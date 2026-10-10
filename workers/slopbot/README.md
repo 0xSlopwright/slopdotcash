@@ -466,18 +466,23 @@ inputs and frozen cycle files retain their existing behavior.
 `--cutoff`. The flag is not enabled in release workflows until the hosted
 publisher and its production records are verified.
 
-The generator rejects redirects, unavailable or invalid pages, changed source,
-and unresolved account identities. A non-merge commit whose author has no
-GitHub identity remains an explicit source limitation; its credit is not
-silently redistributed to the PR author or other known contributors. An empty successful history is explicitly
-missing, never a fabricated assessment. It checks current repository visibility
+The generator rejects redirects, unavailable or invalid pages and changed
+source. An unlinked commit author remains null in the source and adds no credit
+recipient under SCR-04. The PR author qualifies through their verified PR
+identity; the collector does not assign an unknown commit identity to them. An
+empty successful history is explicitly missing, never a fabricated assessment. It checks current repository visibility
 and identity, complete GitHub evidence, pinned policy and all journal revisions.
-Each non-merge commit also retains its verified actor IDs, complete changed
-paths (including rename sources), and attribution limitations. Commit-file
+Each non-merge commit also retains its verified primary-author ID, complete
+changed paths (including rename sources), and attribution limitations. Commit-file
 pagination, repeated paths, the API cap, and addition/deletion totals are checked.
 Incomplete path evidence is null and blocks assessment; it is never an empty
-change set. The final PR stability read follows these commit and identity reads. The whole-PR contributor set is derived from these records plus
-the PR author. This preserves the evidence needed to distinguish shared work
+change set. The final PR stability read follows these commit and identity reads.
+The whole-PR contributor set follows SCR-04: the non-bot PR author plus
+GitHub-linked primary commit authors when the PR targets the integration branch.
+Vendor agent accounts and co-author trailers do not add score recipients or
+turn trailer authors into self-reviewers. The original commit messages remain
+in the evidence; the collector does not resolve trailers into credit authority.
+This preserves the evidence needed to distinguish shared work
 from unrelated changes; it does not yet authorize scoped joint publication.
 The additional evidence participates in the source digest, so old assessments
 need a verified successor before they can match the expanded source record.
@@ -487,8 +492,9 @@ source limitation. These references are discovery metadata, not a joint source
 assessment, and their absence does not prove that no other related work exists.
 The evaluator can name a discovered PR in an unresolved result; a related URL
 without collected reference evidence or a positive joint score is rejected.
-GraphQL coauthor and cross-reference reads use the existing generation budget, REST reads contribute
-to the request count, and all merged outcomes receive human-decision hydration.
+GraphQL cross-reference reads use the existing generation budget. REST reads
+contribute to the request count, and all merged outcomes receive human-decision
+hydration.
 Value collection also retains closed, unmerged PRs in the full scoring window.
 Their complete reviews and current assessment history can award review value,
 but never implementation value. Missing or unresolved decisions do not fall

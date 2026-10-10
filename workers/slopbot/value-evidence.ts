@@ -1,3 +1,6 @@
+import { isCreditEligibleCommitAuthor } from "../../src/lib/commit-credit";
+import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+
 // Shared by the installation worker and the historical reviewer. Missing or
 // moving evidence prevents assessment; pagination limits never imply coverage.
 export interface EvidenceClient {
@@ -483,8 +486,8 @@ export async function collectValueEvidence(
       ...reviewComments.map((comment) => comment.html_url),
     ]),
   ];
-  // Resolve co-authors from GitHub's commit identity mapping, never from a
-  // display name or a guessed bot identity. Keep email addresses out of exports.
+  // Retain GitHub-linked primary authors and complete paths for scoped evidence.
+  // Co-author trailers do not establish credit under SCR-04.
   const commitAttribution: CommitAttribution[] = [];
   for (const commit of commits.filter((entry) => entry.parents.length <= 1)) {
     const changes = await collectCommitChanges(
@@ -510,75 +513,28 @@ export async function collectValueEvidence(
       limitations: changes.limitations,
     };
     commitAttribution.push(attribution);
-    if (commit.author === null)
-      attribution.limitations.push(
-        `Unresolved commit author identity: ${commit.sha}`,
-      );
-    const trailers = [
-      ...commit.commit.message.matchAll(
-        /^co-authored-by:\s*[^\r\n]*<([^<>\r\n]+)>\s*$/gimu,
-      ),
-    ];
-    if (!/^co-authored-by:/imu.test(commit.commit.message)) continue;
-    const trailerCount = [
-      ...commit.commit.message.matchAll(/^co-authored-by:/gimu),
-    ].length;
-    if (!client.graphql || trailers.length !== trailerCount) {
-      attribution.limitations.push(
-        `Unresolved co-author identities: ${commit.sha}`,
-      );
-      continue;
-    }
-    const [owner, name] = repository.split("/");
-    const result = await client.graphql<{
-      repository: {
-        object: {
-          oid: string;
-          authors: {
-            nodes: { email: string; user: { id: string } | null }[];
-            pageInfo: { hasNextPage: boolean };
-          };
-        } | null;
-      } | null;
-    }>(
-      `query($owner:String!,$name:String!,$sha:String!){repository(owner:$owner,name:$name){object(expression:$sha){... on Commit{oid authors(first:100){nodes{email user{id}} pageInfo{hasNextPage}}}}} rateLimit{cost limit remaining resetAt}}`,
-      { owner, name, sha: commit.sha },
-    );
-    const evidence = result.repository?.object;
-    if (
-      !evidence ||
-      evidence.oid !== commit.sha ||
-      evidence.authors.pageInfo.hasNextPage
-    ) {
-      attribution.limitations.push(
-        `Incomplete co-author identity evidence: ${commit.sha}`,
-      );
-      continue;
-    }
-    for (const trailer of trailers) {
-      const matches = evidence.authors.nodes.filter(
-        (entry) =>
-          entry.email.toLowerCase() === trailer[1].trim().toLowerCase(),
-      );
-      const ids = new Set(
-        matches.flatMap((entry) => (entry.user ? [entry.user.id] : [])),
-      );
-      if (ids.size !== 1)
-        attribution.limitations.push(
-          `Unresolved co-author identity: ${commit.sha}`,
-        );
-      else
-        for (const id of ids)
-          if (!attribution.actorNodeIds.includes(id))
-            attribution.actorNodeIds.push(id);
+  }
+  // Trailer identities are source text, not credit authority under SCR-04.
+  const implementationActors = new Set<string>();
+  if (pull.user.type !== "Bot") implementationActors.add(pull.user.node_id);
+  if (
+    pull.base.ref ===
+    findRegisteredRepositoryById(repository)?.integrationBranch
+  ) {
+    for (const commit of commits) {
+      if (
+        commit.parents.length <= 1 &&
+        commit.author &&
+        isCreditEligibleCommitAuthor({
+          id: commit.author.node_id,
+          kind: commit.author.type,
+        })
+      )
+        implementationActors.add(commit.author.node_id);
     }
   }
-  const implementationActors = new Set([pull.user.node_id]);
-  for (const attribution of commitAttribution) {
-    attribution.actorNodeIds.sort();
-    for (const id of attribution.actorNodeIds) implementationActors.add(id);
+  for (const attribution of commitAttribution)
     limitations.push(...attribution.limitations);
-  }
   const after = await client.get<Pull>(path);
   if (
     !after ||
