@@ -53,6 +53,15 @@ A missing or invalid file means label-only review.
 
 ## Cost statements and vault billing
 
+On the Surplus Anthropic endpoint, a structured spending-limit rejection stops
+the model route. It does not trigger the Sol fallback. Other provider failures
+keep the configured fallback behavior. The failed call retains the safe reason
+`provider budget exhausted`; no provider message body is stored. This is
+rejection handling, not proof that a spending limit has been configured.
+The [provider guide](https://www.surplusintelligence.ai/llms.txt) documents the
+Anthropic error envelope and the separate management permission for budgets.
+
+
 `GET /api/v1/payments/slopbot/installations/<id>/invoices/<YYYY-MM>` returns
 one installation's billed model calls for the UTC month. Values use integer
 micro-USDC. This is a cost statement, not a request for payment or proof of

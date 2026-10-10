@@ -61,6 +61,36 @@ export async function runRoute(
   });
 }
 
+// The Anthropic wire reports budget exhaustion as invalid_request_error,
+// with structured budget detail rather than the OpenAI budget_exceeded code.
+// Do not retry another model when the provider has denied spending.
+function isBudgetRejection(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const value = error as {
+    status?: unknown;
+    error?: { error?: { type?: unknown; detail?: unknown } };
+  };
+  const payload = value.error?.error;
+  if (
+    value.status !== 400 ||
+    payload?.type !== "invalid_request_error" ||
+    typeof payload.detail !== "object" ||
+    payload.detail === null
+  )
+    return false;
+  const detail = payload.detail as Record<string, unknown>;
+  return (
+    typeof detail.window === "string" &&
+    detail.window.length > 0 &&
+    Number.isSafeInteger(detail.limit_micro) &&
+    Number(detail.limit_micro) >= 0 &&
+    Number.isSafeInteger(detail.spent_micro) &&
+    Number(detail.spent_micro) >= 0 &&
+    typeof detail.resets_at === "string" &&
+    Number.isFinite(Date.parse(detail.resets_at))
+  );
+}
+
 export async function runStructuredRoute<T>(
   env: ModelEnv,
   route: Step[],
@@ -119,6 +149,11 @@ export async function runStructuredRoute<T>(
       if (headers instanceof Headers) {
         record.providerCostMicroUsd = providerCost(headers);
         record.providerRequestId = providerRequestId(headers);
+      }
+      if (isBudgetRejection(error)) {
+        record.failure = "provider budget exhausted";
+        calls.push(record);
+        return { verdict: null, calls, servedBy: null };
       }
       record.failure =
         typeof status === "number" && Number.isInteger(status)
