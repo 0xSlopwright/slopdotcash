@@ -395,3 +395,11 @@ The isolated queue workflow exercised confirmed closure, an unchanged open
 response, a close-request failure and a post-close comment-update failure. The
 event sequence contained no closure claim before confirmation. Closure was
 enabled only in that local fixture; production closure remains disabled.
+
+After inference, closure eligibility is checked again against current author
+permissions, recorded human-reopen signals and closure limits. Assignment,
+exempt or unknown membership, and a human reopen at the reviewed revision prevent
+closure. Local queue workflow checks changed each condition during inference:
+all four made zero close requests, while the unchanged eligible case closed only
+after confirmation. These checks do not enable production closure or establish
+hosted membership permissions.

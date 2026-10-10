@@ -738,6 +738,32 @@ async function runReview(
     close = false;
     blockedClose = "the item was assigned before closure";
   }
+  if (close) {
+    const exemption = await authorExemption(
+      fresh.github,
+      fresh.repo.owner,
+      job.repo,
+      fresh.issue.user,
+    );
+    const reopened = await store.count(
+      db,
+      "SELECT COUNT(*) AS n FROM slopbot_actions WHERE review_key = ?",
+      `reopen:${issue.node_id}:${context.revision}`,
+    );
+    const currentClosure = await closureState(
+      env,
+      job,
+      fresh,
+      exemption === "not-exempt" && reopened === 0,
+    );
+    if (!currentClosure.allowed) {
+      close = false;
+      blockedClose =
+        reopened > 0
+          ? "a human reopened this revision; maintainer decision stands"
+          : currentClosure.why;
+    }
+  }
 
   const body = commentBody({
     verdict,
