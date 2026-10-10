@@ -472,8 +472,11 @@ GitHub identity remains an explicit source limitation; its credit is not
 silently redistributed to the PR author or other known contributors. An empty successful history is explicitly
 missing, never a fabricated assessment. It checks current repository visibility
 and identity, complete GitHub evidence, pinned policy and all journal revisions.
-Each non-merge commit also retains its verified actor IDs and attribution
-limitations. The whole-PR contributor set is derived from these records plus
+Each non-merge commit also retains its verified actor IDs, complete changed
+paths (including rename sources), and attribution limitations. Commit-file
+pagination, repeated paths, the API cap, and addition/deletion totals are checked.
+Incomplete path evidence is null and blocks assessment; it is never an empty
+change set. The final PR stability read follows these commit and identity reads. The whole-PR contributor set is derived from these records plus
 the PR author. This preserves the evidence needed to distinguish shared work
 from unrelated changes; it does not yet authorize scoped joint publication.
 The additional evidence participates in the source digest, so old assessments

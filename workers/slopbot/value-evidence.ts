@@ -69,7 +69,7 @@ interface Commit {
     committer: { date: string };
   };
 }
-interface MergeCommitEvidence {
+interface CommitChangeEvidence {
   sha: string;
   html_url: string;
   parents: { sha: string }[];
@@ -131,9 +131,58 @@ function comment({
     ...(pull_request_review_id === undefined ? {} : { pull_request_review_id }),
   };
 }
+/** The commit endpoint has a separate file pagination contract and cap. */
+async function collectCommitChanges(
+  client: EvidenceClient,
+  root: string,
+  sha: string,
+  label: string,
+) {
+  let commit: CommitChangeEvidence | null = null;
+  const limitations: string[] = [];
+  for (let page = 1; ; page++) {
+    const batch = await client.get<CommitChangeEvidence>(
+      `${root}/commits/${sha}?per_page=100&page=${page}`,
+    );
+    if (!batch || batch.sha !== sha) {
+      limitations.push(`${label} evidence is unavailable`);
+      break;
+    }
+    if (commit === null) {
+      commit = {
+        sha: batch.sha,
+        html_url: batch.html_url,
+        parents: batch.parents.map(({ sha }) => ({ sha })),
+        stats: { ...batch.stats },
+        files: [],
+      };
+    }
+    commit.files.push(...batch.files.map(fileChange));
+    if (commit.files.length >= 3000) {
+      limitations.push(`${label} file limit reached; Git evidence required`);
+      break;
+    }
+    if (batch.files.length < 100) break;
+  }
+  if (commit !== null) {
+    if (
+      new Set(commit.files.map((file) => file.filename)).size !==
+      commit.files.length
+    )
+      limitations.push(`${label} contains repeated file paths`);
+    for (const kind of ["additions", "deletions"] as const)
+      if (
+        commit.files.reduce((sum, file) => sum + file[kind], 0) !==
+        commit.stats[kind]
+      )
+        limitations.push(`Incomplete ${label.toLowerCase()} ${kind}`);
+  }
+  return { commit, limitations };
+}
 export interface CommitAttribution {
   sha: string;
   actorNodeIds: string[];
+  changedPaths: string[] | null;
   limitations: string[];
 }
 export interface ValueEvidence {
@@ -143,7 +192,7 @@ export interface ValueEvidence {
   collectedAt: string;
   pull: Pull;
   files: FileChange[];
-  mergeCommitEvidence: MergeCommitEvidence | null;
+  mergeCommitEvidence: CommitChangeEvidence | null;
   commits: Commit[];
   reviews: Review[];
   comments: Comment[];
@@ -269,52 +318,22 @@ export async function collectValueEvidence(
   const comments = rawComments.map(comment);
   const reviewComments = rawReviewComments.map(comment);
   const limitations: string[] = [];
-  let mergeCommitEvidence: MergeCommitEvidence | null = null;
+  let mergeCommitEvidence: CommitChangeEvidence | null = null;
   if (pull.merged_at !== null) {
     if (!pull.merge_commit_sha) {
       limitations.push("Reported merge commit is unavailable");
     } else {
       // A PR diff can include work already brought in by another merge. Retain
       // both views; an empty accepted diff is not proof its author did no work.
-      for (let page = 1; ; page++) {
-        const commit: MergeCommitEvidence | null =
-          await client.get<MergeCommitEvidence>(
-            `${root}/commits/${pull.merge_commit_sha}?per_page=100&page=${page}`,
-          );
-        if (!commit || commit.sha !== pull.merge_commit_sha) {
-          limitations.push("Reported merge commit evidence is unavailable");
-          break;
-        }
-        if (mergeCommitEvidence === null) {
-          mergeCommitEvidence = {
-            sha: commit.sha,
-            html_url: commit.html_url,
-            parents: commit.parents.map(({ sha }) => ({ sha })),
-            stats: { ...commit.stats },
-            files: [],
-          };
-        }
-        mergeCommitEvidence.files.push(...commit.files.map(fileChange));
-        // GitHub caps this endpoint at 3,000 files. A cap is not completeness,
-        // including when omitted files have no textual additions/deletions.
-        if (mergeCommitEvidence.files.length >= 3000) {
-          limitations.push(
-            "Reported merge commit file limit reached; Git evidence required",
-          );
-          break;
-        }
-        if (commit.files.length < 100) break;
-      }
+      const accepted = await collectCommitChanges(
+        client,
+        root,
+        pull.merge_commit_sha,
+        "Reported merge commit",
+      );
+      mergeCommitEvidence = accepted.commit;
+      limitations.push(...accepted.limitations);
       if (mergeCommitEvidence !== null) {
-        for (const kind of ["additions", "deletions"] as const) {
-          if (
-            mergeCommitEvidence.files.reduce(
-              (sum, file) => sum + file[kind],
-              0,
-            ) !== mergeCommitEvidence.stats[kind]
-          )
-            limitations.push(`Incomplete reported merge commit ${kind}`);
-        }
         const directMerge =
           mergeCommitEvidence.parents.length === 2 &&
           mergeCommitEvidence.parents[1]?.sha === pull.head.sha;
@@ -332,18 +351,6 @@ export async function collectValueEvidence(
       }
     }
   }
-  const after = await client.get<Pull>(path);
-  if (
-    !after ||
-    after.updated_at !== pull.updated_at ||
-    after.head.sha !== pull.head.sha ||
-    after.base.sha !== pull.base.sha ||
-    after.state !== pull.state ||
-    after.closed_at !== pull.closed_at ||
-    after.merged_at !== pull.merged_at ||
-    after.merge_commit_sha !== pull.merge_commit_sha
-  )
-    limitations.push("PR changed during evidence collection");
   for (const [name, actual, expected] of [
     ["files", files.length, pull.changed_files],
     ["commits", commits.length, pull.commits],
@@ -385,10 +392,27 @@ export async function collectValueEvidence(
   // display name or a guessed bot identity. Keep email addresses out of exports.
   const commitAttribution: CommitAttribution[] = [];
   for (const commit of commits.filter((entry) => entry.parents.length <= 1)) {
+    const changes = await collectCommitChanges(
+      client,
+      root,
+      commit.sha,
+      `Commit ${commit.sha}`,
+    );
     const attribution: CommitAttribution = {
       sha: commit.sha,
       actorNodeIds: commit.author ? [commit.author.node_id] : [],
-      limitations: [],
+      changedPaths:
+        changes.commit !== null && changes.limitations.length === 0
+          ? [
+              ...new Set(
+                changes.commit.files.flatMap((file) => [
+                  file.filename,
+                  ...(file.previous_filename ? [file.previous_filename] : []),
+                ]),
+              ),
+            ].sort()
+          : null,
+      limitations: changes.limitations,
     };
     commitAttribution.push(attribution);
     if (commit.author === null)
@@ -460,6 +484,18 @@ export async function collectValueEvidence(
     for (const id of attribution.actorNodeIds) implementationActors.add(id);
     limitations.push(...attribution.limitations);
   }
+  const after = await client.get<Pull>(path);
+  if (
+    !after ||
+    after.updated_at !== pull.updated_at ||
+    after.head.sha !== pull.head.sha ||
+    after.base.sha !== pull.base.sha ||
+    after.state !== pull.state ||
+    after.closed_at !== pull.closed_at ||
+    after.merged_at !== pull.merged_at ||
+    after.merge_commit_sha !== pull.merge_commit_sha
+  )
+    limitations.push("PR changed during evidence collection");
   const outcomeAt = pull.merged_at ?? pull.closed_at;
   const eligibleReviewIds = reviews
     .filter(
