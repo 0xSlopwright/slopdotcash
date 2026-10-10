@@ -741,7 +741,8 @@ async function runReview(
 
   const body = commentBody({
     verdict,
-    action: close ? "close" : "label",
+    // Publish the review first. A closure claim requires GitHub's response.
+    action: "label",
     blockedClose,
     context,
     triage,
@@ -818,6 +819,19 @@ async function runReview(
       issue.node_id,
       "close",
       JSON.stringify({ category, penaltyEligible: routing.penaltyEligible }),
+    );
+    await upsertComment(
+      env,
+      job,
+      context,
+      commentBody({
+        verdict,
+        action: "close",
+        blockedClose: null,
+        context,
+        triage,
+        confirm,
+      }),
     );
   }
   await store.finishReview(db, reviewKey, "completed", {

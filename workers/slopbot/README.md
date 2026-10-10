@@ -384,3 +384,14 @@ The local queue workflow covered comment 404, invalid creation ID, redirected
 update, label 404 and a response missing the requested label. Each failed and
 retried; no unconfirmed action entered the ledger. Confirmed comments remained
 recorded when the subsequent label failed. Normal comment/label success passed.
+
+The initial review comment never announces a close. Only after GitHub confirms
+the closed state does the worker record the close and update that comment with
+the result. If the comment update fails, the confirmed close stays in the action
+ledger and the run fails visibly. A rejected or failed close creates no close
+record and no closure claim.
+
+The isolated queue workflow exercised confirmed closure, an unchanged open
+response, a close-request failure and a post-close comment-update failure. The
+event sequence contained no closure claim before confirmation. Closure was
+enabled only in that local fixture; production closure remains disabled.
