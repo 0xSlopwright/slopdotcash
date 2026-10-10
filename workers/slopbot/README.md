@@ -299,3 +299,16 @@ requests and the real SQLite migrations. An injected first-send failure returned
 Invalid JSON returned 400, and an invalid signature returned 401, without
 creating receipts. This check did not exercise the hosted Cloudflare queue or
 GitHub App credentials.
+
+## Immutable billing evidence
+
+Migration `0017` rejects changes to every cost field, credit deletion and SQLite
+replacement of an existing cost or credit. This preserves installation and
+model attribution as well as amounts. A credit reference cannot be reused to
+replace a deposit. Corrections and invoice reconciliation require appended
+evidence; this migration does not implement invoice reconciliation.
+
+A local check exercised the model transport and `recordCalls` against the real
+SQLite migrations. All 20 cost columns rejected updates; cost and credit
+deletion and replacement failed; new cost and credit rows still appended, and
+the derived credit balance retained both entries. No production funds changed.
