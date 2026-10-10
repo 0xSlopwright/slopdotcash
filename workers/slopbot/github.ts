@@ -91,6 +91,12 @@ export class GitHubError extends Error {
 export class GitHubClient {
   private constructor(private readonly token: string) {}
 
+  /** Existing GitHub token for read-only source ingestion outside the Worker. */
+  static forToken(token: string) {
+    if (!token.trim()) throw new Error("GitHub source token is required");
+    return new GitHubClient(token);
+  }
+
   static async forInstallation(
     appId: string,
     privateKey: string,

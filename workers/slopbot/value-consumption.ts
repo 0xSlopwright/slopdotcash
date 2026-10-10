@@ -25,6 +25,27 @@ export async function readValueDecision(
   evidence: ValueEvidence,
   policy: { sha: string; text: string },
 ) {
+  return readValueDecisionFromHistory(
+    (after) =>
+      valueHistory(
+        db,
+        findRegisteredRepositoryById(evidence.repository)?.id ??
+          evidence.repository,
+        evidence.pull.number,
+        after,
+      ),
+    evidence,
+    policy,
+  );
+}
+
+export async function readValueDecisionFromHistory(
+  loadPage: (
+    after: number,
+  ) => Promise<Awaited<ReturnType<typeof valueHistory>>>,
+  evidence: ValueEvidence,
+  policy: { sha: string; text: string },
+) {
   const history: PublicRecord[] = [];
   let cursor = 0;
   let more = true;
@@ -33,12 +54,7 @@ export async function readValueDecision(
   let previous: PublicRecord | null = null;
   let latest: ValueJournalRecord | null = null;
   do {
-    const page = await valueHistory(
-      db,
-      repository.id,
-      evidence.pull.number,
-      cursor,
-    );
+    const page = await loadPage(cursor);
     for (const row of page.records) {
       if (
         !Number.isSafeInteger(row.sequence) ||

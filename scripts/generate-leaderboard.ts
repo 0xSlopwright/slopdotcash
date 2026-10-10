@@ -1,3 +1,5 @@
+import { GitHubClient } from "../workers/slopbot/github";
+import { loadValueInputs } from "./value-ingestion";
 /**
  * Collects the rolling contribution ledger and current work queues from the
  * authenticated GitHub GraphQL API. Time slicing, cursor pagination, runtime
@@ -262,6 +264,8 @@ export interface GenerationProgress {
 }
 
 export interface GenerateOptions {
+  /** Enable the authoritative hosted value feed; failures prevent publication. */
+  valueAssessments?: boolean;
   valueActors?: LeaderboardInput["valueActors"];
   valueDecisions?: LeaderboardInput["valueDecisions"];
   now?: Date;
@@ -476,7 +480,7 @@ const ISSUE_FRAGMENT = `
 
 const PREFLIGHT_QUERY = `
   query LeaderboardPreflight($owner: String!, $name: String!) {
-    repository(owner: $owner, name: $name) { id updatedAt }
+    repository(owner: $owner, name: $name) { id isPrivate updatedAt }
     rateLimit { cost limit remaining resetAt }
   }
 `;
@@ -1722,11 +1726,22 @@ function parseIsoDate(value: Date, path: string): Date {
 export function parseGenerationArguments(
   values: string[],
   currentTime = new Date(),
-): Pick<GenerateOptions, "now"> {
+): Pick<GenerateOptions, "now" | "valueAssessments"> {
+  const valueFlags = values.filter((value) => value === "--value-assessments");
+  if (valueFlags.length > 1)
+    throw new TypeError("--value-assessments may appear only once");
+  if (valueFlags.length === 1)
+    return {
+      ...parseGenerationArguments(
+        values.filter((value) => value !== "--value-assessments"),
+        currentTime,
+      ),
+      valueAssessments: true,
+    };
   if (values.length === 0) return {};
   if (values.length !== 2 || values[0] !== "--cutoff") {
     throw new TypeError(
-      "Usage: generate-leaderboard.ts [--cutoff YYYY-MM-DDTHH:mm:ss.sssZ]",
+      "Usage: generate-leaderboard.ts [--cutoff YYYY-MM-DDTHH:mm:ss.sssZ] [--value-assessments]",
     );
   }
   const cutoffText = values[1];
@@ -1943,6 +1958,8 @@ async function preflightRepository(
     name: targetRepository.name,
   });
   const repository = child(data, "repository", "data");
+  if (repository.isPrivate !== false)
+    throw new Error("Leaderboard ingestion requires a public repository");
   const repositoryNodeId = asString(repository.id, "data.repository.id");
   if (
     targetRepository.expectedNodeId !== null &&
@@ -3698,7 +3715,8 @@ export async function generateLeaderboardFromGitHub(
     );
     const reviewedReferences = collection.mergedPullRequestReferences.filter(
       (reference) =>
-        hydrationPlan.hydratedIds.has(reference.id) &&
+        (options.valueAssessments ||
+          hydrationPlan.hydratedIds.has(reference.id)) &&
         !detailedReferenceIds.has(reference.id),
     );
     await ensureEstimatedBudget(
@@ -3839,6 +3857,33 @@ export async function generateLeaderboardFromGitHub(
     .reduce((latest, current) =>
       Date.parse(current) > Date.parse(latest) ? current : latest,
     );
+  let valueRestRequests = 0;
+  let valueInputs = {
+    valueDecisions: options.valueDecisions,
+    valueActors: options.valueActors,
+  };
+  if (options.valueAssessments) {
+    if (options.valueDecisions || options.valueActors)
+      throw new Error(
+        "Hosted value ingestion cannot mix supplied decisions or actors",
+      );
+    const github = GitHubClient.forToken(options.evidenceToken ?? "");
+    valueInputs = await loadValueInputs(
+      {
+        get: <T>(path: string) => {
+          valueRestRequests += 1;
+          return github.get<T>(path);
+        },
+        fileText: (...args: Parameters<GitHubClient["fileText"]>) => {
+          valueRestRequests += 1;
+          return github.fileText(...args);
+        },
+        graphql: async <T>(query: string, variables: Record<string, unknown>) =>
+          (await client.execute(query, variables as GraphqlVariables)) as T,
+      },
+      dedupedOutcomes,
+    );
+  }
   const fetchedAt = new Date().toISOString();
   const rateLimit = client.getRateLimit();
   const source: LeaderboardSourceMetadata = {
@@ -3850,7 +3895,7 @@ export async function generateLeaderboardFromGitHub(
       id: collection.repository.id,
       repositoryId: collection.preflight.id,
     })),
-    requestCount: client.getRequestCount(),
+    requestCount: client.getRequestCount() + valueRestRequests,
     searchSliceCount: stats.searchSliceCount,
     rateLimit,
     counts: {
@@ -3876,8 +3921,7 @@ export async function generateLeaderboardFromGitHub(
     },
   };
   const snapshot = createLeaderboardSnapshot({
-    valueDecisions: options.valueDecisions,
-    valueActors: options.valueActors,
+    ...valueInputs,
     generatedAt: fetchedAt,
     windowFrom: windowFrom.toISOString(),
     windowTo: now.toISOString(),

@@ -454,6 +454,30 @@ A local integration passed collected Eliza #34772 through the journal reader
 and real snapshot generator and validator: nine implementation thirds, one
 review award, no missing-value fallback, retained zero, wrong-head rejection,
 and precedence for a controlled valid human-ratification fixture. The generator
-entry point accepts these inputs; fetching them from the hosted service,
-Points revision ingestion, and public activation remain unfinished. Legacy
+entry point accepts these inputs. Hosted-feed operation, Points revision
+ingestion, and public activation remain unverified. Legacy
 inputs and frozen cycle files retain their existing behavior.
+
+
+## Ingest published assessments
+
+`bun scripts/generate-leaderboard.ts --value-assessments` enables the fixed
+`https://slopbot.slop.cash/v1/value-assessments` feed. It can be combined with
+`--cutoff`. The flag is not enabled in release workflows until the hosted
+publisher and its production records are verified.
+
+The generator rejects redirects, unavailable or invalid pages, changed source,
+and unresolved account identities. An empty successful history is explicitly
+missing, never a fabricated assessment. It checks current repository visibility
+and identity, complete GitHub evidence, pinned policy and all journal revisions.
+GraphQL coauthor reads use the existing generation budget, REST reads contribute
+to the request count, and all merged outcomes receive human-decision hydration.
+The source collector does not call a model. A failed feed prevents snapshot
+publication; legacy scoring is not a failure fallback.
+
+Local integration used the actual Worker HTTP reader, SQLite, fresh Eliza source
+and a controlled assessment fixture, then passed the loaded decisions through
+the real score projection and snapshot validator. It also exercised unavailable,
+redirected, wrong-identity and oversized responses, explicit empty history, and
+private or unknown repository visibility. This is local ingestion evidence, not
+proof of the production hostname, a new model valuation or a hosted publication.

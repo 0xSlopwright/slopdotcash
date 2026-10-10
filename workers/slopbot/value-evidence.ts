@@ -405,7 +405,7 @@ export async function collectValueEvidence(
         } | null;
       } | null;
     }>(
-      `query($owner:String!,$name:String!,$sha:String!){repository(owner:$owner,name:$name){object(expression:$sha){... on Commit{oid authors(first:100){nodes{email user{id}} pageInfo{hasNextPage}}}}}}`,
+      `query($owner:String!,$name:String!,$sha:String!){repository(owner:$owner,name:$name){object(expression:$sha){... on Commit{oid authors(first:100){nodes{email user{id}} pageInfo{hasNextPage}}}}} rateLimit{cost limit remaining resetAt}}`,
       { owner, name, sha: commit.sha },
     );
     const evidence = result.repository?.object;
