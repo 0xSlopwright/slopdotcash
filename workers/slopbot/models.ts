@@ -1,12 +1,7 @@
 // Model route (PRD BOT-09). The model gets no tools, secrets or network access;
 // it returns one schema-valid verdict about the item it was shown, nothing else.
 import Anthropic from "@anthropic-ai/sdk";
-import {
-  type Usage,
-  VERDICT_SCHEMA,
-  type Verdict,
-  validateVerdict,
-} from "./contracts";
+import { type Usage, VERDICT_SCHEMA, validateVerdict } from "./contracts";
 
 export type ModelEnv = {
   SURPLUS_API_KEY?: string;
@@ -57,8 +52,26 @@ export async function runRoute(
   route: Step[],
   prompt: Prompt,
   effort: "medium" | "high",
+) {
+  return runStructuredRoute(env, route, prompt, effort, {
+    name: "slopbot_verdict",
+    schema: VERDICT_SCHEMA,
+    validate: validateVerdict,
+  });
+}
+
+export async function runStructuredRoute<T>(
+  env: ModelEnv,
+  route: Step[],
+  prompt: Prompt,
+  effort: "medium" | "high",
+  output: {
+    name: string;
+    schema: Record<string, unknown>;
+    validate(value: unknown): T | null;
+  },
 ): Promise<{
-  verdict: Verdict | null;
+  verdict: T | null;
   calls: CallRecord[];
   servedBy: CallRecord | null;
 }> {
@@ -77,12 +90,12 @@ export async function runRoute(
     try {
       const result =
         step.provider === "openai"
-          ? await callOpenAI(env, step, prompt, effort)
-          : await callClaude(env, step, prompt, effort);
+          ? await callOpenAI(env, step, prompt, effort, output)
+          : await callClaude(env, step, prompt, effort, output);
       record.usage = result.usage;
       record.servedModel = result.servedModel;
       const verdict =
-        result.json === null ? null : validateVerdict(result.json);
+        result.json === null ? null : output.validate(result.json);
       if (verdict === null) {
         record.failure = result.failure ?? "schema-invalid verdict";
         calls.push(record);
@@ -123,6 +136,7 @@ async function callClaude(
   step: Step,
   prompt: Prompt,
   effort: "medium" | "high",
+  output: { name: string; schema: Record<string, unknown> },
 ): Promise<CallResult> {
   const key = env.SURPLUS_API_KEY;
   if (key === undefined || key === "")
@@ -161,7 +175,7 @@ async function callClaude(
     ],
     output_config: {
       effort,
-      format: { type: "json_schema", schema: VERDICT_SCHEMA },
+      format: { type: "json_schema", schema: output.schema },
     },
   } as unknown as Anthropic.MessageCreateParamsNonStreaming);
   const usage: Usage = {
@@ -197,6 +211,7 @@ async function callOpenAI(
   step: Step,
   prompt: Prompt,
   effort: "medium" | "high",
+  output: { name: string; schema: Record<string, unknown> },
 ): Promise<CallResult> {
   if (env.OPENAI_API_KEY === undefined || env.OPENAI_API_KEY === "")
     throw new Error("openai key not configured");
@@ -216,9 +231,9 @@ async function callOpenAI(
       text: {
         format: {
           type: "json_schema",
-          name: "slopbot_verdict",
+          name: output.name,
           strict: true,
-          schema: VERDICT_SCHEMA,
+          schema: output.schema,
         },
       },
     }),

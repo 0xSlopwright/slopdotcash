@@ -73,9 +73,10 @@ credit. This change neither enables billing nor moves funds.
 
 Do these in order. Each step names who does it and how to verify it.
 
-1. **Register the App** (an org owner of SlopDotCash): go to GitHub →
-   SlopDotCash → Settings → Developer settings → GitHub Apps → New GitHub App.
-   - Name: `slopbot`. Homepage: `https://slop.cash`.
+1. **Use the registered App** (an org owner of SlopDotCash):
+   [slopdotcash](https://github.com/apps/slopdotcash), App ID `5257625`.
+   Do not create a second App or use the unrelated `slopcash` App.
+   - Homepage: `https://slop.cash`.
    - Webhook: active. URL: `https://<worker host>/github/webhook`. Set this
      after step 6; until then, leave the webhook inactive.
    - Webhook secret: generate with `openssl rand -hex 32` and keep it for
@@ -87,7 +88,7 @@ Do these in order. Each step names who does it and how to verify it.
    - Verify: the App page shows exactly these permissions.
 2. **Get the App identity:**
    - Record the App ID shown on the App page.
-   - Get the bot user ID from `https://api.github.com/users/slopbot%5Bbot%5D`
+   - Get the bot user ID from `https://api.github.com/users/slopdotcash%5Bbot%5D`
      (the `id` field).
 3. **Create the key:** on the App page, click "Generate a private key". Then
    convert it:
@@ -154,3 +155,37 @@ Do these in order. Each step names who does it and how to verify it.
 - Reviewed installation-to-project binding and payout-fee offsets.
 - SCR-01 penalty journal events. Closures record `penaltyEligible` for them.
 - Maintainer dashboard and Automation row (LDR-04).
+
+## Value assessment work in progress
+
+The owner approved automatic **provisional** value scores under PRD SCR-06.
+Payout approval stays human. See
+[`slop-value-scoring-plan.md`](../../docs/slop-value-scoring-plan.md) for the
+separate delivery checklist. This does not activate the closure switch.
+
+`value-evidence.ts` collects paginated submitted changes, reported merge changes,
+commit identities and discussion evidence. It reports missing patches, source
+drift, API file limits and merge ancestry that needs joint review. A matching
+squash diff can establish the accepted range; the final commit of a rebase or a
+branch-sync diff cannot establish that range on its own. A read-only local
+collection uses:
+
+```bash
+bun scripts/collect-value-evidence.ts OWNER/REPOSITORY PR_NUMBER /private/output
+```
+
+Raw evidence stays outside the repository. `value-review.ts` shares the strict
+value rubric with the hosted model route. It does not publish scores or approve
+awards. Source-bound publication, ingestion and complete historical calibration
+must pass before this route can be activated. The September/October review uses
+the owner's existing ChatGPT subscription; it does not authorize paid API calls.
+A hosted service still requires its own supported runtime credentials.
+
+Local evidence checks used real GitHub sources: Eliza #34772 has matching full
+submitted and squash diffs; Delta Star #218 correctly requires ancestry review;
+Delta Star #215 reports an omitted original-file patch instead of claiming full
+coverage. These checks do not prove model execution or score publication.
+
+Installation was verified on 10 October 2026: the owner installed the registered
+App on elizaOS (installation `169856061`) with all repositories selected. This
+proves App access, not worker deployment, model connectivity or score delivery.

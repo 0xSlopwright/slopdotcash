@@ -176,7 +176,10 @@ document merge alone does not enable those powers; implement and review the
 versioned protocols and explicit permissions first. The hosted Slopbot service
 is `workers/slopbot` under `protocol/slopbot-v2.md` (effective
 2026-11-01T00:00:00Z). Its global closure switch stays off until a reviewed
-production activation; it never merges, approves, scores, bans, or pays.
+production activation; it never merges, approves payouts, bans, or pays.
+Under owner-approved SCR-06, it may update provisional value scores with
+complete source evidence and append-only revisions. Human ratification takes
+precedence. See `docs/slop-value-scoring-plan.md`.
 
 It measures its own run, checks
 correctness, tests, security, evidence, duplication, abuse signals, scope, and
