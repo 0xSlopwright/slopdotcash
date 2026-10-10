@@ -481,3 +481,15 @@ the real score projection and snapshot validator. It also exercised unavailable,
 redirected, wrong-identity and oversized responses, explicit empty history, and
 private or unknown repository visibility. This is local ingestion evidence, not
 proof of the production hostname, a new model valuation or a hosted publication.
+
+### Recovering a confirmed review comment
+
+A failed local comment-ID checkpoint does not authorize another GitHub comment.
+When the cached ID is absent or GitHub reports it deleted, the Worker reads the
+complete bounded issue-comment history before creating a replacement. It adopts
+only a comment authored by the configured App bot ID with the Slopbot review
+marker. A copied marker from a contributor or another bot is not authority.
+Unavailable, incomplete, or ambiguous history causes a queue retry without a new
+comment. Local queue/SDK/SQLite checks cover checkpoint failure after creation,
+second-page recovery, foreign markers, unavailable history, and multiple matches.
+These controlled checks do not prove live GitHub delivery or production activation.

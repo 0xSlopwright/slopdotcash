@@ -19,6 +19,7 @@ import {
 import {
   authorExemption,
   type Exemption,
+  findReviewComment,
   GitHubClient,
   sha256Hex,
 } from "./github";
@@ -491,8 +492,24 @@ async function upsertComment(
   body: string,
 ) {
   const db = env.SLOPBOT_DB;
-  const existing = await store.commentId(db, context.issue.node_id);
-  if (existing !== null) {
+  let existing = await store.commentId(db, context.issue.node_id);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (existing === null) {
+      existing = await findReviewComment(
+        context.github,
+        job.owner,
+        job.repo,
+        job.number,
+        env.SLOPBOT_APP_USER_ID,
+      );
+      if (existing === null) break;
+      await store.saveCommentId(
+        db,
+        context.issue.node_id,
+        job.repositoryId,
+        existing,
+      );
+    }
     const updated = await context.github.request<{ id: number }>(
       "PATCH",
       `/repos/${job.owner}/${job.repo}/issues/comments/${existing}`,
@@ -503,6 +520,9 @@ async function upsertComment(
         throw new Error("GitHub did not confirm the comment update");
       return;
     }
+    existing = null;
+    if (attempt === 1)
+      throw new Error("GitHub review comment changed during recovery");
   }
   const created = await context.github.request<{ id: number }>(
     "POST",
