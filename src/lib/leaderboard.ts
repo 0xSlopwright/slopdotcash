@@ -3227,6 +3227,9 @@ export function createLeaderboardSnapshot(
       )
     )
       throw new Error("Value review lost its eligible source identity");
+    const reviewedAt = parseIsoTime(review.submittedAt);
+    if (reviewedAt < parseIsoTime(input.windowFrom) || reviewedAt >= windowTo)
+      return;
     addScore(entries, ledger, {
       id: `${pullRequest.id}:value-review:${review.id}`,
       actor: review.author,
@@ -6283,6 +6286,11 @@ export function assertLeaderboardSnapshot(
       throw new Error("Value coverage must retain every closed source");
     for (const event of validatedLedger) {
       if (!event.scoreDecisionSourceId?.startsWith("value:")) continue;
+      if (
+        parseIsoTime(event.occurredAt) < parseIsoTime(window.from) ||
+        parseIsoTime(event.occurredAt) >= parseIsoTime(window.to)
+      )
+        throw new Error("Value score event is outside the scoring window");
       const row = snapshot.valueAssessmentCoverage.find((value) =>
         event.id.startsWith(`${value.pullRequestId}:`),
       );
