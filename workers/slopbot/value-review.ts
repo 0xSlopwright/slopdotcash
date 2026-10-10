@@ -71,5 +71,10 @@ export function validateEvidenceAssessment(
     ),
     eligibleReviewIds: new Set(evidence.eligibleReviewIds),
     merged: evidence.pull.merged_at !== null,
+    closed:
+      evidence.pull.state === "closed" &&
+      Number.isFinite(
+        Date.parse(evidence.pull.merged_at ?? evidence.pull.closed_at ?? ""),
+      ),
   });
 }

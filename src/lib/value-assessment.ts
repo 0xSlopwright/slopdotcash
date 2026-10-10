@@ -123,6 +123,7 @@ export function validateValueAssessment(
     reviewTimes: ReadonlyMap<string, string | null>;
     eligibleReviewIds: ReadonlySet<string>;
     merged: boolean;
+    closed: boolean;
   },
 ): ValueAssessment | null {
   if (
@@ -229,7 +230,7 @@ export function validateValueAssessment(
     if (
       review.tier !== "none" &&
       (value.status !== "assessed" ||
-        !context.merged ||
+        !context.closed ||
         new Set(review.evidenceUrls).size < 2 ||
         !review.evidenceUrls.includes(
           context.reviewUrls.get(review.sourceId) ?? "",
