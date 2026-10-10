@@ -27,6 +27,25 @@ if (
     "Raw evidence must be outside the repository, including through symlinks",
   );
 const client: EvidenceClient = {
+  async graphql<T>(
+    query: string,
+    variables: Record<string, unknown>,
+  ): Promise<T> {
+    const result = Bun.spawn(["gh", "api", "graphql", "--input", "-"], {
+      stdin: new Blob([JSON.stringify({ query, variables })]),
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const [body, status] = await Promise.all([
+      new Response(result.stdout).text(),
+      result.exited,
+    ]);
+    if (status !== 0) throw new Error("GitHub author evidence request failed");
+    const response = JSON.parse(body) as { data?: T; errors?: unknown[] };
+    if (!response.data || response.errors?.length)
+      throw new Error("GitHub author evidence incomplete");
+    return response.data;
+  },
   async get<T>(path: string): Promise<T | null> {
     const result = Bun.spawn(["gh", "api", path], {
       stdout: "pipe",

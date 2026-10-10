@@ -2,6 +2,7 @@
 // moving evidence prevents assessment; pagination limits never imply coverage.
 export interface EvidenceClient {
   get<T>(path: string): Promise<T | null>;
+  graphql?<T>(query: string, variables: Record<string, unknown>): Promise<T>;
 }
 interface Actor {
   node_id: string;
@@ -144,6 +145,7 @@ export interface ValueEvidence {
   limitations: string[];
   evidenceUrls: string[];
   eligibleReviewIds: string[];
+  implementationActorNodeIds: string[];
 }
 async function pages<T>(client: EvidenceClient, path: string): Promise<T[]> {
   const values: T[] = [];
@@ -368,29 +370,73 @@ export async function collectValueEvidence(
       ...reviewComments.map((comment) => comment.html_url),
     ]),
   ];
+  // Resolve co-authors from GitHub's commit identity mapping, never from a
+  // display name or a guessed bot identity. Keep email addresses out of exports.
+  const implementationActors = new Set([pull.user.node_id]);
+  for (const commit of commits.filter((entry) => entry.parents.length <= 1)) {
+    if (commit.author) implementationActors.add(commit.author.node_id);
+    const trailers = [
+      ...commit.commit.message.matchAll(
+        /^co-authored-by:\s*[^\r\n]*<([^<>\r\n]+)>\s*$/gimu,
+      ),
+    ];
+    if (!/^co-authored-by:/imu.test(commit.commit.message)) continue;
+    const trailerCount = [
+      ...commit.commit.message.matchAll(/^co-authored-by:/gimu),
+    ].length;
+    if (!client.graphql || trailers.length !== trailerCount) {
+      limitations.push(`Unresolved co-author identities: ${commit.sha}`);
+      continue;
+    }
+    const [owner, name] = repository.split("/");
+    const result = await client.graphql<{
+      repository: {
+        object: {
+          oid: string;
+          authors: {
+            nodes: { email: string; user: { id: string } | null }[];
+            pageInfo: { hasNextPage: boolean };
+          };
+        } | null;
+      } | null;
+    }>(
+      `query($owner:String!,$name:String!,$sha:String!){repository(owner:$owner,name:$name){object(expression:$sha){... on Commit{oid authors(first:100){nodes{email user{id}} pageInfo{hasNextPage}}}}}}`,
+      { owner, name, sha: commit.sha },
+    );
+    const evidence = result.repository?.object;
+    if (
+      !evidence ||
+      evidence.oid !== commit.sha ||
+      evidence.authors.pageInfo.hasNextPage
+    ) {
+      limitations.push(`Incomplete co-author identity evidence: ${commit.sha}`);
+      continue;
+    }
+    for (const trailer of trailers) {
+      const matches = evidence.authors.nodes.filter(
+        (entry) =>
+          entry.email.toLowerCase() === trailer[1].trim().toLowerCase(),
+      );
+      const ids = new Set(
+        matches.flatMap((entry) => (entry.user ? [entry.user.id] : [])),
+      );
+      if (ids.size !== 1)
+        limitations.push(`Unresolved co-author identity: ${commit.sha}`);
+      else for (const id of ids) implementationActors.add(id);
+    }
+  }
   const eligibleReviewIds = reviews
     .filter(
       (review) =>
         review.user !== null &&
         review.user.type !== "Bot" &&
-        review.user.node_id !== pull.user.node_id &&
-        !commits.some(
-          (commit) =>
-            commit.parents.length <= 1 &&
-            commit.author?.node_id === review.user?.node_id,
-        ) &&
+        !implementationActors.has(review.user.node_id) &&
         review.submitted_at !== null &&
         review.state !== "PENDING" &&
         (pull.merged_at === null ||
           Date.parse(review.submitted_at) < Date.parse(pull.merged_at)),
     )
     .map((review) => review.node_id);
-  if (
-    commits.some((commit) => /^co-authored-by:/imu.test(commit.commit.message))
-  )
-    limitations.push(
-      "Resolve co-author GitHub identities before allocating implementation or self-review credit",
-    );
   return {
     repository,
     repositoryNodeId: repositoryIdentity.node_id,
@@ -406,5 +452,6 @@ export async function collectValueEvidence(
     limitations,
     evidenceUrls,
     eligibleReviewIds,
+    implementationActorNodeIds: [...implementationActors].sort(),
   };
 }

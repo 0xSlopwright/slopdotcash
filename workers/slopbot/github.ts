@@ -147,6 +147,20 @@ export class GitHubClient {
     return (await this.request<T>("GET", path)).data;
   }
 
+  async graphql<T>(
+    query: string,
+    variables: Record<string, unknown>,
+  ): Promise<T> {
+    const response = await this.request<{ data?: T; errors?: unknown[] }>(
+      "POST",
+      "/graphql",
+      { query, variables },
+    );
+    if (!response.data?.data || response.data.errors?.length)
+      throw new Error("GitHub GraphQL evidence is incomplete");
+    return response.data.data;
+  }
+
   // Raw file text at an exact commit, bounded. null when absent.
   async fileText(
     owner: string,
