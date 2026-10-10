@@ -312,3 +312,11 @@ A local check exercised the model transport and `recordCalls` against the real
 SQLite migrations. All 20 cost columns rejected updates; cost and credit
 deletion and replacement failed; new cost and credit rows still appended, and
 the derived credit balance retained both entries. No production funds changed.
+
+Migration `0018` also prevents SQLite replacement through any of the value
+journal's unique keys: sequence, digest, assessment key, PR root, or predecessor.
+A local upgrade check applied it to an existing journal containing a real Eliza
+assessment. Replays retained the original row, successors appended, and all five
+replacement paths failed without changing historical bytes. The actual worker
+reader returned the original JSON bytes. This is local storage evidence, not
+production score publication.
