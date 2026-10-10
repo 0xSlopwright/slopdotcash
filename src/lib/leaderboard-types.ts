@@ -286,6 +286,7 @@ export interface ScoreEvent {
   evidenceBonusBasisPoints?: 0 | 1_000 | 1_500 | 2_500;
   workUnitId?: string;
   scoreDecisionSourceId?: string;
+  scoreDecisionAt?: string;
   occurredAt: string;
   repository: RepositoryId;
   source: {
@@ -543,6 +544,8 @@ export interface LeaderboardSnapshot {
   ledger: ScoreEvent[];
   valueAssessmentCoverage?: {
     pullRequestId: string;
+    repository: RepositoryId;
+    pullRequestNumber: number;
     status: string;
     recordDigest: string | null;
   }[];

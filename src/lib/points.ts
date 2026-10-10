@@ -5,6 +5,7 @@ import type {
   ScoreEvent,
 } from "./leaderboard";
 import { findProject, findProjectByRepositoryId } from "./projects.mjs";
+import { findRegisteredRepositoryById } from "./repositories.mjs";
 import { sha256Hex } from "./sha256";
 
 export const POINTS_RULE = "slop-points-v1";
@@ -23,7 +24,13 @@ export interface PointAward {
   workUnitId: string;
   provisional: boolean;
 }
+export interface PointDecision {
+  sourceId: string;
+  effectiveAt: string;
+  reason: string;
+}
 export interface PointRevision {
+  decision?: PointDecision & { delta: number };
   id: string;
   previous: string | null;
   recordedAt: string;
@@ -103,6 +110,7 @@ export function assertPointsJournal(
       "sourceDigest",
       "sourceRule",
       "award",
+      ...("decision" in r ? ["decision"] : []),
     ]);
     const a = r.award;
     exact(a, [
@@ -174,6 +182,28 @@ export function assertPointsJournal(
     )
       throw new Error("Broken points revision chain");
     const prior = latest.get(a.key);
+    if ("decision" in r) {
+      const decision = r.decision;
+      if (!decision || typeof decision !== "object")
+        throw new Error("Invalid points decision");
+      exact(decision, ["sourceId", "effectiveAt", "reason", "delta"]);
+      if (
+        r.sourceRule !== "slop-score-v2" ||
+        typeof decision.sourceId !== "string" ||
+        !(
+          /^[A-Za-z0-9_=-]{4,256}$/u.test(decision.sourceId) ||
+          /^value:[a-f0-9]{64}$/u.test(decision.sourceId)
+        ) ||
+        !iso(decision.effectiveAt) ||
+        decision.effectiveAt > r.recordedAt ||
+        typeof decision.reason !== "string" ||
+        !decision.reason.trim() ||
+        !Number.isSafeInteger(decision.delta) ||
+        decision.delta !== a.amount - (prior?.award.amount ?? 0)
+      )
+        throw new Error("Points decision does not reconcile its revision");
+    }
+
     if (
       prior &&
       (prior.award.occurredAt !== a.occurredAt ||
@@ -204,13 +234,18 @@ export function pointKey(
   return sha256Hex(JSON.stringify([project, actor, category, source]));
 }
 export function pointsForScore(
-  event: Pick<ScoreEvent, "scoreThirds" | "points">,
+  event: Pick<ScoreEvent, "scoreThirds" | "points"> &
+    Partial<Pick<ScoreEvent, "category" | "scoreDecisionSourceId">>,
 ): number {
   const amount =
     event.scoreThirds === undefined
       ? event.points * 30
       : event.scoreThirds * 10;
-  if (!Number.isSafeInteger(amount) || amount <= 0)
+  const assessedZero =
+    amount === 0 &&
+    event.category === "merged-pull-request" &&
+    /^value:[a-f0-9]{64}$/u.test(event.scoreDecisionSourceId ?? "");
+  if (!Number.isSafeInteger(amount) || (amount <= 0 && !assessedZero))
     throw new Error("Score cannot be converted to exact points");
   return amount;
 }
@@ -234,9 +269,10 @@ export function awardForScore(event: ScoreEvent): PointAward {
     sourceUrl: event.source.url,
     workUnitId: event.workUnitId ?? event.id,
     provisional:
-      event.category === "merged-pull-request" &&
-      event.scoreThirds !== undefined &&
-      !event.scoreDecisionSourceId,
+      event.scoreDecisionSourceId?.startsWith("value:") === true ||
+      (event.category === "merged-pull-request" &&
+        event.scoreThirds !== undefined &&
+        !event.scoreDecisionSourceId),
   };
 }
 export function latestPoints(
@@ -250,6 +286,7 @@ export function appendPointAwards(
   sourceDigest: string,
   sourceRule: string,
   recordedAt: string,
+  decisions?: ReadonlyMap<string, PointDecision>,
 ): PointsJournal {
   assertPointsJournal(journal);
   const output = {
@@ -260,7 +297,15 @@ export function appendPointAwards(
   const latest = latestPoints(journal);
   for (const award of [...awards].sort((a, b) => a.key.localeCompare(b.key))) {
     const previous = latest.get(award.key);
-    if (previous && JSON.stringify(previous.award) === JSON.stringify(award))
+    const decision = decisions?.get(award.key);
+    if (
+      previous &&
+      JSON.stringify(previous.award) === JSON.stringify(award) &&
+      (!decision ||
+        (previous.decision?.sourceId === decision.sourceId &&
+          previous.decision.effectiveAt === decision.effectiveAt &&
+          previous.decision.reason === decision.reason))
+    )
       continue;
     const revision = {
       previous: previous?.id ?? null,
@@ -268,6 +313,14 @@ export function appendPointAwards(
       sourceDigest,
       sourceRule,
       award,
+      ...(decision
+        ? {
+            decision: {
+              ...decision,
+              delta: award.amount - (previous?.award.amount ?? 0),
+            },
+          }
+        : {}),
     };
     const next = { id: pointRevisionId(revision), ...revision };
     output.revisions.push(next);
@@ -285,6 +338,23 @@ export function applyPointsSnapshot(
   const awards = snapshot.ledger
     .filter((e) => e.actor.kind === "User")
     .map(awardForScore);
+  const decisions = new Map<string, PointDecision>();
+  const parentDecisions = new Map<string, PointDecision>();
+  for (const event of snapshot.ledger) {
+    if (
+      event.actor.kind !== "User" ||
+      !event.scoreDecisionSourceId ||
+      !event.scoreDecisionAt
+    )
+      continue;
+    const decision = {
+      sourceId: event.scoreDecisionSourceId,
+      effectiveAt: new Date(event.scoreDecisionAt).toISOString(),
+      reason: event.reason,
+    };
+    decisions.set(awardForScore(event).key, decision);
+    parentDecisions.set(event.source.url.split("#")[0], decision);
+  }
   const keys = new Set(awards.map((a) => a.key));
   const repositoryIds = new Set(snapshot.repositories.map((r) => r.id));
   // A complete newer census can correct a formerly accepted source. Never infer
@@ -292,6 +362,27 @@ export function applyPointsSnapshot(
   for (const previous of latestPoints(journal).values()) {
     const a = previous.award;
     const project = findProject(a.projectId);
+    const sourceUrl = new URL(a.sourceUrl);
+    const match =
+      sourceUrl.origin === "https://github.com"
+        ? sourceUrl.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/([1-9][0-9]*)$/u)
+        : null;
+    if (snapshot.valueAssessmentCoverage && match) {
+      const repository = findRegisteredRepositoryById(
+        `${match[1]}/${match[2]}`,
+      );
+      const coverage = snapshot.valueAssessmentCoverage.find(
+        (row) =>
+          row.repository === repository?.id &&
+          row.pullRequestNumber === Number(match[3]),
+      );
+      // A missing valuation is not evidence that an earlier award was wrong.
+      if (
+        !coverage ||
+        !["assessed", "human-ratified"].includes(coverage.status)
+      )
+        continue;
+    }
     if (
       a.category !== "payout-received" &&
       a.amount &&
@@ -299,8 +390,15 @@ export function applyPointsSnapshot(
       a.occurredAt >= snapshot.window.from &&
       a.occurredAt < snapshot.window.to &&
       project?.repositories.every((r) => repositoryIds.has(r.id))
-    )
+    ) {
       awards.push({ ...a, amount: 0 });
+      const decision = parentDecisions.get(a.sourceUrl.split("#")[0]);
+      if (decision)
+        decisions.set(a.key, {
+          ...decision,
+          reason: `Prior credit was superseded by the current source-bound scoring decision. ${decision.reason}`,
+        });
+    }
   }
   const result = appendPointAwards(
     journal,
@@ -308,6 +406,7 @@ export function applyPointsSnapshot(
     digest,
     snapshot.ruleVersion,
     recordedAt,
+    decisions,
   );
   const existing = new Set(
     result.coverage.map((c) => `${c.repository}:${c.digest}`),
@@ -354,7 +453,7 @@ export function pointMembers(
       a.actor.id,
       a.category,
       a.occurredAt.slice(0, 7),
-      a.category === "substantive-review"
+      a.category === "substantive-review" && !a.provisional
         ? a.sourceUrl.split("#")[0]
         : a.workUnitId,
     ]);

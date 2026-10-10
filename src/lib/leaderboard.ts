@@ -3038,6 +3038,11 @@ export function createLeaderboardSnapshot(
                 (valueRecord
                   ? `value:${valueDecision?.latestDigest}`
                   : undefined),
+              scoreDecisionAt:
+                ratification?.source.createdAt ??
+                (valueRecord
+                  ? valueDecision?.history.at(-1)?.recorded_at
+                  : undefined),
             }
           : {}),
         occurredAt: pullRequest.mergedAt,
@@ -3503,6 +3508,7 @@ export function createLeaderboardSnapshot(
           scoreThirds: thirds,
           workUnitId: `wu_value_review_${review.id.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_")}`,
           scoreDecisionSourceId: `value:${decision.latestDigest}`,
+          scoreDecisionAt: decision.history.at(-1)?.recorded_at,
           occurredAt: review.submittedAt,
           repository: repositoryId,
           source: {
@@ -3923,6 +3929,8 @@ export function createLeaderboardSnapshot(
             const decision = input.valueDecisions?.get(pull.id);
             return {
               pullRequestId: pull.id,
+              repository: repositoryIdFromUrl(pull.url),
+              pullRequestNumber: pull.number,
               status: scoreRatifications.has(pull.id)
                 ? "human-ratified"
                 : (decision?.status ?? "missing"),
@@ -4994,6 +5002,14 @@ function assertLedgerValue(
     throw new Error(`${path}.points does not match its scoring category`);
   }
   assertIsoTimestamp(event.occurredAt, `${path}.occurredAt`);
+  if (event.scoreDecisionAt !== undefined)
+    assertIsoTimestamp(event.scoreDecisionAt, `${path}.scoreDecisionAt`);
+  if (
+    typeof event.scoreDecisionSourceId === "string" &&
+    event.scoreDecisionSourceId.startsWith("value:") &&
+    event.scoreDecisionAt === undefined
+  )
+    throw new Error("Value score event requires its decision time");
   assertString(event.reason, `${path}.reason`);
   if ("continuity" in event) {
     if (
@@ -6168,10 +6184,21 @@ export function assertLeaderboardSnapshot(
       );
       if (
         Object.keys(row).sort().join(",") !==
-        "pullRequestId,recordDigest,status"
+        "pullRequestId,pullRequestNumber,recordDigest,repository,status"
       )
         throw new Error("Value coverage has unexpected fields");
       assertString(row.pullRequestId, "value coverage pullRequestId");
+      assertEnum(
+        row.repository,
+        (snapshot.repositories as LeaderboardSnapshot["repositories"]).map(
+          (repository) => repository.id,
+        ),
+        "value coverage repository",
+      );
+      assertPositiveInteger(
+        row.pullRequestNumber,
+        "value coverage pullRequestNumber",
+      );
       assertEnum(
         row.status,
         [
