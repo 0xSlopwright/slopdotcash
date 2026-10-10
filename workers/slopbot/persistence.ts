@@ -298,15 +298,27 @@ export async function recordCalls(
     const substituted =
       call.servedModel !== null &&
       !call.priceKey.endsWith(`/${call.servedModel}`);
-    const billedMicro =
-      billable && call.outcome === "ok" ? price.billedMicroUsdc : 0;
-    billed += billedMicro;
-    await db
+    const billableCost =
+      billable && call.outcome === "ok" ? price.costMicroUsd : 0;
+    const recorded = await db
       .prepare(
-        `INSERT INTO slopbot_costs (review_key, installation_id, call_kind, route_step, provider, requested_model,
+        `WITH prior AS (
+          SELECT COALESCE(SUM(billable_cost_micro_usd), 0) AS cost,
+            COALESCE(SUM(CASE WHEN billing_rule = 'review-v2' THEN billed_micro_usdc ELSE 0 END), 0) AS billed,
+            COUNT(CASE WHEN billing_rule = 'call-v1' AND billed_micro_usdc > 0 THEN 1 END) AS legacy
+          FROM slopbot_costs WHERE review_key = ?1 AND installation_id = ?2
+        )
+        INSERT INTO slopbot_costs (review_key, installation_id, call_kind, route_step, provider, requested_model,
           served_model, outcome, failure, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens,
-          price_version, cost_micro_usd, billed_micro_usdc, reconciliation, created_at, provider_cost_micro_usd, provider_request_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          price_version, cost_micro_usd, billed_micro_usdc, reconciliation, created_at, provider_cost_micro_usd,
+          provider_request_id, billing_rule, billable_cost_micro_usd)
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+          CASE WHEN ?20 = 0 OR prior.legacy > 0 THEN 0 ELSE ((prior.cost + ?20) * 11 + 9) / 10 - prior.billed END,
+          ?16, ?17, ?18, ?19, 'review-v2', CASE WHEN prior.legacy > 0 THEN 0 ELSE ?20 END
+        FROM prior
+        WHERE prior.legacy > 0 OR (prior.cost <= ?21 - ?20
+          AND ((prior.cost + ?20) * 11 + 9) / 10 >= prior.billed)
+        RETURNING billed_micro_usdc, billable_cost_micro_usd`,
       )
       .bind(
         reviewKey,
@@ -324,13 +336,22 @@ export async function recordCalls(
         call.usage.output,
         PRICE_VERSION,
         price.costMicroUsd,
-        billedMicro,
         substituted ? "estimated" : price.reconciliation,
         now(),
         call.providerCostMicroUsd ?? null,
         call.providerRequestId ?? null,
+        billableCost,
+        Number((BigInt(Number.MAX_SAFE_INTEGER) * 10n) / 11n),
       )
-      .run();
+      .first<{ billed_micro_usdc: number; billable_cost_micro_usd: number }>();
+    if (
+      !recorded ||
+      (billableCost > 0 && recorded.billable_cost_micro_usd === 0)
+    )
+      throw new Error(
+        "Review billing needs reconciliation before further charges",
+      );
+    billed += recorded.billed_micro_usdc;
   }
   return billed;
 }

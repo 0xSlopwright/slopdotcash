@@ -58,6 +58,20 @@ one installation's billed model calls for the UTC month. Values use integer
 micro-USDC. This is a cost statement, not a request for payment or proof of
 settlement. The fee offset is zero until a reviewed project binding exists.
 
+New cost rows use the `review-v2` billing rule. Each append calculates the
+difference between the whole review's rounded cost-plus-10% total and the
+amount already recorded for that review. Triage and confirmation therefore
+share one rounding boundary. Failed calls and service retries add no billable
+cost. Token-rate arithmetic uses integers throughout.
+
+Migration `0023_slopbot_review_billing.sql` preserves old `call-v1` amounts.
+A previously billed legacy review cannot accept a new billable call under
+the new rule without explicit reconciliation. A call already made is retained
+as unbilled evidence before the review reports this failure. Unbilled retries
+can still be recorded. These rows remain cost statements: estimated rates do not prove
+provider settlement, and this calculation does not reserve a budget or
+authorize a service charge.
+
 Billing must use the existing project vaults under PAY-10. The owner authorizes
 `chargeService` on Base or `charge_service` on Solana. The operation must use
 only free sponsor funds, preserve reserved awards and donor funds, and prevent

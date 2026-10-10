@@ -298,15 +298,26 @@ export type Usage = {
 export function priceUsage(key: string, usage: Usage) {
   const entry = PRICES[key];
   if (entry === undefined) return null;
-  const micro =
-    usage.input * entry.input +
-    usage.cacheWrite * entry.cacheWrite +
-    usage.cacheRead * entry.cacheRead +
-    usage.output * entry.output;
-  const costMicroUsd = Math.ceil(micro / 1_000_000);
+  const fields = ["input", "cacheWrite", "cacheRead", "output"] as const;
+  if (
+    fields.some(
+      (field) => !Number.isSafeInteger(usage[field]) || usage[field] < 0,
+    )
+  )
+    throw new Error("Token usage must contain nonnegative safe integers");
+  const micro = fields.reduce(
+    (total, field) => total + BigInt(usage[field]) * BigInt(entry[field]),
+    0n,
+  );
+  const cost = (micro + 999_999n) / 1_000_000n;
+  const billed = (cost * 11n + 9n) / 10n;
+  if (billed > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error("Model price exceeds the supported integer range");
   return {
-    costMicroUsd,
-    billedMicroUsdc: Math.ceil((costMicroUsd * 11) / 10),
+    costMicroUsd: Number(cost),
+    // A standalone estimate. The cost journal applies this rounding to the
+    // accumulated billable cost of the entire review, not to each call.
+    billedMicroUsdc: Number(billed),
     reconciliation: entry.reconciliation,
   };
 }
