@@ -134,7 +134,7 @@ export async function reviewExists(
 ): Promise<boolean> {
   const row = await db
     .prepare(
-      "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND status IN ('running', 'completed')",
+      "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND status = 'completed'",
     )
     .bind(reviewKey)
     .first();
@@ -154,32 +154,68 @@ export type ReviewRow = {
   policyDigest: string;
 };
 
-// Skips happen before inference. Recheck their eligibility on the next event;
-// their first actual review is billable. Failed attempts resume as Slop-caused,
-// unbilled retries. Atomic updates ensure only one consumer claims the row.
+// Longer than Cloudflare's 15-minute queue consumer wall limit. Contended
+// deliveries wait for this lease instead of exhausting short retries or acking.
+export const REVIEW_LEASE_SECONDS = 20 * 60;
+export class ReviewBusyError extends Error {
+  constructor(readonly delaySeconds: number) {
+    super("Review is still claimed by another attempt");
+  }
+}
+export class ReviewLeaseLostError extends Error {
+  constructor() {
+    super("Review attempt no longer owns its lease");
+  }
+}
+export type ReviewClaim = { reviewKey: string; token: string };
+
+export async function ownsReviewClaim(
+  db: D1Database,
+  claim: ReviewClaim,
+): Promise<boolean> {
+  return (
+    (await db
+      .prepare(
+        "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND claim_token = ? AND status = 'running' AND lease_expires_at > ?",
+      )
+      .bind(claim.reviewKey, claim.token, now())
+      .first()) !== null
+  );
+}
+export async function assertReviewClaim(db: D1Database, claim: ReviewClaim) {
+  if (!(await ownsReviewClaim(db, claim))) throw new ReviewLeaseLostError();
+}
+
+// A skipped item has never reached inference. A failed or interrupted attempt
+// resumes unbilled. Each transition atomically replaces the attempt token.
 export async function startReview(
   db: D1Database,
   row: ReviewRow,
+  token: string,
 ): Promise<"new" | "retry" | "exists"> {
+  const at = now();
+  const expires = new Date(
+    Date.parse(at) + REVIEW_LEASE_SECONDS * 1000,
+  ).toISOString();
   const resumed = await db
     .prepare(
-      "UPDATE slopbot_reviews SET status = 'running', skip_reason = NULL, completed_at = NULL WHERE review_key = ? AND status = 'skipped'",
+      "UPDATE slopbot_reviews SET status = 'running', skip_reason = NULL, completed_at = NULL, claim_token = ?, lease_expires_at = ? WHERE review_key = ? AND status = 'skipped'",
     )
-    .bind(row.reviewKey)
+    .bind(token, expires, row.reviewKey)
     .run();
   if ((resumed.meta?.changes ?? 0) === 1) return "new";
   const retried = await db
     .prepare(
-      "UPDATE slopbot_reviews SET status = 'running', skip_reason = NULL, completed_at = NULL WHERE review_key = ? AND status = 'failed'",
+      "UPDATE slopbot_reviews SET status = 'running', skip_reason = NULL, completed_at = NULL, claim_token = ?, lease_expires_at = ? WHERE review_key = ? AND (status = 'failed' OR (status = 'running' AND lease_expires_at <= ?))",
     )
-    .bind(row.reviewKey)
+    .bind(token, expires, row.reviewKey, at)
     .run();
   if ((retried.meta?.changes ?? 0) === 1) return "retry";
   const result = await db
     .prepare(
       `INSERT OR IGNORE INTO slopbot_reviews (review_key, installation_id, repository_id, item_kind, item_number,
-        item_node_id, author_id, revision, content_digest, policy_digest, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`,
+      item_node_id, author_id, revision, content_digest, policy_digest, status, created_at, claim_token, lease_expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
     )
     .bind(
       row.reviewKey,
@@ -192,31 +228,57 @@ export async function startReview(
       row.revision,
       row.contentDigest,
       row.policyDigest,
-      now(),
+      at,
+      token,
+      expires,
     )
     .run();
-  return (result.meta?.changes ?? 0) === 1 ? "new" : "exists";
+  if ((result.meta?.changes ?? 0) === 1) return "new";
+  const current = await db
+    .prepare(
+      "SELECT status, lease_expires_at FROM slopbot_reviews WHERE review_key = ?",
+    )
+    .bind(row.reviewKey)
+    .first<{ status: string; lease_expires_at: string | null }>();
+  if (current?.status === "completed") return "exists";
+  const until = Date.parse(current?.lease_expires_at ?? "");
+  throw new ReviewBusyError(
+    Number.isFinite(until)
+      ? Math.max(
+          1,
+          Math.min(
+            REVIEW_LEASE_SECONDS,
+            Math.ceil((until - Date.now()) / 1000),
+          ),
+        )
+      : REVIEW_LEASE_SECONDS,
+  );
 }
 
 export async function finishReview(
   db: D1Database,
   reviewKey: string,
+  token: string,
   status: "completed" | "failed" | "skipped",
   detail: { skipReason?: string; verdict?: unknown; action?: string },
 ) {
-  await db
+  const at = now();
+  const result = await db
     .prepare(
-      "UPDATE slopbot_reviews SET status = ?, skip_reason = ?, verdict = ?, action = ?, completed_at = ? WHERE review_key = ?",
+      "UPDATE slopbot_reviews SET status = ?, skip_reason = ?, verdict = ?, action = ?, completed_at = ?, lease_expires_at = NULL WHERE review_key = ? AND claim_token = ? AND status = 'running' AND lease_expires_at > ?",
     )
     .bind(
       status,
       detail.skipReason ?? null,
       detail.verdict === undefined ? null : JSON.stringify(detail.verdict),
       detail.action ?? null,
-      now(),
+      at,
       reviewKey,
+      token,
+      at,
     )
     .run();
+  if ((result.meta?.changes ?? 0) !== 1) throw new ReviewLeaseLostError();
 }
 
 // One immutable cost row per model call (BOT-10). Failed calls are recorded

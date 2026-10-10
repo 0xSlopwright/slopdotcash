@@ -493,3 +493,23 @@ Unavailable, incomplete, or ambiguous history causes a queue retry without a new
 comment. Local queue/SDK/SQLite checks cover checkpoint failure after creation,
 second-page recovery, foreign markers, unavailable history, and multiple matches.
 These controlled checks do not prove live GitHub delivery or production activation.
+
+### Recovering interrupted review attempts
+
+Migration `0021_slopbot_review_leases.sql` gives each running attempt a private
+claim token and a 20-minute expiry. This exceeds the documented
+[15-minute queue consumer wall limit](https://developers.cloudflare.com/queues/platform/limits/).
+A competing delivery retries when the lease expires; it is not acknowledged as
+completed and does not spend another model call. An expired running attempt can
+be claimed atomically as an unbilled retry. Completed reviews remain deduplicated.
+
+The current claim is checked before model work and GitHub mutations. Completion
+and failure updates require the same unexpired token, so an older attempt cannot
+overwrite a successor. Provider receipts are still recorded if ownership is lost,
+with zero customer billing for those calls. GitHub mutations and D1 checkpoints
+remain separate operations; confirmed comments use the recovery path above.
+
+Local queue/SDK/SQLite checks cover contention without inference, expired recovery,
+a replaced token during inference, stale completion rejection, concurrent claims,
+skip-to-funded recovery, and migration of existing running rows. Production
+interruption recovery and dead-letter operations still require hosted verification.

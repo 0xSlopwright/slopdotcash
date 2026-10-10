@@ -251,7 +251,10 @@ export default {
           }),
         );
         // Back off for GitHub's secondary content-creation limits (BOT-13).
-        message.retry({ delaySeconds: 60 });
+        message.retry({
+          delaySeconds:
+            error instanceof store.ReviewBusyError ? error.delaySeconds : 60,
+        });
       }
     }
   },

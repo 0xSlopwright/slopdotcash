@@ -490,8 +490,10 @@ async function upsertComment(
   job: Job,
   context: Context,
   body: string,
+  claim: store.ReviewClaim,
 ) {
   const db = env.SLOPBOT_DB;
+  await store.assertReviewClaim(db, claim);
   let existing = await store.commentId(db, context.issue.node_id);
   for (let attempt = 0; attempt < 2; attempt++) {
     if (existing === null) {
@@ -510,6 +512,7 @@ async function upsertComment(
         existing,
       );
     }
+    await store.assertReviewClaim(db, claim);
     const updated = await context.github.request<{ id: number }>(
       "PATCH",
       `/repos/${job.owner}/${job.repo}/issues/comments/${existing}`,
@@ -524,6 +527,7 @@ async function upsertComment(
     if (attempt === 1)
       throw new Error("GitHub review comment changed during recovery");
   }
+  await store.assertReviewClaim(db, claim);
   const created = await context.github.request<{ id: number }>(
     "POST",
     `/repos/${job.owner}/${job.repo}/issues/${job.number}/comments`,
@@ -605,19 +609,24 @@ export async function reviewItem(
   });
 
   const contentDigest = await sha256Hex(context.itemText);
-  const started = await store.startReview(db, {
-    reviewKey,
-    installationId: job.installationId,
-    repositoryId: job.repositoryId,
-    itemKind: job.itemKind,
-    itemNumber: job.number,
-    itemNodeId: issue.node_id,
-    authorId: issue.user.id,
-    revision: context.revision,
-    contentDigest,
-    policyDigest: context.policyDigest,
-  });
-  if (started === "exists") return "review already started";
+  const claimToken = crypto.randomUUID();
+  const started = await store.startReview(
+    db,
+    {
+      reviewKey,
+      installationId: job.installationId,
+      repositoryId: job.repositoryId,
+      itemKind: job.itemKind,
+      itemNumber: job.number,
+      itemNodeId: issue.node_id,
+      authorId: issue.user.id,
+      revision: context.revision,
+      contentDigest,
+      policyDigest: context.policyDigest,
+    },
+    claimToken,
+  );
+  if (started === "exists") return "review already completed";
   try {
     return await runReview(
       env,
@@ -626,10 +635,11 @@ export async function reviewItem(
       routing,
       reviewKey,
       contentDigest,
+      claimToken,
       started === "new",
     );
   } catch (error) {
-    await store.finishReview(db, reviewKey, "failed", {
+    await store.finishReview(db, reviewKey, claimToken, "failed", {
       skipReason: String(error).slice(0, 300),
     });
     throw error;
@@ -643,12 +653,15 @@ async function runReview(
   routing: ReturnType<typeof route>,
   reviewKey: string,
   contentDigest: string,
+  claimToken: string,
   billable: boolean,
 ): Promise<string> {
   const db = env.SLOPBOT_DB;
   const { issue, config } = context;
+  const claim = { reviewKey, token: claimToken };
+  await store.assertReviewClaim(db, claim);
   if (!routing.review) {
-    await store.finishReview(db, reviewKey, "skipped", {
+    await store.finishReview(db, reviewKey, claimToken, "skipped", {
       skipReason: routing.reason,
     });
     return routing.reason;
@@ -659,6 +672,7 @@ async function runReview(
   const deterministic = verdict !== null;
   let triage: CallRecord | null = null;
   if (verdict === null) {
+    await store.assertReviewClaim(db, claim);
     const result = await runRoute(
       env,
       TRIAGE_ROUTE,
@@ -671,7 +685,7 @@ async function runReview(
       job.installationId,
       "triage",
       result.calls,
-      billable,
+      billable && (await store.ownsReviewClaim(db, claim)),
     );
     if (result.verdict === null) {
       // Let reviewItem persist the failure and the queue schedule a retry.
@@ -685,7 +699,7 @@ async function runReview(
   const category: Category = verdict.category;
   const mode = category === "none" ? "off" : config.config.categories[category];
   if (mode === "off") {
-    await store.finishReview(db, reviewKey, "completed", {
+    await store.finishReview(db, reviewKey, claimToken, "completed", {
       verdict,
       action: "none",
     });
@@ -704,6 +718,7 @@ async function runReview(
     else if (!state.allowed) blockedClose = state.why;
     else if (deterministic) close = true;
     else {
+      await store.assertReviewClaim(db, claim);
       const second = await runRoute(
         env,
         CONFIRM_ROUTE,
@@ -716,7 +731,7 @@ async function runReview(
         job.installationId,
         "confirm",
         second.calls,
-        billable,
+        billable && (await store.ownsReviewClaim(db, claim)),
       );
       confirm = second.servedBy;
       if (
@@ -747,7 +762,7 @@ async function runReview(
     freshInstall.suspended_at !== null
   ) {
     const reason = "review source or authorization changed before action";
-    await store.finishReview(db, reviewKey, "failed", {
+    await store.finishReview(db, reviewKey, claimToken, "failed", {
       verdict,
       action: "none",
       skipReason: reason,
@@ -794,7 +809,7 @@ async function runReview(
     triage,
     confirm,
   });
-  await upsertComment(env, job, context, body);
+  await upsertComment(env, job, context, body, claim);
   await store.recordAction(
     db,
     reviewKey,
@@ -803,6 +818,7 @@ async function runReview(
     "comment",
     category,
   );
+  await store.assertReviewClaim(db, claim);
   const label = `slopbot: ${category.replaceAll("_", " ")}`;
   const labeled = await context.github.request<{ name: string }[]>(
     "POST",
@@ -826,6 +842,7 @@ async function runReview(
     category,
   );
   if (close) {
+    await store.assertReviewClaim(db, claim);
     const closed =
       job.itemKind === "pull_request"
         ? await context.github.request<{ state: string }>(
@@ -854,6 +871,7 @@ async function runReview(
           triage,
           confirm,
         }),
+        claim,
       );
     }
   }
@@ -878,9 +896,10 @@ async function runReview(
         triage,
         confirm,
       }),
+      claim,
     );
   }
-  await store.finishReview(db, reviewKey, "completed", {
+  await store.finishReview(db, reviewKey, claimToken, "completed", {
     verdict,
     action: close ? "close" : "label",
   });
