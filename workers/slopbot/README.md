@@ -320,3 +320,15 @@ assessment. Replays retained the original row, successors appended, and all five
 replacement paths failed without changing historical bytes. The actual worker
 reader returned the original JSON bytes. This is local storage evidence, not
 production score publication.
+
+Closed, unmerged assessments retain the GitHub closure date as `occurredAt`;
+merged outcomes retain their merge date. Publication refuses an open outcome
+or a missing occurrence date. The source digest includes the closure date, and
+collection checks state and closure date again before returning evidence.
+An existing assessment must be recollected and reassessed if this changes its
+source digest; do not rewrite earlier assessment bytes.
+
+The live collector retained the 15 September closure date for Eliza PR #31343
+with no source limitations. Existing real merged-assessment journal checks also
+passed. This check made no model call or public assessment and does not establish
+the value of that closed PR's reviews.

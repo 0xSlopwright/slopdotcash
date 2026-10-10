@@ -28,7 +28,7 @@ export interface ValueJournalRecord {
   pullRequestNumber: number;
   headSha: string;
   mergeSha: string | null;
-  occurredAt: string | null;
+  occurredAt: string;
   policySha: string;
   sourceDigest: string;
   rubricVersion: string;
@@ -92,6 +92,15 @@ export async function prepareValueRecord(
       "Value repository does not match its registered immutable identity",
     );
   const assessment = validateEvidenceAssessment(result.verdict, evidence);
+  const occurredAt = evidence.pull.merged_at ?? evidence.pull.closed_at;
+  if (
+    evidence.pull.state !== "closed" ||
+    typeof occurredAt !== "string" ||
+    !Number.isFinite(Date.parse(occurredAt))
+  )
+    throw new Error(
+      "Value record requires a closed outcome with its occurrence date",
+    );
   const call = result.servedBy;
   if (
     !assessment ||
@@ -117,7 +126,7 @@ export async function prepareValueRecord(
     pullRequestNumber: evidence.pull.number,
     headSha: evidence.pull.head.sha,
     mergeSha: evidence.pull.merge_commit_sha,
-    occurredAt: evidence.pull.merged_at,
+    occurredAt,
     policySha: policy.sha,
     sourceDigest: result.sourceDigest,
     rubricVersion: result.rubricVersion,

@@ -19,6 +19,7 @@ interface Pull {
   merged_by: Actor | null;
   state: string;
   merged_at: string | null;
+  closed_at: string | null;
   merge_commit_sha: string | null;
   updated_at: string;
   head: { sha: string };
@@ -185,6 +186,7 @@ export async function collectValueEvidence(
     merged_by,
     state,
     merged_at,
+    closed_at,
     merge_commit_sha,
     updated_at,
     head,
@@ -204,6 +206,7 @@ export async function collectValueEvidence(
     merged_by: merged_by === null ? null : actor(merged_by),
     state,
     merged_at,
+    closed_at,
     merge_commit_sha,
     updated_at,
     head: { sha: head.sha },
@@ -329,6 +332,8 @@ export async function collectValueEvidence(
     after.updated_at !== pull.updated_at ||
     after.head.sha !== pull.head.sha ||
     after.base.sha !== pull.base.sha ||
+    after.state !== pull.state ||
+    after.closed_at !== pull.closed_at ||
     after.merged_at !== pull.merged_at ||
     after.merge_commit_sha !== pull.merge_commit_sha
   )
