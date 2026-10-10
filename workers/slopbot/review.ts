@@ -644,10 +644,9 @@ async function runReview(
       billable,
     );
     if (result.verdict === null) {
-      await store.finishReview(db, reviewKey, "failed", {
-        skipReason: "every model route step failed",
-      });
-      return "model route failed";
+      // Let reviewItem persist the failure and the queue schedule a retry.
+      // Returning normally would acknowledge the job and lose recovery.
+      throw new Error("every model route step failed");
     }
     verdict = result.verdict;
     triage = result.servedBy;

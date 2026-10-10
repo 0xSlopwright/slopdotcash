@@ -347,3 +347,15 @@ balance followed by a deposit, competing claims, failed-attempt retry, completed
 deduplication and the rolling completion-time cap. It made no provider call or
 production write. Hosted queue recovery and atomic inference-budget reservation
 still require separate qualification.
+
+When every triage model route fails, the consumer persists a failed review and
+throws to the queue handler. The handler requests a retry after 60 seconds;
+the configured queue allows five retries before its dead-letter queue. A normal
+return would incorrectly acknowledge the failed job. A successful retry remains
+unbilled and completed revisions remain deduplicated.
+
+A local end-to-end check used the actual queue handler, review service, SDK HTTP
+transport and SQLite, with local GitHub and provider fixtures. Two failed routes
+caused a retry; the next attempt completed; a duplicate made no further provider
+request. All three call rows were retained with zero billed amount. This does
+not prove hosted dead-letter delivery or production GitHub access.
