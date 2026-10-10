@@ -380,6 +380,7 @@ export async function collectValueEvidence(
   const implementationActors = new Set([pull.user.node_id]);
   for (const commit of commits.filter((entry) => entry.parents.length <= 1)) {
     if (commit.author) implementationActors.add(commit.author.node_id);
+    else limitations.push(`Unresolved commit author identity: ${commit.sha}`);
     const trailers = [
       ...commit.commit.message.matchAll(
         /^co-authored-by:\s*[^\r\n]*<([^<>\r\n]+)>\s*$/gimu,

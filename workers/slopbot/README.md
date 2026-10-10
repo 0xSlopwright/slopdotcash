@@ -467,7 +467,9 @@ inputs and frozen cycle files retain their existing behavior.
 publisher and its production records are verified.
 
 The generator rejects redirects, unavailable or invalid pages, changed source,
-and unresolved account identities. An empty successful history is explicitly
+and unresolved account identities. A non-merge commit whose author has no
+GitHub identity remains an explicit source limitation; its credit is not
+silently redistributed to the PR author or other known contributors. An empty successful history is explicitly
 missing, never a fabricated assessment. It checks current repository visibility
 and identity, complete GitHub evidence, pinned policy and all journal revisions.
 GraphQL coauthor reads use the existing generation budget, REST reads contribute
