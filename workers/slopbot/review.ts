@@ -493,25 +493,35 @@ async function upsertComment(
   const db = env.SLOPBOT_DB;
   const existing = await store.commentId(db, context.issue.node_id);
   if (existing !== null) {
-    const updated = await context.github.request(
+    const updated = await context.github.request<{ id: number }>(
       "PATCH",
       `/repos/${job.owner}/${job.repo}/issues/comments/${existing}`,
       { body },
     );
-    if (updated.status !== 404) return;
+    if (updated.status !== 404) {
+      if (updated.status !== 200 || updated.data?.id !== existing)
+        throw new Error("GitHub did not confirm the comment update");
+      return;
+    }
   }
   const created = await context.github.request<{ id: number }>(
     "POST",
     `/repos/${job.owner}/${job.repo}/issues/${job.number}/comments`,
     { body },
   );
-  if (created.data !== null)
-    await store.saveCommentId(
-      db,
-      context.issue.node_id,
-      job.repositoryId,
-      created.data.id,
-    );
+  if (
+    created.status !== 201 ||
+    created.data === null ||
+    !Number.isSafeInteger(created.data.id) ||
+    created.data.id <= 0
+  )
+    throw new Error("GitHub did not confirm the comment creation");
+  await store.saveCommentId(
+    db,
+    context.issue.node_id,
+    job.repositoryId,
+    created.data.id,
+  );
 }
 
 export async function reviewItem(
@@ -746,13 +756,20 @@ async function runReview(
     "comment",
     category,
   );
-  await context.github.request(
+  const label = `slopbot: ${category.replaceAll("_", " ")}`;
+  const labeled = await context.github.request<{ name: string }[]>(
     "POST",
     `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
     {
-      labels: [`slopbot: ${category.replaceAll("_", " ")}`],
+      labels: [label],
     },
   );
+  if (
+    labeled.status !== 200 ||
+    !Array.isArray(labeled.data) ||
+    !labeled.data.some((entry) => entry.name === label)
+  )
+    throw new Error("GitHub did not confirm the review label");
   await store.recordAction(
     db,
     reviewKey,

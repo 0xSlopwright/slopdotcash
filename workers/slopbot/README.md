@@ -373,3 +373,14 @@ response. Unchanged advisory review made its two expected writes. Installation
 removal, suspension, missing installation, private visibility, disabled review
 configuration and edited source each made zero writes. GitHub and provider
 responses were local fixtures; hosted permission and webhook checks remain open.
+
+Comment creation requires GitHub's 201 response and a valid comment ID. Updates
+require a 200 response for the stored ID; only a 404 permits creating a
+replacement comment. Label writes require a 200 response containing the requested
+label. An unconfirmed write fails the run and requests a queue retry instead of
+recording successful action evidence.
+
+The local queue workflow covered comment 404, invalid creation ID, redirected
+update, label 404 and a response missing the requested label. Each failed and
+retried; no unconfirmed action entered the ledger. Confirmed comments remained
+recorded when the subsequent label failed. Normal comment/label success passed.
