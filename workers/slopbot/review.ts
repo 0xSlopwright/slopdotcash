@@ -698,35 +698,35 @@ async function runReview(
     }
   }
 
-  // Re-read state immediately before acting (BOT-01, BOT-06).
-  if (close) {
-    const fresh = await context.github.get<Issue>(
-      `/repos/${job.owner}/${job.repo}/issues/${job.number}`,
-    );
-    const freshPull =
-      job.itemKind === "pull_request"
-        ? await context.github.get<Pull>(
-            `/repos/${job.owner}/${job.repo}/pulls/${job.number}`,
-          )
-        : null;
-    const freshRevision =
-      freshPull?.head.sha ??
-      (fresh === null
-        ? ""
-        : await sha256Hex(`${fresh.title}\n${fresh.body ?? ""}`));
-    const freshInstall = await store.installation(db, job.installationId);
-    if (
-      fresh === null ||
-      fresh.state !== "open" ||
-      freshRevision !== context.revision ||
-      (freshPull?.merged ?? false) ||
-      fresh.assignees.length > 0 ||
-      freshInstall?.removed_at != null ||
-      freshInstall?.suspended_at != null
-    ) {
-      close = false;
-      blockedClose = "the item changed before closure";
-    }
+  // A queued review has no authority to post after the repository, source,
+  // policy or installation changes. Apply this to advisory actions too.
+  const fresh = await loadContext(env, job);
+  const freshInstall = await store.installation(db, job.installationId);
+  if (
+    fresh === null ||
+    fresh.repo.id !== job.repositoryId ||
+    fresh.repo.private ||
+    fresh.issue.state !== "open" ||
+    fresh.revision !== context.revision ||
+    (await sha256Hex(fresh.itemText)) !== contentDigest ||
+    fresh.policyDigest !== context.policyDigest ||
+    (fresh.pull?.merged ?? false) ||
+    (fresh.pull?.draft ?? false) ||
+    freshInstall === null ||
+    freshInstall.removed_at !== null ||
+    freshInstall.suspended_at !== null
+  ) {
+    const reason = "review source or authorization changed before action";
+    await store.finishReview(db, reviewKey, "failed", {
+      verdict,
+      action: "none",
+      skipReason: reason,
+    });
+    return reason;
+  }
+  if (close && fresh.issue.assignees.length > 0) {
+    close = false;
+    blockedClose = "the item was assigned before closure";
   }
 
   const body = commentBody({

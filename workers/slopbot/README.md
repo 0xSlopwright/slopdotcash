@@ -359,3 +359,17 @@ transport and SQLite, with local GitHub and provider fixtures. Two failed routes
 caused a retry; the next attempt completed; a duplicate made no further provider
 request. All three call rows were retained with zero billed amount. This does
 not prove hosted dead-letter delivery or production GitHub access.
+
+Before posting any review action, the worker rereads repository visibility,
+item state and content, revision, current policy/configuration and installation
+state. A changed source, disabled configuration, missing/removed/suspended
+installation, or closed/draft item discards the pending action. The failed
+record preserves the reason and permits a later unbilled retry. This guard
+applies to comments and labels as well as closure; it is not a transaction with
+GitHub, so a change after the final read can still race an API write.
+
+The local queue/service/SDK/SQLite workflow check changed state during the model
+response. Unchanged advisory review made its two expected writes. Installation
+removal, suspension, missing installation, private visibility, disabled review
+configuration and edited source each made zero writes. GitHub and provider
+responses were local fixtures; hosted permission and webhook checks remain open.
