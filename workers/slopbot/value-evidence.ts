@@ -185,6 +185,92 @@ export interface CommitAttribution {
   changedPaths: string[] | null;
   limitations: string[];
 }
+interface RelatedPullRequest {
+  id: string;
+  number: number;
+  url: string;
+  repository: string;
+}
+async function relatedPullRequests(
+  client: EvidenceClient,
+  repository: string,
+  number: number,
+  pullId: string,
+) {
+  const references = new Map<string, RelatedPullRequest>();
+  const limitations: string[] = [];
+  if (!client.graphql)
+    return {
+      references: [],
+      limitations: ["Related PR evidence is unavailable"],
+    };
+  const [owner, name] = repository.split("/");
+  const cursors = new Set<string>();
+  let cursor: string | null = null;
+  for (;;) {
+    const result: {
+      repository: {
+        pullRequest: {
+          id: string;
+          timelineItems: {
+            nodes: {
+              source: {
+                __typename: string;
+                id?: string;
+                number?: number;
+                url?: string;
+                repository?: { nameWithOwner: string; isPrivate: boolean };
+              };
+            }[];
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+          };
+        } | null;
+      } | null;
+    } = await client.graphql(
+      `query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){id timelineItems(first:100,after:$cursor,itemTypes:[CROSS_REFERENCED_EVENT]){nodes{... on CrossReferencedEvent{source{__typename ... on PullRequest{id number url repository{nameWithOwner isPrivate}}}}}pageInfo{hasNextPage endCursor}}}} rateLimit{cost limit remaining resetAt}}`,
+      { owner, name, number, cursor },
+    );
+    const pull = result.repository?.pullRequest;
+    if (!pull || pull.id !== pullId) {
+      limitations.push("Related PR evidence is unavailable");
+      break;
+    }
+    for (const { source } of pull.timelineItems.nodes) {
+      if (source.__typename !== "PullRequest") continue;
+      if (source.repository?.isPrivate !== false) {
+        limitations.push("Related private PR evidence is withheld");
+        continue;
+      }
+      if (
+        !source.id ||
+        typeof source.number !== "number" ||
+        !Number.isSafeInteger(source.number) ||
+        source.number <= 0 ||
+        source.url !==
+          `https://github.com/${source.repository.nameWithOwner}/pull/${source.number}`
+      )
+        throw new Error("Invalid related PR identity");
+      references.set(source.id, {
+        id: source.id,
+        number: source.number,
+        url: source.url,
+        repository: source.repository.nameWithOwner,
+      });
+    }
+    const page = pull.timelineItems.pageInfo;
+    if (!page.hasNextPage) break;
+    if (!page.endCursor || cursors.has(page.endCursor))
+      throw new Error("Related PR pagination did not advance");
+    cursors.add(page.endCursor);
+    cursor = page.endCursor;
+  }
+  return {
+    references: [...references.values()].sort((a, b) =>
+      a.id.localeCompare(b.id),
+    ),
+    limitations: [...new Set(limitations)],
+  };
+}
 export interface ValueEvidence {
   repository: string;
   repositoryNodeId: string;
@@ -202,6 +288,7 @@ export interface ValueEvidence {
   eligibleReviewIds: string[];
   implementationActorNodeIds: string[];
   commitAttribution: CommitAttribution[];
+  relatedPullRequests: RelatedPullRequest[];
 }
 async function pages<T>(client: EvidenceClient, path: string): Promise<T[]> {
   const values: T[] = [];
@@ -372,9 +459,17 @@ export async function collectValueEvidence(
     )
       limitations.push(`Full diff required: ${file.filename}`);
   }
+  const related = await relatedPullRequests(
+    client,
+    repository,
+    number,
+    pull.node_id,
+  );
+  limitations.push(...related.limitations);
   const evidenceUrls = [
     ...new Set([
       pull.html_url,
+      ...related.references.map((reference) => reference.url),
       ...files.map((file) => file.blob_url),
       ...(mergeCommitEvidence === null
         ? []
@@ -526,5 +621,6 @@ export async function collectValueEvidence(
     eligibleReviewIds,
     implementationActorNodeIds: [...implementationActors].sort(),
     commitAttribution,
+    relatedPullRequests: related.references,
   };
 }

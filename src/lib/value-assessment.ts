@@ -118,6 +118,7 @@ export function validateValueAssessment(
   value: unknown,
   context: {
     evidenceUrls: ReadonlySet<string>;
+    relatedPullRequestUrls: ReadonlySet<string>;
     reviewIds: ReadonlySet<string>;
     reviewUrls: ReadonlyMap<string, string>;
     reviewTimes: ReadonlyMap<string, string | null>;
@@ -170,6 +171,8 @@ export function validateValueAssessment(
   )
     return null;
   if ((!context.merged || value.status === "unresolved") && value.tier !== null)
+    return null;
+  if (!related.every((url) => context.relatedPullRequestUrls.has(url)))
     return null;
   // Cross-PR grouping requires the other outcome's full evidence, not just a title.
   if (related.length > 0 && value.status === "assessed") return null;

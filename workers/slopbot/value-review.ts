@@ -62,6 +62,9 @@ export function validateEvidenceAssessment(
 ) {
   return validateValueAssessment(value, {
     evidenceUrls: new Set(evidence.evidenceUrls),
+    relatedPullRequestUrls: new Set(
+      evidence.relatedPullRequests.map((pull) => pull.url),
+    ),
     reviewIds: new Set(evidence.reviews.map((review) => review.node_id)),
     reviewUrls: new Map(
       evidence.reviews.map((review) => [review.node_id, review.html_url]),

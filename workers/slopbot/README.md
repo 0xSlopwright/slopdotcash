@@ -481,7 +481,13 @@ the PR author. This preserves the evidence needed to distinguish shared work
 from unrelated changes; it does not yet authorize scoped joint publication.
 The additional evidence participates in the source digest, so old assessments
 need a verified successor before they can match the expanded source record.
-GraphQL coauthor reads use the existing generation budget, REST reads contribute
+Incoming GitHub PR cross-references are paginated and retained by immutable ID,
+public repository, number and URL. Private references are withheld and leave a
+source limitation. These references are discovery metadata, not a joint source
+assessment, and their absence does not prove that no other related work exists.
+The evaluator can name a discovered PR in an unresolved result; a related URL
+without collected reference evidence or a positive joint score is rejected.
+GraphQL coauthor and cross-reference reads use the existing generation budget, REST reads contribute
 to the request count, and all merged outcomes receive human-decision hydration.
 Value collection also retains closed, unmerged PRs in the full scoring window.
 Their complete reviews and current assessment history can award review value,
