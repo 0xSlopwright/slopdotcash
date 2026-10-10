@@ -260,6 +260,26 @@ record. Only the internal publisher may establish authority for a write; the
 public reader cannot submit or alter assessments.
 
 
+## Current value decisions
+
+`readValueDecision` reads the complete journal for one registered source. It
+checks exact byte digests, sequence order, immutable repository and pull-request
+identity, and the predecessor chain before selecting the latest record. It
+compares that record with the supplied complete source and pinned policy, then
+validates the assessment and model identity. Its states are `missing`,
+`incomplete`, `stale`, `unresolved`, and `assessed`. The first four do not supply
+a numeric score. A caller must apply valid human ratifications before using a
+provisional assessment. The database connection is the authority boundary;
+matching a digest from an arbitrary host does not establish authority.
+
+Publication uses this reader and requires a new result to name the current
+predecessor. An exact assessment-key replay retains the original record. SQLite
+still rejects concurrent forks after the read. Local integration checked real
+Eliza evidence, 104 paginated revisions, changed source, incomplete evidence,
+missing records, unresolved value and corrupted bytes. The leaderboard and
+Points ingestion still require integration; these checks do not change public
+scores or prove a hosted publication.
+
 ## Provider request receipts
 
 The Anthropic SDK response headers carry Surplus transport evidence. The route

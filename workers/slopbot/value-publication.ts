@@ -4,6 +4,7 @@ import type { Job } from "./contracts";
 import { GitHubClient } from "./github";
 import { installation } from "./persistence";
 import { loadPolicy, type ReviewEnv } from "./review";
+import { readValueDecision } from "./value-consumption";
 import {
   collectValueEvidence,
   type EvidenceClient,
@@ -135,6 +136,20 @@ export async function publishValueAssessment(
     supersedes,
     revisionReason,
   );
+  const decision = await readValueDecision(
+    env.SLOPBOT_DB,
+    current.evidence,
+    current.policy,
+  );
+  const replay = await env.SLOPBOT_DB.prepare(
+    "SELECT assessment_key FROM slopbot_value_journal WHERE assessment_key = ?",
+  )
+    .bind(prepared.assessmentKey)
+    .first<{ assessment_key: string }>();
+  if (!replay && supersedes !== decision.latestDigest)
+    throw new Error(
+      "Value publication must supersede the current journal record",
+    );
   // A removal or suspension received while inference/source reads ran wins.
   const latest = await installation(env.SLOPBOT_DB, job.installationId);
   if (!latest || latest.removed_at !== null || latest.suspended_at !== null)
