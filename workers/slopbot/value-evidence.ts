@@ -374,12 +374,23 @@ export async function collectValueEvidence(
         review.user !== null &&
         review.user.type !== "Bot" &&
         review.user.node_id !== pull.user.node_id &&
+        !commits.some(
+          (commit) =>
+            commit.parents.length <= 1 &&
+            commit.author?.node_id === review.user?.node_id,
+        ) &&
         review.submitted_at !== null &&
         review.state !== "PENDING" &&
         (pull.merged_at === null ||
           Date.parse(review.submitted_at) < Date.parse(pull.merged_at)),
     )
     .map((review) => review.node_id);
+  if (
+    commits.some((commit) => /^co-authored-by:/imu.test(commit.commit.message))
+  )
+    limitations.push(
+      "Resolve co-author GitHub identities before allocating implementation or self-review credit",
+    );
   return {
     repository,
     repositoryNodeId: repositoryIdentity.node_id,
