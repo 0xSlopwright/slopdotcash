@@ -130,9 +130,10 @@ maintainers must not receive the same implementation award twice.
 
 At initial inspection, the SlopDotCash-owned App is `slopdotcash` (ID 5257625).
 The separate `slopcash` App is owned by another account and is not interchangeable.
-The production Slopbot hostname does not resolve. No model or Cloudflare API
-credentials are available in this shell. Existing worker billing qualification
-is incomplete. Do not represent App installation alone as an operating bot.
+The production Slopbot hostname did not resolve at initial inspection. The
+owner-supplied Surplus credential subsequently passed local Opus and Sol runtime
+checks. Production Cloudflare access and App private-key/webhook configuration
+remain pending. Existing worker billing qualification is incomplete. Do not represent App installation alone as an operating bot.
 
 The owner selected assessment within the existing ChatGPT subscription for
 the historical run. Do not start paid API calls for that backfill. The ongoing

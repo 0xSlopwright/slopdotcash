@@ -20,11 +20,7 @@ export async function assessValue(
     throw new Error("Complete source evidence is required before valuation");
   if (!/^[a-f0-9]{40}$/u.test(policy.sha) || !policy.text.trim())
     throw new Error("Pinned project policy is required");
-  // Collection time is receipt metadata, not a new source revision. Re-reading
-  // unchanged evidence must not manufacture another assessment identity.
-  const { collectedAt: _collectedAt, ...sourceEvidence } = evidence;
-  const source = JSON.stringify({ policy, evidence: sourceEvidence });
-  const sourceDigest = await sha256Hex(source);
+  const sourceDigest = await valueSourceDigest(evidence, policy);
   const result = await runStructuredRoute(
     env,
     TRIAGE_ROUTE,
@@ -37,22 +33,7 @@ export async function assessValue(
     {
       name: "slop_value_assessment",
       schema: VALUE_ASSESSMENT_SCHEMA,
-      validate: (value) =>
-        validateValueAssessment(value, {
-          evidenceUrls: new Set(evidence.evidenceUrls),
-          reviewIds: new Set(evidence.reviews.map((review) => review.node_id)),
-          reviewUrls: new Map(
-            evidence.reviews.map((review) => [review.node_id, review.html_url]),
-          ),
-          reviewTimes: new Map(
-            evidence.reviews.map((review) => [
-              review.node_id,
-              review.submitted_at,
-            ]),
-          ),
-          eligibleReviewIds: new Set(evidence.eligibleReviewIds),
-          merged: evidence.pull.merged_at !== null,
-        }),
+      validate: (value) => validateEvidenceAssessment(value, evidence),
     },
   );
   return {
@@ -64,4 +45,31 @@ export async function assessValue(
     assessedAt: new Date().toISOString(),
     ...result,
   };
+}
+
+/** Receipt timestamps do not create a new source revision. */
+export function valueSourceDigest(
+  evidence: ValueEvidence,
+  policy: { sha: string; text: string },
+) {
+  const { collectedAt: _collectedAt, ...sourceEvidence } = evidence;
+  return sha256Hex(JSON.stringify({ policy, evidence: sourceEvidence }));
+}
+
+export function validateEvidenceAssessment(
+  value: unknown,
+  evidence: ValueEvidence,
+) {
+  return validateValueAssessment(value, {
+    evidenceUrls: new Set(evidence.evidenceUrls),
+    reviewIds: new Set(evidence.reviews.map((review) => review.node_id)),
+    reviewUrls: new Map(
+      evidence.reviews.map((review) => [review.node_id, review.html_url]),
+    ),
+    reviewTimes: new Map(
+      evidence.reviews.map((review) => [review.node_id, review.submitted_at]),
+    ),
+    eligibleReviewIds: new Set(evidence.eligibleReviewIds),
+    merged: evidence.pull.merged_at !== null,
+  });
 }

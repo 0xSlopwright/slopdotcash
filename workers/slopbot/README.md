@@ -215,3 +215,26 @@ superseded heads still needs evidence of distinct retained value. Schema validit
 alone is not semantic calibration. The test did not publish a score, run the hosted queue,
 activate billing, or approve a payout. Hosted delivery and historical calibration
 remain on the value-scoring acceptance checklist.
+
+
+## Provisional assessment journal
+
+`value-journal.ts` prepares source-bound records for the append-only D1 table
+in migration `0014`. It revalidates the assessment against its exact evidence,
+policy digest and configured served-model identity. The record contains the
+safe rationale and source links, not patches, raw responses or prompts.
+
+An exact source/rubric/producer retry returns the first canonical record.
+A successor must name its predecessor and explain the change. The database
+rejects competing successors, predecessors from another PR, edits and deletes.
+The exact stored JSON bytes define the record digest. Consumers must retain
+those bytes when they verify a record.
+
+A local integration check applied the checked-in migration to real SQLite and
+used the two real Eliza runtime assessments. It verified replay, digest/key
+integrity, successor readback, retained history, and rejection of cross-PR
+predecessors and competing successors. This is storage evidence only. No
+production migration was applied. Authenticated queue publication, fresh-source
+checks, the public reader, score/Points ingestion and human precedence remain
+required before activation. The caller must establish installation authority
+and current source before calling the internal append function.
