@@ -267,7 +267,11 @@ retains `x-si-buyer-cost-micro` as a nullable integer in a separate immutable
 `provider_cost_micro_usd` column (migration `0015`). Missing, fractional or
 unsafe values remain unknown. This is a provider report, not a finalized invoice;
 it does not replace the versioned price, change billing, or mark reconciliation
-complete. Only this allowlisted numeric header is retained.
+complete. Migration `0019` also retains the transport `x-request-id` in the
+private immutable `provider_request_id` column. The model response body's ID
+is a different identity. Only bounded ASCII identifiers are accepted; missing
+or invalid IDs stay null, including all earlier rows. Neither header is exposed
+by the public assessment reader.
 
 `x-si-truncated: 1` rejects the response even if its JSON and stop reason appear
 complete. SDK retries are disabled so each explicit route attempt has one cost
@@ -278,6 +282,12 @@ Live Opus and Sol receipt checks passed on 10 October 2026. Controlled local HTT
 checks covered deadline truncation, fractional costs, error receipts and retry
 count; the real SQLite migrations preserved the receipt and rejected its update.
 Those local checks did not charge a contributor or reconcile a production invoice.
+
+A live Sol call on 10 October 2026 confirmed that the transport ID retrieves
+the exact Surplus request receipt. The model and cost matched; settlement was
+still accrued. Local HTTP and SQLite checks retained IDs on success, truncation
+and HTTP errors, ignored invalid IDs, and rejected changes to persisted IDs.
+This provides a link for later reconciliation, not finalized invoice evidence.
 
 
 ## Webhook redelivery after queue failure

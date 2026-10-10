@@ -243,8 +243,8 @@ export async function recordCalls(
       .prepare(
         `INSERT INTO slopbot_costs (review_key, installation_id, call_kind, route_step, provider, requested_model,
           served_model, outcome, failure, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens,
-          price_version, cost_micro_usd, billed_micro_usdc, reconciliation, created_at, provider_cost_micro_usd)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          price_version, cost_micro_usd, billed_micro_usdc, reconciliation, created_at, provider_cost_micro_usd, provider_request_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         reviewKey,
@@ -266,6 +266,7 @@ export async function recordCalls(
         substituted ? "estimated" : price.reconciliation,
         now(),
         call.providerCostMicroUsd ?? null,
+        call.providerRequestId ?? null,
       )
       .run();
   }

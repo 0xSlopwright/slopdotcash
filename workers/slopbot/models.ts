@@ -41,6 +41,7 @@ export type CallRecord = {
   failure: string | null;
   usage: Usage;
   providerCostMicroUsd: number | null;
+  providerRequestId: string | null;
 };
 
 export type Prompt = { system: string; policy: string; item: string };
@@ -87,11 +88,13 @@ export async function runStructuredRoute<T>(
       failure: null,
       usage: ZERO,
       providerCostMicroUsd: null,
+      providerRequestId: null,
     };
     try {
       const result = await callClaude(env, step, prompt, effort, output);
       record.usage = result.usage;
       record.providerCostMicroUsd = result.providerCostMicroUsd;
+      record.providerRequestId = result.providerRequestId;
       record.servedModel = result.servedModel;
       if (result.servedModel !== step.model) {
         record.failure = "provider did not report the requested model";
@@ -113,8 +116,10 @@ export async function runStructuredRoute<T>(
       // bodies: they may echo credentials or repository prompt material.
       const status = (error as { status?: unknown })?.status;
       const headers = (error as { headers?: unknown })?.headers;
-      if (headers instanceof Headers)
+      if (headers instanceof Headers) {
         record.providerCostMicroUsd = providerCost(headers);
+        record.providerRequestId = providerRequestId(headers);
+      }
       record.failure =
         typeof status === "number" && Number.isInteger(status)
           ? `provider returned HTTP ${status}`
@@ -131,6 +136,7 @@ type CallResult = {
   servedModel: string | null;
   failure: string | null;
   providerCostMicroUsd: number | null;
+  providerRequestId: string | null;
 };
 
 function parseJson(text: string | undefined): unknown {
@@ -149,6 +155,13 @@ function providerCost(headers: Headers): number | null {
     Number.isSafeInteger(Number(cost))
     ? Number(cost)
     : null;
+}
+
+function providerRequestId(headers: Headers): string | null {
+  // This is Surplus's receipt identity. The model response body's id identifies
+  // a different upstream object and cannot be used for cost reconciliation.
+  const id = headers.get("x-request-id");
+  return id !== null && /^[A-Za-z0-9_-]{1,128}$/u.test(id) ? id : null;
 }
 
 async function callClaude(
@@ -208,6 +221,7 @@ async function callClaude(
     } as unknown as Anthropic.MessageCreateParamsNonStreaming)
     .withResponse();
   const providerCostMicroUsd = providerCost(transport.headers);
+  const requestId = providerRequestId(transport.headers);
   const truncated = transport.headers.get("x-si-truncated") === "1";
   const usage: Usage = {
     input: response.usage.input_tokens,
@@ -228,6 +242,7 @@ async function callClaude(
         ? "provider deadline truncated the response"
         : response.stop_reason,
       providerCostMicroUsd,
+      providerRequestId: requestId,
     };
   }
   const text = (response.content as { type: string; text?: string }[]).find(
@@ -239,5 +254,6 @@ async function callClaude(
     servedModel: response.model,
     failure: null,
     providerCostMicroUsd,
+    providerRequestId: requestId,
   };
 }
