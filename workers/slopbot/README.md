@@ -477,7 +477,10 @@ Their complete reviews and current assessment history can award review value,
 but never implementation value. Missing or unresolved decisions do not fall
 back to retained legacy review awards. Reviews must precede closure and exclude
 the implementation authors. Published counts and assessment coverage retain
-these sources separately from merged PRs.
+these sources separately from merged PRs. Value hydration collects every review
+state, including `COMMENTED`, on every page. Eligibility and assessed value
+determine credit; collection does not discard a finding because the reviewer
+did not select approve or request changes.
 
 The source collector does not call a model. A failed feed prevents snapshot
 publication; legacy scoring is not a failure fallback.

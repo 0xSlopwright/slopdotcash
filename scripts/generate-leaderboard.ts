@@ -430,7 +430,7 @@ const MERGED_PULL_REQUEST_REVIEW_FRAGMENT = `
     headRefOid
     author { ...LeaderboardActor }
     comments(first: 100) { ${COMMENT_FIELDS} }
-    reviews(states: [APPROVED, CHANGES_REQUESTED], first: 100) { ${REVIEW_FIELDS} }
+    reviews(states: $reviewStates, first: 100) { ${REVIEW_FIELDS} }
   }
 `;
 
@@ -565,7 +565,7 @@ const PULL_REQUEST_DETAILS_QUERY = `
 `;
 
 const MERGED_PULL_REQUEST_REVIEWS_QUERY = `
-  query LeaderboardMergedPullRequestReviews($ids: [ID!]!) {
+  query LeaderboardMergedPullRequestReviews($ids: [ID!]!, $reviewStates: [PullRequestReviewState!]) {
     nodes(ids: $ids) {
       __typename
       ... on PullRequest { ...LeaderboardMergedPullRequestReview }
@@ -2542,12 +2542,13 @@ async function completePullRequestConnections(
 async function completeMergedPullRequestReviewConnections(
   client: GraphqlExecutor,
   parsed: ParsedMergedPullRequestReview,
+  allReviews: boolean,
 ): Promise<PendingMergedPullRequestReviewRecord> {
   return await completePullRequestTextConnections(
     client,
     parsed.record,
     parsed.pages,
-    MORE_FORMAL_REVIEWS_QUERY,
+    allReviews ? MORE_REVIEWS_QUERY : MORE_FORMAL_REVIEWS_QUERY,
   );
 }
 
@@ -2894,12 +2895,14 @@ async function hydrateReviewedMergedPullRequests(
   client: GraphqlExecutor,
   references: NodeReference[],
   onProgress: (progress: GenerationProgress) => void,
+  allReviews = false,
 ): Promise<MergedPullRequestReviewRecord[]> {
   const pending: PendingMergedPullRequestReviewRecord[] = [];
   for (const batch of chunks(references, DETAIL_BATCH_SIZE)) {
     const ids = batch.map((reference) => reference.id);
     const data = await client.execute(MERGED_PULL_REQUEST_REVIEWS_QUERY, {
       ids,
+      reviewStates: allReviews ? null : ["APPROVED", "CHANGES_REQUESTED"],
     });
     const parsed = parseDetailBatch(
       data,
@@ -2910,7 +2913,11 @@ async function hydrateReviewedMergedPullRequests(
     for (const value of parsed) {
       validateRecordState(value, "merged");
       pending.push(
-        await completeMergedPullRequestReviewConnections(client, value),
+        await completeMergedPullRequestReviewConnections(
+          client,
+          value,
+          allReviews,
+        ),
       );
       onProgress({
         phase: "merged-pull-requests",
@@ -3774,6 +3781,7 @@ export async function generateLeaderboardFromGitHub(
       client,
       reviewedReferences,
       onProgress,
+      options.valueAssessments,
     );
     await reconcileHydratedReviewCensus(client, hydrationPlan.reviewCounts, [
       ...detailedPullRequests,
