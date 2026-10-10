@@ -159,6 +159,7 @@ function valueAssessmentKey(record: ValueJournalRecord) {
 export async function appendValueRecord(
   db: D1Database,
   prepared: Awaited<ReturnType<typeof prepareValueRecord>>,
+  installationId: number | null = null,
 ): Promise<StoredValueRecord> {
   const { record, recordJson, recordDigest, assessmentKey } = prepared;
   if (
@@ -173,6 +174,8 @@ export async function appendValueRecord(
      head_sha, source_digest, supersedes, record_json, recorded_at)
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
     WHERE NOT EXISTS (SELECT 1 FROM slopbot_value_journal WHERE assessment_key = ?)
+      AND (? IS NULL OR EXISTS (SELECT 1 FROM slopbot_installations
+        WHERE installation_id = ? AND removed_at IS NULL AND suspended_at IS NULL))
     ON CONFLICT(assessment_key) DO NOTHING`)
     .bind(
       recordDigest,
@@ -185,6 +188,8 @@ export async function appendValueRecord(
       recordJson,
       new Date().toISOString(),
       assessmentKey,
+      installationId,
+      installationId,
     )
     .run();
   const stored = await db
@@ -208,4 +213,36 @@ export async function latestValueRecord(
     ORDER BY sequence DESC LIMIT 1`)
     .bind(repositoryNodeId, pullRequestNodeId)
     .first<StoredValueRecord>();
+}
+
+/** Public history contains exact record bytes and their digests. This is not a
+ * current-score endpoint: consumers must check source revisions and human decisions.
+ */
+export async function valueHistory(
+  db: D1Database,
+  repository: string,
+  pullRequestNumber: number,
+  afterSequence: number,
+) {
+  const row = await db
+    .prepare(`SELECT json_group_array(json_object(
+    'sequence', sequence, 'record_digest', record_digest,
+    'record_json', record_json, 'recorded_at', recorded_at)) AS records_json
+    FROM (SELECT sequence, record_digest, record_json, recorded_at
+      FROM slopbot_value_journal
+      WHERE json_extract(record_json, '$.repository') = ?
+        AND json_extract(record_json, '$.pullRequestNumber') = ?
+        AND sequence > ? ORDER BY sequence LIMIT 101)`)
+    .bind(repository, pullRequestNumber, afterSequence)
+    .first<{ records_json: string }>();
+  if (!row) throw new Error("Value history read failed");
+  const records = JSON.parse(row.records_json) as Omit<
+    StoredValueRecord,
+    "assessment_key"
+  >[];
+  const page = records.slice(0, 100);
+  return {
+    records: page,
+    nextAfter: records.length > 100 ? page[page.length - 1].sequence : null,
+  };
 }

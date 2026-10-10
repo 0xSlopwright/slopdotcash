@@ -119,8 +119,8 @@ export function neutralize(text: string): string {
     .slice(0, 1500);
 }
 
-async function loadPolicy(
-  github: GitHubClient,
+export async function loadPolicy(
+  github: Pick<GitHubClient, "fileText">,
   owner: string,
   repo: string,
   ref: string,

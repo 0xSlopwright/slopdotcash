@@ -234,7 +234,27 @@ A local integration check applied the checked-in migration to real SQLite and
 used the two real Eliza runtime assessments. It verified replay, digest/key
 integrity, successor readback, retained history, and rejection of cross-PR
 predecessors and competing successors. This is storage evidence only. No
-production migration was applied. Authenticated queue publication, fresh-source
-checks, the public reader, score/Points ingestion and human precedence remain
-required before activation. The caller must establish installation authority
-and current source before calling the internal append function.
+production migration was applied. `value-publication.ts` checks the active
+installation, its token-scoped repository membership, the exact repository IDs,
+and freshly collected complete source and pinned policy. The insert also checks
+installation state to reject a suspension/removal that arrives during the read.
+The live source recheck matched Eliza #34772. Hosted App authentication remains
+untested while credentials are pending.
+
+The read-only `GET /v1/value-assessments?repository=OWNER/REPO&pull=NUMBER`
+route returns ordered record strings and their digests. It accepts an `after`
+sequence cursor, returns up to 100 records, and supplies `nextAfter` when another
+page exists. Invalid queries return 400. A storage failure returns 503, never a
+successful empty history. This route shows recorded history; it does not assert
+that a record still matches GitHub or overrides a human decision.
+
+A local Cloudflare Worker with local D1 passed HTTP readback using the checked-in
+migrations and seeded real Eliza assessments. All returned record digests matched
+the exact bytes; cursor reads, valid empty history and invalid-query responses
+also passed. This does not prove hosted authentication, queue delivery or a
+production write.
+
+Queue scheduling, inference budget accounting, score/Points ingestion and human
+precedence remain required before activation. No hosted queue has published a
+record. Only the internal publisher may establish authority for a write; the
+public reader cannot submit or alter assessments.

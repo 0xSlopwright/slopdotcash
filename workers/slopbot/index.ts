@@ -1,10 +1,12 @@
 // Slopbot GitHub App service (draft, docs/slopbot-v2-proposal.md).
 // fetch: verify and deduplicate webhooks, then enqueue identifiers only.
 // queue: re-read GitHub state and run the review pipeline.
+import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
 import type { Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import * as store from "./persistence";
 import { type ReviewEnv, recordHumanSignal, reviewItem } from "./review";
+import { valueHistory } from "./value-journal";
 
 type Queue = { send(body: Job): Promise<void> };
 type Env = ReviewEnv & { SLOPBOT_WEBHOOK_SECRET: string; SLOPBOT_QUEUE: Queue };
@@ -119,6 +121,51 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
       return Response.json({ service: "slopbot", ok: true });
+    }
+    if (request.method === "GET" && url.pathname === "/v1/value-assessments") {
+      const repository = findRegisteredRepositoryById(
+        url.searchParams.get("repository") ?? "",
+      );
+      const number = url.searchParams.get("pull") ?? "";
+      const after = url.searchParams.get("after") ?? "0";
+      if (
+        !repository ||
+        !/^[1-9][0-9]*$/u.test(number) ||
+        !/^(0|[1-9][0-9]*)$/u.test(after) ||
+        !Number.isSafeInteger(Number(number)) ||
+        !Number.isSafeInteger(Number(after))
+      )
+        return Response.json(
+          { error: "Invalid value-history query" },
+          { status: 400 },
+        );
+      try {
+        const history = await valueHistory(
+          env.SLOPBOT_DB,
+          repository.id,
+          Number(number),
+          Number(after),
+        );
+        return Response.json(
+          {
+            schemaVersion: "slop-value-history:v1",
+            repository: repository.id,
+            pullRequestNumber: Number(number),
+            ...history,
+          },
+          {
+            headers: {
+              "cache-control": "no-store",
+              "x-content-type-options": "nosniff",
+            },
+          },
+        );
+      } catch {
+        return Response.json(
+          { error: "Value history is unavailable" },
+          { status: 503, headers: { "cache-control": "no-store" } },
+        );
+      }
     }
     if (request.method !== "POST" || url.pathname !== "/github/webhook") {
       return new Response("not found", { status: 404 });
