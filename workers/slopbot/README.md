@@ -332,3 +332,18 @@ The live collector retained the 15 September closure date for Eliza PR #31343
 with no source limitations. Existing real merged-assessment journal checks also
 passed. This check made no model call or public assessment and does not establish
 the value of that closed PR's reviews.
+
+## Recovery after an eligibility skip
+
+A skip occurs before inference. A later event for the same revision rechecks
+eligibility, including budget, draft state and author limits. If eligible, an
+atomic claim permits the first actual review; completed and running reviews
+remain deduplicated. Failed attempts remain unbilled Slop-caused retries.
+The daily author cap counts completion time over the preceding 24 UTC hours,
+including reviews that were first skipped on an earlier day.
+
+A local routing/persistence check using the real SQLite schema covered an empty
+balance followed by a deposit, competing claims, failed-attempt retry, completed
+deduplication and the rolling completion-time cap. It made no provider call or
+production write. Hosted queue recovery and atomic inference-budget reservation
+still require separate qualification.

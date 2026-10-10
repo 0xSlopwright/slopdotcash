@@ -542,7 +542,7 @@ export async function reviewItem(
   );
   const authorReviewsToday = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND status = 'completed' AND created_at > datetime('now', '-1 day')",
+    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND status = 'completed' AND completed_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')",
     job.repositoryId,
     issue.user.id,
   );

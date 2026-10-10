@@ -134,7 +134,7 @@ export async function reviewExists(
 ): Promise<boolean> {
   const row = await db
     .prepare(
-      "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND status != 'failed'",
+      "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND status IN ('running', 'completed')",
     )
     .bind(reviewKey)
     .first();
@@ -154,15 +154,23 @@ export type ReviewRow = {
   policyDigest: string;
 };
 
-// "retry" resumes a review whose earlier attempt failed; its model calls are
-// Slop-caused and recorded unbilled.
+// Skips happen before inference. Recheck their eligibility on the next event;
+// their first actual review is billable. Failed attempts resume as Slop-caused,
+// unbilled retries. Atomic updates ensure only one consumer claims the row.
 export async function startReview(
   db: D1Database,
   row: ReviewRow,
 ): Promise<"new" | "retry" | "exists"> {
+  const resumed = await db
+    .prepare(
+      "UPDATE slopbot_reviews SET status = 'running', skip_reason = NULL, completed_at = NULL WHERE review_key = ? AND status = 'skipped'",
+    )
+    .bind(row.reviewKey)
+    .run();
+  if ((resumed.meta?.changes ?? 0) === 1) return "new";
   const retried = await db
     .prepare(
-      "UPDATE slopbot_reviews SET status = 'running' WHERE review_key = ? AND status = 'failed'",
+      "UPDATE slopbot_reviews SET status = 'running', skip_reason = NULL, completed_at = NULL WHERE review_key = ? AND status = 'failed'",
     )
     .bind(row.reviewKey)
     .run();
