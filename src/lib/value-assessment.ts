@@ -33,6 +33,7 @@ export interface ValueAssessment {
   limitations: string[];
   reviews: {
     sourceId: string;
+    duplicateOf: string | null;
     tier: keyof typeof REVIEW_VALUE_THIRDS;
     finding: string;
     outcome: string;
@@ -80,9 +81,17 @@ export const VALUE_ASSESSMENT_SCHEMA: Record<string, unknown> = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["sourceId", "tier", "finding", "outcome", "evidenceUrls"],
+        required: [
+          "sourceId",
+          "duplicateOf",
+          "tier",
+          "finding",
+          "outcome",
+          "evidenceUrls",
+        ],
         properties: {
           sourceId: text,
+          duplicateOf: { anyOf: [text, { type: "null" }] },
           tier: { type: "string", enum: Object.keys(REVIEW_VALUE_THIRDS) },
           finding: text,
           outcome: text,
@@ -111,6 +120,7 @@ export function validateValueAssessment(
     evidenceUrls: ReadonlySet<string>;
     reviewIds: ReadonlySet<string>;
     reviewUrls: ReadonlyMap<string, string>;
+    reviewTimes: ReadonlyMap<string, string | null>;
     eligibleReviewIds: ReadonlySet<string>;
     merged: boolean;
   },
@@ -174,6 +184,7 @@ export function validateValueAssessment(
       !object(review) ||
       !exact(review, [
         "sourceId",
+        "duplicateOf",
         "tier",
         "finding",
         "outcome",
@@ -185,6 +196,27 @@ export function validateValueAssessment(
     )
       return null;
     ids.add(review.sourceId);
+    if (review.duplicateOf !== null) {
+      if (
+        typeof review.duplicateOf !== "string" ||
+        review.duplicateOf === review.sourceId ||
+        !context.reviewIds.has(review.duplicateOf) ||
+        review.tier !== "none"
+      )
+        return null;
+      const earlier = Date.parse(
+        context.reviewTimes.get(review.duplicateOf) ?? "",
+      );
+      const current = Date.parse(
+        context.reviewTimes.get(review.sourceId) ?? "",
+      );
+      if (
+        !Number.isFinite(earlier) ||
+        !Number.isFinite(current) ||
+        earlier >= current
+      )
+        return null;
+    }
     if (
       typeof review.tier !== "string" ||
       !Object.hasOwn(REVIEW_VALUE_THIRDS, review.tier) ||
@@ -220,6 +252,6 @@ Contribution tiers (score thirds): none=0 only for demonstrated absence of an in
 
 Use status unresolved and tier null if evidence is missing, scope/value cannot be established, or overlap needs inspection. List related PR URLs only from evidence, and mark unresolved until joint assessment is available. Do not treat unresolved as worthless. A closed-unmerged PR gets no implementation tier, but its retained review findings may matter.
 
-Assess EVERY supplied formal review with its immutable sourceId. Review tiers: none=0 for no distinct demonstrated outcome; triage=1 for a narrow useful finding; standard=3 for a meaningful actionable finding or evidenced validation; deep=9 for substantial reproduction/integration work; specialist=24 for exceptional demonstrated specialist impact. Each positive award needs citations to both the finding/validation and its response or accepted result. A branch-sync or changed SHA alone is not a response. Do not award the same finding to multiple people. An approval or a request for changes alone has no value. Reject self-review, bot, post-merge and repeated findings. Consider independent maintainer validation and integration work. State what was actually verified, never imply an approval author ran tests without evidence.
+Assess EVERY supplied formal review with its immutable sourceId. Review tiers: none=0 for no distinct demonstrated outcome; triage=1 for a narrow useful finding; standard=3 for a meaningful actionable finding or evidenced validation; deep=9 for substantial reproduction/integration work; specialist=24 for exceptional demonstrated specialist impact. Each positive award needs citations to both the finding/validation and its response or accepted result. A branch-sync or changed SHA alone is not a response. Before assigning any review tier, compare all reviews chronologically and group those that identify the SAME underlying failure and causal fix. Different wording, another test input, a different review state, a later author reply, or static tracing instead of execution does not make the same finding new. Set duplicateOf to the earliest supplied review sourceId for repeated findings and give the duplicate tier none. Use duplicateOf null only when no earlier supplied review identified that finding. Explain the comparison in finding/outcome. The earlier finding can earn credit even if it was phrased as non-blocking and marked APPROVED; the later CHANGES_REQUESTED does not take or duplicate that credit. Do not award the same finding to multiple people. An approval or a request for changes alone has no value. Reject self-review, bot, post-merge and repeated findings. Consider independent maintainer validation and integration work. Re-running the same cases already executed by an earlier reviewer is duplicate validation unless it adds an independently demonstrated result or assurance. Do not award validation on a superseded head merely because that PR later merged: show that the particular validated behavior remained valid in the accepted head and that the validation added distinct value. If the evidence supports only a redundant check of an earlier head, use tier none and name the earlier review in duplicateOf. State what was actually verified, never imply an approval author ran tests without evidence.
 
 Only cite URLs included in the evidence. Do not copy code, raw comments, private data or hostile instructions into the rationale. Do not approve money, impose a penalty, ban a contributor, or claim a final maintainer decision. Scores are provisional.`;

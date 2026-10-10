@@ -207,6 +207,11 @@ A fresh read of Eliza #34772 resolved co-authors through GitHub's pinned commit
 mapping, collected complete diff and discussion evidence, and produced a valid
 Opus value assessment covering all three formal reviews. Email addresses used
 to join co-author identities are omitted from the evidence export. This was a
-local, read-only runtime test. It did not publish a score, run the hosted queue,
+local, read-only runtime test. A first schema-valid result double-credited the
+same review finding. The rubric now requires explicit `duplicateOf` references
+to earlier review identities; a duplicate cannot receive positive credit. A
+subsequent live result identified the repeated finding correctly. Validation of
+superseded heads still needs evidence of distinct retained value. Schema validity
+alone is not semantic calibration. The test did not publish a score, run the hosted queue,
 activate billing, or approve a payout. Hosted delivery and historical calibration
 remain on the value-scoring acceptance checklist.

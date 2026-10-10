@@ -44,6 +44,12 @@ export async function assessValue(
           reviewUrls: new Map(
             evidence.reviews.map((review) => [review.node_id, review.html_url]),
           ),
+          reviewTimes: new Map(
+            evidence.reviews.map((review) => [
+              review.node_id,
+              review.submitted_at,
+            ]),
+          ),
           eligibleReviewIds: new Set(evidence.eligibleReviewIds),
           merged: evidence.pull.merged_at !== null,
         }),
