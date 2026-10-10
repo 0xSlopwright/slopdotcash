@@ -258,3 +258,23 @@ Queue scheduling, inference budget accounting, score/Points ingestion and human
 precedence remain required before activation. No hosted queue has published a
 record. Only the internal publisher may establish authority for a write; the
 public reader cannot submit or alter assessments.
+
+
+## Provider request receipts
+
+The Anthropic SDK response headers carry Surplus transport evidence. The route
+retains `x-si-buyer-cost-micro` as a nullable integer in a separate immutable
+`provider_cost_micro_usd` column (migration `0015`). Missing, fractional or
+unsafe values remain unknown. This is a provider report, not a finalized invoice;
+it does not replace the versioned price, change billing, or mark reconciliation
+complete. Only this allowlisted numeric header is retained.
+
+`x-si-truncated: 1` rejects the response even if its JSON and stop reason appear
+complete. SDK retries are disabled so each explicit route attempt has one cost
+record. Failure responses retain a valid cost header without recording provider
+error bodies. See the official [Surplus routing controls](https://www.surplusintelligence.ai/docs/marketplace/routing-controls).
+
+Live Opus and Sol receipt checks passed on 10 October 2026. Controlled local HTTP
+checks covered deadline truncation, fractional costs, error receipts and retry
+count; the real SQLite migrations preserved the receipt and rejected its update.
+Those local checks did not charge a contributor or reconcile a production invoice.

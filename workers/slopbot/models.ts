@@ -40,6 +40,7 @@ export type CallRecord = {
   outcome: "ok" | "failed";
   failure: string | null;
   usage: Usage;
+  providerCostMicroUsd: number | null;
 };
 
 export type Prompt = { system: string; policy: string; item: string };
@@ -85,10 +86,12 @@ export async function runStructuredRoute<T>(
       outcome: "failed",
       failure: null,
       usage: ZERO,
+      providerCostMicroUsd: null,
     };
     try {
       const result = await callClaude(env, step, prompt, effort, output);
       record.usage = result.usage;
+      record.providerCostMicroUsd = result.providerCostMicroUsd;
       record.servedModel = result.servedModel;
       if (result.servedModel !== step.model) {
         record.failure = "provider did not report the requested model";
@@ -109,6 +112,9 @@ export async function runStructuredRoute<T>(
       // SDK errors can include provider response bodies. Never persist those
       // bodies: they may echo credentials or repository prompt material.
       const status = (error as { status?: unknown })?.status;
+      const headers = (error as { headers?: unknown })?.headers;
+      if (headers instanceof Headers)
+        record.providerCostMicroUsd = providerCost(headers);
       record.failure =
         typeof status === "number" && Number.isInteger(status)
           ? `provider returned HTTP ${status}`
@@ -124,6 +130,7 @@ type CallResult = {
   usage: Usage;
   servedModel: string | null;
   failure: string | null;
+  providerCostMicroUsd: number | null;
 };
 
 function parseJson(text: string | undefined): unknown {
@@ -133,6 +140,15 @@ function parseJson(text: string | undefined): unknown {
   } catch {
     return null;
   }
+}
+
+function providerCost(headers: Headers): number | null {
+  const cost = headers.get("x-si-buyer-cost-micro");
+  return cost !== null &&
+    /^(0|[1-9][0-9]*)$/u.test(cost) &&
+    Number.isSafeInteger(Number(cost))
+    ? Number(cost)
+    : null;
 }
 
 async function callClaude(
@@ -152,41 +168,47 @@ async function callClaude(
     authToken: key,
     baseURL:
       env.SURPLUS_BASE_URL ?? "https://api.surplusintelligence.ai/anthropic",
-    maxRetries: 1,
+    // Each explicit route attempt gets its own cost record. SDK retries hide
+    // extra provider requests from that ledger.
+    maxRetries: 0,
     timeout: 120_000,
   });
-  const response = await client.messages.create({
-    model: step.model,
-    max_tokens: 16000,
-    system: [
-      {
-        type: "text",
-        // The marketplace can translate the Anthropic wire to another
-        // provider. Include the contract in the prompt as well as the API
-        // option; otherwise a transport that drops output_config leaves the
-        // model unaware of the required schema. Local validation stays strict.
-        text: `${prompt.system}\n\nReturn one raw JSON object, without Markdown fences, matching this exact JSON Schema:\n${JSON.stringify(output.schema)}`,
-        cache_control: { type: "ephemeral" },
+  const { data: response, response: transport } = await client.messages
+    .create({
+      model: step.model,
+      max_tokens: 16000,
+      system: [
+        {
+          type: "text",
+          // The marketplace can translate the Anthropic wire to another
+          // provider. Include the contract in the prompt as well as the API
+          // option; otherwise a transport that drops output_config leaves the
+          // model unaware of the required schema. Local validation stays strict.
+          text: `${prompt.system}\n\nReturn one raw JSON object, without Markdown fences, matching this exact JSON Schema:\n${JSON.stringify(output.schema)}`,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: prompt.policy,
+              cache_control: { type: "ephemeral" },
+            },
+            { type: "text", text: prompt.item },
+          ],
+        },
+      ],
+      output_config: {
+        effort,
+        format: { type: "json_schema", schema: output.schema },
       },
-    ],
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: prompt.policy,
-            cache_control: { type: "ephemeral" },
-          },
-          { type: "text", text: prompt.item },
-        ],
-      },
-    ],
-    output_config: {
-      effort,
-      format: { type: "json_schema", schema: output.schema },
-    },
-  } as unknown as Anthropic.MessageCreateParamsNonStreaming);
+    } as unknown as Anthropic.MessageCreateParamsNonStreaming)
+    .withResponse();
+  const providerCostMicroUsd = providerCost(transport.headers);
+  const truncated = transport.headers.get("x-si-truncated") === "1";
   const usage: Usage = {
     input: response.usage.input_tokens,
     cacheWrite: response.usage.cache_creation_input_tokens ?? 0,
@@ -194,6 +216,7 @@ async function callClaude(
     output: response.usage.output_tokens,
   };
   if (
+    truncated ||
     response.stop_reason === "refusal" ||
     response.stop_reason === "max_tokens"
   ) {
@@ -201,7 +224,10 @@ async function callClaude(
       json: null,
       usage,
       servedModel: response.model,
-      failure: response.stop_reason,
+      failure: truncated
+        ? "provider deadline truncated the response"
+        : response.stop_reason,
+      providerCostMicroUsd,
     };
   }
   const text = (response.content as { type: string; text?: string }[]).find(
@@ -212,5 +238,6 @@ async function callClaude(
     usage,
     servedModel: response.model,
     failure: null,
+    providerCostMicroUsd,
   };
 }
