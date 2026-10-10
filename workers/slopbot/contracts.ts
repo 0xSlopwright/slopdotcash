@@ -277,9 +277,9 @@ export const PRICES: Record<string, PriceEntry> = {
     output: 3_000_000,
     reconciliation: "estimated",
   },
-  // OpenAI price per secondary sources on 9 October 2026 (OpenAI's page was
-  // not reachable); reconcile against the OpenAI invoice.
-  "openai/gpt-6.1-sol": {
+  // Surplus catalog reference, 10 October 2026. Seller execution prices vary;
+  // this estimate is not a reconciled invoice or authority to charge funds.
+  "surplus/gpt-6.1-sol": {
     input: 2_000_000,
     cacheWrite: 2_000_000,
     cacheRead: 100_000,

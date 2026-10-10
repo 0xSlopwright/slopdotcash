@@ -6,11 +6,10 @@ import { type Usage, VERDICT_SCHEMA, validateVerdict } from "./contracts";
 export type ModelEnv = {
   SURPLUS_API_KEY?: string;
   SURPLUS_BASE_URL?: string;
-  OPENAI_API_KEY?: string;
 };
 
 type Step = {
-  provider: "surplus" | "openai";
+  provider: "surplus";
   model: string;
   priceKey: string;
 };
@@ -20,17 +19,17 @@ const SURPLUS: Step = {
   model: "claude-opus-5.5",
   priceKey: "surplus/claude-opus-5.5",
 };
-const OPENAI: Step = {
-  provider: "openai",
+const FALLBACK: Step = {
+  provider: "surplus",
   model: "gpt-6.1-sol",
-  priceKey: "openai/gpt-6.1-sol",
+  priceKey: "surplus/gpt-6.1-sol",
 };
 
-// Owner decision (9 October 2026): Surplus serves triage and closure
-// confirmation; GPT-6.1 Sol is the fallback. Confirmation is a second,
+// Owner decision (10 October 2026): Surplus serves both Opus 5.5 and
+// the GPT-6.1 Sol fallback. Confirmation is a second,
 // independent call at higher effort, not a different seller guarantee.
-export const TRIAGE_ROUTE = [SURPLUS, OPENAI];
-export const CONFIRM_ROUTE = [SURPLUS, OPENAI];
+export const TRIAGE_ROUTE = [SURPLUS, FALLBACK];
+export const CONFIRM_ROUTE = [SURPLUS, FALLBACK];
 
 export type CallRecord = {
   routeStep: number;
@@ -88,12 +87,14 @@ export async function runStructuredRoute<T>(
       usage: ZERO,
     };
     try {
-      const result =
-        step.provider === "openai"
-          ? await callOpenAI(env, step, prompt, effort, output)
-          : await callClaude(env, step, prompt, effort, output);
+      const result = await callClaude(env, step, prompt, effort, output);
       record.usage = result.usage;
       record.servedModel = result.servedModel;
+      if (result.servedModel !== step.model) {
+        record.failure = "provider did not report the requested model";
+        calls.push(record);
+        continue;
+      }
       const verdict =
         result.json === null ? null : output.validate(result.json);
       if (verdict === null) {
@@ -105,9 +106,12 @@ export async function runStructuredRoute<T>(
       calls.push(record);
       return { verdict, calls, servedBy: record };
     } catch (error) {
+      // SDK errors can include provider response bodies. Never persist those
+      // bodies: they may echo credentials or repository prompt material.
+      const status = (error as { status?: unknown })?.status;
       record.failure =
-        error instanceof Error
-          ? error.message.slice(0, 300)
+        typeof status === "number" && Number.isInteger(status)
+          ? `provider returned HTTP ${status}`
           : "provider call failed";
       calls.push(record);
     }
@@ -146,7 +150,8 @@ async function callClaude(
   const client = new Anthropic({
     apiKey: null,
     authToken: key,
-    baseURL: env.SURPLUS_BASE_URL ?? "https://api.surplusintelligence.ai",
+    baseURL:
+      env.SURPLUS_BASE_URL ?? "https://api.surplusintelligence.ai/anthropic",
     maxRetries: 1,
     timeout: 120_000,
   });
@@ -202,76 +207,6 @@ async function callClaude(
     json: parseJson(text),
     usage,
     servedModel: response.model,
-    failure: null,
-  };
-}
-
-async function callOpenAI(
-  env: ModelEnv,
-  step: Step,
-  prompt: Prompt,
-  effort: "medium" | "high",
-  output: { name: string; schema: Record<string, unknown> },
-): Promise<CallResult> {
-  if (env.OPENAI_API_KEY === undefined || env.OPENAI_API_KEY === "")
-    throw new Error("openai key not configured");
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: step.model,
-      reasoning: { effort },
-      input: [
-        { role: "system", content: prompt.system },
-        { role: "user", content: `${prompt.policy}\n\n${prompt.item}` },
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: output.name,
-          strict: true,
-          schema: output.schema,
-        },
-      },
-    }),
-    signal: AbortSignal.timeout(120_000),
-  });
-  if (!response.ok) throw new Error(`openai returned ${response.status}`);
-  const body = (await response.json()) as {
-    model?: string;
-    status?: string;
-    output?: { type: string; content?: { type: string; text?: string }[] }[];
-    usage?: {
-      input_tokens: number;
-      output_tokens: number;
-      input_tokens_details?: { cached_tokens?: number };
-    };
-  };
-  const cached = body.usage?.input_tokens_details?.cached_tokens ?? 0;
-  const usage: Usage = {
-    input: (body.usage?.input_tokens ?? 0) - cached,
-    cacheWrite: 0,
-    cacheRead: cached,
-    output: body.usage?.output_tokens ?? 0,
-  };
-  if (body.status !== "completed") {
-    return {
-      json: null,
-      usage,
-      servedModel: body.model ?? null,
-      failure: `status ${body.status}`,
-    };
-  }
-  const text = body.output
-    ?.find((item) => item.type === "message")
-    ?.content?.find((part) => part.type === "output_text")?.text;
-  return {
-    json: parseJson(text),
-    usage,
-    servedModel: body.model ?? null,
     failure: null,
   };
 }

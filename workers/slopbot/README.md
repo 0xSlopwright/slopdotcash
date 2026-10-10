@@ -16,7 +16,7 @@ disabled by `SLOPBOT_CLOSURE_ENABLED = "false"`.
    repository, type switch, open/draft, bot author, human reopen, exemption,
    audience, author cap, budget.
 4. Deterministic pre-filters (empty, same-author duplicate) run without a model.
-5. `models.ts` runs triage: Surplus `claude-opus-5.5`, then OpenAI
+5. `models.ts` runs triage: Surplus `claude-opus-5.5`, then Surplus
    `gpt-6.1-sol` as fallback (owner decision, 9 October 2026). Every call is written to
    `slopbot_costs` with cost and billed amount (cost + 10%).
 6. A close needs all of the following:
@@ -102,10 +102,10 @@ Do these in order. Each step names who does it and how to verify it.
    - `SLOPBOT_APP_USER_ID`
    - `SLOPBOT_APP_PRIVATE_KEY` (the PKCS#8 PEM)
    - `SURPLUS_API_KEY`
-   - `OPENAI_API_KEY`
 
-   Optionally add `SURPLUS_BASE_URL` if Surplus's Anthropic endpoint differs
-   from the default.
+   Both models use the same Surplus key. The default Anthropic-compatible
+   base URL is `https://api.surplusintelligence.ai/anthropic`. Optionally set
+   `SURPLUS_BASE_URL` for another verified Surplus Anthropic endpoint.
 5. **Create the queues in the production Cloudflare account** (the account
    in the `CLOUDFLARE_ACCOUNT_ID` environment secret, which also holds
    `slop-private` and the `eliza-computer` Pages project):

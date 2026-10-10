@@ -933,7 +933,6 @@ jobs:
           if (!Array.isArray(value)) throw new TypeError("slopbot secret inventory must be an array");
           const names = value.map((entry) => entry?.name).sort();
           const required = [
-            "OPENAI_API_KEY",
             "SLOPBOT_APP_ID",
             "SLOPBOT_APP_PRIVATE_KEY",
             "SLOPBOT_APP_USER_ID",
