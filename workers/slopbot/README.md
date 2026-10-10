@@ -189,3 +189,24 @@ coverage. These checks do not prove model execution or score publication.
 Installation was verified on 10 October 2026: the owner installed the registered
 App on elizaOS (installation `169856061`) with all repositories selected. This
 proves App access, not worker deployment, model connectivity or score delivery.
+
+## Runtime verification (10 October 2026)
+
+The owner-supplied Surplus key passed live structured calls for
+`claude-opus-5.5` and `gpt-6.1-sol` through the Anthropic endpoint above.
+An unavailable primary model also exercised the live Sol fallback. These
+checks used the same `runStructuredRoute` function as the worker. The endpoint
+reports the served model; that report is not independent model attestation.
+
+The marketplace response did not follow the requested schema when it was
+provided only in `output_config`. The route now includes the exact schema in
+the trusted prompt and still rejects every response that fails local validation.
+Provider error bodies are not persisted. A model identity mismatch also fails.
+
+A fresh read of Eliza #34772 resolved co-authors through GitHub's pinned commit
+mapping, collected complete diff and discussion evidence, and produced a valid
+Opus value assessment covering all three formal reviews. Email addresses used
+to join co-author identities are omitted from the evidence export. This was a
+local, read-only runtime test. It did not publish a score, run the hosted queue,
+activate billing, or approve a payout. Hosted delivery and historical calibration
+remain on the value-scoring acceptance checklist.

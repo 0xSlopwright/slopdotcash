@@ -161,7 +161,11 @@ async function callClaude(
     system: [
       {
         type: "text",
-        text: prompt.system,
+        // The marketplace can translate the Anthropic wire to another
+        // provider. Include the contract in the prompt as well as the API
+        // option; otherwise a transport that drops output_config leaves the
+        // model unaware of the required schema. Local validation stays strict.
+        text: `${prompt.system}\n\nReturn one raw JSON object, without Markdown fences, matching this exact JSON Schema:\n${JSON.stringify(output.schema)}`,
         cache_control: { type: "ephemeral" },
       },
     ],
