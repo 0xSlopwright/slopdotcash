@@ -278,3 +278,24 @@ Live Opus and Sol receipt checks passed on 10 October 2026. Controlled local HTT
 checks covered deadline truncation, fractional costs, error receipts and retry
 count; the real SQLite migrations preserved the receipt and rejected its update.
 Those local checks did not charge a contributor or reconcile a production invoice.
+
+
+## Webhook redelivery after queue failure
+
+Receipt storage and successful dispatch are separate. Migration `0016` adds a
+completion timestamp. A queue or receipt-write failure returns 503 and leaves
+the delivery retryable. A later redelivery of the same signed event can enqueue
+it; only a completed receipt returns the duplicate acknowledgement. Concurrent
+or ambiguous sends can still deliver a job more than once, so consumer
+idempotency remains required.
+
+This does not make GitHub redeliver failed events automatically. Use GitHub's
+redelivery control for a failed delivery. Existing receipts have no reliable
+queue-acceptance evidence, so they remain retryable after migration.
+
+A local fault-injection check used the actual worker fetch handler, HMAC-signed
+requests and the real SQLite migrations. An injected first-send failure returned
+503; redelivery accepted one job; the completed duplicate made no extra send.
+Invalid JSON returned 400, and an invalid signature returned 401, without
+creating receipts. This check did not exercise the hosted Cloudflare queue or
+GitHub App credentials.

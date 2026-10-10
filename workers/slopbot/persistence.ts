@@ -17,13 +17,29 @@ export async function recordDelivery(
   deliveryId: string,
   event: string,
 ): Promise<boolean> {
-  const result = await db
+  await db
     .prepare(
       "INSERT OR IGNORE INTO slopbot_deliveries (delivery_id, event, received_at) VALUES (?, ?, ?)",
     )
     .bind(deliveryId, event, now())
     .run();
-  return (result.meta?.changes ?? 0) === 1;
+  const row = await db
+    .prepare(
+      "SELECT processed_at FROM slopbot_deliveries WHERE delivery_id = ?",
+    )
+    .bind(deliveryId)
+    .first<{ processed_at: string | null }>();
+  if (!row) throw new Error("Webhook receipt was not stored");
+  return row.processed_at === null;
+}
+
+export async function completeDelivery(db: D1Database, deliveryId: string) {
+  await db
+    .prepare(
+      "UPDATE slopbot_deliveries SET processed_at = ? WHERE delivery_id = ? AND processed_at IS NULL",
+    )
+    .bind(now(), deliveryId)
+    .run();
 }
 
 export async function upsertInstallation(

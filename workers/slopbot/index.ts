@@ -187,14 +187,36 @@ export default {
     const deliveryId = request.headers.get("x-github-delivery") ?? "";
     if (deliveryId === "")
       return new Response("missing delivery id", { status: 400 });
-    if (!(await store.recordDelivery(env.SLOPBOT_DB, deliveryId, event))) {
-      return new Response("duplicate delivery", { status: 202 });
+    let payload: Payload;
+    try {
+      payload = JSON.parse(body) as Payload;
+      if (
+        typeof payload !== "object" ||
+        payload === null ||
+        Array.isArray(payload)
+      )
+        return new Response("invalid payload", { status: 400 });
+    } catch {
+      return new Response("invalid JSON", { status: 400 });
     }
-    const payload = JSON.parse(body) as Payload;
-    await handleInstallation(env, event, payload);
-    const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
-    if (job !== null) await env.SLOPBOT_QUEUE.send(job);
-    return new Response(job === null ? "ignored" : "queued", { status: 202 });
+    try {
+      if (!(await store.recordDelivery(env.SLOPBOT_DB, deliveryId, event)))
+        return new Response("duplicate delivery", { status: 202 });
+      await handleInstallation(env, event, payload);
+      const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
+      if (job !== null) await env.SLOPBOT_QUEUE.send(job);
+      // Mark handled only after the queue accepts the job. If the send or this
+      // write fails, redelivery can retry; queue consumers already dedupe work.
+      await store.completeDelivery(env.SLOPBOT_DB, deliveryId);
+      return new Response(job === null ? "ignored" : "queued", { status: 202 });
+    } catch {
+      return new Response(
+        "webhook processing unavailable; redeliver this event",
+        {
+          status: 503,
+        },
+      );
+    }
   },
 
   async queue(
