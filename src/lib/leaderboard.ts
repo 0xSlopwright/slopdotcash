@@ -6150,6 +6150,13 @@ export function assertLeaderboardSnapshot(
     "snapshot.source",
     snapshot.repositories as LeaderboardSnapshot["repositories"],
   );
+  if (
+    snapshot.valueAssessmentCoverage === undefined &&
+    validatedLedger.some((event) =>
+      event.scoreDecisionSourceId?.startsWith("value:"),
+    )
+  )
+    throw new Error("Value score events require assessment coverage");
   if (snapshot.valueAssessmentCoverage !== undefined) {
     if (!Array.isArray(snapshot.valueAssessmentCoverage))
       throw new Error("snapshot.valueAssessmentCoverage must be an array");
