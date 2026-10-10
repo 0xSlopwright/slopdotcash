@@ -100,6 +100,7 @@ export interface PullRequestRecord {
    */
   editor: GitHubActor | null;
   mergedAt: string | null;
+  closedAt?: string | null;
   headRefOid: string;
   isDraft: boolean;
   reviewDecision: string | null;
@@ -503,6 +504,7 @@ export interface LeaderboardSourceMetadata {
     resetAt: string;
   };
   counts: {
+    closedUnmergedPullRequests?: number;
     mergedPullRequests: number;
     detailedMergedPullRequests: number;
     closedIssues: number;
@@ -576,6 +578,7 @@ export interface LeaderboardInput {
   mergedPullRequestOutcomes: MergedPullRequestOutcome[];
   mergedPullRequests: PullRequestRecord[];
   reviewedMergedPullRequests?: MergedPullRequestReviewRecord[];
+  closedUnmergedPullRequests?: PullRequestRecord[];
   detailEligibleMergedPullRequestIds: string[];
   closedIssueCount: number;
   resolvedIssues: IssueRecord[];

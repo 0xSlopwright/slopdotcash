@@ -84,7 +84,10 @@ export async function fetchValueHistoryPage(
 
 export async function loadValueInputs(
   github: Pick<GitHubClient, "get" | "graphql" | "fileText">,
-  outcomes: readonly MergedPullRequestOutcome[],
+  outcomes: readonly (Pick<
+    MergedPullRequestOutcome,
+    "id" | "url" | "number" | "headRefOid" | "updatedAt"
+  > & { mergedAt: string | null; closedAt?: string | null })[],
   transport: Fetch = fetch,
 ) {
   const valueDecisions = new Map<
@@ -149,6 +152,8 @@ export async function loadValueInputs(
       evidence.pull.node_id !== outcome.id ||
       evidence.pull.head.sha !== outcome.headRefOid ||
       evidence.pull.merged_at !== outcome.mergedAt ||
+      (outcome.mergedAt === null &&
+        evidence.pull.closed_at !== outcome.closedAt) ||
       Date.parse(evidence.pull.updated_at) !== Date.parse(outcome.updatedAt)
     )
       throw new Error("Value source changed after the outcome census");

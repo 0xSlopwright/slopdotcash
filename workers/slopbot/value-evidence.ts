@@ -430,6 +430,7 @@ export async function collectValueEvidence(
       else for (const id of ids) implementationActors.add(id);
     }
   }
+  const outcomeAt = pull.merged_at ?? pull.closed_at;
   const eligibleReviewIds = reviews
     .filter(
       (review) =>
@@ -438,8 +439,8 @@ export async function collectValueEvidence(
         !implementationActors.has(review.user.node_id) &&
         review.submitted_at !== null &&
         review.state !== "PENDING" &&
-        (pull.merged_at === null ||
-          Date.parse(review.submitted_at) < Date.parse(pull.merged_at)),
+        (outcomeAt === null ||
+          Date.parse(review.submitted_at) < Date.parse(outcomeAt)),
     )
     .map((review) => review.node_id);
   return {

@@ -472,6 +472,13 @@ missing, never a fabricated assessment. It checks current repository visibility
 and identity, complete GitHub evidence, pinned policy and all journal revisions.
 GraphQL coauthor reads use the existing generation budget, REST reads contribute
 to the request count, and all merged outcomes receive human-decision hydration.
+Value collection also retains closed, unmerged PRs in the full scoring window.
+Their complete reviews and current assessment history can award review value,
+but never implementation value. Missing or unresolved decisions do not fall
+back to retained legacy review awards. Reviews must precede closure and exclude
+the implementation authors. Published counts and assessment coverage retain
+these sources separately from merged PRs.
+
 The source collector does not call a model. A failed feed prevents snapshot
 publication; legacy scoring is not a failure fallback.
 

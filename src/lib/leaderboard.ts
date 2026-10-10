@@ -2616,6 +2616,11 @@ export function shareScoreThirds(
 export function createLeaderboardSnapshot(
   input: LeaderboardInput,
 ): LeaderboardSnapshot {
+  const closedUnmergedPullRequests = dedupeByNodeId(
+    input.closedUnmergedPullRequests ?? [],
+  );
+  if (closedUnmergedPullRequests.length && input.valueDecisions === undefined)
+    throw new Error("Closed unmerged review scoring requires value decisions");
   const mergedPullRequestOutcomes = dedupeByNodeId(
     input.mergedPullRequestOutcomes,
   ).sort(
@@ -3191,6 +3196,59 @@ export function createLeaderboardSnapshot(
     }
   }
 
+  const awardValueReview = (
+    pullRequest: MergedPullRequestReviewRecord,
+    review: PullRequestReview,
+    closedAt: string,
+  ): void => {
+    const repositoryId = repositoryIdFromUrl(pullRequest.url);
+    const decision = input.valueDecisions?.get(pullRequest.id);
+    if (decision?.status !== "assessed") return;
+    if (decision.record.headSha !== pullRequest.headRefOid)
+      throw new Error("Value review decision does not match the current head");
+    const value = decision.assessment.reviews.find(
+      (item) => item.sourceId === review.id,
+    );
+    if (!value)
+      throw new Error("Value decision omitted a collected formal review");
+    const thirds = REVIEW_VALUE_THIRDS[value.tier];
+    if (thirds === 0) return;
+    if (
+      !review.author ||
+      isBotActor(review.author) ||
+      !review.submittedAt ||
+      parseIsoTime(review.submittedAt) >= parseIsoTime(closedAt) ||
+      decision.implementationActorNodeIds.includes(review.author.id) ||
+      ledger.some(
+        (event) =>
+          event.category === "merged-pull-request" &&
+          event.source.id === pullRequest.id &&
+          event.actor.id === review.author?.id,
+      )
+    )
+      throw new Error("Value review lost its eligible source identity");
+    addScore(entries, ledger, {
+      id: `${pullRequest.id}:value-review:${review.id}`,
+      actor: review.author,
+      category: "substantive-review",
+      points: thirds / 3,
+      scoreThirds: thirds,
+      workUnitId: `wu_value_review_${review.id.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_")}`,
+      scoreDecisionSourceId: `value:${decision.latestDigest}`,
+      scoreDecisionAt: decision.history.at(-1)?.recorded_at,
+      occurredAt: review.submittedAt,
+      repository: repositoryId,
+      source: {
+        id: review.id,
+        kind: "review",
+        number: pullRequest.number,
+        title: pullRequest.title,
+        url: review.url,
+      },
+      reason: `Provisional ${value.tier} review value: ${value.finding} ${value.outcome}`,
+    });
+  };
+
   for (const pullRequest of mergedPullRequests) {
     if (!pullRequest.mergedAt) {
       throw new Error(
@@ -3473,53 +3531,7 @@ export function createLeaderboardSnapshot(
         continue;
       }
       if (!ratification && input.valueDecisions !== undefined) {
-        const decision = input.valueDecisions.get(pullRequest.id);
-        if (decision?.status !== "assessed") continue;
-        if (decision.record.headSha !== pullRequest.headRefOid)
-          throw new Error(
-            "Value review decision does not match the current head",
-          );
-        const value = decision.assessment.reviews.find(
-          (item) => item.sourceId === review.id,
-        );
-        if (!value)
-          throw new Error("Value decision omitted a collected formal review");
-        const thirds = REVIEW_VALUE_THIRDS[value.tier];
-        if (thirds === 0) continue;
-        if (
-          !review.author ||
-          isBotActor(review.author) ||
-          !review.submittedAt ||
-          parseIsoTime(review.submittedAt) >
-            parseIsoTime(pullRequest.mergedAt) ||
-          ledger.some(
-            (event) =>
-              event.category === "merged-pull-request" &&
-              event.source.id === pullRequest.id &&
-              event.actor.id === review.author?.id,
-          )
-        )
-          throw new Error("Value review lost its eligible source identity");
-        addScore(entries, ledger, {
-          id: `${pullRequest.id}:value-review:${review.id}`,
-          actor: review.author,
-          category: "substantive-review",
-          points: thirds / 3,
-          scoreThirds: thirds,
-          workUnitId: `wu_value_review_${review.id.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_")}`,
-          scoreDecisionSourceId: `value:${decision.latestDigest}`,
-          scoreDecisionAt: decision.history.at(-1)?.recorded_at,
-          occurredAt: review.submittedAt,
-          repository: repositoryId,
-          source: {
-            id: review.id,
-            kind: "review",
-            number: pullRequest.number,
-            title: pullRequest.title,
-            url: review.url,
-          },
-          reason: `Provisional ${value.tier} review value: ${value.finding} ${value.outcome}`,
-        });
+        awardValueReview(pullRequest, review, pullRequest.mergedAt);
         continue;
       }
       const exclusionReason =
@@ -3621,6 +3633,33 @@ export function createLeaderboardSnapshot(
     }
   }
 
+  for (const pull of closedUnmergedPullRequests) {
+    if (
+      outcomeIds.has(pull.id) ||
+      pull.mergedAt !== null ||
+      !pull.closedAt ||
+      parseIsoTime(pull.closedAt) < parseIsoTime(input.windowFrom) ||
+      parseIsoTime(pull.closedAt) > windowTo
+    )
+      throw new Error("Closed unmerged review source is outside its census");
+    const repositoryId = repositoryIdFromUrl(pull.url);
+    for (const review of pull.reviews) {
+      if (review.author && !isBotActor(review.author))
+        actorEntry(entries, review.author).rawActivity.reviews += 1;
+      if (isScoreBearingSource(repositoryId, review)) continue;
+      if (
+        review.author &&
+        evaluatedReviewReservations.has(
+          `${repositoryId}\0${pull.number}\0${review.author.id}`,
+        )
+      ) {
+        excludeReview(pull, review, "evaluated-contribution-award");
+        continue;
+      }
+      awardValueReview(pull, review, pull.closedAt);
+    }
+  }
+
   for (const issue of resolvedIssues) {
     const sources = issueTextSources(issue);
     recordTextActivity(entries, sources);
@@ -3702,6 +3741,9 @@ export function createLeaderboardSnapshot(
       occurredAt < parseIsoTime(input.windowFrom) ||
       occurredAt >= windowTo ||
       outcomeIds.has(parentPullRequestId) ||
+      closedUnmergedPullRequests.some(
+        (pull) => pull.id === parentPullRequestId,
+      ) ||
       currentLedgerIds.has(event.id) ||
       currentScoreSources.has(`${event.repository}\0${event.source.id}`)
     ) {
@@ -3907,6 +3949,9 @@ export function createLeaderboardSnapshot(
     source: {
       ...input.source,
       counts: {
+        ...(input.valueDecisions === undefined
+          ? {}
+          : { closedUnmergedPullRequests: closedUnmergedPullRequests.length }),
         mergedPullRequests: mergedPullRequestOutcomes.length,
         detailedMergedPullRequests: detailEligibleMergedPullRequests.length,
         closedIssues: input.closedIssueCount,
@@ -3925,7 +3970,10 @@ export function createLeaderboardSnapshot(
     ...(input.valueDecisions === undefined
       ? {}
       : {
-          valueAssessmentCoverage: mergedPullRequestOutcomes.map((pull) => {
+          valueAssessmentCoverage: [
+            ...mergedPullRequestOutcomes,
+            ...closedUnmergedPullRequests,
+          ].map((pull) => {
             const decision = input.valueDecisions?.get(pull.id);
             return {
               pullRequestId: pull.id,
@@ -6227,8 +6275,12 @@ export function assertLeaderboardSnapshot(
       assertObject(snapshot.source, "snapshot.source").counts,
       "snapshot.source.counts",
     );
-    if (snapshot.valueAssessmentCoverage.length !== counts.mergedPullRequests)
-      throw new Error("Value coverage must retain every accepted source");
+    if (
+      snapshot.valueAssessmentCoverage.length !==
+      Number(counts.mergedPullRequests) +
+        Number(counts.closedUnmergedPullRequests ?? 0)
+    )
+      throw new Error("Value coverage must retain every closed source");
     for (const event of validatedLedger) {
       if (!event.scoreDecisionSourceId?.startsWith("value:")) continue;
       const row = snapshot.valueAssessmentCoverage.find((value) =>
@@ -6300,12 +6352,19 @@ export function assertLeaderboardSnapshot(
       )
       .map(
         (event) =>
-          event.id.split(/:(?:automated-review|ratifier|reviewer):/u)[0],
+          event.id.split(
+            /:(?:automated-review|ratifier|reviewer|value-review):/u,
+          )[0],
       ),
   );
   const resolvedIssueEvents = validatedLedger.filter(
     (event) => event.category === "resolved-issue",
   );
+  if (counts.closedUnmergedPullRequests !== undefined)
+    assertNonNegativeInteger(
+      counts.closedUnmergedPullRequests,
+      "snapshot.source.counts.closedUnmergedPullRequests",
+    );
   const mergedPullRequestCount = counts.mergedPullRequests;
   const detailedMergedPullRequestCount = counts.detailedMergedPullRequests;
   const resolvedIssueCount = counts.resolvedIssues;
@@ -6324,7 +6383,8 @@ export function assertLeaderboardSnapshot(
   if (
     mergedOutcomeSourceIds.size > mergedPullRequestCount ||
     detailedPullRequestIds.size > detailedMergedPullRequestCount ||
-    reviewedPullRequestIds.size > mergedPullRequestCount ||
+    reviewedPullRequestIds.size >
+      mergedPullRequestCount + Number(counts.closedUnmergedPullRequests ?? 0) ||
     resolvedIssueEvents.length > resolvedIssueCount
   ) {
     throw new Error(
