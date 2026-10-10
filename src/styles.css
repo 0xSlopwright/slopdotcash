@@ -4416,3 +4416,12 @@ small {
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
+
+.points-revisions dd {
+  margin-inline-start: 0;
+  overflow-wrap: anywhere;
+}
+.points-revisions dt {
+  font-weight: 600;
+  margin-block-start: 0.5rem;
+}
