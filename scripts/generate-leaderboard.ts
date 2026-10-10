@@ -28,6 +28,7 @@ import {
   type IssueRecord,
   isBotActor,
   isMergedPullRequestBodyEligibleForEvidence,
+  type LeaderboardInput,
   type LeaderboardSnapshot,
   type LeaderboardSourceMetadata,
   type MergedPullRequestOutcome,
@@ -261,6 +262,8 @@ export interface GenerationProgress {
 }
 
 export interface GenerateOptions {
+  valueActors?: LeaderboardInput["valueActors"];
+  valueDecisions?: LeaderboardInput["valueDecisions"];
   now?: Date;
   actualNow?: Date;
   onProgress?: (progress: GenerationProgress) => void;
@@ -2294,6 +2297,7 @@ function parsePullRequestOutcome(
     createdAt: asString(node.createdAt, `${path}.createdAt`),
     updatedAt: asString(node.updatedAt, `${path}.updatedAt`),
     mergedAt,
+    headRefOid: asFullCommitSha(node.headRefOid, `${path}.headRefOid`),
     author: parseActor(node.author, `${path}.author`),
     additions: asNumber(node.additions, `${path}.additions`),
     deletions: asNumber(node.deletions, `${path}.deletions`),
@@ -3872,6 +3876,8 @@ export async function generateLeaderboardFromGitHub(
     },
   };
   const snapshot = createLeaderboardSnapshot({
+    valueDecisions: options.valueDecisions,
+    valueActors: options.valueActors,
     generatedAt: fetchedAt,
     windowFrom: windowFrom.toISOString(),
     windowTo: now.toISOString(),

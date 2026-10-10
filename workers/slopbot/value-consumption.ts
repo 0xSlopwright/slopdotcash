@@ -76,7 +76,11 @@ export async function readValueDecision(
       throw new Error("Value history cursor did not advance");
   } while (more);
 
-  const common = { history, latestDigest: previous?.record_digest ?? null };
+  const common = {
+    history,
+    latestDigest: previous?.record_digest ?? null,
+    implementationActorNodeIds: [...evidence.implementationActorNodeIds],
+  };
   if (!latest) return { ...common, status: "missing" as const };
   if (evidence.limitations.length || !policy.text.trim())
     return { ...common, status: "incomplete" as const };

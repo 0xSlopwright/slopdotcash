@@ -41,6 +41,7 @@ import type {
   WorkItemModelStatus,
   WorkItemSelection,
 } from "./leaderboard-types";
+import { REVIEW_VALUE_THIRDS, VALUE_TIERS } from "./value-assessment";
 
 export type {
   AttributionAssessment,
@@ -1402,17 +1403,21 @@ function requiresExplicitPrizeAcceptance(repositoryId: string): boolean {
   return project?.reward.kind === "external-prize-share";
 }
 
-export function leaderboardMethodology(): LeaderboardMethodology {
+export function leaderboardMethodology(
+  provisionalValues = false,
+): LeaderboardMethodology {
   return {
-    summary:
-      "Slop Score v2 groups accepted work into logical work units and stores credit in integer thirds. Claude review agents propose effort, complexity, impact, and review load; maintainers ratify the score on GitHub. From October 2026 an unratified merge starts at one point, and a formal review scores 1/3 only when the merged code answered its request for changes, once per pull request. Only the actor's aggregate is rounded down at cycle close.",
+    summary: provisionalValues
+      ? "Source-bound Slopbot assessments supply provisional contribution and review value. Valid human ratifications take precedence. Missing, incomplete, stale and unresolved assessments do not receive default credit. Assessed zeroes retain their accepted sources. Integer-third shares preserve the assessed total; payout approval remains separate."
+      : "Slop Score v2 groups accepted work into logical work units and stores credit in integer thirds. Claude review agents propose effort, complexity, impact, and review load; maintainers ratify the score on GitHub. From October 2026 an unratified merge starts at one point, and a formal review scores 1/3 only when the merged code answered its request for changes, once per pull request. Only the actor's aggregate is rounded down at cycle close.",
     scoringRules: [
       {
         id: "merged-pull-request",
         points: "micro 1/3; small 1; medium 3; large 8; XL 15; exceptional 25",
         cap: "uncapped; related or split pull requests share one workUnitId",
-        qualification:
-          "Authored pull request merged during the rolling window. Unratified work merged before 2026-10-01 receives provisional micro credit and later work provisional small credit; other tiers require an immutable exact-head maintainer slop-score record. Integration-branch merge credit is split equally, at least 1/3 each, among the author and linked non-bot commit authors; each commit scores only in its earliest merged pull request.",
+        qualification: provisionalValues
+          ? "A complete exact-head assessment or valid human ratification binds the accepted outcome. Provisional credit is shared among verified implementation identities without increasing its total. Overlapping accepted commits require joint work-unit assessment. Missing value remains unresolved."
+          : "Authored pull request merged during the rolling window. Unratified work merged before 2026-10-01 receives provisional micro credit and later work provisional small credit; other tiers require an immutable exact-head maintainer slop-score record. Integration-branch merge credit is split equally, at least 1/3 each, among the author and linked non-bot commit authors; each commit scores only in its earliest merged pull request.",
       },
       {
         id: "resolved-issue",
@@ -1439,8 +1444,9 @@ export function leaderboardMethodology(): LeaderboardMethodology {
         points:
           "triage 1/3; standard 1; deep reproduction 3; specialist 8; ratification 1/3",
         cap: "from 2026-10-01, one ordinary review award per merged pull request; no self-review and no duplicate reviewer credit on one artifact",
-        qualification:
-          "Every merged pull request with a formal review is selected through a separate bounded review census, independent of the pull-request author's detail cap. A pre-merge APPROVED or CHANGES_REQUESTED review of human-authored work has substantive text or inline discussion. Before 2026-10-01 such a review scores standard credit. From 2026-10-01 only the latest CHANGES_REQUESTED review on a commit other than the merged head scores, at triage credit; approvals and ignored requests do not. Higher review tiers require maintainer ratification. Excluded formal reviews publish a machine-readable reason.",
+        qualification: provisionalValues
+          ? "Complete source-bound assessments value distinct evidenced review outcomes, including useful validation. Duplicate findings receive no additional award. Valid human decisions and reviewed evaluation awards take precedence. Missing, stale or unresolved assessments do not receive legacy review credit."
+          : "Every merged pull request with a formal review is selected through a separate bounded review census, independent of the pull-request author's detail cap. A pre-merge APPROVED or CHANGES_REQUESTED review of human-authored work has substantive text or inline discussion. Before 2026-10-01 such a review scores standard credit. From 2026-10-01 only the latest CHANGES_REQUESTED review on a commit other than the merged head scores, at triage credit; approvals and ignored requests do not. Higher review tiers require maintainer ratification. Excluded formal reviews publish a machine-readable reason.",
       },
       {
         id: "evaluated-contribution",
@@ -1586,7 +1592,14 @@ function addScore(
         : event.category === "substantive-review"
           ? 3
           : Math.max(1, Math.round(event.points * 3)));
-    if (!Number.isSafeInteger(scoreThirds) || scoreThirds < 1) {
+    const assessedZero =
+      scoreThirds === 0 &&
+      event.category === "merged-pull-request" &&
+      /^value:[a-f0-9]{64}$/u.test(event.scoreDecisionSourceId ?? "");
+    if (
+      !Number.isSafeInteger(scoreThirds) ||
+      (scoreThirds < 1 && !assessedZero)
+    ) {
       throw new TypeError("v2 scoreThirds must be a positive safe integer");
     }
     const workUnitId =
@@ -2575,19 +2588,25 @@ function mergeCreditActors(
 
 /**
  * Splits integer score thirds equally; earlier actors receive the remainder.
- * Every actor keeps at least the one-third micro credit of an accepted merge.
+ * Legacy awards retain their one-third floor. Verified value assessments use
+ * a zero floor so sharing cannot increase the assessed total.
  */
-export function shareScoreThirds(total: number, actors: number): number[] {
+export function shareScoreThirds(
+  total: number,
+  actors: number,
+  minimumPerActor: 0 | 1 = 1,
+): number[] {
   if (
     !Number.isSafeInteger(total) ||
-    total < 1 ||
+    total < minimumPerActor ||
     !Number.isSafeInteger(actors) ||
     actors < 1
   ) {
     throw new TypeError("score shares need positive integer inputs");
   }
   const base = Math.floor(total / actors);
-  if (base === 0) return Array.from({ length: actors }, () => 1);
+  if (base === 0 && minimumPerActor === 1)
+    return Array.from({ length: actors }, () => 1);
   return Array.from(
     { length: actors },
     (_, index) => base + (index < total % actors ? 1 : 0),
@@ -2875,9 +2894,11 @@ export function createLeaderboardSnapshot(
   const commitOwners = commitCreditOwners(mergedPullRequestOutcomes);
   for (const pullRequest of mergedPullRequestOutcomes) {
     const repositoryId = repositoryIdFromUrl(pullRequest.url);
-    const ratification = detailEligibleMergedPullRequestIds.has(pullRequest.id)
-      ? scoreRatifications.get(pullRequest.id)
-      : undefined;
+    const ratification =
+      input.valueDecisions !== undefined ||
+      detailEligibleMergedPullRequestIds.has(pullRequest.id)
+        ? scoreRatifications.get(pullRequest.id)
+        : undefined;
     if (requiresExplicitPrizeAcceptance(repositoryId) && !ratification) {
       continue;
     }
@@ -2888,16 +2909,81 @@ export function createLeaderboardSnapshot(
         ? pullRequest.author
         : null;
     // Score v1 history credits the pull-request author only.
-    const actors = v2
+    let actors = v2
       ? mergeCreditActors(pullRequest, commitOwners)
       : author
         ? [author]
         : [];
+    const valueDecision = input.valueDecisions?.get(pullRequest.id);
+    const valueRecord =
+      !ratification && valueDecision?.status === "assessed"
+        ? valueDecision.record
+        : null;
+    if (!ratification && input.valueDecisions !== undefined && !valueRecord)
+      continue;
+    if (
+      valueRecord &&
+      (valueRecord.pullRequestNodeId !== pullRequest.id ||
+        valueRecord.repository.toLowerCase() !== repositoryId.toLowerCase() ||
+        valueRecord.headSha !== pullRequest.headRefOid ||
+        valueRecord.occurredAt !== pullRequest.mergedAt ||
+        valueRecord.assessment.tier === null)
+    )
+      throw new Error(
+        "Current value decision does not match the collected accepted outcome",
+      );
+    if (
+      valueRecord &&
+      !mergedPullRequests.some((source) => source.id === pullRequest.id)
+    )
+      throw new Error(
+        "Value scoring requires hydrated human decision and review sources",
+      );
+    if (valueRecord) {
+      const ids = valueDecision?.implementationActorNodeIds ?? [];
+      actors = ids
+        .map((id) => {
+          const actor =
+            actors.find((candidate) => candidate.id === id) ??
+            input.valueActors?.get(id);
+          if (!actor || actor.id !== id || isBotActor(actor))
+            throw new Error(
+              "Value implementation actor lacks a verified GitHub identity",
+            );
+          return actor;
+        })
+        .sort((left, right) =>
+          left.id === author?.id
+            ? -1
+            : right.id === author?.id
+              ? 1
+              : compareCodeUnits(left.id, right.id),
+        );
+      if (
+        valueRecord.assessment.tier !== "none" &&
+        (pullRequest.commits ?? []).some((commit) => {
+          const owner = commitOwners.get(
+            `${repositoryId.toLowerCase()}\0${commit.oid}`,
+          );
+          return owner !== undefined && owner !== pullRequest.id;
+        })
+      )
+        throw new Error(
+          "Overlapping accepted commits require joint value assessment",
+        );
+    }
     if (actors.length === 0) continue;
     const totalThirds =
       ratification?.record.scoreThirds ??
-      unratifiedMergeScoreThirds(pullRequest.mergedAt);
-    const shares = shareScoreThirds(totalThirds, actors.length);
+      (valueRecord?.assessment.tier !== undefined &&
+      valueRecord.assessment.tier !== null
+        ? VALUE_TIERS[valueRecord.assessment.tier]
+        : unratifiedMergeScoreThirds(pullRequest.mergedAt));
+    const shares = shareScoreThirds(
+      totalThirds,
+      actors.length,
+      valueRecord ? 0 : 1,
+    );
     if (author) {
       const authorEntry = actorEntry(entries, author);
       authorEntry.rawActivity.additions += pullRequest.additions;
@@ -2919,7 +3005,9 @@ export function createLeaderboardSnapshot(
       : null;
     const baseReason = ratification
       ? `Maintainer-ratified ${ratification.record.tier} accepted outcome: ${ratification.record.reason}`
-      : `Accepted outcome has provisional ${totalThirds === 3 ? "small" : "micro"} credit pending immutable maintainer ratification.`;
+      : valueRecord
+        ? `Provisional value assessment (${valueRecord.assessment.tier}): ${valueRecord.assessment.rationale}`
+        : `Accepted outcome has provisional ${totalThirds === 3 ? "small" : "micro"} credit pending immutable maintainer ratification.`;
     for (const [index, actor] of actors.entries()) {
       const isAuthor = actor.id === author?.id;
       const scoreThirds = shares[index] as number;
@@ -2945,7 +3033,11 @@ export function createLeaderboardSnapshot(
                 `wu_${repositoryId
                   .toLowerCase()
                   .replace(/[^a-z0-9_-]+/gu, "_")}_pr_${pullRequest.number}`,
-              scoreDecisionSourceId: ratification?.source.id,
+              scoreDecisionSourceId:
+                ratification?.source.id ??
+                (valueRecord
+                  ? `value:${valueDecision?.latestDigest}`
+                  : undefined),
             }
           : {}),
         occurredAt: pullRequest.mergedAt,
@@ -3375,6 +3467,55 @@ export function createLeaderboardSnapshot(
         excludeReview(pullRequest, review, "evaluated-contribution-award");
         continue;
       }
+      if (!ratification && input.valueDecisions !== undefined) {
+        const decision = input.valueDecisions.get(pullRequest.id);
+        if (decision?.status !== "assessed") continue;
+        if (decision.record.headSha !== pullRequest.headRefOid)
+          throw new Error(
+            "Value review decision does not match the current head",
+          );
+        const value = decision.assessment.reviews.find(
+          (item) => item.sourceId === review.id,
+        );
+        if (!value)
+          throw new Error("Value decision omitted a collected formal review");
+        const thirds = REVIEW_VALUE_THIRDS[value.tier];
+        if (thirds === 0) continue;
+        if (
+          !review.author ||
+          isBotActor(review.author) ||
+          !review.submittedAt ||
+          parseIsoTime(review.submittedAt) >
+            parseIsoTime(pullRequest.mergedAt) ||
+          ledger.some(
+            (event) =>
+              event.category === "merged-pull-request" &&
+              event.source.id === pullRequest.id &&
+              event.actor.id === review.author?.id,
+          )
+        )
+          throw new Error("Value review lost its eligible source identity");
+        addScore(entries, ledger, {
+          id: `${pullRequest.id}:value-review:${review.id}`,
+          actor: review.author,
+          category: "substantive-review",
+          points: thirds / 3,
+          scoreThirds: thirds,
+          workUnitId: `wu_value_review_${review.id.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_")}`,
+          scoreDecisionSourceId: `value:${decision.latestDigest}`,
+          occurredAt: review.submittedAt,
+          repository: repositoryId,
+          source: {
+            id: review.id,
+            kind: "review",
+            number: pullRequest.number,
+            title: pullRequest.title,
+            url: review.url,
+          },
+          reason: `Provisional ${value.tier} review value: ${value.finding} ${value.outcome}`,
+        });
+        continue;
+      }
       const exclusionReason =
         reviewExclusionReason(review, pullRequest) ??
         (ledger.some(
@@ -3716,7 +3857,10 @@ export function createLeaderboardSnapshot(
   }
 
   const leaders = [...entries.values()]
-    .filter((entry) => entry.score > 0)
+    .filter(
+      (entry) =>
+        entry.score > 0 || entry.acceptedOutcomes.mergedPullRequests > 0,
+    )
     .sort(compareRankedEntries)
     .map<LeaderboardEntry>((entry, index) => ({
       rank: index + 1,
@@ -3753,7 +3897,7 @@ export function createLeaderboardSnapshot(
       from: input.windowFrom,
       to: input.windowTo,
     },
-    methodology: leaderboardMethodology(),
+    methodology: leaderboardMethodology(input.valueDecisions !== undefined),
     source: {
       ...input.source,
       counts: {
@@ -3772,6 +3916,20 @@ export function createLeaderboardSnapshot(
       },
     },
     leaders,
+    ...(input.valueDecisions === undefined
+      ? {}
+      : {
+          valueAssessmentCoverage: mergedPullRequestOutcomes.map((pull) => {
+            const decision = input.valueDecisions?.get(pull.id);
+            return {
+              pullRequestId: pull.id,
+              status: scoreRatifications.has(pull.id)
+                ? "human-ratified"
+                : (decision?.status ?? "missing"),
+              recordDigest: decision?.latestDigest ?? null,
+            };
+          }),
+        }),
     ledger: dedupeByNodeId(ledger).sort(
       (left, right) =>
         right.points - left.points ||
@@ -4799,7 +4957,11 @@ function assertLedgerValue(
   const validV2 =
     isV2 &&
     Number.isSafeInteger(scoreThirds) &&
-    Number(scoreThirds) >= 1 &&
+    (Number(scoreThirds) >= 1 ||
+      (scoreThirds === 0 &&
+        event.category === "merged-pull-request" &&
+        typeof event.scoreDecisionSourceId === "string" &&
+        /^value:[a-f0-9]{64}$/u.test(event.scoreDecisionSourceId))) &&
     eventPoints === Number(scoreThirds) / 3 &&
     typeof event.workUnitId === "string" &&
     /^wu_[a-z0-9][a-z0-9_-]{2,255}$/u.test(event.workUnitId);
@@ -5988,6 +6150,65 @@ export function assertLeaderboardSnapshot(
     "snapshot.source",
     snapshot.repositories as LeaderboardSnapshot["repositories"],
   );
+  if (snapshot.valueAssessmentCoverage !== undefined) {
+    if (!Array.isArray(snapshot.valueAssessmentCoverage))
+      throw new Error("snapshot.valueAssessmentCoverage must be an array");
+    const coverageIds = new Set<string>();
+    for (const value of snapshot.valueAssessmentCoverage) {
+      const row = assertObject(
+        value,
+        "snapshot.valueAssessmentCoverage record",
+      );
+      if (
+        Object.keys(row).sort().join(",") !==
+        "pullRequestId,recordDigest,status"
+      )
+        throw new Error("Value coverage has unexpected fields");
+      assertString(row.pullRequestId, "value coverage pullRequestId");
+      assertEnum(
+        row.status,
+        [
+          "human-ratified",
+          "missing",
+          "incomplete",
+          "stale",
+          "unresolved",
+          "assessed",
+        ],
+        "value coverage status",
+      );
+      if (coverageIds.has(row.pullRequestId))
+        throw new Error("Value coverage repeats a source");
+      coverageIds.add(row.pullRequestId);
+      if (
+        row.recordDigest !== null &&
+        (typeof row.recordDigest !== "string" ||
+          !/^[a-f0-9]{64}$/u.test(row.recordDigest))
+      )
+        throw new Error("Value coverage digest is invalid");
+      if (row.status === "assessed" && row.recordDigest === null)
+        throw new Error("Assessed coverage requires a journal digest");
+    }
+    const counts = assertObject(
+      assertObject(snapshot.source, "snapshot.source").counts,
+      "snapshot.source.counts",
+    );
+    if (snapshot.valueAssessmentCoverage.length !== counts.mergedPullRequests)
+      throw new Error("Value coverage must retain every accepted source");
+    for (const event of validatedLedger) {
+      if (!event.scoreDecisionSourceId?.startsWith("value:")) continue;
+      const row = snapshot.valueAssessmentCoverage.find((value) =>
+        event.id.startsWith(`${value.pullRequestId}:`),
+      );
+      if (
+        row?.status !== "assessed" ||
+        `value:${row.recordDigest}` !== event.scoreDecisionSourceId
+      )
+        throw new Error(
+          "Value score event is not bound to its assessment coverage",
+        );
+    }
+  }
   const source = assertObject(snapshot.source, "snapshot.source");
   if (
     source.fetchedAt !== snapshot.generatedAt ||

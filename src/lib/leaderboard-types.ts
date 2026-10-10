@@ -1,3 +1,4 @@
+import type { readValueDecision } from "../../workers/slopbot/value-consumption";
 /** Public snapshot contracts. Historical records retain their original semantics. */
 
 import type {
@@ -141,6 +142,8 @@ export type MergedPullRequestReviewRecord = Pick<
 >;
 
 export interface MergedPullRequestOutcome {
+  /** Exact source head; older saved inputs can omit it but cannot use valuations. */
+  headRefOid?: string;
   id: string;
   number: number;
   title: string;
@@ -538,6 +541,11 @@ export interface LeaderboardSnapshot {
   source: LeaderboardSourceMetadata;
   leaders: LeaderboardEntry[];
   ledger: ScoreEvent[];
+  valueAssessmentCoverage?: {
+    pullRequestId: string;
+    status: string;
+    recordDigest: string | null;
+  }[];
   reviewExclusions?: ReviewExclusion[];
   opportunities: ScoreOpportunity[];
   attributions: ModelAttribution[];
@@ -550,6 +558,13 @@ export interface LeaderboardSnapshot {
 }
 
 export interface LeaderboardInput {
+  /** GitHub-resolved identities for assessment coauthors absent from ordinary hydration. */
+  valueActors?: ReadonlyMap<string, GitHubActor>;
+  /** Trusted journal decisions verified against fresh complete source evidence. */
+  valueDecisions?: ReadonlyMap<
+    string,
+    Awaited<ReturnType<typeof readValueDecision>>
+  >;
   generatedAt: string;
   windowFrom: string;
   windowTo: string;

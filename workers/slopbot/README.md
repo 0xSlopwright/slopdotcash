@@ -277,7 +277,7 @@ predecessor. An exact assessment-key replay retains the original record. SQLite
 still rejects concurrent forks after the read. Local integration checked real
 Eliza evidence, 104 paginated revisions, changed source, incomplete evidence,
 missing records, unresolved value and corrupted bytes. The leaderboard and
-Points ingestion still require integration; these checks do not change public
+Points ingestion still require hosted activation; these checks do not change public
 scores or prove a hosted publication.
 
 ## Provider request receipts
@@ -433,3 +433,27 @@ closure. Local queue workflow checks changed each condition during inference:
 all four made zero close requests, while the unchanged eligible case closed only
 after confirmation. These checks do not enable production closure or establish
 hosted membership permissions.
+
+
+## Value score projection
+
+The leaderboard generator accepts verified `valueDecisions` and GitHub-resolved
+`valueActors`. When supplied, valid human ratifications take precedence across
+the hydrated source set. Missing, incomplete, stale and unresolved decisions
+receive no default implementation or review award. The snapshot retains a
+coverage row for every accepted source. Assessed zeroes retain their ledger
+source and actor, while integer-third shares preserve the assessed total.
+
+Positive assessments require exact-head source agreement, hydrated human and
+review decisions, complete implementation identities, and no overlapping
+accepted commits that need joint assessment. Distinct positive review outcomes
+use their assessed tier; duplicate and zero-valued reviews do not multiply
+credit. Existing reviewed evaluator awards keep their precedence.
+
+A local integration passed collected Eliza #34772 through the journal reader
+and real snapshot generator and validator: nine implementation thirds, one
+review award, no missing-value fallback, retained zero, wrong-head rejection,
+and precedence for a controlled valid human-ratification fixture. The generator
+entry point accepts these inputs; fetching them from the hosted service,
+Points revision ingestion, and public activation remain unfinished. Legacy
+inputs and frozen cycle files retain their existing behavior.
