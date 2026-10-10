@@ -485,6 +485,28 @@ export function pointMembers(
     m.awards.push(a);
     members.set(a.actor.id, m);
   }
+  // An assessed zero corrects an amount; it does not erase the contributor.
+  // Keep these identities discoverable without counting zero awards as badges.
+  for (const award of awards) {
+    if (award.amount || (projectId && award.projectId !== projectId)) continue;
+    const member = members.get(award.actor.id);
+    if (!member) {
+      members.set(award.actor.id, {
+        actor: award.actor,
+        total: 0,
+        monthly: 0,
+        firstContributionAt: award.occurredAt,
+        projects: 0,
+        badges: [],
+        awards: [],
+      });
+    } else if (
+      member.total === 0 &&
+      award.occurredAt < member.firstContributionAt
+    ) {
+      member.firstContributionAt = award.occurredAt;
+    }
+  }
   for (const m of members.values()) {
     m.awards.sort(
       (a, b) =>
