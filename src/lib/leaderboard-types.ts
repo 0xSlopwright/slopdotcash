@@ -1,4 +1,5 @@
 import type { readValueDecision } from "../../workers/slopbot/value-consumption";
+import type { consumeWorkUnitHistory } from "../../workers/slopbot/value-work-unit-consumption";
 /** Public snapshot contracts. Historical records retain their original semantics. */
 
 import type {
@@ -570,6 +571,13 @@ export interface LeaderboardInput {
     string,
     Awaited<ReturnType<typeof readValueDecision>>
   >;
+  /** A shared decision is indexed by each member PR, but scored once per unit. */
+  jointValueDecisions?: ReadonlyMap<
+    string,
+    Awaited<ReturnType<typeof consumeWorkUnitHistory>>
+  >;
+  /** Complete human context for joint members outside the census; never counted as new outcomes. */
+  valueContextPullRequests?: MergedPullRequestReviewRecord[];
   generatedAt: string;
   windowFrom: string;
   windowTo: string;

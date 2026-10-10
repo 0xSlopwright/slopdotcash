@@ -268,6 +268,8 @@ export interface GenerateOptions {
   valueAssessments?: boolean;
   valueActors?: LeaderboardInput["valueActors"];
   valueDecisions?: LeaderboardInput["valueDecisions"];
+  jointValueDecisions?: LeaderboardInput["jointValueDecisions"];
+  valueContextPullRequests?: LeaderboardInput["valueContextPullRequests"];
   now?: Date;
   actualNow?: Date;
   onProgress?: (progress: GenerationProgress) => void;
@@ -2896,6 +2898,7 @@ async function hydrateReviewedMergedPullRequests(
   references: NodeReference[],
   onProgress: (progress: GenerationProgress) => void,
   allReviews = false,
+  expectedState: "merged" | "closed" = "merged",
 ): Promise<MergedPullRequestReviewRecord[]> {
   const pending: PendingMergedPullRequestReviewRecord[] = [];
   for (const batch of chunks(references, DETAIL_BATCH_SIZE)) {
@@ -2911,7 +2914,9 @@ async function hydrateReviewedMergedPullRequests(
       parseMergedPullRequestReview,
     );
     for (const value of parsed) {
-      validateRecordState(value, "merged");
+      if (expectedState === "merged") validateRecordState(value, "merged");
+      else if (value.state !== "CLOSED" || value.record.mergedAt !== null)
+        throw new Error("Joint context source changed its closed state");
       pending.push(
         await completeMergedPullRequestReviewConnections(
           client,
@@ -3920,12 +3925,25 @@ export async function generateLeaderboardFromGitHub(
       Date.parse(current) > Date.parse(latest) ? current : latest,
     );
   let valueRestRequests = 0;
-  let valueInputs = {
+  let valueInputs: Pick<
+    LeaderboardInput,
+    | "valueDecisions"
+    | "jointValueDecisions"
+    | "valueActors"
+    | "valueContextPullRequests"
+  > = {
     valueDecisions: options.valueDecisions,
+    jointValueDecisions: options.jointValueDecisions,
+    valueContextPullRequests: options.valueContextPullRequests,
     valueActors: options.valueActors,
   };
   if (options.valueAssessments) {
-    if (options.valueDecisions || options.valueActors)
+    if (
+      options.valueDecisions ||
+      options.jointValueDecisions ||
+      options.valueContextPullRequests ||
+      options.valueActors
+    )
       throw new Error(
         "Hosted value ingestion cannot mix supplied decisions or actors",
       );
@@ -3945,6 +3963,44 @@ export async function generateLeaderboardFromGitHub(
       },
       [...dedupedOutcomes, ...closedUnmergedPullRequests],
     );
+  }
+  if (options.valueAssessments) {
+    const censusIds = new Set(
+      [...dedupedOutcomes, ...closedUnmergedPullRequests].map(
+        (source) => source.id,
+      ),
+    );
+    const contexts = new Map<string, "merged" | "closed">();
+    for (const decision of valueInputs.jointValueDecisions?.values() ?? []) {
+      if (decision.status !== "assessed") continue;
+      for (const { evidence } of decision.evidence.sources)
+        if (!censusIds.has(evidence.pull.node_id))
+          contexts.set(
+            evidence.pull.node_id,
+            evidence.pull.merged_at ? "merged" : "closed",
+          );
+    }
+    await ensureEstimatedBudget(client, 0, 0, 0, contexts.size);
+    valueInputs.valueContextPullRequests = [];
+    for (const state of ["merged", "closed"] as const) {
+      const references: NodeReference[] = [...contexts]
+        .filter(([, expected]) => expected === state)
+        .map(([id]) => ({
+          id,
+          kind: "PullRequest",
+          outcome: null,
+          openVersion: null,
+        }));
+      valueInputs.valueContextPullRequests.push(
+        ...(await hydrateReviewedMergedPullRequests(
+          client,
+          references,
+          onProgress,
+          true,
+          state,
+        )),
+      );
+    }
   }
   const fetchedAt = new Date().toISOString();
   const rateLimit = client.getRateLimit();

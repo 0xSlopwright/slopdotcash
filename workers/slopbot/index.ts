@@ -7,6 +7,7 @@ import { verifyWebhookSignature } from "./github";
 import * as store from "./persistence";
 import { type ReviewEnv, recordHumanSignal, reviewItem } from "./review";
 import { valueHistory } from "./value-journal";
+import { workUnitHistory } from "./value-work-unit-journal";
 
 type Queue = { send(body: Job): Promise<void> };
 type Env = ReviewEnv & { SLOPBOT_WEBHOOK_SECRET: string; SLOPBOT_QUEUE: Queue };
@@ -122,33 +123,53 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") {
       return Response.json({ service: "slopbot", ok: true });
     }
-    if (request.method === "GET" && url.pathname === "/v1/value-assessments") {
+    const jointHistory = url.pathname === "/v1/work-unit-assessments";
+    if (
+      request.method === "GET" &&
+      (jointHistory || url.pathname === "/v1/value-assessments")
+    ) {
       const repository = findRegisteredRepositoryById(
         url.searchParams.get("repository") ?? "",
       );
       const number = url.searchParams.get("pull") ?? "";
       const after = url.searchParams.get("after") ?? "0";
+      const through = jointHistory ? url.searchParams.get("through") : null;
       if (
         !repository ||
         !/^[1-9][0-9]*$/u.test(number) ||
         !/^(0|[1-9][0-9]*)$/u.test(after) ||
         !Number.isSafeInteger(Number(number)) ||
-        !Number.isSafeInteger(Number(after))
+        !Number.isSafeInteger(Number(after)) ||
+        (jointHistory && Number(after) > 0 && through === null) ||
+        (through !== null &&
+          (!/^(0|[1-9][0-9]*)$/u.test(through) ||
+            !Number.isSafeInteger(Number(through)) ||
+            Number(through) < Number(after)))
       )
         return Response.json(
           { error: "Invalid value-history query" },
           { status: 400 },
         );
       try {
-        const history = await valueHistory(
-          env.SLOPBOT_DB,
-          repository.id,
-          Number(number),
-          Number(after),
-        );
+        const history = jointHistory
+          ? await workUnitHistory(
+              env.SLOPBOT_DB,
+              repository.id,
+              Number(number),
+              Number(after),
+              through === null ? null : Number(through),
+            )
+          : await valueHistory(
+              env.SLOPBOT_DB,
+              repository.id,
+              Number(number),
+              Number(after),
+            );
         return Response.json(
           {
-            schemaVersion: "slop-value-history:v1",
+            schemaVersion: jointHistory
+              ? "slop-work-unit-history:v1"
+              : "slop-value-history:v1",
             repository: repository.id,
             pullRequestNumber: Number(number),
             ...history,

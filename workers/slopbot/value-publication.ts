@@ -2,7 +2,7 @@
 // identity and deployed producer revision; neither comes from model output.
 import type { Job } from "./contracts";
 import { GitHubClient } from "./github";
-import { installation } from "./persistence";
+import { type D1Database, installation } from "./persistence";
 import { loadPolicy, type ReviewEnv } from "./review";
 import { readValueDecision } from "./value-consumption";
 import {
@@ -13,7 +13,7 @@ import {
 import { appendValueRecord, prepareValueRecord } from "./value-journal";
 import { type assessValue, valueSourceDigest } from "./value-review";
 
-type ValueClient = EvidenceClient & Pick<GitHubClient, "fileText">;
+export type ValueClient = EvidenceClient & Pick<GitHubClient, "fileText">;
 type ValueResult = Awaited<ReturnType<typeof assessValue>>;
 
 export async function loadValuePolicy(
@@ -37,7 +37,7 @@ export async function loadValuePolicy(
 export async function verifyCurrentValueSource(
   github: ValueClient,
   evidence: ValueEvidence,
-  result: ValueResult,
+  result: Pick<ValueResult, "policySha" | "sourceDigest">,
 ) {
   const [owner, repo] = evidence.repository.split("/");
   const identity = await github.get<{
@@ -46,8 +46,7 @@ export async function verifyCurrentValueSource(
     private: boolean;
   }>(`/repos/${owner}/${repo}`);
   if (
-    !identity ||
-    identity.private ||
+    identity?.private !== false ||
     identity.id !== evidence.repositoryDatabaseId ||
     identity.node_id !== evidence.repositoryNodeId
   )
@@ -100,9 +99,7 @@ export async function publishValueAssessment(
     job.number !== evidence.pull.number
   )
     throw new Error("Value publication job does not match its source");
-  const state = await installation(env.SLOPBOT_DB, job.installationId);
-  if (!state || state.removed_at !== null || state.suspended_at !== null)
-    throw new Error("Value publication installation is inactive");
+  await assertValueInstallation(env.SLOPBOT_DB, job.installationId);
   // A public repository read alone does not prove installation membership.
   // Verify the token-scoped repository list before reading public source.
   const github = await GitHubClient.forInstallation(
@@ -110,23 +107,7 @@ export async function publishValueAssessment(
     env.SLOPBOT_APP_PRIVATE_KEY,
     job.installationId,
   );
-  let installed = false;
-  for (let page = 1; !installed; page += 1) {
-    const listing = await github.get<{
-      total_count: number;
-      repositories: { id: number; node_id: string; private: boolean }[];
-    }>(`/installation/repositories?per_page=100&page=${page}`);
-    if (!listing || !Array.isArray(listing.repositories))
-      throw new Error("Installation repository membership is unavailable");
-    installed = listing.repositories.some(
-      (repo) =>
-        repo.id === job.repositoryId &&
-        repo.node_id === evidence.repositoryNodeId &&
-        !repo.private,
-    );
-    if (!installed && listing.repositories.length < 100)
-      throw new Error("Repository is not selected for this installation");
-  }
+  await assertValueInstallationRepositories(github, [evidence]);
   const current = await verifyCurrentValueSource(github, evidence, result);
   const prepared = await prepareValueRecord(
     result,
@@ -151,8 +132,54 @@ export async function publishValueAssessment(
       "Value publication must supersede the current journal record",
     );
   // A removal or suspension received while inference/source reads ran wins.
-  const latest = await installation(env.SLOPBOT_DB, job.installationId);
-  if (!latest || latest.removed_at !== null || latest.suspended_at !== null)
-    throw new Error("Value publication installation became inactive");
+  await assertValueInstallation(env.SLOPBOT_DB, job.installationId);
   return appendValueRecord(env.SLOPBOT_DB, prepared, job.installationId);
+}
+
+export async function assertValueInstallation(
+  db: D1Database,
+  installationId: number,
+) {
+  const state = await installation(db, installationId);
+  if (!state || state.removed_at !== null || state.suspended_at !== null)
+    throw new Error("Value publication installation is inactive");
+}
+
+/** Installation-token visibility is authority; public repository access is not. */
+export async function assertValueInstallationRepositories(
+  github: Pick<GitHubClient, "get">,
+  sources: readonly Pick<
+    ValueEvidence,
+    "repositoryDatabaseId" | "repositoryNodeId"
+  >[],
+) {
+  const pending = new Map<number, string>();
+  for (const source of sources) {
+    const previous = pending.get(source.repositoryDatabaseId);
+    if (previous !== undefined && previous !== source.repositoryNodeId)
+      throw new Error("Value sources disagree about repository identity");
+    pending.set(source.repositoryDatabaseId, source.repositoryNodeId);
+  }
+  if (!pending.size)
+    throw new Error("Value publication requires repository sources");
+  const seen = new Set<number>();
+  for (let page = 1; pending.size; page += 1) {
+    const listing = await github.get<{
+      repositories: { id: number; node_id: string; private: boolean }[];
+    }>(`/installation/repositories?per_page=100&page=${page}`);
+    if (!listing || !Array.isArray(listing.repositories))
+      throw new Error("Installation repository membership is unavailable");
+    for (const repository of listing.repositories) {
+      if (seen.has(repository.id))
+        throw new Error("Installation repository pagination repeated a source");
+      seen.add(repository.id);
+      if (
+        pending.get(repository.id) === repository.node_id &&
+        repository.private === false
+      )
+        pending.delete(repository.id);
+    }
+    if (pending.size && listing.repositories.length < 100)
+      throw new Error("Repository is not selected for this installation");
+  }
 }

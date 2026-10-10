@@ -8,7 +8,7 @@ import {
   type ValueAssessment,
 } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
-import { TRIAGE_ROUTE } from "./models";
+import { type CallRecord, TRIAGE_ROUTE } from "./models";
 import type { D1Database } from "./persistence";
 import type { ValueEvidence } from "./value-evidence";
 import {
@@ -48,6 +48,27 @@ export interface StoredValueRecord {
 }
 const SHA = /^[a-f0-9]{40}$/u;
 const DIGEST = /^[a-f0-9]{64}$/u;
+
+export function valueProducerIdentity(
+  call: CallRecord | null,
+  assessedAt: string,
+) {
+  if (
+    call?.outcome !== "ok" ||
+    call.servedModel !== call.requestedModel ||
+    !TRIAGE_ROUTE.some(
+      (step) =>
+        step.provider === call.provider && step.model === call.requestedModel,
+    ) ||
+    !Number.isFinite(Date.parse(assessedAt))
+  )
+    throw new Error("Value result lacks a validated model identity");
+  return {
+    provider: call.provider,
+    requested: call.requestedModel,
+    reported: call.servedModel,
+  };
+}
 
 export async function prepareValueRecord(
   result: AssessmentResult,
@@ -101,21 +122,8 @@ export async function prepareValueRecord(
     throw new Error(
       "Value record requires a closed outcome with its occurrence date",
     );
-  const call = result.servedBy;
-  if (
-    !assessment ||
-    !call ||
-    call.outcome !== "ok" ||
-    call.servedModel !== call.requestedModel ||
-    !TRIAGE_ROUTE.some(
-      (step) =>
-        step.provider === call.provider && step.model === call.requestedModel,
-    ) ||
-    !Number.isFinite(Date.parse(result.assessedAt))
-  )
-    throw new Error(
-      "Value result lacks a validated assessment and model identity",
-    );
+  if (!assessment) throw new Error("Value result lacks a validated assessment");
+  const model = valueProducerIdentity(result.servedBy, result.assessedAt);
   const record: ValueJournalRecord = {
     schemaVersion: "slop-value-record:v1",
     projectId: project.id,
@@ -134,11 +142,7 @@ export async function prepareValueRecord(
     assessedAt: result.assessedAt,
     supersedes,
     revisionReason,
-    model: {
-      provider: call.provider,
-      requested: call.requestedModel,
-      reported: call.servedModel,
-    },
+    model,
     assessment,
   };
   // The exact UTF-8 JSON bytes are the digest contract. The public reader must

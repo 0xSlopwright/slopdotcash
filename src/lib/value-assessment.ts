@@ -119,7 +119,11 @@ export function validateValueAssessment(
   context: {
     evidenceUrls: ReadonlySet<string>;
     relatedPullRequestUrls: ReadonlySet<string>;
+    /** Only joint callers with complete evidence may permit assessed links. */
+    jointPullRequestUrls?: ReadonlySet<string>;
     reviewIds: ReadonlySet<string>;
+    /** A joint unit owns a subset; duplicate references can span the full set. */
+    requiredReviewIds?: ReadonlySet<string>;
     reviewUrls: ReadonlyMap<string, string>;
     reviewTimes: ReadonlyMap<string, string | null>;
     eligibleReviewIds: ReadonlySet<string>;
@@ -175,7 +179,11 @@ export function validateValueAssessment(
   if (!related.every((url) => context.relatedPullRequestUrls.has(url)))
     return null;
   // Cross-PR grouping requires the other outcome's full evidence, not just a title.
-  if (related.length > 0 && value.status === "assessed") return null;
+  if (
+    value.status === "assessed" &&
+    related.some((url) => !context.jointPullRequestUrls?.has(url))
+  )
+    return null;
   if (
     value.status === "unresolved" &&
     (value.limitations as string[]).length === 0
@@ -196,6 +204,7 @@ export function validateValueAssessment(
       ]) ||
       !nonempty(review.sourceId) ||
       !context.reviewIds.has(review.sourceId) ||
+      !(context.requiredReviewIds ?? context.reviewIds).has(review.sourceId) ||
       ids.has(review.sourceId)
     )
       return null;
@@ -242,7 +251,8 @@ export function validateValueAssessment(
     )
       return null;
   }
-  if (ids.size !== context.reviewIds.size) return null;
+  if (ids.size !== (context.requiredReviewIds ?? context.reviewIds).size)
+    return null;
   return value as unknown as ValueAssessment;
 }
 
