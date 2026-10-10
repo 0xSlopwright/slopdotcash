@@ -2,6 +2,7 @@
 // fetch: verify and deduplicate webhooks, then enqueue identifiers only.
 // queue: re-read GitHub state and run the review pipeline.
 import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+import { resumeBudgetBlocks } from "./budget-blocks";
 import type { Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import * as store from "./persistence";
@@ -238,6 +239,10 @@ export default {
         },
       );
     }
+  },
+
+  async scheduled(_event: unknown, env: Env) {
+    await resumeBudgetBlocks(env.SLOPBOT_DB, env.SLOPBOT_QUEUE);
   },
 
   async queue(

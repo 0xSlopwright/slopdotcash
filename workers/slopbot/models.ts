@@ -64,8 +64,8 @@ export async function runRoute(
 // The Anthropic wire reports budget exhaustion as invalid_request_error,
 // with structured budget detail rather than the OpenAI budget_exceeded code.
 // Do not retry another model when the provider has denied spending.
-function isBudgetRejection(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
+function budgetResetAt(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null;
   const value = error as {
     status?: unknown;
     error?: { error?: { type?: unknown; detail?: unknown } };
@@ -77,9 +77,9 @@ function isBudgetRejection(error: unknown): boolean {
     typeof payload.detail !== "object" ||
     payload.detail === null
   )
-    return false;
+    return null;
   const detail = payload.detail as Record<string, unknown>;
-  return (
+  const valid =
     typeof detail.window === "string" &&
     detail.window.length > 0 &&
     Number.isSafeInteger(detail.limit_micro) &&
@@ -87,8 +87,8 @@ function isBudgetRejection(error: unknown): boolean {
     Number.isSafeInteger(detail.spent_micro) &&
     Number(detail.spent_micro) >= 0 &&
     typeof detail.resets_at === "string" &&
-    Number.isFinite(Date.parse(detail.resets_at))
-  );
+    Number.isFinite(Date.parse(detail.resets_at));
+  return valid ? new Date(detail.resets_at as string).toISOString() : null;
 }
 
 export async function runStructuredRoute<T>(
@@ -105,6 +105,7 @@ export async function runStructuredRoute<T>(
   verdict: T | null;
   calls: CallRecord[];
   servedBy: CallRecord | null;
+  budgetResetAt?: string;
 }> {
   const calls: CallRecord[] = [];
   for (const [index, step] of route.entries()) {
@@ -150,10 +151,11 @@ export async function runStructuredRoute<T>(
         record.providerCostMicroUsd = providerCost(headers);
         record.providerRequestId = providerRequestId(headers);
       }
-      if (isBudgetRejection(error)) {
+      const resetAt = budgetResetAt(error);
+      if (resetAt !== null) {
         record.failure = "provider budget exhausted";
         calls.push(record);
-        return { verdict: null, calls, servedBy: null };
+        return { verdict: null, calls, servedBy: null, budgetResetAt: resetAt };
       }
       record.failure =
         typeof status === "number" && Number.isInteger(status)

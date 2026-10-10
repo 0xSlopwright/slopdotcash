@@ -1,6 +1,7 @@
 // Review pipeline for one issue or pull request revision (PRD BOT-04 to BOT-13).
 // The model only classifies. Every GitHub action is decided here, in code,
 // after independent state checks.
+import { activeBudgetBlock, recordBudgetBlock } from "./budget-blocks";
 import {
   AUTHOR_DAILY_CAP,
   type Category,
@@ -563,6 +564,10 @@ export async function reviewItem(
   if (await store.reviewExists(db, reviewKey))
     return "already reviewed at this revision and policy";
 
+  const budgetBlock = await activeBudgetBlock(db, reviewKey);
+  if (budgetBlock)
+    return `blocked: provider budget until ${budgetBlock.retry_at}`;
+
   const exemption: Exemption = await authorExemption(
     context.github,
     repo.owner,
@@ -687,6 +692,10 @@ async function runReview(
       result.calls,
       billable && (await store.ownsReviewClaim(db, claim)),
     );
+    if (result.budgetResetAt) {
+      await recordBudgetBlock(db, claim, job, result.budgetResetAt);
+      return `blocked: provider budget until ${result.budgetResetAt}`;
+    }
     if (result.verdict === null) {
       // Let reviewItem persist the failure and the queue schedule a retry.
       // Returning normally would acknowledge the job and lose recovery.
@@ -733,6 +742,10 @@ async function runReview(
         second.calls,
         billable && (await store.ownsReviewClaim(db, claim)),
       );
+      if (second.budgetResetAt) {
+        await recordBudgetBlock(db, claim, job, second.budgetResetAt);
+        return `blocked: provider budget until ${second.budgetResetAt}`;
+      }
       confirm = second.servedBy;
       if (
         second.verdict?.category === category &&

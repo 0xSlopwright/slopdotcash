@@ -22,6 +22,9 @@ max_batch_size = 5
 max_retries = 5
 dead_letter_queue = "slopbot-jobs-dlq"
 
+[triggers]
+crons = ["*/5 * * * *"]
+
 [vars]
 # Off until the owner approves Slopbot v2 closures (PRD BOT-06, BOT-12).
 SLOPBOT_CLOSURE_ENABLED = "false"

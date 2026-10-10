@@ -51,6 +51,25 @@ disabled by `SLOPBOT_CLOSURE_ENABLED = "false"`.
 
 A missing or invalid file means label-only review.
 
+## Budget-block recovery
+
+A structured provider budget rejection writes an immutable block in
+`slopbot_budget_blocks`. The same database operation ends the claimed attempt
+with the explicit reason `blocked: provider budget exhausted`. The queue
+acknowledges that durable state, so a monthly reset does not exhaust its short
+failure-retry allowance. Early redeliveries do not call a model.
+
+The five-minute scheduled handler sends due jobs for active installations,
+then records each dispatch. A failed or uncertain queue send leaves recoverable
+work. Duplicate sends remain subject to the existing revision check and review
+lease. Recovery re-reads GitHub and policy before it can infer or act; it is
+unbilled under the service-retry rule. The public summary reports
+`itemsBlocked` separately from completed reviews.
+
+Apply migration `0024_slopbot_budget_blocks.sql` before the worker and summary
+API. This recovery mechanism does not set provider limits, reserve prepaid
+credit, or make an estimated token price a hard spending cap.
+
 ## Cost statements and vault billing
 
 On the Surplus Anthropic endpoint, a structured spending-limit rejection stops
