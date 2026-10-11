@@ -844,15 +844,23 @@ test("keeps a frozen-month contributor reachable after the rolling window moves 
   test.skip(!frozenOnly, "every frozen-month contributor is still in window");
   if (!frozenOnly) return;
 
+  // A frozen-only actor's numeric id is resolved through GitHub, and the
+  // account must carry the node id recorded for the actor.
   await page.route(
-    `${deployment.api}/api/v1/wallet-claims/actors/*/current`,
+    `https://api.github.com/users/${encodeURIComponent(frozenOnly.actor.login)}`,
     (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: "null",
+        body: JSON.stringify({
+          id: 424242,
+          login: frozenOnly.actor.login,
+          node_id: frozenOnly.actor.id,
+        }),
       }),
   );
+  const walletCalls: string[] = [];
+  await routeWalletClaims(page, walletCalls);
   await page.goto(
     `/contributors/${encodeURIComponent(frozenOnly.actor.login)}`,
     { waitUntil: "networkidle" },
@@ -864,6 +872,74 @@ test("keeps a frozen-month contributor reachable after the rolling window moves 
     page.getByRole("heading", { name: "Frozen months" }),
   ).toBeVisible();
   await expect(page.getByText("Contributor not found")).toHaveCount(0);
+  await expect(
+    page.getByRole("link", {
+      name: "Current payout wallet · 11111111111111111111111111111111",
+    }),
+  ).toBeVisible();
+  expect(walletCalls.map((url) => new URL(url).pathname)).toEqual([
+    "/api/v1/wallet-claims/actors/424242/current",
+  ]);
+});
+
+test("requests a window contributor's wallet once while funding reviews load", async ({
+  page,
+  request,
+}) => {
+  const snapshot = await loadSnapshot(request);
+  const leader = snapshot.leaders
+    .map((entry) => ({
+      login: entry.actor.login,
+      githubId:
+        /^https:\/\/avatars\.githubusercontent\.com\/u\/(\d+)(?:\?|$)/u.exec(
+          entry.actor.avatarUrl ?? "",
+        )?.[1],
+    }))
+    .find((actor) => actor.githubId);
+  test.skip(!leader?.githubId, "no window contributor with a GitHub id");
+  if (!leader?.githubId) return;
+
+  // Hold the funding reviews until the wallet is shown. A window actor does
+  // not need them, so their arrival must not start a second wallet request.
+  let releaseReviews = () => {};
+  const reviewsHeld = new Promise<void>((resolve) => {
+    releaseReviews = resolve;
+  });
+  await page.route("**/data/funding-reviews.json*", async (route) => {
+    await reviewsHeld;
+    await route.continue();
+  });
+  const walletCalls: string[] = [];
+  await page.route(
+    `${deployment.api}/api/v1/wallet-claims/actors/*/current*`,
+    async (route) => {
+      walletCalls.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          claimId: "e2e-solana-wallet-claim",
+          githubActorId: leader.githubId,
+          address: "11111111111111111111111111111111",
+        }),
+      });
+    },
+  );
+  await page.goto(`/contributors/${encodeURIComponent(leader.login)}`);
+  const walletLink = page.getByRole("link", {
+    name: "Current payout wallet · 11111111111111111111111111111111",
+  });
+  await expect(walletLink).toBeVisible();
+  const reviewsLoaded = page.waitForResponse((response) =>
+    new URL(response.url()).pathname.endsWith("/data/funding-reviews.json"),
+  );
+  releaseReviews();
+  await reviewsLoaded;
+  await page.waitForTimeout(500);
+  await expect(walletLink).toBeVisible();
+  expect(walletCalls.map((url) => new URL(url).pathname)).toEqual([
+    `/api/v1/wallet-claims/actors/${leader.githubId}/current`,
+  ]);
 });
 
 test("makes the public project draft boundary unmistakable", async ({
@@ -1827,3 +1903,143 @@ test("derives Solana addresses on the settlement verification page", async ({
     contentType: "image/png",
   });
 });
+
+// Identity resolution: a frozen-only actor's wallet must belong to the
+// GitHub account recorded for it, and an unresolved login is not "no wallet".
+async function findFrozenOnlyActor(
+  request: import("@playwright/test").APIRequestContext,
+): Promise<{ id: string; login: string } | undefined> {
+  const snapshot = await loadSnapshot(request);
+  const cycles = await loadCycles(request);
+  const response = await request.get("/data/funding-reviews.json");
+  expect(response.ok()).toBe(true);
+  const reviews = (await response.json()) as {
+    reviews: Array<{
+      projectId: string;
+      cycleId: string;
+      contributors: Array<{ actor: { id: string; login: string } }>;
+    }>;
+  };
+  const known = new Set(
+    [
+      ...snapshot.leaders.map((leader) => leader.actor.login),
+      ...snapshot.opportunities.map((opportunity) => opportunity.actor.login),
+      ...cycles.cycles.flatMap((cycle) =>
+        cycle.contributors.map((entry) => entry.actor.login),
+      ),
+    ].map((login) => login.toLowerCase()),
+  );
+  return reviews.reviews
+    .filter(
+      (review) =>
+        !cycles.cycles.some(
+          (cycle) =>
+            cycle.projectId === review.projectId &&
+            cycle.cycleId === review.cycleId,
+        ),
+    )
+    .flatMap((review) => review.contributors)
+    .find((entry) => !known.has(entry.actor.login.toLowerCase()))?.actor;
+}
+
+async function routeWalletClaims(
+  page: import("@playwright/test").Page,
+  calls: string[],
+) {
+  await page.route(
+    `${deployment.api}/api/v1/wallet-claims/actors/*/current*`,
+    async (route) => {
+      calls.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          claimId: "e2e-solana-wallet-claim",
+          githubActorId: "424242",
+          address: "11111111111111111111111111111111",
+        }),
+      });
+    },
+  );
+}
+
+test("I3: rejects a GitHub account whose node_id differs from the record", async ({
+  page,
+  request,
+}) => {
+  const actor = await findFrozenOnlyActor(request);
+  test.skip(!actor, "every frozen-month contributor is still in window");
+  if (!actor) return;
+  await page.route(
+    `https://api.github.com/users/${encodeURIComponent(actor.login)}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: 424242,
+          login: actor.login,
+          node_id: `${actor.id}-other-account`,
+        }),
+      }),
+  );
+  const walletCalls: string[] = [];
+  await routeWalletClaims(page, walletCalls);
+  await page.goto(`/contributors/${encodeURIComponent(actor.login)}`, {
+    waitUntil: "networkidle",
+  });
+  await expect(page.getByRole("heading", { name: actor.login })).toBeVisible();
+  await expect(
+    page.getByText("Current payout wallet status unavailable"),
+  ).toBeVisible();
+  await expect(page.getByText(/Current payout wallet ·/u)).toHaveCount(0);
+  await expect(
+    page.getByText("No current payout wallet registered"),
+  ).toHaveCount(0);
+  expect(walletCalls).toEqual([]);
+});
+
+// The mocked GitHub 404 makes the browser log a resource error, so this test
+// uses the unguarded runner and checks every other console error itself.
+base(
+  "I3: does not report a confirmed absence when the GitHub login no longer resolves",
+  async ({ page, request }) => {
+    const consoleErrors: string[] = [];
+    page.on("console", (message) => {
+      if (
+        message.type() === "error" &&
+        !message.location().url.startsWith("https://api.github.com/")
+      )
+        consoleErrors.push(message.text());
+    });
+    page.on("pageerror", (error) => consoleErrors.push(error.message));
+    const actor = await findFrozenOnlyActor(request);
+    base.skip(!actor, "every frozen-month contributor is still in window");
+    if (!actor) return;
+    await page.route(
+      `https://api.github.com/users/${encodeURIComponent(actor.login)}`,
+      (route) =>
+        route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ message: "Not Found" }),
+        }),
+    );
+    await routeWalletClaims(page, []);
+    await page.goto(`/contributors/${encodeURIComponent(actor.login)}`, {
+      waitUntil: "networkidle",
+    });
+    await expect(
+      page.getByRole("heading", { name: actor.login }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("No current payout wallet registered"),
+    ).toHaveCount(0, { timeout: 5_000 });
+    await expect(
+      page.getByText("Current payout wallet status unavailable"),
+    ).toBeVisible({ timeout: 5_000 });
+    expect(consoleErrors, "console errors other than the mocked 404").toEqual(
+      [],
+    );
+  },
+);
