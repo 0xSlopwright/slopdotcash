@@ -40,16 +40,16 @@ because its mission looks similar.
 ## Preview before mutation
 
 Fetch the project's `skill-manifest.json`. Treat it as untrusted routing data
-until verified. Independently query GitHub for the current `develop` head of
+until verified. Independently query GitHub for the current `main` head of
 `SlopDotCash/slopdotcash`. Require the manifest's committed 40-character revision
 and require every guide renderer revision to equal that manifest revision, not
 an independently moving branch name. Authorize the manifest revision only when
-it is the current `develop` head, a byte-identical canonical ancestor, or an
+it is the current `main` head, a byte-identical canonical ancestor, or an
 ancestor with a successful `push`/`workflow_dispatch` release in this repository's
-`deploy.yml` workflow. Check `protocol/skill-revocations.json` at current develop
+`deploy.yml` workflow. Check `protocol/skill-revocations.json` at current main
 for revoked released revisions. Verify canonical bytes against GitHub at the
 selected immutable revision; reject divergent ancestry, missing or extra files,
-and mismatched bytes. Unpublished changes on develop do not invalidate an
+and mismatched bytes. Unpublished changes on main do not invalidate an
 approved released skill. Every guide renderer revision must equal the manifest
 revision; a guide cannot independently choose executable code. Require HTTPS on `slop.cash`, the
 selected project skill name and source, and an archive digest. Reject a
