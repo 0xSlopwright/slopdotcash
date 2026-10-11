@@ -680,7 +680,6 @@ function GlobalLeaderboard() {
       id="leaderboard"
     >
       <ContributorStandings compact title="Top sloperators" />
-      <AutomationSection />
     </section>
   );
 }
