@@ -2693,9 +2693,12 @@ function SponsorsPage({
         <div>
           <h2>Awards, fee and total.</h2>
           <p>
-            Monthly pools add a separate 1% fee to approved awards. Contributors
-            receive the full approved amount. Paid requires finalized evidence
-            for both the awards and fee.
+            Legacy monthly pools add a separate 1% fee to approved awards.
+            Contributors receive the full approved amount. New escrow payouts
+            deduct 2% from the gross award: 100 USDC becomes 98 USDC for the
+            contributor and 2 USDC in fees. Each cycle keeps its recorded
+            policy. Paid requires finalized evidence for both the awards and
+            fee.
           </p>
           <p>
             External prize shares use the terms published for that project. The
@@ -2704,10 +2707,10 @@ function SponsorsPage({
         </div>
         <dl
           className="equation-card"
-          aria-label="Example: $5,000 in approved awards"
+          aria-label="Legacy example: $5,000 in approved awards"
         >
           <div>
-            <dt>Example approved awards</dt>
+            <dt>Legacy example approved awards</dt>
             <dd>$5,000</dd>
           </div>
           <div>

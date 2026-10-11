@@ -64,6 +64,13 @@ test("maintainer reviews August cap, preserves excluded rows, and follows fundin
   await expect(
     panel.getByRole("link", { name: "Download unsigned execution plan" }),
   ).toHaveCount(0);
+  // A published proposal can have missing wallets before anyone approves it.
+  await panel.getByLabel("Contribution month").selectOption("2026-09");
+  const paymentRows = panel.getByRole("table", {
+    name: "Payment status by contributor",
+  });
+  await expect(paymentRows).toContainText("Proposed, needs a destination");
+  await expect(paymentRows).not.toContainText("Approved, needs a destination");
   expect(errors).toEqual([]);
   expect(
     (await new AxeBuilder({ page }).include(".funding-workbench").analyze())

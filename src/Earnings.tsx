@@ -271,7 +271,10 @@ export function EarningsPage() {
   return (
     <main className="shell route-main earnings-page" aria-labelledby={heading}>
       <h1 id={heading}>Your payouts</h1>
-      <p>Contributor amounts include the 2% payout fee deduction.</p>
+      <p>
+        This page shows escrow payouts after the 2% fee deduction. Legacy
+        project cycles keep their recorded fee policy.
+      </p>
       {loading && <p role="status">Checking your payouts…</p>}
       {signedOut && !loading && (
         <div>
