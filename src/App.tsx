@@ -44,6 +44,7 @@ import {
 import { browserDeployment } from "./lib/browser-deployment";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
+import { directPayments } from "./lib/direct-payments";
 import { currentProjectFundingRecords } from "./lib/funding";
 import { commitmentVerifiedNetMinor } from "./lib/funding-commitment";
 import { communityProjects, homeProjects } from "./lib/home-projects";
@@ -86,6 +87,7 @@ import {
   DataNotice,
   EmptyState,
   ExternalLinkAnchor,
+  formatCycleMonth,
   formatDate,
   formatMicroUsdc,
   monthlyPoolLabel,
@@ -1139,6 +1141,17 @@ function ProjectPaymentHistory({
     0n,
   );
   const externalPrize = project.reward.kind === "external-prize-share";
+  const direct = new Map<string, { amount: bigint; count: number }>();
+  for (const payment of directPayments) {
+    if (payment.projectId !== project.id) continue;
+    const month = direct.get(payment.contributionMonth) ?? {
+      amount: 0n,
+      count: 0,
+    };
+    month.amount += payment.amountMinor;
+    month.count += 1;
+    direct.set(payment.contributionMonth, month);
+  }
   return (
     <section className="section payment-history">
       <div className="simple-heading">
@@ -1159,6 +1172,20 @@ function ProjectPaymentHistory({
           <span>{formatMicroUsdc(fees.toString())} in 1% payout fees</span>
         </p>
       )}
+      {[...direct].map(([month, { amount, count }]) => (
+        <p className="money-summary" key={month}>
+          <strong>{formatMicroUsdc(amount.toString())} paid directly</strong>
+          <span>
+            {formatCycleMonth(month)} · {count} finalized transfers outside Slop
+            settlement ·{" "}
+            <ExternalLinkAnchor
+              href={`${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/disclosures/${project.id}-${month}-direct-payments.json`}
+            >
+              Disclosure
+            </ExternalLinkAnchor>
+          </span>
+        </p>
+      ))}
       {cycles.length === 0 ? (
         <EmptyState text="No cycles have closed yet." />
       ) : (
