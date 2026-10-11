@@ -44,7 +44,6 @@ import {
 import { browserDeployment } from "./lib/browser-deployment";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
-import { directPayments } from "./lib/direct-payments";
 import { currentProjectFundingRecords } from "./lib/funding";
 import { commitmentVerifiedNetMinor } from "./lib/funding-commitment";
 import { communityProjects, homeProjects } from "./lib/home-projects";
@@ -66,6 +65,7 @@ import {
 import { pageTitle, SITE_ORIGIN, STATIC_PAGE_TITLES } from "./lib/site-routes";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
 import { useCycleIndex } from "./lib/use-cycle-index";
+import { useDirectTransfers } from "./lib/use-direct-transfers";
 import { type DataState, useSnapshot } from "./lib/use-snapshot";
 import {
   summarizeWhoBuilds,
@@ -1124,6 +1124,9 @@ function ProjectPaymentHistory({
   project: ProjectDefinition;
   state: DataState;
 }) {
+  const [directState, retryDirect] = useDirectTransfers({
+    projectId: project.id,
+  });
   if (state.status !== "ready") return null;
   const cycles = state.cycleIndex.cycles
     .filter((cycle) => cycle.projectId === project.id)
@@ -1142,13 +1145,14 @@ function ProjectPaymentHistory({
   );
   const externalPrize = project.reward.kind === "external-prize-share";
   const direct = new Map<string, { amount: bigint; count: number }>();
-  for (const payment of directPayments) {
-    if (payment.projectId !== project.id) continue;
+  for (const payment of directState.status === "ready"
+    ? directState.transfers
+    : []) {
     const month = direct.get(payment.contributionMonth) ?? {
       amount: 0n,
       count: 0,
     };
-    month.amount += payment.amountMinor;
+    month.amount += BigInt(payment.amountMicro);
     month.count += 1;
     direct.set(payment.contributionMonth, month);
   }
@@ -1172,6 +1176,14 @@ function ProjectPaymentHistory({
           <span>{formatMicroUsdc(fees.toString())} in 1% payout fees</span>
         </p>
       )}
+      {directState.status === "error" && !externalPrize ? (
+        <p role="status">
+          Direct payment records are unavailable.{" "}
+          <button type="button" onClick={retryDirect}>
+            Retry direct payments
+          </button>
+        </p>
+      ) : null}
       {[...direct].map(([month, { amount, count }]) => (
         <p className="money-summary" key={month}>
           <strong>{formatMicroUsdc(amount.toString())} paid directly</strong>

@@ -97,6 +97,18 @@ ledger. Missing index coverage is explicit. Account `deliveryState` distinguishe
 needs-wallet, awaiting-binding, submitted, held, and paid; only `state=paid`
 represents finalized chain payment.
 
+Migration `0014` adds `payment_direct_transfers`: transfers that a project
+creator sent outside escrow, imported from the reviewed `disclosures/*.json`
+records. Each deploy runs `scripts/prepare-payments-import.ts` after the
+migrations. It writes nothing unless every disclosure reproduces from its
+frozen preparation. Rows are permanent, and a disclosure that contradicts an
+imported transaction fails the import. Direct transfers never become an
+obligation or `state=paid`, and project totals never add them to verified
+payouts. `GET /me` returns them as `directTransfers`.
+`GET /api/v1/payments/projects/<id>/direct-transfers` and
+`GET /api/v1/payments/actors/<numeric-github-id>/direct-transfers` publish
+the same disclosed facts.
+
 For browser QA, `bun backend/payments/base.integration.ts --serve` starts a local
 HTTP fixture on port 18548 with a seeded GitHub session, real migrated SQLite,
 and an isolated Anvil chain. It exposes `/fixture`, the account login read, and

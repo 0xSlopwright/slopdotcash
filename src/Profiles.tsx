@@ -2,8 +2,9 @@ import { type ReactNode, useState } from "react";
 import { browserDeployment } from "./lib/browser-deployment";
 import { fetchWithDeadline, readBoundedJson } from "./lib/browser-json";
 import type { CycleIndex } from "./lib/cycle-index";
-import { directPayments } from "./lib/direct-payments";
+import { githubUserIdFromNodeId } from "./lib/github-actor";
 import type { ScoreEvent } from "./lib/leaderboard";
+import { transactionUrl } from "./lib/payments/contracts";
 import { type PointsMember, pointKey } from "./lib/points";
 import {
   assertProfiles,
@@ -14,6 +15,7 @@ import {
 import { findProject, findProjectByRepositoryId } from "./lib/projects.mjs";
 import { TARGET_REPOSITORIES } from "./lib/repositories.mjs";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
+import { useDirectTransfers } from "./lib/use-direct-transfers";
 import { usePublicResource } from "./lib/use-public-resource";
 import {
   ContributorIdentity,
@@ -103,16 +105,25 @@ export function ProfileActivity({
             })),
         )
       : null;
-  const direct = id
-    ? directPayments
-        .filter((payment) => payment.actorId === id)
-        .map((payment) => ({
-          date: payment.observedAt,
-          amount: payment.amountMinor,
-          href: `https://solscan.io/tx/${payment.signature}`,
-          name: `${findProject(payment.projectId)?.name ?? payment.projectId} · ${formatCycleMonth(payment.contributionMonth)}`,
+  const githubUserId = id
+    ? /^[1-9]\d*$/u.test(id)
+      ? id
+      : githubUserIdFromNodeId(id)
+    : null;
+  const [directState] = useDirectTransfers(
+    githubUserId ? { githubUserId } : null,
+  );
+  const direct =
+    directState.status === "ready"
+      ? directState.transfers.map((t) => ({
+          date: t.blockTime,
+          amount: BigInt(t.amountMicro),
+          href:
+            transactionUrl(t.network, t.transactionId) ??
+            `/projects/${encodeURIComponent(t.projectId)}/funding#payouts`,
+          name: `${findProject(t.projectId)?.name ?? t.projectId} · ${formatCycleMonth(t.contributionMonth)}`,
         }))
-    : [];
+      : [];
   return (
     <section className="profile-activity" aria-label="Contributor profile">
       {showIdentity ? (
@@ -157,9 +168,10 @@ export function ProfileActivity({
         </div>
         <div>
           <strong>
-            {id
+            {directState.status === "ready"
               ? dollars(direct.reduce((n, r) => n + r.amount, 0n))
-              : state.status === "loading"
+              : (githubUserId && directState.status === "loading") ||
+                  (!id && state.status === "loading")
                 ? "Loading…"
                 : "Unavailable"}
           </strong>
@@ -310,7 +322,7 @@ function ProfileTimeline({
       date: payment.date,
       href: payment.href,
       title: payment.name,
-      detail: "Reported outside Slop settlement · grouped by disclosure date",
+      detail: "Sent outside Slop settlement · published disclosure",
       amount: `${dollars(payment.amount)} USDC reported`,
     })),
   ].sort(

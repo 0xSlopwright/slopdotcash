@@ -147,10 +147,12 @@ test("public funding records and the payout workspace are separate tabs", async 
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/projects/eliza");
   const history = page.locator(".payment-history");
-  await expect(history).toContainText("$4,219.71 paid directly");
+  // Direct payments come from the payments database, which answers only the
+  // product origins. A local preview shows that they are unavailable.
   await expect(history).toContainText(
-    "53 finalized transfers outside Slop settlement",
+    "Direct payment records are unavailable.",
   );
+  await expect(history).not.toContainText("paid directly");
   await page.getByRole("link", { name: "Manage payouts" }).click();
   await expect(page).toHaveURL(/\/projects\/eliza\/funding#payouts$/u);
   const payouts = page.getByRole("tab", { name: "Manage payouts" });
