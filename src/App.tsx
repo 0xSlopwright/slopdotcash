@@ -65,6 +65,7 @@ import {
 import { pageTitle, SITE_ORIGIN, STATIC_PAGE_TITLES } from "./lib/site-routes";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
 import { useCycleIndex } from "./lib/use-cycle-index";
+import { useDirectTransfers } from "./lib/use-direct-transfers";
 import { type DataState, useSnapshot } from "./lib/use-snapshot";
 import {
   summarizeWhoBuilds,
@@ -86,6 +87,7 @@ import {
   DataNotice,
   EmptyState,
   ExternalLinkAnchor,
+  formatCycleMonth,
   formatDate,
   formatMicroUsdc,
   monthlyPoolLabel,
@@ -280,7 +282,7 @@ function useRoute(): Route {
 const PRIVATE_PAGE_TITLES = new Map<Route["kind"], string>([
   ["account", "Account"],
   ["login", "Log in"],
-  ["earnings", "Your earnings"],
+  ["earnings", "Your payouts"],
 ]);
 
 /** The title and canonical path of a route; a missing page has no canonical. */
@@ -1122,6 +1124,9 @@ function ProjectPaymentHistory({
   project: ProjectDefinition;
   state: DataState;
 }) {
+  const [directState, retryDirect] = useDirectTransfers({
+    projectId: project.id,
+  });
   if (state.status !== "ready") return null;
   const cycles = state.cycleIndex.cycles
     .filter((cycle) => cycle.projectId === project.id)
@@ -1139,6 +1144,18 @@ function ProjectPaymentHistory({
     0n,
   );
   const externalPrize = project.reward.kind === "external-prize-share";
+  const direct = new Map<string, { amount: bigint; count: number }>();
+  for (const payment of directState.status === "ready"
+    ? directState.transfers
+    : []) {
+    const month = direct.get(payment.contributionMonth) ?? {
+      amount: 0n,
+      count: 0,
+    };
+    month.amount += BigInt(payment.amountMicro);
+    month.count += 1;
+    direct.set(payment.contributionMonth, month);
+  }
   return (
     <section className="section payment-history">
       <div className="simple-heading">
@@ -1159,6 +1176,28 @@ function ProjectPaymentHistory({
           <span>{formatMicroUsdc(fees.toString())} in 1% payout fees</span>
         </p>
       )}
+      {directState.status === "error" && !externalPrize ? (
+        <p role="status">
+          Direct payment records are unavailable.{" "}
+          <button type="button" onClick={retryDirect}>
+            Retry direct payments
+          </button>
+        </p>
+      ) : null}
+      {[...direct].map(([month, { amount, count }]) => (
+        <p className="money-summary" key={month}>
+          <strong>{formatMicroUsdc(amount.toString())} paid directly</strong>
+          <span>
+            {formatCycleMonth(month)} · {count} finalized transfers outside Slop
+            settlement ·{" "}
+            <ExternalLinkAnchor
+              href={`${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/disclosures/${project.id}-${month}-direct-payments.json`}
+            >
+              Disclosure
+            </ExternalLinkAnchor>
+          </span>
+        </p>
+      ))}
       {cycles.length === 0 ? (
         <EmptyState text="No cycles have closed yet." />
       ) : (
@@ -2693,9 +2732,12 @@ function SponsorsPage({
         <div>
           <h2>Awards, fee and total.</h2>
           <p>
-            Monthly pools add a separate 1% fee to approved awards. Contributors
-            receive the full approved amount. Paid requires finalized evidence
-            for both the awards and fee.
+            Legacy monthly pools add a separate 1% fee to approved awards.
+            Contributors receive the full approved amount. New escrow payouts
+            deduct 2% from the gross award: 100 USDC becomes 98 USDC for the
+            contributor and 2 USDC in fees. Each cycle keeps its recorded
+            policy. Paid requires finalized evidence for both the awards and
+            fee.
           </p>
           <p>
             External prize shares use the terms published for that project. The
@@ -2704,10 +2746,10 @@ function SponsorsPage({
         </div>
         <dl
           className="equation-card"
-          aria-label="Example: $5,000 in approved awards"
+          aria-label="Legacy example: $5,000 in approved awards"
         >
           <div>
-            <dt>Example approved awards</dt>
+            <dt>Legacy example approved awards</dt>
             <dd>$5,000</dd>
           </div>
           <div>

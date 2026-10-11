@@ -1669,7 +1669,12 @@ export function FundingReview({
                                     {r.actor.login}
                                   </a>
                                 </th>
-                                <td>{PAYMENT_STATE_LABELS[r.state]}</td>
+                                <td>
+                                  {r.state === "unclaimed" &&
+                                  !published.approvedAt
+                                    ? "Proposed, needs a destination"
+                                    : PAYMENT_STATE_LABELS[r.state]}
+                                </td>
                                 <td>{formatMicroUsdc(r.approvedMinor)}</td>
                                 <td>{formatMicroUsdc(r.paidMinor)}</td>
                               </tr>

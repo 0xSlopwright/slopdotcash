@@ -256,14 +256,14 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   await expect(
     elizaCard.getByText("Not funded yet", { exact: true }),
   ).toHaveCount(0);
-  await expect(elizaCard.getByText("$5k", { exact: true })).toBeVisible();
+  await expect(elizaCard.getByText("$1k", { exact: true })).toBeVisible();
   await expect(
     elizaCard.getByText("/mo target", { exact: true }),
   ).toBeVisible();
   await expect(
     elizaCard.getByText("Vault: Not funded", { exact: true }),
   ).toBeVisible();
-  await expect(elizaCard.getByText("$5,000", { exact: true })).toHaveCount(0);
+  await expect(elizaCard.getByText("$1,000", { exact: true })).toHaveCount(0);
   await expect(
     elizaCard.getByText(/Build and verify the elizaOS framework/u),
   ).toBeVisible();

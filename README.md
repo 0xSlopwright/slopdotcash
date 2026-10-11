@@ -189,7 +189,13 @@ they do not replace source authorization.
 
 ## Contributing
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md). Security-sensitive reports must
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). This repository has a $1,000
+monthly Slop contributor pool. Star and fork the repository first. Accepted work
+is reproduced bugs, security, verification, vault, settlement, and scoring
+correctness, and measured improvements inside the approved MVP. UI changes are
+not accepted unless they fix a broken user flow. Prove the result with real LLM
+calls where a model is involved, and test the workflow in the agent clients
+that use it. Security-sensitive reports must
 use the target repository’s private reporting channel; never publish secrets,
 private traces, prompts, credentials, private keys, or vulnerability details in
 an issue or pull request.

@@ -63,6 +63,23 @@ of blocking defects. A merged PR, a local test pass, partial rollout, or an
 agent's statement cannot close the MVP. After that record is approved, humans
 select and approve the next PRD phase before agents implement it.
 
+### Contributor bounty rules
+
+This repository is a Slop project with a $1,000 monthly contributor pool. Follow
+CONTRIBUTING.md "Before you start" and "Slop bounty: what is accepted":
+
+- Star and fork the repository first. Slop uses this to track participation.
+- Accepted: reproduced real bugs, security, verification, settlement, vault and
+  scoring correctness, and measured improvements inside approved MVP scope.
+- Not accepted: UI, style, or copy changes, except a fix to a broken user flow
+  with before and after video.
+- Prove model-backed behavior with real LLM calls. Configure `.env` from
+  `.env.example` and Worker `.dev.vars`; never commit values.
+- Test the affected workflow in the agent clients that use it (Claude Code,
+  Codex/ChatGPT, Hermes Agent, OpenClaw, Muse, Grok bot, elizaOS, Cursor).
+  Install other clients and drive them with computer use when needed. Record
+  each client, version, provider, model, and result.
+
 ## Human-responsible outside issues
 
 This rule covers Slop participation issues: issues in this repository, and
