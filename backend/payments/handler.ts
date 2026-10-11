@@ -1,6 +1,7 @@
 import { readBoundedJson } from "../../src/lib/browser-json";
 import type {
   AccountPayment,
+  DirectTransfer,
   PaymentsAccount,
 } from "../../src/lib/payments/contracts";
 import { isWalletAddress, isWalletChain } from "../../src/lib/wallets";
@@ -35,6 +36,19 @@ function json(status: number, body: unknown) {
       "x-content-type-options": "nosniff",
     },
   });
+}
+async function directTransfers(
+  db: D1Database,
+  column: "project_id" | "github_user_id",
+  value: string,
+): Promise<DirectTransfer[]> {
+  const row = await db
+    .prepare(
+      `SELECT json_group_array(json_object('projectId',project_id,'contributionMonth',contribution_month,'githubUserId',github_user_id,'login',github_login,'network',network,'chain',chain,'recipient',recipient,'amountMicro',amount_micro,'transactionId',transaction_id,'blockTime',block_time)) items FROM (SELECT * FROM payment_direct_transfers WHERE ${column}=? ORDER BY block_time,transaction_id)`,
+    )
+    .bind(value)
+    .first<{ items: string }>();
+  return JSON.parse(row?.items ?? "[]") as DirectTransfer[];
 }
 export async function handlePaymentsApi(
   request: Request,
@@ -97,6 +111,23 @@ export async function handlePaymentsApi(
           completeThrough: cursor?.position ?? null,
         },
         syncedAt: cursor?.synced_at ?? null,
+      });
+    }
+    const directRoute =
+      /^\/(?:projects\/([a-z0-9][a-z0-9-]*)|actors\/([1-9]\d{0,15}))\/direct-transfers$/.exec(
+        path,
+      );
+    if (directRoute && request.method === "GET") {
+      const transfers = await directTransfers(
+        deps.db,
+        directRoute[2] ? "github_user_id" : "project_id",
+        directRoute[2] ?? directRoute[1],
+      );
+      return json(200, {
+        transfers,
+        totalMicro: transfers
+          .reduce((sum, t) => sum + BigInt(t.amountMicro), 0n)
+          .toString(),
       });
     }
     const invoiceRoute =
@@ -324,6 +355,11 @@ export async function handlePaymentsApi(
         wallets: JSON.parse(walletRows?.items ?? "[]"),
         payments,
         balances,
+        directTransfers: await directTransfers(
+          deps.db,
+          "github_user_id",
+          member.github_id,
+        ),
       };
       return json(200, account);
     }

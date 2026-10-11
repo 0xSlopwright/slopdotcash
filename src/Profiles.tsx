@@ -2,7 +2,9 @@ import { type ReactNode, useState } from "react";
 import { browserDeployment } from "./lib/browser-deployment";
 import { fetchWithDeadline, readBoundedJson } from "./lib/browser-json";
 import type { CycleIndex } from "./lib/cycle-index";
+import { githubUserIdFromNodeId } from "./lib/github-actor";
 import type { ScoreEvent } from "./lib/leaderboard";
+import { transactionUrl } from "./lib/payments/contracts";
 import { type PointsMember, pointKey } from "./lib/points";
 import {
   assertProfiles,
@@ -13,6 +15,7 @@ import {
 import { findProject, findProjectByRepositoryId } from "./lib/projects.mjs";
 import { TARGET_REPOSITORIES } from "./lib/repositories.mjs";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
+import { useDirectTransfers } from "./lib/use-direct-transfers";
 import { usePublicResource } from "./lib/use-public-resource";
 import {
   ContributorIdentity,
@@ -22,22 +25,6 @@ import {
   formatScore,
 } from "./Presentation";
 
-const disclosures = import.meta.glob("../disclosures/*.json", {
-  eager: true,
-  import: "default",
-}) as Record<
-  string,
-  {
-    projectId: string;
-    contributionMonth: string;
-    observedAt: string;
-    rows: {
-      actorId: string;
-      state: string;
-      observed: null | { amountMinor: string; signature: string };
-    }[];
-  }
->;
 async function loadProfiles(signal: AbortSignal) {
   const response = await fetchWithDeadline("/data/profiles.json", {
     signal,
@@ -118,34 +105,25 @@ export function ProfileActivity({
             })),
         )
       : null;
-  const seen = new Set<string>();
-  const direct = id
-    ? Object.values(disclosures).flatMap((d) =>
-        d.rows
-          .filter(
-            (r) => r.actorId === id && r.state === "paid-direct" && r.observed,
-          )
-          .flatMap((r) => {
-            const o = r.observed;
-            if (
-              !o ||
-              !/^\d+$/.test(o.amountMinor) ||
-              !/^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(o.signature) ||
-              seen.has(o.signature)
-            )
-              return [];
-            seen.add(o.signature);
-            return [
-              {
-                date: d.observedAt,
-                amount: BigInt(o.amountMinor),
-                href: `https://solscan.io/tx/${o.signature}`,
-                name: `${findProject(d.projectId)?.name ?? d.projectId} · ${formatCycleMonth(d.contributionMonth)}`,
-              },
-            ];
-          }),
-      )
-    : [];
+  const githubUserId = id
+    ? /^[1-9]\d*$/u.test(id)
+      ? id
+      : githubUserIdFromNodeId(id)
+    : null;
+  const [directState] = useDirectTransfers(
+    githubUserId ? { githubUserId } : null,
+  );
+  const direct =
+    directState.status === "ready"
+      ? directState.transfers.map((t) => ({
+          date: t.blockTime,
+          amount: BigInt(t.amountMicro),
+          href:
+            transactionUrl(t.network, t.transactionId) ??
+            `/projects/${encodeURIComponent(t.projectId)}/funding#payouts`,
+          name: `${findProject(t.projectId)?.name ?? t.projectId} · ${formatCycleMonth(t.contributionMonth)}`,
+        }))
+      : [];
   return (
     <section className="profile-activity" aria-label="Contributor profile">
       {showIdentity ? (
@@ -190,9 +168,10 @@ export function ProfileActivity({
         </div>
         <div>
           <strong>
-            {id
+            {directState.status === "ready"
               ? dollars(direct.reduce((n, r) => n + r.amount, 0n))
-              : state.status === "loading"
+              : (githubUserId && directState.status === "loading") ||
+                  (!id && state.status === "loading")
                 ? "Loading…"
                 : "Unavailable"}
           </strong>
@@ -343,7 +322,7 @@ function ProfileTimeline({
       date: payment.date,
       href: payment.href,
       title: payment.name,
-      detail: "Reported outside Slop settlement · grouped by disclosure date",
+      detail: "Sent outside Slop settlement · published disclosure",
       amount: `${dollars(payment.amount)} USDC reported`,
     })),
   ].sort(

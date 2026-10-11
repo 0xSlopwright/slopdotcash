@@ -22,7 +22,9 @@ import {
   type FundingReviewIndex,
 } from "./lib/funding-review-data";
 import { applyFundingReviewSubmission } from "./lib/funding-review-submission";
+import { transactionUrl } from "./lib/payments/contracts";
 import type { ProjectDefinition } from "./lib/projects.mjs";
+import { useDirectTransfers } from "./lib/use-direct-transfers";
 import { isSolanaAddress } from "./lib/wallets";
 import { formatDate, formatMicroUsdc } from "./Presentation";
 import { SquadsTracking } from "./SquadsTracking";
@@ -190,6 +192,13 @@ export function FundingReview({
   const currentContext = useRef("");
   currentContext.current = `${project.id}:${cycleId}`;
   const review = reviews.find((r) => r.cycleId === cycleId);
+  const [directState, retryDirect] = useDirectTransfers(
+    step === 4 ? { projectId: project.id } : null,
+  );
+  const direct =
+    directState.status === "ready"
+      ? directState.transfers.filter((t) => t.contributionMonth === cycleId)
+      : [];
   const published = cycleIndex?.cycles.find(
     (c) => c.projectId === project.id && c.cycleId === cycleId,
   );
@@ -1670,6 +1679,86 @@ export function FundingReview({
                       </section>
                     </>
                   )}
+                  {directState.status === "loading" ? (
+                    <p role="status">Loading direct payment records…</p>
+                  ) : directState.status === "error" ? (
+                    <p role="alert">
+                      Direct payment records are unavailable.{" "}
+                      <button type="button" onClick={retryDirect}>
+                        Retry direct payments
+                      </button>
+                    </p>
+                  ) : direct.length > 0 ? (
+                    <>
+                      <p className="money-summary">
+                        <strong>
+                          Sent outside Slop settlement{" "}
+                          {formatMicroUsdc(
+                            direct
+                              .reduce((n, t) => n + BigInt(t.amountMicro), 0n)
+                              .toString(),
+                          )}
+                        </strong>
+                        <span>
+                          {direct.length.toLocaleString()} direct transfers
+                        </span>
+                      </p>
+                      <p>
+                        The project creator sent these transfers directly. They
+                        are recorded in a{" "}
+                        <a
+                          href={`${repo}/tree/${browserDeployment.branch}/disclosures`}
+                        >
+                          published disclosure
+                        </a>{" "}
+                        and on chain. They had no Slop proposal, review or
+                        approval.
+                      </p>
+                      <section
+                        className="plain-table-wrap"
+                        aria-label="Scrollable direct payment records"
+                      >
+                        <table className="plain-table">
+                          <caption className="visually-hidden">
+                            Direct transfers by contributor
+                          </caption>
+                          <thead>
+                            <tr>
+                              <th scope="col">Contributor</th>
+                              <th scope="col">Received</th>
+                              <th scope="col">Transaction</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {direct.map((t) => (
+                              <tr key={`${t.network}:${t.transactionId}`}>
+                                <th scope="row">
+                                  <a
+                                    href={`/contributors/${encodeURIComponent(t.login)}`}
+                                  >
+                                    {t.login}
+                                  </a>
+                                </th>
+                                <td>{formatMicroUsdc(t.amountMicro)}</td>
+                                <td>
+                                  <a
+                                    href={
+                                      transactionUrl(
+                                        t.network,
+                                        t.transactionId,
+                                      ) ?? undefined
+                                    }
+                                  >
+                                    View transfer
+                                  </a>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </section>
+                    </>
+                  ) : null}
                   <p>
                     Vault members sign outside Slop. A Squads approval or a
                     submitted transaction is not a payment. Paid needs finalized
