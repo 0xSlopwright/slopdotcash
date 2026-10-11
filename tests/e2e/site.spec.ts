@@ -859,15 +859,8 @@ test("keeps a frozen-month contributor reachable after the rolling window moves 
         }),
       }),
   );
-  await page.route(
-    `${deployment.api}/api/v1/wallet-claims/actors/*/current`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: "null",
-      }),
-  );
+  const walletCalls: string[] = [];
+  await routeWalletClaims(page, walletCalls);
   await page.goto(
     `/contributors/${encodeURIComponent(frozenOnly.actor.login)}`,
     { waitUntil: "networkidle" },
@@ -879,6 +872,14 @@ test("keeps a frozen-month contributor reachable after the rolling window moves 
     page.getByRole("heading", { name: "Frozen months" }),
   ).toBeVisible();
   await expect(page.getByText("Contributor not found")).toHaveCount(0);
+  await expect(
+    page.getByRole("link", {
+      name: "Current payout wallet · 11111111111111111111111111111111",
+    }),
+  ).toBeVisible();
+  expect(walletCalls.map((url) => new URL(url).pathname)).toEqual([
+    "/api/v1/wallet-claims/actors/424242/current",
+  ]);
 });
 
 test("makes the public project draft boundary unmistakable", async ({
@@ -1887,9 +1888,9 @@ async function routeWalletClaims(
 ) {
   await page.route(
     `${deployment.api}/api/v1/wallet-claims/actors/*/current*`,
-    (route) => {
+    async (route) => {
       calls.push(route.request().url());
-      route.fulfill({
+      await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
