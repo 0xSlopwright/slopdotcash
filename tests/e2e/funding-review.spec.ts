@@ -146,6 +146,11 @@ test("public funding records and the payout workspace are separate tabs", async 
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/projects/eliza");
+  const history = page.locator(".payment-history");
+  await expect(history).toContainText("$4,219.71 paid directly");
+  await expect(history).toContainText(
+    "53 finalized transfers outside Slop settlement",
+  );
   await page.getByRole("link", { name: "Manage payouts" }).click();
   await expect(page).toHaveURL(/\/projects\/eliza\/funding#payouts$/u);
   const payouts = page.getByRole("tab", { name: "Manage payouts" });
