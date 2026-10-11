@@ -48,6 +48,14 @@ payout. Direct unsolicited token deposits do not confer refund rights and are no
 counted in `deposited`; such transfers remain unavailable to awards and refunds. Both credited free balance
 and the actual vault token balance must cover every new reserve or withdrawal.
 
+`charge_service(amount, invoice_digest)` (PAY-10) lets only the owner pay one
+Slopbot invoice from free funds to the fee recipient's token account. A
+permanent `service` PDA per project and invoice digest makes each charge
+happen once. The `service_fees` counter joins the conservation identity:
+`deposited = free + reserved + paid + payout_fees + withdrawn_gross + service_fees`.
+It cannot spend reserved principal or fees. Only the owner deposits, so every
+credited balance is sponsor-class; this version holds no donor-class funds.
+
 All transfer instructions validate the classic token program, mint, token account
 owners, vault PDA, project account and signer. Failed token transfers roll back the
 entire transaction, including fees and accounting. Frozen destinations do not block

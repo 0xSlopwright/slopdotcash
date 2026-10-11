@@ -176,6 +176,24 @@ function withdraw(amount) {
     })
     .rpc();
 }
+const service = (digest) =>
+  pda(seed("service"), key(project), Buffer.from(digest));
+function chargeService(amount, digest, signer = payer) {
+  return program.methods
+    .chargeService(bn(amount), digest)
+    .accountsStrict({
+      owner: signer.publicKey,
+      project,
+      mint,
+      vault,
+      feeAccount,
+      charge: service(digest),
+      tokenProgram: TOKEN_PROGRAM_ID,
+      systemProgram: SystemProgram.programId,
+    })
+    .signers(signer === payer ? [] : [signer])
+    .rpc();
+}
 const balance = async (address) =>
   (await getAccount(provider.connection, address)).amount;
 test("actual SPL escrow lifecycle, late wallet claim, reserve and authority attacks", async () => {
@@ -335,11 +353,38 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     pay("late", 102, wrongDestination),
     /ConstraintTokenMint|WrongDestination/,
   );
+  // PAY-10: the owner pays one Slopbot invoice from free funds only. The 50
+  // reserved for actor 102 cannot be charged, and an invoice pays once.
+  const invoice = hash("invoice:local:2026-10");
+  await assert.rejects(
+    chargeService(850_000_001, invoice),
+    /InsufficientFreeBalance/,
+  );
+  await assert.rejects(chargeService(1, Array(32).fill(0)), /InvalidAmount/);
+  const stranger = Keypair.generate();
+  await sendAndConfirmTransaction(
+    provider.connection,
+    new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: payer.publicKey,
+        toPubkey: stranger.publicKey,
+        lamports: 100_000_000,
+      }),
+    ),
+    [payer],
+  );
+  await assert.rejects(chargeService(1, invoice, stranger), /ConstraintHasOne/);
+  await chargeService(20_000_000, invoice);
+  assert.equal(await balance(feeAccount), 22_000_000n);
+  await assert.rejects(chargeService(20_000_000, invoice));
+  const charged = await program.account.serviceCharge.fetch(service(invoice));
+  assert.equal(charged.amount.toString(), "20000000");
+  assert.equal(await balance(feeAccount), 22_000_000n);
   // Split withdrawals cannot avoid the cumulative 10% charge.
   await withdraw(1);
-  await withdraw(849_999_999);
-  assert.equal(await balance(source), 765_000_000n);
-  assert.equal(await balance(feeAccount), 87_000_000n);
+  await withdraw(829_999_999);
+  assert.equal(await balance(source), 747_000_000n);
+  assert.equal(await balance(feeAccount), 105_000_000n);
   await assert.rejects(withdraw(1), /InsufficientFreeBalance/);
   // A stolen authority key rebinds actor 102 to a thief. Only the owner can
   // veto it, and only while it is pending; the vetoed version never pays.
@@ -390,13 +435,14 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     [payer],
   );
   assert.equal(await balance(destination), 147_000_001n);
-  assert.equal(await balance(feeAccount), 88_000_000n);
+  assert.equal(await balance(feeAccount), 106_000_000n);
   assert.equal(await balance(vault), 0n);
   const state = await program.account.project.fetch(project);
   assert.equal(state.reserved.toString(), "0");
   assert.equal(state.paid.toString(), "147000000");
   assert.equal(state.payoutFees.toString(), "3000000");
-  assert.equal(state.withdrawalFees.toString(), "85000000");
+  assert.equal(state.withdrawalFees.toString(), "83000000");
+  assert.equal(state.serviceFees.toString(), "20000000");
   assert.equal(
     (await balance(source)) +
       (await balance(destination)) +

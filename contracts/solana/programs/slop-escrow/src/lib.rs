@@ -246,6 +246,45 @@ pub mod slop_escrow {
         });
         Ok(())
     }
+    // PAY-10: the owner pays one Slopbot invoice from free sponsor funds. The
+    // `service` PDA makes each invoice digest chargeable exactly once.
+    pub fn charge_service(
+        ctx: Context<ChargeService>,
+        amount: u64,
+        invoice_digest: [u8; 32],
+    ) -> Result<()> {
+        require!(
+            amount > 0 && invoice_digest != [0u8; 32],
+            EscrowError::InvalidAmount
+        );
+        let p = &ctx.accounts.project;
+        require!(
+            ctx.accounts.vault.amount >= add(p.reserved, amount)? && free(p)? >= amount,
+            EscrowError::InsufficientFreeBalance
+        );
+        let seeds: &[&[u8]] = &[b"project", p.owner.as_ref(), &p.project_id, &[p.bump]];
+        send(
+            &ctx.accounts.token_program,
+            &ctx.accounts.vault,
+            &ctx.accounts.fee_account,
+            &ctx.accounts.mint,
+            p,
+            seeds,
+            amount,
+        )?;
+        let p = &mut ctx.accounts.project;
+        p.service_fees = add(p.service_fees, amount)?;
+        let c = &mut ctx.accounts.charge;
+        c.project = p.key();
+        c.invoice_digest = invoice_digest;
+        c.amount = amount;
+        emit!(ServiceCharged {
+            project: p.key(),
+            invoice_digest,
+            amount
+        });
+        Ok(())
+    }
 }
 /// The only valid award ID for a source in this project.
 pub fn award_id_for(project: &Pubkey, source_digest: &[u8; 32]) -> [u8; 32] {
@@ -262,6 +301,7 @@ fn free(p: &Project) -> Result<u64> {
         .checked_sub(p.paid)
         .and_then(|n| n.checked_sub(p.payout_fees))
         .and_then(|n| n.checked_sub(p.withdrawn_gross))
+        .and_then(|n| n.checked_sub(p.service_fees))
         .and_then(|n| n.checked_sub(p.reserved))
         .ok_or(error!(EscrowError::Arithmetic))
 }
@@ -392,6 +432,23 @@ pub struct Withdraw<'info> {
     pub fee_account: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
 }
+#[derive(Accounts)]
+#[instruction(amount:u64, invoice_digest:[u8;32])]
+pub struct ChargeService<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(mut,has_one=owner,has_one=mint)]
+    pub project: Box<Account<'info, Project>>,
+    pub mint: Account<'info, Mint>,
+    #[account(mut,seeds=[b"vault",project.key().as_ref()],bump,token::mint=mint,token::authority=project)]
+    pub vault: Account<'info, TokenAccount>,
+    #[account(mut,token::mint=mint,constraint=fee_account.owner==project.fee_recipient,constraint=fee_account.key()!=vault.key())]
+    pub fee_account: Account<'info, TokenAccount>,
+    #[account(init,payer=owner,space=8+ServiceCharge::INIT_SPACE,seeds=[b"service",project.key().as_ref(),&invoice_digest],bump)]
+    pub charge: Account<'info, ServiceCharge>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
 #[account]
 #[derive(InitSpace)]
 pub struct Project {
@@ -409,6 +466,14 @@ pub struct Project {
     pub withdrawal_fees: u64,
     pub bump: u8,
     pub binding_delay: i64,
+    pub service_fees: u64,
+}
+#[account]
+#[derive(InitSpace)]
+pub struct ServiceCharge {
+    pub project: Pubkey,
+    pub invoice_digest: [u8; 32],
+    pub amount: u64,
 }
 #[account]
 #[derive(InitSpace)]
@@ -469,6 +534,12 @@ pub struct AwardPaid {
     pub fee: u64,
     pub destination: Pubkey,
     pub wallet_version: u64,
+}
+#[event]
+pub struct ServiceCharged {
+    pub project: Pubkey,
+    pub invoice_digest: [u8; 32],
+    pub amount: u64,
 }
 #[event]
 pub struct UnusedWithdrawn {
