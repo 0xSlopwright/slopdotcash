@@ -49,6 +49,11 @@ The operator may choose a specific issue directly. Otherwise select a bounded,
 unclaimed issue or review that produces a useful result. Labels and queue order
 are recommendations, not permission gates. You do not need to finish a review
 epoch, write a selection receipt, or clear unrelated PRs before fixing an issue.
+Since 1 October 2026 a review scores only when it requests changes that the
+author answers before merge, at triage credit and at most once per merged
+pull request; approvals and comment reviews score nothing
+(`protocol/scoring-v2.md`). A merged pull request of your own starts at small
+credit.
 
 The optional GET-only report helps discover work:
 
