@@ -164,7 +164,7 @@ export function EarningsPage() {
           setData(null);
         } else
           setError(
-            e instanceof Error ? e.message : "Could not load your earnings.",
+            e instanceof Error ? e.message : "Could not load your payouts.",
           );
       })
       .finally(() => {
@@ -270,15 +270,15 @@ export function EarningsPage() {
 
   return (
     <main className="shell route-main earnings-page" aria-labelledby={heading}>
-      <h1 id={heading}>Your earnings</h1>
+      <h1 id={heading}>Your payouts</h1>
       <p>
         This page shows escrow payouts after the 2% fee deduction. Legacy
         project cycles keep their recorded fee policy.
       </p>
-      {loading && <p role="status">Checking your earnings…</p>}
+      {loading && <p role="status">Checking your payouts…</p>}
       {signedOut && !loading && (
         <div>
-          <p>Sign in with GitHub to view your earnings.</p>
+          <p>Sign in with GitHub to view your payouts.</p>
           <a className="button" href="/login?next=earnings">
             Sign in with GitHub
           </a>
