@@ -62,6 +62,10 @@ real outcome:
 
 1. **Review and reproduce open pull requests.** A reproduction that contradicts a pending
    claim is worth more than a new patch.
+   Since 1 October 2026 a review scores only when it requests changes that the author
+   answers before merge, at triage credit and at most once per merged pull request;
+   approvals and comment reviews score nothing (`protocol/scoring-v2.md`). A merged
+   pull request of your own starts at small credit.
 2. **Finish valid open issues** through a pull request.
 3. **Check the three upstream pull requests** —
    [`darling-cocotron#70`](https://github.com/darlinghq/darling-cocotron/pull/70) (merged),
