@@ -882,6 +882,66 @@ test("keeps a frozen-month contributor reachable after the rolling window moves 
   ]);
 });
 
+test("requests a window contributor's wallet once while funding reviews load", async ({
+  page,
+  request,
+}) => {
+  const snapshot = await loadSnapshot(request);
+  const leader = snapshot.leaders
+    .map((entry) => ({
+      login: entry.actor.login,
+      githubId:
+        /^https:\/\/avatars\.githubusercontent\.com\/u\/(\d+)(?:\?|$)/u.exec(
+          entry.actor.avatarUrl ?? "",
+        )?.[1],
+    }))
+    .find((actor) => actor.githubId);
+  test.skip(!leader?.githubId, "no window contributor with a GitHub id");
+  if (!leader?.githubId) return;
+
+  // Hold the funding reviews until the wallet is shown. A window actor does
+  // not need them, so their arrival must not start a second wallet request.
+  let releaseReviews = () => {};
+  const reviewsHeld = new Promise<void>((resolve) => {
+    releaseReviews = resolve;
+  });
+  await page.route("**/data/funding-reviews.json*", async (route) => {
+    await reviewsHeld;
+    await route.continue();
+  });
+  const walletCalls: string[] = [];
+  await page.route(
+    `${deployment.api}/api/v1/wallet-claims/actors/*/current*`,
+    async (route) => {
+      walletCalls.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          claimId: "e2e-solana-wallet-claim",
+          githubActorId: leader.githubId,
+          address: "11111111111111111111111111111111",
+        }),
+      });
+    },
+  );
+  await page.goto(`/contributors/${encodeURIComponent(leader.login)}`);
+  const walletLink = page.getByRole("link", {
+    name: "Current payout wallet · 11111111111111111111111111111111",
+  });
+  await expect(walletLink).toBeVisible();
+  const reviewsLoaded = page.waitForResponse((response) =>
+    new URL(response.url()).pathname.endsWith("/data/funding-reviews.json"),
+  );
+  releaseReviews();
+  await reviewsLoaded;
+  await page.waitForTimeout(500);
+  await expect(walletLink).toBeVisible();
+  expect(walletCalls.map((url) => new URL(url).pathname)).toEqual([
+    `/api/v1/wallet-claims/actors/${leader.githubId}/current`,
+  ]);
+});
+
 test("makes the public project draft boundary unmistakable", async ({
   page,
 }) => {

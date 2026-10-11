@@ -4,7 +4,7 @@ import {
   ExternalLink,
   RotateCcw,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DonorFundingProfile, useFundingIndex } from "./FundingRecords";
 import { Link } from "./Link";
 import { browserDeployment } from "./lib/browser-deployment";
@@ -430,50 +430,32 @@ function useCurrentWallet(
   const [wallet, setWallet] = useState<CurrentWalletState>({
     status: "loading",
   });
+  const normalizedLogin = login.toLowerCase();
+  // Funding reviews matter only for an actor outside the rolling window and
+  // the cycles. Reduce the inputs to primitive values, so a window actor's
+  // request does not restart when the reviews finish loading.
+  const lookup = useMemo(
+    () => findWalletLookup(state, normalizedLogin, fundingReviews),
+    [state, normalizedLogin, fundingReviews],
+  );
+  const lookupStatus = lookup.status;
+  const recordActorId = lookup.status === "actor" ? lookup.recordId : "";
+  const localActorId =
+    lookup.status === "actor" ? (lookup.localActorId ?? "") : "";
   useEffect(() => {
-    if (state.status !== "ready") return;
-    const normalizedLogin = login.toLowerCase();
-    setWallet({ status: "loading" });
-    const actors: Array<{ id: string; login: string; avatarUrl?: string }> = [
-      ...state.views.flatMap((view) => [
-        ...view.leaders.map((leader) => leader.actor),
-        ...view.opportunities.map((opportunity) => opportunity.actor),
-      ]),
-      ...state.cycleIndex.cycles.flatMap((cycle) =>
-        cycle.contributors.map((contributor) => contributor.actor),
-      ),
-    ];
-    const windowActor = actors.find(
-      (candidate) => candidate.login.toLowerCase() === normalizedLogin,
-    );
-    // A frozen-month-only actor is in neither list. Its review record keeps
-    // the GitHub node id, which the account lookup must match.
-    if (!windowActor && fundingReviews.status === "loading") return;
-    if (!windowActor && fundingReviews.status !== "ready") {
+    if (lookupStatus === "waiting") {
+      setWallet({ status: "loading" });
+      return;
+    }
+    if (lookupStatus === "error") {
       setWallet({ status: "error", login: normalizedLogin });
       return;
     }
-    const actor: { id: string; login: string; avatarUrl?: string } | undefined =
-      windowActor ??
-      (fundingReviews.status === "ready"
-        ? fundingReviews.index.reviews
-            .flatMap((review) => review.contributors)
-            .map((contributor) => contributor.actor)
-            .find(
-              (candidate) => candidate.login.toLowerCase() === normalizedLogin,
-            )
-        : undefined);
-    const avatarActorId = actor?.avatarUrl
-      ? /^https:\/\/avatars\.githubusercontent\.com\/u\/(\d+)(?:\?|$)/u.exec(
-          actor.avatarUrl,
-        )?.[1]
-      : undefined;
-    const localActorId =
-      actor && /^\d+$/u.test(actor.id) ? actor.id : avatarActorId;
-    if (!actor) {
+    if (lookupStatus === "none") {
       setWallet({ status: "none", login: normalizedLogin });
       return;
     }
+    setWallet({ status: "loading" });
     let active = true;
     const controller = new AbortController();
     const timeout = window.setTimeout(
@@ -482,10 +464,10 @@ function useCurrentWallet(
     );
     // Frozen-month records keep only a GitHub node id. Resolve the numeric id
     // and require the account's node_id to match the recorded one.
-    let githubActorId = localActorId ?? "";
+    let githubActorId = localActorId;
     const actorId = localActorId
       ? Promise.resolve(localActorId)
-      : resolveGithubActorId(normalizedLogin, actor.id, controller.signal);
+      : resolveGithubActorId(normalizedLogin, recordActorId, controller.signal);
     void actorId
       .then((resolved) => {
         githubActorId = resolved;
@@ -545,11 +527,63 @@ function useCurrentWallet(
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [state, login, fundingReviews]);
-  if (wallet.status !== "loading" && wallet.login !== login.toLowerCase()) {
+  }, [lookupStatus, recordActorId, localActorId, normalizedLogin]);
+  if (wallet.status !== "loading" && wallet.login !== normalizedLogin) {
     return { status: "loading" };
   }
   return wallet;
+}
+
+type WalletLookup =
+  | { status: "waiting" }
+  | { status: "error" }
+  | { status: "none" }
+  | { status: "actor"; recordId: string; localActorId?: string };
+
+function findWalletLookup(
+  state: DataState,
+  normalizedLogin: string,
+  fundingReviews: FundingReviewsState,
+): WalletLookup {
+  if (state.status !== "ready") return { status: "waiting" };
+  const actors: Array<{ id: string; login: string; avatarUrl?: string }> = [
+    ...state.views.flatMap((view) => [
+      ...view.leaders.map((leader) => leader.actor),
+      ...view.opportunities.map((opportunity) => opportunity.actor),
+    ]),
+    ...state.cycleIndex.cycles.flatMap((cycle) =>
+      cycle.contributors.map((contributor) => contributor.actor),
+    ),
+  ];
+  const windowActor = actors.find(
+    (candidate) => candidate.login.toLowerCase() === normalizedLogin,
+  );
+  // A frozen-month-only actor is in neither list. Its review record keeps
+  // the GitHub node id, which the account lookup must match.
+  if (!windowActor && fundingReviews.status === "loading") {
+    return { status: "waiting" };
+  }
+  if (!windowActor && fundingReviews.status !== "ready") {
+    return { status: "error" };
+  }
+  const actor: { id: string; login: string; avatarUrl?: string } | undefined =
+    windowActor ??
+    (fundingReviews.status === "ready"
+      ? fundingReviews.index.reviews
+          .flatMap((review) => review.contributors)
+          .map((contributor) => contributor.actor)
+          .find(
+            (candidate) => candidate.login.toLowerCase() === normalizedLogin,
+          )
+      : undefined);
+  if (!actor) return { status: "none" };
+  const avatarActorId = actor.avatarUrl
+    ? /^https:\/\/avatars\.githubusercontent\.com\/u\/(\d+)(?:\?|$)/u.exec(
+        actor.avatarUrl,
+      )?.[1]
+    : undefined;
+  const localActorId = /^\d+$/u.test(actor.id) ? actor.id : avatarActorId;
+  return { status: "actor", recordId: actor.id, localActorId };
 }
 
 type CurrentWalletState =
