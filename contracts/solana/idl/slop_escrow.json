@@ -80,6 +80,86 @@
       ]
     },
     {
+      "name": "charge_service",
+      "discriminator": [244, 35, 209, 10, 213, 122, 56, 146],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": ["project"]
+        },
+        {
+          "name": "project",
+          "writable": true
+        },
+        {
+          "name": "mint",
+          "relations": ["project"]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [118, 97, 117, 108, 116]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_account",
+          "writable": true
+        },
+        {
+          "name": "charge",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [115, 101, 114, 118, 105, 99, 101]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "invoice_digest"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "invoice_digest",
+          "type": {
+            "array": ["u8", 32]
+          }
+        }
+      ]
+    },
+    {
       "name": "commit",
       "discriminator": [223, 140, 142, 165, 229, 208, 156, 74],
       "accounts": [
@@ -518,6 +598,10 @@
       "discriminator": [205, 168, 189, 202, 181, 247, 142, 19]
     },
     {
+      "name": "ServiceCharge",
+      "discriminator": [80, 27, 252, 196, 96, 153, 254, 192]
+    },
+    {
       "name": "WalletBinding",
       "discriminator": [51, 211, 204, 185, 168, 68, 52, 176]
     }
@@ -534,6 +618,10 @@
     {
       "name": "BindingVetoed",
       "discriminator": [218, 122, 70, 149, 6, 123, 80, 103]
+    },
+    {
+      "name": "ServiceCharged",
+      "discriminator": [177, 27, 12, 242, 174, 79, 142, 142]
     },
     {
       "name": "UnusedWithdrawn",
@@ -837,6 +925,54 @@
           {
             "name": "binding_delay",
             "type": "i64"
+          },
+          {
+            "name": "service_fees",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ServiceCharge",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "invoice_digest",
+            "type": {
+              "array": ["u8", 32]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ServiceCharged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "invoice_digest",
+            "type": {
+              "array": ["u8", 32]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
           }
         ]
       }

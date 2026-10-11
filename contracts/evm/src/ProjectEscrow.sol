@@ -46,9 +46,11 @@ contract ProjectEscrow {
     uint64 public totalGrossWithdrawn;
     uint64 public totalWithdrawalFees;
     uint64 public accruedFees;
+    uint64 public totalServiceFees;
     mapping(bytes32 => Award) public awards;
     mapping(bytes32 => bool) public consumedSources;
     mapping(uint64 => Binding) public bindings;
+    mapping(bytes32 => bool) public chargedInvoices;
     bool private entered;
 
     error Unauthorized();
@@ -58,6 +60,7 @@ contract ProjectEscrow {
     error InvalidBinding();
     error TransferFailed();
     error ReentrantCall();
+    error DuplicateInvoice();
 
     event Deposited(address indexed sponsor, uint256 amount);
     event AwardCommitted(bytes32 indexed id, uint64 indexed actorId, uint64 gross, uint64 fee, bytes32 sourceDigest);
@@ -76,6 +79,7 @@ contract ProjectEscrow {
         uint64 fee
     );
     event UnusedWithdrawn(address indexed destination, uint256 gross, uint256 net, uint256 fee);
+    event ServiceCharged(bytes32 indexed invoiceDigest, uint256 amount);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -209,6 +213,19 @@ contract ProjectEscrow {
         accruedFees += fee;
         sendExact(refundDestination, gross - fee);
         emit UnusedWithdrawn(refundDestination, gross, gross - fee, fee);
+    }
+
+    /// @notice PAY-10: the owner pays one Slopbot invoice from free sponsor funds, exactly once per digest.
+    /// The charge accrues for the fee recipient like other fees; reserved awards are never touched.
+    function chargeService(uint64 amount, bytes32 invoiceDigest) external onlyOwner nonReentrant {
+        if (amount == 0 || invoiceDigest == bytes32(0)) revert InvalidInput();
+        if (chargedInvoices[invoiceDigest]) revert DuplicateInvoice();
+        if (amount > freeBalance) revert InsufficientFreeBalance();
+        chargedInvoices[invoiceDigest] = true;
+        freeBalance -= amount;
+        totalServiceFees += amount;
+        accruedFees += amount;
+        emit ServiceCharged(invoiceDigest, amount);
     }
 
     /// @notice Anyone can move accrued fees to the fee recipient. Only this call depends on that address.

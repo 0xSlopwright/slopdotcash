@@ -22,8 +22,8 @@ export interface SolanaEscrowConfig {
 }
 const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-/** Project account size: 249 bytes of v2 state plus the i64 binding delay. */
-export const PROJECT_SIZE = 257;
+/** Project account size: 249 bytes of v2 state, the i64 binding delay and the u64 service fees. */
+export const PROJECT_SIZE = 265;
 /** Wallet binding size: 152 bytes of v2 state plus the i64 bound_at time. */
 export const BINDING_SIZE = 160;
 type Obj = Record<string, unknown>;

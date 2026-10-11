@@ -182,6 +182,7 @@ For each vault, excluding separately tracked unsolicited token transfers:
 deposited = free + reservedPrincipal + reservedPayoutFees
           + contributorPaid + payoutFeesPaid
           + sponsorReturns + withdrawalFeesPaid
+          + serviceFeesPaid
 
 grossUnusedWithdrawal = sponsorReturn + withdrawalFee
 ```

@@ -79,9 +79,17 @@ The conservation identity is:
 ```
 totalDeposited = freeBalance + reservedPrincipal + reservedFees
                + totalPaid + totalPayoutFees + totalGrossWithdrawn
+               + totalServiceFees
 vault balance  = freeBalance + reservedPrincipal + reservedFees + accruedFees
 accruedFees + claimed fees = totalPayoutFees + totalWithdrawalFees
+                           + totalServiceFees
 ```
+
+`chargeService(amount, invoiceDigest)` (PAY-10) lets only the owner pay one
+Slopbot invoice from `freeBalance`. The amount accrues for the fee recipient
+like other fees. Each nonzero invoice digest can be charged once. It cannot
+spend reserved principal or reserved fees. Only the owner deposits, so every
+vault balance is sponsor-class; this version holds no donor-class funds.
 
 The owner can commit an award to any GitHub actor, including an account the
 owner controls. That moves unused funds out at the 2% payout fee instead of the
