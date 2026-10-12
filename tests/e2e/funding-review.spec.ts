@@ -64,6 +64,13 @@ test("maintainer reviews August cap, preserves excluded rows, and follows fundin
   await expect(
     panel.getByRole("link", { name: "Download unsigned execution plan" }),
   ).toHaveCount(0);
+  // A published proposal can have missing wallets before anyone approves it.
+  await panel.getByLabel("Contribution month").selectOption("2026-09");
+  const paymentRows = panel.getByRole("table", {
+    name: "Payment status by contributor",
+  });
+  await expect(paymentRows).toContainText("Proposed, needs a destination");
+  await expect(paymentRows).not.toContainText("Approved, needs a destination");
   expect(errors).toEqual([]);
   expect(
     (await new AxeBuilder({ page }).include(".funding-workbench").analyze())
@@ -139,6 +146,16 @@ test("public funding records and the payout workspace are separate tabs", async 
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/projects/eliza");
+  const history = page.locator(".payment-history");
+  // The history renders after the full contribution snapshot loads, which
+  // can take longer than the default assertion timeout on a cold runner.
+  await expect(history).toBeVisible({ timeout: 60_000 });
+  // Direct payments come from the payments database, which answers only the
+  // product origins. A local preview shows that they are unavailable.
+  await expect(history).toContainText(
+    "Direct payment records are unavailable.",
+  );
+  await expect(history).not.toContainText("paid directly");
   await page.getByRole("link", { name: "Manage payouts" }).click();
   await expect(page).toHaveURL(/\/projects\/eliza\/funding#payouts$/u);
   const payouts = page.getByRole("tab", { name: "Manage payouts" });

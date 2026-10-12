@@ -61,9 +61,10 @@ settlement. The fee offset is zero until a reviewed project binding exists.
 Billing must use the existing project vaults under PAY-10. The owner authorizes
 `chargeService` on Base or `charge_service` on Solana. The operation must use
 only free sponsor funds, preserve reserved awards and donor funds, and prevent
-a second charge for the same invoice digest. Neither contract has that
-operation yet; finalized invoice reconciliation is also required before launch.
-Issue #616 tracks these dependencies.
+a second charge for the same invoice digest. Both contracts now include that
+operation; it is not reviewed or deployed. Contract security review, deployment
+and finalized invoice reconciliation are still required before launch. Issue
+#616 tracks these dependencies.
 
 Do not send service deposits to payout-fee wallets. There is no public prepaid
 deposit-credit endpoint. A past fee transfer must never become new service

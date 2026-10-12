@@ -100,14 +100,14 @@ try {
     delay,
   ]);
   const id = baseAwardId(31337n, vault, source);
-  await send(token, "mint(address,uint256)", [owner, "110000000"]);
-  await send(token, "approve(address,uint256)", [vault, "110000000"]);
+  await send(token, "mint(address,uint256)", [owner, "115000000"]);
+  await send(token, "approve(address,uint256)", [vault, "115000000"]);
   await rpc("eth_sendTransaction", [
     {
       from: owner,
       to: vault,
       gas: "0x7a1200",
-      data: buildDepositCalldata("110000000"),
+      data: buildDepositCalldata("115000000"),
     },
   ]);
   await rpc("anvil_mine", ["0x1"]);
@@ -259,6 +259,38 @@ try {
     /not finalized/,
   );
   await rpc("anvil_mine", ["0x40"]);
+  // PAY-10: the owner pays one Slopbot invoice from the 15 free; the 100
+  // reserved for the award stays untouched, and an invoice pays once.
+  const invoice = `0x${"3".padStart(64, "0")}`;
+  const charge = (amount: string, digest = invoice, from = owner) =>
+    rpc("eth_call", [
+      {
+        from,
+        to: vault,
+        data: execFileSync(
+          "cast",
+          ["calldata", "chargeService(uint64,bytes32)", amount, digest],
+          { encoding: "utf8" },
+        ).trim(),
+      },
+      "latest",
+    ]);
+  const selector = (error: string) =>
+    execFileSync("cast", ["sig", error], { encoding: "utf8" }).trim();
+  await assert.rejects(
+    charge("15000001"),
+    new RegExp(selector("InsufficientFreeBalance()")),
+  );
+  await assert.rejects(
+    charge("1", `0x${"0".repeat(64)}`),
+    new RegExp(selector("InvalidInput()")),
+  );
+  await assert.rejects(
+    charge("1", invoice, recipient),
+    new RegExp(selector("Unauthorized()")),
+  );
+  await send(vault, "chargeService(uint64,bytes32)", ["5000000", invoice]);
+  await assert.rejects(charge("1"), new RegExp(selector("DuplicateInvoice()")));
   await rpc("eth_sendTransaction", [
     {
       from: owner,
@@ -308,13 +340,14 @@ try {
     ["call", token, "balanceOf(address)(uint256)", fee, "--rpc-url", rpcUrl],
     { encoding: "utf8" },
   ).trim();
-  assert.equal(feeBalance.split(" ")[0], "3000000");
+  // 2 payout fee, 1 withdrawal fee and the 5 service charge.
+  assert.equal(feeBalance.split(" ")[0], "8000000");
   await assert.rejects(
     verifyReserve(config, paymentTx, 0, id),
     /Wrong event topics/,
   );
   console.log(
-    "Base adapter integration passed: real deployment, vault-bound award, delayed and cancellable binding, payment, fee claim, finalized gating, wrong chain/vault/award/index/delay rejection.",
+    "Base adapter integration passed: real deployment, vault-bound award, delayed and cancellable binding, payment, fee claim, exactly-once service charge, finalized gating, wrong chain/vault/award/index/delay rejection.",
   );
 } finally {
   anvil.kill("SIGTERM");

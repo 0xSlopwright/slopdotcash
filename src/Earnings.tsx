@@ -1,6 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { readBoundedJson } from "./lib/browser-json";
-import type { PaymentChain, PaymentsAccount } from "./lib/payments/contracts";
+import {
+  type PaymentChain,
+  type PaymentsAccount,
+  transactionUrl,
+} from "./lib/payments/contracts";
+import { isDirectTransfer } from "./lib/use-direct-transfers";
 
 const networkName = { base: "Base", solana: "Solana" };
 
@@ -12,19 +17,6 @@ const networkLabels: Record<string, string> = {
   "solana-testnet": "Solana Testnet · test token",
   anvil: "Local Base test · test USDC",
 };
-function transactionUrl(network: string, id: string | null): string | null {
-  if (!id) return null;
-  if (network === "base-sepolia")
-    return `https://sepolia.basescan.org/tx/${encodeURIComponent(id)}`;
-  if (network === "base-mainnet")
-    return `https://basescan.org/tx/${encodeURIComponent(id)}`;
-  if (network === "solana-mainnet")
-    return `https://explorer.solana.com/tx/${encodeURIComponent(id)}`;
-  if (network === "solana-devnet" || network === "solana-testnet")
-    return `https://explorer.solana.com/tx/${encodeURIComponent(id)}?cluster=${network.slice(7)}`;
-  return null;
-}
-
 function amount(value: string): string {
   const number = BigInt(value);
   const fraction = (number % 1_000_000n)
@@ -106,7 +98,9 @@ function account(value: unknown): PaymentsAccount {
     ) ||
     data.balances.some(
       (b) => !b || !["base", "solana"].includes(b.chain) || !money(b.netMicro),
-    )
+    ) ||
+    !Array.isArray(data.directTransfers) ||
+    !data.directTransfers.every(isDirectTransfer)
   )
     throw new Error("The payment record could not be verified. Please retry.");
   return data;
@@ -164,7 +158,7 @@ export function EarningsPage() {
           setData(null);
         } else
           setError(
-            e instanceof Error ? e.message : "Could not load your earnings.",
+            e instanceof Error ? e.message : "Could not load your payouts.",
           );
       })
       .finally(() => {
@@ -270,12 +264,15 @@ export function EarningsPage() {
 
   return (
     <main className="shell route-main earnings-page" aria-labelledby={heading}>
-      <h1 id={heading}>Your earnings</h1>
-      <p>Contributor amounts include the 2% payout fee deduction.</p>
-      {loading && <p role="status">Checking your earnings…</p>}
+      <h1 id={heading}>Your payouts</h1>
+      <p>
+        This page shows escrow payouts after the 2% fee deduction. Legacy
+        project cycles keep their recorded fee policy.
+      </p>
+      {loading && <p role="status">Checking your payouts…</p>}
       {signedOut && !loading && (
         <div>
-          <p>Sign in with GitHub to view your earnings.</p>
+          <p>Sign in with GitHub to view your payouts.</p>
           <a className="button" href="/login?next=earnings">
             Sign in with GitHub
           </a>
@@ -358,8 +355,8 @@ export function EarningsPage() {
             </button>
             {data.payments.length === 0 ? (
               <p>
-                No funded awards yet. Proposed rewards appear on project pages
-                until they are approved and funded.
+                No funded escrow awards yet. Proposed rewards appear on project
+                pages until they are approved and funded.
               </p>
             ) : (
               <section
@@ -436,6 +433,67 @@ export function EarningsPage() {
               </section>
             )}
           </section>
+          {data.directTransfers.length > 0 && (
+            <section aria-labelledby={`${heading}-direct`}>
+              <h2 id={`${heading}-direct`}>Sent outside escrow</h2>
+              <p>
+                A project creator sent these transfers directly, before escrow
+                payouts. Each one is in a published disclosure and on chain. No
+                payout fee was deducted.
+              </p>
+              <section
+                className="points-table"
+                aria-label="Direct payment details; scroll horizontally for all columns"
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll the payment history on narrow screens.
+                tabIndex={0}
+              >
+                <table>
+                  <caption>Direct transfers by contribution month</caption>
+                  <thead>
+                    <tr>
+                      <th>Project</th>
+                      <th>Month</th>
+                      <th>Network</th>
+                      <th>Received</th>
+                      <th>Transaction</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.directTransfers.map((t) => (
+                      <tr key={`${t.network}:${t.transactionId}`}>
+                        <td>
+                          <a
+                            href={`/projects/${encodeURIComponent(t.projectId)}`}
+                          >
+                            {t.projectId}
+                          </a>
+                        </td>
+                        <td>{t.contributionMonth}</td>
+                        <td>{networkLabels[t.network] ?? t.network}</td>
+                        <td>{amount(t.amountMicro)}</td>
+                        <td>
+                          {transactionUrl(t.network, t.transactionId) ? (
+                            <a
+                              href={
+                                transactionUrl(t.network, t.transactionId) ??
+                                undefined
+                              }
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              View transfer
+                            </a>
+                          ) : (
+                            t.transactionId
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+            </section>
+          )}
         </>
       )}
     </main>

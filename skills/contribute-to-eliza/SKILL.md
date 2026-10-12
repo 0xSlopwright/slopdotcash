@@ -6,7 +6,7 @@ description: "Review and prove current elizaOS/eliza pull requests on real worki
 # Contribute to Eliza
 
 Produce one reviewable outcome in `elizaOS/eliza`. Accepted work shares the
-eliza monthly USDC pool, capped at $5,000 and not funded yet; maintainers
+eliza monthly USDC pool, capped at $1,000 and not funded yet; maintainers
 review allocations, nothing is paid until the pool is funded and the month is
 approved, and token volume alone never earns.
 

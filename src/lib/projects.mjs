@@ -33,6 +33,10 @@ const PROJECTS = Object.freeze(
           left.reward.monthlyCapMinor,
           right.reward.monthlyCapMinor,
         ) ||
+        // Equal pools keep the root publisher first, so a cap change alone
+        // cannot move the primary leaderboard repository.
+        Number(right.skill.publishAtRoot === true) -
+          Number(left.skill.publishAtRoot === true) ||
         left.id.localeCompare(right.id),
     )
     .map(freezeTree),
