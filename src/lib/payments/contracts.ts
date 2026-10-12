@@ -30,6 +30,15 @@ export interface PaymentsAccount {
   balances: { chain: PaymentChain; netMicro: string }[];
   /** Imported from reviewed disclosures; never an escrow `paid` state. */
   directTransfers: DirectTransfer[];
+  /** Legacy README observations; history only, never a payout destination. */
+  walletObservations: WalletObservation[];
+}
+export interface WalletObservation {
+  chain: PaymentChain;
+  address: string;
+  proofLevel: "profile_readme";
+  sourceUrl: string;
+  observedAt: string;
 }
 /** A transfer a project creator sent outside escrow and Slop settlement. */
 export interface DirectTransfer {

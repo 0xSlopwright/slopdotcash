@@ -109,6 +109,15 @@ payouts. `GET /me` returns them as `directTransfers`.
 `GET /api/v1/payments/actors/<numeric-github-id>/direct-transfers` publish
 the same disclosed facts.
 
+Migration `0015` adds `wallet_observations`: legacy Solana addresses that a
+contributor published in a GitHub profile README and that a reviewed
+preparation or cycle proposal froze at an immutable commit. The same import
+writes them with proof level `profile_readme` (PRD WAL-01). They are history
+only. They never become `wallet_claims`, payment authorizations, or payout
+destinations. `GET /me` returns them as `walletObservations`, and the payouts
+page asks the contributor to connect and confirm a wallet. Registry-sourced
+frozen wallets are already D1 claims and are not imported again.
+
 For browser QA, `bun backend/payments/base.integration.ts --serve` starts a local
 HTTP fixture on port 18548 with a seeded GitHub session, real migrated SQLite,
 and an isolated Anvil chain. It exposes `/fixture`, the account login read, and
