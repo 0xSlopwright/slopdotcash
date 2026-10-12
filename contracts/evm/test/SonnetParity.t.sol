@@ -1,0 +1,249 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.30;
+import {ProjectEscrow, IERC20} from "../src/ProjectEscrow.sol";
+import {TestDollar} from "../integration/TestDollar.sol";
+
+interface Vm {
+    function warp(uint256) external;
+    function prank(address) external;
+    function expectRevert() external;
+}
+
+contract SonnetParity {
+    Vm constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+    TestDollar t;
+    ProjectEscrow e;
+    address owner = address(0xA11CE);
+    address auth = address(0xA07);
+    address feeR = address(0xFEE);
+    address dest1 = address(0xD1);
+    address dest2 = address(0xD2);
+
+    function setUp() public {
+        t = new TestDollar();
+        e = new ProjectEscrow(bytes32(uint256(1)), IERC20(address(t)), owner, owner, feeR, auth, 100);
+        t.mint(owner, 1e15);
+        vm.prank(owner);
+        t.approve(address(e), type(uint256).max);
+    }
+
+    function _dep(uint64 a) internal {
+        vm.prank(owner);
+        e.deposit(a);
+    }
+
+    function _wd(uint64 g) internal {
+        vm.prank(owner);
+        e.withdrawUnused(g);
+    }
+
+    function _inv() internal view {
+        require(
+            e.totalDeposited()
+                == uint256(e.freeBalance()) + e.reservedPrincipal() + e.reservedFees() + e.totalPaid()
+                    + e.totalPayoutFees() + e.totalGrossWithdrawn() + e.totalServiceFees(),
+            "id1"
+        );
+        require(
+            t.balanceOf(address(e))
+                == uint256(e.freeBalance()) + e.reservedPrincipal() + e.reservedFees() + e.accruedFees(),
+            "id2"
+        );
+        require(e.totalWithdrawalFees() == e.totalGrossWithdrawn() / 10, "wfee");
+    }
+
+    // payout fee table
+    function test_payoutFeeTable() public view {
+        uint64[9] memory g = [uint64(1), 49, 50, 51, 99, 100, 149, 150, 1e6];
+        for (uint256 i; i < g.length; i++) {
+            uint64 f = e.payoutFee(g[i]);
+            require(f <= g[i] && g[i] - f >= 1, "bad");
+        }
+    }
+
+    // withdrawal: record fee for each piece; fuzz splitting
+    function testFuzz_splitTotalEqual(uint8[12] memory parts) public {
+        _dep(1e12);
+        uint64 total;
+        uint64 feeSum;
+        for (uint256 i; i < 12; i++) {
+            uint64 g = uint64(parts[i]) + 1;
+            uint64 beforeAcc = e.accruedFees();
+            _wd(g);
+            uint64 fee = e.accruedFees() - beforeAcc;
+            require(fee <= g, "fee>gross");
+            feeSum += fee;
+            total += g;
+            _inv();
+        }
+        require(feeSum == total / 10, "path dependent");
+    }
+
+    function test_unitWithdrawals() public {
+        _dep(1000);
+        uint64 feeSum;
+        for (uint256 i; i < 30; i++) {
+            uint64 b = e.accruedFees();
+            _wd(1);
+            feeSum += e.accruedFees() - b;
+        }
+        require(feeSum == 3, "3");
+        _inv();
+    }
+
+    function test_interleavedPaymentsAndWithdrawals() public {
+        _dep(10000);
+        // commit award 149 and 50, bind, pay between withdrawals
+        bytes32 s1 = bytes32(uint256(11));
+        bytes32 s2 = bytes32(uint256(12));
+        bytes32 id1 = e.awardId(s1);
+        bytes32 id2 = e.awardId(s2);
+        vm.prank(owner);
+        e.commitAward(id1, 7, 149, s1);
+        vm.prank(owner);
+        e.commitAward(id2, 8, 99, s2);
+        _inv();
+        _wd(9);
+        _inv();
+        vm.prank(auth);
+        e.bindDestination(7, dest1, 0, bytes32(uint256(1)), type(uint64).max);
+        vm.prank(auth);
+        e.bindDestination(8, dest2, 0, bytes32(uint256(1)), type(uint64).max);
+        vm.warp(block.timestamp + 100);
+        e.pay(id1, 1);
+        _inv();
+        _wd(1);
+        _inv();
+        e.pay(id2, 1);
+        _inv();
+        _wd(5);
+        _inv();
+        require(t.balanceOf(dest1) == 147 && t.balanceOf(dest2) == 98, "net");
+        require(e.accruedFees() == 2 + 1 + 1, "fees"); // 2 + 1 payout, +1 withdraw (cum 15 -> 1)
+        e.claimFees();
+        _inv();
+        require(t.balanceOf(feeR) == 4, "claimed");
+    }
+
+    function test_chargeServiceInterplay() public {
+        _dep(1000);
+        vm.prank(owner);
+        e.chargeService(100, bytes32(uint256(5)));
+        _inv();
+        _wd(100); // fee 10 on 100, service not counted in cumulative
+        _inv();
+        require(e.totalGrossWithdrawn() == 100 && e.totalWithdrawalFees() == 10, "svc");
+        // service charge reduces free; withdrawal cannot exceed free
+        vm.expectRevert();
+        _wd(801);
+        e.claimFees();
+        _inv();
+        require(t.balanceOf(feeR) == 110, "110");
+    }
+
+    // direct transfer doesn't break accounting identities (2) other than vault >= sum
+    function test_directTransfer() public {
+        _dep(1000);
+        t.mint(address(e), 777);
+        require(t.balanceOf(address(e)) == 1777, "x");
+        _wd(1000);
+        require(t.balanceOf(address(e)) == 777 + 100, "stuck");
+        require(e.freeBalance() == 0, "free");
+    }
+
+    // blocked destination reverts whole pay and leaves state
+    function test_blockedPayLeavesState() public {
+        _dep(1000);
+        bytes32 s1 = bytes32(uint256(11));
+        bytes32 id1 = e.awardId(s1);
+        vm.prank(owner);
+        e.commitAward(id1, 7, 100, s1);
+        vm.prank(auth);
+        e.bindDestination(7, dest1, 0, bytes32(uint256(1)), type(uint64).max);
+        vm.warp(block.timestamp + 100);
+        t.blockAddress(dest1);
+        vm.expectRevert();
+        e.pay(id1, 1);
+        _inv();
+        require(e.reservedPrincipal() == 98 && e.reservedFees() == 2, "state");
+    }
+
+    // cancel then rebind then pay
+    function test_cancelThenRebind() public {
+        _dep(1000);
+        bytes32 s1 = bytes32(uint256(11));
+        bytes32 id1 = e.awardId(s1);
+        vm.prank(owner);
+        e.commitAward(id1, 7, 100, s1);
+        vm.prank(auth);
+        e.bindDestination(7, dest1, 0, bytes32(uint256(1)), type(uint64).max);
+        vm.prank(owner);
+        e.cancelBinding(7, 1);
+        vm.warp(block.timestamp + 1000);
+        vm.expectRevert();
+        e.pay(id1, 1);
+        vm.prank(auth);
+        e.bindDestination(7, dest1, 1, bytes32(uint256(1)), type(uint64).max);
+        vm.warp(block.timestamp + 100);
+        e.pay(id1, 2);
+        _inv();
+    }
+
+    function test_repeatedCancelBlocksForever() public {
+        _dep(1000);
+        bytes32 s1 = bytes32(uint256(11));
+        bytes32 id1 = e.awardId(s1);
+        vm.prank(owner);
+        e.commitAward(id1, 7, 100, s1);
+        uint64 v;
+        for (uint256 i; i < 10; i++) {
+            vm.prank(auth);
+            e.bindDestination(7, dest1, v, bytes32(uint256(1)), type(uint64).max);
+            v++;
+            vm.prank(owner);
+            e.cancelBinding(7, v);
+            vm.warp(block.timestamp + 1000);
+            vm.expectRevert();
+            e.pay(id1, v);
+        }
+        require(e.reservedPrincipal() == 98 && e.freeBalance() == 900, "still reserved");
+        // owner cannot recover
+        vm.expectRevert();
+        _wd(901);
+    }
+
+    function test_activeBindingSupersededThenCancelled() public {
+        _dep(1000);
+        bytes32 s1 = bytes32(uint256(11));
+        bytes32 id1 = e.awardId(s1);
+        vm.prank(owner);
+        e.commitAward(id1, 7, 100, s1);
+        vm.prank(auth);
+        e.bindDestination(7, dest1, 0, bytes32(uint256(1)), type(uint64).max);
+        vm.warp(block.timestamp + 1000); // v1 active and payable
+        // authority rotates (same destination), owner cancels the replacement
+        vm.prank(auth);
+        e.bindDestination(7, dest1, 1, bytes32(uint256(2)), type(uint64).max);
+        vm.expectRevert(); // old active version no longer payable
+        e.pay(id1, 1);
+        vm.prank(owner);
+        e.cancelBinding(7, 2);
+        vm.warp(block.timestamp + 1000);
+        vm.expectRevert();
+        e.pay(id1, 1);
+        vm.expectRevert();
+        e.pay(id1, 2);
+    }
+
+    function test_selfPayoutExitFeeAndFragments() public {
+        // 49-unit awards pay zero fee; 100 gross pays 2
+        _dep(1000);
+        for (uint256 i; i < 3; i++) {
+            bytes32 s = bytes32(uint256(100 + i));
+            bytes32 id = e.awardId(s);
+            vm.prank(owner);
+            e.commitAward(id, 9, 49, s);
+        }
+        require(e.reservedFees() == 0 && e.reservedPrincipal() == 147, "fragments");
+    }
+}
