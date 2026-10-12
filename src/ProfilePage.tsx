@@ -37,6 +37,7 @@ import {
   formatMicroUsdc,
   formatScore,
   monthlyPoolUnfunded,
+  UNFUNDED_POOL_HEADLINE,
 } from "./Presentation";
 import { RewardValue } from "./ProjectLeaderboard";
 
@@ -211,7 +212,7 @@ export function ProfilePage({
     monthlyPools.every((view) => monthlyPoolUnfunded(view.project.reward));
   const simulatedLabel = `${
     cycleId ? formatCycleMonth(cycleId) : "monthly"
-  } simulated estimate${simulatedUnfunded ? ", unfunded" : ""}`;
+  } ${simulatedUnfunded ? "pool" : "simulated estimate"}`;
   const historicalWallet = history.find(({ contributor }) => contributor.wallet)
     ?.contributor.wallet;
   return (
@@ -264,16 +265,24 @@ export function ProfilePage({
               <strong>{formatCompact(acceptedOutcomes)}</strong>
               <span>accepted this month</span>
             </div>
-            <div>
-              <strong>{formatMicroUsdc(simulated.toString())}</strong>
-              <span>{simulatedLabel}</span>
-            </div>
+            {simulatedUnfunded ? (
+              <div>
+                <strong>{UNFUNDED_POOL_HEADLINE}</strong>
+                <span>{simulatedLabel}</span>
+              </div>
+            ) : (
+              <div>
+                <strong>{formatMicroUsdc(simulated.toString())}</strong>
+                <span>{simulatedLabel}</span>
+              </div>
+            )}
           </>
         }
       />
       <p>
-        This estimate uses project budget targets. It is not an approved payout.
-        The 14-day review applies to monthly proposals, not this estimate.
+        {simulatedUnfunded
+          ? "No monthly pool is funded, so no amount is estimated. Approved payouts appear once a funded cycle is approved."
+          : "This estimate uses project budget targets. It is not an approved payout. The 14-day review applies to monthly proposals, not this estimate."}
       </p>
       <section className="section profile-section">
         <div className="profile-section-heading">

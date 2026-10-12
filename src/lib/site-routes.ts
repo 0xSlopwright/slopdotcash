@@ -2,7 +2,7 @@
 import { PROJECTS } from "./projects.mjs";
 
 export const SITE_ORIGIN = "https://slop.cash";
-export const HOME_TITLE = "Slop — make money shipping open source";
+export const HOME_TITLE = "Slop: make money shipping open source";
 
 /** Indexable pages with fixed paths, in sitemap order. */
 export const STATIC_PAGE_TITLES = new Map([
@@ -17,7 +17,7 @@ export const STATIC_PAGE_TITLES = new Map([
 ]);
 
 export function pageTitle(name: string): string {
-  return name === HOME_TITLE ? name : `${name} — Slop`;
+  return name === HOME_TITLE ? name : `${name} · Slop`;
 }
 
 /** Every indexable path: fixed pages, each manifest project, each published cycle. */
