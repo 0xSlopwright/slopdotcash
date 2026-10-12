@@ -49,7 +49,7 @@ jobs:
           version: v1.7.1
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bun run test:escrow-policy
-      - run: bun run test:contracts:base
+      - run: bun run test:contracts:evm
       - run: bun run test:payments
       - run: bunx playwright install --with-deps chromium
       - run: bunx vite build

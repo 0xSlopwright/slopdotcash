@@ -12,11 +12,11 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
 import {
   type BindingInput,
-  baseAwardId,
-  baseBindingDigest,
-  type baseBindingTypedData,
   buildBindCalldata,
   buildPayCalldata,
+  evmAwardId,
+  evmBindingDigest,
+  type evmBindingTypedData,
   verifyBinding,
 } from "../../contracts/evm/adapter";
 import { sha256Hex } from "../../workers/identity/crypto";
@@ -142,7 +142,7 @@ const recipientAccount = privateKeyToAccount(`0x${"0".repeat(63)}1`);
 /** viem signs the same EIP-712 structure the vault hashes; a mismatch fails at the handler. */
 function signBinding(
   account: { signTypedData: (data: never) => Promise<`0x${string}`> },
-  typedData: ReturnType<typeof baseBindingTypedData>,
+  typedData: ReturnType<typeof evmBindingTypedData>,
 ) {
   const { EIP712Domain: _domain, ...types } = typedData.types;
   return account.signTypedData({
@@ -181,7 +181,7 @@ async function authorizeBinding(
       }),
       { db },
     )
-  ).json()) as { typedData: ReturnType<typeof baseBindingTypedData> };
+  ).json()) as { typedData: ReturnType<typeof evmBindingTypedData> };
   assert.equal(challenge.typedData.message.expectedVersion, expectedVersion);
   const response = await handlePaymentsApi(
     request("/wallets/bind-authorize", {
@@ -296,7 +296,7 @@ try {
     ])) as string
   ).slice(-40)}`;
   deploymentTransactions.set(vault, createTx);
-  award = baseAwardId(31337n, vault, source);
+  award = evmAwardId(31337n, vault, source);
   await send(asset, "mint(address,uint256)", [owner, "200000000"]);
   await send(asset, "approve(address,uint256)", [vault, "200000000"]);
   await send(vault, "deposit(uint64)", ["200000000"]);
@@ -420,7 +420,7 @@ try {
       }),
       { db },
     )
-  ).json()) as { typedData: ReturnType<typeof baseBindingTypedData> };
+  ).json()) as { typedData: ReturnType<typeof evmBindingTypedData> };
   assert.ok(bindChallenge.typedData, JSON.stringify(bindChallenge));
   assert.equal(bindChallenge.typedData.message.destination, recipient);
   assert.equal(
@@ -755,11 +755,7 @@ try {
   ).trim();
   assert.equal(refundBalance.split(" ")[0], "90000000");
   // A later award follows an authenticated successor only after the 24-hour delay.
-  const rotationAward = baseAwardId(
-    31337n,
-    vault,
-    `0x${"a".padStart(64, "0")}`,
-  );
+  const rotationAward = evmAwardId(31337n, vault, `0x${"a".padStart(64, "0")}`);
   await send(asset, "mint(address,uint256)", [owner, "100000000"]);
   await send(asset, "approve(address,uint256)", [vault, "100000000"]);
   await send(vault, "deposit(uint64)", ["100000000"]);
@@ -940,7 +936,7 @@ try {
     "Original award is never replayed during rotation",
   );
   if (process.argv.includes("--serve")) {
-    const browserAward = baseAwardId(
+    const browserAward = evmAwardId(
       31337n,
       vault,
       `0x${"5".padStart(64, "0")}`,
@@ -1002,7 +998,7 @@ try {
               // The fixture wallet (key 1) accepts the binding, as the page would.
               const accepted = secp256k1.sign(
                 Uint8Array.from(
-                  baseBindingDigest(31337n, vault, acceptance)
+                  evmBindingDigest(31337n, vault, acceptance)
                     .slice(2)
                     .match(/../g) ?? [],
                   (b) => Number.parseInt(b, 16),

@@ -6,8 +6,6 @@ import { fileURLToPath } from "node:url";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import {
   type BindingInput,
-  baseAwardId,
-  baseBindingDigest,
   buildBindCalldata,
   buildCancelBindingCalldata,
   buildClaimFeesCalldata,
@@ -15,9 +13,11 @@ import {
   buildDepositCalldata,
   buildPayCalldata,
   buildWithdrawCalldata,
-  readBaseAuthorityRotation,
-  verifyBaseDeployment,
+  evmAwardId,
+  evmBindingDigest,
+  readEvmAuthorityRotation,
   verifyBinding,
+  verifyEvmDeployment,
   verifyPayment,
   verifyReserve,
 } from "./adapter";
@@ -121,12 +121,12 @@ try {
       "latest",
     ])) as string
   ).slice(-40)}`;
-  const id = baseAwardId(31337n, vault, source);
+  const id = evmAwardId(31337n, vault, source);
   /** The destination wallet signs the exact binding; the authority submits it unchanged. */
   const acceptBinding = (binding: BindingInput) => {
     const signed = secp256k1.sign(
       Uint8Array.from(
-        baseBindingDigest(31337n, vault, binding).slice(2).match(/../g) ?? [],
+        evmBindingDigest(31337n, vault, binding).slice(2).match(/../g) ?? [],
         (pair) => Number.parseInt(pair, 16),
       ),
       recipientKey,
@@ -403,14 +403,14 @@ try {
   // Identity authority rotation: the registrar (the deployer here) proposes,
   // the change takes effect after 7 days, and the reviewed manifest must be
   // updated before the adapter accepts the vault again.
-  assert.deepEqual(await readBaseAuthorityRotation(config, "latest"), {
+  assert.deepEqual(await readEvmAuthorityRotation(config, "latest"), {
     factory: factory.toLowerCase(),
     identityAuthority: attester.toLowerCase(),
     pendingIdentityAuthority: null,
     effectiveAt: null,
   });
   await send(factory, "proposeIdentityAuthority(address)", [nextAttester]);
-  const pending = await readBaseAuthorityRotation(config, "latest");
+  const pending = await readEvmAuthorityRotation(config, "latest");
   assert.equal(pending.pendingIdentityAuthority, nextAttester.toLowerCase());
   assert.ok(BigInt(pending.effectiveAt ?? "0") > 0n);
   const premature = await send(
@@ -431,16 +431,16 @@ try {
   await rpc("anvil_mine", ["0x1"]);
   await send(factory, "executeIdentityAuthorityRotation()", [], recipient);
   assert.equal(
-    (await readBaseAuthorityRotation(config, "latest")).identityAuthority,
+    (await readEvmAuthorityRotation(config, "latest")).identityAuthority,
     nextAttester.toLowerCase(),
   );
   await rpc("anvil_mine", ["0x40"]);
   await assert.rejects(
-    verifyBaseDeployment(config),
+    verifyEvmDeployment(config),
     /asset or authority/,
     "a rotated authority fails the reviewed manifest until it is updated",
   );
-  await verifyBaseDeployment({ ...config, identityAuthority: nextAttester });
+  await verifyEvmDeployment({ ...config, identityAuthority: nextAttester });
   console.log(
     "Base adapter integration passed: real factory deployment, vault-bound award, wallet-accepted delayed and cancellable binding, payment, fee claim, exactly-once service charge, finalized gating, wrong chain/vault/award/index/delay rejection, timelocked authority rotation.",
   );

@@ -3,7 +3,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
   type BindingInput,
-  baseBindingDigest,
+  evmBindingDigest,
 } from "../../contracts/evm/adapter";
 import { solanaAddressBytes } from "../../src/lib/wallets";
 
@@ -21,7 +21,7 @@ export function personalMessageHash(message: string): Uint8Array {
   return keccak_256(data);
 }
 /** Recovers the externally owned account that produced a 65-byte secp256k1 signature over a digest. */
-function recoverBaseSigner(digest: Uint8Array, signature: string): string {
+function recoverEvmSigner(digest: Uint8Array, signature: string): string {
   if (!/^0x[0-9a-fA-F]{130}$/.test(signature))
     throw new Error("Invalid signature");
   const bytes = Uint8Array.from(signature.slice(2).match(/../g) ?? [], (b) =>
@@ -37,8 +37,8 @@ function recoverBaseSigner(digest: Uint8Array, signature: string): string {
   ).toBytes(false);
   return `0x${hex(keccak_256(publicKey.slice(1)).slice(-20))}`;
 }
-/** The destination wallet's EIP-712 acceptance of one exact Base binding (ProjectEscrow.bindingDigest). EOA only. */
-export function verifyBaseBindingSignature(
+/** The destination wallet's EIP-712 acceptance of one exact EVM binding (ProjectEscrow.bindingDigest). EOA only. */
+export function verifyEvmBindingSignature(
   chainId: bigint,
   vault: string,
   input: BindingInput,
@@ -46,11 +46,11 @@ export function verifyBaseBindingSignature(
 ): boolean {
   try {
     const digest = Uint8Array.from(
-      baseBindingDigest(chainId, vault, input).slice(2).match(/../g) ?? [],
+      evmBindingDigest(chainId, vault, input).slice(2).match(/../g) ?? [],
       (b) => Number.parseInt(b, 16),
     );
     return (
-      recoverBaseSigner(digest, signature) === input.destination.toLowerCase()
+      recoverEvmSigner(digest, signature) === input.destination.toLowerCase()
     );
   } catch {
     return false;
@@ -76,7 +76,7 @@ export function verifyPaymentWalletSignature(
     }
     if (chain !== "base") return false;
     return (
-      recoverBaseSigner(personalMessageHash(message), signature) ===
+      recoverEvmSigner(personalMessageHash(message), signature) ===
       address.toLowerCase()
     );
   } catch {

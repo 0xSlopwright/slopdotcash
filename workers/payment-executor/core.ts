@@ -5,14 +5,14 @@ import type {
 } from "../../backend/payments/dispatch";
 import {
   buildPaymentWalletMessage,
-  verifyBaseBindingSignature,
+  verifyEvmBindingSignature,
   verifyPaymentWalletSignature,
 } from "../../backend/payments/possession";
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import {
   buildBindCalldata,
   buildPayCalldata,
-  verifyBaseDeployment,
+  verifyEvmDeployment,
 } from "../../contracts/evm/adapter";
 import { finalizedBaseRevert } from "../payments/reconcile";
 
@@ -216,7 +216,7 @@ export async function preflightBaseDeployment(
     BigInt(deployment.chainId)
   )
     throw new Error("Wrong RPC chain");
-  await verifyBaseDeployment({
+  await verifyEvmDeployment({
     ...deployment,
     chainId: BigInt(deployment.chainId),
   });
@@ -491,7 +491,7 @@ export function createBaseAttester(env: ExecutorEnvironment): PaymentExecutor {
         expiresAt: accepted.expiresAt,
       };
       if (
-        !verifyBaseBindingSignature(
+        !verifyEvmBindingSignature(
           BigInt(deployment.chainId),
           deployment.vault,
           request,

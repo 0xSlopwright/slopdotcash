@@ -1,7 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 /** Finalized escrow events from a reviewed deployment. The configured RPC and vault are trust roots. */
-export interface BaseEscrowConfig {
+export interface EvmEscrowConfig {
   rpcUrl: string;
   chainId: bigint;
   vault: string;
@@ -61,11 +61,7 @@ function uint64(word: string): bigint {
   if (value > U64) throw new Error("Invalid uint64 event field");
   return value;
 }
-async function rpc(
-  config: BaseEscrowConfig,
-  method: string,
-  params: unknown[],
-) {
+async function rpc(config: EvmEscrowConfig, method: string, params: unknown[]) {
   const response = await fetch(config.rpcUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -81,8 +77,8 @@ async function rpc(
 }
 
 /** codeSha256 hashes decoded immutable runtime code bytes, not hex text or creation code. */
-export async function verifyBaseDeployment(
-  config: BaseEscrowConfig,
+export async function verifyEvmDeployment(
+  config: EvmEscrowConfig,
   blockTag: unknown = "finalized",
 ) {
   if (
@@ -150,7 +146,7 @@ export async function verifyBaseDeployment(
 }
 
 /** The only award ID ProjectEscrow accepts: keccak256(abi.encode(chainId, vault, sourceDigest)). */
-export function baseAwardId(
+export function evmAwardId(
   chainId: bigint,
   vault: string,
   sourceDigest: string,
@@ -168,7 +164,7 @@ export function baseAwardId(
 }
 
 async function finalizedLog(
-  config: BaseEscrowConfig,
+  config: EvmEscrowConfig,
   transactionId: string,
   eventIndex: number,
 ) {
@@ -208,7 +204,7 @@ async function finalizedLog(
   ) {
     throw new Error("Receipt block is not canonical");
   }
-  await verifyBaseDeployment(config, receipt.blockNumber);
+  await verifyEvmDeployment(config, receipt.blockNumber);
   if (!Array.isArray(receipt.logs)) throw new Error("Missing receipt logs");
   const matches = receipt.logs
     .map(object)
@@ -229,7 +225,7 @@ async function finalizedLog(
 }
 
 async function verify(
-  config: BaseEscrowConfig,
+  config: EvmEscrowConfig,
   transactionId: string,
   eventIndex: number,
   obligationId: string,
@@ -302,7 +298,7 @@ async function verify(
 }
 
 export function verifyReserve(
-  config: BaseEscrowConfig,
+  config: EvmEscrowConfig,
   transactionId: string,
   eventIndex: number,
   obligationId: string,
@@ -311,7 +307,7 @@ export function verifyReserve(
 }
 
 export function verifyPayment(
-  config: BaseEscrowConfig,
+  config: EvmEscrowConfig,
   transactionId: string,
   eventIndex: number,
   obligationId: string,
@@ -320,7 +316,7 @@ export function verifyPayment(
 }
 
 export async function verifyBinding(
-  config: BaseEscrowConfig,
+  config: EvmEscrowConfig,
   transactionId: string,
   eventIndex: number,
   githubUserId: string,
@@ -426,7 +422,7 @@ const DOMAIN_NAME_HASH =
 const DOMAIN_VERSION_HASH =
   "2a80e1ef1d7842f27f2e6be0972bb708b9a135c38860dbe73c27c3486c34f4de";
 /** The EIP-712 typed data a destination wallet signs to accept a binding (eth_signTypedData_v4). */
-export function baseBindingTypedData(
+export function evmBindingTypedData(
   chainId: bigint,
   vault: string,
   input: BindingInput,
@@ -467,7 +463,7 @@ export function baseBindingTypedData(
   };
 }
 /** The digest ProjectEscrow.bindingDigest returns for the same fields; recover it to verify a wallet signature. */
-export function baseBindingDigest(
+export function evmBindingDigest(
   chainId: bigint,
   vault: string,
   input: BindingInput,
@@ -497,7 +493,7 @@ export function buildBindCalldata(
   const signature = input.walletSignature.slice(2).toLowerCase();
   return `0xac11944e${word(input.githubUserId)}${input.destination.slice(2).toLowerCase().padStart(64, "0")}${word(input.expectedVersion)}${hash(input.claimDigest).slice(2)}${word(input.expiresAt)}${"c0".padStart(64, "0")}${"41".padStart(64, "0")}${signature.padEnd(192, "0")}`;
 }
-export interface BaseAuthorityRotation {
+export interface EvmAuthorityRotation {
   factory: string;
   identityAuthority: string;
   /** Null when no rotation is proposed. */
@@ -505,10 +501,10 @@ export interface BaseAuthorityRotation {
   effectiveAt: string | null;
 }
 /** The identity authority in force for a vault and any pending factory rotation, at the finalized block. */
-export async function readBaseAuthorityRotation(
-  config: BaseEscrowConfig,
+export async function readEvmAuthorityRotation(
+  config: EvmEscrowConfig,
   blockTag: unknown = "finalized",
-): Promise<BaseAuthorityRotation> {
+): Promise<EvmAuthorityRotation> {
   if (!ADDRESS.test(config.vault)) throw new Error("Invalid vault");
   const read = async (to: string, selector: string, pattern: RegExp) => {
     const value = await rpc(config, "eth_call", [

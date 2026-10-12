@@ -1,9 +1,6 @@
 /** Produce unsigned owner requests from an exact source-bound, review-complete proposal. */
 import { resolve } from "node:path";
-import {
-  baseAwardId,
-  buildCommitAwardCalldata,
-} from "../contracts/evm/adapter";
+import { buildCommitAwardCalldata, evmAwardId } from "../contracts/evm/adapter";
 import { solanaAwardId } from "../contracts/solana/adapter";
 import { ESCROW_NETWORKS } from "../src/lib/escrow-policy.mjs";
 import { findProject } from "../src/lib/projects.mjs";
@@ -78,7 +75,7 @@ export async function prepareEscrowCommitments(
       // reserve it first.
       awardId:
         project.escrow?.chain === "base"
-          ? baseAwardId(
+          ? evmAwardId(
               BigInt(ESCROW_NETWORKS[deployment.network].chainId ?? "0"),
               deployment.vault,
               `0x${award.sourceDigest}`,

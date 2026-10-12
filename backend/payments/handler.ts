@@ -1,4 +1,4 @@
-import { baseBindingTypedData } from "../../contracts/evm/adapter";
+import { evmBindingTypedData } from "../../contracts/evm/adapter";
 import { readBoundedJson } from "../../src/lib/browser-json";
 import type {
   AccountPayment,
@@ -10,7 +10,7 @@ import { sha256Hex } from "../../workers/identity/crypto";
 import type { D1Database } from "../trace/cloudflare-persistence";
 import {
   buildPaymentWalletMessage,
-  verifyBaseBindingSignature,
+  verifyEvmBindingSignature,
   verifyPaymentWalletSignature,
 } from "./possession";
 import { slopbotInvoice } from "./slopbot-billing";
@@ -380,11 +380,11 @@ export async function handlePaymentsApi(
       if (!authorize)
         return json(200, {
           claimId: wallet.id,
-          typedData: baseBindingTypedData(BigInt(body.chainId), vault, binding),
+          typedData: evmBindingTypedData(BigInt(body.chainId), vault, binding),
         });
       if (
         BigInt(expiresAt) <= BigInt(nowSeconds) ||
-        !verifyBaseBindingSignature(
+        !verifyEvmBindingSignature(
           BigInt(body.chainId),
           vault,
           binding,
