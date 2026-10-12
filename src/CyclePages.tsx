@@ -52,12 +52,17 @@ export function CyclePage({
   let view: ProjectView | null = null;
   try {
     view = createProjectView(state.snapshot, project.id, cycleId);
-  } catch (error: unknown) {
+  } catch {
     if (!record) {
       return (
-        <NotFound
-          title={error instanceof Error ? error.message : "Cycle unavailable"}
-        />
+        <NotFound title={`No ${formatCycleMonth(cycleId)} cycle record`}>
+          <p>
+            {project.name} has no frozen cycle record for this month, and the
+            live leaderboard does not cover it. Any payment sent outside the
+            cycle flow is listed on the{" "}
+            <Link href={`/projects/${project.slug}`}>project page</Link>.
+          </p>
+        </NotFound>
       );
     }
   }
@@ -212,10 +217,12 @@ export function CyclePage({
           ))}
         </ol>
       )}
-      {view ? (
-        <CycleAllocation updatedAt={state.snapshot.generatedAt} view={view} />
-      ) : record ? (
+      {record ? (
+        // A frozen record is what is under review; never replace it with a
+        // live recompute, even while the rolling window still covers the month.
         <ArchivedCycleLeaderboard cycle={record} />
+      ) : view ? (
+        <CycleAllocation updatedAt={state.snapshot.generatedAt} view={view} />
       ) : null}
       {record ? <CycleArtifacts cycle={record} /> : null}
     </main>
