@@ -1,4 +1,4 @@
-# Repository contract — xchemtina/darling-arm64
+# Repository contract: xchemtina/darling-arm64
 
 What the repository contains, what runs where, and which invariants a contribution must
 not break. Read this before choosing work; read
@@ -15,7 +15,7 @@ This is the fact that determines everything else.
 
 Darling is a translation layer, not a CPU emulator: the host architecture must match the
 binary architecture. An x86_64 machine cannot produce a valid result for this project at
-all — not a weaker one, none.
+all: not a weaker one, none.
 
 The Darling **source tree lives inside the VM**, not in this repository. Do not clone the
 Darwin sources on the macOS side: APFS is case-insensitive by default and the Darwin tree
@@ -28,8 +28,8 @@ it.
 |---|---|---|
 | `tools/` | VM | Measurement harnesses. Named for the finding that produced them (`fNNN-*`), so a number in `FINDINGS.md` leads directly to the tool that measured it. |
 | `scripts/` | host | Staging: VM setup, corpus construction, native ground-truth capture, staged builds. Numbered by stage (`00-`, `10-`, `30-`…). |
-| `evidence/` | — | Raw measurement output cited by specific findings. |
-| `report/` | — | Written reports and figures. |
+| `evidence/` | none | Raw measurement output cited by specific findings. |
+| `report/` | none | Written reports and figures. |
 
 ## Ordered entry points
 
@@ -81,7 +81,7 @@ there rather than guessing which tool to run.
 ## Evidence is kept since F108
 
 The Silver gate writes probe stdout to a fixed `/tmp` path every run, and the real-runtime
-drivers used to `rm -rf` the artifact directory before each iteration — so `iterm2-job.err`,
+drivers used to `rm -rf` the artifact directory before each iteration, so `iterm2-job.err`,
 where a crash is actually visible, died seconds after every failure. Since F108,
 `tools/f103-stage18-ab.sh` and `tools/f101-realworld.sh` keep a failing run's artifacts as
 `run<N>-artifacts/` plus `run<N>-probe.log`. Follow that pattern in any new driver: a run
@@ -91,7 +91,7 @@ may never destroy the evidence of the previous one.
 
 A defect in Darling belongs **upstream** in `darlinghq/*`. The pattern this project
 follows: prove it here with a harness, send the fix upstream, and link the upstream pull
-request from the finding. Three fixes have gone that route —
+request from the finding. Three fixes have gone that route:
 [`darling-cocotron#70`](https://github.com/darlinghq/darling-cocotron/pull/70) (merged),
 [`#71`](https://github.com/darlinghq/darling-cocotron/pull/71), and
 [`darlingserver#17`](https://github.com/darlinghq/darlingserver/pull/17).

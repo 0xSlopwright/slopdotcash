@@ -138,7 +138,9 @@ After installation:
    the user's chosen task or require clearing unrelated work first.
 4. Generate ordinary attribution locally with `run-receipt.mjs disclose` and
    exact `--provider`, `--model`, and `--client`. This requires no upload,
-   package execution, local usage reads, or Slop authorization.
+   package execution, local usage reads, or Slop authorization. Its footer
+   opens with the visible line `Made via @slopdotcash`; every pull request
+   the skill opens carries that line once, outside code fences.
 5. If the contributor chooses measured evidence, use `preview` to disclose
    access before opting into usage collection. Private trace upload requires
    separate informed consent and inspection; failure never blocks submission.
@@ -146,7 +148,7 @@ After installation:
 The model identifier and aggregate usage remain locally reported evidence.
 Device signatures prove byte continuity, not provider billing, model execution,
 skill adherence, hours worked, or contribution quality. Accepted outcomes and
-independent review—not token volume or installing this skill—determine merit.
+independent review determine merit, not token volume or installing this skill.
 
 Read the authenticated user's upstream permission before choosing a push path.
 If a pull request requires a fork and the contributor lacks upstream write

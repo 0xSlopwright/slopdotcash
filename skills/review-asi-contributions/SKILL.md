@@ -57,7 +57,7 @@ and rerun the affected validation.
 Verify the exact base and head revisions, then rerun the stated commands with
 the stated seeds. Trace the claimed number from its raw artifact under
 `outputs/`, through its validator, to the summary in the pull request body.
-Inspect the artifact itself — not the command exit code.
+Inspect the artifact itself, not the command exit code.
 
 Answer these separately:
 
@@ -70,7 +70,7 @@ Answer these separately:
   evidence seeds left alone?
 - Does the reported outcome match the pre-registered threshold, or was the
   bar moved after the numbers existed?
-- Is the evidence tier stated honestly — development-grade and nonpromoting
+- Is the evidence tier stated honestly: development-grade and nonpromoting
   versus promoted through a frozen protocol and its validator?
 - Are pinned `outputs/` artifacts untouched and validators, thresholds, and
   tests unweakened?
@@ -114,7 +114,7 @@ refactor, rename, abstraction, or configuration knob with no measured effect,
 and changes spread across lanes instead of moving one.
 
 Do not penalize a self-closed issue or pull request, an honestly reported
-losing result, or an inconclusive run stated as inconclusive — those are the
+losing result, or an inconclusive run stated as inconclusive. Those are the
 behaviours this project wants. Repeated work closed by maintainers, copied
 work submitted after an earlier source, or deliberately noisy duplicate
 submissions may become a risk signal. A model finding never bans a
