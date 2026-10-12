@@ -9,9 +9,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
-import { mnemonicToAccount } from "viem/accounts";
+import { mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
 import {
+  type BindingInput,
   baseAwardId,
+  baseBindingDigest,
+  type baseBindingTypedData,
   buildBindCalldata,
   buildPayCalldata,
   verifyBinding,
@@ -132,6 +135,68 @@ const source = `0x${"2".padStart(64, "0")}`;
 const claimDigest = "c".repeat(64);
 const now = new Date().toISOString();
 const session = "a".repeat(43);
+// Public deterministic test key 1 controls the recipient; no user wallet or secret is read.
+const recipientKey = new Uint8Array(32);
+recipientKey[31] = 1;
+const recipientAccount = privateKeyToAccount(`0x${"0".repeat(63)}1`);
+/** viem signs the same EIP-712 structure the vault hashes; a mismatch fails at the handler. */
+function signBinding(
+  account: { signTypedData: (data: never) => Promise<`0x${string}`> },
+  typedData: ReturnType<typeof baseBindingTypedData>,
+) {
+  const { EIP712Domain: _domain, ...types } = typedData.types;
+  return account.signTypedData({
+    domain: {
+      ...typedData.domain,
+      chainId: Number(typedData.domain.chainId),
+      verifyingContract: typedData.domain.verifyingContract as `0x${string}`,
+    },
+    types,
+    primaryType: typedData.primaryType,
+    message: {
+      actorId: BigInt(typedData.message.actorId),
+      destination: typedData.message.destination as `0x${string}`,
+      expectedVersion: BigInt(typedData.message.expectedVersion),
+      claimDigest: typedData.message.claimDigest as `0x${string}`,
+      expiresAt: BigInt(typedData.message.expiresAt),
+    },
+  } as never);
+}
+/** The contributor accepts one exact binding through the account API; the attester reuses it later. */
+async function authorizeBinding(
+  db: D1Database,
+  claimId: string,
+  vault: string,
+  expectedVersion: string,
+  account: { signTypedData: (data: never) => Promise<`0x${string}`> },
+) {
+  const challenge = (await (
+    await handlePaymentsApi(
+      request("/wallets/bind-challenge", {
+        claimId,
+        network: "anvil",
+        vault,
+        chainId: "31337",
+        expectedVersion,
+      }),
+      { db },
+    )
+  ).json()) as { typedData: ReturnType<typeof baseBindingTypedData> };
+  assert.equal(challenge.typedData.message.expectedVersion, expectedVersion);
+  const response = await handlePaymentsApi(
+    request("/wallets/bind-authorize", {
+      claimId,
+      network: "anvil",
+      vault,
+      chainId: "31337",
+      expectedVersion,
+      expiresAt: challenge.typedData.message.expiresAt,
+      signature: await signBinding(account, challenge.typedData),
+    }),
+    { db },
+  );
+  assert.equal(response.status, 200, await response.text());
+}
 async function rpc(method: string, params: unknown[]) {
   const response = await fetch(rpcUrl, {
     method: "POST",
@@ -212,15 +277,25 @@ try {
     .sort())
     sql.exec(readFileSync(`${root}migrations/${file}`, "utf8"));
   const asset = deploy("integration/TestDollar.sol:TestDollar");
-  const vault = deploy("src/ProjectEscrow.sol:ProjectEscrow", [
-    projectKey,
+  // Vaults are created only by the factory, which holds the identity authority.
+  const factory = deploy("src/ProjectEscrow.sol:EscrowFactory", [
     asset,
-    owner,
-    owner,
     fee,
     attester,
     delay,
   ]);
+  const createTx = await send(factory, "create(bytes32,address,address)", [
+    projectKey,
+    owner,
+    owner,
+  ]);
+  const vault = `0x${(
+    (await rpc("eth_call", [
+      { to: factory, data: `0xcca23bf2${projectKey.slice(2)}` },
+      "latest",
+    ])) as string
+  ).slice(-40)}`;
+  deploymentTransactions.set(vault, createTx);
   award = baseAwardId(31337n, vault, source);
   await send(asset, "mint(address,uint256)", [owner, "200000000"]);
   await send(asset, "approve(address,uint256)", [vault, "200000000"]);
@@ -310,13 +385,14 @@ try {
       { db },
     )
   ).json()) as { message: string; challengeId: string };
-  // Public deterministic test key 1; no user wallet or secret is read.
-  const key = new Uint8Array(32);
-  key[31] = 1;
-  const signed = secp256k1.sign(personalMessageHash(challenge.message), key, {
-    prehash: false,
-    format: "recovered",
-  });
+  const signed = secp256k1.sign(
+    personalMessageHash(challenge.message),
+    recipientKey,
+    {
+      prehash: false,
+      format: "recovered",
+    },
+  );
   const signature = `0x${Array.from(signed.slice(1), (b) => b.toString(16).padStart(2, "0")).join("")}${(signed[0] + 27).toString(16)}`;
   assert.equal(
     (
@@ -331,6 +407,99 @@ try {
     ).status,
     200,
   );
+  // The binding acceptance is checked against the current claim: a stranger's
+  // signature and a signature over another version are both refused.
+  const bindChallenge = (await (
+    await handlePaymentsApi(
+      request("/wallets/bind-challenge", {
+        claimId: "claim",
+        network: "anvil",
+        vault,
+        chainId: "31337",
+        expectedVersion: "0",
+      }),
+      { db },
+    )
+  ).json()) as { typedData: ReturnType<typeof baseBindingTypedData> };
+  assert.ok(bindChallenge.typedData, JSON.stringify(bindChallenge));
+  assert.equal(bindChallenge.typedData.message.destination, recipient);
+  assert.equal(
+    (
+      await handlePaymentsApi(
+        request("/wallets/bind-authorize", {
+          claimId: "claim",
+          network: "anvil",
+          vault,
+          chainId: "31337",
+          expectedVersion: "0",
+          expiresAt: bindChallenge.typedData.message.expiresAt,
+          signature: await signBinding(
+            mnemonicToAccount(
+              "test test test test test test test test test test test junk",
+              { addressIndex: 3 },
+            ),
+            bindChallenge.typedData,
+          ),
+        }),
+        { db },
+      )
+    ).status,
+    403,
+  );
+  assert.equal(
+    (
+      await handlePaymentsApi(
+        request("/wallets/bind-authorize", {
+          claimId: "claim",
+          network: "anvil",
+          vault,
+          chainId: "31337",
+          expectedVersion: "1",
+          expiresAt: bindChallenge.typedData.message.expiresAt,
+          signature: await signBinding(
+            recipientAccount,
+            bindChallenge.typedData,
+          ),
+        }),
+        { db },
+      )
+    ).status,
+    403,
+  );
+  // Without the contributor's acceptance the attester cannot bind at all.
+  const unsignedAttester = createBaseAttester({
+    PAYMENTS_DB: db,
+    PAYMENT_DEPLOYMENTS: JSON.stringify([
+      { ...config, chain: "base", chainId: "31337" },
+    ]),
+    PAYMENT_RPC_URLS: JSON.stringify({ anvil: rpcUrl }),
+    ALLOW_LOCAL_TEST_CHAIN: true,
+    SIGNER: mnemonicToAccount(
+      "test test test test test test test test test test test junk",
+      { addressIndex: 1 },
+    ),
+    JOURNAL: journal("unsigned-attester"),
+  });
+  sql
+    .prepare(
+      "INSERT INTO payment_attempts VALUES('needs-acceptance',?,'claim',?,NULL,'prepared')",
+    )
+    .run(award, now);
+  await assert.rejects(
+    unsignedAttester.submit({
+      obligationId: award,
+      network: "anvil",
+      vault,
+      githubUserId: "123",
+      claimId: "claim",
+      claimDigest,
+      destination: recipient,
+      idempotencyKey: "needs-acceptance",
+    }),
+    /wallet signature required for binding version 0/,
+  );
+  sql.prepare("DELETE FROM payment_attempts WHERE id='needs-acceptance'").run();
+  await authorizeBinding(db, "claim", vault, "0", recipientAccount);
   // Public Anvil mnemonic only. Dedicated local attester and gas keys sign real EIP1559 bytes.
   const mnemonic =
     "test test test test test test test test test test test junk";
@@ -665,6 +834,8 @@ try {
     ).status,
     200,
   );
+  // The successor wallet accepts the next binding version itself.
+  await authorizeBinding(db, "claim-next", vault, "1", successorAccount);
   // The already-authorized old signer is paused at RPC while its wallet is superseded.
   const oldRequest = {
     idempotencyKey: "unsigned-old",
@@ -821,17 +992,32 @@ try {
                 "latest",
                 false,
               ])) as { timestamp: string };
+              const acceptance: BindingInput = {
+                githubUserId: input.githubUserId,
+                destination: input.destination,
+                expectedVersion: "0",
+                claimDigest: `0x${input.claimDigest}`,
+                expiresAt: String(Number(BigInt(latest.timestamp)) + 3600),
+              };
+              // The fixture wallet (key 1) accepts the binding, as the page would.
+              const accepted = secp256k1.sign(
+                Uint8Array.from(
+                  baseBindingDigest(31337n, vault, acceptance)
+                    .slice(2)
+                    .match(/../g) ?? [],
+                  (b) => Number.parseInt(b, 16),
+                ),
+                recipientKey,
+                { prehash: false, format: "recovered" },
+              );
               const bindingTx = (await rpc("eth_sendTransaction", [
                 {
                   from: attester,
                   to: vault,
                   gas: "0x7a1200",
                   data: buildBindCalldata({
-                    githubUserId: input.githubUserId,
-                    destination: input.destination,
-                    expectedVersion: "0",
-                    claimDigest: `0x${input.claimDigest}`,
-                    expiresAt: String(Number(BigInt(latest.timestamp)) + 3600),
+                    ...acceptance,
+                    walletSignature: `0x${Array.from(accepted.slice(1), (b) => b.toString(16).padStart(2, "0")).join("")}${(accepted[0] + 27).toString(16)}`,
                   }),
                 },
               ])) as string;

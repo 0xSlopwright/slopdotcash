@@ -28,6 +28,8 @@ export const ESCROW_NETWORKS = Object.freeze({
 });
 /** Production destination bindings activate no sooner than 48 hours. */
 export const MIN_PRODUCTION_BINDING_DELAY = 48 * 60 * 60;
+/** A proposed Solana identity authority takes effect no sooner than 7 days later; Base fixes 7 days in the factory. */
+export const MIN_PRODUCTION_ROTATION_DELAY = 7 * 24 * 60 * 60;
 function keys(value, expected) {
   if (
     !value ||
@@ -74,6 +76,8 @@ export function assertEscrowPolicy(value) {
       "sourceCommit",
       "codeSha256",
       "bindingDelaySeconds",
+      "rotationDelaySeconds",
+      "bindingNamespace",
     ]);
     const network = ESCROW_NETWORKS[deployment.network];
     if (
@@ -99,14 +103,31 @@ export function assertEscrowPolicy(value) {
         ? deployment.programId !== null ||
           deployment.upgradeAuthority !== null ||
           deployment.projectPda !== null ||
-          deployment.networkDomain !== null
+          deployment.networkDomain !== null ||
+          deployment.rotationDelaySeconds !== null ||
+          deployment.bindingNamespace !== null
         : (deployment.upgradeAuthority !== null &&
             !isFundingAddress("solana", deployment.upgradeAuthority)) ||
           !isFundingAddress("solana", deployment.programId) ||
           !isFundingAddress("solana", deployment.projectPda) ||
+          !isFundingAddress("solana", deployment.bindingNamespace) ||
           !/^[0-9a-f]{64}$/.test(deployment.networkDomain))
     )
       throw new TypeError("Escrow asset or program does not match the network");
+    // The owner proposes and the fee recipient confirms a new identity
+    // authority; the notice period gives every binding made with a stolen
+    // key time to be vetoed. Base fixes 7 days in the factory contract.
+    if (
+      value.chain === "solana" &&
+      (typeof deployment.rotationDelaySeconds !== "string" ||
+        !/^(0|[1-9][0-9]{0,9})$/.test(deployment.rotationDelaySeconds) ||
+        (!network.testnet &&
+          Number(deployment.rotationDelaySeconds) <
+            MIN_PRODUCTION_ROTATION_DELAY))
+    )
+      throw new TypeError(
+        "Escrow rotation delay is missing or below the production minimum",
+      );
     if (
       deployment.network === "solana-mainnet" &&
       deployment.upgradeAuthority !== null

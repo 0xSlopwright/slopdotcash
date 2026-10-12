@@ -6,19 +6,28 @@ and network domain. The program deliberately cannot determine GitHub authority o
 whether an arbitrary mint is Circle USDC. A reviewed project manifest must bind
 its program ID, project PDA, network, mint, owner and identity authority.
 
-The owner deposits and approves immutable awards. Award approval reserves principal
+The owner deposits and approves immutable awards. The only mutable authority is
+the identity authority, replaced by a public two-party timelock. Award approval reserves principal
 and its included 2% fee before a wallet exists. The `award` PDA and separate `origin` PDA are
 permanent: no close, cancellation, rescue or reserve withdrawal instruction exists.
 The same source digest cannot be committed again under a different award ID.
 The award ID must equal `sha256("slop-escrow-award" || project PDA || source digest)`,
 so another project cannot reserve the same ID first.
-A narrow identity authority binds numeric GitHub actors to destinations with an
-expected predecessor version. Binding PDAs include authority, network, actor and
-the program deployment. Permissionless payment callers select neither amount nor
-recipient; the binding and expected version select the recipient. The backend must
-verify GitHub login and the contributor's wallet authorization before the identity
-signer submits this transaction. An identity key can redirect future unpaid awards;
-this authority must be disclosed, protected and reviewed separately from relayers.
+A binding needs two signatures. The project's identity authority (Slop's
+attester key) and the destination keypair both sign `bind_wallet`, which binds
+a numeric GitHub actor to that co-signing destination with an expected
+predecessor version. The program takes the destination from the co-signer, so
+the authority alone cannot bind a wallet it does not hold, and a destination
+cannot bind itself without the authority. Binding PDAs include the project's
+binding namespace (the identity authority at `initialize`), network, actor and
+the program deployment, so they survive an authority rotation. Permissionless
+payment callers select neither amount nor recipient; the binding and expected
+version select the recipient. The backend must verify GitHub login and the
+contributor's current registered claim before the identity signer co-signs. A
+compromised identity key cannot redirect unpaid awards on its own; with a
+colluding wallet it can propose a new destination, which the delay and veto
+below exist to catch. The authority must be disclosed, protected and reviewed
+separately from relayers.
 
 Two delays protect awards, both of length `binding_delay` (set once at
 `initialize`, between one hour and 30 days). Each binding records `bound_at`,
@@ -31,7 +40,7 @@ binding: allowed while that binding waits out its own delay, or while an unpaid
 award to the actor (passed as the optional `obligation` account) is inside its
 commit delay, and never on a binding that has paid. A veto creates a permanent
 `veto` PDA for that project, actor and version, and `pay` in that project never
-uses a vetoed version. Only a new authority binding (the next version, with a
+uses a vetoed version. Only a new co-signed binding (the next version, with a
 new delay) can follow. For an actor that has never been paid, a project can
 veto at most three times (a `veto-count` PDA per project and actor); the next
 binding pays after its delay. An owner can therefore delay a contributor's
@@ -49,15 +58,66 @@ destination only after its delay, and until then the active binding keeps
 paying; vetoing the pending rotation leaves the active binding payable. The
 executor pays only the destination the contributor currently claims, so a
 claimed rotation waits for its delay rather than paying the previous wallet.
-Bindings and the active slot are shared across projects with the same identity
-authority and network. A veto affects only the vetoing project, and a project
+Bindings and the active slot are shared across projects with the same binding
+namespace (the identity authority at `initialize`) and network. A veto affects only the vetoing project, and a project
 that vetoes a version another project then pays through has no payable binding
 until the next version activates. `pay` requires the destination to be the
 paying wallet's associated token account, and `bind_wallet` rejects a zero
-claim digest, a destination equal to the project or vault PDA, and a submission
-past its `expires_at`. `initialize` rejects a fee recipient equal to the owner
+claim digest, a destination equal to the identity authority, the project or the
+vault PDA, and a submission past its `expires_at`; a PDA cannot co-sign in any
+case. `initialize` rejects a fee recipient equal to the owner
 or the project. Production deployments use a delay of at least 48 hours, and
 the adapter checks the project's delay against the reviewed manifest.
+
+### Identity authority rotation
+
+Each project rotates its own identity authority through a public two-party
+timelock. The owner calls `propose_authority_rotation(next)`, which records the
+candidate and an effective time `rotation_delay` seconds later (set at
+`initialize`; production uses at least 7 days, and the adapter checks the
+project's delay against the reviewed manifest) and emits
+`AuthorityRotationProposed`. The fee recipient, the second fixed party, calls
+`confirm_authority_rotation`. The owner can cancel its own pending proposal
+with `cancel_authority_rotation`. Once confirmed and past the effective time,
+anyone can call `execute_authority_rotation`, which emits `AuthorityRotated`;
+the current authority has no instruction that blocks or delays it. Until
+execution the current authority keeps binding; afterwards only the new one
+can. Binding PDAs derive from the binding namespace, not the current
+authority, so every existing binding stays valid and `pay` keeps finding it.
+The next authority must differ from the owner, the fee recipient and the
+current authority. Projects that share a namespace share bindings, so they
+should rotate together; a project that wants isolation initializes with its
+own authority key.
+
+### Key recovery runbook
+
+Who acts: the project owner key and the fee recipient key, together. The
+identity key is a hot service key and is never used for recovery. Slop holds
+the identity key and, as fee recipient, the confirming key; the owner alone
+starts every rotation.
+
+Identity key lost: the authority can no longer co-sign, so awards to actors
+without an active binding wait; nothing is lost and no reserve moves. The
+owner proposes the replacement, the fee recipient confirms, and anyone
+executes after the delay. Existing bindings keep paying throughout.
+Contributors whose bindings were pending or missing co-sign their next binding
+with the new authority.
+
+Identity key compromised: the owner proposes the replacement at once; the
+exposure window is the rotation delay. During it the attacker can submit only
+bindings that a wallet co-signs, each activating after `binding_delay`. The
+owner watches `WalletBound` and vetoes any binding it did not expect with
+`veto_binding`, which costs the contributor a delay and nothing else. After
+execution the old key cannot bind. Rotation never vetoes or re-points a
+binding by itself, so review every binding made during the window. Projects
+that share the namespace must rotate too, or the old key keeps writing
+bindings they honor.
+
+Owner key lost: deposits, awards, withdrawals and rotation proposals for that
+project stop; reserved awards still pay to active bindings. Fee recipient key
+lost: fee transfers to its token accounts still work, but no rotation can be
+confirmed, so the identity key of that project becomes fixed. There is no
+owner or fee recipient change in this version.
 
 The owner can commit an award to any GitHub actor, including an account the
 owner controls, and so move unused funds out at the 2% payout fee instead of the
@@ -130,9 +190,9 @@ finalized reconciliation, real OAuth and browser journey separately.
 Program upgrade authority remains a fundamental trust boundary: a retained upgrade
 key can replace these restrictions. Do not activate mainnet without an explicit
 reviewed immutable or governance-controlled deployment decision and independent
-contract review. Identity and owner keys are fixed in each v1 project; migration
-and key rotation require a separately designed successor protocol, not a hidden
-administrative bypass.
+contract review. The owner and fee recipient keys are fixed in each project;
+the identity authority changes only through the public two-party timelock
+above, never through a hidden administrative bypass.
 
 ## Deployment identity and automatic execution
 
@@ -149,8 +209,9 @@ in the same transaction cannot make a valid payment unverifiable. The scanner
 uses the same instruction list, skips other projects' instructions, processes
 at most 100 transactions per run, and atomically checkpoints each verified chunk.
 Backward discovery pages persist across runs, so a large backlog does not reset
-discovery to the newest signature. Each reviewed configuration includes owner, identity authority,
-fee recipient, token mint, network domain, program loader and code digest.
+discovery to the newest signature. Each reviewed configuration includes owner, identity authority
+in force, binding namespace, rotation delay, fee recipient, token mint, network
+domain, program loader and code digest.
 For the upgradeable loader, `codeSha256` hashes every byte after the fixed
 45-byte ProgramData header, including allocation padding. `upgradeAuthority`
 must match the finalized loader state, including `null` for an immutable program.
@@ -164,7 +225,13 @@ The shared service in `workers/payment-executor/solana.ts` validates the current
 SQLite/D1 wallet consent and the finalized deployment before signing. Each role
 holds a different test signer. The gas signer cannot be the owner or identity
 signer. It creates recipient and fee ATAs idempotently and pays the exact bound
-version. The identity role stores the claim digest in the wallet binding. A
+version. The identity role prepares a `bind_wallet` transaction that names the
+destination as a second required signer, signs its half, journals the bytes
+and returns them; the contributor's wallet signs the same bytes and the
+completed transaction is broadcast through the identity role, which checks
+both signatures against the journaled message first. The transaction must be
+completed within its blockhash lifetime, so the identity role never binds
+unattended. The identity role stores the claim digest in the wallet binding. A
 successor needs the shared 24-hour signed-lineage policy and reconciliation of
 older attempts. The program itself never authorizes GitHub sessions.
 

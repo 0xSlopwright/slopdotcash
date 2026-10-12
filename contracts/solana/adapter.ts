@@ -19,11 +19,16 @@ export interface SolanaEscrowConfig {
   upgradeAuthority: string | null;
   /** Reviewed delay, in seconds, before a wallet binding can pay in this project. */
   bindingDelaySeconds: string;
+  /** Reviewed notice period, in seconds, before a proposed identity authority takes effect. */
+  rotationDelaySeconds: string;
+  /** The key binding PDAs derive from: the identity authority at initialize, fixed for the project. */
+  bindingNamespace: string;
 }
 const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-/** Project account size: 249 bytes of v2 state, the i64 binding delay and the u64 service fees. */
-export const PROJECT_SIZE = 265;
+/** Project account size: 265 bytes of v3 state plus the binding namespace, the pending identity
+ * authority, its effective time and confirmation, and the i64 rotation delay. */
+export const PROJECT_SIZE = 346;
 /** Wallet binding size: 160 bytes of latest-binding state plus the active destination and version. */
 export const BINDING_SIZE = 200;
 /** Obligation size: 137 bytes of v2 state plus the i64 commit time. */
@@ -131,11 +136,12 @@ export async function verifySolanaDeployment(
     config.upgradeAuthority !== null
   )
     throw new Error("Mainnet escrow requires a revoked upgrade authority");
-  if (
-    !/^(0|[1-9][0-9]{0,18})$/.test(config.bindingDelaySeconds) ||
-    BigInt(config.bindingDelaySeconds) > (1n << 63n) - 1n
-  )
-    throw new Error("Missing reviewed binding delay");
+  for (const delay of [config.bindingDelaySeconds, config.rotationDelaySeconds])
+    if (
+      !/^(0|[1-9][0-9]{0,18})$/.test(delay) ||
+      BigInt(delay) > (1n << 63n) - 1n
+    )
+      throw new Error("Missing reviewed binding or rotation delay");
   const response = object(
     await rpc(config, "getAccountInfo", [
       config.programId,
@@ -198,17 +204,47 @@ export async function verifySolanaDeployment(
     PROJECT_SIZE,
     "cda8bdcab5f78e13",
   );
+  const view = new DataView(project.buffer, project.byteOffset);
   if (
-    new DataView(project.buffer, project.byteOffset).getBigInt64(249, true) !==
-      BigInt(config.bindingDelaySeconds) ||
+    view.getBigInt64(249, true) !== BigInt(config.bindingDelaySeconds) ||
+    view.getBigInt64(338, true) !== BigInt(config.rotationDelaySeconds) ||
     pubkey(project, 8) !== config.owner ||
     pubkey(project, 104) !== config.identityAuthority ||
     pubkey(project, 136) !== config.feeRecipient ||
     pubkey(project, 168) !== config.mint ||
+    pubkey(project, 265) !== config.bindingNamespace ||
     hex(project.slice(72, 104)) !== hex(digest(config.networkDomain))
   )
     throw new Error("Reviewed project authorities or asset mismatch");
   return project;
+}
+
+export interface SolanaAuthorityRotation {
+  identityAuthority: string;
+  bindingNamespace: string;
+  /** Null when no rotation is proposed. */
+  pendingIdentityAuthority: string | null;
+  effectiveAt: string | null;
+  confirmed: boolean;
+  rotationDelaySeconds: string;
+}
+/** The identity authority in force and any pending rotation, from finalized project state. */
+export function solanaAuthorityRotation(
+  project: Uint8Array,
+): SolanaAuthorityRotation {
+  if (project.length !== PROJECT_SIZE)
+    throw new Error("Account layout mismatch");
+  const view = new DataView(project.buffer, project.byteOffset);
+  const pending = pubkey(project, 297);
+  const proposed = pending !== "11111111111111111111111111111111";
+  return {
+    identityAuthority: pubkey(project, 104),
+    bindingNamespace: pubkey(project, 265),
+    pendingIdentityAuthority: proposed ? pending : null,
+    effectiveAt: proposed ? view.getBigInt64(329, true).toString() : null,
+    confirmed: proposed && project[337] === 1,
+    rotationDelaySeconds: view.getBigInt64(338, true).toString(),
+  };
 }
 
 /** The only award ID the program accepts for a source in this project. */

@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
-import {ProjectEscrow, IERC20} from "../src/ProjectEscrow.sol";
+import {EscrowFactory, IERC20, ProjectEscrow} from "../src/ProjectEscrow.sol";
 import {TestDollar} from "../integration/TestDollar.sol";
 
 interface Vm {
     function warp(uint256) external;
     function prank(address) external;
     function expectRevert() external;
+    function addr(uint256) external pure returns (address);
+    function sign(uint256, bytes32) external pure returns (uint8, bytes32, bytes32);
 }
 
 contract SonnetParity {
@@ -16,16 +18,29 @@ contract SonnetParity {
     address owner = address(0xA11CE);
     address auth = address(0xA07);
     address feeR = address(0xFEE);
-    address dest1 = address(0xD1);
-    address dest2 = address(0xD2);
+    uint256 constant KEY1 = 0xD1;
+    uint256 constant KEY2 = 0xD2;
+    address dest1 = vm.addr(KEY1);
+    address dest2 = vm.addr(KEY2);
     uint64 constant D = 1 hours;
 
     function setUp() public {
         t = new TestDollar();
-        e = new ProjectEscrow(bytes32(uint256(1)), IERC20(address(t)), owner, owner, feeR, auth, D);
+        // This contract is the registrar; vaults are created only by the factory.
+        EscrowFactory f = new EscrowFactory(IERC20(address(t)), feeR, auth, D);
+        e = ProjectEscrow(f.create(bytes32(uint256(1)), owner, owner));
         t.mint(owner, 1e15);
         vm.prank(owner);
         t.approve(address(e), type(uint256).max);
+    }
+
+    /// @dev The destination wallet signs the exact binding; the authority submits it.
+    function _bind(uint64 actor, address dest, uint64 expected, bytes32 claim) internal {
+        uint64 expiresAt = type(uint64).max;
+        (uint8 v, bytes32 r, bytes32 s) =
+            vm.sign(dest == dest1 ? KEY1 : KEY2, e.bindingDigest(actor, dest, expected, claim, expiresAt));
+        vm.prank(auth);
+        e.bindDestination(actor, dest, expected, claim, expiresAt, abi.encodePacked(r, s, v));
     }
 
     function _dep(uint64 a) internal {
@@ -106,10 +121,8 @@ contract SonnetParity {
         _inv();
         _wd(9);
         _inv();
-        vm.prank(auth);
-        e.bindDestination(7, dest1, 0, bytes32(uint256(1)), type(uint64).max);
-        vm.prank(auth);
-        e.bindDestination(8, dest2, 0, bytes32(uint256(1)), type(uint64).max);
+        _bind(7, dest1, 0, bytes32(uint256(1)));
+        _bind(8, dest2, 0, bytes32(uint256(1)));
         vm.warp(block.timestamp + D);
         e.pay(id1, 1);
         _inv();
@@ -159,8 +172,7 @@ contract SonnetParity {
         bytes32 id1 = e.awardId(s1);
         vm.prank(owner);
         e.commitAward(id1, 7, 100, s1);
-        vm.prank(auth);
-        e.bindDestination(7, dest1, 0, bytes32(uint256(1)), type(uint64).max);
+        _bind(7, dest1, 0, bytes32(uint256(1)));
         vm.warp(block.timestamp + D);
         t.blockAddress(dest1);
         vm.expectRevert();
@@ -176,15 +188,13 @@ contract SonnetParity {
         bytes32 id1 = e.awardId(s1);
         vm.prank(owner);
         e.commitAward(id1, 7, 100, s1);
-        vm.prank(auth);
-        e.bindDestination(7, dest1, 0, bytes32(uint256(1)), type(uint64).max);
+        _bind(7, dest1, 0, bytes32(uint256(1)));
         vm.prank(owner);
         e.cancelBinding(7, 1);
         vm.warp(block.timestamp + D + 1);
         vm.expectRevert();
         e.pay(id1, 1);
-        vm.prank(auth);
-        e.bindDestination(7, dest1, 1, bytes32(uint256(1)), type(uint64).max);
+        _bind(7, dest1, 1, bytes32(uint256(1)));
         vm.warp(block.timestamp + D);
         e.pay(id1, 2);
         _inv();
@@ -199,8 +209,7 @@ contract SonnetParity {
         e.commitAward(id1, 7, 100, s1);
         uint64 v;
         for (uint256 i; i < 3; i++) {
-            vm.prank(auth);
-            e.bindDestination(7, dest1, v, bytes32(uint256(1)), type(uint64).max);
+            _bind(7, dest1, v, bytes32(uint256(1)));
             v++;
             vm.prank(owner);
             e.cancelBinding(7, v);
@@ -209,8 +218,7 @@ contract SonnetParity {
             e.pay(id1, v);
         }
         require(e.reservedPrincipal() == 98 && e.freeBalance() == 900, "still reserved");
-        vm.prank(auth);
-        e.bindDestination(7, dest1, v, bytes32(uint256(1)), type(uint64).max);
+        _bind(7, dest1, v, bytes32(uint256(1)));
         v++;
         vm.prank(owner);
         vm.expectRevert();
@@ -236,13 +244,11 @@ contract SonnetParity {
         e.commitAward(id2, 7, 100, s2);
         vm.prank(owner);
         e.commitAward(id3, 7, 100, s3);
-        vm.prank(auth);
-        e.bindDestination(7, dest1, 0, bytes32(uint256(1)), type(uint64).max);
+        _bind(7, dest1, 0, bytes32(uint256(1)));
         vm.warp(block.timestamp + D + 1); // v1 active and payable
         e.pay(id1, 1);
         // authority rotates to a new destination; the pending v2 does not pay, v1 still does
-        vm.prank(auth);
-        e.bindDestination(7, dest2, 1, bytes32(uint256(2)), type(uint64).max);
+        _bind(7, dest2, 1, bytes32(uint256(2)));
         vm.expectRevert();
         e.pay(id2, 2);
         e.pay(id2, 1);

@@ -82,7 +82,11 @@ contract OpusTokensTest is OpusBase {
     function setUpOdd(uint8 m) internal {
         vm.warp(1_800_000_000);
         odd = new OpusOddToken();
-        escrow = new ProjectEscrow(keccak256("p"), IERC20(address(odd)), OWNER, OWNER, FEE, AUTHORITY, DELAY);
+        walletKeys[ALICE_WALLET] = OpusWallets.ALICE_KEY;
+        vm.prank(REGISTRAR);
+        factory = new EscrowFactory(IERC20(address(odd)), FEE, AUTHORITY, DELAY);
+        vm.prank(REGISTRAR);
+        escrow = ProjectEscrow(factory.create(keccak256("p"), OWNER, OWNER));
         odd.mint(OWNER, 1_000e6);
         vm.prank(OWNER);
         odd.approve(address(escrow), type(uint256).max);
@@ -125,8 +129,7 @@ contract OpusTokensTest is OpusBase {
         bytes32 id = escrow.awardId(src);
         vm.prank(OWNER);
         escrow.commitAward(id, 7, 50e6, src);
-        vm.prank(AUTHORITY);
-        escrow.bindDestination(7, ALICE_WALLET, 0, keccak256("c"), uint64(block.timestamp));
+        bindAs(7, ALICE_WALLET);
         vm.warp(block.timestamp + DELAY);
         odd.setMode(4);
         odd.setReenter(address(escrow), abi.encodeCall(ProjectEscrow.claimFees, ()));

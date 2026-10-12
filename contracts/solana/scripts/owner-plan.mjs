@@ -130,6 +130,7 @@ export async function ownerPlan(input, runtime) {
           new PublicKey(d.identityAuthority),
           new PublicKey(d.feeRecipient),
           delay(d.bindingDelaySeconds),
+          delay(d.rotationDelaySeconds),
         )
         .accountsStrict({
           owner,
@@ -149,6 +150,8 @@ export async function ownerPlan(input, runtime) {
       !state.identityAuthority.equals(new PublicKey(d.identityAuthority)) ||
       !state.feeRecipient.equals(new PublicKey(d.feeRecipient)) ||
       !state.bindingDelay.eq(delay(d.bindingDelaySeconds)) ||
+      !state.rotationDelay.eq(delay(d.rotationDelaySeconds)) ||
+      !state.bindingNamespace.equals(new PublicKey(d.bindingNamespace)) ||
       !Buffer.from(state.network).equals(Buffer.from(hash(d.networkDomain)))
     )
       throw new Error("Reviewed project configuration mismatch");
@@ -212,7 +215,7 @@ export async function ownerPlan(input, runtime) {
             project,
             binding: pda(
               Buffer.from("wallet"),
-              state.identityAuthority.toBuffer(),
+              state.bindingNamespace.toBuffer(),
               Buffer.from(state.network),
               actor.toArrayLike(Buffer, "le", 8),
             ),

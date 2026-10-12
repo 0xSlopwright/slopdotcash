@@ -1,3 +1,4 @@
+import { baseBindingTypedData } from "../../contracts/evm/adapter";
 import { readBoundedJson } from "../../src/lib/browser-json";
 import type {
   AccountPayment,
@@ -9,6 +10,7 @@ import { sha256Hex } from "../../workers/identity/crypto";
 import type { D1Database } from "../trace/cloudflare-persistence";
 import {
   buildPaymentWalletMessage,
+  verifyBaseBindingSignature,
   verifyPaymentWalletSignature,
 } from "./possession";
 import { slopbotInvoice } from "./slopbot-billing";
@@ -324,6 +326,89 @@ export async function handlePaymentsApi(
       return authorized
         ? json(200, { authorized: true })
         : json(409, { error: "claim_not_current" });
+    }
+    // A Base destination binding needs the destination wallet's EIP-712
+    // signature over the exact chain, vault, actor, destination, expected
+    // version, claim digest and expiry (PAY-05). The challenge is stateless:
+    // the authorize step verifies every field against the current claim.
+    if (
+      ["/wallets/bind-challenge", "/wallets/bind-authorize"].includes(path) &&
+      request.method === "POST"
+    ) {
+      const body = (await readBoundedJson(
+        request as unknown as Response,
+        4096,
+        "binding authorization",
+      )) as Record<string, unknown>;
+      const decimal = (value: unknown): value is string =>
+        typeof value === "string" && /^(0|[1-9][0-9]{0,18})$/.test(value);
+      const authorize = path === "/wallets/bind-authorize";
+      if (
+        typeof body.claimId !== "string" ||
+        typeof body.network !== "string" ||
+        !/^[a-z0-9-]{1,64}$/.test(body.network) ||
+        typeof body.vault !== "string" ||
+        !/^0x[0-9a-fA-F]{40}$/.test(body.vault) ||
+        !decimal(body.chainId) ||
+        body.chainId === "0" ||
+        !decimal(body.expectedVersion) ||
+        (authorize &&
+          (!decimal(body.expiresAt) ||
+            typeof body.signature !== "string" ||
+            !/^0x[0-9a-fA-F]{130}$/.test(body.signature)))
+      )
+        return json(400, { error: "invalid_request" });
+      const wallet = await deps.db
+        .prepare(
+          "SELECT w.id,w.wallet_address,w.record_sha256 FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id WHERE w.id=? AND w.github_user_id=? AND w.chain='base' AND w.source='d1_registry' AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)",
+        )
+        .bind(body.claimId, member.github_id)
+        .first<{ id: string; wallet_address: string; record_sha256: string }>();
+      if (!wallet) return json(409, { error: "claim_not_current" });
+      const nowSeconds = Math.floor(Date.parse(now) / 1000);
+      const expiresAt = authorize
+        ? (body.expiresAt as string)
+        : String(nowSeconds + 90 * 24 * 60 * 60);
+      const binding = {
+        githubUserId: member.github_id,
+        destination: wallet.wallet_address,
+        expectedVersion: body.expectedVersion,
+        claimDigest: `0x${wallet.record_sha256}`,
+        expiresAt,
+      };
+      const vault = body.vault.toLowerCase();
+      if (!authorize)
+        return json(200, {
+          claimId: wallet.id,
+          typedData: baseBindingTypedData(BigInt(body.chainId), vault, binding),
+        });
+      if (
+        BigInt(expiresAt) <= BigInt(nowSeconds) ||
+        !verifyBaseBindingSignature(
+          BigInt(body.chainId),
+          vault,
+          binding,
+          body.signature as string,
+        )
+      )
+        return json(403, { error: "wallet_signature_required" });
+      await deps.db
+        .prepare(
+          "INSERT INTO payment_binding_authorizations(claim_id,github_user_id,network,vault,chain_id,expected_version,expires_at,signature,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(claim_id,network,vault,expected_version) DO NOTHING",
+        )
+        .bind(
+          wallet.id,
+          member.github_id,
+          body.network,
+          vault,
+          body.chainId,
+          body.expectedVersion,
+          expiresAt,
+          body.signature,
+          now,
+        )
+        .run();
+      return json(200, { authorized: true, expiresAt });
     }
     if (path === "/me" && request.method === "GET") {
       const walletRows = await deps.db

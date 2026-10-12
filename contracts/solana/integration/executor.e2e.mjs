@@ -25,6 +25,7 @@ import {
   solanaPaymentAdapter,
 } from "../.local/adapter.mjs";
 import {
+  completeSolanaBinding,
   createSolanaAttester,
   createSolanaExecutor,
   preflightSolanaDeployment,
@@ -143,6 +144,7 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
       [...domain],
       identity.publicKey,
       fee.publicKey,
+      bn(2),
       bn(2),
     )
     .accountsStrict({
@@ -322,6 +324,8 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
     feeRecipient: fee.publicKey.toBase58(),
     ...expectedDeployment,
     bindingDelaySeconds: "2",
+    rotationDelaySeconds: "2",
+    bindingNamespace: identity.publicKey.toBase58(),
   };
   const common = {
     PAYMENTS_DB: db,
@@ -363,11 +367,12 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
     ),
     /Reviewed project authorities/,
   );
-  const attester = createSolanaAttester({
+  const identityEnvironment = {
     ...common,
     SOLANA_SIGNER: signer(identity),
     JOURNAL: journal("identity:"),
-  });
+  };
+  const attester = createSolanaAttester(identityEnvironment);
   let gasSignatures = 0;
   const gasSigner = signer(gas);
   const executor = createSolanaExecutor({
@@ -380,14 +385,63 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
       },
     },
     JOURNAL: journal("gas:"),
-    ATTESTER: attester,
   });
   await assert.rejects(
     executor.submit({ ...input, destination: fee.publicKey.toBase58() }),
     /Payout request differs/,
   );
-  await assert.rejects(executor.submit(input), /binding awaiting finality/);
-  const bound = await attester.submit(input);
+  await assert.rejects(executor.submit(input), /co-signature/);
+  // The attester half-signs the binding; only the destination wallet can
+  // complete it, over exactly the prepared bytes.
+  const prepared = await attester.submit(input);
+  assert.ok(prepared.transaction, "prepared binding returns bytes to co-sign");
+  assert.deepEqual(await attester.submit(input), prepared);
+  const raw = Buffer.from(prepared.transaction, "base64");
+  assert.equal(raw[0], 2);
+  const bindMessage = raw.subarray(129);
+  const cosign = async (wallet) =>
+    Buffer.concat([
+      raw.subarray(0, 65),
+      Buffer.from(await signer(wallet).signMessage(bindMessage)),
+      bindMessage,
+    ]).toString("base64");
+  await assert.rejects(
+    completeSolanaBinding(identityEnvironment, input, await cosign(fee)),
+    /wallet signature rejected/,
+  );
+  await assert.rejects(
+    completeSolanaBinding(
+      identityEnvironment,
+      input,
+      Buffer.concat([raw.subarray(0, 129), bindMessage, Buffer.of(0)]).toString(
+        "base64",
+      ),
+    ),
+    /differs from the prepared binding/,
+  );
+  // A valid attempt that the attester never prepared has no journaled bytes.
+  sql
+    .prepare("INSERT INTO payment_attempts VALUES(?,?,?,?,NULL,'prepared')")
+    .run("unprepared-attempt", input.obligationId, input.claimId, now);
+  await assert.rejects(
+    completeSolanaBinding(
+      identityEnvironment,
+      { ...input, idempotencyKey: "unprepared-attempt" },
+      await cosign(recipient),
+    ),
+    /No prepared binding/,
+  );
+  const bound = await completeSolanaBinding(
+    identityEnvironment,
+    input,
+    await cosign(recipient),
+  );
+  assert.equal(bound.transactionId, prepared.transactionId);
+  // Completing again re-broadcasts the same signed bytes.
+  assert.deepEqual(
+    await completeSolanaBinding(identityEnvironment, input, await cosign(fee)),
+    bound,
+  );
   await finalized(bound.transactionId);
   // Persist real signed bytes, then interrupt the transport before broadcast.
   const originalFetch = globalThis.fetch;
@@ -470,7 +524,6 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
     ...common,
     SOLANA_SIGNER: signer(gas),
     JOURNAL: journal("gas:"),
-    ATTESTER: attester,
   });
   assert.equal(
     (await restarted.submit(input)).transactionId,
@@ -539,6 +592,7 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
       [...domain],
       identity.publicKey,
       fee.publicKey,
+      bn(2),
       bn(2),
     )
     .accountsStrict({

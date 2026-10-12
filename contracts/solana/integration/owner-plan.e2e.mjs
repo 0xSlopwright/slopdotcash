@@ -79,6 +79,8 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
     feeRecipient: fees.publicKey.toBase58(),
     ...expectedDeployment,
     bindingDelaySeconds: "3600",
+    rotationDelaySeconds: "604800",
+    bindingNamespace: identity.publicKey.toBase58(),
   };
   const expectedGenesis = await provider.connection.getGenesisHash();
   async function execute(operation, extra) {
@@ -137,25 +139,27 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
       },
     ],
   });
-  // The identity authority binds actor 999; the owner vetoes it while pending.
+  // The identity authority and the destination wallet bind actor 999; the
+  // owner vetoes it while pending.
   const program = new anchor.Program(
     JSON.parse(readFileSync("idl/slop_escrow.json")),
     provider,
   );
   const actor = new anchor.BN(999).toArrayLike(Buffer, "le", 8),
-    version = new anchor.BN(1).toArrayLike(Buffer, "le", 8);
+    version = new anchor.BN(1).toArrayLike(Buffer, "le", 8),
+    wallet = Keypair.generate();
   await program.methods
     .bindWallet(
       new anchor.BN(999),
       [...Buffer.from(deployment.networkDomain, "hex")],
       new anchor.BN(0),
-      Keypair.generate().publicKey,
       [...Buffer.from(hash("owner-plan-claim"), "hex")],
       new anchor.BN(Math.floor(Date.now() / 1000) + 3600),
     )
     .accountsStrict({
       payer: owner.publicKey,
       identityAuthority: identity.publicKey,
+      destination: wallet.publicKey,
       project,
       binding: PublicKey.findProgramAddressSync(
         [
@@ -168,7 +172,7 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
       )[0],
       systemProgram: anchor.web3.SystemProgram.programId,
     })
-    .signers([identity])
+    .signers([identity, wallet])
     .rpc();
   await execute("veto", { githubUserId: "999", bindingVersion: "1" });
   assert.ok(

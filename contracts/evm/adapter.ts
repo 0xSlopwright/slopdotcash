@@ -388,13 +388,15 @@ export function buildPayCalldata(
   return `0xcbcf057d${hash(obligationId).slice(2)}${word(expectedBindingVersion)}`;
 }
 
-export function buildBindCalldata(input: {
+export interface BindingInput {
   githubUserId: string;
   destination: string;
   expectedVersion: string;
   claimDigest: string;
   expiresAt: string;
-}) {
+}
+const SIGNATURE = /^0x[0-9a-fA-F]{130}$/;
+function assertBindingInput(input: BindingInput) {
   if (
     !ADDRESS.test(input.destination) ||
     BigInt(input.destination) === 0n ||
@@ -403,7 +405,134 @@ export function buildBindCalldata(input: {
   ) {
     throw new Error("Invalid binding input");
   }
-  return `0x9865ee3f${word(input.githubUserId)}${input.destination.slice(2).toLowerCase().padStart(64, "0")}${word(input.expectedVersion)}${hash(input.claimDigest).slice(2)}${word(input.expiresAt)}`;
+}
+const keccakHex = (bytes: Uint8Array) =>
+  `0x${Array.from(keccak_256(bytes), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("")}`;
+const unhex = (value: string) =>
+  Uint8Array.from(value.replace(/^0x/, "").match(/../g) ?? [], (pair) =>
+    Number.parseInt(pair, 16),
+  );
+/** keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)") */
+const DOMAIN_TYPEHASH =
+  "8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f";
+/** keccak256("DestinationBinding(uint64 actorId,address destination,uint64 expectedVersion,bytes32 claimDigest,uint64 expiresAt)") */
+const BINDING_TYPEHASH =
+  "da5a17ebadee256f10c42cd35247bcea3c3b77ba8772bea3807f7d5023a4489e";
+/** keccak256("SlopProjectEscrow") and keccak256("3"): the vault's EIP-712 name and version. */
+const DOMAIN_NAME_HASH =
+  "3c605d82f7aa4ceb74cffe80a28c3f9b810fb40c95cdc887dea666b075537518";
+const DOMAIN_VERSION_HASH =
+  "2a80e1ef1d7842f27f2e6be0972bb708b9a135c38860dbe73c27c3486c34f4de";
+/** The EIP-712 typed data a destination wallet signs to accept a binding (eth_signTypedData_v4). */
+export function baseBindingTypedData(
+  chainId: bigint,
+  vault: string,
+  input: BindingInput,
+) {
+  assertBindingInput(input);
+  if (!ADDRESS.test(vault) || chainId <= 0n || chainId > U64)
+    throw new Error("Invalid binding domain");
+  return {
+    types: {
+      EIP712Domain: [
+        { name: "name", type: "string" },
+        { name: "version", type: "string" },
+        { name: "chainId", type: "uint256" },
+        { name: "verifyingContract", type: "address" },
+      ],
+      DestinationBinding: [
+        { name: "actorId", type: "uint64" },
+        { name: "destination", type: "address" },
+        { name: "expectedVersion", type: "uint64" },
+        { name: "claimDigest", type: "bytes32" },
+        { name: "expiresAt", type: "uint64" },
+      ],
+    },
+    primaryType: "DestinationBinding" as const,
+    domain: {
+      name: "SlopProjectEscrow",
+      version: "3",
+      chainId: chainId.toString(),
+      verifyingContract: vault.toLowerCase(),
+    },
+    message: {
+      actorId: input.githubUserId,
+      destination: input.destination.toLowerCase(),
+      expectedVersion: input.expectedVersion,
+      claimDigest: hash(input.claimDigest),
+      expiresAt: input.expiresAt,
+    },
+  };
+}
+/** The digest ProjectEscrow.bindingDigest returns for the same fields; recover it to verify a wallet signature. */
+export function baseBindingDigest(
+  chainId: bigint,
+  vault: string,
+  input: BindingInput,
+): string {
+  assertBindingInput(input);
+  if (!ADDRESS.test(vault) || chainId <= 0n || chainId > U64)
+    throw new Error("Invalid binding domain");
+  const domain = keccakHex(
+    unhex(
+      `${DOMAIN_TYPEHASH}${DOMAIN_NAME_HASH}${DOMAIN_VERSION_HASH}${chainId.toString(16).padStart(64, "0")}${vault.slice(2).toLowerCase().padStart(64, "0")}`,
+    ),
+  );
+  const struct = keccakHex(
+    unhex(
+      `${BINDING_TYPEHASH}${word(input.githubUserId)}${input.destination.slice(2).toLowerCase().padStart(64, "0")}${word(input.expectedVersion)}${hash(input.claimDigest).slice(2)}${word(input.expiresAt)}`,
+    ),
+  );
+  return keccakHex(unhex(`1901${domain.slice(2)}${struct.slice(2)}`));
+}
+/** bindDestination(uint64,address,uint64,bytes32,uint64,bytes): the authority's call carrying the wallet's signature. */
+export function buildBindCalldata(
+  input: BindingInput & { walletSignature: string },
+) {
+  assertBindingInput(input);
+  if (!SIGNATURE.test(input.walletSignature))
+    throw new Error("Invalid wallet signature encoding");
+  const signature = input.walletSignature.slice(2).toLowerCase();
+  return `0xac11944e${word(input.githubUserId)}${input.destination.slice(2).toLowerCase().padStart(64, "0")}${word(input.expectedVersion)}${hash(input.claimDigest).slice(2)}${word(input.expiresAt)}${"c0".padStart(64, "0")}${"41".padStart(64, "0")}${signature.padEnd(192, "0")}`;
+}
+export interface BaseAuthorityRotation {
+  factory: string;
+  identityAuthority: string;
+  /** Null when no rotation is proposed. */
+  pendingIdentityAuthority: string | null;
+  effectiveAt: string | null;
+}
+/** The identity authority in force for a vault and any pending factory rotation, at the finalized block. */
+export async function readBaseAuthorityRotation(
+  config: BaseEscrowConfig,
+  blockTag: unknown = "finalized",
+): Promise<BaseAuthorityRotation> {
+  if (!ADDRESS.test(config.vault)) throw new Error("Invalid vault");
+  const read = async (to: string, selector: string, pattern: RegExp) => {
+    const value = await rpc(config, "eth_call", [
+      { to, data: selector },
+      blockTag,
+    ]);
+    if (typeof value !== "string" || !pattern.test(value))
+      throw new Error("Malformed factory state");
+    return value;
+  };
+  const addressWord = /^0x0{24}[0-9a-fA-F]{40}$/;
+  const factory = `0x${(await read(config.vault, "0xc45a0155", addressWord)).slice(-40).toLowerCase()}`;
+  const identityAuthority = `0x${(await read(factory, "0x13fa3c08", addressWord)).slice(-40).toLowerCase()}`;
+  const pending = `0x${(await read(factory, "0xc9a66a21", addressWord)).slice(-40).toLowerCase()}`;
+  const effectiveAt = uint64(
+    (await read(factory, "0x2c35d137", /^0x[0-9a-fA-F]{64}$/)).slice(2),
+  );
+  const proposed = BigInt(pending) !== 0n;
+  return {
+    factory,
+    identityAuthority,
+    pendingIdentityAuthority: proposed ? pending : null,
+    effectiveAt: proposed ? effectiveAt.toString() : null,
+  };
 }
 
 export function buildDepositCalldata(grossMicro: string) {

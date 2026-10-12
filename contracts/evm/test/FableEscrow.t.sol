@@ -12,18 +12,25 @@ interface Vm {
     function expectRevert(bytes4) external;
     function expectRevert() external;
     function assume(bool) external;
+    function addr(uint256) external pure returns (address);
+    function sign(uint256, bytes32) external pure returns (uint8, bytes32, bytes32);
 }
 
 /// @dev Minimal harness: no forge-std is vendored in the scratch project.
 contract FableBase {
     Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    address internal constant OWNER = address(0xA11CE);
+    // Destinations are keyed wallets: every binding carries the destination's own signature.
+    uint256 internal constant OWNER_KEY = 0xA11CE;
+    uint256 internal constant FEE_KEY = 0xFEE;
+    uint256 internal constant CONTRIBUTOR_KEY = 0xC0DE;
+    uint256 internal constant ATTACKER_KEY = 0xBAD;
+    address internal OWNER = vm.addr(OWNER_KEY);
     address internal constant AUTHORITY = address(0xA07);
-    address internal constant FEE = address(0xFEE);
+    address internal FEE = vm.addr(FEE_KEY);
     address internal constant REGISTRAR = address(0x5E6);
-    address internal constant CONTRIBUTOR = address(0xC0DE);
-    address internal constant ATTACKER = address(0xBAD);
+    address internal CONTRIBUTOR = vm.addr(CONTRIBUTOR_KEY);
+    address internal ATTACKER = vm.addr(ATTACKER_KEY);
     uint64 internal constant DELAY = 48 hours;
     bytes32 internal constant PROJECT = keccak256("project");
 
@@ -54,11 +61,22 @@ contract FableBase {
         vault.commitAward(id, actor, gross, source);
     }
 
+    function keyOf(address wallet) internal view returns (uint256) {
+        if (wallet == OWNER) return OWNER_KEY;
+        if (wallet == FEE) return FEE_KEY;
+        if (wallet == CONTRIBUTOR) return CONTRIBUTOR_KEY;
+        if (wallet == ATTACKER) return ATTACKER_KEY;
+        revert("unknown wallet key");
+    }
+
+    /// @dev The destination wallet signs the exact binding; the authority submits it.
     function bind(uint64 actor, address dest, uint64 expected) internal {
+        bytes32 claim = keccak256(abi.encode(actor, dest, expected));
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        (uint8 v, bytes32 r, bytes32 s) =
+            vm.sign(keyOf(dest), vault.bindingDigest(actor, dest, expected, claim, expiresAt));
         vm.prank(AUTHORITY);
-        vault.bindDestination(
-            actor, dest, expected, keccak256(abi.encode(actor, dest, expected)), uint64(block.timestamp + 1 hours)
-        );
+        vault.bindDestination(actor, dest, expected, claim, expiresAt, abi.encodePacked(r, s, v));
     }
 
     function conservationHolds() internal view returns (bool) {
@@ -358,13 +376,13 @@ contract FableEscrowTest is FableBase {
     function test_sound_bindRejectsVaultAndExpired() public {
         vm.prank(AUTHORITY);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        vault.bindDestination(1, address(vault), 0, keccak256("c"), uint64(block.timestamp));
+        vault.bindDestination(1, address(vault), 0, keccak256("c"), uint64(block.timestamp), "");
         vm.prank(AUTHORITY);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        vault.bindDestination(1, CONTRIBUTOR, 0, keccak256("c"), uint64(block.timestamp - 1));
+        vault.bindDestination(1, CONTRIBUTOR, 0, keccak256("c"), uint64(block.timestamp - 1), "");
         vm.prank(AUTHORITY);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        vault.bindDestination(1, CONTRIBUTOR, 1, keccak256("c"), uint64(block.timestamp)); // wrong expected version
+        vault.bindDestination(1, CONTRIBUTOR, 1, keccak256("c"), uint64(block.timestamp), ""); // wrong expected version
     }
 
     function test_sound_blockedDestinationLeavesReserve() public {

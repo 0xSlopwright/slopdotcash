@@ -18,6 +18,10 @@ export interface EscrowDeployment {
   sourceCommit: string;
   codeSha256: string;
   bindingDelaySeconds: string;
+  /** Solana only; null on Base, where the factory fixes 7 days. */
+  rotationDelaySeconds: string | null;
+  /** Solana only; null on Base, where bindings are stored per vault. */
+  bindingNamespace: string | null;
 }
 export interface EscrowPolicy {
   schemaVersion: "1";
@@ -29,6 +33,7 @@ export interface EscrowPolicy {
   deployments: EscrowDeployment[];
 }
 export declare const MIN_PRODUCTION_BINDING_DELAY: number;
+export declare const MIN_PRODUCTION_ROTATION_DELAY: number;
 export declare const ESCROW_NETWORKS: Readonly<
   Record<
     EscrowDeployment["network"],
