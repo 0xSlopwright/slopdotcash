@@ -1,31 +1,75 @@
 import { isFundingAddress, isSolanaTransactionId } from "./funding-address.mjs";
 
-/** Technical network definitions only. Projects and deployments live in project.json. */
+/**
+ * Technical network definitions only. Projects and deployments live in
+ * project.json. `family` selects the adapter, executor and scanner
+ * implementation; `chain` is the wallet-claim and consent identity. EVM
+ * networks also carry the executor gas ceiling (gas units) and the scanner
+ * window (blocks per eth_getLogs page, inclusive), which the generated
+ * deployment record copies so hosted workers never assume a value.
+ */
 export const ESCROW_NETWORKS = Object.freeze({
   "base-sepolia": {
     chain: "base",
+    family: "evm",
     testnet: true,
     chainId: "84532",
     asset: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+    assetSymbol: "USDC",
+    gasCeiling: "500000",
+    scanPageBlocks: "2000",
   },
   "base-mainnet": {
     chain: "base",
+    family: "evm",
     testnet: false,
     chainId: "8453",
     asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    assetSymbol: "USDC",
+    gasCeiling: "500000",
+    scanPageBlocks: "2000",
   },
   "solana-devnet": {
     chain: "solana",
+    family: "solana",
     testnet: true,
     asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    assetSymbol: "USDC",
   },
-  "solana-testnet": { chain: "solana", testnet: true, asset: null },
+  "solana-testnet": {
+    chain: "solana",
+    family: "solana",
+    testnet: true,
+    asset: null,
+    assetSymbol: "TEST",
+  },
   "solana-mainnet": {
     chain: "solana",
+    family: "solana",
     testnet: false,
     asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    assetSymbol: "USDC",
   },
 });
+/** Chains a policy may name, in registry order; each maps to exactly one family. */
+export const ESCROW_CHAINS = Object.freeze([
+  ...new Set(Object.values(ESCROW_NETWORKS).map((network) => network.chain)),
+]);
+export function isEscrowChain(value) {
+  return ESCROW_CHAINS.includes(value);
+}
+/** The execution family of a chain. Unknown chains throw; nothing may default to a family. */
+export function chainFamily(chain) {
+  const network = Object.values(ESCROW_NETWORKS).find(
+    (candidate) => candidate.chain === chain,
+  );
+  if (!network) throw new TypeError(`Unknown escrow chain: ${String(chain)}`);
+  return network.family;
+}
+/** Chains whose wallets are EVM accounts (personal_sign consent, EIP-712 bindings). */
+export const EVM_CHAINS = Object.freeze(
+  ESCROW_CHAINS.filter((chain) => chainFamily(chain) === "evm"),
+);
 /** Production destination bindings activate no sooner than 48 hours. */
 export const MIN_PRODUCTION_BINDING_DELAY = 48 * 60 * 60;
 /** A proposed Solana identity authority takes effect no sooner than 7 days later; Base fixes 7 days in the factory. */
@@ -52,7 +96,7 @@ export function assertEscrowPolicy(value) {
   if (
     value.schemaVersion !== "1" ||
     !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(value.effectiveCycle) ||
-    !["base", "solana"].includes(value.chain) ||
+    !isEscrowChain(value.chain) ||
     value.feeBasisPoints !== 200 ||
     value.withdrawalFeeBasisPoints !== 1000 ||
     value.feeMode !== "deduct-from-gross" ||
@@ -99,7 +143,7 @@ export function assertEscrowPolicy(value) {
       throw new TypeError("Invalid escrow address");
     if (
       (network.asset && deployment.asset !== network.asset) ||
-      (value.chain === "base"
+      (chainFamily(value.chain) === "evm"
         ? deployment.programId !== null ||
           deployment.upgradeAuthority !== null ||
           deployment.projectPda !== null ||
@@ -118,7 +162,7 @@ export function assertEscrowPolicy(value) {
     // authority; the notice period gives every binding made with a stolen
     // key time to be vetoed. Base fixes 7 days in the factory contract.
     if (
-      value.chain === "solana" &&
+      chainFamily(value.chain) === "solana" &&
       (typeof deployment.rotationDelaySeconds !== "string" ||
         !/^(0|[1-9][0-9]{0,9})$/.test(deployment.rotationDelaySeconds) ||
         (!network.testnet &&
@@ -156,7 +200,7 @@ export function assertEscrowPolicy(value) {
     if (
       !/^[0-9a-f]{40}$/.test(deployment.sourceCommit) ||
       !/^[0-9a-f]{64}$/.test(deployment.codeSha256) ||
-      !(value.chain === "base"
+      !(chainFamily(value.chain) === "evm"
         ? /^0x[0-9a-f]{64}$/.test(deployment.deploymentTransaction)
         : isSolanaTransactionId(deployment.deploymentTransaction))
     )

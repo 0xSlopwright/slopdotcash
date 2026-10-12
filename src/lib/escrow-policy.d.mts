@@ -23,10 +23,12 @@ export interface EscrowDeployment {
   /** Solana only; null on Base, where bindings are stored per vault. */
   bindingNamespace: string | null;
 }
+export type EscrowChain = "base" | "solana";
+export type EscrowFamily = "evm" | "solana";
 export interface EscrowPolicy {
   schemaVersion: "1";
   effectiveCycle: string;
-  chain: "base" | "solana";
+  chain: EscrowChain;
   feeBasisPoints: 200;
   withdrawalFeeBasisPoints: 1000;
   feeMode: "deduct-from-gross";
@@ -34,17 +36,25 @@ export interface EscrowPolicy {
 }
 export declare const MIN_PRODUCTION_BINDING_DELAY: number;
 export declare const MIN_PRODUCTION_ROTATION_DELAY: number;
+export interface EscrowNetwork {
+  chain: EscrowChain;
+  family: EscrowFamily;
+  testnet: boolean;
+  chainId?: string;
+  asset: string | null;
+  assetSymbol: string;
+  /** EVM only: executor gas ceiling in gas units, decimal string. */
+  gasCeiling?: string;
+  /** EVM only: blocks per eth_getLogs page, inclusive, decimal string. */
+  scanPageBlocks?: string;
+}
 export declare const ESCROW_NETWORKS: Readonly<
-  Record<
-    EscrowDeployment["network"],
-    {
-      chain: "base" | "solana";
-      testnet: boolean;
-      chainId?: string;
-      asset: string | null;
-    }
-  >
+  Record<EscrowDeployment["network"], EscrowNetwork>
 >;
+export declare const ESCROW_CHAINS: readonly EscrowChain[];
+export declare const EVM_CHAINS: readonly EscrowChain[];
+export declare function isEscrowChain(value: unknown): value is EscrowChain;
+export declare function chainFamily(chain: string): EscrowFamily;
 export declare function assertEscrowPolicy(value: unknown): EscrowPolicy;
 export declare function assertEscrowTransition(
   previous: EscrowPolicy | undefined,
