@@ -75,8 +75,16 @@ manifest output. Solana additionally needs `PAYMENT_SOLANA_GENESIS` trust roots.
 The manifest supplies its program, project PDA, token vault, network domain,
 and asset. Both chain adapters fetch actual finalized evidence independently.
 
-`BASE_PAYMENT_EXECUTOR` and `SOLANA_PAYMENT_EXECUTOR` are separate internal
-service bindings, not public URLs. The scoped signing implementations live in
+Each EVM deployment record also carries `gasCeiling` (executor gas units) and
+`scanPageBlocks` (blocks per `eth_getLogs` page, inclusive), copied from the
+network registry by `scripts/prepare-payment-deployments.ts`. A record missing
+either value is refused; no worker substitutes a default.
+
+`EVM_PAYMENT_EXECUTOR` and `SOLANA_PAYMENT_EXECUTOR` are separate internal
+service bindings, not public URLs. The dispatcher picks one by the
+deployment's execution family from the network registry
+(`src/lib/escrow-policy.mjs`), never by the literal chain name. The scoped
+signing implementations live in
 `workers/payment-executor`. Neither relayer key may approve awards or withdraw
 funds. A separate attester signs only a verified destination binding. Keys are
 runtime secrets; no production credentials are read by the local tests.

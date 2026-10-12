@@ -27,10 +27,10 @@ import {
   lookupAttempt,
   retireUnsignedAttempt,
 } from "../../workers/payment-executor/core";
-import { scanBasePayments } from "../../workers/payments/scanner";
+import { scanEvmPayments } from "../../workers/payments/scanner";
 import type { D1Database } from "../trace/cloudflare-persistence";
-import { basePaymentAdapter } from "./base-adapter";
 import { dispatchPayment } from "./dispatch";
+import { evmPaymentAdapter } from "./evm-adapter";
 import { handlePaymentsApi } from "./handler";
 import { indexPaymentEvent } from "./ledger";
 import { personalMessageHash } from "./possession";
@@ -321,13 +321,28 @@ try {
     projectId: "integration-fixture",
     network: "anvil",
   };
-  const adapter = basePaymentAdapter(db, config);
-  const scan = () =>
-    scanBasePayments(
+  const adapter = evmPaymentAdapter(db, { ...config, chain: "base" });
+  // A scan deployment must state its reviewed page size; the scanner never assumes one.
+  await assert.rejects(
+    scanEvmPayments(
       db,
       {
         ...config,
         chain: "base",
+        deploymentTransaction: deploymentTransactions.get(vault),
+      },
+      rpcUrl,
+      async () => {},
+    ),
+    /scan page size/,
+  );
+  const scan = () =>
+    scanEvmPayments(
+      db,
+      {
+        ...config,
+        chain: "base",
+        scanPageBlocks: "2000",
         deploymentTransaction: deploymentTransactions.get(vault),
       },
       rpcUrl,
@@ -470,7 +485,13 @@ try {
   const unsignedAttester = createBaseAttester({
     PAYMENTS_DB: db,
     PAYMENT_DEPLOYMENTS: JSON.stringify([
-      { ...config, chain: "base", chainId: "31337" },
+      {
+        ...config,
+        chain: "base",
+        chainId: "31337",
+        gasCeiling: "500000",
+        scanPageBlocks: "2000",
+      },
     ]),
     PAYMENT_RPC_URLS: JSON.stringify({ anvil: rpcUrl }),
     ALLOW_LOCAL_TEST_CHAIN: true,
@@ -557,7 +578,13 @@ try {
     },
   });
   const deployments = JSON.stringify([
-    { ...config, chain: "base", chainId: "31337" },
+    {
+      ...config,
+      chain: "base",
+      chainId: "31337",
+      gasCeiling: "500000",
+      scanPageBlocks: "2000",
+    },
   ]);
   const shared = {
     PAYMENTS_DB: db,

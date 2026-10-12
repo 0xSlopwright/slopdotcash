@@ -1,16 +1,17 @@
-import { basePaymentAdapter } from "../../backend/payments/base-adapter";
 import {
   dispatchPayment,
   type PaymentExecutor,
 } from "../../backend/payments/dispatch";
+import { evmPaymentAdapter } from "../../backend/payments/evm-adapter";
 import {
   indexPaymentEvent,
   type PaymentChainAdapter,
 } from "../../backend/payments/ledger";
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import { solanaPaymentAdapter } from "../../contracts/solana/adapter";
+import { chainFamily } from "../../src/lib/escrow-policy.mjs";
 import { reconcileFailedAttempts } from "./reconcile";
-import { scanBasePayments, scanSolanaPayments } from "./scanner";
+import { scanEvmPayments, scanSolanaPayments } from "./scanner";
 
 export interface PaymentDeployment {
   projectId: string;
@@ -30,6 +31,10 @@ export interface PaymentDeployment {
   upgradeAuthority: string | null;
   networkDomain?: string;
   chainId?: string;
+  /** EVM only: executor gas ceiling, copied from the registry by prepare-payment-deployments. */
+  gasCeiling?: string;
+  /** EVM only: eth_getLogs page size, copied from the registry by prepare-payment-deployments. */
+  scanPageBlocks?: string;
   deploymentTransaction?: string;
 }
 export interface PaymentsWorkerEnvironment {
@@ -39,7 +44,7 @@ export interface PaymentsWorkerEnvironment {
   PAYMENT_RPC_URLS: string;
   PAYMENT_SOLANA_GENESIS?: string;
   /** A separate restricted execution service; no signer secrets in this worker. */
-  BASE_PAYMENT_EXECUTOR?: { fetch(request: Request): Promise<Response> };
+  EVM_PAYMENT_EXECUTOR?: { fetch(request: Request): Promise<Response> };
   SOLANA_PAYMENT_EXECUTOR?: { fetch(request: Request): Promise<Response> };
 }
 export async function recoverUncertainAttempts(
@@ -56,8 +61,8 @@ export async function recoverUncertainAttempts(
     chain: string;
   }[]) {
     const service =
-      attempt.chain === "base"
-        ? env.BASE_PAYMENT_EXECUTOR
+      chainFamily(attempt.chain) === "evm"
+        ? env.EVM_PAYMENT_EXECUTOR
         : env.SOLANA_PAYMENT_EXECUTOR;
     if (!service) throw new Error("Attempt status service unavailable");
     const { chain: _chain, ...identity } = attempt;
@@ -142,8 +147,8 @@ function executor(env: PaymentsWorkerEnvironment): PaymentExecutor {
       if (matched.length !== 1)
         throw new Error("Reviewed execution deployment unavailable");
       const service =
-        matched[0].chain === "base"
-          ? env.BASE_PAYMENT_EXECUTOR
+        chainFamily(matched[0].chain) === "evm"
+          ? env.EVM_PAYMENT_EXECUTOR
           : env.SOLANA_PAYMENT_EXECUTOR;
       if (!service) throw new Error("Chain execution service unavailable");
       const response = await service.fetch(
@@ -169,7 +174,7 @@ export async function runPaymentDispatch(
   env: PaymentsWorkerEnvironment,
   now = new Date(),
 ): Promise<void> {
-  if (!env.BASE_PAYMENT_EXECUTOR && !env.SOLANA_PAYMENT_EXECUTOR)
+  if (!env.EVM_PAYMENT_EXECUTOR && !env.SOLANA_PAYMENT_EXECUTOR)
     throw new Error("Payment execution service unavailable");
   const rows = await env.PAYMENTS_DB.prepare(
     "SELECT json_group_array(obligation_id) ids FROM (SELECT obligation_id FROM payment_outbox WHERE state='ready' OR (state='processing' AND lease_until<?) ORDER BY updated_at LIMIT 50)",
@@ -221,8 +226,9 @@ export async function ingestPaymentEvent(
   if (matches.length !== 1)
     throw new Error("Reviewed deployment unavailable or ambiguous");
   const deployment = matches[0];
+  const family = chainFamily(deployment.chain);
   if (
-    !(deployment.chain === "base" ? /^0x[0-9a-f]{64}$/ : /^[0-9a-f]{64}$/).test(
+    !(family === "evm" ? /^0x[0-9a-f]{64}$/ : /^[0-9a-f]{64}$/).test(
       message.obligationId,
     )
   )
@@ -231,14 +237,14 @@ export async function ingestPaymentEvent(
   const rpcUrl = rpcUrls[deployment.network];
   if (!rpcUrl) throw new Error("Private RPC configuration unavailable");
   let adapter: PaymentChainAdapter;
-  if (deployment.chain === "base" && deployment.chainId) {
-    adapter = basePaymentAdapter(env.PAYMENTS_DB, {
+  if (family === "evm" && deployment.chainId) {
+    adapter = evmPaymentAdapter(env.PAYMENTS_DB, {
       ...deployment,
       rpcUrl,
       chainId: BigInt(deployment.chainId),
     });
   } else if (
-    deployment.chain === "solana" &&
+    family === "solana" &&
     deployment.programId &&
     deployment.projectPda &&
     deployment.asset &&
@@ -274,8 +280,8 @@ export default {
     const failures: unknown[] = [];
     for (const deployment of deployments) {
       try {
-        if (deployment.chain === "base")
-          await scanBasePayments(
+        if (chainFamily(deployment.chain) === "evm")
+          await scanEvmPayments(
             env.PAYMENTS_DB,
             deployment,
             rpcUrls[deployment.network],

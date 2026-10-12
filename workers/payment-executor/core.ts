@@ -14,7 +14,7 @@ import {
   buildPayCalldata,
   verifyEvmDeployment,
 } from "../../contracts/evm/adapter";
-import { finalizedBaseRevert } from "../payments/reconcile";
+import { finalizedEvmRevert } from "../payments/reconcile";
 
 type Hex = `0x${string}`;
 export interface Signer {
@@ -310,10 +310,11 @@ async function retireRevertedBind(
   key: string,
   attempt: Attempt,
 ): Promise<boolean> {
-  const proof = await finalizedBaseRevert(
+  const proof = await finalizedEvmRevert(
     config.rpcUrl,
     config.chainId,
     attempt.transactionId,
+    config.chain,
   );
   if (!proof) return false;
   return env.JOURNAL.transaction(async (store) => {
