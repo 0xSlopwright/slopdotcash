@@ -6,7 +6,8 @@ if [[ ! -f .local/payer.json ]]; then
   solana-keygen new --no-bip39-passphrase --silent --outfile .local/payer.json >/dev/null
 fi
 npm ci --ignore-scripts --legacy-peer-deps
-bash scripts/build-local.sh
+# The suite waits the binding delay out in seconds, so it builds with the test-only delay floor.
+SLOP_ESCROW_FEATURES=short-delay-for-tests bash scripts/build-local.sh
 solana-test-validator --reset --quiet --ledger .local/ledger --rpc-port 18899 --faucet-port 18940 --dynamic-port-range 18901-18930 --bpf-program 4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj target/deploy/slop_escrow.so >.local/validator.log 2>&1 &
 validator_pid=$!
 trap 'kill "$validator_pid" 2>/dev/null || true' EXIT

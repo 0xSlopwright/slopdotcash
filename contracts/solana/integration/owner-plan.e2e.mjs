@@ -151,6 +151,7 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
       new anchor.BN(0),
       Keypair.generate().publicKey,
       [...Buffer.from(hash("owner-plan-claim"), "hex")],
+      new anchor.BN(Math.floor(Date.now() / 1000) + 3600),
     )
     .accountsStrict({
       payer: owner.publicKey,

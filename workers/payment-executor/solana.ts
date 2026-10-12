@@ -7,6 +7,8 @@ import type {
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import {
   BINDING_SIZE,
+  OBLIGATION_DISCRIMINATOR,
+  OBLIGATION_SIZE,
   PROJECT_SIZE,
   type SolanaEscrowConfig,
   solanaAccount,
@@ -284,7 +286,12 @@ async function authorized(
     bytes(config.projectPda),
     solanaDigest(input.obligationId),
   ]);
-  const obligation = await read(config, awardAddress, 137, "a8ce8d6a584caca7");
+  const obligation = await read(
+    config,
+    awardAddress,
+    OBLIGATION_SIZE,
+    OBLIGATION_DISCRIMINATOR,
+  );
   if (
     !obligation ||
     solanaPubkey(obligation, 48) !== config.projectPda ||
@@ -474,6 +481,8 @@ export function createSolanaAttester(
         );
       if (!ctx.binding) await holdSuccessorClaim(env, input);
       const version = ctx.binding ? solanaUint(ctx.binding, 144) : 0n;
+      // Submission expiry only; the binding itself has no expiry (see contracts/solana/README.md).
+      const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 3600);
       const ix: Instruction = {
         program: ctx.config.programId,
         accounts: [
@@ -490,6 +499,7 @@ export function createSolanaAttester(
           le(version),
           bytes(input.destination),
           solanaDigest(input.claimDigest),
+          le(expiresAt),
         ),
       };
       return send(env, ctx, input, "attester", [ix]);
@@ -511,18 +521,30 @@ export function createSolanaExecutor(
         await env.ATTESTER.submit(input);
         throw new Error("Destination binding awaiting finality");
       }
+      // The executor pays only the claimed destination, which is the latest binding. The
+      // program would also accept the binding a payment last used, but a claimed rotation
+      // waits for its delay here rather than paying the previous wallet.
       const version = solanaUint(ctx.binding, 144);
-      const activatesAt = int64(ctx.binding, 152) + int64(ctx.project, 249);
-      if (BigInt(Math.floor(Date.now() / 1000)) < activatesAt)
+      const delay = int64(ctx.project, 249);
+      const now = BigInt(Math.floor(Date.now() / 1000));
+      const activatesAt = int64(ctx.binding, 152) + delay;
+      if (now < activatesAt)
         throw new Error(
           `Destination binding activates at ${new Date(Number(activatesAt) * 1000).toISOString()}; retry after activation`,
         );
-      const veto = pda(ctx.config.programId, [
-        encoder.encode("veto"),
-        bytes(ctx.config.projectPda),
-        le(BigInt(input.githubUserId)),
-        le(version),
-      ]);
+      const payableAt = int64(ctx.obligation, 137) + delay;
+      if (now < payableAt)
+        throw new Error(
+          `Award is inside its commit delay until ${new Date(Number(payableAt) * 1000).toISOString()}; retry after it ends`,
+        );
+      const vetoFor = (bindingVersion: bigint) =>
+        pda(ctx.config.programId, [
+          encoder.encode("veto"),
+          bytes(ctx.config.projectPda),
+          le(BigInt(input.githubUserId)),
+          le(bindingVersion),
+        ]);
+      const veto = vetoFor(version);
       const vetoed = (await solanaRpc(ctx.config, "getAccountInfo", [
         veto,
         { commitment: "finalized", encoding: "base64" },
@@ -541,13 +563,14 @@ export function createSolanaExecutor(
         accounts: [
           { key: ctx.config.projectPda, write: true },
           { key: ctx.awardAddress, write: true },
-          { key: ctx.bindingAddress, write: false },
+          { key: ctx.bindingAddress, write: true },
           { key: ctx.config.mint, write: false },
           { key: ctx.config.vault, write: true },
           { key: ata(ctx.config.mint, input.destination), write: true },
           { key: ata(ctx.config.mint, feeOwner), write: true },
           { key: TOKEN, write: false },
           { key: veto, write: false },
+          { key: vetoFor(solanaUint(ctx.binding, 192)), write: false },
         ],
         data: instructionData("pay", le(version)),
       };

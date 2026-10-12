@@ -76,6 +76,10 @@
           "type": {
             "array": ["u8", 32]
           }
+        },
+        {
+          "name": "expires_at",
+          "type": "i64"
         }
       ]
     },
@@ -403,7 +407,8 @@
           "writable": true
         },
         {
-          "name": "binding"
+          "name": "binding",
+          "writable": true
         },
         {
           "name": "mint",
@@ -427,6 +432,9 @@
         },
         {
           "name": "destination",
+          "docs": [
+            "The handler requires this to be the associated token account of whichever binding pays."
+          ],
           "writable": true
         },
         {
@@ -457,6 +465,31 @@
               {
                 "kind": "account",
                 "path": "binding.version",
+                "account": "WalletBinding"
+              }
+            ]
+          }
+        },
+        {
+          "name": "active_veto",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [118, 101, 116, 111]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "account",
+                "path": "obligation.actor_id",
+                "account": "Obligation"
+              },
+              {
+                "kind": "account",
+                "path": "binding.active_version",
                 "account": "WalletBinding"
               }
             ]
@@ -509,6 +542,34 @@
               }
             ]
           }
+        },
+        {
+          "name": "ledger",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [118, 101, 116, 111, 45, 99, 111, 117, 110, 116]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "actor_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "obligation",
+          "docs": [
+            "An unpaid award to this actor in this project whose commit delay has not passed;",
+            "it extends the veto window to that award's commit delay."
+          ],
+          "optional": true
         },
         {
           "name": "system_program",
@@ -600,6 +661,10 @@
     {
       "name": "ServiceCharge",
       "discriminator": [80, 27, 252, 196, 96, 153, 254, 192]
+    },
+    {
+      "name": "VetoLedger",
+      "discriminator": [27, 80, 180, 216, 138, 251, 176, 217]
     },
     {
       "name": "WalletBinding",
@@ -697,6 +762,26 @@
       "code": 6012,
       "name": "WrongDestination",
       "msg": "Destination must be the bound wallet's associated token account"
+    },
+    {
+      "code": 6013,
+      "name": "AwardPending",
+      "msg": "Award is still inside its commit delay"
+    },
+    {
+      "code": 6014,
+      "name": "VetoLimit",
+      "msg": "Owner veto limit reached before the actor's first payment"
+    },
+    {
+      "code": 6015,
+      "name": "InvalidDelay",
+      "msg": "Binding delay must be between one hour and 30 days"
+    },
+    {
+      "code": 6016,
+      "name": "BindingExpired",
+      "msg": "Binding submission expired"
     }
   ],
   "types": [
@@ -845,6 +930,10 @@
           {
             "name": "paid",
             "type": "bool"
+          },
+          {
+            "name": "committed_at",
+            "type": "i64"
           }
         ]
       }
@@ -1002,7 +1091,26 @@
       }
     },
     {
+      "name": "VetoLedger",
+      "docs": [
+        "Vetoes this project has recorded for an actor before the actor's first payment."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "count",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "WalletBinding",
+      "docs": [
+        "Shared across every project with the same authority and network. The first seven",
+        "fields are the latest binding; the active slot is the binding a payment last used."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
@@ -1037,6 +1145,14 @@
           {
             "name": "bound_at",
             "type": "i64"
+          },
+          {
+            "name": "active_destination",
+            "type": "pubkey"
+          },
+          {
+            "name": "active_version",
+            "type": "u64"
           }
         ]
       }

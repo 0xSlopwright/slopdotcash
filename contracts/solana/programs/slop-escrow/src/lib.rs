@@ -3,6 +3,20 @@ use solana_sha256_hasher::hashv;
 use anchor_spl::associated_token::get_associated_token_address;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, TransferChecked};
 declare_id!("4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj");
+/// Bounds on the binding delay. Below one hour the owner cannot react; above 30 days a
+/// binding or a committed award waits too long to be useful. The local end-to-end suite
+/// builds with the `short-delay-for-tests` feature so it can wait the delay out in
+/// seconds; that build must never be deployed.
+const MIN_BINDING_DELAY: i64 = if cfg!(feature = "short-delay-for-tests") {
+    1
+} else {
+    3600
+};
+const MAX_BINDING_DELAY: i64 = 30 * 86400;
+/// Vetoes a project owner may record for an actor that has never been paid through the
+/// shared binding. Each veto can only delay the actor by one more binding delay, so this
+/// bounds the owner's delay power.
+const MAX_VETOES_BEFORE_ACTIVE: u8 = 3;
 #[program]
 pub mod slop_escrow {
     use super::*;
@@ -18,8 +32,13 @@ pub mod slop_escrow {
             identity_authority != Pubkey::default()
                 && fee_recipient != Pubkey::default()
                 && identity_authority != ctx.accounts.owner.key()
-                && binding_delay >= 0,
+                && fee_recipient != ctx.accounts.owner.key()
+                && fee_recipient != ctx.accounts.project.key(),
             EscrowError::InvalidIdentity
+        );
+        require!(
+            (MIN_BINDING_DELAY..=MAX_BINDING_DELAY).contains(&binding_delay),
+            EscrowError::InvalidDelay
         );
         let p = &mut ctx.accounts.project;
         p.owner = ctx.accounts.owner.key();
@@ -81,6 +100,7 @@ pub mod slop_escrow {
         a.gross = gross;
         a.principal = principal;
         a.fee = fee;
+        a.committed_at = Clock::get()?.unix_timestamp;
         emit!(AwardCommitted {
             project: p.key(),
             award_id,
@@ -93,6 +113,8 @@ pub mod slop_escrow {
         Ok(())
     }
     // The attester signs this exact transaction, including deployment and predecessor.
+    // `expires_at` limits submission, not claim lifetime. A new binding replaces the latest
+    // one; the active slot (the binding a payment last used) is untouched.
     pub fn bind_wallet(
         ctx: Context<BindWallet>,
         actor_id: u64,
@@ -100,10 +122,22 @@ pub mod slop_escrow {
         expected_version: u64,
         destination: Pubkey,
         claim_digest: [u8; 32],
+        expires_at: i64,
     ) -> Result<()> {
+        let project = ctx.accounts.project.key();
+        let vault = Pubkey::find_program_address(&[b"vault", project.as_ref()], ctx.program_id).0;
+        // A destination owned by the project or vault PDA would strand the principal.
         require!(
-            actor_id > 0 && destination != Pubkey::default(),
+            actor_id > 0
+                && destination != Pubkey::default()
+                && destination != project
+                && destination != vault
+                && claim_digest != [0u8; 32],
             EscrowError::InvalidIdentity
+        );
+        require!(
+            Clock::get()?.unix_timestamp < expires_at,
+            EscrowError::BindingExpired
         );
         require!(
             network == ctx.accounts.project.network,
@@ -127,18 +161,36 @@ pub mod slop_escrow {
         });
         Ok(())
     }
-    // The owner stops a pending binding for this project before it can pay. A new
-    // authority binding (next version) is required afterwards.
+    // The owner stops the latest binding for this project before it pays: while it waits
+    // out its own delay, or while an unpaid award to the actor (passed as `obligation`) is
+    // still inside its commit delay. A binding that has paid cannot be vetoed, and an
+    // actor that has never been paid can be vetoed at most MAX_VETOES_BEFORE_ACTIVE times.
+    // A new authority binding (next version) is required afterwards.
     pub fn veto_binding(ctx: Context<VetoBinding>, actor_id: u64, version: u64) -> Result<()> {
         let b = &ctx.accounts.binding;
+        let p = &ctx.accounts.project;
         require!(
             b.version == version && b.actor_id == actor_id && version > 0,
             EscrowError::StaleBinding
         );
+        require!(version != b.active_version, EscrowError::BindingActive);
+        let now = Clock::get()?.unix_timestamp;
+        let commit_window = match &ctx.accounts.obligation {
+            Some(a) => now < add_i64(a.committed_at, p.binding_delay)?,
+            None => false,
+        };
         require!(
-            Clock::get()?.unix_timestamp < activates_at(b, &ctx.accounts.project)?,
+            now < activates_at(b, p)? || commit_window,
             EscrowError::BindingActive
         );
+        if b.active_version == 0 {
+            let ledger = &mut ctx.accounts.ledger;
+            require!(
+                ledger.count < MAX_VETOES_BEFORE_ACTIVE,
+                EscrowError::VetoLimit
+            );
+            ledger.count += 1;
+        }
         emit!(BindingVetoed {
             project: ctx.accounts.project.key(),
             actor_id,
@@ -146,24 +198,46 @@ pub mod slop_escrow {
         });
         Ok(())
     }
+    // Pays an award once its commit delay has passed, to the latest binding if that
+    // binding's delay has passed and this project has not vetoed it, otherwise to the
+    // binding a payment last used. The first payment through a binding makes it active.
     pub fn pay(ctx: Context<Pay>, expected_version: u64) -> Result<()> {
         let p = &ctx.accounts.project;
         let a = &ctx.accounts.obligation;
+        let b = &ctx.accounts.binding;
         require!(!a.paid, EscrowError::AlreadyPaid);
+        let now = Clock::get()?.unix_timestamp;
         require!(
-            ctx.accounts.binding.version > 0 && ctx.accounts.binding.version == expected_version,
-            EscrowError::StaleBinding
+            now >= add_i64(a.committed_at, p.binding_delay)?,
+            EscrowError::AwardPending
         );
+        require!(b.version > 0, EscrowError::StaleBinding);
+        // A veto address can only be created by veto_binding; an empty system account
+        // proves the owner did not veto that binding version.
+        let latest_ready = now >= activates_at(b, p)? && unvetoed(&ctx.accounts.veto);
+        // Naming the latest version while it cannot pay reports why, not a stale version.
+        if !latest_ready && (expected_version == b.version || b.active_version == 0) {
+            return Err(if now < activates_at(b, p)? {
+                error!(EscrowError::BindingPending)
+            } else {
+                error!(EscrowError::BindingVetoed)
+            });
+        }
+        let (destination, version) = if latest_ready {
+            (b.destination, b.version)
+        } else {
+            require!(
+                unvetoed(&ctx.accounts.active_veto),
+                EscrowError::BindingVetoed
+            );
+            (b.active_destination, b.active_version)
+        };
+        require!(version == expected_version, EscrowError::StaleBinding);
         require!(
-            Clock::get()?.unix_timestamp >= activates_at(&ctx.accounts.binding, p)?,
-            EscrowError::BindingPending
-        );
-        // The veto address can only be created by veto_binding; an empty system
-        // account proves the owner did not veto this binding version.
-        require!(
-            ctx.accounts.veto.data_is_empty()
-                && ctx.accounts.veto.owner == &anchor_lang::system_program::ID,
-            EscrowError::BindingVetoed
+            ctx.accounts.destination.owner == destination
+                && ctx.accounts.destination.key()
+                    == get_associated_token_address(&destination, &ctx.accounts.mint.key()),
+            EscrowError::WrongDestination
         );
         let seeds: &[&[u8]] = &[b"project", p.owner.as_ref(), &p.project_id, &[p.bump]];
         send(
@@ -194,14 +268,19 @@ pub mod slop_escrow {
         p.paid = add(p.paid, principal)?;
         p.payout_fees = add(p.payout_fees, fee)?;
         ctx.accounts.obligation.paid = true;
+        let b = &mut ctx.accounts.binding;
+        if b.active_version != version {
+            b.active_destination = destination;
+            b.active_version = version;
+        }
         emit!(AwardPaid {
             project: p.key(),
             award_id: ctx.accounts.obligation.award_id,
             gross: ctx.accounts.obligation.gross,
             principal,
             fee,
-            destination: ctx.accounts.binding.destination,
-            wallet_version: expected_version
+            destination,
+            wallet_version: version
         });
         Ok(())
     }
@@ -291,9 +370,13 @@ pub fn award_id_for(project: &Pubkey, source_digest: &[u8; 32]) -> [u8; 32] {
     hashv(&[b"slop-escrow-award", project.as_ref(), source_digest]).to_bytes()
 }
 fn activates_at(b: &WalletBinding, p: &Project) -> Result<i64> {
-    b.bound_at
-        .checked_add(p.binding_delay)
-        .ok_or(error!(EscrowError::Arithmetic))
+    add_i64(b.bound_at, p.binding_delay)
+}
+fn add_i64(a: i64, b: i64) -> Result<i64> {
+    a.checked_add(b).ok_or(error!(EscrowError::Arithmetic))
+}
+fn unvetoed(veto: &UncheckedAccount) -> bool {
+    veto.data_is_empty() && veto.owner == &anchor_lang::system_program::ID
 }
 // Unsolicited token transfers do not acquire sponsor refund or award rights.
 fn free(p: &Project) -> Result<u64> {
@@ -317,6 +400,11 @@ fn send<'info>(
     seeds: &[&[u8]],
     amount: u64,
 ) -> Result<()> {
+    // A zero fee or refund leg is skipped, so a frozen fee account cannot stall a
+    // zero-fee payout and a zero-return withdrawal needs no transfer.
+    if amount == 0 {
+        return Ok(());
+    }
     token::transfer_checked(
         CpiContext::new_with_signer(
             program.to_account_info(),
@@ -396,6 +484,12 @@ pub struct VetoBinding<'info> {
     pub binding: Box<Account<'info, WalletBinding>>,
     #[account(init,payer=owner,space=8+BindingVeto::INIT_SPACE,seeds=[b"veto",project.key().as_ref(),&actor_id.to_le_bytes(),&version.to_le_bytes()],bump)]
     pub veto: Account<'info, BindingVeto>,
+    #[account(init_if_needed,payer=owner,space=8+VetoLedger::INIT_SPACE,seeds=[b"veto-count",project.key().as_ref(),&actor_id.to_le_bytes()],bump)]
+    pub ledger: Account<'info, VetoLedger>,
+    /// An unpaid award to this actor in this project whose commit delay has not passed;
+    /// it extends the veto window to that award's commit delay.
+    #[account(constraint=obligation.project==project.key() @ EscrowError::InvalidAward,constraint=obligation.actor_id==actor_id @ EscrowError::InvalidAward,constraint=!obligation.paid @ EscrowError::AlreadyPaid)]
+    pub obligation: Option<Box<Account<'info, Obligation>>>,
     pub system_program: Program<'info, System>,
 }
 #[derive(Accounts)]
@@ -404,19 +498,23 @@ pub struct Pay<'info> {
     pub project: Box<Account<'info, Project>>,
     #[account(mut,has_one=project,seeds=[b"award",project.key().as_ref(),&obligation.award_id],bump)]
     pub obligation: Box<Account<'info, Obligation>>,
-    #[account(seeds=[b"wallet",project.identity_authority.as_ref(),&project.network,&obligation.actor_id.to_le_bytes()],bump,constraint=binding.actor_id==obligation.actor_id,constraint=binding.network==project.network,constraint=binding.authority==project.identity_authority)]
+    #[account(mut,seeds=[b"wallet",project.identity_authority.as_ref(),&project.network,&obligation.actor_id.to_le_bytes()],bump,constraint=binding.actor_id==obligation.actor_id,constraint=binding.network==project.network,constraint=binding.authority==project.identity_authority)]
     pub binding: Box<Account<'info, WalletBinding>>,
     pub mint: Account<'info, Mint>,
     #[account(mut,seeds=[b"vault",project.key().as_ref()],bump,token::mint=mint,token::authority=project)]
     pub vault: Account<'info, TokenAccount>,
-    #[account(mut,token::mint=mint,constraint=destination.owner==binding.destination,constraint=destination.key()==get_associated_token_address(&binding.destination,&mint.key()) @ EscrowError::WrongDestination,constraint=destination.key()!=vault.key())]
+    /// The handler requires this to be the associated token account of whichever binding pays.
+    #[account(mut,token::mint=mint,constraint=destination.key()!=vault.key())]
     pub destination: Account<'info, TokenAccount>,
     #[account(mut,token::mint=mint,constraint=fee_account.owner==project.fee_recipient,constraint=fee_account.key()!=vault.key())]
     pub fee_account: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
-    /// CHECK: must be the empty veto address for this project, actor and binding version.
+    /// CHECK: must be the empty veto address for this project, actor and latest binding version.
     #[account(seeds=[b"veto",project.key().as_ref(),&obligation.actor_id.to_le_bytes(),&binding.version.to_le_bytes()],bump)]
     pub veto: UncheckedAccount<'info>,
+    /// CHECK: must be the empty veto address for this project, actor and active binding version.
+    #[account(seeds=[b"veto",project.key().as_ref(),&obligation.actor_id.to_le_bytes(),&binding.active_version.to_le_bytes()],bump)]
+    pub active_veto: UncheckedAccount<'info>,
 }
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
@@ -486,7 +584,10 @@ pub struct Obligation {
     pub principal: u64,
     pub fee: u64,
     pub paid: bool,
+    pub committed_at: i64,
 }
+/// Shared across every project with the same authority and network. The first seven
+/// fields are the latest binding; the active slot is the binding a payment last used.
 #[account]
 #[derive(InitSpace)]
 pub struct WalletBinding {
@@ -497,10 +598,18 @@ pub struct WalletBinding {
     pub destination: Pubkey,
     pub version: u64,
     pub bound_at: i64,
+    pub active_destination: Pubkey,
+    pub active_version: u64,
 }
 #[account]
 #[derive(InitSpace)]
 pub struct BindingVeto {}
+/// Vetoes this project has recorded for an actor before the actor's first payment.
+#[account]
+#[derive(InitSpace)]
+pub struct VetoLedger {
+    pub count: u8,
+}
 #[event]
 pub struct BindingVetoed {
     pub project: Pubkey,
@@ -576,6 +685,14 @@ pub enum EscrowError {
     BindingActive,
     #[msg("Destination must be the bound wallet's associated token account")]
     WrongDestination,
+    #[msg("Award is still inside its commit delay")]
+    AwardPending,
+    #[msg("Owner veto limit reached before the actor's first payment")]
+    VetoLimit,
+    #[msg("Binding delay must be between one hour and 30 days")]
+    InvalidDelay,
+    #[msg("Binding submission expired")]
+    BindingExpired,
 }
 
 #[account]

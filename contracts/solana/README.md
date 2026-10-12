@@ -20,18 +20,44 @@ verify GitHub login and the contributor's wallet authorization before the identi
 signer submits this transaction. An identity key can redirect future unpaid awards;
 this authority must be disclosed, protected and reviewed separately from relayers.
 
-Each binding records `bound_at`. In a project, `pay` rejects a binding until
-`bound_at + binding_delay` (set once at `initialize`). While a binding is
-pending, the project owner can call `veto_binding(actor_id, version)`. It
-creates a permanent `veto` PDA for that project, actor and version, and `pay`
-rejects any binding version with a veto. Bindings are shared across projects
-with the same identity authority and network, so a veto affects only the
-vetoing project. Only a new authority binding (the next version, with a new
-delay) can follow. An active binding cannot be vetoed. An owner can delay a
-contributor's payout but never take an approved award back. Production
-deployments use a delay of at least 48 hours, and the adapter checks the
-project's delay against the reviewed manifest. `pay` also requires the
-destination to be the bound wallet's associated token account.
+Two delays protect awards, both of length `binding_delay` (set once at
+`initialize`, between one hour and 30 days). Each binding records `bound_at`,
+and `pay` rejects the latest binding until `bound_at + binding_delay`. Each
+award records `committed_at`, and `pay` rejects the award until
+`committed_at + binding_delay`, so a binding placed before the actor had any
+award still gives the owner a full delay from the moment money is attached to
+it. The owner's exact power is `veto_binding(actor_id, version)` on the latest
+binding: allowed while that binding waits out its own delay, or while an unpaid
+award to the actor (passed as the optional `obligation` account) is inside its
+commit delay, and never on a binding that has paid. A veto creates a permanent
+`veto` PDA for that project, actor and version, and `pay` in that project never
+uses a vetoed version. Only a new authority binding (the next version, with a
+new delay) can follow. For an actor that has never been paid, a project can
+veto at most three times (a `veto-count` PDA per project and actor); the next
+binding pays after its delay. An owner can therefore delay a contributor's
+payout by a bounded number of delays, but never take an approved award back or
+redirect it.
+
+The binding account holds two slots. The latest binding (`destination`,
+`version`, `bound_at`, `claim_digest`) is what the authority last wrote. The
+active slot (`active_destination`, `active_version`) is the binding a payment
+last used; the first payment through a binding promotes it. `pay` uses the
+latest binding once its delay has passed and this project has not vetoed it,
+otherwise the active binding if this project has not vetoed that version, and
+takes an `active_veto` account for that check. A rotation therefore moves the
+destination only after its delay, and until then the active binding keeps
+paying; vetoing the pending rotation leaves the active binding payable. The
+executor pays only the destination the contributor currently claims, so a
+claimed rotation waits for its delay rather than paying the previous wallet.
+Bindings and the active slot are shared across projects with the same identity
+authority and network. A veto affects only the vetoing project, and a project
+that vetoes a version another project then pays through has no payable binding
+until the next version activates. `pay` requires the destination to be the
+paying wallet's associated token account, and `bind_wallet` rejects a zero
+claim digest, a destination equal to the project or vault PDA, and a submission
+past its `expires_at`. `initialize` rejects a fee recipient equal to the owner
+or the project. Production deployments use a delay of at least 48 hours, and
+the adapter checks the project's delay against the reviewed manifest.
 
 The owner can commit an award to any GitHub actor, including an account the
 owner controls, and so move unused funds out at the 2% payout fee instead of the
@@ -53,6 +79,9 @@ Slopbot invoice from free funds to the fee recipient's token account. A
 permanent `service` PDA per project and invoice digest makes each charge
 happen once. The `service_fees` counter joins the conservation identity:
 `deposited = free + reserved + paid + payout_fees + withdrawn_gross + service_fees`.
+The binding lifecycle does not change this identity. A zero-amount transfer leg
+(a zero fee, or a withdrawal whose return rounds to zero) is skipped, so a
+frozen fee account cannot stall a zero-fee payout.
 It cannot spend reserved principal or fees. Only the owner deposits, so every
 credited balance is sponsor-class; this version holds no donor-class funds.
 
@@ -77,6 +106,10 @@ Fixture keys and tokens have no mainnet value. CI runs these end-to-end
 workflows; a successful build alone is not payment evidence.
 `cargo check --locked` verifies the host program build but does not prove SBF or
 validator execution. Use Anchor 0.32.1 and the platform tools pinned in the scripts.
+The end-to-end suite waits the binding delay out in seconds, so `test-e2e.sh`
+builds with the `short-delay-for-tests` Cargo feature, which lowers the on-chain
+delay floor from one hour to one second. `deploy-testnet.sh` never sets it;
+a reviewed deployment digest must come from a build without it.
 
 ## Public test deployment
 
@@ -108,9 +141,9 @@ escrow instruction, not per transaction. The event index is the instruction's
 position in the transaction's flattened instruction list (top-level
 instructions, each followed by its inner instructions). For `commit` it checks
 the instruction's project, award account and arguments against the durable
-award. For `pay` it requires exactly two inner `transferChecked` calls from the
-vault, signed by the project PDA, for the net amount to the destination and the
-fee to the fee recipient's account. Logs are not used, because unrelated
+award. For `pay` it requires the inner `transferChecked` calls from the vault,
+signed by the project PDA: the net amount to the destination, and the fee to
+the fee recipient's account unless the fee is zero. Logs are not used, because unrelated
 instructions in the same transaction can truncate them. Unrelated instructions
 in the same transaction cannot make a valid payment unverifiable. The scanner
 uses the same instruction list, skips other projects' instructions, processes
@@ -142,7 +175,9 @@ and finalized obligations/bindings are reconciled. Replacement uses an atomic
 comparison with the exact expired attempt, so concurrent workers cannot replace a
 still-valid transaction. Retired unsigned attempts are rejected before signing.
 
-`owner-plan.mjs` creates unsigned initialize/deposit/commit/withdraw transactions.
+`owner-plan.mjs` creates unsigned initialize/deposit/commit/veto/withdraw
+transactions; a veto may name an unpaid award (`obligationId`) to use its
+commit-delay window.
 Give it the reviewed input file; private RPC URL, expected genesis and a fresh
 blockhash come separately from `SLOP_SOLANA_RPC_URL`, `SLOP_SOLANA_GENESIS`, and
 `SLOP_SOLANA_RECENT_BLOCKHASH`. It verifies deployed code and authorities and never
