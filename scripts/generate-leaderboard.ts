@@ -1396,6 +1396,17 @@ async function readGraphqlResponseBody(response: Response): Promise<string> {
     );
   }
   const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decode = (chunk?: Uint8Array, stream = false): string => {
+    try {
+      return decoder.decode(chunk, { stream });
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      throw new GraphqlResponseBoundaryError(
+        "GitHub GraphQL response is not valid UTF-8",
+        { cause: error },
+      );
+    }
+  };
   let byteLength = 0;
   let body = "";
   try {
@@ -1409,18 +1420,10 @@ async function readGraphqlResponseBody(response: Response): Promise<string> {
           `GitHub GraphQL response exceeds ${MAX_GRAPHQL_RESPONSE_BYTES} bytes`,
         );
       }
-      body += decoder.decode(chunk.value, { stream: true });
+      // Stream reads can also throw TypeError; preserve those for transport retries.
+      body += decode(chunk.value, true);
     }
-    body += decoder.decode();
-  } catch (error) {
-    if (error instanceof GraphqlResponseBoundaryError) throw error;
-    if (error instanceof TypeError) {
-      throw new GraphqlResponseBoundaryError(
-        "GitHub GraphQL response is not valid UTF-8",
-        { cause: error },
-      );
-    }
-    throw error;
+    body += decode();
   } finally {
     reader.releaseLock();
   }
