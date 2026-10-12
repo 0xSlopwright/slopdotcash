@@ -4294,7 +4294,7 @@ function assertSourceValue(
   );
   assertEnum(
     evidenceVerification.status,
-    ["complete", "suppressed-limit"],
+    ["complete", "suppressed-limit", "incomplete"],
     `${path}.evidenceVerification.status`,
   );
   const sourceCount = evidenceVerification.sourceCount;
