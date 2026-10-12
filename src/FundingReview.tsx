@@ -1345,7 +1345,7 @@ export function FundingReview({
                         >
                           Verify deposit on GitHub
                         </a>{" "}
-                        — select main and enter project {project.id}, month{" "}
+                        then select main and enter project {project.id}, month{" "}
                         {cycleId}, and the public transaction signature. Review
                         the resulting evidence PR.
                       </p>
@@ -1584,7 +1584,7 @@ export function FundingReview({
                         >
                           Link your Squads proposal
                         </a>{" "}
-                        — select main, {project.id}/{cycleId}, its public
+                        then select main, {project.id}/{cycleId}, its public
                         transaction index, and single or batch mode. The
                         workflow checks every transfer before opening a binding
                         PR.
@@ -1627,7 +1627,7 @@ export function FundingReview({
                             >
                               Verify settlement on GitHub
                             </a>{" "}
-                            — choose verify-settlement for {project.id}/
+                            then choose verify-settlement for {project.id}/
                             {cycleId} and bind the transaction evidence to plan
                             SHA-256{" "}
                             <code>{published.files.executionPlan.sha256}</code>.

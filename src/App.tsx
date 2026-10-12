@@ -360,6 +360,9 @@ function Header() {
   const domain = publicFooterDomain(window.location.hostname);
   return (
     <header className="site-header">
+      <a className="skip-link" href="#main">
+        Skip to content
+      </a>
       <div className="shell header-inner">
         <Link ariaLabel="Slop home" className="wordmark" href="/">
           <SlopMark size={36} />
@@ -3567,15 +3570,18 @@ function AppContent({ route }: { route: Route }) {
   return (
     <>
       <Header />
-      <Suspense
-        fallback={
-          <main className="shell route-main" role="status">
-            Loading page…
-          </main>
-        }
-      >
-        {content}
-      </Suspense>
+      {/* Routes render their own main; the skip link lands on this container. */}
+      <div className="skip-target" id="main" tabIndex={-1}>
+        <Suspense
+          fallback={
+            <main className="shell route-main" role="status">
+              Loading page…
+            </main>
+          }
+        >
+          {content}
+        </Suspense>
+      </div>
       <Footer />
     </>
   );
