@@ -21,10 +21,11 @@ import {
 } from "../../contracts/evm/adapter";
 import { sha256Hex } from "../../workers/identity/crypto";
 import {
-  createBaseAttester,
-  createBaseExecutor,
+  createEvmAttester,
+  createEvmExecutor,
   type JournalStore,
   lookupAttempt,
+  preflightEvmDeployment,
   retireUnsignedAttempt,
 } from "../../workers/payment-executor/core";
 import { scanEvmPayments } from "../../workers/payments/scanner";
@@ -481,8 +482,71 @@ try {
     ).status,
     403,
   );
+  // Hosted preflight rules survive the family refactor: a record without a
+  // gas ceiling, a mainnet registry network, and an unknown chain string are
+  // each refused before any signer secret or RPC is touched.
+  const preflightBase = {
+    PAYMENT_DEPLOYMENTS: "",
+    PAYMENT_RPC_URLS: JSON.stringify({ anvil: rpcUrl, "base-mainnet": rpcUrl }),
+    ALLOW_LOCAL_TEST_CHAIN: true,
+  };
+  const preflightInput = {
+    obligationId: award,
+    network: "anvil",
+    vault,
+    githubUserId: "123",
+    claimId: "claim",
+    claimDigest: "0".repeat(64),
+    destination: recipientAccount.address.toLowerCase(),
+  };
+  const { gasCeiling: _omitted, ...withoutCeiling } = {
+    ...config,
+    chain: "base",
+    chainId: "31337",
+    gasCeiling: "500000",
+    scanPageBlocks: "2000",
+  };
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...preflightBase,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([withoutCeiling]),
+      },
+      preflightInput,
+    ),
+    /Reviewed gas ceiling required/,
+  );
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...preflightBase,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([
+          {
+            ...withoutCeiling,
+            network: "base-mainnet",
+            chainId: "8453",
+            gasCeiling: "500000",
+          },
+        ]),
+      },
+      { ...preflightInput, network: "base-mainnet" },
+    ),
+    /Test deployment required/,
+  );
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...preflightBase,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([
+          { ...withoutCeiling, chain: "evm", gasCeiling: "500000" },
+        ]),
+      },
+      preflightInput,
+    ),
+    /Test deployment required/,
+  );
   // Without the contributor's acceptance the attester cannot bind at all.
-  const unsignedAttester = createBaseAttester({
+  const unsignedAttester = createEvmAttester({
     PAYMENTS_DB: db,
     PAYMENT_DEPLOYMENTS: JSON.stringify([
       {
@@ -595,7 +659,7 @@ try {
     ALLOW_LOCAL_TEST_CHAIN: true,
   };
   let rejectFirstBinding = true;
-  const attesterEngine = createBaseAttester({
+  const attesterEngine = createEvmAttester({
     ...shared,
     SIGNER: {
       address: attesterAccount.address,
@@ -615,7 +679,7 @@ try {
     JOURNAL: attesterJournal,
   });
   const makeExecutor = () =>
-    createBaseExecutor({
+    createEvmExecutor({
       ...shared,
       SIGNER: gasAccount,
       JOURNAL: gasJournal,
