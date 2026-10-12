@@ -46,6 +46,19 @@ export function stale(
   return Date.now() - Date.parse(snapshot.generatedAt) > 8 * 60 * 60 * 1_000;
 }
 
+/** Date and time in UTC, for timestamps shown beside formatDate values. */
+export function formatDateTime(value: string): string {
+  return `${new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    month: "short",
+    timeZone: "UTC",
+    year: "numeric",
+  }).format(new Date(value))} UTC`;
+}
+
 export function formatDate(value: string): string {
   return new Intl.DateTimeFormat("en-US", {
     day: "numeric",

@@ -504,7 +504,7 @@ export function ContributionQualityReview({
                 <a href={event.url} target="_blank" rel="noreferrer">
                   {event.title}
                 </a>
-                {" — "}
+                {" · "}
                 {actors.get(event.actorId ?? "") ??
                   ("actorLogin" in event ? event.actorLogin : null) ??
                   "Unknown author"}

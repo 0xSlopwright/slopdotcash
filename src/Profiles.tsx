@@ -22,6 +22,7 @@ import {
   ExternalLinkAnchor,
   formatCycleMonth,
   formatDate,
+  formatDateTime,
   formatScore,
 } from "./Presentation";
 
@@ -192,7 +193,7 @@ export function ProfileActivity({
         <>
           <p className="points-meta">
             Slop repository history · updated{" "}
-            {new Date(state.index.generatedAt).toLocaleString()}
+            {formatDateTime(state.index.generatedAt)}
             {Date.now() - Date.parse(state.index.generatedAt) > 8 * 3600000
               ? " · Stale: refresh pending"
               : ""}
@@ -205,8 +206,8 @@ export function ProfileActivity({
               <summary>PR counts by repository</summary>
               <p className="points-meta">
                 Statuses observed between{" "}
-                {new Date(state.index.startedAt).toLocaleString()} and{" "}
-                {new Date(state.index.generatedAt).toLocaleString()}.
+                {formatDateTime(state.index.startedAt)} and{" "}
+                {formatDateTime(state.index.generatedAt)}.
               </p>
               <ul>
                 {p.repositories.map((r) => (
@@ -559,10 +560,7 @@ function IssueOutcomes({
                     return (
                       <li key={record.id}>
                         <time dateTime={record.date}>
-                          {new Date(record.date).toLocaleString(undefined, {
-                            timeZone: "UTC",
-                          })}{" "}
-                          UTC
+                          {formatDateTime(record.date)}
                         </time>
                         {" · "}
                         <a
@@ -587,8 +585,8 @@ function IssueOutcomes({
             <p className="points-meta">
               Coverage: accessible issues in the tracked repositories, plus
               retained records first captured from{" "}
-              {new Date(index.issues.firstObservedAt).toLocaleDateString()}.
-              Records deleted before capture may be absent.
+              {formatDate(index.issues.firstObservedAt)}. Records deleted before
+              capture may be absent.
             </p>
           </>
         ) : (
