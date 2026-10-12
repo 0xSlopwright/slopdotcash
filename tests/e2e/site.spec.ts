@@ -1434,6 +1434,10 @@ for (const scenario of [
             }
           });
         }
+        // The skip link is the first stop; it hands keyboard users the content.
+        await page.keyboard.press("Tab");
+        await expect(page.locator(":focus")).toHaveAttribute("href", "#main");
+        await expect(page.locator(":focus")).toHaveText("Skip to content");
         await page.keyboard.press("Tab");
         await expect(page.locator(":focus")).toHaveAttribute("href", "/");
         const accessibility = await new AxeBuilder({ page })
