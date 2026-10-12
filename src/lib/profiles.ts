@@ -54,7 +54,15 @@ export interface ProfileIssueHistory {
   repositories: { repository: string; count: number }[];
   items: ProfileIssue[];
 }
-export function assertProfiles(value: unknown): asserts value is ProfileIndex {
+/**
+ * `targets` defaults to the current active repositories. A previous census
+ * may predate an activation or retirement, so its caller passes its own
+ * registered inventory instead.
+ */
+export function assertProfiles(
+  value: unknown,
+  targets: readonly string[] = TARGET_REPOSITORIES.map((r) => r.id),
+): asserts value is ProfileIndex {
   const v = value as ProfileIndex;
   const validCount = (n: number) => Number.isSafeInteger(n) && n >= 0;
   if (
@@ -67,10 +75,9 @@ export function assertProfiles(value: unknown): asserts value is ProfileIndex {
     !Array.isArray(v.repositories)
   )
     throw Error("Invalid profile census");
-  const targets = TARGET_REPOSITORIES.map((r) => r.id).sort();
+  const inventory = JSON.stringify([...targets].sort());
   if (
-    JSON.stringify(v.repositories.map((r) => r.repository).sort()) !==
-    JSON.stringify(targets)
+    JSON.stringify(v.repositories.map((r) => r.repository).sort()) !== inventory
   )
     throw Error("Profile repository inventory mismatch");
   const ids = new Set<string>();
@@ -117,12 +124,12 @@ export function assertProfiles(value: unknown): asserts value is ProfileIndex {
       (totals.get(r.repository) ?? 0) + r.excluded !== r.count
     )
       throw Error("Incomplete profile census");
-  if (v.schemaVersion === "2") assertProfileIssues(v);
+  if (v.schemaVersion === "2") assertProfileIssues(v, targets);
   else if (v.issues !== undefined)
     throw Error("Unexpected legacy issue census");
 }
 
-function assertProfileIssues(index: ProfileIndex) {
+function assertProfileIssues(index: ProfileIndex, targets: readonly string[]) {
   const history = index.issues;
   const time = (value: string) =>
     typeof value === "string" && Number.isFinite(Date.parse(value));
@@ -134,10 +141,9 @@ function assertProfileIssues(index: ProfileIndex) {
     !Array.isArray(history.items)
   )
     throw Error("Invalid issue history coverage");
-  const targets = TARGET_REPOSITORIES.map((r) => r.id).sort();
   if (
     JSON.stringify(history.repositories.map((r) => r.repository).sort()) !==
-    JSON.stringify(targets)
+    JSON.stringify([...targets].sort())
   )
     throw Error("Issue repository inventory mismatch");
   const people = new Set(index.people.map((p) => p.id));
