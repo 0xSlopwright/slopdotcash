@@ -26,6 +26,6 @@ Produce `PR`, `base_sha`, `head_sha`, `problem`, `correctness`, `materiality`, `
 
 Current reward/receipt terms come from the project manifest. Signed receipts and private traces are optional; no trace bonus without real finalized evidence. Never require private prompts or traces to review a contribution. Never handle keys, register wallets or transfer funds.
 
-## Worked example — authored demonstration
+## Worked example: authored demonstration
 
 A PR adds a dashboard tile showing "Mention rate" computed in the React component from snapshot rows. Even if the number is right, request changes: the CLI and MCP cannot read it, and the UI recomputes a metric. Require the rate in the API response, a CLI field with the same value, and a test asserting the exact numerator, denominator and formatted percent. This is an illustrative review, not a finding against an actual current PR.

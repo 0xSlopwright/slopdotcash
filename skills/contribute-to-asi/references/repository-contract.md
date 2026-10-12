@@ -40,7 +40,7 @@ CLI rejects anything else. Adding an arm means adding its spec plus a
 bit-exact reduction-pin test showing it collapses to an existing arm when its
 mechanism constant is inert.
 
-Cost is strongly arm-dependent — a 60-task shard ranges from seconds for the
+Cost is strongly arm-dependent: a 60-task shard ranges from seconds for the
 cheapest arms to hours for the per-step-noise controls, and 200-task
 confirmation runs are minutes per seed for cheap arms. Read the recorded
 `wall_clock_seconds` in existing shards to budget before launching a wave, and
@@ -51,7 +51,7 @@ ceiling; its ordering is calibrated on the input-permutation family only, and
 a micro win promotes nothing. `rule_discovery` drives automated update-rule
 search with explicit search and holdout seed and task separation.
 
-`alberta_framework/core/` holds the learners those lanes exercise — IDBD,
+`alberta_framework/core/` holds the learners those lanes exercise: IDBD,
 Autostep, SwiftTD, UPGD, continual backprop, Horde, actor-critic, world
 models, options, feature lifecycles.
 
@@ -63,12 +63,12 @@ CI-cheap unless explicitly registered as a scientific lane.
 Do not issue a plan, reserve a seed, or start a shard in these without an
 explicit written maintainer request:
 
-- **IPMNIST v3 frozen lifecycle** — a failed or partial worker consumes that
+- **IPMNIST v3 frozen lifecycle**: a failed or partial worker consumes that
   learner and seed identity permanently and may never be retried. Seed IDs
   consumed by v1 are permanently rejected.
-- **Label-permuted EMNIST, slowly-changing regression, continual-IA v2** —
+- **Label-permuted EMNIST, slowly-changing regression, continual-IA v2**:
   unissued and nonpromoting.
-- **Forager matched-current and matched-v3** — currently fail closed on source
+- **Forager matched-current and matched-v3**: currently fail closed on source
   drift; no external-baseline comparison is admissible, and several forager
   roots are quarantined or chmod-frozen and must never be resumed, imported,
   or compared against.
@@ -80,7 +80,7 @@ A screening run writes a versioned shard carrying its evidence policy
 hyperparameters, seed, noise mode, protocol config, per-task accuracy, loss
 and plasticity vectors, wall clock, and the JAX/NumPy/Python environment.
 Merging produces a summary with per-arm mean and standard error, per-seed
-values, late-window slope, and — for arms sharing seeds with the control — a
+values, late-window slope, and, for arms sharing seeds with the control, a
 `paired_vs_control` block with per-seed diffs and whether every seed improved.
 
 The in-band validators refuse: an unknown arm name, non-finite or wrong-shape
@@ -88,7 +88,7 @@ per-task vectors, a negative or non-integer seed, shards spanning multiple
 protocol configs, shards spanning multiple noise modes, and duplicate
 arm/seed pairs. Output paths are refused if already occupied and written
 atomically, so a completed shard is never silently overwritten. Collapsed runs
-are excluded by these checks by design — do not loosen them to get a number.
+are excluded by these checks by design. Do not loosen them to get a number.
 
 `.venv/bin/alberta-evidence-status` reports the registry: exit `0` accepted,
 `1` valid rejection or missing, `2` invalid. Exit `2` because registered

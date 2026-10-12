@@ -9,7 +9,7 @@ reproduce that number without trusting the summary.
 - the exact commands with every flag, and the commit SHA they ran at;
 - the seed list and `n`, stating which seeds were tuning and which were
   evaluation;
-- baseline and candidate as **mean and spread**, plus the delta — never a
+- baseline and candidate as **mean and spread**, plus the delta, never a
   single run, never a best-of-`k`;
 - the baseline re-measured in the same environment as the candidate;
 - the artifact paths written under `outputs/`, attached as immutable GitHub
@@ -27,8 +27,8 @@ and hardware. Tuning happens on tuning seeds; evaluation seeds are touched
 once. The comparison is decided against a threshold chosen **before** the
 numbers existed.
 
-If the result is inside the seed-to-seed spread, it is not an improvement yet
-— say so and either raise `n` or report it as inconclusive.
+If the result is inside the seed-to-seed spread, it is not an improvement yet.
+Say so and either raise `n` or report it as inconclusive.
 
 ## Reviewing someone else's result
 

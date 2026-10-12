@@ -3413,7 +3413,7 @@ function markdownItems(items) {
           `open closing PR${item.closingPullRequests.length === 1 ? "" : "s"}: ${item.closingPullRequests.map((number) => `#${number}`).join(", ")}`,
         );
       }
-      const suffix = suffixes.length === 0 ? "" : ` — ${suffixes.join("; ")}`;
+      const suffix = suffixes.length === 0 ? "" : `: ${suffixes.join("; ")}`;
       return `- [#${item.number}](${item.url}) ${item.title}${suffix}`;
     })
     .join("\n");
@@ -3425,7 +3425,7 @@ export function renderMarkdown(report) {
     "report.selection.eligibleIssueLabels",
   );
   const lines = [
-    `# elizaOS contribution report — ${report.repository}`,
+    `# elizaOS contribution report: ${report.repository}`,
     "",
     `Open issues: ${report.totals.openIssues}; unclaimed candidates: ${report.totals.candidateIssues}.`,
     `Open PRs: ${report.totals.openPullRequests}; reviewable candidates: ${report.totals.reviewablePullRequests}.`,

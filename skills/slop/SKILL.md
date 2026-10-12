@@ -138,7 +138,9 @@ After installation:
    the user's chosen task or require clearing unrelated work first.
 4. Generate ordinary attribution locally with `run-receipt.mjs disclose` and
    exact `--provider`, `--model`, and `--client`. This requires no upload,
-   package execution, local usage reads, or Slop authorization.
+   package execution, local usage reads, or Slop authorization. Its footer
+   opens with the visible line `Made via @slopdotcash`; every pull request
+   the skill opens carries that line once, outside code fences.
 5. If the contributor chooses measured evidence, use `preview` to disclose
    access before opting into usage collection. Private trace upload requires
    separate informed consent and inspection; failure never blocks submission.

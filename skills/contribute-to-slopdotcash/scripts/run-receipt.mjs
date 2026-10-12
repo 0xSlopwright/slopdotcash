@@ -102,7 +102,8 @@ const LEGACY_V1_RECEIPT_IDENTITIES = new Map([
 const HELP = `Usage: node scripts/run-receipt.mjs <command> [options]
 
 Commands:
-  disclose Print ordinary GitHub attribution without network or usage reads
+  disclose Print ordinary GitHub attribution (with the visible Made via
+           @slopdotcash line) without network or usage reads
   preview  Show local reads, writes, network access, and public receipt fields
   doctor   Verify repository, skill provenance, declarations, and local runners
   status   List this project's local active and completed measured runs
@@ -1836,7 +1837,26 @@ export function signingPayload(receipt) {
   return JSON.stringify({ ...value, run: unsignedRun });
 }
 
-export function footer(receipt, lane) {
+/**
+ * Visible participation line required on every pull request a Slop skill
+ * creates (PRD SKL-07). It is a participation signal, not a device signature,
+ * so it sits above the attribution rows and outside the signed marker.
+ */
+const PARTICIPATION_LINE = "Made via @slopdotcash";
+
+/**
+ * Lane signature dash. The Slop and elizaOS validators accept U+2014 or a bare
+ * hyphen, but a hyphen followed by a space is a Markdown list marker and is
+ * stripped before the lane pattern runs, so the published token stays U+2014.
+ * The escape keeps the literal character out of this source file.
+ */
+const LANE_DASH = "\u2014";
+
+function laneSignature(lane) {
+  return `${LANE_DASH} [${lane}]`;
+}
+
+function attributionRows(receipt, lane) {
   const value = marker(receipt);
   return [
     `Compute receipt: ${receipt.usage.totalTokens} project-attributed tokens (${receipt.usage.confidence}; device-signed, locally reported)`,
@@ -1844,9 +1864,19 @@ export function footer(receipt, lane) {
     `Client / agent tooling: ${receipt.client}`,
     `Contribution skill revision: ${receipt.skillRevision}`,
     "Attribution status: self-reported",
-    `— [${lane}]`,
+    laneSignature(lane),
     `<!-- ${PROJECT.projectId === "eliza" ? "elizaos-contribution-attribution:v2" : "slop-contribution-attribution:v1"} ${JSON.stringify(value)} -->`,
-  ].join("\n");
+  ];
+}
+
+export function footer(receipt, lane) {
+  return [PARTICIPATION_LINE, ...attributionRows(receipt, lane)].join("\n");
+}
+
+/** Footer rendering before the participation line; completed runs that were
+ * finished under it stay valid. */
+function preParticipationFooter(receipt, lane) {
+  return attributionRows(receipt, lane).join("\n");
 }
 
 function preActivationFooter(receipt, lane) {
@@ -1857,7 +1887,7 @@ function preActivationFooter(receipt, lane) {
     `Client / agent tooling: ${receipt.client}`,
     `Contribution skill revision: ${receipt.skillRevision}`,
     "Attribution status: self-reported",
-    `— [${lane}]`,
+    laneSignature(lane),
     `<!-- elizaos-contribution-attribution:v2 ${JSON.stringify(value)} -->`,
   ].join("\n");
 }
@@ -1870,7 +1900,7 @@ function legacyFooter(receipt, lane) {
     `Contribution skill revision: ${receipt.skillRevision}`,
     `Compute receipt: ${receipt.usage.totalTokens} project-attributed tokens (${receipt.usage.confidence}; device-signed, locally reported)`,
     "Attribution status: self-reported",
-    `— [${lane}]`,
+    laneSignature(lane),
     `<!-- elizaos-contribution-attribution:v2 ${JSON.stringify(value)} -->`,
   ].join("\n");
 }
@@ -1884,7 +1914,9 @@ function completedLane(value, receipt) {
     .split("\n")
     .map(
       (line) =>
-        line.match(/^(?:—|-)\s*\[([A-Za-z0-9][A-Za-z0-9-]{1,48})\]$/u)?.[1],
+        line.match(
+          /^(?:\u2014|-)\s*\[([A-Za-z0-9][A-Za-z0-9-]{1,48})\]$/u,
+        )?.[1],
     )
     .filter(Boolean);
   if (lanes.length !== 1 || value.footer !== legacyFooter(receipt, lanes[0])) {
@@ -2061,6 +2093,7 @@ function validateCompletedRecord(value) {
     !valid ||
     (wrapperIsCurrent &&
       value.footer !== canonicalFooter &&
+      value.footer !== preParticipationFooter(receipt, lane) &&
       value.footer !== preActivationFooter(receipt, lane))
   ) {
     fail("completed run signature or footer is invalid");
@@ -2759,7 +2792,15 @@ export async function main(args = process.argv.slice(2), testOptions) {
       skill_revision:
         "N/A - ordinary GitHub contribution without optional run evidence",
     };
-    const rendered = `AI provider/model: ${value.provider} / ${value.model}\nClient / agent tooling: ${value.client}\nContribution skill revision: ${value.skill_revision}\nAttribution status: self-reported\n— [contributor]\n<!-- ${PROJECT.projectId === "eliza" ? "eliza-computer-attribution:v1" : "slop-contribution-attribution:v1"} ${JSON.stringify(value)} -->`;
+    const rendered = [
+      PARTICIPATION_LINE,
+      `AI provider/model: ${value.provider} / ${value.model}`,
+      `Client / agent tooling: ${value.client}`,
+      `Contribution skill revision: ${value.skill_revision}`,
+      "Attribution status: self-reported",
+      laneSignature("contributor"),
+      `<!-- ${PROJECT.projectId === "eliza" ? "eliza-computer-attribution:v1" : "slop-contribution-attribution:v1"} ${JSON.stringify(value)} -->`,
+    ].join("\n");
     renderResult({ footer: rendered, message: rendered }, options.json);
   } else if (options.action === "preview") previewRun(options);
   else if (options.action === "doctor") doctorRun(options);

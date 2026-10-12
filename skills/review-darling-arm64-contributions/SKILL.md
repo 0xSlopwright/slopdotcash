@@ -43,7 +43,7 @@ acknowledgement.
 ## Select the review
 
 Review the PR selected by the operator, or choose useful unclaimed work from
-live GitHub — the oldest unreviewed pull request before the newest. Recheck
+live GitHub: the oldest unreviewed pull request before the newest. Recheck
 its exact current head before posting. Queue order and labels are advisory.
 Never approve your own work.
 
@@ -53,7 +53,7 @@ Verify the exact base and head revisions. This is the fastest way to reject
 invalid work, so do it first:
 
 - Does the contribution state `uname -m` for every host that produced a
-  number? Darling is a translation layer, not a CPU emulator — the Darling
+  number? Darling is a translation layer, not a CPU emulator, so the Darling
   runtime host must be aarch64 Linux, and native ground truth must come from
   arm64 macOS. An x86_64 result is not weak evidence, it is no evidence.
 - Where your host allows, rerun the harness the contribution shipped. Does a
@@ -65,13 +65,13 @@ invalid work, so do it first:
 Separate these questions:
 
 - Was a named control used, and how many variables moved relative to it?
-- Is anything called a **fix** backed by A/B/A — baseline, patched, reverted —
+- Is anything called a **fix** backed by A/B/A (baseline, patched, reverted),
   or does it rest on a single measured arm?
 - Does the contribution label a trend as a trend? The standard in the record
   is `darlingserver#17`: mechanism proven by core dump, end-to-end effect
   reported as a trend, not a proven effect (18%→8%, p=0.23 at n=50).
-- Was the environment named — distro, kernel, clang version, VM type, Darling
-  commit — and `git-lfs` confirmed present?
+- Was the environment named (distro, kernel, clang version, VM type, Darling
+  commit) and `git-lfs` confirmed present?
 - Has the work merged to `main` on `xchemtina/darling-arm64`, or is it still
   only proposed?
 
@@ -83,15 +83,15 @@ evidence, or a flake mechanism explained and measured. Recommend `reject` for
 refactors, formatting, lint passes, dependency bumps, comment churn, coverage
 farming, and speculative guards with no reproduced failure. An old issue,
 large diff, or green harness does not make low-value work material. A
-**clean, reproducible negative result** — including a retraction that
-overturns the project's own record — is a real outcome and should be credited
+**clean, reproducible negative result**, including a retraction that
+overturns the project's own record, is a real outcome and should be credited
 as one; check that the superseded claim was corrected in place next to the
 evidence that falsified it, not silently reworded.
 
 ## Adversarial review
 
 Search the repository, closed and open PRs, earlier issues, and
-`FINDINGS.md`'s own history for identical or near-identical work — a rerun of
+`FINDINGS.md`'s own history for identical or near-identical work: a rerun of
 an experiment the record already reports as confounded or negative earns
 nothing new. Compare chronology before alleging copied work. Flag exact patch
 replay, superficial renaming, repeated already-reported findings, generated
@@ -104,7 +104,7 @@ build? Two of this project's first six findings were exactly that. Was a flag
 flipped at every required site together (the thread-bridge flag lives in the
 probe and seven generated launchd plists; flipping some of them measures the
 mismatch, not the change)? Does a new driver destroy the artifacts of the
-previous run — since F108 that is a defect, not a convention? Does the diff
+previous run, which since F108 is a defect, not a convention? Does the diff
 contain code or text from a fork that strips upstream GPL-3.0 attribution, or
 commit Apple-owned assets (shared cache, app bundles, Swift toolchain, corpus
 binaries)? Either is an automatic reject regardless of quality.
