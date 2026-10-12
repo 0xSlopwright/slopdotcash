@@ -540,7 +540,7 @@ test("starts Eliza with one prompt and no separate payout form", async ({
     page.getByRole("columnheader", { name: "Share of score" }),
   ).toBeVisible();
   await expect(
-    page.getByText(/Not funded yet\. Not approved payouts\./u),
+    page.getByText(/Not funded yet\. No payouts are approved\./u),
   ).toBeVisible();
   await expect(page.getByText("Live from GitHub")).toHaveCount(0);
   await expect(page.getByText("How credit survives review")).toHaveCount(0);
@@ -689,8 +689,15 @@ test("renders contributor and cycle records from validated public data", {
   await expect(
     page
       .locator(".profile-totals")
-      .getByText(/^[A-Z][a-z]+ \d{4} simulated estimate/u),
+      .getByText(/^[A-Z][a-z]+ \d{4} (simulated estimate|pool)$/u),
   ).toBeVisible();
+  // Mirrors monthlyPoolUnfunded in src/Presentation.tsx.
+  const unfundedPools = PROJECTS.every(
+    (project) =>
+      project.reward.kind !== "monthly-pool" ||
+      project.reward.fundingState !== "committed" ||
+      BigInt(project.reward.committedMinor) === 0n,
+  );
   const simulated = PROJECTS.reduce((total, project) => {
     if (
       !projectCycleHasOpened(snapshot, project.id) ||
@@ -706,18 +713,26 @@ test("renders contributor and cycle records from validated public data", {
     return total + BigInt(leader?.simulatedMinor ?? "0");
   }, 0n);
   const estimate = page.locator(".profile-totals > div").filter({
-    hasText: /simulated estimate/u,
+    hasText: /simulated estimate|pool$/u,
   });
-  await expect(estimate.locator("strong")).toHaveText(
-    new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: simulated % 1_000_000n === 0n ? 0 : 2,
-      maximumFractionDigits: 2,
-    }).format(Number(simulated) / 1_000_000),
-  );
+  if (unfundedPools) {
+    await expect(estimate.locator("strong")).toHaveText("Not funded yet");
+    await expect(estimate).toHaveCount(1);
+  } else
+    await expect(estimate.locator("strong")).toHaveText(
+      new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: simulated % 1_000_000n === 0n ? 0 : 2,
+        maximumFractionDigits: 2,
+      }).format(Number(simulated) / 1_000_000),
+    );
   await expect(
-    page.getByText(/14-day review applies to monthly proposals/u),
+    page.getByText(
+      unfundedPools
+        ? /No monthly pool is funded, so no amount is estimated/u
+        : /14-day review applies to monthly proposals/u,
+    ),
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "Progress" })).toHaveCount(0);
   const acceptedRecords = snapshot.ledger.filter(

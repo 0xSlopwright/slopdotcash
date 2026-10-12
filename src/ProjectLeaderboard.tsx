@@ -69,7 +69,7 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
               {monthlyPoolUnfunded(view.project.reward)
                 ? `${UNFUNDED_POOL_HEADLINE}.`
                 : `Shares simulate the ${monthlyPoolLabel(view.project.reward)} cap.`}{" "}
-              Not approved payouts.
+              No payouts are approved.
             </p>
           ) : null}
         </div>
@@ -110,7 +110,10 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
                         <span>
                           <strong>{leader.actor.login}</strong>
                           <small>
-                            {leader.acceptedOutcomeCount} accepted events
+                            {leader.acceptedOutcomeCount} accepted{" "}
+                            {leader.acceptedOutcomeCount === 1
+                              ? "event"
+                              : "events"}
                           </small>
                         </span>
                       </Link>

@@ -6,6 +6,7 @@ import {
   transactionUrl,
 } from "./lib/payments/contracts";
 import { isDirectTransfer } from "./lib/use-direct-transfers";
+import { formatDate, formatDateTime } from "./Presentation";
 
 const networkName = { base: "Base", solana: "Solana" };
 
@@ -338,9 +339,9 @@ export function EarningsPage() {
                           </a>{" "}
                           listed{" "}
                           <span className="wallet-address">{o.address}</span> on{" "}
-                          {new Date(o.observedAt).toLocaleDateString()}. That
-                          record is history only. Connect and confirm a wallet
-                          to receive escrow payments.
+                          {formatDate(o.observedAt)}. That record is history
+                          only. Connect and confirm a wallet to receive escrow
+                          payments.
                         </p>
                       ))}
                   {wallet && (
@@ -354,8 +355,8 @@ export function EarningsPage() {
                     Date.parse(wallet.activationEligibleAt) > Date.now() && (
                       <p>
                         Wallet change becomes eligible after{" "}
-                        {new Date(wallet.activationEligibleAt).toLocaleString()}
-                        . Existing awards remain reserved.
+                        {formatDateTime(wallet.activationEligibleAt)}. Existing
+                        awards remain reserved.
                       </p>
                     )}
                   <button
@@ -432,12 +433,12 @@ export function EarningsPage() {
                         <td>
                           {
                             {
-                              paid: "Paid — verified on chain",
+                              paid: "Paid, verified on chain",
                               needs_wallet: `Add or confirm ${networkName[payment.chain]} wallet`,
                               awaiting_binding: "Awaiting automatic payment",
                               submitted:
-                                "Submitted — waiting for chain verification",
-                              held: "Payment held — funds remain reserved",
+                                "Submitted, waiting for chain verification",
+                              held: "Payment held, funds remain reserved",
                             }[payment.deliveryState]
                           }
                           {transactionUrl(

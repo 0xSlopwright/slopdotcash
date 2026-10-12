@@ -39,6 +39,7 @@ import { type DataState, useSnapshot } from "./lib/use-snapshot";
 import {
   DataNotice,
   formatDate,
+  formatDateTime,
   formatMicroUsdc,
   formatScore,
   NotFound,
@@ -401,7 +402,7 @@ function Notice() {
     );
   return (
     <p className="points-meta">
-      Points updated {new Date(state.journal.generatedAt).toLocaleString()}
+      Points updated {formatDateTime(state.journal.generatedAt)}
       {Date.now() - Date.parse(state.journal.generatedAt) > 8 * 3600000
         ? " · Stale: the next verified update is pending."
         : ""}

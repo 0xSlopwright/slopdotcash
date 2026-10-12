@@ -103,13 +103,13 @@ try {
       .waitFor({ state: "visible" });
     await page.waitForLoadState("networkidle");
     if (
-      await page.getByText("Paid — verified on chain", { exact: true }).count()
+      await page.getByText("Paid, verified on chain", { exact: true }).count()
     )
       break;
     await page.waitForTimeout(1000);
   }
   await page
-    .getByText("Paid — verified on chain", { exact: true })
+    .getByText("Paid, verified on chain", { exact: true })
     .waitFor({ timeout: 10000 });
   const paid = await (
     await fetch("http://127.0.0.1:18548/api/v1/payments/me")
