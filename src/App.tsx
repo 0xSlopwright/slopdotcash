@@ -136,12 +136,9 @@ const FundingReview = lazy(() =>
 const SOCIAL_X = "https://x.com/SlopCash";
 const SOCIAL_LINKEDIN = "https://www.linkedin.com/company/slop-cash";
 const SOCIAL_TELEGRAM = "https://t.me/slopcashofficial";
-const HERO_ACTIONS = [
-  "SHIPPING OPEN SOURCE.",
-  "SECURING THE WEB.",
-  "HACKING THE PLANET.",
-  "BUILDING AGI.",
-] as const;
+// DSC-01: the hero names only launched work; add a phrase here only when it
+// describes a shipped program.
+const HERO_ACTIONS = ["SHIPPING OPEN SOURCE."] as const;
 const HERO_HOLD_MS = 2_400;
 const HERO_TYPE_MS = 55;
 const HERO_DELETE_MS = 30;
@@ -434,6 +431,7 @@ function TypewriterHeroHeading() {
   );
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (HERO_ACTIONS.length < 2) return;
     const target = HERO_ACTIONS[index];
     let delay = 1;
     let advance: () => void;
@@ -2229,9 +2227,10 @@ function HowItWorksPage() {
           </p>
           <p>
             For monthly v1 cycles, the first-of-month workflow freezes a
-            proposal for 14 days of public review. Wallet changes restart
-            review. Awards below $2 accrue to the next cycle. Historical records
-            keep their recorded fee and authority rules.
+            proposal for 14 days of public review. Only an amount change
+            restarts review; a wallet registered after the proposal applies to
+            the next cycle. Awards below $2 accrue to the next cycle. Historical
+            records keep their recorded fee and authority rules.
           </p>
         </details>
       </section>
