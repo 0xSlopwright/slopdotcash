@@ -21,10 +21,19 @@ Use the repository's pinned lockfile and supported Node version. Run `npm ci`, `
 
 ## Submit evidence
 
-Prepare one PR into main with the user problem, before/after behavior, exact-head validation, public-safe artifacts and limitations. Recheck GitHub for overlapping work and head drift before authorized publication. Maintainers decide acceptance. Disclose actual provider, exact model and client in a final footer; measure duration/usage only when available. No self-approval or automatic deployment.
+Prepare one PR into main with the user problem, before/after behavior, exact-head validation, public-safe artifacts and limitations. Recheck GitHub for overlapping work and head drift before authorized publication. Maintainers decide acceptance.
+
+Generate the final attribution footer with one local command and paste it unchanged; it opens with the visible line `Made via @slopdotcash`, which the PR body carries once, outside code fences:
+
+```bash
+node <skill-directory>/scripts/run-receipt.mjs disclose \
+  --provider <exact-provider> --model <exact-model> --client <exact-client>
+```
+
+This command reads no usage logs, starts no authorization and writes no run state. A signed run receipt (`run-receipt.mjs start` and `finish`) is optional and never blocks submission. Measure duration or usage only when available. No self-approval or automatic deployment.
 
 Read the live Slop manifest for rewards. Disabled payments or a zero pool are not promises of future earnings. Signed receipts/private traces are optional; no consent means no upload. Never publish personal briefs, private source history, keys or raw transcripts. Do not handle wallets or move money.
 
-## Worked example — authored demonstration
+## Worked example: authored demonstration
 
 Brief: a fictional neighborhood bicycle repair service. Generate a Business Model Canvas with fixture data; edit the value proposition to “Same-day puncture repairs”; export SVG and confirm the exported text contains that edit. A delayed provider response cancelled by the user must not silently replace later edits. These are acceptance examples, not evidence of a current defect or live-model quality.

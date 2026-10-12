@@ -80,8 +80,10 @@ node <skill-directory>/scripts/run-receipt.mjs disclose \
 ```
 
 This command reads no usage logs, starts no authorization, and writes no run
-state. Paste its footer unchanged. It emits the appropriate marker for this
-repository. Follow any additional target-repository evidence requirements.
+state. Paste its footer unchanged. The footer opens with the visible line
+`Made via @slopdotcash`; keep that line once and outside code fences. It emits the
+appropriate marker for this repository. Follow any additional
+target-repository evidence requirements.
 
 ## Optional evidence
 

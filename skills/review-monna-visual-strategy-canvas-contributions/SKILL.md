@@ -24,6 +24,6 @@ Return `PR`, `base_sha`, `head_sha`, `problem`, `correctness`, `materiality`, `t
 
 Optional signed receipts/private traces never gate review. Upload requires separate informed consent and manual inspection. Read current project reward terms; zero funding and disabled payments imply no earning promise. Never handle signing keys or move funds.
 
-## Worked example — authored demonstration
+## Worked example: authored demonstration
 
 A change exports the initial generated canvas even after the user edits it. A test asserting only that a file downloaded misses the defect. Request an export-content regression: generate a fictional repair-service canvas, change one field, download SVG and inspect that exact new value. Mark model evaluation N/A for a purely deterministic export fix; do not claim the underlying generated strategy was validated.
