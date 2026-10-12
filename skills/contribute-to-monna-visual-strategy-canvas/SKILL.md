@@ -21,7 +21,16 @@ Use the repository's pinned lockfile and supported Node version. Run `npm ci`, `
 
 ## Submit evidence
 
-Prepare one PR into main with the user problem, before/after behavior, exact-head validation, public-safe artifacts and limitations. Recheck GitHub for overlapping work and head drift before authorized publication. Maintainers decide acceptance. Disclose actual provider, exact model and client in a final footer; measure duration/usage only when available. No self-approval or automatic deployment.
+Prepare one PR into main with the user problem, before/after behavior, exact-head validation, public-safe artifacts and limitations. Recheck GitHub for overlapping work and head drift before authorized publication. Maintainers decide acceptance.
+
+Generate the final attribution footer with one local command and paste it unchanged:
+
+```bash
+node <skill-directory>/scripts/run-receipt.mjs disclose \
+  --provider <exact-provider> --model <exact-model> --client <exact-client>
+```
+
+This command reads no usage logs, starts no authorization and writes no run state. A signed run receipt (`run-receipt.mjs start` and `finish`) is optional and never blocks submission. Measure duration or usage only when available. No self-approval or automatic deployment.
 
 Read the live Slop manifest for rewards. Disabled payments or a zero pool are not promises of future earnings. Signed receipts/private traces are optional; no consent means no upload. Never publish personal briefs, private source history, keys or raw transcripts. Do not handle wallets or move money.
 
