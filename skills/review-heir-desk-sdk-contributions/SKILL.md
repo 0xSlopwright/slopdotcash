@@ -51,7 +51,7 @@ and rerun the affected validation.
 ## Reproduce the outcome
 
 Verify the exact base and head revisions. Run focused package tests first, then
-`npm run build` and `npm run test`. Inspect the real artifact—not just the
+`npm run build` and `npm run test`. Inspect the real artifact, not just the
 command exit code. For sandbox or permission work, exercise the denied path as
 well as the allowed path.
 

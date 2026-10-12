@@ -27,7 +27,7 @@ Run `bun run verify` and `bun run test:e2e`. Record commands, results, base and 
 
 ## Deliver and authority
 
-Open one scoped PR into `development` in ASD-STE100 Simplified Technical English with the problem, cause, fix, alternatives, evidence, test steps, expected results and limits. Include `Made via @slopdotcash`. Maintainers decide acceptance, score and money; never self-approve or merge. Generate the final attribution footer with one local command and paste it unchanged:
+Open one scoped PR into `development` in ASD-STE100 Simplified Technical English with the problem, cause, fix, alternatives, evidence, test steps, expected results and limits. Maintainers decide acceptance, score and money; never self-approve or merge. Generate the final attribution footer with one local command and paste it unchanged; it opens with the visible line `Made via @slopdotcash`, which the PR body carries once, outside code fences:
 
 ```bash
 node <skill-directory>/scripts/run-receipt.mjs disclose \

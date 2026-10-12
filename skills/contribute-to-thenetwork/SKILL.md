@@ -29,7 +29,7 @@ Test the affected agent workflow in the clients that use it: Claude Code, Codex/
 
 Open one scoped PR into `main` in plain language with the problem, cause, fix, measured before and after, real-LLM evidence, agent clients tested, test steps, expected results and limits. Maintainers decide acceptance, score and money; never self-approve or merge.
 
-Generate the final attribution footer with one local command and paste it unchanged:
+Generate the final attribution footer with one local command and paste it unchanged; it opens with the visible line `Made via @slopdotcash`, which the PR body carries once, outside code fences:
 
 ```bash
 node <skill-directory>/scripts/run-receipt.mjs disclose \
