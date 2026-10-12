@@ -1,0 +1,183 @@
+# Robinhood Chain USDG escrow payouts: design
+
+Date: 12 October 2026. Status: design approved by the operator (Drew Pierson); implementation PRs follow this document. Nothing in it activates a project, lifts the mainnet executor rejection, or changes the fee policy.
+
+This document is the decision record for adding Robinhood Chain as a third escrow settlement network beside Base and Solana. It extends [the payouts addendum](payouts-mvp.md) and [the Base and Solana architecture plan](base-solana-payout-plan.md), which states the rule this work follows: "Add a network definition and a chain adapter, then pass the same accounting and workflow conformance suite." PRD requirements: FND-01, FND-02, PAY-06, PAY-07, PAY-08. MVP packages: MVP-02, MVP-06, MVP-07.
+
+## Why
+
+The $SLOP token launches on Robinhood Chain in November 2026 through the Umia auction. Sponsors who arrive through that launch will assume project pools can pay on the same network. Robinhood Chain is an Arbitrum Nitro Layer 2 with ETH gas, so the existing EVM escrow contract and adapter apply with configuration, not new contract code. The stablecoin natively issued there is Paxos USDG, not USDC.
+
+## Verified facts (12 October 2026)
+
+Every value below was read from a primary source on the date given. Re-verify before deployment; never copy an address from a third-party page.
+
+| Fact | Value | Source |
+|---|---|---|
+| Mainnet chain id | 4663 (`0x1237`) | `eth_chainId` on `https://rpc.mainnet.chain.robinhood.com`; Robinhood docs, Connecting page |
+| Testnet chain id | 46630 (`0xb626`) | `eth_chainId` on `https://rpc.testnet.chain.robinhood.com`; same docs page |
+| Native gas token | ETH | Robinhood docs, Connecting page |
+| Mainnet explorer | `https://robinhoodchain.blockscout.com` | Robinhood docs, Connecting page |
+| Testnet explorer | `https://explorer.testnet.chain.robinhood.com` | Robinhood docs, Connecting page |
+| USDG token (mainnet) | `0x5fc5360d0400a0fd4f2af552add042d716f1d168` | Robinhood docs, Token Contracts page; Paxos docs, USDG mainnet guide (both list this address) |
+| USDG metadata on chain | name "Global Dollar", symbol USDG, `decimals() == 6` | `eth_call` on the mainnet RPC |
+| USDG contract shape | ERC-1967 proxy; implementation `0x68184c449e1a8f34fa18d289737129fd27b66f8f`; `paused()` false; Paxos freeze interface present | `eth_getCode`, `eth_getStorageAt` (implementation slot), `eth_call` |
+| USDG on testnet | none; no code at the mainnet address on 46630, no faucet distributes USDG | `eth_getCode` on the testnet RPC; Robinhood and Paxos docs |
+| Finality tags | the RPC serves `safe` and `finalized`; `finalized` ran about 18 minutes behind head | `eth_getBlockByNumber` with each tag |
+| Finality model | soft confirmation from the sequencer, then posted to Ethereum, then Ethereum finality | Robinhood docs, Transaction Finality page |
+| `block.number` opcode | returns an estimate of the Ethereum block number, not the L2 block | Robinhood docs, Differences from Ethereum page |
+| Gas estimation | `eth_estimateGas` folds the Ethereum data-posting fee into the returned gas units | Robinhood docs, Gas and Fees page |
+| Base fee recipient `0x8f77c37d8650776bfe73c9b12b15209ee15d9b86` | plain account, no code and no transactions on Base or Robinhood Chain | `eth_getCode` and `eth_getTransactionCount` on both RPCs |
+
+The escrow contract reads `block.timestamp` and `block.chainid` only. It never reads `block.number`, so the Arbitrum block-number semantics do not affect award ids, binding delays, or rotation delays. RPC block numbers used by the adapter, scanner and reconciler are L2 block numbers and stay consistent with each other.
+
+## Goals
+
+1. A project can select Robinhood Chain as its one settlement network and run the same escrow lifecycle it would run on Base: deposit, commit awards, contributor-signed destination binding, permissionless `pay`, refund of free funds, finalized-event indexing, exact reconciliation.
+2. Contributors see Robinhood Chain and USDG named truthfully in consent text, wallet cards, payout rows and explorer links.
+3. Base behavior is unchanged, byte for byte where possible, and every Base test still passes.
+4. A testnet deployment can be executed by a human from a written runbook with no key passing through an agent.
+
+## Non-goals
+
+- Activating any project on Robinhood Chain. Each activation is its own manifest PR with a reviewed deployment record.
+- Lifting the hosted executor's rejection of mainnet deployments. That is the repository owner's decision under PAY-05 and the production readiness gate.
+- Choosing the Robinhood Chain fee recipient or identity authority addresses. These are policy inputs recorded at deployment.
+- The legacy 1% monthly-pool settlement rail (PAY-09, RFC #472). It stays Base and Solana only.
+- Bridging, on-ramp or faucet guidance for sponsors and contributors beyond the runbook's test-gas steps.
+- Any change to the 2% fee, the 10% withdrawal fee, or the fee incidence.
+
+## Design
+
+### 1. Network and chain model
+
+`ESCROW_NETWORKS` in `src/lib/escrow-policy.mjs` gains two entries and every entry gains explicit fields that the code currently infers from the word `base`:
+
+| Network | chain | family | testnet | chainId | asset | assetSymbol | gasCeiling | scanPageBlocks |
+|---|---|---|---|---|---|---|---|---|
+| `base-sepolia` | `base` | `evm` | true | 84532 | Circle test USDC | USDC | 500000 | 1999 |
+| `base-mainnet` | `base` | `evm` | false | 8453 | Circle USDC | USDC | 500000 | 1999 |
+| `robinhood-testnet` | `robinhood` | `evm` | true | 46630 | null (reviewed test token per deployment) | TEST | 2000000 | 9000 |
+| `robinhood-mainnet` | `robinhood` | `evm` | false | 4663 | `0x5fc5360d0400a0fd4f2af552add042d716f1d168` | USDG | 2000000 | 9000 |
+| `solana-devnet` | `solana` | `solana` | true | n/a | Circle devnet USDC | USDC | n/a | n/a |
+| `solana-testnet` | `solana` | `solana` | true | n/a | null | TEST | n/a | n/a |
+| `solana-mainnet` | `solana` | `solana` | false | n/a | Circle USDC | USDC | n/a | n/a |
+
+Two exported helpers replace ad hoc string tests: `chainFamily(chain)` returns `evm` or `solana`, and `ESCROW_CHAINS` lists the chain values the policy accepts. Every place that today writes `chain === "base"` to mean "this is an EVM chain" calls `chainFamily(chain) === "evm"` instead. Places that mean "this specific network" keep comparing network names.
+
+The chain value is `robinhood`, displayed as "Robinhood Chain". A vague `evm` chain value is rejected for the reason the architecture plan gives: Base and Robinhood Chain have different chain ids, different assets and different explorers, and every signed message and receipt binds one of them.
+
+Wallet claims, payment wallet challenges and authorizations, binding authorizations and payout rows are per chain. A contributor who wants Robinhood Chain payouts registers a Robinhood Chain wallet and signs its consent, even when the address equals their Base address. The reason is that the consent message and the EIP-712 binding digest name the chain id and vault, so a Base signature cannot be reused on Robinhood Chain, and the product must not imply otherwise.
+
+The one-chain-per-project rule holds through `assertEscrowPolicy` (`reward.chain` must equal `escrow.chain`, deployments must belong to that chain) and the `payment_project_network_locked` trigger. Neither changes.
+
+### 2. Contracts and deployment
+
+No Solidity change. `ProjectEscrow.sol` accepts any token whose `decimals()` is 6 and whose transfers move exact amounts; it derives award ids from `block.chainid` and the vault address; it uses `block.timestamp` for the binding delay, the commit window, binding expiry and authority rotation. All of this is correct on Arbitrum Nitro.
+
+New Foundry scripts under `contracts/evm/script/`:
+
+- `DeployRobinhood.s.sol`: `require(block.chainid == 4663)`, USDG constant equal to the registry asset, fee recipient and identity authority read from the environment as public addresses, binding delay 48 hours (`MIN_PRODUCTION_BINDING_DELAY`), authority rotation delay as fixed in the factory by #675. Production release remains outside this script, as it is for Base.
+- `DeployRobinhoodTestnet.s.sol`: `require(block.chainid == 46630)`, deploys `integration/TestDollar.sol` (six decimals) and then the factory bound to it, with fee recipient and identity authority from the environment. The test token is not USDG and the README says so, mirroring the Solana Testnet labeled test mint.
+
+USDG is an upgradeable proxy with a pause switch and a per-address freeze, the same risk class as Circle's USDC on Base. The contract already fails closed: a frozen or paused recipient reverts `pay`, the award stays reserved, and a frozen fee recipient blocks only `claimFees`. The README's asset section gains a USDG paragraph stating this.
+
+`foundry.toml` targets the Cancun EVM. Arbitrum Nitro supports Cancun opcodes from ArbOS 30, and the testnet deployment is the proof for this chain: the runbook records the ArbOS version read from the `ArbSys` precompile and the deployment receipt. If deployment fails on an opcode, the fallback is a per-script `evm_version` of Shanghai, recorded as a deviation.
+
+Fee recipient: the Base fee address is a plain account with no history on either chain, so the same key could receive on Robinhood Chain. Whether to reuse it, and which address is the identity authority, are decisions for the repository owner, recorded in the deployment evidence and the project manifest. This design does not assume them.
+
+### 3. Data model
+
+Five tables carry `CHECK(chain IN ('base','solana'))`: `wallet_claims` (migration 0010), `payment_obligations` and `payment_wallet_proposals` (0011), `payment_direct_transfers` (0014), `wallet_observations` (0015). SQLite cannot alter a CHECK in place, so migration `0017_robinhood_chain.sql` rebuilds each table with the widened constraint. It follows the order the SQLite documentation prescribes for a table that other tables reference (create the replacement, copy, drop the original, rename the replacement), not the rename-first order migration 0003 used when `wallet_claims` had no child tables:
+
+1. Create `<name>_0017` with `CHECK(chain IN ('base','solana','robinhood'))` and every other column, constraint, foreign key and `STRICT` setting identical to the current definition.
+2. Copy every row with an explicit column list.
+3. Drop the original table's triggers, then the original table.
+4. Rename `<name>_0017` to `<name>`.
+5. Recreate every index and trigger with its original definition.
+
+The order matters because SQLite rewrites foreign-key references in other tables when the referenced table is renamed. Renaming the original away first would point every child table at the discarded copy. Renaming the replacement into place rewrites nothing, since no table references the temporary name, and the children's references resolve by name to the rebuilt table.
+
+`wallet_claims` is referenced by its own `supersedes_claim_id`, by `wallet_possession_challenges`, `wallet_possession_attestations`, `payment_wallet_authorizations`, `payment_attempts`, `payment_wallet_challenges` and, after #675, `payment_binding_authorizations`. `payment_obligations` is referenced by `payment_outbox` and `payment_attempts`. The migration runs inside one transaction with `PRAGMA defer_foreign_keys = ON`, so the implicit delete performed by `DROP TABLE` is checked at commit, when the rebuilt table already holds every referenced row under the original name. The migration asserts row counts before and after each copy and aborts on any difference, and the migration test in section 6 runs `PRAGMA foreign_key_check` afterwards and expects no rows.
+
+Row ids, digests, timestamps and lineage links do not change. No existing row gains the new chain value. Applied by the existing deploy step on staging first, then production, exactly as earlier migrations were.
+
+### 4. Backend and workers
+
+Routing by family. `workers/payments/index.ts` selects the EVM adapter and scanner when `chainFamily(deployment.chain) === "evm"` and the Solana ones otherwise; the executor service binding is `EVM_PAYMENT_EXECUTOR` (renamed from `BASE_PAYMENT_EXECUTOR`) or `SOLANA_PAYMENT_EXECUTOR`. `workers/payments/reconcile.ts` chooses the finalized-revert proof by family and records the deployment's chain in the proof instead of the constant `base`. `backend/payments/base-adapter.ts` becomes `evm-adapter.ts` and reports `chain` from its configuration.
+
+Executor. `workers/payment-executor/index.ts` runs under `CHAIN_FAMILY` of `evm` or `solana`; `configure.mjs` derives it from the registry, allows `robinhood-testnet` in its network list, and names the worker, service binding and secret by network. `preflightEvmDeployment` (renamed from `preflightBaseDeployment`) accepts a deployment when its network is a registry testnet whose `chainId` matches the configured value, or the local 31337 override; every mainnet network stays rejected. The journal keys for EVM attempts stay `pay:<idempotencyKey>` and the nonce key already includes the chain id, so no journal migration is needed and no hosted test stack exists in production to migrate.
+
+Gas policy per network. `eth_estimateGas` on Robinhood Chain returns gas units that include the Ethereum data-posting component, so a `pay` call can legitimately exceed the Base ceiling of 500,000 when Ethereum is congested. The ceiling moves into the registry (`gasCeiling`): Base keeps 500,000; Robinhood Chain uses 2,000,000. The 10 gwei `maxFeePerGas` cap stays global; Robinhood Chain's L2 base fee is far below it. The executor README's "Base signing limits gas to 500,000" sentence becomes a per-network table.
+
+Scanner paging per network. `scanEvmPayments` (renamed from `scanBasePayments`) reads `scanPageBlocks` from the registry: Base keeps 1,999 blocks per run; Robinhood Chain uses 9,000, which stays under the common provider limit of 10,000 blocks per `eth_getLogs` request while keeping up with sub-second blocks on a five-minute cron and catching up from the deployment block in a reasonable number of runs. The cursor semantics do not change: it advances only after every recognized finalized event is indexed.
+
+Finality. The adapter already gates every receipt on the `finalized` block tag, which on Arbitrum Nitro means the batch is final on Ethereum. The Robinhood docs name that stage "full finality". No confirmation counts are introduced. Soft confirmation and the "posted to Ethereum" stage are never treated as paid.
+
+Wallet API. `src/lib/wallets.ts` `WALLET_CHAINS` gains `robinhood` with the EVM address rule; `backend/trace/handler.ts` accepts `chain=robinhood` on the claim endpoints and its error text names all three chains; `backend/payments/possession.ts` verifies `personal_sign` for any EVM-family chain and the EIP-712 binding signature with the deployment's chain id. `backend/payments/handler.ts` builds balances for every chain in `ESCROW_CHAINS`.
+
+Manifest schema. `src/lib/project-schema.mjs` requires `reward.currency` to be `USDG` when `reward.chain` is `robinhood` and `USDC` otherwise. `src/lib/funding-address.mjs` maps `robinhood` to `USDG` and validates its addresses with the EVM rule; the funding-record and commitment modules are not extended (the legacy rail stays Base and Solana), and the schema rejects a fresh-cycle instrument on a Robinhood Chain project with a clear message.
+
+Account API types. `PaymentChain` in `src/lib/payments/contracts.ts` becomes `"base" | "solana" | "robinhood"`; `transactionUrl` adds the Blockscout mainnet and testnet explorers.
+
+### 5. Site
+
+- Labels: "Robinhood Chain · USDG" for `robinhood-mainnet`, "Robinhood Chain Testnet · test token" for `robinhood-testnet`.
+- Amount formatting on the payouts, escrow funding and proposal pages takes the symbol from the network's `assetSymbol` instead of appending "USDC".
+- Wallet registration offers Solana, Base and Robinhood Chain; the address hint for Robinhood Chain is the same EVM rule as Base.
+- Payouts page wallet cards and the connect flow name the chain the contributor chose. The EVM connect branch stays `personal_sign`, which is chain-independent; it does not call `wallet_switchEthereumChain`, because signing consent does not require the wallet to be on that network. Copy says so in one sentence.
+- Explorer links use `transactionUrl`.
+- No em dashes in any new copy.
+
+### 6. Tests and CI
+
+- `contracts/evm/adapter.integration.ts` and `backend/payments/base.integration.ts` (renamed `evm.integration.ts`) add a second Anvil pass started with chain id 46630 under network `robinhood-testnet`, proving award ids bind 46630, the preflight accepts the testnet entry and rejects a chain-id mismatch, the family routing reaches the EVM executor and scanner, the registry's gas ceiling is applied, and the ledger records `chain = robinhood`.
+- A negative case: a deployment claiming `robinhood-mainnet` is rejected by the hosted preflight.
+- Migration test: apply 0001 through 0017 on a fresh local D1, insert a Base claim lineage and a Solana one, confirm counts, indexes and triggers match the pre-migration state, then insert a `robinhood` claim and a `robinhood` obligation.
+- Foundry suites unchanged; `forge build` and `forge fmt --check` run as today.
+- `scripts/test-payout-browser.mjs` asserts the new labels alongside the Base ones.
+- `.github/workflows/escrow-tests.yml` job `base` is renamed `evm` and runs the EVM integration with both chain ids.
+- Typecheck, lint, format and the e2e suites green before each PR.
+
+### 7. Testnet runbook (prepare only)
+
+Delivered as `docs/robinhood-chain-testnet-runbook.md` with an evidence template. An agent prepares; a human broadcasts. Steps:
+
+1. Create a dedicated Foundry keystore account for the testnet deployer; never a raw key in a command, file or environment dump.
+2. Fund it from `https://faucet.testnet.chain.robinhood.com`; confirm with `node scripts/check-payout-test-funding.mjs robinhood-testnet <address>` (the script gains the network with chain id `0xb626` and the public testnet RPC).
+3. Obtain an archive RPC key (Alchemy is the documented provider) for the scanner; the public RPC is rate-limited and not for production use.
+4. Simulate `DeployRobinhoodTestnet.s.sol` without broadcast; review the printed addresses; broadcast with the keystore account.
+5. Verify source on the testnet Blockscout; read back `token()`, `owner()`, `identityAuthority()`, `feeRecipient()`, `bindingDelay()` and the runtime code SHA-256; read the ArbOS version from the `ArbSys` precompile.
+6. Create one vault for a test project manifest; record the deployment under `escrow.deployments` with `network: "robinhood-testnet"` and the test token as `asset`.
+7. Run the canonical acceptance scenario from the architecture plan with the test token: fund 1,000; commit 100 and 50; pay 98 plus 2; refund free funds at the withdrawal fee; bind the late wallet with a contributor signature; pay 49 plus 1; replay and prove no duplicate payment.
+8. Record the evidence manifest: source SHA, compiler settings, factory and vault addresses, deployment transactions, chain id, token address and code hash, registrar, fee recipient, identity authority, ArbOS version, finalized block of each receipt.
+
+### 8. Delivery
+
+The repository rules require a new requirement to be discussed with humans and added to the PRD, with maintainer approval of scope and phase, before implementation starts. FND-02 currently reads "Choose Base or Solana before first funding", so Robinhood Chain is a new requirement. The gate is therefore:
+
+- **Step 0, PRD amendment.** A docs-only PR adds Robinhood Chain and USDG to FND-02, adds one sentence to the payouts addendum, and links this document. The repository owner approves and merges it. Until then PR A, B and C stay drafts.
+
+Then three pull requests into `development`, each stacked on #675 (which changes the factory constructor and the deployment schema) and merged by the repository owner:
+
+- **PR A, family refactor.** `chainFamily`, `ESCROW_CHAINS`, the registry fields, renames (`evmPaymentAdapter`, `scanEvmPayments`, `preflightEvmDeployment`, `EvmEscrowConfig`, `verifyEvmDeployment`, `evmAwardId`, `finalizedEvmRevert`, `EVM_PAYMENT_EXECUTOR`, `CHAIN_FAMILY=evm`), and every `chain === "base"` call site that means EVM. No new chain value, no migration, no label change. Base integration output identical before and after.
+- **PR B, Robinhood Chain.** Registry entries, migration 0017, deploy scripts, wallet and payment API acceptance, manifest schema, labels, explorer links, tests, README and docs updates (the EVM contracts README network table and USDG paragraph, `docs/testnet-funding.md`, the executor README gas table). The PRD and payouts addendum changes land in step 0, not here.
+- **PR C, runbook.** `docs/robinhood-chain-testnet-runbook.md`, the evidence template, and the `check-payout-test-funding.mjs` network entry if not already in B.
+
+Each PR cites FND-01, FND-02, PAY-06, PAY-07 and MVP-02, MVP-06, MVP-07 in its description per the repository's PR rule.
+
+## Open decisions for the repository owner
+
+1. Robinhood Chain fee recipient address (reuse the Base account or a new one).
+2. Robinhood Chain identity authority address, and who holds it, under the #675 bounded-attester design.
+3. Which project is first to carry a `robinhood-mainnet` deployment, and when the hosted executor may accept a mainnet network at all.
+4. Whether the public copy on `/sponsors` and project pages may say "USDG on Robinhood Chain" before a project is activated there. This design adds no such copy.
+
+## Risks and mitigations
+
+- **USDG freeze or pause.** Handled by fail-closed reverts; the unpaid award stays reserved; a frozen fee recipient blocks only fee claims.
+- **Sequencer reordering before posting.** Nothing is paid or indexed before the `finalized` tag, which is Ethereum finality.
+- **Gas spikes from Ethereum data fees.** Per-network gas ceiling; the 10 gwei price cap protects the relayer from paying an absurd price, and a transaction over the ceiling is held with a human-readable cause, not retried to a different value.
+- **Migration on a live table.** Same pattern as migration 0003, run on staging first, with row-count assertions and deferred foreign keys.
+- **Cancun opcode support.** Confirmed by the testnet deployment; fallback is a recorded `evm_version` deviation.
+- **Address copied from the wrong source.** The registry carries the USDG address that two official pages list and the chain confirms; the deploy script's constant must equal the registry value, checked by a test.
