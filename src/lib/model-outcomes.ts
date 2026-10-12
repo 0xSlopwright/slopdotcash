@@ -22,6 +22,8 @@ const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
   "z.ai": "zai",
   "z-ai": "zai",
   "moonshot-ai": "moonshotai",
+  spacexai: "xai",
+  "x-ai": "xai",
 };
 
 export interface ModelIdentityKey {

@@ -147,6 +147,9 @@ test("public funding records and the payout workspace are separate tabs", async 
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/projects/eliza");
   const history = page.locator(".payment-history");
+  // The history renders after the full contribution snapshot loads, which
+  // can take longer than the default assertion timeout on a cold runner.
+  await expect(history).toBeVisible({ timeout: 60_000 });
   // Direct payments come from the payments database, which answers only the
   // product origins. A local preview shows that they are unavailable.
   await expect(history).toContainText(
