@@ -6,7 +6,10 @@ import {
   type ProfileIndex,
   type ProfileRecord,
 } from "../src/lib/profiles";
-import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
+import {
+  REGISTERED_REPOSITORIES,
+  TARGET_REPOSITORIES,
+} from "../src/lib/repositories.mjs";
 import { GitHubGraphqlClient } from "./generate-leaderboard";
 import {
   type CensusRequest,
@@ -62,7 +65,16 @@ if (values.live) {
       "Live profile collection requires --previous with the last published census (or the reviewed seed for the first publication)",
     );
   const previous = JSON.parse(await readFile(values.previous, "utf8"));
-  assertProfiles(previous);
+  // The last census may predate a project activation or retirement. It only
+  // carries issue history forward, so it must name registered repositories,
+  // not exactly the current active set.
+  const registered = new Set(REGISTERED_REPOSITORIES.map((r) => r.id));
+  const previousInventory = Array.isArray(previous?.repositories)
+    ? previous.repositories.map((r: { repository: string }) => r.repository)
+    : [];
+  if (!previousInventory.every((id: string) => registered.has(id)))
+    throw Error("Previous census names an unregistered repository");
+  assertProfiles(previous, previousInventory);
   const client = new GitHubGraphqlClient(token);
   const request: CensusRequest = async <T>(
     query: string,

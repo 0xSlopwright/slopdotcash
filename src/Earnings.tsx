@@ -100,7 +100,17 @@ function account(value: unknown): PaymentsAccount {
       (b) => !b || !["base", "solana"].includes(b.chain) || !money(b.netMicro),
     ) ||
     !Array.isArray(data.directTransfers) ||
-    !data.directTransfers.every(isDirectTransfer)
+    !data.directTransfers.every(isDirectTransfer) ||
+    !Array.isArray(data.walletObservations) ||
+    data.walletObservations.some(
+      (o) =>
+        !o ||
+        !["base", "solana"].includes(o.chain) ||
+        typeof o.address !== "string" ||
+        o.proofLevel !== "profile_readme" ||
+        !/^https:\/\/github\.com\//u.test(o.sourceUrl) ||
+        Number.isNaN(Date.parse(o.observedAt)),
+    )
   )
     throw new Error("The payment record could not be verified. Please retry.");
   return data;
@@ -309,6 +319,30 @@ export function EarningsPage() {
                       this network.
                     </p>
                   )}
+                  {!wallet?.authorized &&
+                    data.walletObservations
+                      .filter(
+                        (o) =>
+                          o.chain === chain && o.address !== wallet?.address,
+                      )
+                      .slice(0, 1)
+                      .map((o) => (
+                        <p key={o.sourceUrl}>
+                          Your{" "}
+                          <a
+                            href={o.sourceUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            GitHub profile README
+                          </a>{" "}
+                          listed{" "}
+                          <span className="wallet-address">{o.address}</span> on{" "}
+                          {new Date(o.observedAt).toLocaleDateString()}. That
+                          record is history only. Connect and confirm a wallet
+                          to receive escrow payments.
+                        </p>
+                      ))}
                   {wallet && (
                     <p>
                       {wallet.authorized

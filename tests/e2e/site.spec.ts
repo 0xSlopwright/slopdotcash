@@ -578,6 +578,57 @@ test("never presents Delta Star's external prize as platform money", async ({
   ).toBeVisible();
 });
 
+test("shows the frozen record for a cycle the live window still covers", {
+  tag: ["@pages"],
+}, async ({ page, request }) => {
+  const snapshot = await loadSnapshot(request);
+  const cycles = await loadCycles(request);
+  // A month with a frozen record that the rolling window also reaches is the
+  // case where a live recompute could replace what is under review.
+  const overlapping = cycles.cycles.find((cycle) => {
+    if (cycle.contributors.length === 0) return false;
+    try {
+      createProjectView(snapshot, cycle.projectId, cycle.cycleId);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const cycle = overlapping ?? cycles.cycles.find((c) => c.contributors.length);
+  if (cycle) {
+    await page.goto(`/cycles/${cycle.projectId}/${cycle.cycleId}`, {
+      waitUntil: "networkidle",
+    });
+    const rows = page.locator(".archived-leader-row");
+    await expect(rows).toHaveCount(cycle.contributors.length);
+    await expect(rows.first().getByRole("link")).toHaveText(
+      cycle.contributors[0].actor.login,
+    );
+    await expect(
+      page.locator(
+        ".leader-row:not(.archived-leader-row, .archived-leader-head)",
+      ),
+    ).toHaveCount(0);
+  }
+
+  const project = PROJECTS.find(
+    (candidate) => candidate.reward.kind === "monthly-pool",
+  );
+  if (!project) throw new Error("Monthly project fixture is unavailable");
+  await page.goto(`/cycles/${project.id}/2025-01`, {
+    waitUntil: "networkidle",
+  });
+  await expect(
+    page.getByRole("heading", {
+      name: "No January 2025 cycle record",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "project page" }),
+  ).toHaveAttribute("href", `/projects/${project.slug}`);
+});
+
 test("renders contributor and cycle records from validated public data", {
   tag: ["@pages"],
 }, async ({ page, request }) => {
