@@ -360,6 +360,16 @@ export async function handlePaymentsApi(
           "github_user_id",
           member.github_id,
         ),
+        walletObservations: JSON.parse(
+          (
+            await deps.db
+              .prepare(
+                "SELECT json_group_array(json_object('chain',chain,'address',address,'proofLevel',proof_level,'sourceUrl',source_url,'observedAt',observed_at)) items FROM (SELECT * FROM wallet_observations WHERE github_user_id=? ORDER BY observed_at DESC)",
+              )
+              .bind(member.github_id)
+              .first<{ items: string }>()
+          )?.items ?? "[]",
+        ),
       };
       return json(200, account);
     }
