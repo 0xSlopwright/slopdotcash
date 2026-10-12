@@ -55,8 +55,8 @@ The escrow contract reads `block.timestamp` and `block.chainid` only. It never r
 
 | Network | chain | family | testnet | chainId | asset | assetSymbol | gasCeiling | scanPageBlocks |
 |---|---|---|---|---|---|---|---|---|
-| `base-sepolia` | `base` | `evm` | true | 84532 | Circle test USDC | USDC | 500000 | 1999 |
-| `base-mainnet` | `base` | `evm` | false | 8453 | Circle USDC | USDC | 500000 | 1999 |
+| `base-sepolia` | `base` | `evm` | true | 84532 | Circle test USDC | USDC | 500000 | 2000 |
+| `base-mainnet` | `base` | `evm` | false | 8453 | Circle USDC | USDC | 500000 | 2000 |
 | `robinhood-testnet` | `robinhood` | `evm` | true | 46630 | null (reviewed test token per deployment) | TEST | 2000000 | 9000 |
 | `robinhood-mainnet` | `robinhood` | `evm` | false | 4663 | `0x5fc5360d0400a0fd4f2af552add042d716f1d168` | USDG | 2000000 | 9000 |
 | `solana-devnet` | `solana` | `solana` | true | n/a | Circle devnet USDC | USDC | n/a | n/a |
@@ -110,7 +110,7 @@ Executor. `workers/payment-executor/index.ts` runs under `CHAIN_FAMILY` of `evm`
 
 Gas policy per network. `eth_estimateGas` on Robinhood Chain returns gas units that include the Ethereum data-posting component, so a `pay` call can legitimately exceed the Base ceiling of 500,000 when Ethereum is congested. The ceiling moves into the registry (`gasCeiling`): Base keeps 500,000; Robinhood Chain uses 2,000,000. The 10 gwei `maxFeePerGas` cap stays global; Robinhood Chain's L2 base fee is far below it. The executor README's "Base signing limits gas to 500,000" sentence becomes a per-network table.
 
-Scanner paging per network. `scanEvmPayments` (renamed from `scanBasePayments`) reads `scanPageBlocks` from the registry: Base keeps 1,999 blocks per run; Robinhood Chain uses 9,000, which stays under the common provider limit of 10,000 blocks per `eth_getLogs` request while keeping up with sub-second blocks on a five-minute cron and catching up from the deployment block in a reasonable number of runs. The cursor semantics do not change: it advances only after every recognized finalized event is indexed.
+Scanner paging per network. `scanEvmPayments` (renamed from `scanBasePayments`) reads `scanPageBlocks` from the registry, defined as the inclusive number of blocks per `eth_getLogs` page: Base keeps 2,000 per run (the old `from + 1999` arithmetic, unchanged); Robinhood Chain uses 9,000, which stays under the common provider limit of 10,000 blocks per `eth_getLogs` request while keeping up with sub-second blocks on a five-minute cron and catching up from the deployment block in a reasonable number of runs. The cursor semantics do not change: it advances only after every recognized finalized event is indexed.
 
 Finality. The adapter already gates every receipt on the `finalized` block tag, which on Arbitrum Nitro means the batch is final on Ethereum. The Robinhood docs name that stage "full finality". No confirmation counts are introduced. Soft confirmation and the "posted to Ethereum" stage are never treated as paid.
 

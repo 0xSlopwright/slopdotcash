@@ -545,6 +545,22 @@ try {
     ),
     /Test deployment required/,
   );
+  // A registry network must carry the registry's chain id even under the
+  // local override: naming base-sepolia with Anvil's 31337 is refused. (The
+  // pre-refactor preflight accepted this combination; the narrowing is
+  // deliberate and only reachable with ALLOW_LOCAL_TEST_CHAIN set.)
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...preflightBase,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([
+          { ...withoutCeiling, network: "base-sepolia", gasCeiling: "500000" },
+        ]),
+      },
+      { ...preflightInput, network: "base-sepolia" },
+    ),
+    /Test deployment required/,
+  );
   // Without the contributor's acceptance the attester cannot bind at all.
   const unsignedAttester = createEvmAttester({
     PAYMENTS_DB: db,
