@@ -33,7 +33,7 @@ Apply migration `0011_payments.sql` after prior migrations. Run the account and
 queue integration workflow with:
 
 ```
-bun backend/payments/base.integration.ts
+bun backend/payments/evm.integration.ts
 ```
 
 The Base vertical workflow deploys real local contracts, reserves a walletless
@@ -126,7 +126,7 @@ destinations. `GET /me` returns them as `walletObservations`, and the payouts
 page asks the contributor to connect and confirm a wallet. Registry-sourced
 frozen wallets are already D1 claims and are not imported again.
 
-For browser QA, `bun backend/payments/base.integration.ts --serve` starts a local
+For browser QA, `bun backend/payments/evm.integration.ts --serve` starts a local
 HTTP fixture on port 18548 with a seeded GitHub session, real migrated SQLite,
 and an isolated Anvil chain. It exposes `/fixture`, the account login read, and
 the actual payments API. Wallet registration and signing trigger real local

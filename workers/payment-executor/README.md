@@ -146,7 +146,7 @@ operational material and has no read route other than transaction-ID lookup.
 
 ## Validation boundaries
 
-`bun backend/payments/base.integration.ts` executes the account API, signed
+`bun backend/payments/evm.integration.ts` executes the account API, signed
 wallet consent, finalized reservation scanner, real separate EIP1559 signers,
 payment dispatch, disk-backed journal recovery after a deliberately lost RPC
 response, and finalized payout indexing against actual Anvil contracts. It
