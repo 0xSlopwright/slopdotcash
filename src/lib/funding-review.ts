@@ -123,7 +123,7 @@ export function walletLockLabel(
 ): string {
   const row = cycle?.contributors.find((c) => c.actor.id === actorId);
   if (!row) return "Not locked";
-  if (!row.wallet) return "Unclaimed — no locked wallet";
+  if (!row.wallet) return "Unclaimed: no locked wallet";
   return `Locked for ${cycle?.cycleId}`;
 }
 
