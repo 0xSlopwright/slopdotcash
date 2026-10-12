@@ -1,5 +1,6 @@
 import { evmBindingTypedData } from "../../contracts/evm/adapter";
 import { readBoundedJson } from "../../src/lib/browser-json";
+import { ESCROW_CHAINS, EVM_CHAINS } from "../../src/lib/escrow-policy.mjs";
 import type {
   AccountPayment,
   DirectTransfer,
@@ -360,9 +361,9 @@ export async function handlePaymentsApi(
         return json(400, { error: "invalid_request" });
       const wallet = await deps.db
         .prepare(
-          "SELECT w.id,w.wallet_address,w.record_sha256 FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id WHERE w.id=? AND w.github_user_id=? AND w.chain='base' AND w.source='d1_registry' AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)",
+          `SELECT w.id,w.wallet_address,w.record_sha256 FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id WHERE w.id=? AND w.github_user_id=? AND w.chain IN (${EVM_CHAINS.map(() => "?").join(",")}) AND w.source='d1_registry' AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)`,
         )
-        .bind(body.claimId, member.github_id)
+        .bind(body.claimId, member.github_id, ...EVM_CHAINS)
         .first<{ id: string; wallet_address: string; record_sha256: string }>();
       if (!wallet) return json(409, { error: "claim_not_current" });
       const nowSeconds = Math.floor(Date.parse(now) / 1000);
@@ -428,7 +429,7 @@ export async function handlePaymentsApi(
       ) as AccountPayment[];
       for (const p of payments)
         p.netMicro = (BigInt(p.grossMicro) - BigInt(p.feeMicro)).toString();
-      const balances = (["base", "solana"] as const).map((chain) => ({
+      const balances = ESCROW_CHAINS.map((chain) => ({
         chain,
         netMicro: payments
           .filter((p) => p.chain === chain && p.state === "reserved")

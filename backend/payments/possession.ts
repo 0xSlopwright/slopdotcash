@@ -5,6 +5,7 @@ import {
   type BindingInput,
   evmBindingDigest,
 } from "../../contracts/evm/adapter";
+import { chainFamily, isEscrowChain } from "../../src/lib/escrow-policy.mjs";
 import { solanaAddressBytes } from "../../src/lib/wallets";
 
 function hex(bytes: Uint8Array) {
@@ -74,7 +75,7 @@ export function verifyPaymentWalletSignature(
         { zip215: false },
       );
     }
-    if (chain !== "base") return false;
+    if (!isEscrowChain(chain) || chainFamily(chain) !== "evm") return false;
     return (
       recoverEvmSigner(personalMessageHash(message), signature) ===
       address.toLowerCase()
