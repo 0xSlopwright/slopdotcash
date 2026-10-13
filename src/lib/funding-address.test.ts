@@ -4,6 +4,7 @@ import {
   fundingAssetForNetwork,
   isFundingAddress,
 } from "./funding-address.mjs";
+import type { FundingNetwork } from "./funding-address.mjs";
 
 const evm = "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86";
 
@@ -24,6 +25,8 @@ describe("funding address primitives", () => {
         "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
       ),
     ).toBe(false);
-    expect(isFundingAddress("evm", evm)).toBe(false);
+    expect(isFundingAddress("evm" as unknown as FundingNetwork, evm)).toBe(
+      false,
+    );
   });
 });
