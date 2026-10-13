@@ -33,9 +33,9 @@ binding is always an interactive step; the relayer reports a missing binding
 and never requests one.
 
 The hosted wrapper checks the configured test network and the RPC's chain or
-genesis identity before reading the signer secret. Base mainnet and Solana
-mainnet are rejected. The local integration override exists only in the core
-APIs and is not forwarded by the hosted wrapper.
+genesis identity before reading the signer secret. Base mainnet, Robinhood Chain
+mainnet and Solana mainnet are rejected. The local integration override exists
+only in the core APIs and is not forwarded by the hosted wrapper.
 
 ## Durability and retries
 
@@ -78,10 +78,18 @@ never proof that signing cannot race the lookup.
 Signer keys must be dedicated to these Workers. Manual external transactions
 using the same keys would invalidate the nonce ownership assumption. An EVM
 transaction stuck due to fee pricing requires operator reconciliation; there
-is no automatic gas-price replacement in this version. EVM signing limits gas
-to the deployment record's `gasCeiling` (copied from the network registry:
-500,000 on Base) and max gas price to 10 gwei; a record without a ceiling is
-refused. Never delete or restore an old journal
+is no automatic gas-price replacement in this version.
+
+EVM signing limits gas to the deployment record's `gasCeiling`, copied from the
+network registry, and max gas price to 10 gwei; a record without a ceiling is
+refused.
+
+| Network | `gasCeiling` | Why |
+| --- | --- | --- |
+| Base (`base-sepolia`, `base-mainnet`) | 500,000 | Plain L2 execution gas |
+| Robinhood Chain (`robinhood-testnet`, `robinhood-mainnet`) | 2,000,000 | `eth_estimateGas` on Arbitrum Nitro folds the Ethereum data-posting fee into the returned units |
+
+Never delete or restore an old journal
 snapshot to clear an error. A restore must preserve every signed attempt and
 reconcile the chain before resuming.
 
@@ -134,7 +142,8 @@ Set secret bindings only through the approved isolated test release process:
 
 - `PAYMENT_RPC_URLS`: private JSON mapping of network names to authenticated RPC
   endpoints. Do not place RPC credentials in public manifests.
-- Base Worker: `TEST_SIGNER_PRIVATE_KEY`, dedicated test key in hex form.
+- EVM Worker (Base or Robinhood Chain): `TEST_SIGNER_PRIVATE_KEY`, dedicated test
+  key in hex form.
 - Solana Worker: `TEST_SOLANA_SIGNER_SEED`, dedicated test seed as 64 hex digits.
 
 Supply only the one signer secret for the Worker's chain and role. The

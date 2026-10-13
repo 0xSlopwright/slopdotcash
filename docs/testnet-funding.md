@@ -6,12 +6,22 @@ Run the read-only funding check with the intended public address:
 node scripts/check-payout-test-funding.mjs base-sepolia "$BASE_TEST_ADDRESS"
 node scripts/check-payout-test-funding.mjs solana-devnet "$SOLANA_TEST_ADDRESS"
 node scripts/check-payout-test-funding.mjs solana-testnet "$SOLANA_TEST_ADDRESS"
+node scripts/check-payout-test-funding.mjs robinhood-testnet "$ROBINHOOD_TEST_ADDRESS"
 ```
 
 An optional third argument selects an HTTPS RPC URL. Use a public URL without
 credentials. The command checks the Base chain ID or Solana genesis hash before
 reading a finalized balance. Mainnet network names are rejected. It neither
 reads signing keys nor requests funds, signs, or broadcasts a transaction.
+
+Robinhood Chain Testnet (chain id 46630) gas comes from
+`https://faucet.testnet.chain.robinhood.com`; the check reads the chain id
+`0xb626` before the finalized balance. The public RPC is rate-limited; use it
+for this check and a one-off deployment, not for the scanner. The public RPC
+does not keep state at the `finalized` tag, so pass an archive RPC URL (for
+example an Alchemy endpoint for Robinhood Chain Testnet) as the third argument;
+without one the check fails with `historical state is not available`, which is
+an RPC limitation, not a zero balance.
 
 JSON output reports the integer balance as a decimal string (`wei` or
 `lamports`), the finalized block or slot, and `nonzero`. A zero balance is a
