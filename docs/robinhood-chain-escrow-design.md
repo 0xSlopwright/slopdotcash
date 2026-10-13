@@ -133,7 +133,7 @@ Account API types. `PaymentChain` in `src/lib/payments/contracts.ts` becomes `"b
 
 - `contracts/evm/adapter.integration.ts` and `backend/payments/base.integration.ts` (renamed `evm.integration.ts`) add a second Anvil pass started with chain id 46630 under network `robinhood-testnet`, proving award ids bind 46630, the preflight accepts the testnet entry and rejects a chain-id mismatch, the family routing reaches the EVM executor and scanner, the registry's gas ceiling is applied, and the ledger records `chain = robinhood`.
 - A negative case: a deployment claiming `robinhood-mainnet` is rejected by the hosted preflight.
-- Migration test: apply 0001 through 0017 on a fresh local D1, insert a Base claim lineage and a Solana one, confirm counts, indexes and triggers match the pre-migration state, then insert a `robinhood` claim and a `robinhood` obligation.
+- Migration test (`backend/payments/migrations.test.ts`): apply 0001 through 0017 on a local SQLite database (`bun:sqlite`), once in autocommit and once inside a single transaction to match D1's apply, after seeding a Base claim lineage and a Solana one with a row in every child table; confirm row counts, indexes, triggers, column order and an empty `PRAGMA foreign_key_check`, then insert `robinhood` rows into all five tables.
 - Foundry suites unchanged; `forge build` and `forge fmt --check` run as today.
 - `scripts/test-payout-browser.mjs` asserts the new labels alongside the Base ones.
 - `.github/workflows/escrow-tests.yml` job `base` is renamed `evm` and runs the EVM integration with both chain ids.
@@ -178,6 +178,6 @@ Each PR cites FND-01, FND-02, PAY-06, PAY-07 and MVP-02, MVP-06, MVP-07 in its d
 - **USDG freeze or pause.** Handled by fail-closed reverts; the unpaid award stays reserved; a frozen fee recipient blocks only fee claims.
 - **Sequencer reordering before posting.** Nothing is paid or indexed before the `finalized` tag, which is Ethereum finality.
 - **Gas spikes from Ethereum data fees.** Per-network gas ceiling; the 10 gwei price cap protects the relayer from paying an absurd price, and a transaction over the ceiling is held with a human-readable cause, not retried to a different value.
-- **Migration on a live table.** Same pattern as migration 0003, run on staging first, with row-count assertions and deferred foreign keys.
+- **Migration on a live table.** A copy-aside rebuild that re-inserts the parent rows under the original name, so D1's single-transaction apply commits with deferred foreign keys; applied on staging first, pinned by the transactional migration test, with row counts asserted by that test.
 - **Cancun opcode support.** Confirmed by the testnet deployment; fallback is a recorded `evm_version` deviation.
 - **Address copied from the wrong source.** The registry carries the USDG address that two official pages list and the chain confirms; the deploy script's constant must equal the registry value, checked by a test.
