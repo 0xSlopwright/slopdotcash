@@ -3193,6 +3193,15 @@ export function createLeaderboardSnapshot(
     const reviewLedgerStart = ledger.length;
     const ratification = scoreRatifications.get(pullRequest.id);
     const awardedReviewers = new Set<string>();
+    // SCR-04: a review by any credit actor of this pull request is a
+    // self-review on every review path, not only for its author.
+    const isCreditActor = (actorId: string | undefined): boolean =>
+      ledger.some(
+        (event) =>
+          event.category === "merged-pull-request" &&
+          event.source.id === pullRequest.id &&
+          event.actor.id === actorId,
+      );
     const hasEvaluatedReviewReservation = (actorId: string): boolean =>
       evaluatedReviewReservations.has(
         `${repositoryId}\0${pullRequest.number}\0${actorId}`,
@@ -3207,7 +3216,8 @@ export function createLeaderboardSnapshot(
       if (
         rawReview === null ||
         !source.author ||
-        sameActor(source.author, pullRequest.author)
+        sameActor(source.author, pullRequest.author) ||
+        isCreditActor(source.author.id)
       )
         continue;
       if (hasEvaluatedReviewReservation(source.author.id)) continue;
@@ -3273,6 +3283,7 @@ export function createLeaderboardSnapshot(
     if (
       ratification?.source.author &&
       !sameActor(ratification.source.author, pullRequest.author) &&
+      !isCreditActor(ratification.source.author.id) &&
       !hasEvaluatedReviewReservation(ratification.source.author.id) &&
       !awardedReviewers.has(ratification.source.author.id)
     ) {
@@ -3377,14 +3388,7 @@ export function createLeaderboardSnapshot(
       }
       const exclusionReason =
         reviewExclusionReason(review, pullRequest) ??
-        (ledger.some(
-          (event) =>
-            event.category === "merged-pull-request" &&
-            event.source.id === pullRequest.id &&
-            event.actor.id === review.author?.id,
-        )
-          ? "self-review"
-          : null);
+        (isCreditActor(review.author?.id) ? "self-review" : null);
       if (exclusionReason !== null) {
         excludeReview(pullRequest, review, exclusionReason);
         continue;
