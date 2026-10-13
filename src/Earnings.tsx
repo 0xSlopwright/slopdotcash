@@ -6,6 +6,7 @@ import {
   transactionUrl,
 } from "./lib/payments/contracts";
 import { isDirectTransfer } from "./lib/use-direct-transfers";
+import { usePayoutWallets } from "./lib/use-payout-wallets";
 import { formatDate, formatDateTime } from "./Presentation";
 
 const networkName = { base: "Base", solana: "Solana" };
@@ -117,23 +118,9 @@ function account(value: unknown): PaymentsAccount {
   return data;
 }
 
-type EthereumWallet = {
-  request(input: { method: string; params?: unknown[] }): Promise<unknown>;
-};
-type SolanaWallet = {
-  connect(): Promise<{ publicKey: { toString(): string } }>;
-  signMessage(
-    message: Uint8Array,
-    display: "utf8",
-  ): Promise<{ signature: Uint8Array }>;
-};
-type WalletWindow = Window & {
-  ethereum?: EthereumWallet;
-  solana?: SolanaWallet;
-  phantom?: { solana?: SolanaWallet };
-};
-
 export function EarningsPage() {
+  const wallets = usePayoutWallets();
+  const [selected, setSelected] = useState({ base: "", solana: "" });
   const [data, setData] = useState<PaymentsAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -183,46 +170,12 @@ export function EarningsPage() {
     setError("");
     setMessage("");
     try {
-      const provider = window as WalletWindow;
-      let address: string;
-      let sign: (message: string) => Promise<string>;
-      if (chain === "base") {
-        const wallet = provider.ethereum;
-        if (!wallet)
-          throw new Error(
-            "Open this page in your Base wallet’s browser or enable its browser extension.",
-          );
-        const addresses = await wallet.request({
-          method: "eth_requestAccounts",
-        });
-        if (!Array.isArray(addresses) || typeof addresses[0] !== "string")
-          throw new Error("Your wallet did not return a Base address.");
-        address = addresses[0].toLowerCase();
-        sign = async (text) => {
-          const hex = `0x${Array.from(new TextEncoder().encode(text), (n) => n.toString(16).padStart(2, "0")).join("")}`;
-          const signature = await wallet.request({
-            method: "personal_sign",
-            params: [hex, address],
-          });
-          if (typeof signature !== "string")
-            throw new Error("Your wallet did not return a signature.");
-          return signature;
-        };
-      } else {
-        const wallet = provider.phantom?.solana ?? provider.solana;
-        if (!wallet)
-          throw new Error(
-            "Open this page in your Solana wallet’s browser or enable its browser extension.",
-          );
-        address = (await wallet.connect()).publicKey.toString();
-        sign = async (text) => {
-          const result = await wallet.signMessage(
-            new TextEncoder().encode(text),
-            "utf8",
-          );
-          return btoa(String.fromCharCode(...result.signature));
-        };
-      }
+      const chosen = wallets.find(
+        (wallet) => wallet.chain === chain && wallet.id === selected[chain],
+      );
+      if (!chosen)
+        throw new Error(`Choose a ${networkName[chain]} wallet first.`);
+      const { address, sign } = await chosen.connect();
       const claim = (await request("wallets/register", { chain, address })) as {
         claimId: string;
       };
@@ -359,10 +312,46 @@ export function EarningsPage() {
                         awards remain reserved.
                       </p>
                     )}
+                  <label>
+                    {networkName[chain]} wallet
+                    <select
+                      value={selected[chain]}
+                      disabled={busy !== null}
+                      onChange={(event) =>
+                        setSelected((previous) => ({
+                          ...previous,
+                          [chain]: event.target.value,
+                        }))
+                      }
+                    >
+                      <option value="">Choose a wallet</option>
+                      {wallets
+                        .filter((choice) => choice.chain === chain)
+                        .map((choice) => (
+                          <option key={choice.id} value={choice.id}>
+                            {choice.name}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  {!wallets.some((choice) => choice.chain === chain) && (
+                    <p>
+                      No {networkName[chain]} wallet detected. Enable a
+                      compatible browser extension or open this page in your
+                      wallet’s browser.
+                    </p>
+                  )}
                   <button
                     className="button secondary-button"
                     type="button"
-                    disabled={busy !== null}
+                    disabled={
+                      busy !== null ||
+                      !wallets.some(
+                        (choice) =>
+                          choice.chain === chain &&
+                          choice.id === selected[chain],
+                      )
+                    }
                     onClick={() => void connect(chain)}
                   >
                     {busy === chain
