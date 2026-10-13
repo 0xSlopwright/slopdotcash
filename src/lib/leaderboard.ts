@@ -434,7 +434,7 @@ function attributionMarkerRecords(body: string): AttributionMarkerRecord[] {
         end: record.start + leadingWhitespace + raw.length,
         payload: marker[3].trim(),
         start: record.start + leadingWhitespace,
-        version: marker[2] ? "v2" : (marker[1].toLowerCase() as "v1" | "v2"),
+        version: marker[1] ? (marker[1].toLowerCase() as "v1" | "v2") : "v1",
       };
     })
     .filter((record): record is AttributionMarkerRecord => record !== null);
