@@ -33,19 +33,29 @@ const author = actor("U_author", "pr-author");
 const coAuthor = actor("U_coauthor", "commit-coauthor");
 const maintainer = actor("U_maintainer", "other-maintainer");
 const reviewer = actor("U_reviewer", "outside-reviewer");
+// A later merge ratified into the same work unit claims that unit's merge
+// credit first, so the shared pull request above emits no merge events.
+const later = {
+  id: "PR_later_outcome",
+  url: "https://github.com/elizaOS/eliza/pull/9002",
+  head: "d".repeat(40),
+};
+const laterAuthor = actor("U_later", "later-author");
+const laterMaintainer = actor("U_maintainer_2", "second-maintainer");
 
 function comment(
   id: string,
   by: GitHubActor,
   body: string,
   at: string,
+  on: { id: string; url: string } = { id: pullRequestId, url },
 ): GitHubTextSource {
   return {
     id,
-    artifactId: pullRequestId,
+    artifactId: on.id,
     kind: "comment",
     body,
-    url: `${url}#issuecomment-${id.replace(/\D/g, "")}`,
+    url: `${on.url}#issuecomment-${id.replace(/\D/g, "")}`,
     createdAt: at,
     updatedAt: at,
     author: by,
@@ -53,15 +63,19 @@ function comment(
   };
 }
 
-function scoreRecord(tier: "micro" | "small", proposals: string[]): string {
+function scoreRecord(
+  tier: "micro" | "small",
+  proposals: string[],
+  on: { id: string; head: string } = { id: pullRequestId, head },
+): string {
   return [
     "```slop-score",
     JSON.stringify({
       schemaVersion: "1",
       ruleVersion: "slop-score-v2",
       projectId: "eliza",
-      pullRequestNodeId: pullRequestId,
-      headSha: head,
+      pullRequestNodeId: on.id,
+      headSha: on.head,
       workUnitId: "wu_eliza_shared_outcome",
       tier,
       scoreThirds: tier === "micro" ? 1 : 3,
@@ -173,7 +187,22 @@ function signedReviewRecord(): string {
 function reviewCredit(
   comments: GitHubTextSource[],
   reviews: PullRequestReview[] = [],
+  laterComments?: GitHubTextSource[],
 ) {
+  const laterPullRequest = laterComments && {
+    id: later.id,
+    number: 9002,
+    title: "fix: rest of the shared outcome",
+    url: later.url,
+    body: "Fixes the rest of the defect.",
+    createdAt: "2026-10-05T00:00:00.000Z",
+    updatedAt: "2026-10-07T00:00:00.000Z",
+    mergedAt: "2026-10-07T00:00:00.000Z",
+    author: laterAuthor,
+    additions: 4,
+    deletions: 1,
+  };
+  const mergedCount = laterPullRequest ? 2 : 1;
   const pullRequest = {
     id: pullRequestId,
     number: 9001,
@@ -213,8 +242,8 @@ function reviewCredit(
         resetAt: "2026-10-13T01:00:00.000Z",
       },
       counts: {
-        mergedPullRequests: 1,
-        detailedMergedPullRequests: 1,
+        mergedPullRequests: mergedCount,
+        detailedMergedPullRequests: mergedCount,
         closedIssues: 0,
         detailedClosedIssues: 0,
         resolvedIssues: 0,
@@ -243,6 +272,15 @@ function reviewCredit(
           { oid: "2".repeat(40), author: coAuthor },
         ],
       },
+      ...(laterPullRequest
+        ? [
+            {
+              ...laterPullRequest,
+              baseRefName: "develop",
+              commits: [{ oid: "3".repeat(40), author: laterAuthor }],
+            },
+          ]
+        : []),
     ],
     mergedPullRequests: [
       {
@@ -264,8 +302,37 @@ function reviewCredit(
         changedFiles: 1,
         commitCount: 2,
       },
+      ...(laterPullRequest
+        ? [
+            {
+              ...laterPullRequest,
+              lastEditedAt: null,
+              editor: null,
+              headRefOid: later.head,
+              isDraft: false,
+              reviewDecision: "APPROVED" as const,
+              activeReviewRequestCount: 0,
+              assignees: [],
+              labels: [],
+              files: [
+                {
+                  path: "packages/core/src/fix.ts",
+                  additions: 4,
+                  deletions: 1,
+                },
+              ],
+              comments: laterComments ?? [],
+              reviews: [],
+              closingIssueIds: [],
+              changedFiles: 1,
+              commitCount: 1,
+            },
+          ]
+        : []),
     ],
-    detailEligibleMergedPullRequestIds: [pullRequestId],
+    detailEligibleMergedPullRequestIds: laterPullRequest
+      ? [pullRequestId, later.id]
+      : [pullRequestId],
     closedIssueCount: 0,
     resolvedIssues: [],
     openIssues: [],
@@ -350,4 +417,71 @@ test("a commit co-author's signed review proposal earns no review credit", () =>
     "other-maintainer:1",
     "outside-reviewer:9",
   ]);
+});
+
+// The later merge's ratification, by a second maintainer, into the same unit.
+const laterRatified = [
+  comment(
+    "IC_9",
+    laterMaintainer,
+    scoreRecord("micro", [], later),
+    "2026-10-06T12:00:00.000Z",
+    later,
+  ),
+];
+
+test("a co-author's ratification and review earn nothing when a later merge owns the work unit", () => {
+  const changesRequested: PullRequestReview = {
+    id: "PRR_coauthor",
+    body: "Please handle the empty input case before this merges.",
+    state: "CHANGES_REQUESTED",
+    submittedAt: "2026-10-05T06:00:00.000Z",
+    url: `${url}#pullrequestreview-1`,
+    author: coAuthor,
+    inlineCommentCount: 1,
+    commitId: "1".repeat(40),
+  };
+  const coAuthorRatifies = reviewCredit(
+    [
+      comment(
+        "IC_1",
+        coAuthor,
+        scoreRecord("micro", []),
+        "2026-10-05T12:00:00.000Z",
+      ),
+    ],
+    [changesRequested],
+    laterRatified,
+  );
+  expect(coAuthorRatifies).toEqual({
+    merges: [],
+    reviews: [],
+    exclusions: ["PRR_coauthor:self-review"],
+  });
+});
+
+test("a co-author's signed review proposal earns nothing when a later merge owns the work unit", () => {
+  const coAuthorProposes = reviewCredit(
+    [
+      comment(
+        "IC_2",
+        coAuthor,
+        signedReviewRecord(),
+        "2026-10-05T03:00:00.000Z",
+      ),
+      comment(
+        "IC_3",
+        maintainer,
+        scoreRecord("small", ["IC_2"]),
+        "2026-10-05T12:00:00.000Z",
+      ),
+    ],
+    [],
+    laterRatified,
+  );
+  expect(coAuthorProposes).toEqual({
+    merges: [],
+    reviews: ["other-maintainer:1"],
+    exclusions: [],
+  });
 });

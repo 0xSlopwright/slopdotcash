@@ -2873,6 +2873,9 @@ export function createLeaderboardSnapshot(
   }
 
   const commitOwners = commitCreditOwners(mergedPullRequestOutcomes);
+  // SCR-04 credit actors by pull request. A shared work unit can suppress a
+  // pull request's merge events; its credit actors stay self-reviewers.
+  const creditActorIds = new Map<string, ReadonlySet<string>>();
   for (const pullRequest of mergedPullRequestOutcomes) {
     const repositoryId = repositoryIdFromUrl(pullRequest.url);
     const ratification = detailEligibleMergedPullRequestIds.has(pullRequest.id)
@@ -2893,6 +2896,10 @@ export function createLeaderboardSnapshot(
       : author
         ? [author]
         : [];
+    creditActorIds.set(
+      pullRequest.id,
+      new Set(actors.map((actor) => actor.id)),
+    );
     if (actors.length === 0) continue;
     const totalThirds =
       ratification?.record.scoreThirds ??
@@ -3196,12 +3203,8 @@ export function createLeaderboardSnapshot(
     // SCR-04: a review by any credit actor of this pull request is a
     // self-review on every review path, not only for its author.
     const isCreditActor = (actorId: string | undefined): boolean =>
-      ledger.some(
-        (event) =>
-          event.category === "merged-pull-request" &&
-          event.source.id === pullRequest.id &&
-          event.actor.id === actorId,
-      );
+      actorId !== undefined &&
+      (creditActorIds.get(pullRequest.id)?.has(actorId) ?? false);
     const hasEvaluatedReviewReservation = (actorId: string): boolean =>
       evaluatedReviewReservations.has(
         `${repositoryId}\0${pullRequest.number}\0${actorId}`,
