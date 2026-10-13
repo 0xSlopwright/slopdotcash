@@ -50,6 +50,29 @@ export const ESCROW_NETWORKS = Object.freeze({
     asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     assetSymbol: "USDC",
   },
+  "robinhood-testnet": {
+    chain: "robinhood",
+    family: "evm",
+    testnet: true,
+    chainId: "46630",
+    /** No USDG exists on the testnet; each deployment names its reviewed test token. */
+    asset: null,
+    assetSymbol: "TEST",
+    gasCeiling: "2000000",
+    scanPageBlocks: "9000",
+  },
+  "robinhood-mainnet": {
+    chain: "robinhood",
+    family: "evm",
+    testnet: false,
+    chainId: "4663",
+    /** Paxos USDG, listed by the Robinhood and Paxos docs and read back on chain (design record). */
+    asset: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+    assetSymbol: "USDG",
+    /** eth_estimateGas on Arbitrum Nitro includes the Ethereum data-posting fee. */
+    gasCeiling: "2000000",
+    scanPageBlocks: "9000",
+  },
 });
 /** Chains a policy may name, in registry order; each maps to exactly one family. */
 export const ESCROW_CHAINS = Object.freeze([

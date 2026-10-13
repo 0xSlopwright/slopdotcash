@@ -4,7 +4,9 @@ export interface EscrowDeployment {
     | "base-mainnet"
     | "solana-devnet"
     | "solana-testnet"
-    | "solana-mainnet";
+    | "solana-mainnet"
+    | "robinhood-testnet"
+    | "robinhood-mainnet";
   vault: string;
   programId: string | null;
   upgradeAuthority: string | null;
@@ -18,12 +20,12 @@ export interface EscrowDeployment {
   sourceCommit: string;
   codeSha256: string;
   bindingDelaySeconds: string;
-  /** Solana only; null on Base, where the factory fixes 7 days. */
+  /** Solana only; null on EVM chains, where the factory fixes 7 days. */
   rotationDelaySeconds: string | null;
-  /** Solana only; null on Base, where bindings are stored per vault. */
+  /** Solana only; null on EVM chains, where bindings are stored per vault. */
   bindingNamespace: string | null;
 }
-export type EscrowChain = "base" | "solana";
+export type EscrowChain = "base" | "solana" | "robinhood";
 export type EscrowFamily = "evm" | "solana";
 export interface EscrowPolicy {
   schemaVersion: "1";

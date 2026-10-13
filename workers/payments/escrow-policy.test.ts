@@ -47,6 +47,11 @@ const solanaDeployment = {
   rotationDelaySeconds: "60",
   bindingNamespace: "Stake11111111111111111111111111111111111111",
 };
+const robinhoodDeployment = {
+  ...evmDeployment,
+  network: "robinhood-testnet",
+  asset: "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86",
+};
 const policy = (chain: string, deployment: object) => ({
   schemaVersion: "1",
   effectiveCycle: "2026-11",
@@ -59,10 +64,11 @@ const policy = (chain: string, deployment: object) => ({
 
 describe("escrow chain families", () => {
   test("each chain maps to exactly one family", () => {
-    expect([...ESCROW_CHAINS]).toEqual(["base", "solana"]);
+    expect([...ESCROW_CHAINS]).toEqual(["base", "solana", "robinhood"]);
     expect(chainFamily("base")).toBe("evm");
     expect(chainFamily("solana")).toBe("solana");
-    expect([...EVM_CHAINS]).toEqual(["base"]);
+    expect(chainFamily("robinhood")).toBe("evm");
+    expect([...EVM_CHAINS]).toEqual(["base", "robinhood"]);
   });
   test("an unknown chain is rejected, never defaulted to a family", () => {
     expect(isEscrowChain("evm")).toBe(false);
@@ -94,6 +100,32 @@ describe("escrow chain families", () => {
       expect(ESCROW_NETWORKS[name].assetSymbol).toBe("USDC");
     }
     expect(ESCROW_NETWORKS["solana-testnet"].assetSymbol).toBe("TEST");
+  });
+  test("Robinhood Chain carries its own limits, chain ids and USDG", () => {
+    const testnet = ESCROW_NETWORKS["robinhood-testnet"];
+    const mainnet = ESCROW_NETWORKS["robinhood-mainnet"];
+    expect(testnet).toEqual({
+      chain: "robinhood",
+      family: "evm",
+      testnet: true,
+      chainId: "46630",
+      asset: null,
+      assetSymbol: "TEST",
+      gasCeiling: "2000000",
+      scanPageBlocks: "9000",
+    });
+    expect(mainnet).toEqual({
+      chain: "robinhood",
+      family: "evm",
+      testnet: false,
+      chainId: "4663",
+      asset: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+      assetSymbol: "USDG",
+      gasCeiling: "2000000",
+      scanPageBlocks: "9000",
+    });
+    // Under the common 10,000-block eth_getLogs provider limit (spec section 4).
+    expect(Number(mainnet.scanPageBlocks)).toBeLessThan(10_000);
   });
 });
 
@@ -129,5 +161,36 @@ describe("assertEscrowPolicy after the family refactor", () => {
         }),
       ),
     ).toThrow(/immutable source and transaction evidence/);
+  });
+  test("accepts a reviewed Robinhood Chain testnet deployment", () => {
+    expect(() =>
+      assertEscrowPolicy(policy("robinhood", robinhoodDeployment)),
+    ).not.toThrow();
+  });
+  test("a mainnet Robinhood Chain deployment must name USDG", () => {
+    expect(() =>
+      assertEscrowPolicy(
+        policy("robinhood", {
+          ...robinhoodDeployment,
+          network: "robinhood-mainnet",
+          bindingDelaySeconds: "172800",
+        }),
+      ),
+    ).toThrow(/does not match the network/);
+    expect(() =>
+      assertEscrowPolicy(
+        policy("robinhood", {
+          ...robinhoodDeployment,
+          network: "robinhood-mainnet",
+          bindingDelaySeconds: "172800",
+          asset: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        }),
+      ),
+    ).not.toThrow();
+  });
+  test("a Base network cannot sit on a Robinhood Chain policy", () => {
+    expect(() =>
+      assertEscrowPolicy(policy("robinhood", evmDeployment)),
+    ).toThrow(/one chain and one escrow per network/);
   });
 });
