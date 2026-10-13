@@ -24,46 +24,59 @@ type FetchLike = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+/** Terminal response-boundary violation: never retried, never reclassified. */
+class WalletResponseBoundaryError extends Error {}
+
 async function boundedApiBody(response: Response): Promise<string> {
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     const parsedLength = Number(declaredLength);
     if (!/^\d+$/u.test(declaredLength) || !Number.isSafeInteger(parsedLength)) {
-      throw new Error(
+      throw new WalletResponseBoundaryError(
         "GitHub wallet lookup returned an invalid Content-Length",
       );
     }
     if (parsedLength > MAX_API_RESPONSE_BYTES) {
-      throw new Error("GitHub wallet lookup response is oversized");
+      throw new WalletResponseBoundaryError(
+        "GitHub wallet lookup response is oversized",
+      );
     }
   }
   const reader = response.body?.getReader();
   if (!reader)
-    throw new Error("GitHub wallet lookup returned no readable body");
+    throw new WalletResponseBoundaryError(
+      "GitHub wallet lookup returned no readable body",
+    );
   const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decode = (chunk?: Uint8Array, stream = false): string => {
+    try {
+      return decoder.decode(chunk, { stream });
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      throw new WalletResponseBoundaryError(
+        "GitHub wallet lookup response is not valid UTF-8",
+        { cause: error },
+      );
+    }
+  };
   let byteLength = 0;
   let body = "";
   try {
     for (;;) {
+      // Stream reads can also throw TypeError on interrupted transport;
+      // keep those on the retryable path instead of misreporting them.
       const chunk = await reader.read();
       if (chunk.done) break;
       byteLength += chunk.value.byteLength;
       if (byteLength > MAX_API_RESPONSE_BYTES) {
         await reader.cancel("response exceeded size limit");
-        throw new RangeError(
+        throw new WalletResponseBoundaryError(
           "GitHub wallet lookup response exceeded its size limit",
         );
       }
-      body += decoder.decode(chunk.value, { stream: true });
+      body += decode(chunk.value, true);
     }
-    body += decoder.decode();
-  } catch (error) {
-    if (error instanceof TypeError) {
-      throw new Error("GitHub wallet lookup response is not valid UTF-8", {
-        cause: error,
-      });
-    }
-    throw error;
+    body += decode();
   } finally {
     reader.releaseLock();
   }
@@ -113,6 +126,7 @@ async function apiJson(
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       let response: Response;
+      let body: string;
       try {
         response = await fetchImpl(`${API_ORIGIN}${path}`, {
           headers: {
@@ -124,7 +138,11 @@ async function apiJson(
           redirect: "error",
           signal: controller.signal,
         });
+        // Body stream reads can throw TypeError on interrupted transport;
+        // route those through the retryable path below, not the UTF-8 diagnosis.
+        body = await boundedApiBody(response);
       } catch (error) {
+        if (error instanceof WalletResponseBoundaryError) throw error;
         const retryable =
           controller.signal.aborted || transientNetworkError(error);
         if (retryable && attempt < MAX_API_ATTEMPTS) {
@@ -149,7 +167,6 @@ async function apiJson(
           `GitHub wallet lookup failed with HTTP ${response.status}`,
         );
       }
-      const body = await boundedApiBody(response);
       try {
         return JSON.parse(body);
       } catch (error) {
@@ -173,6 +190,7 @@ async function registryJson(
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       let response: Response;
+      let body: string;
       try {
         response = await fetchImpl(`${WALLET_AUTHORITY}${path}`, {
           headers: {
@@ -182,7 +200,11 @@ async function registryJson(
           redirect: "error",
           signal: controller.signal,
         });
+        // Body stream reads can throw TypeError on interrupted transport;
+        // route those through the retryable path below, not the UTF-8 diagnosis.
+        body = await boundedApiBody(response);
       } catch (error) {
+        if (error instanceof WalletResponseBoundaryError) throw error;
         const retryable =
           controller.signal.aborted || transientNetworkError(error);
         if (retryable && attempt < MAX_API_ATTEMPTS) {
@@ -207,7 +229,6 @@ async function registryJson(
           `Slop wallet registry failed with HTTP ${response.status}`,
         );
       }
-      const body = await boundedApiBody(response);
       try {
         return JSON.parse(body);
       } catch (error) {
