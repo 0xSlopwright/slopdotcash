@@ -4416,3 +4416,85 @@ small {
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
+
+.wallet-picker {
+  width: min(420px, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  box-sizing: border-box;
+  margin: auto;
+  padding: 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.wallet-picker::backdrop {
+  background: rgb(0 0 0 / 65%);
+}
+.wallet-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.wallet-picker-header h2 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+.wallet-picker-close {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.wallet-picker-close:hover {
+  background: var(--line);
+}
+.wallet-picker-list {
+  display: grid;
+  gap: 0.75rem;
+  margin-block: 1.5rem;
+}
+.wallet-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  text-decoration: none;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.wallet-picker-row:hover {
+  border-color: var(--orange);
+  background: var(--line);
+}
+.wallet-picker-row span {
+  flex: 1;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+.wallet-picker-row small {
+  font-size: 0.875rem;
+}
+.wallet-picker-row:focus-visible,
+.wallet-picker-close:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 3px;
+}
+.wallet-picker-note {
+  margin-bottom: 0;
+  font-size: 0.875rem;
+}

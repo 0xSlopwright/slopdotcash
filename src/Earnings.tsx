@@ -1,3 +1,4 @@
+import { ExternalLink, Wallet as WalletIcon, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { readBoundedJson } from "./lib/browser-json";
 import {
@@ -6,7 +7,7 @@ import {
   transactionUrl,
 } from "./lib/payments/contracts";
 import { isDirectTransfer } from "./lib/use-direct-transfers";
-import { usePayoutWallets } from "./lib/use-payout-wallets";
+import { type PayoutWallet, usePayoutWallets } from "./lib/use-payout-wallets";
 import { formatDate, formatDateTime } from "./Presentation";
 
 const networkName = { base: "Base", solana: "Solana" };
@@ -120,7 +121,8 @@ function account(value: unknown): PaymentsAccount {
 
 export function EarningsPage() {
   const wallets = usePayoutWallets();
-  const [selected, setSelected] = useState({ base: "", solana: "" });
+  const [picker, setPicker] = useState<PaymentChain | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
   const [data, setData] = useState<PaymentsAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -165,16 +167,18 @@ export function EarningsPage() {
     return () => controller.abort();
   }, [revision]);
 
-  async function connect(chain: PaymentChain) {
+  useEffect(() => {
+    if (picker) dialog.current?.showModal();
+    else dialog.current?.close();
+  }, [picker]);
+
+  async function connect(chosen: PayoutWallet) {
+    const chain = chosen.chain;
+    setPicker(null);
     setBusy(chain);
     setError("");
     setMessage("");
     try {
-      const chosen = wallets.find(
-        (wallet) => wallet.chain === chain && wallet.id === selected[chain],
-      );
-      if (!chosen)
-        throw new Error(`Choose a ${networkName[chain]} wallet first.`);
       const { address, sign } = await chosen.connect();
       const claim = (await request("wallets/register", { chain, address })) as {
         claimId: string;
@@ -233,6 +237,85 @@ export function EarningsPage() {
         This page shows escrow payouts after the 2% fee deduction. Legacy
         project cycles keep their recorded fee policy.
       </p>
+      <dialog
+        ref={dialog}
+        className="wallet-picker"
+        aria-labelledby={`${heading}-wallet-picker`}
+        onCancel={() => setPicker(null)}
+        onClose={() => setPicker(null)}
+      >
+        <div className="wallet-picker-header">
+          <h2 id={`${heading}-wallet-picker`}>
+            Connect a {picker ? networkName[picker] : ""} wallet
+          </h2>
+          <button
+            type="button"
+            className="wallet-picker-close"
+            aria-label="Close wallet picker"
+            onClick={() => setPicker(null)}
+          >
+            <X size={20} aria-hidden="true" />
+          </button>
+        </div>
+        <p>
+          Choose a wallet for your {picker ? networkName[picker] : ""} payouts.
+        </p>
+        <div className="wallet-picker-list">
+          {wallets
+            .filter((wallet) => wallet.chain === picker)
+            .map((wallet) => (
+              <button
+                type="button"
+                key={wallet.id}
+                className="wallet-picker-row"
+                onClick={() => void connect(wallet)}
+              >
+                {wallet.icon &&
+                /^data:image\/(?:png|jpeg|webp|svg\+xml)[;,]/u.test(
+                  wallet.icon,
+                ) ? (
+                  <img src={wallet.icon} width={32} height={32} alt="" />
+                ) : (
+                  <WalletIcon size={24} aria-hidden="true" />
+                )}
+                <span>{wallet.name}</span>
+                <small>Detected</small>
+              </button>
+            ))}
+          {!wallets.some((wallet) => wallet.chain === picker) && (
+            <>
+              <p>
+                No wallet detected. Install a wallet, then reload this page.
+              </p>
+              <a
+                className="wallet-picker-row"
+                href="https://metamask.io/download"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <WalletIcon size={24} aria-hidden="true" />
+                <span>MetaMask</span>
+                <small>Install</small>
+                <ExternalLink size={16} aria-hidden="true" />
+              </a>
+              <a
+                className="wallet-picker-row"
+                href="https://phantom.com/download"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <WalletIcon size={24} aria-hidden="true" />
+                <span>Phantom</span>
+                <small>Install</small>
+                <ExternalLink size={16} aria-hidden="true" />
+              </a>
+            </>
+          )}
+        </div>
+        <p className="wallet-picker-note">
+          Base and Solana can use different wallets.
+        </p>
+      </dialog>
       {loading && <p role="status">Checking your payouts…</p>}
       {signedOut && !loading && (
         <div>
@@ -312,47 +395,11 @@ export function EarningsPage() {
                         awards remain reserved.
                       </p>
                     )}
-                  <label>
-                    {networkName[chain]} wallet
-                    <select
-                      value={selected[chain]}
-                      disabled={busy !== null}
-                      onChange={(event) =>
-                        setSelected((previous) => ({
-                          ...previous,
-                          [chain]: event.target.value,
-                        }))
-                      }
-                    >
-                      <option value="">Choose a wallet</option>
-                      {wallets
-                        .filter((choice) => choice.chain === chain)
-                        .map((choice) => (
-                          <option key={choice.id} value={choice.id}>
-                            {choice.name}
-                          </option>
-                        ))}
-                    </select>
-                  </label>
-                  {!wallets.some((choice) => choice.chain === chain) && (
-                    <p>
-                      No {networkName[chain]} wallet detected. Enable a
-                      compatible browser extension or open this page in your
-                      wallet’s browser.
-                    </p>
-                  )}
                   <button
                     className="button secondary-button"
                     type="button"
-                    disabled={
-                      busy !== null ||
-                      !wallets.some(
-                        (choice) =>
-                          choice.chain === chain &&
-                          choice.id === selected[chain],
-                      )
-                    }
-                    onClick={() => void connect(chain)}
+                    disabled={busy !== null}
+                    onClick={() => setPicker(chain)}
                   >
                     {busy === chain
                       ? "Confirm in your wallet…"

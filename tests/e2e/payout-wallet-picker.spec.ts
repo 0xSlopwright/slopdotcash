@@ -70,7 +70,7 @@ async function providers(page: Page, reject = false) {
                   uuid,
                   name,
                   rdns: `${name}.app`,
-                  icon: "data:image/png;base64,",
+                  icon: "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2224%22 height=%2224%22/%3E",
                 },
               },
             }),
@@ -87,7 +87,7 @@ async function providers(page: Page, reject = false) {
       const solana = (name: string) => ({
         name,
         version: "1.0.0",
-        icon: "data:image/png;base64,",
+        icon: "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2224%22 height=%2224%22/%3E",
         chains: ["solana:mainnet"],
         accounts: [],
         features: {
@@ -121,40 +121,54 @@ async function providers(page: Page, reject = false) {
   );
 }
 
-test("choose MetaMask for Base and Backpack for Solana despite Phantom globals", async ({
+async function openPicker(page: Page, chain: "Base" | "Solana") {
+  await page
+    .getByRole("button", { name: `Connect ${chain} wallet`, exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: `Connect a ${chain} wallet`,
+  });
+  await expect(dialog).toBeVisible();
+  return dialog;
+}
+
+test("modal routes Base to MetaMask and Solana to Backpack despite Phantom globals", async ({
   page,
 }, info) => {
   const writes = await payments(page);
   await providers(page);
   await page.goto("/earnings");
-  const base = page.getByRole("combobox", { name: "Base wallet", exact: true });
-  const solana = page.getByRole("combobox", {
-    name: "Solana wallet",
-    exact: true,
-  });
-  await expect(
-    page.getByRole("button", { name: "Connect Base wallet", exact: true }),
-  ).toBeDisabled();
   expect(
     await page.evaluate(
       () => (window as unknown as { walletCalls: string[] }).walletCalls,
     ),
   ).toEqual([]);
-  await base.selectOption({ label: "MetaMask" });
-  await solana.selectOption({ label: "Backpack" });
-  await page
-    .getByRole("button", { name: "Connect Base wallet", exact: true })
+  const base = await openPicker(page, "Base");
+  await expect(
+    base.getByRole("button", { name: "Backpack Detected" }),
+  ).toHaveCount(0);
+  const axe = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+    .analyze();
+  expect(axe.violations).toEqual([]);
+  await page.screenshot({
+    path: info.outputPath("wallet-modal.png"),
+    fullPage: true,
+  });
+  await base
+    .getByRole("button", { name: "MetaMask Detected", exact: true })
     .click();
+  await expect(base).not.toBeVisible();
   await expect(
     page.getByRole("status").filter({ hasText: "Base wallet confirmed" }),
   ).toBeVisible();
-  await expect(solana).toHaveValue("solana-1");
-  await page
-    .getByRole("button", { name: "Connect Solana wallet", exact: true })
+  const solana = await openPicker(page, "Solana");
+  await solana
+    .getByRole("button", { name: "Backpack Detected", exact: true })
     .click();
-  await expect(page.getByRole("status")).toContainText(
-    "Solana wallet confirmed",
-  );
+  await expect(
+    page.getByRole("status").filter({ hasText: "Solana wallet confirmed" }),
+  ).toBeVisible();
   expect(
     await page.evaluate(
       () => (window as unknown as { walletCalls: string[] }).walletCalls,
@@ -172,14 +186,6 @@ test("choose MetaMask for Base and Backpack for Solana despite Phantom globals",
     { chain: "solana", address: solanaAddress },
   ]);
   expect(writes.filter((w) => w.path === "wallets/authorize")).toHaveLength(2);
-  const axe = await new AxeBuilder({ page })
-    .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
-    .analyze();
-  expect(axe.violations).toEqual([]);
-  await page.screenshot({
-    path: info.outputPath("wallet-picker.png"),
-    fullPage: true,
-  });
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth - innerWidth,
@@ -187,38 +193,56 @@ test("choose MetaMask for Base and Backpack for Solana despite Phantom globals",
   ).toBeLessThanOrEqual(1);
 });
 
-test("wallet rejection stops registration and allows another selection", async ({
+test("Escape and close cancel without wallet requests and return focus", async ({
+  page,
+}) => {
+  const writes = await payments(page);
+  await providers(page);
+  await page.goto("/earnings");
+  await openPicker(page, "Base");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Connect Base wallet", exact: true }),
+  ).toBeFocused();
+  const solana = await openPicker(page, "Solana");
+  await solana.getByRole("button", { name: "Close wallet picker" }).click();
+  await expect(solana).not.toBeVisible();
+  expect(writes).toEqual([]);
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { walletCalls: string[] }).walletCalls,
+    ),
+  ).toEqual([]);
+});
+
+test("wallet rejection stops registration and permits reopening the modal", async ({
   page,
 }) => {
   const writes = await payments(page);
   await providers(page, true);
   await page.goto("/earnings");
-  await page
-    .getByRole("combobox", { name: "Base wallet", exact: true })
-    .selectOption({ label: "MetaMask" });
-  await page
-    .getByRole("button", { name: "Connect Base wallet", exact: true })
+  const dialog = await openPicker(page, "Base");
+  await dialog
+    .getByRole("button", { name: "MetaMask Detected", exact: true })
     .click();
   await expect(page.getByRole("alert")).toContainText(
     "Wallet request rejected",
   );
   expect(writes).toEqual([]);
-  await expect(
-    page.getByRole("combobox", { name: "Base wallet", exact: true }),
-  ).toBeEnabled();
+  await openPicker(page, "Base");
 });
 
-test("repeated announcements do not duplicate choices and removed Solana wallet cannot connect", async ({
+test("repeated announcements do not duplicate options and removed Solana wallet disappears", async ({
   page,
 }) => {
   await payments(page);
   await providers(page);
   await page.goto("/earnings");
-  const solana = page.getByRole("combobox", {
-    name: "Solana wallet",
-    exact: true,
-  });
-  await solana.selectOption({ label: "Backpack" });
+  const dialog = await openPicker(page, "Solana");
+  await expect(
+    dialog.getByRole("button", { name: "Backpack Detected", exact: true }),
+  ).toBeVisible();
   await page.evaluate(() => {
     const testWindow = window as unknown as {
       announceWallets(): void;
@@ -228,36 +252,43 @@ test("repeated announcements do not duplicate choices and removed Solana wallet 
     testWindow.removeBackpack();
   });
   await expect(
-    page
-      .getByRole("combobox", { name: "Base wallet", exact: true })
-      .locator("option"),
-  ).toHaveCount(3);
-  await expect(solana.locator("option")).toHaveCount(2);
+    dialog.getByRole("button", { name: "Backpack Detected", exact: true }),
+  ).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Close wallet picker" }).click();
+  const base = await openPicker(page, "Base");
   await expect(
-    page.getByRole("button", { name: "Connect Solana wallet", exact: true }),
-  ).toBeDisabled();
+    base.getByRole("button", { name: "MetaMask Detected", exact: true }),
+  ).toHaveCount(1);
+  await expect(
+    base.getByRole("button", { name: "Phantom Detected", exact: true }),
+  ).toHaveCount(1);
 });
 
-test("no detected wallets explains recovery and keeps both connections disabled", async ({
+test("no wallets offers official install links in either network modal", async ({
   page,
 }) => {
-  await payments(page);
+  const writes = await payments(page);
   await page.goto("/earnings");
-  await expect(
-    page.getByText("No Base wallet detected.", { exact: false }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("No Solana wallet detected.", { exact: false }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Connect Base wallet", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "Connect Solana wallet", exact: true }),
-  ).toBeDisabled();
+  for (const chain of ["Base", "Solana"] as const) {
+    const dialog = await openPicker(page, chain);
+    await expect(
+      dialog.getByText("No wallet detected.", { exact: false }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("link", { name: "MetaMask Install", exact: false }),
+    ).toHaveAttribute("href", "https://metamask.io/download");
+    await expect(
+      dialog.getByRole("link", { name: "Phantom Install", exact: false }),
+    ).toHaveAttribute("href", "https://phantom.com/download");
+    await expect(
+      dialog.getByRole("button", { name: "Detected", exact: false }),
+    ).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Close wallet picker" }).click();
+  }
+  expect(writes).toEqual([]);
 });
 
-test("legacy wallet browser remains selectable without automatic connection", async ({
+test("legacy wallet browser remains connectable through the modal", async ({
   page,
 }) => {
   await payments(page);
@@ -274,10 +305,9 @@ test("legacy wallet browser remains selectable without automatic connection", as
     { evmAddress },
   );
   await page.goto("/earnings");
-  const base = page.getByRole("combobox", { name: "Base wallet", exact: true });
-  await base.selectOption({ label: "MetaMask" });
-  await page
-    .getByRole("button", { name: "Connect Base wallet", exact: true })
+  const dialog = await openPicker(page, "Base");
+  await dialog
+    .getByRole("button", { name: "MetaMask Detected", exact: true })
     .click();
   await expect(
     page.getByRole("status").filter({ hasText: "Base wallet confirmed" }),

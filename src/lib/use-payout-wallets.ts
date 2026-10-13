@@ -30,6 +30,7 @@ type WalletWindow = Window & {
 export type PayoutWallet = {
   id: string;
   name: string;
+  icon?: string;
   chain: PaymentChain;
   connect(): Promise<{
     address: string;
@@ -41,10 +42,12 @@ function evmWallet(
   id: string,
   name: string,
   provider: EthereumWallet,
+  icon?: string,
 ): PayoutWallet {
   return {
     id,
     name,
+    icon,
     chain: "base",
     async connect() {
       const addresses = await provider.request({
@@ -109,6 +112,7 @@ export function usePayoutWallets(): PayoutWallet[] {
         next.push({
           id: solanaIds.get(wallet) as string,
           name: wallet.name,
+          icon: wallet.icon,
           chain: "solana",
           async connect() {
             const { accounts } =
@@ -191,6 +195,7 @@ export function usePayoutWallets(): PayoutWallet[] {
             `evm-${detail.info.uuid}`,
             detail.info.name,
             detail.provider,
+            detail.info.icon,
           ),
         );
       update();
