@@ -1,10 +1,12 @@
 // Chain primitives for Robinhood Chain: USDG asset, EVM address rule.
 import { describe, expect, test } from "bun:test";
+import { ESCROW_CHAINS } from "./escrow-policy.mjs";
 import {
   type FundingNetwork,
   fundingAssetForNetwork,
   isFundingAddress,
 } from "./funding-address.mjs";
+import { WALLET_CHAINS } from "./wallets";
 
 const evm = "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86";
 
@@ -28,5 +30,8 @@ describe("funding address primitives", () => {
     expect(isFundingAddress("evm" as unknown as FundingNetwork, evm)).toBe(
       false,
     );
+  });
+  test("wallet chains and escrow chains are the same set", () => {
+    expect(new Set(WALLET_CHAINS)).toEqual(new Set(ESCROW_CHAINS));
   });
 });

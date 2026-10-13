@@ -1,4 +1,5 @@
 import { browserDeployment } from "./browser-deployment";
+import { chainFamily } from "./escrow-policy.mjs";
 /** Browser adapter for the canonical wallet-claim/run-receipt OAuth protocol. */
 import {
   type IdentityAuthorization,
@@ -132,7 +133,7 @@ async function claim(
     schemaVersion: 1,
     ...actor,
     address: row.address,
-    ...(chain === "base" ? { chain } : {}),
+    ...(chain !== "solana" ? { chain } : {}),
     source: row.source,
     issueRepository: row.issueRepository,
     issueNumber: row.issueNumber,
@@ -192,8 +193,8 @@ export async function prepareWalletRegistration(
   const chain = options.chain ?? "solana";
   if (!isWalletChain(chain) || !isWalletAddress(chain, address))
     throw new Error(
-      chain === "base"
-        ? "Enter a valid lowercase Base public address (0x and 40 hexadecimal characters)."
+      chainFamily(chain) === "evm"
+        ? "Enter a valid lowercase public address (0x and 40 hexadecimal characters)."
         : "Enter a valid Solana public address (32-byte base58).",
     );
   const now = options.now ?? Date.now;
@@ -296,7 +297,7 @@ export async function prepareWalletRegistration(
     )
       invalid();
     const currentResponse = await request(
-      `${API}/api/v1/wallet-claims/current${chain === "base" ? "?chain=base" : ""}`,
+      `${API}/api/v1/wallet-claims/current${chain !== "solana" ? `?chain=${chain}` : ""}`,
       { headers: { Authorization: `Bearer ${token}` } },
       true,
     );
@@ -344,7 +345,7 @@ export async function prepareWalletRegistration(
               await request(`${API}/api/v1/wallet-claims`, {
                 ...post({
                   address,
-                  ...(chain === "base" ? { chain } : {}),
+                  ...(chain !== "solana" ? { chain } : {}),
                   supersedesClaimId: current?.claimId ?? null,
                 }),
                 headers: {
@@ -365,7 +366,7 @@ export async function prepareWalletRegistration(
                 schemaVersion: 1,
                 githubActorId: owner.githubActorId,
                 address,
-                ...(chain === "base" ? { chain } : {}),
+                ...(chain !== "solana" ? { chain } : {}),
                 supersedesClaimId: current?.claimId ?? null,
               }))
           )
