@@ -513,7 +513,7 @@ export interface LeaderboardSourceMetadata {
     to: string;
   };
   evidenceVerification: {
-    status: "complete" | "suppressed-limit" | "incomplete";
+    status: "complete" | "suppressed-limit";
     sourceCount: number;
     artifactCount: number;
     maxSources: number;

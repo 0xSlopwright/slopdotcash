@@ -48,6 +48,7 @@ import {
   type TargetRepository,
 } from "../src/lib/repositories.mjs";
 import {
+  isTransientArtifactFailure,
   planReferencedArtifacts,
   verifyReferencedArtifacts,
 } from "./check-pr-evidence.mjs";
@@ -79,7 +80,7 @@ export const MAX_EVIDENCE_ARTIFACTS_PER_SOURCE =
   MAX_EVIDENCE_ARTIFACTS_PER_SNAPSHOT;
 export const EVIDENCE_VERIFICATION_CONCURRENCY = 4;
 export const EVIDENCE_ARTIFACT_TIMEOUT_MS = 5_000;
-/** Extra attempts for an artifact fetch that failed in transport. */
+/** Extra fetches of one artifact after a transport failure. */
 export const EVIDENCE_TRANSIENT_RETRIES = 2;
 export const EVIDENCE_TRANSIENT_RETRY_DELAY_MS = 1_000;
 export const EVIDENCE_CONTENT_DIGEST_LIMIT_BYTES = 32 * 1024 * 1024;
@@ -3425,34 +3426,41 @@ async function mapWithFixedConcurrency<T, R>(
   return results;
 }
 
+interface UnavailableEvidenceArtifact {
+  pullRequestUrl: string;
+  artifactUrl: string;
+  status: string;
+  detail: string | null;
+}
+
 interface CandidateEvidenceVerdict {
   artifacts: VerifiedEvidenceArtifact[];
   failedCategories: EvidenceCategory[];
-  unavailable: boolean;
+  unavailable: UnavailableEvidenceArtifact[];
 }
 
 /**
- * A timeout, a network error, or HTTP 408/429/5xx says nothing about the
- * artifact. It is unavailable, not invalid (protocol/points-v1.md: missing
- * data is unavailable, never a fabricated zero).
+ * A score-bearing artifact stayed unavailable after its transport retries.
+ * Missing data is unavailable, never a fabricated zero (protocol/points-v1.md),
+ * and incomplete evidence must fail snapshot collection
+ * (protocol/scoring-v2.md), so no scored snapshot is returned or written.
  */
-function isTransientEvidenceFailure(finding: {
-  status: string;
-  detail?: string;
-}): boolean {
-  if (
-    finding.status === "artifact-timeout" ||
-    finding.status === "artifact-fetch-error"
-  )
-    return true;
-  if (finding.status !== "artifact-http-error") return false;
-  const code = Number(/^HTTP (\d{3})$/.exec(finding.detail ?? "")?.[1]);
-  return code === 408 || code === 429 || (code >= 500 && code <= 599);
+export class EvidenceUnavailableError extends Error {
+  readonly unavailable: readonly UnavailableEvidenceArtifact[];
+
+  constructor(unavailable: UnavailableEvidenceArtifact[]) {
+    const first = unavailable[0];
+    super(
+      `Evidence collection is incomplete: ${unavailable.length} score-bearing artifact(s) stayed unavailable after ${EVIDENCE_TRANSIENT_RETRIES + 1} attempts (first: ${first.artifactUrl} in ${first.pullRequestUrl}, ${first.status}${first.detail ? ` ${first.detail}` : ""})`,
+    );
+    this.name = "EvidenceUnavailableError";
+    this.unavailable = unavailable;
+  }
 }
 
 export interface PullRequestEvidenceVerificationResult {
   artifacts: VerifiedEvidenceArtifact[];
-  status: "complete" | "suppressed-limit" | "incomplete";
+  status: "complete" | "suppressed-limit";
   sourceCount: number;
   artifactCount: number;
 }
@@ -3502,7 +3510,7 @@ export async function verifyPullRequestEvidence(
     selectedCandidates.push(candidate);
     selectedArtifactCount += candidate.artifactCount;
   }
-  const limitStatus =
+  const status =
     selectedCandidates.length === candidates.length
       ? "complete"
       : "suppressed-limit";
@@ -3511,33 +3519,35 @@ export async function verifyPullRequestEvidence(
     selectedCandidates,
     EVIDENCE_VERIFICATION_CONCURRENCY,
     async ({ pullRequest, source }): Promise<CandidateEvidenceVerdict> => {
-      const verify = () =>
-        verifyReferencedArtifacts(source.body, SCORE_EVIDENCE_ROWS, {
+      // The verifier retries only the artifact that failed in transport. A
+      // terminal finding such as HTTP 404 keeps its first verdict.
+      const verification = await verifyReferencedArtifacts(
+        source.body,
+        SCORE_EVIDENCE_ROWS,
+        {
           allowedArtifactKinds: ["opaque-upload"],
           concurrency: 1,
           contentDigestLimitBytes: EVIDENCE_CONTENT_DIGEST_LIMIT_BYTES,
           fetchImpl: options.evidenceFetch,
           timeoutMs: options.evidenceTimeoutMs ?? EVIDENCE_ARTIFACT_TIMEOUT_MS,
           token: options.evidenceToken,
-        });
-      let verification = await verify();
-      for (
-        let retry = 1;
-        retry <= EVIDENCE_TRANSIENT_RETRIES &&
-        verification.findings.some(isTransientEvidenceFailure);
-        retry += 1
-      ) {
-        const delay =
-          (options.evidenceRetryDelayMs ?? EVIDENCE_TRANSIENT_RETRY_DELAY_MS) *
-          retry;
-        if (delay > 0) await new Promise((done) => setTimeout(done, delay));
-        verification = await verify();
-      }
-      const unavailable = verification.findings.some(
-        (finding) =>
-          SCORE_EVIDENCE_CATEGORY.has(finding.id) &&
-          isTransientEvidenceFailure(finding),
+          transientRetries: EVIDENCE_TRANSIENT_RETRIES,
+          transientRetryDelayMs:
+            options.evidenceRetryDelayMs ?? EVIDENCE_TRANSIENT_RETRY_DELAY_MS,
+        },
       );
+      const unavailable = verification.findings
+        .filter(
+          (finding) =>
+            SCORE_EVIDENCE_CATEGORY.has(finding.id) &&
+            isTransientArtifactFailure(finding),
+        )
+        .map((finding) => ({
+          pullRequestUrl: pullRequest.url,
+          artifactUrl: finding.url,
+          status: finding.status,
+          detail: finding.detail ?? null,
+        }));
       const failedCategories = new Set<EvidenceCategory>();
       for (const finding of verification.findings) {
         const category = SCORE_EVIDENCE_CATEGORY.get(finding.id);
@@ -3586,6 +3596,9 @@ export async function verifyPullRequestEvidence(
       };
     },
   );
+  // Fail closed before any artifact list is returned for scoring.
+  const unavailable = verdicts.flatMap((verdict) => verdict.unavailable);
+  if (unavailable.length > 0) throw new EvidenceUnavailableError(unavailable);
   const failedByPullRequest = new Set<string>();
   for (const [index, verdict] of verdicts.entries()) {
     const pullRequestId = selectedCandidates[index].pullRequest.id;
@@ -3612,11 +3625,6 @@ export async function verifyPullRequestEvidence(
     remotelyVerified,
     pullRequests,
   );
-  // An unverifiable source must not publish as complete: funding requires a
-  // complete status, so an unavailable artifact cannot become a silent zero.
-  const status = verdicts.some((verdict) => verdict.unavailable)
-    ? "incomplete"
-    : limitStatus;
   return {
     artifacts,
     status,
