@@ -94,7 +94,7 @@ async function claim(
   const row = record(value);
   const actor = identity(row);
   // The numeric ID owns the claim. A claim recorded before a GitHub rename
-  // keeps the earlier login until the owner registers again (ACC-01).
+  // keeps the earlier login until the owner registers a new address (ACC-01).
   if (actor.githubActorId !== owner.githubActorId)
     throw new Error(
       "Returned wallet claim belongs to a different GitHub identity.",
@@ -337,14 +337,10 @@ export async function prepareWalletRegistration(
           );
         used = true;
         try {
-          // After a rename the API re-records an unchanged address under the
-          // current login, so only an exact address and login match is done.
-          if (
-            current?.address === address &&
-            current.githubLogin.toLowerCase() ===
-              owner.githubLogin.toLowerCase()
-          )
-            return current;
+          // An unchanged address keeps its claim, even under an earlier login:
+          // payout authorization is keyed to that claim, and a login-only
+          // successor would supersede it (ACC-01, WAL-03).
+          if (current?.address === address) return current;
           const result =
             (
               await request(`${API}/api/v1/wallet-claims`, {

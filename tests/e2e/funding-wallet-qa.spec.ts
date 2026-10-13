@@ -410,21 +410,28 @@ for (const sameTab of [false, true]) {
   });
 }
 
-test("a renamed GitHub account opens its wallet claim and refreshes the recorded login", async ({
-  page,
-  context,
-}, info) => {
-  const evidence = observe(page);
-  let writes = 0;
-  // ACC-01: the numeric ID owns the claim. The registry recorded it before
-  // the rename, so it still carries the earlier login.
-  const owner = { githubActorId: "123", githubLogin: "qa-renamed" };
+const renamed = { githubActorId: "123", githubLogin: "qa-renamed" };
+const otherAddress = "Vote111111111111111111111111111111111111111";
+
+/**
+ * Routes a renamed account whose current claim was recorded under the earlier
+ * login. `claimActorId` overrides the claim's numeric ID; `successorLogin` is
+ * the login the API records on a new claim. Returns the registry write count.
+ */
+async function routeRenamedAccount(
+  context: BrowserContext,
+  {
+    claimActorId = renamed.githubActorId,
+    successorLogin = renamed.githubLogin,
+  } = {},
+): Promise<{ writes: number }> {
+  const api = { writes: 0 };
   const expiresAt = new Date(
     Math.floor(Date.now() / 1000) * 1000 + 240_000,
   ).toISOString();
   const recorded = {
     schemaVersion: 1,
-    githubActorId: owner.githubActorId,
+    githubActorId: claimActorId,
     githubLogin: "qa-fixture",
     address,
     source: "d1_registry",
@@ -432,14 +439,14 @@ test("a renamed GitHub account opens its wallet claim and refreshes the recorded
     issueNumber: null,
     sourceBodySha256: sha({
       schemaVersion: 1,
-      githubActorId: owner.githubActorId,
+      githubActorId: claimActorId,
       address,
       supersedesClaimId: null,
     }),
     observedAt: new Date(Date.now() - 86_400_000).toISOString(),
     supersedesClaimId: null,
   };
-  const signIn = await routeSyntheticSignIn(context, owner, expiresAt);
+  const signIn = await routeSyntheticSignIn(context, renamed, expiresAt);
   await context.route(`${deployment.api}/**`, async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v1/auth/session") {
@@ -455,63 +462,138 @@ test("a renamed GitHub account opens its wallet claim and refreshes the recorded
         },
       });
     } else if (path === "/api/v1/wallet-claims") {
-      writes++;
-      // The API appends a same-address successor under the current login.
-      expect(route.request().postDataJSON()).toEqual({
-        address,
-        supersedesClaimId: "qa_recorded_claim",
-      });
-      const next = {
+      api.writes++;
+      // Like the API, append a successor under the session's numeric ID.
+      const { address: next, supersedesClaimId } = route
+        .request()
+        .postDataJSON();
+      expect(supersedesClaimId).toBe("qa_recorded_claim");
+      const successor = {
         ...recorded,
-        githubLogin: owner.githubLogin,
+        githubActorId: renamed.githubActorId,
+        githubLogin: successorLogin,
+        address: next,
         sourceBodySha256: sha({
           schemaVersion: 1,
-          githubActorId: owner.githubActorId,
-          address,
-          supersedesClaimId: "qa_recorded_claim",
+          githubActorId: renamed.githubActorId,
+          address: next,
+          supersedesClaimId,
         }),
         observedAt: new Date().toISOString(),
-        supersedesClaimId: "qa_recorded_claim",
+        supersedesClaimId,
       };
       await route.fulfill({
         json: {
-          ...next,
-          claimId: "qa_refreshed_claim",
-          recordDigest: sha(next),
+          ...successor,
+          claimId: "qa_successor_claim",
+          recordDigest: sha(successor),
         },
       });
     } else throw new Error(`Unexpected API request ${path}`);
   });
+  return api;
+}
+
+async function startRegistration(page: Page, value: string) {
   await page.goto("/account#wallets", { waitUntil: "networkidle" });
   await keyboardTo(page, page.getByLabel("Solana public address"));
-  await page.keyboard.type(address);
+  await page.keyboard.type(value);
   await page.keyboard.press("Enter");
+}
+
+async function confirmRegistration(page: Page) {
   await expect(
     page.getByRole("heading", { name: "Confirm your public registration" }),
   ).toBeVisible();
-  await expect(page.locator(".wallet-confirmation")).toContainText(
-    owner.githubLogin,
-  );
-  expect(writes).toBe(0);
-  await audit(page, info, "wallet-renamed-preview");
   await keyboardTo(
     page,
     page.getByRole("button", { name: "Register address", exact: true }),
   );
   await page.keyboard.press("Enter");
+}
+
+test("a renamed GitHub account opens its wallet claim and keeps it for the same address", async ({
+  page,
+  context,
+}, info) => {
+  const evidence = observe(page);
+  // ACC-01: the numeric ID owns the claim, so the earlier login still opens it.
+  const api = await routeRenamedAccount(context);
+  await startRegistration(page, address);
+  await expect(
+    page.getByRole("heading", { name: "Confirm your public registration" }),
+  ).toBeVisible();
+  await expect(page.locator(".wallet-confirmation")).toContainText(
+    renamed.githubLogin,
+  );
+  await audit(page, info, "wallet-renamed-preview");
+  await confirmRegistration(page);
   await expect(
     page.getByRole("heading", { name: "Wallet registered", exact: true }),
   ).toBeVisible();
-  expect(writes).toBe(1);
-  expect(signIn.starts).toBe(1);
-  await expect(page.locator(".funding-workbench")).toContainText(
-    `Saved for ${owner.githubLogin}`,
+  // A login-only successor would supersede the claim that payout
+  // authorization is keyed to, so the unchanged address is not re-sent.
+  expect(api.writes).toBe(0);
+  await expect(
+    page.getByRole("link", { name: "View public record" }),
+  ).toHaveAttribute(
+    "href",
+    `${deployment.api}/api/v1/wallet-claims/qa_recorded_claim`,
   );
-  await audit(page, info, "wallet-renamed-refreshed");
+  await audit(page, info, "wallet-renamed-unchanged");
   await info.attach("console-network.json", {
     body: JSON.stringify(evidence, null, 2),
     contentType: "application/json",
   });
   expect(evidence.errors).toEqual([]);
   expect(evidence.network.filter((r) => r.status >= 400)).toEqual([]);
+});
+
+test("a renamed GitHub account registers a new address under its current login", async ({
+  page,
+  context,
+}) => {
+  const api = await routeRenamedAccount(context);
+  await startRegistration(page, otherAddress);
+  await confirmRegistration(page);
+  await expect(
+    page.getByRole("heading", { name: "Wallet registered", exact: true }),
+  ).toBeVisible();
+  expect(api.writes).toBe(1);
+  await expect(page.locator(".funding-workbench")).toContainText(
+    `Saved for ${renamed.githubLogin}`,
+  );
+});
+
+test("a current claim recorded for another numeric GitHub ID is rejected before any write", async ({
+  page,
+  context,
+}) => {
+  const api = await routeRenamedAccount(context, { claimActorId: "456" });
+  await startRegistration(page, address);
+  await expect(page.getByRole("alert")).toContainText(
+    "Returned wallet claim belongs to a different GitHub identity.",
+  );
+  await expect(
+    page.getByRole("heading", { name: "Confirm your public registration" }),
+  ).toBeHidden();
+  expect(api.writes).toBe(0);
+});
+
+test("a created successor carrying another login is not shown as saved", async ({
+  page,
+  context,
+}) => {
+  const api = await routeRenamedAccount(context, {
+    successorLogin: "qa-fixture",
+  });
+  await startRegistration(page, otherAddress);
+  await confirmRegistration(page);
+  await expect(page.getByRole("alert")).toContainText(
+    "Returned wallet registration does not match the confirmed address and predecessor.",
+  );
+  await expect(
+    page.getByRole("heading", { name: "Wallet registered", exact: true }),
+  ).toBeHidden();
+  expect(api.writes).toBe(1);
 });
