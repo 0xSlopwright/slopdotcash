@@ -1,6 +1,12 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { readBoundedJson } from "./lib/browser-json";
 import {
+  ESCROW_CHAINS,
+  ESCROW_NETWORKS,
+  type EscrowChain,
+  EVM_CHAINS,
+} from "./lib/escrow-policy.mjs";
+import {
   type PaymentChain,
   type PaymentsAccount,
   transactionUrl,
@@ -8,7 +14,11 @@ import {
 import { isDirectTransfer } from "./lib/use-direct-transfers";
 import { formatDate, formatDateTime } from "./Presentation";
 
-const networkName = { base: "Base", solana: "Solana" };
+const networkName: Record<EscrowChain, string> = {
+  base: "Base",
+  solana: "Solana",
+  robinhood: "Robinhood Chain",
+};
 
 const networkLabels: Record<string, string> = {
   "base-mainnet": "Base · USDC",
@@ -16,15 +26,32 @@ const networkLabels: Record<string, string> = {
   "solana-mainnet": "Solana · USDC",
   "solana-devnet": "Solana Devnet · test USDC",
   "solana-testnet": "Solana Testnet · test token",
-  anvil: "Local Base test · test USDC",
+  "robinhood-mainnet": "Robinhood Chain · USDG",
+  "robinhood-testnet": "Robinhood Chain Testnet · test token",
+  anvil: "Local EVM test · test USDC",
 };
-function amount(value: string): string {
+
+function symbol(network: string): string {
+  return Object.hasOwn(ESCROW_NETWORKS, network)
+    ? ESCROW_NETWORKS[network as keyof typeof ESCROW_NETWORKS].assetSymbol
+    : "USDC";
+}
+
+function chainDefaultNetwork(chain: EscrowChain): string {
+  return (
+    Object.entries(ESCROW_NETWORKS).find(
+      ([, n]) => n.chain === chain && !n.testnet,
+    )?.[0] ?? ""
+  );
+}
+
+function amount(value: string, network: string): string {
   const number = BigInt(value);
   const fraction = (number % 1_000_000n)
     .toString()
     .padStart(6, "0")
     .replace(/0+$/, "");
-  return `${(number / 1_000_000n).toLocaleString()}${fraction ? `.${fraction}` : ""} USDC`;
+  return `${(number / 1_000_000n).toLocaleString()}${fraction ? `.${fraction}` : ""} ${symbol(network)}`;
 }
 
 class SignedOutError extends Error {}
@@ -70,7 +97,7 @@ function account(value: unknown): PaymentsAccount {
     data.wallets.some(
       (w) =>
         !w ||
-        !["base", "solana"].includes(w.chain) ||
+        !ESCROW_CHAINS.includes(w.chain) ||
         typeof w.claimId !== "string" ||
         typeof w.address !== "string" ||
         typeof w.authorized !== "boolean",
@@ -78,7 +105,7 @@ function account(value: unknown): PaymentsAccount {
     data.payments.some(
       (p) =>
         !p ||
-        !["base", "solana"].includes(p.chain) ||
+        !ESCROW_CHAINS.includes(p.chain) ||
         typeof p.projectId !== "string" ||
         typeof p.network !== "string" ||
         (p.transactionId !== null && typeof p.transactionId !== "string") ||
@@ -98,7 +125,7 @@ function account(value: unknown): PaymentsAccount {
         ].includes(p.deliveryState),
     ) ||
     data.balances.some(
-      (b) => !b || !["base", "solana"].includes(b.chain) || !money(b.netMicro),
+      (b) => !b || !ESCROW_CHAINS.includes(b.chain) || !money(b.netMicro),
     ) ||
     !Array.isArray(data.directTransfers) ||
     !data.directTransfers.every(isDirectTransfer) ||
@@ -106,7 +133,7 @@ function account(value: unknown): PaymentsAccount {
     data.walletObservations.some(
       (o) =>
         !o ||
-        !["base", "solana"].includes(o.chain) ||
+        !ESCROW_CHAINS.includes(o.chain) ||
         typeof o.address !== "string" ||
         o.proofLevel !== "profile_readme" ||
         !/^https:\/\/github\.com\//u.test(o.sourceUrl) ||
@@ -186,17 +213,17 @@ export function EarningsPage() {
       const provider = window as WalletWindow;
       let address: string;
       let sign: (message: string) => Promise<string>;
-      if (chain === "base") {
+      if (EVM_CHAINS.includes(chain)) {
         const wallet = provider.ethereum;
         if (!wallet)
           throw new Error(
-            "Open this page in your Base wallet’s browser or enable its browser extension.",
+            "Open this page in your wallet’s browser or enable its browser extension.",
           );
         const addresses = await wallet.request({
           method: "eth_requestAccounts",
         });
         if (!Array.isArray(addresses) || typeof addresses[0] !== "string")
-          throw new Error("Your wallet did not return a Base address.");
+          throw new Error("Your wallet did not return an address.");
         address = addresses[0].toLowerCase();
         sign = async (text) => {
           const hex = `0x${Array.from(new TextEncoder().encode(text), (n) => n.toString(16).padStart(2, "0")).join("")}`;
@@ -302,7 +329,7 @@ export function EarningsPage() {
         <>
           {error && <p>Showing the last verified account response.</p>}
           <section aria-label="Payout wallets" className="earnings-wallets">
-            {(["base", "solana"] as const).map((chain) => {
+            {ESCROW_CHAINS.map((chain) => {
               const wallet = data.wallets.find((w) => w.chain === chain);
               const balance =
                 data.balances.find((b) => b.chain === chain)?.netMicro ?? "0";
@@ -310,7 +337,10 @@ export function EarningsPage() {
                 <article key={chain} className="funding-workbench">
                   <h2>{networkName[chain]}</h2>
                   <p>
-                    <strong>{amount(balance)}</strong> unpaid
+                    <strong>
+                      {amount(balance, chainDefaultNetwork(chain))}
+                    </strong>{" "}
+                    unpaid
                   </p>
                   {wallet ? (
                     <p className="wallet-address">{wallet.address}</p>
@@ -318,6 +348,9 @@ export function EarningsPage() {
                     <p>
                       Add a {networkName[chain]} wallet to receive awards on
                       this network.
+                      {EVM_CHAINS.includes(chain)
+                        ? " Signing this consent does not require your wallet to be switched to this network."
+                        : ""}
                     </p>
                   )}
                   {!wallet?.authorized &&
@@ -427,9 +460,9 @@ export function EarningsPage() {
                         <td>
                           {networkLabels[payment.network] ?? payment.network}
                         </td>
-                        <td>{amount(payment.grossMicro)}</td>
-                        <td>{amount(payment.feeMicro)}</td>
-                        <td>{amount(payment.netMicro)}</td>
+                        <td>{amount(payment.grossMicro, payment.network)}</td>
+                        <td>{amount(payment.feeMicro, payment.network)}</td>
+                        <td>{amount(payment.netMicro, payment.network)}</td>
                         <td>
                           {
                             {
@@ -505,7 +538,7 @@ export function EarningsPage() {
                         </td>
                         <td>{t.contributionMonth}</td>
                         <td>{networkLabels[t.network] ?? t.network}</td>
-                        <td>{amount(t.amountMicro)}</td>
+                        <td>{amount(t.amountMicro, t.network)}</td>
                         <td>
                           {transactionUrl(t.network, t.transactionId) ? (
                             <a

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { readBoundedJson } from "./lib/browser-json";
+import { ESCROW_NETWORKS } from "./lib/escrow-policy.mjs";
 import type { ProjectDefinition } from "./lib/projects.mjs";
 
 interface Totals {
@@ -11,9 +12,18 @@ interface Totals {
   syncedAt: string | null;
   coverage: { kind: string; completeThrough: string | null };
 }
-function usdc(value: string) {
+const chainNames = {
+  base: "Base",
+  solana: "Solana",
+  robinhood: "Robinhood Chain",
+} as const;
+
+function amount(value: string, network: string) {
   const n = BigInt(value);
-  return `${n / 1_000_000n}.${(n % 1_000_000n).toString().padStart(6, "0")} USDC`;
+  const symbol = Object.hasOwn(ESCROW_NETWORKS, network)
+    ? ESCROW_NETWORKS[network as keyof typeof ESCROW_NETWORKS].assetSymbol
+    : "USDC";
+  return `${n / 1_000_000n}.${(n % 1_000_000n).toString().padStart(6, "0")} ${symbol}`;
 }
 
 export function EscrowFunding({ project }: { project: ProjectDefinition }) {
@@ -63,7 +73,7 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
   }, [project.id, deployed, revision]);
   return (
     <section className="section project-funding" aria-label="Project escrow">
-      <h2>{project.escrow?.chain === "base" ? "Base" : "Solana"} escrow</h2>
+      <h2>{chainNames[project.escrow?.chain ?? "solana"]} escrow</h2>
       <p>
         Contributor amounts deduct a 2% fee. Funded awards remain reserved until
         paid. Returning unused sponsor funds costs 10%.
@@ -88,13 +98,13 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
             <>
               <dl>
                 <dt>Indexed contributor payouts</dt>
-                <dd>{usdc(totals.totalNetPaidMicro)}</dd>
+                <dd>{amount(totals.totalNetPaidMicro, totals.network)}</dd>
                 <dt>Indexed payout fees</dt>
-                <dd>{usdc(totals.payoutFeesPaidMicro)}</dd>
+                <dd>{amount(totals.payoutFeesPaidMicro, totals.network)}</dd>
                 <dt>Reserved contributor awards</dt>
-                <dd>{usdc(totals.reservedNetMicro)}</dd>
+                <dd>{amount(totals.reservedNetMicro, totals.network)}</dd>
                 <dt>Reserved payout fees</dt>
-                <dd>{usdc(totals.reservedFeeMicro)}</dd>
+                <dd>{amount(totals.reservedFeeMicro, totals.network)}</dd>
               </dl>
               <p>
                 Network: {totals.network}.{" "}
