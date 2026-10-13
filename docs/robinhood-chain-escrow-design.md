@@ -88,17 +88,17 @@ Fee recipient: the Base fee address is a plain account with no history on either
 
 ### 3. Data model
 
-Five tables carry `CHECK(chain IN ('base','solana'))`: `wallet_claims` (migration 0010), `payment_obligations` and `payment_wallet_proposals` (0011), `payment_direct_transfers` (0014), `wallet_observations` (0015). SQLite cannot alter a CHECK in place, so migration `0017_robinhood_chain.sql` rebuilds each table with the widened constraint. It follows the order the SQLite documentation prescribes for a table that other tables reference (create the replacement, copy, drop the original, rename the replacement), not the rename-first order migration 0003 used when `wallet_claims` had no child tables:
+Five tables carry `CHECK(chain IN ('base','solana'))`: `wallet_claims` (migration 0010), `payment_obligations` and `payment_wallet_proposals` (0011), `payment_direct_transfers` (0014), `wallet_observations` (0015). SQLite cannot alter a CHECK in place, so migration `0017_robinhood_chain.sql` rebuilds each table with the widened constraint. D1 applies a migration inside one transaction, so the rebuild order is set by how SQLite counts deferred foreign-key violations, not by the rename-first order migration 0003 used when `wallet_claims` had no child tables:
 
-1. Create `<name>_0017` with `CHECK(chain IN ('base','solana','robinhood'))` and every other column, constraint, foreign key and `STRICT` setting identical to the current definition.
-2. Copy every row with an explicit column list.
-3. Drop the original table's triggers, then the original table.
-4. Rename `<name>_0017` to `<name>`.
+1. Copy every row, with an explicit column list, into `<name>_0017_copy`: a plain `STRICT` table with the same columns and no foreign keys, constraints or defaults.
+2. Drop the original table's triggers, then the original table.
+3. Create `<name>` with `CHECK(chain IN ('base','solana','robinhood'))` and every other column, constraint, foreign key and `STRICT` setting identical to the current definition.
+4. Re-insert every row from the copy with an explicit column list, then drop the copy.
 5. Recreate every index and trigger with its original definition.
 
-The order matters because SQLite rewrites foreign-key references in other tables when the referenced table is renamed. Renaming the original away first would point every child table at the discarded copy. Renaming the replacement into place rewrites nothing, since no table references the temporary name, and the children's references resolve by name to the rebuilt table.
+The order matters because of how SQLite treats a dropped parent. Inside D1's transaction `PRAGMA foreign_keys = OFF` has no effect, so the file sets `PRAGMA defer_foreign_keys = ON`: the implicit delete performed by `DROP TABLE` then counts each orphaned child row as a deferred violation, checked at commit. `ALTER TABLE ... RENAME` never clears that count, so renaming a replacement into place fails the commit even though every child resolves again. Re-inserting the parent rows under the original name does clear it, and the copy declares no foreign keys, so it adds nothing to the count. The file also keeps `PRAGMA foreign_keys = OFF`, restored to `ON` at the end, for an autocommit runner such as the local test harness, where the deferral lapses after each statement.
 
-`wallet_claims` is referenced by its own `supersedes_claim_id`, by `wallet_possession_challenges`, `wallet_possession_attestations`, `payment_wallet_authorizations`, `payment_attempts`, `payment_wallet_challenges` and, after #675, `payment_binding_authorizations`. `payment_obligations` is referenced by `payment_outbox` and `payment_attempts`. The migration runs inside one transaction with `PRAGMA defer_foreign_keys = ON`, so the implicit delete performed by `DROP TABLE` is checked at commit, when the rebuilt table already holds every referenced row under the original name. The migration asserts row counts before and after each copy and aborts on any difference, and the migration test in section 6 runs `PRAGMA foreign_key_check` afterwards and expects no rows.
+`wallet_claims` is referenced by its own `supersedes_claim_id`, by `wallet_possession_challenges`, `wallet_possession_attestations`, `payment_wallet_authorizations`, `payment_attempts`, `payment_wallet_challenges` and, after #675, `payment_binding_authorizations`. `payment_obligations` is referenced by `payment_outbox` and `payment_attempts`. No table is renamed, so no child's foreign-key text is rewritten; each resolves by name to the rebuilt table. The migration test in section 6 seeds a row in every child table, applies the file both outside and inside an explicit transaction, compares row counts, column order, indexes and triggers, and expects `PRAGMA foreign_key_check` to return no rows.
 
 Row ids, digests, timestamps and lineage links do not change. No existing row gains the new chain value. Applied by the existing deploy step on staging first, then production, exactly as earlier migrations were.
 
@@ -133,7 +133,7 @@ Account API types. `PaymentChain` in `src/lib/payments/contracts.ts` becomes `"b
 
 - `contracts/evm/adapter.integration.ts` and `backend/payments/base.integration.ts` (renamed `evm.integration.ts`) add a second Anvil pass started with chain id 46630 under network `robinhood-testnet`, proving award ids bind 46630, the preflight accepts the testnet entry and rejects a chain-id mismatch, the family routing reaches the EVM executor and scanner, the registry's gas ceiling is applied, and the ledger records `chain = robinhood`.
 - A negative case: a deployment claiming `robinhood-mainnet` is rejected by the hosted preflight.
-- Migration test: apply 0001 through 0017 on a fresh local D1, insert a Base claim lineage and a Solana one, confirm counts, indexes and triggers match the pre-migration state, then insert a `robinhood` claim and a `robinhood` obligation.
+- Migration test (`backend/payments/migrations.test.ts`): apply 0001 through 0017 on a local SQLite database (`bun:sqlite`), once in autocommit and once inside a single transaction to match D1's apply, after seeding a Base claim lineage and a Solana one with a row in every child table; confirm row counts, indexes, triggers, column order and an empty `PRAGMA foreign_key_check`, then insert `robinhood` rows into all five tables.
 - Foundry suites unchanged; `forge build` and `forge fmt --check` run as today.
 - `scripts/test-payout-browser.mjs` asserts the new labels alongside the Base ones.
 - `.github/workflows/escrow-tests.yml` job `base` is renamed `evm` and runs the EVM integration with both chain ids.
@@ -178,6 +178,6 @@ Each PR cites FND-01, FND-02, PAY-06, PAY-07 and MVP-02, MVP-06, MVP-07 in its d
 - **USDG freeze or pause.** Handled by fail-closed reverts; the unpaid award stays reserved; a frozen fee recipient blocks only fee claims.
 - **Sequencer reordering before posting.** Nothing is paid or indexed before the `finalized` tag, which is Ethereum finality.
 - **Gas spikes from Ethereum data fees.** Per-network gas ceiling; the 10 gwei price cap protects the relayer from paying an absurd price, and a transaction over the ceiling is held with a human-readable cause, not retried to a different value.
-- **Migration on a live table.** Same pattern as migration 0003, run on staging first, with row-count assertions and deferred foreign keys.
+- **Migration on a live table.** A copy-aside rebuild that re-inserts the parent rows under the original name, so D1's single-transaction apply commits with deferred foreign keys; applied on staging first, pinned by the transactional migration test, with row counts asserted by that test.
 - **Cancun opcode support.** Confirmed by the testnet deployment; fallback is a recorded `evm_version` deviation.
 - **Address copied from the wrong source.** The registry carries the USDG address that two official pages list and the chain confirms; the deploy script's constant must equal the registry value, checked by a test.
