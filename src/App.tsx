@@ -2325,11 +2325,10 @@ function HowItWorksPage() {
             Register a public Solana, Base or Robinhood Chain address in{" "}
             <Link href="/account#wallets">Account wallets</Link> with your
             GitHub account. No wallet connection or signing is needed. Payments
-            are the project's settlement asset on its settlement network, USDC
-            on Base or Solana and USDG on Robinhood Chain, sent by the project
-            maintainer, never by Slop. A wallet must be registered before a
-            month freezes to apply to that month. Without one, your row stays
-            unclaimed and carries forward.
+            are USDC on the project's settlement network, Base or Solana, sent
+            by the project maintainer, never by Slop. A wallet must be
+            registered before a month freezes to apply to that month. Without
+            one, your row stays unclaimed and carries forward.
           </p>
         </details>
         <details>

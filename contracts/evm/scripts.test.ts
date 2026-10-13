@@ -39,10 +39,10 @@ describe("deploy script constants match the registry", () => {
       "utf8",
     );
     expect(mainnet).toContain(
-      `block.chainid == ${ESCROW_NETWORKS["robinhood-mainnet"].chainId}`,
+      `block.chainid == ${ESCROW_NETWORKS["robinhood-mainnet"].chainId},`,
     );
     expect(testnet).toContain(
-      `block.chainid == ${ESCROW_NETWORKS["robinhood-testnet"].chainId}`,
+      `block.chainid == ${ESCROW_NETWORKS["robinhood-testnet"].chainId},`,
     );
     expect(testnet).toContain("TestDollar");
   });

@@ -158,6 +158,11 @@ export function assertFundingAddresses(
       ["address", "asset", "effectiveAt", "network", "replacedAt"],
       routeField,
     );
+    if (route.network === "robinhood") {
+      throw new TypeError(
+        "Robinhood Chain projects settle through the project escrow; a direct funding address is not supported",
+      );
+    }
     const asset = fundingAssetForNetwork(route.network);
     if (asset === null || route.asset !== asset) {
       throw new TypeError(`${routeField} network or asset is unsupported`);

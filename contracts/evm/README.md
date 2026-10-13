@@ -162,8 +162,10 @@ refunds continue. Refunds go only to the owner: the constructor requires
 Deposits and transfers must move exact amounts. Token failures or blocked
 recipients revert the full payment. The accepted token
 must have six decimals and ordinary exact-transfer behavior. The deployment
-script fixes Circle's Base Sepolia test USDC address; verify that asset again
-before deployment. Arbitrary tokens with dishonest `balanceOf` results are
+script fixes its token: the Base scripts name Circle's USDC addresses and the
+Robinhood Chain mainnet script names Paxos USDG, while the Robinhood Chain
+Testnet script deploys its own `TestDollar`; verify the asset again before any
+deployment. Arbitrary tokens with dishonest `balanceOf` results are
 outside the supported asset model. Direct transfers to the vault do not create
 refundable credits and cannot be rescued in this version. The supported funding
 path is owner `approve` followed by `deposit`.

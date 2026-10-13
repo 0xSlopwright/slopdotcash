@@ -82,6 +82,26 @@ describe("Robinhood Chain manifests", () => {
       }),
     ).toThrow(/fresh-cycle instrument is not supported/);
   });
+  test("a direct funding address on Robinhood Chain is refused", () => {
+    const m = manifest();
+    expect(() =>
+      assertProjectDefinition({
+        ...m,
+        funding: {
+          ...m.funding,
+          addresses: [
+            {
+              network: "robinhood",
+              asset: "USDG",
+              address: evm,
+              effectiveAt: "2026-10-01T00:00:00.000Z",
+              replacedAt: null,
+            },
+          ],
+        },
+      }),
+    ).toThrow(/direct funding address is not supported/);
+  });
   test("the legacy rail does not reach Robinhood Chain", () => {
     const { escrow: _escrow, ...legacy } = manifest();
     expect(() =>

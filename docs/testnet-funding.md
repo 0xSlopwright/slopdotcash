@@ -13,7 +13,7 @@ An optional third argument selects an HTTPS RPC URL. Prefer a public URL without
 credentials. If a network needs an archive endpoint that carries a key, keep
 the key out of shell history and recorded evidence: build the URL from an
 environment variable and redact it in any output you keep. The command checks
-the Base chain ID or Solana genesis hash before reading a finalized balance.
+the EVM chain id or Solana genesis hash before reading a finalized balance.
 Mainnet network names are rejected. It neither reads signing keys nor requests
 funds, signs, or broadcasts a transaction.
 
