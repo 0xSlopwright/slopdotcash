@@ -19,6 +19,7 @@ import {
   type evmBindingTypedData,
   verifyBinding,
 } from "../../contracts/evm/adapter";
+import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
 import { sha256Hex } from "../../workers/identity/crypto";
 import {
   createEvmAttester,
@@ -42,6 +43,8 @@ const rpcUrl = `http://127.0.0.1:${localPort}`;
 const anvil = spawn("anvil", ["--port", String(localPort), "--silent"], {
   stdio: "ignore",
 });
+// Second local chain for the Robinhood Chain Testnet pass, started after the Base flow.
+let rcAnvil: ReturnType<typeof spawn> | undefined;
 const sql = new Database(":memory:");
 const journalDirectory = mkdtempSync(join(tmpdir(), "slop-executor-journal-"));
 let faultProxy: ReturnType<typeof Bun.serve> | undefined;
@@ -170,14 +173,16 @@ async function authorizeBinding(
   vault: string,
   expectedVersion: string,
   account: { signTypedData: (data: never) => Promise<`0x${string}`> },
+  network = "anvil",
+  chainId = "31337",
 ) {
   const challenge = (await (
     await handlePaymentsApi(
       request("/wallets/bind-challenge", {
         claimId,
-        network: "anvil",
+        network,
         vault,
-        chainId: "31337",
+        chainId,
         expectedVersion,
       }),
       { db },
@@ -187,9 +192,9 @@ async function authorizeBinding(
   const response = await handlePaymentsApi(
     request("/wallets/bind-authorize", {
       claimId,
-      network: "anvil",
+      network,
       vault,
-      chainId: "31337",
+      chainId,
       expectedVersion,
       expiresAt: challenge.typedData.message.expiresAt,
       signature: await signBinding(account, challenge.typedData),
@@ -198,8 +203,8 @@ async function authorizeBinding(
   );
   assert.equal(response.status, 200, await response.text());
 }
-async function rpc(method: string, params: unknown[]) {
-  const response = await fetch(rpcUrl, {
+async function rpc(method: string, params: unknown[], url = rpcUrl) {
+  const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
@@ -209,7 +214,7 @@ async function rpc(method: string, params: unknown[]) {
   return body.result;
 }
 const deploymentTransactions = new Map<string, string>();
-function deploy(contract: string, args: string[] = []) {
+function deploy(contract: string, args: string[] = [], url = rpcUrl) {
   const created = JSON.parse(
     execFileSync(
       "forge",
@@ -219,7 +224,7 @@ function deploy(contract: string, args: string[] = []) {
         `${root}contracts/evm`,
         contract,
         "--rpc-url",
-        rpcUrl,
+        url,
         "--unlocked",
         "--from",
         owner,
@@ -230,18 +235,28 @@ function deploy(contract: string, args: string[] = []) {
       { encoding: "utf8" },
     ),
   ) as { deployedTo: string; transactionHash: string };
-  deploymentTransactions.set(created.deployedTo, created.transactionHash);
+  // Contract addresses can repeat across local chains (same deployer and
+  // nonces), so only the first chain's transactions are recorded here.
+  if (url === rpcUrl)
+    deploymentTransactions.set(created.deployedTo, created.transactionHash);
   return created.deployedTo;
 }
-async function send(to: string, signature: string, args: string[]) {
+async function send(
+  to: string,
+  signature: string,
+  args: string[],
+  url = rpcUrl,
+) {
   const data = execFileSync("cast", ["calldata", signature, ...args], {
     encoding: "utf8",
   }).trim();
-  const hash = (await rpc("eth_sendTransaction", [
-    { from: owner, to, data, gas: "0x7a1200" },
-  ])) as string;
-  await rpc("anvil_mine", ["0x1"]);
-  const receipt = (await rpc("eth_getTransactionReceipt", [hash])) as {
+  const hash = (await rpc(
+    "eth_sendTransaction",
+    [{ from: owner, to, data, gas: "0x7a1200" }],
+    url,
+  )) as string;
+  await rpc("anvil_mine", ["0x1"], url);
+  const receipt = (await rpc("eth_getTransactionReceipt", [hash], url)) as {
     status: string;
   };
   assert.equal(receipt.status, "0x1", `Transaction failed: ${signature}`);
@@ -1042,6 +1057,377 @@ try {
     "98000000",
     "Original award is never replayed during rotation",
   );
+  // Robinhood Chain Testnet pass on a second Anvil at chain id 46630. The
+  // registry entry is a reviewed testnet, so the hosted preflight accepts a
+  // record that names it with no local override, rejects a chain-id
+  // mismatch, the mainnet entry and an RPC on the wrong chain, and carries
+  // the registry gas ceiling. The same executor, attester, scanner and
+  // ledger then pay one award there, recorded as chain = robinhood through
+  // migration 0017.
+  const rcPolicy = ESCROW_NETWORKS["robinhood-testnet"];
+  const rcChainId = "46630";
+  assert.equal(
+    rcPolicy.chainId,
+    rcChainId,
+    "Registry Robinhood Chain Testnet id",
+  );
+  assert.equal(
+    rcPolicy.gasCeiling,
+    "2000000",
+    "Registry gas ceiling for Robinhood Chain Testnet",
+  );
+  assert.equal(rcPolicy.scanPageBlocks, "9000", "Registry scan page size");
+  const rcPort = localPort + 20;
+  const rcRpcUrl = `http://127.0.0.1:${rcPort}`;
+  const rcNode = spawn(
+    "anvil",
+    ["--port", String(rcPort), "--chain-id", rcChainId, "--silent"],
+    { stdio: "ignore" },
+  );
+  rcAnvil = rcNode;
+  let rcReady = false;
+  for (let i = 0; i < 50; i++) {
+    if (rcNode.exitCode !== null)
+      throw new Error("Robinhood Chain Anvil startup failed");
+    try {
+      await rpc("eth_chainId", [], rcRpcUrl);
+      rcReady = true;
+      break;
+    } catch {
+      await Bun.sleep(50);
+    }
+  }
+  assert(rcReady, "Robinhood Chain Anvil startup");
+  assert.equal(
+    BigInt((await rpc("eth_chainId", [], rcRpcUrl)) as string),
+    46630n,
+    "Second Anvil reports the Robinhood Chain Testnet chain id",
+  );
+  const rcAsset = deploy("integration/TestDollar.sol:TestDollar", [], rcRpcUrl);
+  const rcFactory = deploy(
+    "src/ProjectEscrow.sol:EscrowFactory",
+    [rcAsset, fee, attester, delay],
+    rcRpcUrl,
+  );
+  const rcCreateTx = await send(
+    rcFactory,
+    "create(bytes32,address,address)",
+    [projectKey, owner, owner],
+    rcRpcUrl,
+  );
+  const rcVault = `0x${(
+    (await rpc(
+      "eth_call",
+      [{ to: rcFactory, data: `0xcca23bf2${projectKey.slice(2)}` }, "latest"],
+      rcRpcUrl,
+    )) as string
+  ).slice(-40)}`;
+  const rcSource = `0x${"7".padStart(64, "0")}`;
+  const rcAward = evmAwardId(46630n, rcVault, rcSource);
+  assert.notEqual(
+    rcAward,
+    evmAwardId(31337n, rcVault, rcSource),
+    "The same vault address and source on another chain is another award",
+  );
+  const rcRuntimeCode = (await rpc(
+    "eth_getCode",
+    [rcVault, "latest"],
+    rcRpcUrl,
+  )) as string;
+  const rcConfig = {
+    asset: rcAsset,
+    owner,
+    identityAuthority: attester,
+    feeRecipient: fee,
+    codeSha256: createHash("sha256")
+      .update(Buffer.from(rcRuntimeCode.slice(2), "hex"))
+      .digest("hex"),
+    rpcUrl: rcRpcUrl,
+    chainId: 46630n,
+    vault: rcVault,
+    bindingDelaySeconds: delay,
+    // One settlement network per project (payment_project_network_locked), so
+    // the second chain belongs to its own fixture project.
+    projectId: "robinhood-fixture",
+    network: "robinhood-testnet",
+  };
+  const rcDeployment = {
+    ...rcConfig,
+    chain: "robinhood",
+    chainId: rcChainId,
+    gasCeiling: "2000000",
+    scanPageBlocks: "9000",
+  };
+  const rcEnv = {
+    PAYMENT_DEPLOYMENTS: JSON.stringify([rcDeployment]),
+    PAYMENT_RPC_URLS: JSON.stringify({
+      "robinhood-testnet": rcRpcUrl,
+      "robinhood-mainnet": rcRpcUrl,
+    }),
+  };
+  const rcInput = {
+    ...preflightInput,
+    network: "robinhood-testnet",
+    vault: rcVault,
+    obligationId: rcAward,
+  };
+  // Preflight reads the vault at the finalized tag, so let the deployment finalize.
+  await rpc("anvil_mine", ["0x40"], rcRpcUrl);
+  const rcAccepted = await preflightEvmDeployment(rcEnv, rcInput);
+  assert.equal(
+    rcAccepted.gasCeiling,
+    "2000000",
+    "Registry gas ceiling travels with the Robinhood Chain record",
+  );
+  assert.equal(
+    rcAccepted.chainId,
+    "46630",
+    "Preflight accepts the registry testnet chain id without a local override",
+  );
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...rcEnv,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([
+          { ...rcDeployment, chainId: "4663" },
+        ]),
+      },
+      rcInput,
+    ),
+    /Test deployment required/,
+    "A robinhood-testnet record naming the mainnet chain id is refused",
+  );
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...rcEnv,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([
+          { ...rcDeployment, network: "robinhood-mainnet", chainId: "4663" },
+        ]),
+      },
+      { ...rcInput, network: "robinhood-mainnet" },
+    ),
+    /Test deployment required/,
+    "The Robinhood Chain mainnet entry is refused by the testnet preflight",
+  );
+  // Wrong RPC chain: pointing the testnet record at the 31337 Anvil fails the chain-id readback.
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...rcEnv,
+        PAYMENT_RPC_URLS: JSON.stringify({ "robinhood-testnet": rpcUrl }),
+      },
+      rcInput,
+    ),
+    /Wrong RPC chain/,
+    "A robinhood-testnet record served by a 31337 RPC is refused",
+  );
+  // Review Focus 2: the same user and the same address bytes get a separate
+  // Robinhood Chain claim; the Base lineage (claim, then claim-next) is untouched.
+  sql
+    .prepare(
+      "INSERT INTO wallet_claims(id,github_user_id,github_login,wallet_address,source,source_body_sha256,observed_at,record_sha256,created_at,chain) VALUES('claim-rc','123','alice',?,'d1_registry',?,?,?,?,'robinhood')",
+    )
+    .run(successorAccount.address, "a".repeat(64), now, "f".repeat(64), now);
+  const rcChallenge = (await (
+    await handlePaymentsApi(
+      request("/wallets/challenge", { claimId: "claim-rc" }),
+      { db },
+    )
+  ).json()) as { message: string; challengeId: string; chain: string };
+  assert.equal(rcChallenge.chain, "robinhood");
+  assert.equal(
+    (
+      await handlePaymentsApi(
+        request("/wallets/authorize", {
+          claimId: "claim-rc",
+          challengeId: rcChallenge.challengeId,
+          signature: await successorAccount.signMessage({
+            message: rcChallenge.message,
+          }),
+        }),
+        { db },
+      )
+    ).status,
+    200,
+    "A Robinhood Chain wallet claim is authorized by its own signature",
+  );
+  // Review Focus 1: a binding request whose chain id contradicts its registry network is refused.
+  const mismatch = await handlePaymentsApi(
+    request("/wallets/bind-challenge", {
+      claimId: "claim-rc",
+      network: "robinhood-testnet",
+      vault: rcVault,
+      chainId: "31337",
+      expectedVersion: "0",
+    }),
+    { db },
+  );
+  assert.equal(
+    mismatch.status,
+    400,
+    "Binding chain id must match the registry network",
+  );
+  assert.match(
+    await mismatch.text(),
+    /Chain id does not match the named network/,
+  );
+  await authorizeBinding(
+    db,
+    "claim-rc",
+    rcVault,
+    "0",
+    successorAccount,
+    "robinhood-testnet",
+    rcChainId,
+  );
+  await send(rcAsset, "mint(address,uint256)", [owner, "100000000"], rcRpcUrl);
+  await send(
+    rcAsset,
+    "approve(address,uint256)",
+    [rcVault, "100000000"],
+    rcRpcUrl,
+  );
+  await send(rcVault, "deposit(uint64)", ["100000000"], rcRpcUrl);
+  await send(
+    rcVault,
+    "commitAward(bytes32,uint64,uint64,bytes32)",
+    [rcAward, "123", "100000000", rcSource],
+    rcRpcUrl,
+  );
+  await rpc("anvil_mine", ["0x40"], rcRpcUrl);
+  const rcAdapter = evmPaymentAdapter(db, {
+    ...rcConfig,
+    chain: "robinhood",
+  });
+  const rcScan = () =>
+    scanEvmPayments(
+      db,
+      {
+        ...rcDeployment,
+        deploymentTransaction: rcCreateTx,
+      },
+      rcRpcUrl,
+      async (event) => {
+        await indexPaymentEvent(db, rcAdapter, event, new Date().toISOString());
+      },
+    );
+  await rcScan();
+  assert.equal(
+    (
+      sql
+        .query<{ chain: string }, [string]>(
+          "SELECT chain FROM payment_obligations WHERE id=?",
+        )
+        .get(rcAward) as { chain: string }
+    ).chain,
+    "robinhood",
+    "Ledger records the Robinhood Chain obligation under its own chain",
+  );
+  const readAccount = async () =>
+    (await (await handlePaymentsApi(request("/me"), { db })).json()) as {
+      wallets: { chain: string; claimId: string; address: string }[];
+      payments: {
+        id: string;
+        chain: string;
+        state: string;
+        netMicro: string;
+      }[];
+      balances: { chain: string; netMicro: string }[];
+    };
+  const rcReserved = await readAccount();
+  assert.equal(
+    rcReserved.balances.find((b) => b.chain === "robinhood")?.netMicro,
+    "98000000",
+    "The reserved Robinhood Chain award shows its net before payment",
+  );
+  assert.equal(
+    rcReserved.balances.find((b) => b.chain === "base")?.netMicro,
+    "0",
+    "Base balance is unaffected by the Robinhood Chain reservation",
+  );
+  // The hosted attester and executor, with no local override, bind and pay on 46630.
+  const rcShared = { PAYMENTS_DB: db, ...rcEnv };
+  const rcAttester = createEvmAttester({
+    ...rcShared,
+    SIGNER: attesterAccount,
+    JOURNAL: journal("rc-attester"),
+  });
+  const rcRelayerJournal = journal("rc-relayer");
+  const rcExecutor = () =>
+    createEvmExecutor({
+      ...rcShared,
+      SIGNER: gasAccount,
+      JOURNAL: rcRelayerJournal,
+      ATTESTER: rcAttester,
+    });
+  await assert.rejects(
+    dispatchPayment(db, rcExecutor(), rcAward, new Date()),
+    /awaits finality/,
+  );
+  await rpc("anvil_mine", ["0x40"], rcRpcUrl);
+  await assert.rejects(
+    dispatchPayment(db, rcExecutor(), rcAward, new Date()),
+    /activates at/,
+  );
+  await rpc("evm_increaseTime", [Number(delay)], rcRpcUrl);
+  await rpc("anvil_mine", ["0x1"], rcRpcUrl);
+  assert.equal(
+    await dispatchPayment(db, rcExecutor(), rcAward, new Date()),
+    "submitted",
+  );
+  await rpc("anvil_mine", ["0x40"], rcRpcUrl);
+  await rcScan();
+  const rcPaid = await readAccount();
+  assert.equal(
+    rcPaid.payments.find((p) => p.id === rcAward)?.state,
+    "paid",
+    "The Robinhood Chain award is paid from finalized evidence",
+  );
+  assert.equal(
+    rcPaid.balances.find((b) => b.chain === "robinhood")?.netMicro,
+    "0",
+    "Nothing stays reserved on Robinhood Chain after payment",
+  );
+  assert.equal(
+    rcPaid.wallets.filter((w) => w.chain === "base").length,
+    1,
+    "One current Base wallet",
+  );
+  assert.equal(
+    rcPaid.wallets.filter((w) => w.chain === "robinhood").length,
+    1,
+    "One current Robinhood Chain wallet",
+  );
+  const baseWallet = rcPaid.wallets.find((w) => w.chain === "base");
+  const rcWallet = rcPaid.wallets.find((w) => w.chain === "robinhood");
+  assert.equal(
+    baseWallet?.address.toLowerCase(),
+    rcWallet?.address.toLowerCase(),
+    "Both lineages hold the same address bytes",
+  );
+  assert.notEqual(
+    baseWallet?.claimId,
+    rcWallet?.claimId,
+    "The Base claim is not a Robinhood Chain wallet and the reverse",
+  );
+  const rcBalance = execFileSync(
+    "cast",
+    [
+      "call",
+      rcAsset,
+      "balanceOf(address)(uint256)",
+      successorAccount.address,
+      "--rpc-url",
+      rcRpcUrl,
+    ],
+    { encoding: "utf8" },
+  ).trim();
+  assert.equal(
+    rcBalance.split(" ")[0],
+    "98000000",
+    "The Robinhood Chain payment lands net of the 2% fee",
+  );
   if (process.argv.includes("--serve")) {
     const browserAward = evmAwardId(
       31337n,
@@ -1222,13 +1608,14 @@ try {
         for (const database of journalHandles) database.close();
         rmSync(journalDirectory, { recursive: true, force: true });
         anvil.kill("SIGTERM");
+        rcAnvil?.kill("SIGTERM");
         sql.close();
         process.exit(0);
       });
     await new Promise(() => {});
   }
   console.log(
-    "Local Base workflow passed: escrow, signed consent, separate signed execution, durable ambiguous-send recovery, finalized binding retry, finalized scanner replay, safe unsigned retirement, delayed successor rotation, and exact net balances.",
+    "Local EVM workflow passed (Base on 31337, Robinhood Chain Testnet on 46630): escrow, signed consent, separate signed execution, durable ambiguous-send recovery, finalized binding retry, finalized scanner replay, safe unsigned retirement, delayed successor rotation, exact net balances; Robinhood Chain Testnet registry preflight (chain id, mainnet and wrong-RPC refusals, 2,000,000 gas ceiling), chain = robinhood ledger, separate wallet lineages, binding chain id guard, and a paid award.",
   );
 } finally {
   sql.close();
@@ -1236,4 +1623,5 @@ try {
   for (const database of journalHandles) database.close();
   rmSync(journalDirectory, { recursive: true, force: true });
   anvil.kill("SIGTERM");
+  rcAnvil?.kill("SIGTERM");
 }

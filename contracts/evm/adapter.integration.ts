@@ -122,6 +122,11 @@ try {
     ])) as string
   ).slice(-40)}`;
   const id = evmAwardId(31337n, vault, source);
+  assert.notEqual(
+    evmAwardId(46630n, vault, source),
+    evmAwardId(31337n, vault, source),
+    "Award ids bind the chain id, so Robinhood Chain Testnet never collides with Anvil",
+  );
   /** The destination wallet signs the exact binding; the authority submits it unchanged. */
   const acceptBinding = (binding: BindingInput) => {
     const signed = secp256k1.sign(
@@ -198,6 +203,11 @@ try {
   await assert.rejects(
     verifyReserve({ ...config, chainId: 84532n }, reserveTx, 0, id),
     /Wrong chain/,
+  );
+  await assert.rejects(
+    verifyReserve({ ...config, chainId: 46630n }, reserveTx, 0, id),
+    /Wrong chain/,
+    "A Robinhood Chain Testnet config refuses a reservation read from the 31337 node",
   );
   await assert.rejects(
     verifyReserve({ ...config, vault: token }, reserveTx, 0, id),
