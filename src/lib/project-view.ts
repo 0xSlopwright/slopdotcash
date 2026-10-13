@@ -597,8 +597,14 @@ export function createProjectView(
       right.score - left.score ||
       compareActors(left.actor, right.actor),
   );
-  leaders.forEach((entry, index) => {
-    entry.rank = index + 1;
+  // Preserve allocation order because frozen payment intent IDs use its index.
+  const scoreLeaders = [...leaders].sort(
+    (left, right) => right.scoreThirds - left.scoreThirds,
+  );
+  scoreLeaders.forEach((entry, index) => {
+    const previous = scoreLeaders[index - 1];
+    entry.rank =
+      previous?.scoreThirds === entry.scoreThirds ? previous.rank : index + 1;
   });
 
   const opportunities = snapshot.opportunities

@@ -10,6 +10,7 @@ import { type APIRequestContext, test as base, expect } from "@playwright/test";
 import { assertCycleIndex, type CycleIndex } from "../../src/lib/cycle-index";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
 import { githubUserIdFromNodeId } from "../../src/lib/github-actor";
+import { createGlobalLeaders } from "../../src/lib/global-leaderboard";
 import { communityProjects } from "../../src/lib/home-projects";
 import {
   assertLeaderboardSnapshot,
@@ -84,6 +85,99 @@ async function loadCycles(request: APIRequestContext): Promise<CycleIndex> {
   assertCycleIndex(value);
   return value;
 }
+
+test("equal contributors share cycle and profile ranks", async ({
+  page,
+  request,
+}) => {
+  // The local preview is not an allowed origin for the unrelated wallet API.
+  await page.route(
+    `${deployment.api}/api/v1/wallet-claims/actors/*/current`,
+    (route) => route.fulfill({ json: null }),
+  );
+  const snapshot = await loadSnapshot(request);
+  const cycles = await loadCycles(request);
+  const views = PROJECTS.filter(
+    (project) =>
+      projectCycleHasOpened(snapshot, project.id) &&
+      project.repositories.every((repository) =>
+        snapshot.repositories.some((entry) => entry.id === repository.id),
+      ),
+  ).map((project) => createProjectView(snapshot, project.id));
+  const view = views.find((entry) =>
+    entry.leaders.some(
+      (leader, index) =>
+        index > 0 &&
+        leader.scoreThirds === entry.leaders[index - 1].scoreThirds &&
+        leader.adjustedWeight !== entry.leaders[index - 1].adjustedWeight,
+    ),
+  );
+  if (!view)
+    throw new Error(
+      "Public snapshot has no tied scores with different weights",
+    );
+  const tiedIndex = view.leaders.findIndex(
+    (leader, index) =>
+      index > 0 &&
+      leader.scoreThirds === view.leaders[index - 1].scoreThirds &&
+      leader.adjustedWeight !== view.leaders[index - 1].adjustedWeight,
+  );
+  const tiedScore = view.leaders[tiedIndex].scoreThirds;
+  const expectedRank =
+    view.leaders.filter((leader) => leader.scoreThirds > tiedScore).length + 1;
+  const tiedLeaders = view.leaders.filter(
+    (leader) => leader.scoreThirds === tiedScore,
+  );
+  await page.goto(`/projects/${view.project.id}`);
+  await page.getByText("Cycle allocation details", { exact: true }).click();
+  await expect(page.locator(".project-leader-row .rank-cell")).toHaveText(
+    [...view.leaders]
+      .sort(
+        (left, right) =>
+          right.scoreThirds - left.scoreThirds ||
+          left.actor.id.localeCompare(right.actor.id),
+      )
+      .map(
+        (leader) =>
+          `#${view.leaders.filter((entry) => entry.scoreThirds > leader.scoreThirds).length + 1}`,
+      ),
+  );
+  for (const leader of tiedLeaders) {
+    const row = page.locator(".project-leader-row").filter({
+      has: page.locator(
+        `a[href="/contributors/${encodeURIComponent(leader.actor.login)}"]`,
+      ),
+    });
+    await expect(row).toBeVisible();
+    await expect(row.locator(".rank-cell")).toHaveText(`#${expectedRank}`);
+  }
+  const followingLeader = view.leaders
+    .filter((leader) => leader.scoreThirds < tiedScore)
+    .sort((left, right) => right.scoreThirds - left.scoreThirds)[0];
+  if (!followingLeader)
+    throw new Error("Public snapshot has no contributor after the score tie");
+  const followingRow = page.locator(".project-leader-row").filter({
+    has: page.locator(
+      `a[href="/contributors/${encodeURIComponent(followingLeader.actor.login)}"]`,
+    ),
+  });
+  await expect(followingRow.locator(".rank-cell")).toHaveText(
+    `#${expectedRank + tiedLeaders.length}`,
+  );
+
+  const leaders = createGlobalLeaders(snapshot, views, cycles);
+  const profileIndex = leaders.findIndex(
+    (leader, index) => index > 0 && leader.score === leaders[index - 1].score,
+  );
+  if (profileIndex < 0)
+    throw new Error("Public snapshot has no tied overall contributors");
+  for (const leader of leaders.slice(profileIndex - 1, profileIndex + 1)) {
+    await page.goto(`/contributors/${encodeURIComponent(leader.actor.login)}`);
+    const rank = page.getByText("overall rank", { exact: true }).locator("..");
+    await expect(rank).toBeVisible();
+    await expect(rank.locator("strong")).toHaveText(`#${profileIndex}`);
+  }
+});
 
 test("shows signer loss and expired capability without payout availability", async ({
   page,
