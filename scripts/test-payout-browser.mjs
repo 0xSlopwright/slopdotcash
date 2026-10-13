@@ -91,6 +91,9 @@ try {
     path: "evidence/payout-desktop-before.png",
     fullPage: true,
   });
+  await page
+    .getByRole("combobox", { name: "Base wallet", exact: true })
+    .selectOption({ label: "Browser wallet" });
   await page.getByRole("button", { name: "Connect Base wallet" }).focus();
   await page.keyboard.press("Enter");
   await page
