@@ -1,7 +1,13 @@
 /** Browser-only synthetic identity responses never register a real wallet. */
 import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
-import { expect, type Page, type TestInfo, test } from "@playwright/test";
+import {
+  type BrowserContext,
+  expect,
+  type Page,
+  type TestInfo,
+  test,
+} from "@playwright/test";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
 
 const deployment = deploymentOrigins(
@@ -184,6 +190,71 @@ test("funding and wallet keyboard flows remain accessible at 200 percent text si
   expect(evidence.network.filter((r) => r.status >= 400)).toEqual([]);
 });
 
+/**
+ * Routes a synthetic GitHub sign-in for `owner`; opening the authorize page
+ * completes the flow. Returns the session token and the sign-in start count.
+ */
+async function routeSyntheticSignIn(
+  context: BrowserContext,
+  owner: { githubActorId: string; githubLogin: string },
+  expiresAt: string,
+): Promise<{ starts: number; token: string }> {
+  const signIn = {
+    starts: 0,
+    token: `fixture.${Buffer.from(
+      JSON.stringify({
+        githubId: owner.githubActorId,
+        githubLogin: owner.githubLogin,
+        iss: "slop.cash",
+        aud: "private-trace-api",
+        sub: `github:${owner.githubActorId}`,
+        exp: Date.parse(expiresAt) / 1000,
+      }),
+    ).toString("base64url")}.fixture`,
+  };
+  let authorized = false;
+  const flowId = `flow_${"f".repeat(24)}`;
+  await context.route(`${deployment.identity}/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/v1/oauth/authorize") {
+      authorized = true;
+      await route.fulfill({
+        contentType: "text/html",
+        body: "<title>Synthetic OAuth fixture</title>Test sign-in complete",
+      });
+    } else if (path === "/v1/oauth/start") {
+      signIn.starts++;
+      authorized = false;
+      await route.fulfill({
+        json: {
+          flowId,
+          pollCapability: "p".repeat(48),
+          expiresAt,
+          pollAfterSeconds: 1,
+          authorizationUrl: `${deployment.identity}/v1/oauth/authorize?flow_id=${flowId}&state=${"s".repeat(48)}`,
+        },
+      });
+    } else if (path === "/v1/oauth/poll") {
+      if (!authorized) {
+        await route.fulfill({
+          status: 202,
+          json: { status: "pending", retryAfterSeconds: 1 },
+        });
+        return;
+      }
+      await route.fulfill({
+        json: {
+          status: "complete",
+          assertionType: "SlopIdentity",
+          assertion: `slop_assert_v1_${"a".repeat(48)}`,
+          expiresAt,
+        },
+      });
+    } else throw new Error(`Unexpected identity request ${path}`);
+  });
+  return signIn;
+}
+
 for (const sameTab of [false, true]) {
   test(`wallet ${sameTab ? "same-tab recovery" : "popup"} requires confirmation and verifies the returned public proof`, async ({
     page,
@@ -191,8 +262,6 @@ for (const sameTab of [false, true]) {
   }, info) => {
     const evidence = observe(page);
     let writes = 0;
-    let starts = 0;
-    let authorized = false;
     if (sameTab)
       await page.addInitScript(() => {
         window.open = () => null;
@@ -201,7 +270,6 @@ for (const sameTab of [false, true]) {
     const expiresAt = new Date(
       Math.floor(Date.now() / 1000) * 1000 + 240_000,
     ).toISOString();
-    const flowId = `flow_${"f".repeat(24)}`;
     const canonical = {
       schemaVersion: 1,
       ...owner,
@@ -218,59 +286,12 @@ for (const sameTab of [false, true]) {
       observedAt: new Date().toISOString(),
       supersedesClaimId: null,
     };
-    const token = `fixture.${Buffer.from(
-      JSON.stringify({
-        githubId: owner.githubActorId,
-        githubLogin: owner.githubLogin,
-        iss: "slop.cash",
-        aud: "private-trace-api",
-        sub: "github:123",
-        exp: Date.parse(expiresAt) / 1000,
-      }),
-    ).toString("base64url")}.fixture`;
-    await context.route(`${deployment.identity}/**`, async (route) => {
-      const path = new URL(route.request().url()).pathname;
-      if (path === "/v1/oauth/authorize") {
-        authorized = true;
-        await route.fulfill({
-          contentType: "text/html",
-          body: "<title>Synthetic OAuth fixture</title>Test sign-in complete",
-        });
-      } else if (path === "/v1/oauth/start") {
-        starts++;
-        authorized = false;
-        await route.fulfill({
-          json: {
-            flowId,
-            pollCapability: "p".repeat(48),
-            expiresAt,
-            pollAfterSeconds: 1,
-            authorizationUrl: `${deployment.identity}/v1/oauth/authorize?flow_id=${flowId}&state=${"s".repeat(48)}`,
-          },
-        });
-      } else if (path === "/v1/oauth/poll") {
-        if (!authorized) {
-          await route.fulfill({
-            status: 202,
-            json: { status: "pending", retryAfterSeconds: 1 },
-          });
-          return;
-        }
-        await route.fulfill({
-          json: {
-            status: "complete",
-            assertionType: "SlopIdentity",
-            assertion: `slop_assert_v1_${"a".repeat(48)}`,
-            expiresAt,
-          },
-        });
-      } else throw new Error(`Unexpected identity request ${path}`);
-    });
+    const signIn = await routeSyntheticSignIn(context, owner, expiresAt);
     await context.route(`${deployment.api}/**`, async (route) => {
       const path = new URL(route.request().url()).pathname;
       if (path === "/api/v1/auth/session") {
         await route.fulfill({
-          json: { tokenType: "Bearer", token, expiresAt },
+          json: { tokenType: "Bearer", token: signIn.token, expiresAt },
         });
       } else if (path === "/api/v1/wallet-claims/current") {
         // A real existing claim avoids treating an expected 404 as a console failure.
@@ -320,7 +341,7 @@ for (const sameTab of [false, true]) {
       page.getByRole("heading", { name: "Confirm your public registration" }),
     ).toBeVisible();
     expect(writes).toBe(0);
-    expect(starts).toBe(1);
+    expect(signIn.starts).toBe(1);
     await expect(page.locator(".funding-workbench")).toContainText(
       owner.githubLogin,
     );
@@ -366,7 +387,7 @@ for (const sameTab of [false, true]) {
       page.getByRole("heading", { name: "Wallet registered", exact: true }),
     ).toBeVisible();
     expect(writes).toBe(1);
-    expect(starts).toBe(2);
+    expect(signIn.starts).toBe(2);
     await expect(page.getByText(/^Record digest:/u)).toBeHidden();
     await expect(
       page.getByRole("listitem").filter({ hasText: "Saved" }),
@@ -388,3 +409,109 @@ for (const sameTab of [false, true]) {
     expect(evidence.network.filter((r) => r.status >= 400)).toEqual([]);
   });
 }
+
+test("a renamed GitHub account opens its wallet claim and refreshes the recorded login", async ({
+  page,
+  context,
+}, info) => {
+  const evidence = observe(page);
+  let writes = 0;
+  // ACC-01: the numeric ID owns the claim. The registry recorded it before
+  // the rename, so it still carries the earlier login.
+  const owner = { githubActorId: "123", githubLogin: "qa-renamed" };
+  const expiresAt = new Date(
+    Math.floor(Date.now() / 1000) * 1000 + 240_000,
+  ).toISOString();
+  const recorded = {
+    schemaVersion: 1,
+    githubActorId: owner.githubActorId,
+    githubLogin: "qa-fixture",
+    address,
+    source: "d1_registry",
+    issueRepository: null,
+    issueNumber: null,
+    sourceBodySha256: sha({
+      schemaVersion: 1,
+      githubActorId: owner.githubActorId,
+      address,
+      supersedesClaimId: null,
+    }),
+    observedAt: new Date(Date.now() - 86_400_000).toISOString(),
+    supersedesClaimId: null,
+  };
+  const signIn = await routeSyntheticSignIn(context, owner, expiresAt);
+  await context.route(`${deployment.api}/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/auth/session") {
+      await route.fulfill({
+        json: { tokenType: "Bearer", token: signIn.token, expiresAt },
+      });
+    } else if (path === "/api/v1/wallet-claims/current") {
+      await route.fulfill({
+        json: {
+          ...recorded,
+          claimId: "qa_recorded_claim",
+          recordDigest: sha(recorded),
+        },
+      });
+    } else if (path === "/api/v1/wallet-claims") {
+      writes++;
+      // The API appends a same-address successor under the current login.
+      expect(route.request().postDataJSON()).toEqual({
+        address,
+        supersedesClaimId: "qa_recorded_claim",
+      });
+      const next = {
+        ...recorded,
+        githubLogin: owner.githubLogin,
+        sourceBodySha256: sha({
+          schemaVersion: 1,
+          githubActorId: owner.githubActorId,
+          address,
+          supersedesClaimId: "qa_recorded_claim",
+        }),
+        observedAt: new Date().toISOString(),
+        supersedesClaimId: "qa_recorded_claim",
+      };
+      await route.fulfill({
+        json: {
+          ...next,
+          claimId: "qa_refreshed_claim",
+          recordDigest: sha(next),
+        },
+      });
+    } else throw new Error(`Unexpected API request ${path}`);
+  });
+  await page.goto("/account#wallets", { waitUntil: "networkidle" });
+  await keyboardTo(page, page.getByLabel("Solana public address"));
+  await page.keyboard.type(address);
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("heading", { name: "Confirm your public registration" }),
+  ).toBeVisible();
+  await expect(page.locator(".wallet-confirmation")).toContainText(
+    owner.githubLogin,
+  );
+  expect(writes).toBe(0);
+  await audit(page, info, "wallet-renamed-preview");
+  await keyboardTo(
+    page,
+    page.getByRole("button", { name: "Register address", exact: true }),
+  );
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("heading", { name: "Wallet registered", exact: true }),
+  ).toBeVisible();
+  expect(writes).toBe(1);
+  expect(signIn.starts).toBe(1);
+  await expect(page.locator(".funding-workbench")).toContainText(
+    `Saved for ${owner.githubLogin}`,
+  );
+  await audit(page, info, "wallet-renamed-refreshed");
+  await info.attach("console-network.json", {
+    body: JSON.stringify(evidence, null, 2),
+    contentType: "application/json",
+  });
+  expect(evidence.errors).toEqual([]);
+  expect(evidence.network.filter((r) => r.status >= 400)).toEqual([]);
+});
