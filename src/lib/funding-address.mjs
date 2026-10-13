@@ -109,6 +109,7 @@ export function fundingAssetForNetwork(network) {
       base: "USDC",
       bitcoin: "BTC",
       ethereum: "USDC",
+      robinhood: "USDG",
       solana: "USDC",
     }[network] ?? null
   );
@@ -119,7 +120,7 @@ export function isFundingAddress(network, value) {
     return decodedBase58Length(value, 32, 44) === 32;
   }
   if (network === "bitcoin") return validBitcoinAddress(value);
-  if (network === "base" || network === "ethereum") {
+  if (network === "base" || network === "ethereum" || network === "robinhood") {
     return (
       typeof value === "string" &&
       /^0x[0-9a-f]{40}$/u.test(value) &&
