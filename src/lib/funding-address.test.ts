@@ -1,10 +1,10 @@
 // Chain primitives for Robinhood Chain: USDG asset, EVM address rule.
 import { describe, expect, test } from "bun:test";
 import {
+  type FundingNetwork,
   fundingAssetForNetwork,
   isFundingAddress,
 } from "./funding-address.mjs";
-import type { FundingNetwork } from "./funding-address.mjs";
 
 const evm = "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86";
 
