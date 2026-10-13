@@ -9,14 +9,14 @@ import {
 } from "../../backend/payments/ledger";
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import { solanaPaymentAdapter } from "../../contracts/solana/adapter";
-import { chainFamily } from "../../src/lib/escrow-policy.mjs";
+import { chainFamily, type EscrowChain } from "../../src/lib/escrow-policy.mjs";
 import { reconcileFailedAttempts } from "./reconcile";
 import { scanEvmPayments, scanSolanaPayments } from "./scanner";
 
 export interface PaymentDeployment {
   projectId: string;
   network: string;
-  chain: "base" | "solana";
+  chain: EscrowChain;
   vault: string;
   programId?: string;
   projectPda?: string;

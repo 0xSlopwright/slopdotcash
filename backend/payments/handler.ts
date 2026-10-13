@@ -1,6 +1,10 @@
 import { evmBindingTypedData } from "../../contracts/evm/adapter";
 import { readBoundedJson } from "../../src/lib/browser-json";
-import { ESCROW_CHAINS, EVM_CHAINS } from "../../src/lib/escrow-policy.mjs";
+import {
+  ESCROW_CHAINS,
+  ESCROW_NETWORKS,
+  EVM_CHAINS,
+} from "../../src/lib/escrow-policy.mjs";
 import type {
   AccountPayment,
   DirectTransfer,
@@ -359,6 +363,15 @@ export async function handlePaymentsApi(
             !/^0x[0-9a-fA-F]{130}$/.test(body.signature)))
       )
         return json(400, { error: "invalid_request" });
+      if (
+        Object.hasOwn(ESCROW_NETWORKS, body.network) &&
+        ESCROW_NETWORKS[body.network as keyof typeof ESCROW_NETWORKS]
+          .chainId !== body.chainId
+      )
+        return json(400, {
+          error: "invalid_request",
+          detail: "Chain id does not match the named network",
+        });
       const wallet = await deps.db
         .prepare(
           `SELECT w.id,w.wallet_address,w.record_sha256 FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id WHERE w.id=? AND w.github_user_id=? AND w.chain IN (${EVM_CHAINS.map(() => "?").join(",")}) AND w.source='d1_registry' AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)`,

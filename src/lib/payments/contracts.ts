@@ -1,4 +1,6 @@
-export type PaymentChain = "base" | "solana";
+import type { EscrowChain } from "../escrow-policy.mjs";
+
+export type PaymentChain = EscrowChain;
 export interface AccountPayment {
   id: string;
   projectId: string;
@@ -74,5 +76,9 @@ export function transactionUrl(
     return `https://explorer.solana.com/tx/${encodeURIComponent(id)}`;
   if (network === "solana-devnet" || network === "solana-testnet")
     return `https://explorer.solana.com/tx/${encodeURIComponent(id)}?cluster=${network.slice(7)}`;
+  if (network === "robinhood-mainnet")
+    return `https://robinhoodchain.blockscout.com/tx/${encodeURIComponent(id)}`;
+  if (network === "robinhood-testnet")
+    return `https://explorer.testnet.chain.robinhood.com/tx/${encodeURIComponent(id)}`;
   return null;
 }

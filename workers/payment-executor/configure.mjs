@@ -29,7 +29,12 @@ for (let index = 2; index < process.argv.length; index += 2) {
 }
 const network = args.network;
 if (
-  !["base-sepolia", "solana-devnet", "solana-testnet"].includes(network) ||
+  ![
+    "base-sepolia",
+    "solana-devnet",
+    "solana-testnet",
+    "robinhood-testnet",
+  ].includes(network) ||
   !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
     args["database-id"] ?? "",
   ) ||
