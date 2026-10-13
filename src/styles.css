@@ -4464,7 +4464,7 @@ small {
 .wallet-picker-row {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.5rem;
   width: 100%;
   box-sizing: border-box;
   padding: 1rem;
@@ -4487,6 +4487,10 @@ small {
   font-weight: 600;
 }
 .wallet-picker-row small {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
   font-size: 0.875rem;
 }
 .wallet-picker-row:focus-visible,

@@ -295,8 +295,9 @@ export function EarningsPage() {
               >
                 <WalletIcon size={24} aria-hidden="true" />
                 <span>MetaMask</span>
-                <small>Install</small>
-                <ExternalLink size={16} aria-hidden="true" />
+                <small>
+                  Install <ExternalLink size={16} aria-hidden="true" />
+                </small>
               </a>
               <a
                 className="wallet-picker-row"
@@ -306,8 +307,9 @@ export function EarningsPage() {
               >
                 <WalletIcon size={24} aria-hidden="true" />
                 <span>Phantom</span>
-                <small>Install</small>
-                <ExternalLink size={16} aria-hidden="true" />
+                <small>
+                  Install <ExternalLink size={16} aria-hidden="true" />
+                </small>
               </a>
             </>
           )}
