@@ -12,7 +12,7 @@ GitHub remains the authority for repository work, acceptance, and public project
 
 The core product outcome is a complete, understandable journey from finding work to receiving a verified payment. A wallet form, points page, vault balance, or bot review alone does not complete that journey.
 
-The MVP includes the current product capabilities, unified accounts, contributor and maintainer onboarding, project discovery, contribution and review skills, optional operated Slopbot, community-project security vetting, points and Slop Score leaderboards, donations, and a complete Base/Solana payout path. Private security bounty programs, Robinhood integrations, Ethereum mainnet settlement, and additional chains are future scope. Existing historical records and read-only integrations remain readable even when their network is outside the new MVP settlement scope.
+The MVP includes the current product capabilities, unified accounts, contributor and maintainer onboarding, project discovery, contribution and review skills, optional operated Slopbot, community-project security vetting, points and Slop Score leaderboards, donations, and a complete Base/Solana payout path. Robinhood Chain joins Base and Solana as an escrow settlement network under FND-02; adding it activates no project. Private security bounty programs, other Robinhood integrations, Ethereum mainnet settlement, and additional chains are future scope. Existing historical records and read-only integrations remain readable even when their network is outside the new MVP settlement scope.
 
 This draft defines target behavior. It does not authorize a release, financial transaction, contract deployment, new fee, or retrospective change to contributor terms.
 
@@ -36,7 +36,7 @@ This draft defines target behavior. It does not authorize a release, financial t
 3. Let maintainers publish a project and manage its lifecycle from one dashboard while retaining GitHub approval authority.
 4. Make available funds, reserved awards, and money actually paid easy to distinguish.
 5. Reduce review effort through optional Slopbot reviews and explicitly delegated closure rules. Keep accepted-work ratification and payment approval with maintainers; apply published penalties through deterministic accounting.
-6. Make Base and Solana behave consistently at the product level, with explicit network differences where users need them.
+6. Make Base, Solana and Robinhood Chain behave consistently at the product level, with explicit network differences where users need them.
 
 ### Measures
 
@@ -59,7 +59,7 @@ Suggested pilot targets are product targets, not observed performance: at least 
 | GitHub registration | OAuth identity worker and separate points membership session | MVP: one account experience with properly scoped sessions |
 | X connection | OAuth connection, opt-in display, one-time points | MVP: expose within account settings; verify live provider activation |
 | Wallet records | Append-only backend claims; independent Base and Solana lineages | MVP: unified wallet UX, possession/consent rules, recovery, and payout binding |
-| Wallet page | Inspected form validates Solana addresses | MVP: both supported networks and network-specific status |
+| Wallet page | Inspected form validates Solana addresses | MVP: every supported network and network-specific status |
 | Contribution skills | General bootstrap plus canonical project contributor/reviewer skills | MVP: discovery without an existing checkout and resumable onboarding |
 | Work selection | GitHub ingestion and bounded eligibility decisions | MVP: explain eligibility and recheck before starting |
 | Slopbot | Advisory protocol and project reviewer skills | MVP: optional GitHub App, participation filters, ignore lists, full guideline review, health status, delegated closure and auditable penalties |
@@ -68,10 +68,10 @@ Suggested pilot targets are product targets, not observed performance: at least 
 | Points | Durable journal, membership, X, contribution and recipient payout points | MVP: explicit setup and maintainer recognition without changing cash scores |
 | Leaderboards | Current project cycles, cumulative score, points standings, archive | MVP: Slop Score by default, points and money-received sorting, issue/PR outcome ratios and negative events |
 | Funding | Direct funding records and Squads/Sablier commitment verification | MVP: third-party vault funding and clearly defined withdrawal rights |
-| Payouts | Deterministic allocations, unsigned Solana or Base plans per project network, finalized or quorum-confirmed verification | MVP: complete Base/Solana reserve, approval, execution, and reconciliation paths |
+| Payouts | Deterministic allocations, unsigned Solana or Base plans per project network, finalized or quorum-confirmed verification | MVP: complete Base/Solana reserve, approval, execution, and reconciliation paths; the same paths on Robinhood Chain before any project activates there |
 | Private traces | Dedicated R2 storage and scoped metadata/authorization | Retain applicable protocol; do not reuse as a private bounty case system |
 | Security bounty business | No complete private program workflow established by this review | Future: opt-in private programs and 50/50 researcher split |
-| Other networks/products | Existing Ethereum/Bitcoin funding readers and external prize records | Preserve history; new Ethereum settlement and Robinhood are future |
+| Other networks/products | Existing Ethereum/Bitcoin funding readers and external prize records | Preserve history; new Ethereum settlement and Robinhood products other than Robinhood Chain escrow settlement are future |
 
 The current upstream source uses Score v2. The supplied local instructions describe older diminishing-credit behavior and stricter trace requirements. These must not be combined into a new accidental policy. This PRD preserves the source baseline for analysis and calls for one approved versioned policy before implementation. The requested Slopbot closures, penalties, and security-based project bans are target MVP policy changes. They require versioned protocol and runtime changes before activation; publication of this PRD does not activate them.
 
@@ -125,11 +125,11 @@ Preserve the existing minimal-storage design: account ID, observed handle, verif
 
 **WAL-01 — Backend ownership of the record.** Store all new account-to-wallet connections through Slop's authenticated API. No GitHub bio, issue, PR, commit, or manually edited manifest is a normal registration path. Legacy records remain historical evidence and require explicit migration provenance; they do not automatically become authorization for a new payout protocol.
 
-One account may have one active destination on Base and one on Solana. A project's settlement network selects the appropriate destination. An EVM address on another network does not establish Base readiness. Show full addresses on confirmation and copy actions, network, token, verification state, and last change time.
+One account may have one active destination per supported network: Base, Solana and Robinhood Chain. A project's settlement network selects the appropriate destination. An EVM address registered for one network does not establish readiness on another, because the consent message and the binding digest name the chain id: a Base registration does not establish Robinhood Chain readiness, and the reverse. Show full addresses on confirmation and copy actions, network, token, verification state, and last change time.
 
 **WAL-02 — Proof and consent.** Connecting a wallet provider is not proof by itself. Use a short-lived, single-use signature challenge bound to actor, origin, network, exact destination, purpose, and expiry. The message authorizes payout routing only. It must not request token approval, a transaction, a seed phrase, or a private key. Separately capture agreement to receive awards at that destination.
 
-The MVP initially supports ordinary self-controlled Base and Solana wallets with verified signatures. Contract wallets, multisigs, exchange deposit addresses, and off-curve Solana destinations need an explicit supported proof method or reviewed exception; an unsupported wallet receives a useful explanation and remains ineligible for automatic routing. Preserve historical claims without falsely upgrading their proof level.
+The MVP initially supports ordinary self-controlled Base, Solana and Robinhood Chain wallets with verified signatures. Contract wallets, multisigs, exchange deposit addresses, and off-curve Solana destinations need an explicit supported proof method or reviewed exception; an unsupported wallet receives a useful explanation and remains ineligible for automatic routing. Preserve historical claims without falsely upgrading their proof level.
 
 **WAL-03 — Changes.** A change appends a successor to the current actor/network lineage. Use compare-and-swap semantics so two concurrent changes cannot create competing current wallets. Require recent GitHub authentication and fresh proof for the new destination. Recommended default: a 24-hour delay for changes affecting unpaid funded awards, with an immediate security freeze option. Show the activation time and affected obligations.
 
@@ -264,7 +264,7 @@ These requirements come from `docs/slopbot-v2-proposal.md`. Approval of the requ
 
 **FND-01 — Funding modes.** Distinguish legacy direct receiving addresses, externally controlled committed instruments, and new Slop-compatible protected vaults. Show the mode and its actual constraints. Only the last may claim contract-enforced reserved awards once the deployed program and authorities are verified. Use “project vault” as the primary label. Do not relabel current funding as escrow or guaranteed funds.
 
-**FND-02 — One network.** Choose Base or Solana before first funding. Use that network's approved USDC asset. Freeze the project network while balances or obligations exist. No automatic bridging, contributor override, or mixed-chain obligation. Keep gas/rent funding separate from USDC contributor principal.
+**FND-02 — One network.** Choose Base, Solana or Robinhood Chain before first funding. Use that network's approved stablecoin: Circle USDC on Base and Solana, Paxos USDG on Robinhood Chain (`0x5fc5360d0400a0fd4f2af552add042d716f1d168`, 6 decimals, verified in the design record). Freeze the project network while balances or obligations exist. No automatic bridging, contributor override, or mixed-chain obligation. Keep gas/rent funding separate from stablecoin contributor principal. Robinhood Chain (chain id 4663, testnet 46630, Arbitrum Nitro, ETH gas) runs the same EVM escrow contract and adapter as Base, with its own network definition, wallet lineage and consent; it is an escrow settlement network only, and the legacy monthly-pool rail in PAY-09 stays Base and Solana. Adding the network activates no project: each activation is its own reviewed manifest change, the hosted executor keeps rejecting mainnet deployments until the repository owner lifts that under PAY-05, and the Robinhood Chain fee recipient and identity authority are repository-owner decisions recorded at deployment. Design record: [Robinhood Chain USDG escrow payouts](robinhood-chain-escrow-design.md).
 
 **FND-03 — Donation journey.** A visitor chooses Fund project, reviews the network, asset, destination, current balance, applicable fee, withdrawal rights, and project risk. They can donate without a Slop account. Signing occurs in their wallet. Display submitted, pending finality, verified, or failed status with a transaction link. A pasted transaction ID is only a report until verified. Require no public GitHub PR for normal deposit recognition.
 
@@ -276,7 +276,7 @@ For the initial design, reserve donor-class funds for awards before refundable s
 
 If the project closes, donor funds remain restricted while existing obligations settle. The default is no discretionary operator sweep. Any future wind-down transfer to another project requires terms established before deposit and the specified approval; otherwise keep the balance restricted. This is a contract-design requirement missing from the simpler single-sponsor payout proposal.
 
-**FND-05 — Accounting.** Publish deposited USDC, gross awards, free reward funding, reserved net contributor principal, reserved payout fees, contributor-paid principal, platform fees, and refunded sponsor funds separately. Do not add an external commitment, a vault deposit, and its payout into one “funding” total. Record exact integers and provenance; formatted currency is presentation only.
+**FND-05 — Accounting.** Publish deposited USDC (USDG on Robinhood Chain), gross awards, free reward funding, reserved net contributor principal, reserved payout fees, contributor-paid principal, platform fees, and refunded sponsor funds separately. Do not add an external commitment, a vault deposit, and its payout into one “funding” total. Record exact integers and provenance; formatted currency is presentation only.
 
 **FND-06 — Slopbot service allocation (approved 9 October 2026).** When depositing sponsor-class funds, the owner may set a service allocation percentage (suggested 2%). It is a Slopbot budget cap, not a transfer. Money moves only through a PAY-10 charge; an unused allocation stays refundable sponsor money. Donor-class funds are never used for Slopbot.
 
@@ -636,7 +636,7 @@ flowchart TD
   B --> H[Human review in GitHub]
   H --> C[Reviewed allocation]
   C --> O[Owner authorizes funded obligations]
-  O --> V[Base or Solana project vault]
+  O --> V[Base, Solana or Robinhood Chain project vault]
   A --> D[Actor and wallet proof: design gate]
   D --> P[Project-operated or permissionless executor]
   P --> V
@@ -726,7 +726,7 @@ Collection risk is explicit. An unfunded third-party promise is not an earned ca
 
 GitHub private vulnerability reporting may provide an integration path, but it must be enabled and its actual permissions and API capabilities tested. A `SECURITY.md` file alone does not establish an available private intake. [GitHub private reporting](https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/report-privately)
 
-Robinhood remains a separate future discovery item: clarify whether the intended product is a wallet, chain, payment, or brokerage integration before defining requirements. Ethereum mainnet and other networks must pass the same accounting, authority, fee, finality, and end-to-end conformance gates before activation.
+Robinhood Chain escrow settlement is in scope under FND-02. Other Robinhood integrations (wallet, payment or brokerage) remain a separate future discovery item with no requirements defined. Ethereum mainnet and other networks must pass the same accounting, authority, fee, finality, and end-to-end conformance gates before activation.
 
 ## 20 Risks and mitigation
 
@@ -763,7 +763,7 @@ The legal review item is a launch dependency, not a conclusion about Slop's lega
 | 1 Unified identity | Account, optional X, both-chain wallets, private earnings shell, migration | Real OAuth and wallet proof/recovery flow on isolated staging |
 | 2 Project and skill onboarding | Resumable project setup, policy updates, discovery skill, canonical artifacts | Maintainer and contributor complete real repository workflows |
 | 3 Slopbot and security admission | Optional bot, participation filters, delegated closure, VM vetting, Astra/Opus scans, artifact quarantine and bans | Review/skip matrix, exact-revision decisions, negative-event reversals and malicious/clean fixture qualification |
-| 4 Financial vertical slice | Base and Solana vaults, funding classes, approvals, walletless reserves, dispatch, fees and reconciliation | Same complete funded-award scenario passes on both supported test environments |
+| 4 Financial vertical slice | Base and Solana vaults, funding classes, approvals, walletless reserves, dispatch, fees and reconciliation | Same complete funded-award scenario passes on the Base and Solana test environments; on the Robinhood Chain testnet before any project activates there, not as a gate for the MVP completion record |
 | 5 Product presentation | Homepage, dashboards, points, leaderboards, notifications, support and appeals | Accessible desktop/mobile acceptance with correct metrics and failure states |
 | 6 Controlled production activation | Audited contracts, operational authority, deployed-byte verification, limited funded pilot | Actual authorized mainnet evidence and reconciliation before broader enablement |
 
@@ -774,7 +774,7 @@ This is an order of dependencies, not a calendar estimate. Contract work can inf
 | Requirement group | Required real workflow and evidence |
 | --- | --- |
 | ACC/SOC | New GitHub user, returning user, rename, denied/expired OAuth, logout/revocation, X connect/disconnect/conflict and private visibility |
-| WAL | Base and Solana signatures, wrong network, replayed challenge, concurrent change, delayed activation, compromised-account hold and unsupported wallet |
+| WAL | Base, Solana and Robinhood Chain signatures, wrong network, replayed challenge, concurrent change, delayed activation, compromised-account hold and unsupported wallet |
 | SKL | Start outside a repo, choose project, verify/install skill, select live eligible work, submit a real bounded contribution with required evidence |
 | PRJ | Install App, verify authority, save/resume draft, publish reviewed manifest/skills, lose permission, change rules prospectively |
 | BOT | Optional disabled/degraded/ready states; marker/member/external/ignore truth table; full policy inputs; real PR and issue revisions; confirmed closure, failed closure, retries and uninstall |
@@ -788,7 +788,7 @@ This is an order of dependencies, not a calendar estimate. Contract work can inf
 
 On each supported test deployment, fund 1,000 test USDC; approve 100 for a registered actor and 50 for a walletless actor; reserve 150 under the approved deducted fee; pay 98 net plus 2 fee for the first award; register the second actor and pay 49 net plus 1 fee; replay dispatch and prove no duplicate payment. Separately add donor-class funds and prove they cannot be refunded. Rebuild the projection and prove all balances, principal, fees, obligations, and receipts match. Exercise manual mode against the same exact-once controls.
 
-Use Base Sepolia and the approved Solana application test cluster with explicitly identified test assets. Testnet assets are not real funds or production evidence. Carry the detailed contract and deployment acceptance work from the Base/Solana architecture proposal into the implementation plan after reconciling donation and fee policy.
+Use Base Sepolia, the approved Solana application test cluster and Robinhood Chain Testnet (chain id 46630) with explicitly identified test assets; no USDG exists on that testnet, so it uses a separately labeled test token, as Solana Testnet does. Testnet assets are not real funds or production evidence. Carry the detailed contract and deployment acceptance work from the Base/Solana architecture proposal into the implementation plan after reconciling donation and fee policy.
 
 For implementation, retain all required repository checks, lockfile/toolchain pinning, current-base rebase, exact-head browser evidence, and protected release workflow. UI PRs require uploaded walkthrough and evidence videos. Verify production website, API migrations, contract/program deployment, DNS/TLS/headers, and actual payment independently. Documentation drafting does not establish any of those results.
 
@@ -827,7 +827,7 @@ served files. Issue #534 tracks this approved operational change.
 | Privacy and retention | Field-level inventory, public wallet compatibility, closure/recovery policy | Privacy and backend owners |
 | Deployment branch policy | Resolve open staging/production proposal before implementation release work | Release owner |
 | Security bounty terms | Future only; funded 50/50 split, safe harbor, privacy and appeals | Security-program, finance and legal owners |
-| Robinhood meaning | Define the intended integration before estimating | Product owner |
+| Robinhood Chain escrow settlement | **Proposed 13 October 2026 by the operator; approved by the repository owner's merge of the amendment that added this row:** Robinhood Chain (chain id 4663) is a third escrow settlement network under FND-02 with Paxos USDG as its asset, run by the existing EVM contract and adapter with its own network definition, wallet lineage and consent; the legacy monthly-pool rail stays Base and Solana; fees and fee incidence are unchanged; the testnet is prepare-only and a human broadcasts; no project is activated and the hosted executor's mainnet rejection stands. Still open: the Robinhood Chain fee recipient and identity authority, the first project, and when the executor may accept a mainnet network (`docs/robinhood-chain-escrow-design.md`) | Repository owner |
 
 No unresolved decision in this table is permission for an agent to invent a new economic rule. The drafting can complete now; implementation must bind to the approved choices.
 
@@ -841,7 +841,7 @@ Map legacy wallet observations to historical claims with their original proof le
 
 Keep old cycle and fee verifiers available for historical records. New vaults use versioned rules and an effective date. An old commitment becomes new-vault funding only after actual verified transfer; never count both the source instrument and destination balance. Stop new intake during a project migration if its obligations cannot be cleanly separated.
 
-Release behind capability gates for accounts, Base wallets, vault deposits, execution, and donations. Rollback may disable new actions and withdraw a bad projection; it cannot delete journal history, undo chain transfers, reset welcome points, or restore a stale wallet as current. Reconcile before resuming.
+Release behind capability gates for accounts, Base and Robinhood Chain wallets, vault deposits, execution, and donations. Rollback may disable new actions and withdraw a bad projection; it cannot delete journal history, undo chain transfers, reset welcome points, or restore a stale wallet as current. Reconcile before resuming.
 
 ## 24 Review basis and follow-up evidence
 
@@ -861,6 +861,7 @@ Primary source map, all paths at the baseline above:
 - Skills/bot: `skills/slop/SKILL.md`, `skills/contribute-to-*/`, `skills/review-*-contributions/`, `protocol/slopbot-v1.md`.
 - Projects/funds: `projects/*/project.json`, `src/lib/project-schema.mjs`, `funding/README.md`, `cycles/README.md`, `src/lib/settlement-plan.ts`, `src/lib/evm-settlement.ts`.
 - Prior local proposal: Base and Solana payouts architecture review, dated 6 October 2026. It is background context, not an additional canonical requirement source; this PRD and the MVP plan define the adopted scope.
+- Robinhood Chain design record: [Robinhood Chain USDG escrow payouts](robinhood-chain-escrow-design.md), 12 October 2026. It records the operator-approved design for the third escrow settlement network under FND-02 and the facts verified for it; implementation pull requests cite it, and none could start before this amendment was approved.
 
 Open work that needs reconciliation includes [Base settlement #472](https://github.com/SlopDotCash/slopdotcash/issues/472), [vault RFC #500](https://github.com/SlopDotCash/slopdotcash/issues/500), [unclaimed carry #477](https://github.com/SlopDotCash/slopdotcash/issues/477), [direct-payment reconciliation #455](https://github.com/SlopDotCash/slopdotcash/issues/455), [installer reauthorization #463](https://github.com/SlopDotCash/slopdotcash/issues/463), [work queue #456](https://github.com/SlopDotCash/slopdotcash/issues/456), [review policy #413](https://github.com/SlopDotCash/slopdotcash/issues/413), [private security credit #452](https://github.com/SlopDotCash/slopdotcash/issues/452), and [release separation #534](https://github.com/SlopDotCash/slopdotcash/issues/534). Their existence does not establish approval or completion. PRs [508](https://github.com/SlopDotCash/slopdotcash/pull/508), [509](https://github.com/SlopDotCash/slopdotcash/pull/509), [510](https://github.com/SlopDotCash/slopdotcash/pull/510), and [511](https://github.com/SlopDotCash/slopdotcash/pull/511) merged as a separate legacy committed-instrument mode: a 2-of-3 Squads project vault, a 1% fee that the creator pays separately, no protected contributor claim, and no withdrawal fee. The project schema rejects legacy `reward.paymentMode: "enabled"` on any project with an `escrow` policy, so the legacy mode and escrow never run as one funding mode.
 

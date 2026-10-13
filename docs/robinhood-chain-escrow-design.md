@@ -156,7 +156,7 @@ Delivered as `docs/robinhood-chain-testnet-runbook.md` with an evidence template
 
 The repository rules require a new requirement to be discussed with humans and added to the PRD, with maintainer approval of scope and phase, before implementation starts. FND-02 currently reads "Choose Base or Solana before first funding", so Robinhood Chain is a new requirement. The gate is therefore:
 
-- **Step 0, PRD amendment.** A docs-only PR adds Robinhood Chain and USDG to FND-02, adds one sentence to the payouts addendum, and links this document. The repository owner approves and merges it. Until then PR A, B and C stay drafts.
+- **Step 0, PRD amendment.** A docs-only PR adds Robinhood Chain and USDG to FND-02 and to every other PRD and MVP-plan line that named only Base and Solana or called Robinhood future scope, replaces the section 22 "Robinhood meaning" row with the decision, adds one sentence to the payouts addendum, and links this document. The repository owner approves and merges it. Until then PR A, B and C stay drafts.
 
 Then three pull requests into `development`, each stacked on #675 (which changes the factory constructor and the deployment schema) and merged by the repository owner:
 

@@ -6,7 +6,7 @@ This is a focused implementation addendum to [the canonical PRD](slop-product-re
 
 ## Product contract
 
-Projects select one payout chain: Base or Solana. The selected chain cannot change while the project's payment history and obligations exist. Network-specific execution lives behind adapters so additional chains can implement the same financial contract.
+Projects select one payout chain: Base, Solana or Robinhood Chain (USDG, see [the Robinhood Chain design record](robinhood-chain-escrow-design.md)). The selected chain cannot change while the project's payment history and obligations exist. Network-specific execution lives behind adapters so additional chains can implement the same financial contract.
 
 All new escrow allocations are gross USDC. The fee is deducted: `fee = floor(gross / 50)`, `recipientNet = gross - fee`. A 100-USDC allocation reserves 100, transfers 98 to the contributor, and transfers 2 to the fee recipient. Contributor earnings display net. Per-award gross and fee remain inspectable. Monetary arithmetic is integer micro-USDC.
 
