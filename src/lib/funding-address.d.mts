@@ -1,7 +1,7 @@
 /** Types the shared canonical receiving-address validator. */
 
 export type FundingNetwork = "base" | "bitcoin" | "ethereum" | "robinhood" | "solana";
-export type FundingAsset = "BTC" | "USDC";
+export type FundingAsset = "BTC" | "USDC" | "USDG";
 
 export interface FundingAddressRoute {
   readonly network: FundingNetwork;
