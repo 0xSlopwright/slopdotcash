@@ -9,19 +9,23 @@ node scripts/check-payout-test-funding.mjs solana-testnet "$SOLANA_TEST_ADDRESS"
 node scripts/check-payout-test-funding.mjs robinhood-testnet "$ROBINHOOD_TEST_ADDRESS"
 ```
 
-An optional third argument selects an HTTPS RPC URL. Use a public URL without
-credentials. The command checks the Base chain ID or Solana genesis hash before
-reading a finalized balance. Mainnet network names are rejected. It neither
-reads signing keys nor requests funds, signs, or broadcasts a transaction.
+An optional third argument selects an HTTPS RPC URL. Prefer a public URL without
+credentials. If a network needs an archive endpoint that carries a key, keep
+the key out of shell history and recorded evidence: build the URL from an
+environment variable and redact it in any output you keep. The command checks
+the Base chain ID or Solana genesis hash before reading a finalized balance.
+Mainnet network names are rejected. It neither reads signing keys nor requests
+funds, signs, or broadcasts a transaction.
 
 Robinhood Chain Testnet (chain id 46630) gas comes from
-`https://faucet.testnet.chain.robinhood.com`; the check reads the chain id
-`0xb626` before the finalized balance. The public RPC is rate-limited; use it
-for this check and a one-off deployment, not for the scanner. The public RPC
-does not keep state at the `finalized` tag, so pass an archive RPC URL (for
-example an Alchemy endpoint for Robinhood Chain Testnet) as the third argument;
-without one the check fails with `historical state is not available`, which is
-an RPC limitation, not a zero balance.
+`https://faucet.testnet.chain.robinhood.com`. The check reads the chain id
+`0xb626` and then the balance at the `finalized` tag. The public RPC
+`https://rpc.testnet.chain.robinhood.com` answers the chain id but does not
+keep account state at `finalized` (it replies `historical state is not available`, which is an RPC limitation, not a zero balance), so pass an archive
+RPC URL for Robinhood Chain Testnet as the third argument for this network.
+Alchemy is the provider the Robinhood documentation names. The public RPC
+remains acceptable for a one-off deployment broadcast, not for this check and
+not for the scanner.
 
 JSON output reports the integer balance as a decimal string (`wei` or
 `lamports`), the finalized block or slot, and `nonzero`. A zero balance is a
