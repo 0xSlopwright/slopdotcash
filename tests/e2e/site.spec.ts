@@ -96,6 +96,19 @@ test("equal contributors share cycle and profile ranks", async ({
     (route) => route.fulfill({ json: null }),
   );
   const snapshot = await loadSnapshot(request);
+  const publishedTie = snapshot.leaders.findIndex(
+    (leader, index) =>
+      index > 0 &&
+      leader.scoreThirds === snapshot.leaders[index - 1].scoreThirds,
+  );
+  if (publishedTie < 0)
+    throw new Error("Public snapshot has no tied contributor scores");
+  for (const leader of snapshot.leaders) {
+    expect(leader.rank).toBe(
+      snapshot.leaders.filter((entry) => entry.scoreThirds > leader.scoreThirds)
+        .length + 1,
+    );
+  }
   const cycles = await loadCycles(request);
   const views = PROJECTS.filter(
     (project) =>

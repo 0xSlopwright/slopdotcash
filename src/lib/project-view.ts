@@ -19,7 +19,7 @@ import type {
   ScoreOpportunity,
   WorkItem,
 } from "./leaderboard";
-import { SCORE_CAPS } from "./leaderboard";
+import { assignLeaderboardRanks, SCORE_CAPS } from "./leaderboard";
 import {
   findProject,
   type ProjectDefinition,
@@ -601,11 +601,7 @@ export function createProjectView(
   const scoreLeaders = [...leaders].sort(
     (left, right) => right.scoreThirds - left.scoreThirds,
   );
-  scoreLeaders.forEach((entry, index) => {
-    const previous = scoreLeaders[index - 1];
-    entry.rank =
-      previous?.scoreThirds === entry.scoreThirds ? previous.rank : index + 1;
-  });
+  assignLeaderboardRanks(scoreLeaders);
 
   const opportunities = snapshot.opportunities
     .filter((opportunity) => repositoryIds.has(opportunity.repository))

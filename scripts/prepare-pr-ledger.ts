@@ -8,6 +8,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
   assertLeaderboardSnapshot,
+  assignLeaderboardRanks,
   LEADERBOARD_SCHEMA_VERSION,
   type LeaderboardEntry,
   type LeaderboardSnapshot,
@@ -265,9 +266,7 @@ function rebuildLeaders(
       codeUnitCompare(left.actor.login, right.actor.login) ||
       codeUnitCompare(left.actor.id, right.actor.id),
   );
-  leaders.forEach((leader, index) => {
-    leader.rank = index + 1;
-  });
+  assignLeaderboardRanks(leaders);
   return leaders;
 }
 
@@ -325,7 +324,9 @@ export function preparePullRequestLedger(value: unknown): LeaderboardSnapshot {
   );
   if (candidate.schemaVersion === LEADERBOARD_SCHEMA_VERSION) {
     assertLeaderboardSnapshot(candidate);
-    return candidate as unknown as LeaderboardSnapshot;
+    const leaders = candidate.leaders.map((leader) => ({ ...leader }));
+    assignLeaderboardRanks(leaders);
+    return { ...candidate, leaders };
   }
   if (candidate.schemaVersion !== "5") {
     throw new TypeError("deployed ledger is not schema 5 or 6");
