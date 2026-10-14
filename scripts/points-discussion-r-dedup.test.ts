@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import {
   POINTS_RULE,
-  pointMembers,
   type PointAward,
   type PointsJournal,
+  pointMembers,
 } from "../src/lib/points";
 
 const AT = "2026-10-14T17:30:00.000Z";
