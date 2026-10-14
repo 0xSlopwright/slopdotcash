@@ -1,65 +1,39 @@
 /**
- * Bounded webhook body reader. Signature verification must not allocate more
- * than the declared limit, and a missing Content-Length must not mean unbounded.
+ * Bounded webhook body reader. Returns the exact received bytes so the HMAC
+ * covers them unchanged, and a missing or false Content-Length never makes the
+ * read unbounded. Returns null when the body exceeds maxBytes.
  */
 export async function readWebhookBody(
   request: Request,
   maxBytes: number,
-): Promise<
-  { ok: true; body: string } | { ok: false; status: 400 | 413; message: string }
-> {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
-    throw new TypeError("maxBytes must be a positive safe integer");
-  }
+): Promise<Uint8Array<ArrayBuffer> | null> {
   const declared = request.headers.get("content-length");
-  if (declared !== null) {
-    if (!/^\d+$/u.test(declared) || Number(declared) > maxBytes) {
-      return { ok: false, status: 413, message: "payload too large" };
-    }
+  if (
+    declared !== null &&
+    !(/^\d+$/u.test(declared) && Number(declared) <= maxBytes)
+  ) {
+    await request.body?.cancel().catch(() => undefined);
+    return null;
   }
-  if (request.body === null) {
-    return { ok: true, body: "" };
-  }
+  if (request.body === null) return new Uint8Array();
   const reader = request.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const chunks: Uint8Array[] = [];
   let total = 0;
-  let body = "";
-  try {
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      total += chunk.value.byteLength;
-      if (total > maxBytes) {
-        try {
-          await reader.cancel("payload too large");
-        } catch {
-          // Bound breach is the actionable error.
-        }
-        return { ok: false, status: 413, message: "payload too large" };
-      }
-      try {
-        body += decoder.decode(chunk.value, { stream: true });
-      } catch (error) {
-        if (error instanceof TypeError) {
-          return {
-            ok: false,
-            status: 400,
-            message: "invalid payload encoding",
-          };
-        }
-        throw error;
-      }
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    total += chunk.value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
     }
-    try {
-      body += decoder.decode();
-    } catch (error) {
-      if (error instanceof TypeError) {
-        return { ok: false, status: 400, message: "invalid payload encoding" };
-      }
-      throw error;
-    }
-  } finally {
-    reader.releaseLock();
+    chunks.push(chunk.value);
   }
-  return { ok: true, body };
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
 }

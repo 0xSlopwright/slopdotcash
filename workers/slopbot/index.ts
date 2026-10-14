@@ -124,11 +124,10 @@ export default {
     if (request.method !== "POST" || url.pathname !== "/github/webhook") {
       return new Response("not found", { status: 404 });
     }
-    const loaded = await readWebhookBody(request, MAX_WEBHOOK_BYTES);
-    if (!loaded.ok) {
-      return new Response(loaded.message, { status: loaded.status });
+    const body = await readWebhookBody(request, MAX_WEBHOOK_BYTES);
+    if (body === null) {
+      return new Response("payload too large", { status: 413 });
     }
-    const body = loaded.body;
     if (
       !(await verifyWebhookSignature(
         env.SLOPBOT_WEBHOOK_SECRET,
@@ -145,7 +144,7 @@ export default {
     if (!(await store.recordDelivery(env.SLOPBOT_DB, deliveryId, event))) {
       return new Response("duplicate delivery", { status: 202 });
     }
-    const payload = JSON.parse(body) as Payload;
+    const payload = JSON.parse(new TextDecoder().decode(body)) as Payload;
     await handleInstallation(env, event, payload);
     const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
     if (job !== null) await env.SLOPBOT_QUEUE.send(job);

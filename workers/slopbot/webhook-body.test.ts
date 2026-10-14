@@ -1,68 +1,85 @@
+// Route-level checks: the /github/webhook handler must bound the body before
+// signature verification and must sign the exact received bytes.
 import { describe, expect, test } from "bun:test";
-import { readWebhookBody } from "./webhook-body";
+import worker from "./index";
 
-const MAX = 64;
+const SECRET = "test-secret";
+const URL = "https://slopbot.example/github/webhook";
+const LIMIT = 25 * 1024 * 1024;
 
-function request(body: BodyInit | null, headers?: Record<string, string>) {
-  return new Request("https://slopbot.example/github/webhook", {
-    method: "POST",
-    headers,
-    body,
-  });
+type Fetch = (request: Request, env: never) => Promise<Response>;
+const handle = worker.fetch as unknown as Fetch;
+
+async function sign(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, bytes));
+  return `sha256=${[...mac].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
-describe("readWebhookBody", () => {
-  test("rejects a Content-Length above the limit before reading", async () => {
-    const result = await readWebhookBody(
-      request("tiny", { "content-length": String(MAX + 1) }),
-      MAX,
-    );
-    expect(result).toEqual({
-      ok: false,
-      status: 413,
-      message: "payload too large",
+function env(): never {
+  return {
+    SLOPBOT_WEBHOOK_SECRET: SECRET,
+    SLOPBOT_DB: {
+      prepare: () => {
+        throw new Error("persistence must not be reached");
+      },
+    },
+  } as never;
+}
+
+describe("POST /github/webhook body bound", () => {
+  test("rejects a chunked body with no Content-Length once it passes the limit", async () => {
+    let cancelled = false;
+    let sent = 0;
+    const chunk = new Uint8Array(1024 * 1024);
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        sent += chunk.byteLength;
+        controller.enqueue(chunk);
+        if (sent > LIMIT * 2) controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
     });
-  });
-
-  test("rejects a missing Content-Length once the streamed body exceeds the limit", async () => {
-    const result = await readWebhookBody(request("x".repeat(MAX + 1)), MAX);
-    expect(result).toEqual({
-      ok: false,
-      status: 413,
-      message: "payload too large",
-    });
-  });
-
-  test("rejects when Content-Length is under the limit but the body is larger", async () => {
-    // Fetch implementations may ignore a lied Content-Length; the stream bound
-    // must still stop the read before signature verification.
-    const result = await readWebhookBody(
-      request("x".repeat(MAX + 8), { "content-length": "8" }),
-      MAX,
+    const response = await handle(
+      new Request(URL, { method: "POST", body, duplex: "half" } as RequestInit),
+      env(),
     );
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    expect(result.status).toBe(413);
+    expect(response.status).toBe(413);
+    expect(sent).toBeLessThanOrEqual(LIMIT + 2 * chunk.byteLength);
+    expect(cancelled).toBe(true);
   });
 
-  test("accepts a body at the limit and returns the exact UTF-8 text", async () => {
-    const body = "a".repeat(MAX);
-    const result = await readWebhookBody(
-      request(body, { "content-length": String(MAX) }),
-      MAX,
+  test("rejects a declared oversized Content-Length before reading", async () => {
+    const response = await handle(
+      new Request(URL, {
+        method: "POST",
+        body: "{}",
+        headers: { "content-length": String(LIMIT + 1) },
+      }),
+      env(),
     );
-    expect(result).toEqual({ ok: true, body });
+    expect(response.status).toBe(413);
   });
 
-  test("rejects invalid UTF-8 without treating it as a size breach", async () => {
-    const result = await readWebhookBody(
-      request(Uint8Array.of(0xff, 0xfe), { "content-length": "2" }),
-      MAX,
+  test("verifies the HMAC over the exact received bytes, including a BOM", async () => {
+    const raw = Uint8Array.of(0xef, 0xbb, 0xbf, 0x7b, 0x7d);
+    const response = await handle(
+      new Request(URL, {
+        method: "POST",
+        body: raw,
+        headers: { "x-hub-signature-256": await sign(raw) },
+      }),
+      env(),
     );
-    expect(result).toEqual({
-      ok: false,
-      status: 400,
-      message: "invalid payload encoding",
-    });
+    // Signature accepted; the request then fails on the missing delivery id.
+    expect(response.status).toBe(400);
   });
 });
