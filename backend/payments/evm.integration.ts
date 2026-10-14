@@ -32,7 +32,7 @@ import { scanEvmPayments } from "../../workers/payments/scanner";
 import type { D1Database } from "../trace/cloudflare-persistence";
 import { dispatchPayment } from "./dispatch";
 import { evmPaymentAdapter } from "./evm-adapter";
-import { handlePaymentsApi } from "./handler";
+import { handlePaymentsApi, type PaymentDeploymentIdentity } from "./handler";
 import { indexPaymentEvent } from "./ledger";
 import { personalMessageHash } from "./possession";
 
@@ -136,6 +136,8 @@ const source = `0x${"2".padStart(64, "0")}`;
 const claimDigest = "c".repeat(64);
 const now = new Date().toISOString();
 const session = "a".repeat(43);
+// The reviewed deployments the account API trusts; set after deployment.
+let paymentDeployments: PaymentDeploymentIdentity[] = [];
 // Public deterministic test key 1 controls the recipient; no user wallet or secret is read.
 const recipientKey = new Uint8Array(32);
 recipientKey[31] = 1;
@@ -177,10 +179,9 @@ async function authorizeBinding(
         claimId,
         network: "anvil",
         vault,
-        chainId: "31337",
         expectedVersion,
       }),
-      { db },
+      { db, paymentDeployments },
     )
   ).json()) as { typedData: ReturnType<typeof evmBindingTypedData> };
   assert.equal(challenge.typedData.message.expectedVersion, expectedVersion);
@@ -189,12 +190,11 @@ async function authorizeBinding(
       claimId,
       network: "anvil",
       vault,
-      chainId: "31337",
       expectedVersion,
       expiresAt: challenge.typedData.message.expiresAt,
       signature: await signBinding(account, challenge.typedData),
     }),
-    { db },
+    { db, paymentDeployments },
   );
   assert.equal(response.status, 200, await response.text());
 }
@@ -307,6 +307,10 @@ try {
     [award, "123", "100000000", source],
   );
   const runtimeCode = (await rpc("eth_getCode", [vault, "latest"])) as string;
+  const factoryCode = (await rpc("eth_getCode", [factory, "latest"])) as string;
+  paymentDeployments = [
+    { network: "anvil", chain: "base", vault, chainId: "31337" },
+  ];
   const config = {
     asset,
     owner,
@@ -319,6 +323,11 @@ try {
     chainId: 31337n,
     vault,
     bindingDelaySeconds: delay,
+    factory,
+    factoryCodeSha256: createHash("sha256")
+      .update(Buffer.from(factoryCode.slice(2), "hex"))
+      .digest("hex"),
+    registrar: owner,
     projectId: "integration-fixture",
     network: "anvil",
   };
@@ -431,10 +440,9 @@ try {
         claimId: "claim",
         network: "anvil",
         vault,
-        chainId: "31337",
         expectedVersion: "0",
       }),
-      { db },
+      { db, paymentDeployments },
     )
   ).json()) as { typedData: ReturnType<typeof evmBindingTypedData> };
   assert.ok(bindChallenge.typedData, JSON.stringify(bindChallenge));
@@ -446,7 +454,6 @@ try {
           claimId: "claim",
           network: "anvil",
           vault,
-          chainId: "31337",
           expectedVersion: "0",
           expiresAt: bindChallenge.typedData.message.expiresAt,
           signature: await signBinding(
@@ -457,7 +464,7 @@ try {
             bindChallenge.typedData,
           ),
         }),
-        { db },
+        { db, paymentDeployments },
       )
     ).status,
     403,
@@ -469,7 +476,6 @@ try {
           claimId: "claim",
           network: "anvil",
           vault,
-          chainId: "31337",
           expectedVersion: "1",
           expiresAt: bindChallenge.typedData.message.expiresAt,
           signature: await signBinding(
@@ -477,7 +483,7 @@ try {
             bindChallenge.typedData,
           ),
         }),
-        { db },
+        { db, paymentDeployments },
       )
     ).status,
     403,
@@ -600,7 +606,113 @@ try {
     /wallet signature required for binding version 0/,
   );
   sql.prepare("DELETE FROM payment_attempts WHERE id='needs-acceptance'").run();
+  // The chain ID comes from the reviewed deployment: without the trusted
+  // deployment list, or for a vault outside it, nothing is signed or stored.
+  const bindAuthorize = (body: Record<string, string>) =>
+    handlePaymentsApi(
+      request("/wallets/bind-authorize", {
+        claimId: "claim",
+        network: "anvil",
+        vault,
+        expectedVersion: "0",
+        ...body,
+      }),
+      { db, paymentDeployments },
+    );
+  assert.equal(
+    (
+      await handlePaymentsApi(
+        request("/wallets/bind-challenge", {
+          claimId: "claim",
+          network: "anvil",
+          vault,
+          expectedVersion: "0",
+        }),
+        { db },
+      )
+    ).status,
+    503,
+  );
+  assert.equal(
+    (
+      await handlePaymentsApi(
+        request("/wallets/bind-challenge", {
+          claimId: "claim",
+          network: "anvil",
+          vault: fee,
+          expectedVersion: "0",
+        }),
+        { db, paymentDeployments },
+      )
+    ).status,
+    400,
+  );
+  const withExpiry = (expiresAt: number) => ({
+    ...bindChallenge.typedData,
+    message: {
+      ...bindChallenge.typedData.message,
+      expiresAt: String(expiresAt),
+    },
+  });
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  // An authorization the attester could not submit in time is refused.
+  const tooSoon = withExpiry(nowSeconds + 600);
+  assert.equal(
+    (
+      await bindAuthorize({
+        expiresAt: tooSoon.message.expiresAt,
+        signature: await signBinding(recipientAccount, tooSoon),
+      })
+    ).status,
+    400,
+  );
+  const short = withExpiry(nowSeconds + 3600);
+  const shortSignature = await signBinding(recipientAccount, short);
+  const recovery = Number.parseInt(shortSignature.slice(130), 16);
+  // The same signature with a high s value: valid ECDSA, but the vault rejects it.
+  const order =
+    0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+  const highS = `0x${shortSignature.slice(2, 66)}${(order - BigInt(`0x${shortSignature.slice(66, 130)}`)).toString(16).padStart(64, "0")}${(recovery === 27 ? 28 : 27).toString(16)}`;
+  assert.equal(
+    (
+      await bindAuthorize({
+        expiresAt: short.message.expiresAt,
+        signature: highS,
+      })
+    ).status,
+    403,
+  );
+  // A wallet that returns a recovery byte of 0 or 1 is accepted, and the row
+  // stores the 27 or 28 encoding that bindDestination accepts.
+  const zeroOne = `${shortSignature.slice(0, 130)}0${recovery - 27}`;
+  assert.equal(
+    (
+      await bindAuthorize({
+        expiresAt: short.message.expiresAt,
+        signature: zeroOne,
+      })
+    ).status,
+    200,
+  );
+  assert.equal(
+    sql
+      .query<{ signature: string }, [string]>(
+        "SELECT signature FROM payment_binding_authorizations WHERE expires_at=?",
+      )
+      .get(short.message.expiresAt)?.signature,
+    shortSignature.toLowerCase(),
+  );
+  // A renewal with a later expiry is a new row, not a silent no-op, so an
+  // expired authorization can never block the claim and version.
   await authorizeBinding(db, "claim", vault, "0", recipientAccount);
+  assert.equal(
+    sql
+      .query<{ n: number }, []>(
+        "SELECT count(*) n FROM payment_binding_authorizations WHERE claim_id='claim' AND expected_version='0'",
+      )
+      .get()?.n,
+    2,
+  );
   // Public Anvil mnemonic only. Dedicated local attester and gas keys sign real EIP1559 bytes.
   const mnemonic =
     "test test test test test test test test test test test junk";

@@ -1106,6 +1106,7 @@ async function verifyArtifact(
     if (!response.ok) {
       return {
         status: "artifact-http-error",
+        httpStatus: response.status,
         detail: `HTTP ${response.status}`,
       };
     }
@@ -1233,6 +1234,23 @@ async function verifyArtifact(
   }
 }
 
+/**
+ * A timeout, a network error, or HTTP 408, 429 or 5xx says nothing about the
+ * artifact itself: it is unavailable, not invalid. Every other result is a
+ * terminal verdict on the artifact (for example HTTP 404).
+ */
+export function isTransientArtifactFailure(result) {
+  if (
+    result.status === "artifact-timeout" ||
+    result.status === "artifact-fetch-error"
+  ) {
+    return true;
+  }
+  if (result.status !== "artifact-http-error") return false;
+  const code = result.httpStatus;
+  return code === 408 || code === 429 || (code >= 500 && code <= 599);
+}
+
 async function mapWithConcurrency(items, concurrency, mapper) {
   const results = new Array(items.length);
   let nextIndex = 0;
@@ -1289,6 +1307,14 @@ export async function verifyReferencedArtifacts(
             Math.trunc(options.contentDigestLimitBytes),
           ),
         );
+  const transientRetries = Math.max(
+    0,
+    Math.min(5, Math.trunc(options.transientRetries ?? 0)),
+  );
+  const transientRetryDelayMs = Math.max(
+    0,
+    Math.min(10_000, Math.trunc(options.transientRetryDelayMs ?? 1_000)),
+  );
   // This standalone script runs outside Turbo task caching; credentials affect
   // transport access, never the deterministic evidence verdict.
   const githubToken = process.env.GITHUB_TOKEN;
@@ -1376,14 +1402,37 @@ export async function verifyReferencedArtifacts(
       findings: limitFindings,
     };
   }
-  const results = await mapWithConcurrency(artifacts, concurrency, (artifact) =>
-    verifyArtifact(
-      artifact,
-      fetchImpl,
-      token,
-      timeoutMs,
-      contentDigestLimitBytes,
-    ),
+  const results = await mapWithConcurrency(
+    artifacts,
+    concurrency,
+    async (artifact) => {
+      const verify = () =>
+        verifyArtifact(
+          artifact,
+          fetchImpl,
+          token,
+          timeoutMs,
+          contentDigestLimitBytes,
+        );
+      let result = await verify();
+      // Only this artifact is fetched again, and only after a transport
+      // failure. A terminal verdict (for example HTTP 404) is kept from its
+      // first response, so a transient sibling cannot cause its refetch.
+      for (
+        let retry = 1;
+        retry <= transientRetries && isTransientArtifactFailure(result);
+        retry += 1
+      ) {
+        const delayMs = transientRetryDelayMs * retry;
+        if (delayMs > 0) {
+          await new Promise((resolveDelay) =>
+            setTimeout(resolveDelay, delayMs),
+          );
+        }
+        result = await verify();
+      }
+      return result;
+    },
   );
   const resultsByIdentity = new Map(
     artifacts.map((artifact, index) => [artifact.identity, results[index]]),

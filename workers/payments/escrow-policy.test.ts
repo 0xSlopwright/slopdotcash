@@ -27,7 +27,9 @@ const evmDeployment = {
   codeSha256: "ab".repeat(32),
   bindingDelaySeconds: "60",
   rotationDelaySeconds: null,
-  bindingNamespace: null,
+  factory: "0x5000000000000000000000000000000000000005",
+  factoryCodeSha256: "cd".repeat(32),
+  registrar: "0x6000000000000000000000000000000000000006",
 };
 const solanaDeployment = {
   network: "solana-devnet",
@@ -45,7 +47,9 @@ const solanaDeployment = {
   codeSha256: "ab".repeat(32),
   bindingDelaySeconds: "60",
   rotationDelaySeconds: "60",
-  bindingNamespace: "Stake11111111111111111111111111111111111111",
+  factory: null,
+  factoryCodeSha256: null,
+  registrar: null,
 };
 const policy = (chain: string, deployment: object) => ({
   schemaVersion: "1",

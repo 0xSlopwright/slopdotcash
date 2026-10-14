@@ -68,6 +68,9 @@ interface Deployment {
   bindingDelaySeconds: string;
   /** Reviewed executor gas ceiling in gas units, copied from the registry into the deployment record. */
   gasCeiling: string;
+  factory: string;
+  factoryCodeSha256: string;
+  registrar: string;
 }
 export interface Authorization extends DispatchPayment {
   projectId: string;
@@ -507,7 +510,7 @@ export function createEvmAttester(env: ExecutorEnvironment): PaymentExecutor {
       // collected by the account API. The attester submits it unchanged and
       // cannot bind without it.
       const accepted = await env.PAYMENTS_DB.prepare(
-        "SELECT expires_at expiresAt,signature FROM payment_binding_authorizations WHERE claim_id=? AND github_user_id=? AND network=? AND vault=? AND chain_id=? AND expected_version=? AND CAST(expires_at AS INTEGER)>? ORDER BY created_at DESC LIMIT 1",
+        "SELECT expires_at expiresAt,signature FROM payment_binding_authorizations WHERE claim_id=? AND github_user_id=? AND network=? AND vault=? AND chain_id=? AND expected_version=? AND CAST(expires_at AS INTEGER)>? ORDER BY CAST(expires_at AS INTEGER) DESC LIMIT 1",
       )
         .bind(
           input.claimId,

@@ -274,6 +274,66 @@ contract BoundedAttesterTest {
         assertEq(cancelled ? 1 : 0, 1);
     }
 
+    uint256 internal constant ATTACKER_KEY = 0xBADBAD;
+
+    /// @dev Binds ACTOR to the wallet of `key`, submitted by `authority`, with that wallet's signature.
+    function bindWallet(address authority, uint256 key, uint64 expectedVersion) internal {
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        address destination = vm.addr(key);
+        bytes memory signature = walletSignature(key, expectedVersion, expiresAt, destination);
+        vm.prank(authority);
+        vault.bindDestination(ACTOR, destination, expectedVersion, CLAIM, expiresAt, signature);
+    }
+
+    /// Review H-1 regression: a stolen identity authority key, paired with a wallet the attacker controls,
+    /// cannot take an award at the production minimums (48-hour binding delay, 7-day rotation). The registrar
+    /// proposes a new authority at once, the owner cancels each attacker binding late in its delay, and the
+    /// new authority replaces the last attacker binding before it activates. Only the contributor is paid.
+    function test_H1_stolenAuthorityCannotTakeAnAward() public {
+        bytes32 id = commit(keccak256("h1"), 100e6);
+        vm.prank(REGISTRAR);
+        factory.proposeIdentityAuthority(NEXT_AUTHORITY);
+        uint64 rotationAt = factory.identityAuthorityEffectiveAt();
+        uint64 version = 0;
+        for (uint256 i = 0; i < vault.MAX_CANCELS_BETWEEN_PAYMENTS(); i++) {
+            bindWallet(AUTHORITY, ATTACKER_KEY, version);
+            version++;
+            vm.warp(block.timestamp + DELAY - 1);
+            (, uint64 payable_) = vault.payableBinding(ACTOR);
+            assertEq(payable_, 0);
+            vm.prank(OWNER);
+            vault.cancelBinding(ACTOR, version);
+            vm.warp(block.timestamp + 1);
+        }
+        // The owner's cancels are spent, so the attacker's next binding cannot be cancelled.
+        bindWallet(AUTHORITY, ATTACKER_KEY, version);
+        version++;
+        vm.prank(OWNER);
+        vm.expectRevert(ProjectEscrow.CancelLimit.selector);
+        vault.cancelBinding(ACTOR, version);
+        (,,, uint64 attackerActivatesAt,) = vault.bindings(ACTOR);
+        require(rotationAt < attackerActivatesAt, "rotation executes before the attacker binding activates");
+        vm.warp(rotationAt);
+        factory.executeIdentityAuthorityRotation();
+        // The stolen key can no longer bind.
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        address attacker = vm.addr(ATTACKER_KEY);
+        bytes memory stolen = walletSignature(ATTACKER_KEY, version, expiresAt, attacker);
+        vm.prank(AUTHORITY);
+        vm.expectRevert(ProjectEscrow.Unauthorized.selector);
+        vault.bindDestination(ACTOR, attacker, version, CLAIM, expiresAt, stolen);
+        // The new authority binds the contributor's wallet with the contributor's signature. It replaces the
+        // attacker binding, which therefore never pays.
+        bindWallet(NEXT_AUTHORITY, CONTRIBUTOR_KEY, version);
+        vm.warp(attackerActivatesAt);
+        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
+        vault.pay(id, version);
+        vm.warp(rotationAt + DELAY);
+        vault.pay(id, version + 1);
+        assertEq(usdc.balanceOf(attacker), 0);
+        assertEq(usdc.balanceOf(contributor), 98e6);
+    }
+
     function test_vaultsAreCreatedOnlyByTheFactory() public {
         vm.expectRevert();
         new ProjectEscrow(PROJECT, IERC20(address(usdc)), OWNER, OWNER, FEE, DELAY);

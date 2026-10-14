@@ -13,6 +13,9 @@ export interface SolanaEscrowConfig {
   vault: string;
   mint: string;
   owner: string;
+  /** The identity authority at activation. Later authorities come only from the program's
+   * owner-proposed, fee-recipient-confirmed, timelocked rotation, so it is not compared with
+   * live state. */
   identityAuthority: string;
   feeRecipient: string;
   codeSha256: string;
@@ -21,16 +24,15 @@ export interface SolanaEscrowConfig {
   bindingDelaySeconds: string;
   /** Reviewed notice period, in seconds, before a proposed identity authority takes effect. */
   rotationDelaySeconds: string;
-  /** The key binding PDAs derive from: the identity authority at initialize, fixed for the project. */
-  bindingNamespace: string;
 }
 const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-/** Project account size: 265 bytes of v3 state plus the binding namespace, the pending identity
- * authority, its effective time and confirmation, and the i64 rotation delay. */
-export const PROJECT_SIZE = 346;
-/** Wallet binding size: 160 bytes of latest-binding state plus the active destination and version. */
-export const BINDING_SIZE = 200;
+/** Project account size: 265 bytes of v3 state, then the pending identity authority, its
+ * effective time and confirmation, and the i64 rotation delay. `migrate_project` grows a
+ * 265-byte account to this size. */
+export const PROJECT_SIZE = 314;
+/** Wallet binding size: 160 bytes of latest-binding state plus the u64 paid version and u8 veto count. */
+export const BINDING_SIZE = 169;
 /** Obligation size: 137 bytes of v2 state plus the i64 commit time. */
 export const OBLIGATION_SIZE = 145;
 export const OBLIGATION_DISCRIMINATOR = "a8ce8d6a584caca7";
@@ -207,12 +209,10 @@ export async function verifySolanaDeployment(
   const view = new DataView(project.buffer, project.byteOffset);
   if (
     view.getBigInt64(249, true) !== BigInt(config.bindingDelaySeconds) ||
-    view.getBigInt64(338, true) !== BigInt(config.rotationDelaySeconds) ||
+    view.getBigInt64(306, true) !== BigInt(config.rotationDelaySeconds) ||
     pubkey(project, 8) !== config.owner ||
-    pubkey(project, 104) !== config.identityAuthority ||
     pubkey(project, 136) !== config.feeRecipient ||
     pubkey(project, 168) !== config.mint ||
-    pubkey(project, 265) !== config.bindingNamespace ||
     hex(project.slice(72, 104)) !== hex(digest(config.networkDomain))
   )
     throw new Error("Reviewed project authorities or asset mismatch");
@@ -221,7 +221,6 @@ export async function verifySolanaDeployment(
 
 export interface SolanaAuthorityRotation {
   identityAuthority: string;
-  bindingNamespace: string;
   /** Null when no rotation is proposed. */
   pendingIdentityAuthority: string | null;
   effectiveAt: string | null;
@@ -235,15 +234,14 @@ export function solanaAuthorityRotation(
   if (project.length !== PROJECT_SIZE)
     throw new Error("Account layout mismatch");
   const view = new DataView(project.buffer, project.byteOffset);
-  const pending = pubkey(project, 297);
+  const pending = pubkey(project, 265);
   const proposed = pending !== "11111111111111111111111111111111";
   return {
     identityAuthority: pubkey(project, 104),
-    bindingNamespace: pubkey(project, 265),
     pendingIdentityAuthority: proposed ? pending : null,
-    effectiveAt: proposed ? view.getBigInt64(329, true).toString() : null,
-    confirmed: proposed && project[337] === 1,
-    rotationDelaySeconds: view.getBigInt64(338, true).toString(),
+    effectiveAt: proposed ? view.getBigInt64(297, true).toString() : null,
+    confirmed: proposed && project[305] === 1,
+    rotationDelaySeconds: view.getBigInt64(306, true).toString(),
   };
 }
 

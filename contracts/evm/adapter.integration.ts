@@ -160,6 +160,15 @@ try {
   ])) as string;
   await rpc("anvil_mine", ["0x1"]);
   const runtimeCode = (await rpc("eth_getCode", [vault, "latest"])) as string;
+  const codeSha256 = async (address: string) =>
+    createHash("sha256")
+      .update(
+        Buffer.from(
+          ((await rpc("eth_getCode", [address, "latest"])) as string).slice(2),
+          "hex",
+        ),
+      )
+      .digest("hex");
   const config = {
     rpcUrl,
     chainId: 31337n,
@@ -172,6 +181,9 @@ try {
       .update(Buffer.from(runtimeCode.slice(2), "hex"))
       .digest("hex"),
     bindingDelaySeconds: delay,
+    factory,
+    factoryCodeSha256: await codeSha256(factory),
+    registrar: owner,
   };
   await assert.rejects(
     verifyReserve(config, reserveTx, 0, id),
@@ -180,7 +192,31 @@ try {
   await rpc("anvil_mine", ["0x40"]);
   await assert.rejects(
     verifyReserve({ ...config, asset: owner }, reserveTx, 0, id),
-    /asset or authority/,
+    /asset, factory or registrar/,
+  );
+  // The factory is pinned by address, runtime code and registrar. A second
+  // factory with the same constructor arguments has identical code but did
+  // not create this vault.
+  const otherFactory = deploy("src/ProjectEscrow.sol:EscrowFactory", [
+    token,
+    fee,
+    attester,
+    delay,
+  ]);
+  await assert.rejects(
+    verifyEvmDeployment({ ...config, factory: otherFactory }, "latest"),
+    /asset, factory or registrar/,
+  );
+  await assert.rejects(
+    verifyEvmDeployment(
+      { ...config, factoryCodeSha256: "f".repeat(64) },
+      "latest",
+    ),
+    /factory code/,
+  );
+  await assert.rejects(
+    verifyEvmDeployment({ ...config, registrar: attester }, "latest"),
+    /asset, factory or registrar/,
   );
   await assert.rejects(
     verifyReserve({ ...config, codeSha256: "f".repeat(64) }, reserveTx, 0, id),
@@ -188,7 +224,7 @@ try {
   );
   await assert.rejects(
     verifyReserve({ ...config, bindingDelaySeconds: "0" }, reserveTx, 0, id),
-    /binding delay/,
+    /delays do not match/,
   );
   const reservation = await verifyReserve(config, reserveTx, 0, id);
   assert.equal(reservation.githubUserId, "101");
@@ -400,9 +436,10 @@ try {
     verifyReserve(config, paymentTx, 0, id),
     /Wrong event topics/,
   );
-  // Identity authority rotation: the registrar (the deployer here) proposes,
-  // the change takes effect after 7 days, and the reviewed manifest must be
-  // updated before the adapter accepts the vault again.
+  // Identity authority rotation: the registrar (the deployer here) proposes and
+  // the change takes effect after 7 days. The adapter pins the factory and its
+  // rotation rules, not the authority in force, so verification continues
+  // through the rotation without a manifest change.
   assert.deepEqual(await readEvmAuthorityRotation(config, "latest"), {
     factory: factory.toLowerCase(),
     identityAuthority: attester.toLowerCase(),
@@ -435,12 +472,12 @@ try {
     nextAttester.toLowerCase(),
   );
   await rpc("anvil_mine", ["0x40"]);
-  await assert.rejects(
-    verifyEvmDeployment(config),
-    /asset or authority/,
-    "a rotated authority fails the reviewed manifest until it is updated",
+  await verifyEvmDeployment(config);
+  assert.equal(
+    (await verifyPayment(config, paymentTx, 0, id)).netMicro,
+    "98000000",
+    "a payment made before the rotation still verifies after it",
   );
-  await verifyEvmDeployment({ ...config, identityAuthority: nextAttester });
   console.log(
     "Base adapter integration passed: real factory deployment, vault-bound award, wallet-accepted delayed and cancellable binding, payment, fee claim, exactly-once service charge, finalized gating, wrong chain/vault/award/index/delay rejection, timelocked authority rotation.",
   );

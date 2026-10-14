@@ -92,59 +92,33 @@ contract FableBase {
 
 contract FableEscrowTest is FableBase {
     // ------------------------------------------------------------------
-    // F-1: no authority rotation, no award cancel, no rescue. A lost or
-    // compromised authority key strands every unpaid award for actors that
-    // have no active binding. Owner veto converts theft into indefinite lock.
+    // F-1: an award to an actor with no binding cannot be paid, and its
+    // reserve is not available to the owner as free balance.
     // ------------------------------------------------------------------
-    function test_F1_lostAuthorityStrandsUnpaidAwards() public {
+    function test_F1_unboundAwardStaysReserved() public {
         depositAs(1_000e6);
         bytes32 id = commit(keccak256("src-1"), 42, 100e6);
         vm.warp(block.timestamp + DELAY);
-        // Authority key is "lost": nobody can bind actor 42. Payment is impossible.
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.pay(id, 1);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.pay(id, 0);
-        // The reserved 100e6 is unreachable by the owner: free is 900e6 only.
         vm.prank(OWNER);
         vm.expectRevert(ProjectEscrow.InsufficientFreeBalance.selector);
         vault.withdrawUnused(900e6 + 1);
         vm.prank(OWNER);
         vm.expectRevert(ProjectEscrow.InsufficientFreeBalance.selector);
         vault.chargeService(900e6 + 1, keccak256("inv"));
-        // Compromised-key variant (review H-1, not addressed here): attacker binds, owner cancels. The
-        // honest contributor can never be bound because only the compromised key can bind, and the
-        // award cannot be refunded or cancelled. The cancel cap (review M-2) bounds the lock at three
-        // cancels before the first payment; after that the attacker's binding pays.
-        for (uint64 round = 0; round < vault.MAX_CANCELS_BEFORE_ACTIVE(); round++) {
-            bind(42, ATTACKER, round);
-            vm.warp(block.timestamp + DELAY - 1);
-            vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-            vault.pay(id, round + 1);
-            vm.prank(OWNER);
-            vault.cancelBinding(42, round + 1);
-            vm.warp(block.timestamp + 365 days);
-            vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-            vault.pay(id, round + 1);
-        }
         require(vault.reservedPrincipal() == 98e6 && vault.reservedFees() == 2e6, "reserve still locked");
         require(conservationHolds(), "conservation");
-        uint64 capped = vault.MAX_CANCELS_BEFORE_ACTIVE();
-        bind(42, ATTACKER, capped);
-        vm.prank(OWNER);
-        vm.expectRevert(ProjectEscrow.CancelLimit.selector);
-        vault.cancelBinding(42, capped + 1);
-        vm.warp(block.timestamp + DELAY);
-        vault.pay(id, capped + 1);
-        require(usdc.balanceOf(ATTACKER) == 98e6, "bounded lock ends in payment to the bound wallet");
     }
 
     // ------------------------------------------------------------------
-    // F-2 (fixed, review M-2): a binding that has paid stays payable through
-    // any later rotation and cancel. The owner can cancel every unpaid
-    // rotation, but that only keeps payments on the binding already in use.
+    // F-2 (fixed, review M-2): a binding that has paid cannot be cancelled,
+    // and a rotation or its cancel never reopens payment to the earlier
+    // wallet. The owner's cancels between payments are capped.
     // ------------------------------------------------------------------
-    function test_F2_activeBindingSurvivesRotateAndCancel() public {
+    function test_F2_paidBindingIsFinalAndRotationFreezesPayment() public {
         depositAs(1_000e6);
         bytes32 first = commit(keccak256("src-2"), 7, 50e6);
         bytes32 second = commit(keccak256("src-2b"), 7, 50e6);
@@ -155,24 +129,30 @@ contract FableEscrowTest is FableBase {
         vm.prank(OWNER);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.cancelBinding(7, 1);
-        // Authority rotates (to the same destination even); the owner cancels v2.
-        bind(7, CONTRIBUTOR, 1);
+        // The authority rotates; the owner cancels v2. Neither v1 nor v2 can pay.
+        bind(7, ATTACKER, 1);
         vm.prank(OWNER);
         vault.cancelBinding(7, 2);
         vm.warp(block.timestamp + 10 * DELAY);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.pay(second, 2);
-        // The owner can keep cancelling future versions; none of it blocks v1.
-        for (uint64 v = 2; v < 12; v++) {
+        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
+        vault.pay(second, 1);
+        // The owner can cancel at most MAX_CANCELS_BETWEEN_PAYMENTS rotations before the next payment.
+        uint64 cap = vault.MAX_CANCELS_BETWEEN_PAYMENTS();
+        for (uint64 v = 2; v < cap + 1; v++) {
             bind(7, CONTRIBUTOR, v);
             vm.prank(OWNER);
             vault.cancelBinding(7, v + 1);
         }
-        vm.warp(block.timestamp + 10 * DELAY);
-        vault.pay(second, 1);
-        require(usdc.balanceOf(CONTRIBUTOR) == 98e6, "both awards paid to the active binding");
-        (address active, uint64 activeVersion) = vault.activeBindings(7);
-        require(active == CONTRIBUTOR && activeVersion == 1, "active binding unchanged");
+        bind(7, CONTRIBUTOR, cap + 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ProjectEscrow.CancelLimit.selector);
+        vault.cancelBinding(7, cap + 2);
+        vm.warp(block.timestamp + DELAY);
+        vault.pay(second, cap + 2);
+        require(usdc.balanceOf(CONTRIBUTOR) == 98e6 && usdc.balanceOf(ATTACKER) == 0, "both awards to the contributor");
+        require(vault.paidVersion(7) == cap + 2, "latest paid version recorded");
     }
 
     // ------------------------------------------------------------------

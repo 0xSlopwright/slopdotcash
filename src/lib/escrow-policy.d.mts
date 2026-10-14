@@ -20,8 +20,12 @@ export interface EscrowDeployment {
   bindingDelaySeconds: string;
   /** Solana only; null on Base, where the factory fixes 7 days. */
   rotationDelaySeconds: string | null;
-  /** Solana only; null on Base, where bindings are stored per vault. */
-  bindingNamespace: string | null;
+  /** Base only; null on Solana. The EscrowFactory that created the vault and rotates its identity authority. */
+  factory: string | null;
+  /** Base only; null on Solana. sha256 of the factory runtime code. */
+  factoryCodeSha256: string | null;
+  /** Base only; null on Solana. The factory registrar, which alone proposes an authority rotation. */
+  registrar: string | null;
 }
 export type EscrowChain = "base" | "solana";
 export type EscrowFamily = "evm" | "solana";
