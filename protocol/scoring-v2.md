@@ -49,7 +49,8 @@ other actors follow in actor-ID order; the first actors receive the remainder.
 Each actor keeps at least one third. The author's event keeps the
 `<pull-request-node-id>:merged` ID and the only evidence bonus; each other
 actor's event is `<pull-request-node-id>:merged:<actor-node-id>`. A formal
-review by any credit actor of the same pull request is a self-review.
+review, a `slop-review` record, or a `slop-score` ratification by any credit
+actor of the same pull request is a self-review and earns no review credit.
 
 ## Review credit
 

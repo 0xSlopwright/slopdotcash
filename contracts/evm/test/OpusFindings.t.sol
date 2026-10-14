@@ -44,12 +44,12 @@ contract OpusFindingsTest is OpusBase {
         check(escrow.reservedPrincipal() == 980e6, "award still reserved for alice");
     }
 
-    /// F-2 (fixed, review M-2): the owner's cancel is capped at MAX_CANCELS_BEFORE_ACTIVE for an actor that
-    /// has never been paid, so the owner can delay the first payment by at most three more delays.
+    /// F-2 (fixed, review M-2): the owner's cancel is capped at MAX_CANCELS_BETWEEN_PAYMENTS between two
+    /// payments to an actor, so the owner can delay the first payment by at most three more delays.
     function test_F2_ownerCancelIsCappedBeforeFirstPayment() public {
         bytes32 id = commit(keccak256("eliza/2026-11/alice"), ALICE, 1_000e6);
         uint64 v;
-        for (uint256 i = 0; i < escrow.MAX_CANCELS_BEFORE_ACTIVE(); i++) {
+        for (uint256 i = 0; i < escrow.MAX_CANCELS_BETWEEN_PAYMENTS(); i++) {
             v = bindAs(ALICE, ALICE_WALLET);
             vm.prank(OWNER);
             escrow.cancelBinding(ALICE, v);
@@ -68,37 +68,6 @@ contract OpusFindingsTest is OpusBase {
         vm.prank(RELAYER);
         escrow.pay(id, v);
         check(usdc.balanceOf(ALICE_WALLET) == 980e6, "alice paid after the cap");
-    }
-
-    /// F-3 (residual, review H-1, not addressed here): before an actor's first payment, a compromised
-    /// authority key can still race every honest rebind. The owner can only cancel, now at most three times,
-    /// so the outcome is bounded delay followed by theft unless the authority key is recovered.
-    function test_F3_compromisedAuthorityConvertsToLockOrTheft() public {
-        uint64 good = bindAs(ALICE, ALICE_WALLET);
-        vm.warp(block.timestamp + DELAY);
-        bytes32 id = commit(keccak256("eliza/2026-11/alice"), ALICE, 1_000e6);
-        // Attacker front-runs the pay with a rotation. The honest binding never paid, so it is replaced;
-        // the award itself is still inside its commit delay.
-        uint64 bad = bindAs(ALICE, ATTACKER);
-        vm.prank(RELAYER);
-        vm.expectRevert(ProjectEscrow.AwardPending.selector);
-        escrow.pay(id, good);
-        // Owner cancels the bad rotation. The honest binding is gone; nothing the owner can do restores it.
-        vm.prank(OWNER);
-        escrow.cancelBinding(ALICE, bad);
-        vm.warp(block.timestamp + DELAY + 1);
-        vm.prank(RELAYER);
-        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        escrow.pay(id, bad);
-        // Any honest re-bind by the operator is raced by the attacker holding the same immutable key.
-        uint64 honest = bindAs(ALICE, ALICE_WALLET);
-        uint64 bad2 = bindAs(ALICE, ATTACKER);
-        check(bad2 == honest + 1, "attacker overwrote honest rebind");
-        // If the owner misses a single 48h window, the attacker is paid.
-        vm.warp(block.timestamp + DELAY);
-        vm.prank(RELAYER);
-        escrow.pay(id, bad2);
-        check(usdc.balanceOf(ATTACKER) == 980e6, "theft after one missed window");
     }
 
     /// F-4 (fixed, review L-1): the factory rejects a delay below one hour or above 30 days, so a zero

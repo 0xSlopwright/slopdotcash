@@ -1,6 +1,6 @@
 # Robinhood Chain USDG escrow payouts: design
 
-Date: 12 October 2026. Status: design approved by the operator (Drew Pierson); implementation PRs follow this document. Nothing in it activates a project, lifts the mainnet executor rejection, or changes the fee policy.
+Date: 12 October 2026, proposed by Drew Pierson. Status: scope approved by the repository owner on 14 October 2026 (PRD FND-02 and the section 22 decision row). Nothing in it activates a project, lifts the mainnet executor rejection, or changes the fee policy.
 
 This document is the decision record for adding Robinhood Chain as a third escrow settlement network beside Base and Solana. It extends [the payouts addendum](payouts-mvp.md) and [the Base and Solana architecture plan](base-solana-payout-plan.md), which states the rule this work follows: "Add a network definition and a chain adapter, then pass the same accounting and workflow conformance suite." PRD requirements: FND-01, FND-02, PAY-06, PAY-07, PAY-08. MVP packages: MVP-02, MVP-06, MVP-07.
 
@@ -8,26 +8,46 @@ This document is the decision record for adding Robinhood Chain as a third escro
 
 The $SLOP token launches on Robinhood Chain in November 2026 through the Umia auction. Sponsors who arrive through that launch will assume project pools can pay on the same network. Robinhood Chain is an Arbitrum Nitro Layer 2 with ETH gas, so the existing EVM escrow contract and adapter apply with configuration, not new contract code. The stablecoin natively issued there is Paxos USDG, not USDC.
 
-## Verified facts (12 October 2026)
+## Verified facts
 
-Every value below was read from a primary source on the date given. Re-verify before deployment; never copy an address from a third-party page.
+The values below come from primary sources. The on-chain rows were first read on 12 October 2026 and read again on 14 October 2026 at the blocks given under "Reproduce the on-chain rows". Re-verify before deployment; never copy an address from a third-party page.
+
+Primary pages: Robinhood Chain docs [Connecting](https://docs.robinhood.com/chain/connecting), [Token Contracts](https://docs.robinhood.com/chain/contracts), [Transaction Finality](https://docs.robinhood.com/chain/transaction-finality), [Differences from Ethereum](https://docs.robinhood.com/chain/differences-from-ethereum) and [Gas and Fees](https://docs.robinhood.com/chain/gas-and-fees); Paxos [USDG testnet guide](https://docs.paxos.com/guides/stablecoin/usdg/testnet).
 
 | Fact | Value | Source |
 |---|---|---|
-| Mainnet chain id | 4663 (`0x1237`) | `eth_chainId` on `https://rpc.mainnet.chain.robinhood.com`; Robinhood docs, Connecting page |
-| Testnet chain id | 46630 (`0xb626`) | `eth_chainId` on `https://rpc.testnet.chain.robinhood.com`; same docs page |
-| Native gas token | ETH | Robinhood docs, Connecting page |
-| Mainnet explorer | `https://robinhoodchain.blockscout.com` | Robinhood docs, Connecting page |
-| Testnet explorer | `https://explorer.testnet.chain.robinhood.com` | Robinhood docs, Connecting page |
-| USDG token (mainnet) | `0x5fc5360d0400a0fd4f2af552add042d716f1d168` | Robinhood docs, Token Contracts page; Paxos docs, USDG mainnet guide (both list this address) |
-| USDG metadata on chain | name "Global Dollar", symbol USDG, `decimals() == 6` | `eth_call` on the mainnet RPC |
-| USDG contract shape | ERC-1967 proxy; implementation `0x68184c449e1a8f34fa18d289737129fd27b66f8f`; `paused()` false; Paxos freeze interface present | `eth_getCode`, `eth_getStorageAt` (implementation slot), `eth_call` |
-| USDG on testnet | `0x7e955252e15c84f5768b83c41a71f9eba181802f`; name "Global Dollar", symbol USDG, `decimals() == 6`, ERC-1967 proxy (re-verified 13 October 2026; the 12 October reading of "none" checked only the mainnet address) | [Paxos USDG testnet guide](https://docs.paxos.com/guides/stablecoin/usdg/testnet); `eth_call` on `https://rpc.testnet.chain.robinhood.com` |
-| Finality tags | the RPC serves `safe` and `finalized`; `finalized` ran about 18 minutes behind head | `eth_getBlockByNumber` with each tag |
-| Finality model | soft confirmation from the sequencer, then posted to Ethereum, then Ethereum finality | Robinhood docs, Transaction Finality page |
-| `block.number` opcode | returns an estimate of the Ethereum block number, not the L2 block | Robinhood docs, Differences from Ethereum page |
-| Gas estimation | `eth_estimateGas` folds the Ethereum data-posting fee into the returned gas units | Robinhood docs, Gas and Fees page |
-| Base fee recipient `0x8f77c37d8650776bfe73c9b12b15209ee15d9b86` | plain account, no code and no transactions on Base or Robinhood Chain | `eth_getCode` and `eth_getTransactionCount` on both RPCs |
+| Mainnet chain id | 4663 (`0x1237`) | `eth_chainId` on `https://rpc.mainnet.chain.robinhood.com`; [Connecting](https://docs.robinhood.com/chain/connecting) |
+| Testnet chain id | 46630 (`0xb626`) | `eth_chainId` on `https://rpc.testnet.chain.robinhood.com`; [Connecting](https://docs.robinhood.com/chain/connecting) |
+| Native gas token | ETH | [Connecting](https://docs.robinhood.com/chain/connecting) |
+| Mainnet explorer | `https://robinhoodchain.blockscout.com` | [Connecting](https://docs.robinhood.com/chain/connecting) |
+| Testnet explorer | `https://explorer.testnet.chain.robinhood.com` | [Connecting](https://docs.robinhood.com/chain/connecting) |
+| USDG token (mainnet) | `0x5fc5360d0400a0fd4f2af552add042d716f1d168` | [Token Contracts](https://docs.robinhood.com/chain/contracts); Paxos USDG mainnet guide |
+| USDG metadata (mainnet) | name "Global Dollar", symbol USDG, `decimals() == 6`, `paused()` false | `eth_call` at mainnet block 88282064 |
+| USDG contract shape (mainnet) | ERC-1967 proxy; implementation `0x68184c449e1a8f34fa18d289737129fd27b66f8f`; Paxos freeze interface present (12 October reading) | `eth_getStorageAt` on the ERC-1967 implementation slot at mainnet block 88282064 |
+| USDG on testnet | Paxos test USDG `0x7e955252e15c84f5768b83c41a71f9eba181802f`; ERC-1967 proxy, implementation `0xf0863d7a29a55d0c4263c11bfac754312ff078df`; name "Global Dollar", symbol USDG, `decimals() == 6`, `paused()` false; the mainnet USDG address has no code on 46630. The 12 October reading of "no USDG on testnet" checked only the mainnet address and was wrong. | [USDG testnet guide](https://docs.paxos.com/guides/stablecoin/usdg/testnet); `eth_call`, `eth_getStorageAt` and `eth_getCode` at testnet block 134966126 |
+| Test USDG supply | No primary source states how to obtain test USDG on Robinhood Chain Testnet. The Paxos guide links a general Paxos faucet but does not say that it serves this network. | [USDG testnet guide](https://docs.paxos.com/guides/stablecoin/usdg/testnet) |
+| Finality tags | the RPC serves `safe` and `finalized`; `finalized` was 868 seconds (mainnet) and 1,122 seconds (testnet) behind head on 14 October 2026, and about 18 minutes behind on 12 October | `eth_getBlockByNumber` with `latest` and `finalized` at the blocks below |
+| Finality model | soft confirmation from the sequencer, then posted to Ethereum, then Ethereum finality | [Transaction Finality](https://docs.robinhood.com/chain/transaction-finality) |
+| `block.number` opcode | returns an estimate of the Ethereum block number, not the L2 block | [Differences from Ethereum](https://docs.robinhood.com/chain/differences-from-ethereum) |
+| Gas estimation | `eth_estimateGas` folds the Ethereum data-posting fee into the returned gas units | [Gas and Fees](https://docs.robinhood.com/chain/gas-and-fees) |
+| Base fee recipient `0x8f77c37d8650776bfe73c9b12b15209ee15d9b86` | plain account: no code and transaction count 0 on Base (block 52591539) and on Robinhood Chain (block 88282440) | `eth_getCode` and `eth_getTransactionCount` on `https://mainnet.base.org` and the Robinhood Chain mainnet RPC |
+
+### Reproduce the on-chain rows
+
+Readings of 14 October 2026. Mainnet: `latest` block 88282064 (timestamp 1791972388, 10:06:28 UTC), `finalized` block 88273460 (timestamp 1791971520). Testnet: `latest` block 134966126 (timestamp 1791972388), `finalized` block 134955868 (timestamp 1791971266). Each call below names the block it was read at; replace the block to read the current state.
+
+```bash
+# decimals(): result ends in ...06 on both networks
+curl -s -H 'content-type: application/json' https://rpc.testnet.chain.robinhood.com \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x7e955252e15c84f5768b83c41a71f9eba181802f","data":"0x313ce567"},"0x80b6b6e"]}'
+curl -s -H 'content-type: application/json' https://rpc.mainnet.chain.robinhood.com \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x5fc5360d0400a0fd4f2af552add042d716f1d168","data":"0x313ce567"},"0x54313d0"]}'
+# ERC-1967 implementation slot: testnet result ends in f0863d7a29a55d0c4263c11bfac754312ff078df
+curl -s -H 'content-type: application/json' https://rpc.testnet.chain.robinhood.com \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_getStorageAt","params":["0x7e955252e15c84f5768b83c41a71f9eba181802f","0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc","0x80b6b6e"]}'
+```
+
+Other selectors used: `symbol()` `0x95d89b41`, `name()` `0x06fdde03`, `paused()` `0x5c975abb`.
 
 The escrow contract reads `block.timestamp` and `block.chainid` only. It never reads `block.number`, so the Arbitrum block-number semantics do not affect award ids, binding delays, or rotation delays. RPC block numbers used by the adapter, scanner and reconciler are L2 block numbers and stay consistent with each other.
 
@@ -78,7 +98,7 @@ No Solidity change. `ProjectEscrow.sol` accepts any token whose `decimals()` is 
 New Foundry scripts under `contracts/evm/script/`:
 
 - `DeployRobinhood.s.sol`: `require(block.chainid == 4663)`, USDG constant equal to the registry asset, fee recipient and identity authority read from the environment as public addresses, binding delay 48 hours (`MIN_PRODUCTION_BINDING_DELAY`), authority rotation delay as fixed in the factory by #675. Production release remains outside this script, as it is for Base.
-- `DeployRobinhoodTestnet.s.sol`: `require(block.chainid == 46630)`, binds the factory to the Paxos testnet USDG constant (equal to the registry asset), with fee recipient and identity authority from the environment, mirroring `DeployBaseSepolia.s.sol`.
+- `DeployRobinhoodTestnet.s.sol`: `require(block.chainid == 46630)`, binds the factory to the Paxos testnet USDG constant (equal to the registry asset), with fee recipient and identity authority from the environment, mirroring `DeployBaseSepolia.s.sol`. No separate test token is deployed.
 
 USDG is an upgradeable proxy with a pause switch and a per-address freeze, the same risk class as Circle's USDC on Base. The contract already fails closed: a frozen or paused recipient reverts `pay`, the award stays reserved, and a frozen fee recipient blocks only `claimFees`. The README's asset section gains a USDG paragraph stating this.
 
@@ -149,20 +169,25 @@ To be delivered in PR C as `docs/robinhood-chain-testnet-runbook.md` with an evi
 4. Simulate `DeployRobinhoodTestnet.s.sol` without broadcast; review the printed addresses; broadcast with the keystore account.
 5. Verify source on the testnet Blockscout; read back `token()`, `owner()`, `identityAuthority()`, `feeRecipient()`, `bindingDelay()` and the runtime code SHA-256; read the ArbOS version from the `ArbSys` precompile.
 6. Create one vault for a test project manifest; record the deployment under `escrow.deployments` with `network: "robinhood-testnet"` and the testnet USDG address as `asset`.
-7. Run the canonical acceptance scenario from the architecture plan with testnet USDG: fund 1,000; commit 100 and 50; pay 98 plus 2; refund free funds at the withdrawal fee; bind the late wallet with a contributor signature; pay 49 plus 1; replay and prove no duplicate payment.
-8. Record the evidence manifest: source SHA, compiler settings, factory and vault addresses, deployment transactions, chain id, token address and code hash, registrar, fee recipient, identity authority, ArbOS version, finalized block of each receipt.
+7. Establish a documented supply route for at least 1,000 test USDG on Robinhood Chain Testnet. No primary source states one today (see Verified facts). Without a route, stop and record the gap for the repository owner; do not substitute another token.
+8. Run the canonical acceptance scenario from the architecture plan with testnet USDG: fund 1,000; commit 100 and 50; pay 98 plus 2; refund free funds at the withdrawal fee; bind the late wallet with a contributor signature; pay 49 plus 1; replay and prove no duplicate payment.
+9. Record the evidence manifest: source SHA, compiler settings, factory and vault addresses, deployment transactions, chain id, token address and code hash, registrar, fee recipient, identity authority, ArbOS version, finalized block of each receipt.
 
 ### 8. Delivery
 
-The repository rules require a new requirement to be discussed with humans and added to the PRD, with maintainer approval of scope and phase, before implementation starts. FND-02 currently reads "Choose Base or Solana before first funding", so Robinhood Chain is a new requirement. The gate is therefore:
+The repository rules require a new requirement to be discussed with humans and added to the PRD, with maintainer approval of scope and phase, before implementation is accepted. FND-02 read "Choose Base or Solana before first funding", so Robinhood Chain was a new requirement.
 
-- **Step 0, PRD amendment.** A docs-only PR adds Robinhood Chain and USDG to FND-02, adds one sentence to the payouts addendum, and links this document. The repository owner approves and merges it. Until then PR A, B and C stay drafts.
+- **Step 0, PRD amendment (PR #678).** A docs-only PR adds Robinhood Chain and USDG to FND-02 and to every other PRD, MVP-plan and payouts-addendum line that named only Base and Solana or called Robinhood future scope, replaces the section 22 "Robinhood meaning" row with the decision, and links this document. The repository owner approved this scope on 14 October 2026.
 
-Then three pull requests into `development`, each stacked on #675 (which changes the factory constructor and the deployment schema) and merged by the repository owner:
+Order of events, stated exactly: the implementation PRs below were opened as drafts before the scope approval existed. A draft is not approval. They stayed drafts and unmerged until the repository owner approved the scope on 14 October 2026, and they merge only after this amendment.
 
-- **PR A, family refactor.** `chainFamily`, `ESCROW_CHAINS`, the registry fields, renames (`evmPaymentAdapter`, `scanEvmPayments`, `preflightEvmDeployment`, `EvmEscrowConfig`, `verifyEvmDeployment`, `evmAwardId`, `finalizedEvmRevert`, `EVM_PAYMENT_EXECUTOR`, `CHAIN_FAMILY=evm`), and every `chain === "base"` call site that means EVM. No new chain value, no migration, no label change. Base integration output identical before and after.
-- **PR B, Robinhood Chain.** Registry entries, migration 0017, deploy scripts, wallet and payment API acceptance, manifest schema, labels, explorer links, tests, README and docs updates (the EVM contracts README network table and USDG paragraph, `docs/testnet-funding.md`, the executor README gas table). The PRD and payouts addendum changes land in step 0, not here.
-- **PR C, runbook.** `docs/robinhood-chain-testnet-runbook.md`, the evidence template, and the `check-payout-test-funding.mjs` network entry if not already in B.
+Payment authority is a separate prerequisite. Robinhood Chain destination binding and payment dispatch reuse the PAY-05 actor-binding design (the bounded identity attester) that the repository owner approved on 14 October 2026 in PR #675. They add no new issuer, verification, expiry, replay, revocation or recovery rule. Mainnet destination binding and payment dispatch stay blocked on every network until the tested implementation passes independent review and the counsel review in PRD section 22.
+
+The implementation pull requests into `development`, merged by the repository owner after step 0:
+
+- **PR A (#677), family refactor.** `chainFamily`, `ESCROW_CHAINS`, the registry fields, renames (`evmPaymentAdapter`, `scanEvmPayments`, `preflightEvmDeployment`, `EvmEscrowConfig`, `verifyEvmDeployment`, `evmAwardId`, `finalizedEvmRevert`, `EVM_PAYMENT_EXECUTOR`, `CHAIN_FAMILY=evm`), and every `chain === "base"` call site that means EVM. No new chain value, no migration, no label change. Base integration output identical before and after.
+- **PR B (#680), Robinhood Chain.** Registry entries (including the Paxos test USDG asset for `robinhood-testnet`), migration 0017, deploy scripts, wallet and payment API acceptance, manifest schema, labels, explorer links, tests, README and docs updates (the EVM contracts README network table and USDG paragraph, `docs/testnet-funding.md`, the executor README gas table). The PRD, MVP plan and payouts addendum changes land in step 0, not here.
+- **PR C, runbook.** Not yet opened. `docs/robinhood-chain-testnet-runbook.md`, the evidence template, the test USDG supply route, and the `check-payout-test-funding.mjs` network entry if not already in B.
 
 Each PR cites FND-01, FND-02, PAY-06, PAY-07 and MVP-02, MVP-06, MVP-07 in its description per the repository's PR rule.
 

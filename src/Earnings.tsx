@@ -1,6 +1,8 @@
+import { ExternalLink, Wallet as WalletIcon, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { readBoundedJson } from "./lib/browser-json";
 import {
+  chainFamily,
   ESCROW_CHAINS,
   ESCROW_NETWORKS,
   type EscrowChain,
@@ -12,6 +14,7 @@ import {
   transactionUrl,
 } from "./lib/payments/contracts";
 import { isDirectTransfer } from "./lib/use-direct-transfers";
+import { type PayoutWallet, usePayoutWallets } from "./lib/use-payout-wallets";
 import { formatDate, formatDateTime } from "./Presentation";
 
 const networkName: Record<EscrowChain, string> = {
@@ -151,23 +154,10 @@ function account(value: unknown): PaymentsAccount {
   return data;
 }
 
-type EthereumWallet = {
-  request(input: { method: string; params?: unknown[] }): Promise<unknown>;
-};
-type SolanaWallet = {
-  connect(): Promise<{ publicKey: { toString(): string } }>;
-  signMessage(
-    message: Uint8Array,
-    display: "utf8",
-  ): Promise<{ signature: Uint8Array }>;
-};
-type WalletWindow = Window & {
-  ethereum?: EthereumWallet;
-  solana?: SolanaWallet;
-  phantom?: { solana?: SolanaWallet };
-};
-
 export function EarningsPage() {
+  const wallets = usePayoutWallets();
+  const [picker, setPicker] = useState<PaymentChain | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
   const [data, setData] = useState<PaymentsAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -212,51 +202,18 @@ export function EarningsPage() {
     return () => controller.abort();
   }, [revision]);
 
-  async function connect(chain: PaymentChain) {
+  useEffect(() => {
+    if (picker) dialog.current?.showModal();
+    else dialog.current?.close();
+  }, [picker]);
+
+  async function connect(chosen: PayoutWallet, chain: PaymentChain) {
+    setPicker(null);
     setBusy(chain);
     setError("");
     setMessage("");
     try {
-      const provider = window as WalletWindow;
-      let address: string;
-      let sign: (message: string) => Promise<string>;
-      if (EVM_CHAINS.includes(chain)) {
-        const wallet = provider.ethereum;
-        if (!wallet)
-          throw new Error(
-            "Open this page in your wallet’s browser or enable its browser extension.",
-          );
-        const addresses = await wallet.request({
-          method: "eth_requestAccounts",
-        });
-        if (!Array.isArray(addresses) || typeof addresses[0] !== "string")
-          throw new Error("Your wallet did not return an address.");
-        address = addresses[0].toLowerCase();
-        sign = async (text) => {
-          const hex = `0x${Array.from(new TextEncoder().encode(text), (n) => n.toString(16).padStart(2, "0")).join("")}`;
-          const signature = await wallet.request({
-            method: "personal_sign",
-            params: [hex, address],
-          });
-          if (typeof signature !== "string")
-            throw new Error("Your wallet did not return a signature.");
-          return signature;
-        };
-      } else {
-        const wallet = provider.phantom?.solana ?? provider.solana;
-        if (!wallet)
-          throw new Error(
-            "Open this page in your Solana wallet’s browser or enable its browser extension.",
-          );
-        address = (await wallet.connect()).publicKey.toString();
-        sign = async (text) => {
-          const result = await wallet.signMessage(
-            new TextEncoder().encode(text),
-            "utf8",
-          );
-          return btoa(String.fromCharCode(...result.signature));
-        };
-      }
+      const { address, sign } = await chosen.connect();
       const claim = (await request("wallets/register", { chain, address })) as {
         claimId: string;
       };
@@ -314,6 +271,89 @@ export function EarningsPage() {
         This page shows escrow payouts after the 2% fee deduction. Legacy
         project cycles keep their recorded fee policy.
       </p>
+      <dialog
+        ref={dialog}
+        className="wallet-picker"
+        aria-labelledby={`${heading}-wallet-picker`}
+        onCancel={() => setPicker(null)}
+        onClose={() => setPicker(null)}
+      >
+        <div className="wallet-picker-header">
+          <h2 id={`${heading}-wallet-picker`}>
+            Connect a {picker ? networkName[picker] : ""} wallet
+          </h2>
+          <button
+            type="button"
+            className="wallet-picker-close"
+            aria-label="Close wallet picker"
+            onClick={() => setPicker(null)}
+          >
+            <X size={20} aria-hidden="true" />
+          </button>
+        </div>
+        <p>
+          Choose a wallet for your {picker ? networkName[picker] : ""} payouts.
+        </p>
+        <div className="wallet-picker-list">
+          {wallets
+            .filter((wallet) => picker && wallet.family === chainFamily(picker))
+            .map((wallet) => (
+              <button
+                type="button"
+                key={wallet.id}
+                className="wallet-picker-row"
+                onClick={() => picker && void connect(wallet, picker)}
+              >
+                {wallet.icon &&
+                /^data:image\/(?:png|jpeg|webp|svg\+xml)[;,]/u.test(
+                  wallet.icon,
+                ) ? (
+                  <img src={wallet.icon} width={32} height={32} alt="" />
+                ) : (
+                  <WalletIcon size={24} aria-hidden="true" />
+                )}
+                <span>{wallet.name}</span>
+                <small>Detected</small>
+              </button>
+            ))}
+          {!wallets.some(
+            (wallet) => picker && wallet.family === chainFamily(picker),
+          ) && (
+            <>
+              <p>
+                No wallet detected. Install a wallet, then reload this page.
+              </p>
+              <a
+                className="wallet-picker-row"
+                href="https://metamask.io/download"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <WalletIcon size={24} aria-hidden="true" />
+                <span>MetaMask</span>
+                <small>
+                  Install <ExternalLink size={16} aria-hidden="true" />
+                </small>
+              </a>
+              <a
+                className="wallet-picker-row"
+                href="https://phantom.com/download"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <WalletIcon size={24} aria-hidden="true" />
+                <span>Phantom</span>
+                <small>
+                  Install <ExternalLink size={16} aria-hidden="true" />
+                </small>
+              </a>
+            </>
+          )}
+        </div>
+        <p className="wallet-picker-note">
+          Each network can use a different wallet.
+        </p>
+      </dialog>
       {loading && <p role="status">Checking your payouts…</p>}
       {signedOut && !loading && (
         <div>
@@ -414,7 +454,7 @@ export function EarningsPage() {
                     className="button secondary-button"
                     type="button"
                     disabled={busy !== null}
-                    onClick={() => void connect(chain)}
+                    onClick={() => setPicker(chain)}
                   >
                     {busy === chain
                       ? "Confirm in your wallet…"

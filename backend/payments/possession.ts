@@ -38,13 +38,39 @@ function recoverEvmSigner(digest: Uint8Array, signature: string): string {
   ).toBytes(false);
   return `0x${hex(keccak_256(publicKey.slice(1)).slice(-20))}`;
 }
-/** The destination wallet's EIP-712 acceptance of one exact EVM binding (ProjectEscrow.bindingDigest). EOA only. */
+/** Half the secp256k1 group order: ProjectEscrow rejects a signature with a larger s (EIP-2). */
+const MAX_S = BigInt(
+  "0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0",
+);
+/**
+ * The exact encoding ProjectEscrow.bindDestination accepts: 65 bytes, low s, and a recovery
+ * byte of 27 or 28. Wallets that return a recovery byte of 0 or 1 sign the same digest, so
+ * that byte is rewritten; a high-s signature is rejected because the vault rejects it.
+ */
+export function canonicalEvmSignature(signature: string): string | null {
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) return null;
+  const body = signature.slice(2).toLowerCase();
+  const v = Number.parseInt(body.slice(128), 16);
+  const recovery = v === 0 || v === 1 ? v + 27 : v;
+  if (
+    (recovery !== 27 && recovery !== 28) ||
+    BigInt(`0x${body.slice(64, 128)}`) > MAX_S
+  )
+    return null;
+  return `0x${body.slice(0, 128)}${recovery.toString(16)}`;
+}
+/**
+ * The destination wallet's EIP-712 acceptance of one exact EVM binding (ProjectEscrow.bindingDigest),
+ * in the encoding the vault accepts (see canonicalEvmSignature). EOA only.
+ */
 export function verifyEvmBindingSignature(
   chainId: bigint,
   vault: string,
   input: BindingInput,
   signature: string,
 ): boolean {
+  if (canonicalEvmSignature(signature) !== signature.toLowerCase())
+    return false;
   try {
     const digest = Uint8Array.from(
       evmBindingDigest(chainId, vault, input).slice(2).match(/../g) ?? [],

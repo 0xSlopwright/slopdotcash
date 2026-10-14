@@ -17,6 +17,8 @@ import {
 } from "@solana/web3.js";
 
 const { Program, BN } = anchor;
+/** A project account created before the identity authority rotation fields existed. */
+const LEGACY_PROJECT_SIZE = 265;
 const hash = (value) => {
   if (typeof value !== "string" || !/^(?:0x)?[a-fA-F0-9]{64}$/.test(value))
     throw new Error("Expected 32-byte digest");
@@ -142,20 +144,62 @@ export async function ownerPlan(input, runtime) {
         })
         .instruction(),
     );
+  } else if (input.operation === "migrate") {
+    // Grows a project created before the rotation fields existed. The account
+    // must be this program's 265-byte project for the reviewed owner, mint
+    // and network; the reviewed rotation delay becomes its rotation delay.
+    const legacy = await connection.getAccountInfo(project, "finalized");
+    if (
+      !legacy?.owner.equals(program.programId) ||
+      legacy.data.length !== LEGACY_PROJECT_SIZE ||
+      !legacy.data
+        .subarray(0, 8)
+        .equals(Buffer.from("cda8bdcab5f78e13", "hex")) ||
+      !new PublicKey(legacy.data.subarray(8, 40)).equals(owner) ||
+      !Buffer.from(legacy.data.subarray(72, 104)).equals(
+        Buffer.from(hash(d.networkDomain)),
+      ) ||
+      !new PublicKey(legacy.data.subarray(168, 200)).equals(mint)
+    )
+      throw new Error("Not a legacy project for this reviewed deployment");
+    instructions.push(
+      await program.methods
+        .migrateProject(delay(d.rotationDelaySeconds))
+        .accountsStrict({
+          owner,
+          project,
+          systemProgram: SystemProgram.programId,
+        })
+        .instruction(),
+    );
   } else {
     const state = await program.account.project.fetch(project, "finalized");
+    // The identity authority is not compared: after activation it changes
+    // only through the timelocked rotation that the program enforces.
     if (
       !state.owner.equals(owner) ||
       !state.mint.equals(mint) ||
-      !state.identityAuthority.equals(new PublicKey(d.identityAuthority)) ||
       !state.feeRecipient.equals(new PublicKey(d.feeRecipient)) ||
       !state.bindingDelay.eq(delay(d.bindingDelaySeconds)) ||
       !state.rotationDelay.eq(delay(d.rotationDelaySeconds)) ||
-      !state.bindingNamespace.equals(new PublicKey(d.bindingNamespace)) ||
       !Buffer.from(state.network).equals(Buffer.from(hash(d.networkDomain)))
     )
       throw new Error("Reviewed project configuration mismatch");
-    if (input.operation === "deposit")
+    if (input.operation === "propose-rotation")
+      instructions.push(
+        await program.methods
+          .proposeAuthorityRotation(new PublicKey(input.nextIdentityAuthority))
+          .accountsStrict({ owner, project })
+          .instruction(),
+      );
+    else if (input.operation === "cancel-rotation")
+      instructions.push(
+        await program.methods
+          .cancelAuthorityRotation()
+          .accountsStrict({ owner, project })
+          .instruction(),
+      );
+    else if (input.operation === "deposit")
       instructions.push(
         await program.methods
           .deposit(amount(input.grossMicro))
@@ -215,8 +259,7 @@ export async function ownerPlan(input, runtime) {
             project,
             binding: pda(
               Buffer.from("wallet"),
-              state.bindingNamespace.toBuffer(),
-              Buffer.from(state.network),
+              project.toBuffer(),
               actor.toArrayLike(Buffer, "le", 8),
             ),
             veto: pda(
@@ -224,11 +267,6 @@ export async function ownerPlan(input, runtime) {
               project.toBuffer(),
               actor.toArrayLike(Buffer, "le", 8),
               version.toArrayLike(Buffer, "le", 8),
-            ),
-            ledger: pda(
-              Buffer.from("veto-count"),
-              project.toBuffer(),
-              actor.toArrayLike(Buffer, "le", 8),
             ),
             obligation:
               input.obligationId === undefined

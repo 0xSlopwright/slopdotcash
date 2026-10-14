@@ -6,9 +6,8 @@ has no proxy, owner change, token approval, arbitrary call, rescue, claim
 expiry, or award cancellation entry point. An approved award remains reserved until it is paid. The owner can cancel only a wallet binding that has
 not paid yet, and only inside a bounded window. The only mutable authority is
 the factory's identity authority, replaced by a public 7-day timelock. This
-code has local EVM execution evidence and an AI-assisted internal review
-(12 October 2026). It has not received an independent security review or a
-public testnet deployment.
+code has local EVM execution evidence only. It has not received an independent
+security review or a public testnet deployment.
 
 ## Networks
 
@@ -58,10 +57,11 @@ still gives the owner a full delay measured from the moment money is attached
 to it. The owner's exact power is `cancelBinding(actorId, version)` on the
 latest binding, allowed while that binding waits out its own delay or while an
 award to the actor is inside its commit delay, and never on a binding that has
-already paid. A cancelled binding never pays; only a new binding (the next version, with a
-new delay and a new wallet signature) can follow. For an actor that has never been
-paid, the owner can cancel at most `MAX_CANCELS_BEFORE_ACTIVE` (3) times; the
-next binding pays after its delay. The owner can therefore delay a
+already paid. A cancelled binding never pays; only a new binding (the next
+version, with a new delay and a new wallet signature) can follow. Between two
+payments to an actor, the owner can cancel at most `MAX_CANCELS_BETWEEN_PAYMENTS`
+(3) times; the next binding cannot be cancelled and pays after its delay. A
+payment resets the count. The owner can therefore delay a
 contributor's payout by a bounded number of delays, but can never take an
 approved award back or redirect it. The constructor rejects a delay below one
 hour or above 30 days; production deployments use at least 48 hours
@@ -83,10 +83,16 @@ the new one can. Bindings are stored per vault and actor and do not reference
 the authority, so every existing binding, pending or active, stays valid across
 a rotation, and `pay` never reads the authority. The next authority must be
 nonzero and differ from the current authority and the registrar. Vaults are
-created only by the factory and read `factory.identityAuthority()`; the
-adapter reads `identityAuthority()` on the vault, so a reviewed manifest records
-the authority in force at review time and the deployment evidence records the
-factory.
+created only by the factory and read `factory.identityAuthority()`. The reviewed
+manifest pins the factory address, its runtime code digest
+(`factoryCodeSha256`) and its registrar, and the adapter checks that the factory
+created the vault for its project ID and has the reviewed asset, fee recipient,
+binding delay and 7-day `AUTHORITY_ROTATION_DELAY`. A vault from a factory with
+other rotation rules therefore fails verification. The manifest's
+`identityAuthority` is the authority at activation; the adapter does not compare
+it with the authority in force, because after activation the authority changes
+only through this timelock. A rotation therefore never interrupts verification
+or payment, and the manifest stays immutable.
 
 ### Key recovery runbook
 
@@ -106,8 +112,15 @@ exposure window is 7 days. During it the attacker can submit only bindings
 that a wallet co-signs, each activating after `bindingDelay`. Every project
 owner watches `DestinationBound` and cancels any binding it did not expect
 with `cancelBinding`, which costs the contributor a delay and nothing else.
-After execution the old key cannot bind. Rotation never cancels or re-points a
-binding by itself, so review every binding made during the window.
+The owner cancels late in each binding's delay, so three cancels and the
+fourth binding's own delay cover at least four delays: 8 days at the 48-hour
+production minimum, longer than the 7-day notice. After execution the old key
+cannot bind, and the new authority binds the contributor's wallet as the next
+version before the attacker's last binding activates; only the latest binding
+pays. `test_H1_stolenAuthorityCannotTakeAnAward` in `test/BoundedAttester.t.sol`
+runs this sequence and asserts that the attacker receives nothing. Rotation
+never cancels or re-points a binding by itself, so review every binding made
+during the window.
 
 Registrar key lost or compromised: there is no second rotation path; the
 registrar is the recovery authority, so choose it at factory deployment and
@@ -120,17 +133,17 @@ Project owner key lost: deposits, awards and withdrawals from that vault stop;
 reserved awards still pay to active bindings. There is no owner change in this
 version.
 
-Each actor has two binding slots. `bindings(actorId)` is the latest authority
-binding with its `activatesAt` and `cancelled` flag. `activeBindings(actorId)`
-is the binding the last payment used; the first payment through a binding
-promotes it. `payableBinding(actorId)` returns the binding a payment would use
-now: the latest one once its delay has passed and it is not cancelled,
-otherwise the active one. A rotation therefore moves the destination only
-after its delay, and until then the active binding keeps paying; cancelling the
-pending rotation leaves the active binding payable. The executor pays only the
-destination the contributor currently claims, so a claimed rotation waits for
-its delay rather than paying the previous wallet. A payment names the version
-it expects, and a payment naming any other version fails. If payment executes
+Only the latest binding can pay. `bindings(actorId)` is the latest authority
+binding with its `activatesAt` and `cancelled` flag. `payableBinding(actorId)`
+returns it once its delay has passed and it is not cancelled, and version 0
+otherwise. `paidVersion(actorId)` records the version the last payment used, so
+that binding cannot be cancelled. While a rotation waits out its delay, or after
+the owner cancels it, no caller can pay any earlier wallet: a contributor who
+rotates away from a lost or compromised wallet freezes payment to it at once,
+and payment resumes only to the new binding once it is ready. This is the
+stale-binding rule in `docs/base-solana-payout-plan.md`: a finalized change
+invalidates payment to the earlier destination. A payment names the version it
+expects, and a payment naming any other version fails. If payment executes
 first, a later rotation cannot repay the award. Every award ID and source
 digest is consumed permanently. Source
 digests identify a single allocation origin including project, cycle, and actor; keep it stable across amount or snapshot
@@ -203,7 +216,8 @@ net contributor obligations; `reservedFees` records their deducted fees.
 contributor net. Event observations and counters are not finality proof;
 backend receipts must use finalized chain state. Before indexing an event or
 signing, the adapter verifies the finalized runtime code SHA-256 and the token,
-owner, identity authority in force, and fee recipient against the reviewed manifest.
+owner, fee recipient, binding delay and factory (address, runtime code digest,
+registrar and rotation delay) against the reviewed manifest.
 `codeSha256` hashes decoded `eth_getCode` bytes, including constructor
 immutables. The current manifest has one sponsor address, so activation also
 requires the refund destination to equal that owner.
@@ -220,11 +234,13 @@ forge test --root contracts/evm
 bun contracts/evm/adapter.integration.ts
 ```
 
-`forge test` runs the Foundry suites under `test/`: the review tests from the
-12 October 2026 AI-assisted review adapted to the fixed behaviour, invariant
-runs over random owner, authority and payer sequences, and the binding
-lifecycle tests (commit delay, active binding through rotation and cancel,
-cancel cap, delay bounds, one-shot cancel).
+`forge test` runs the Foundry suites under `test/`: regression tests for the
+binding lifecycle (commit delay, payment frozen during a rotation and after its
+cancel, cancel cap between payments, delay bounds, one-shot cancel), token and
+accounting checks, and invariant runs over random owner, authority and payer
+sequences. These suites are regression evidence, not a security review. The
+`base` job in `.github/workflows/escrow-tests.yml` runs the format check, build
+and `forge test` on every escrow change.
 
 The integration deploys `integration/TestDollar.sol`, a six-decimal test
 ERC-20. The test token is not Circle USDC; Circle integration, wallet signatures, OAuth, indexer finality,

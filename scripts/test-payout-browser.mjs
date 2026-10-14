@@ -98,6 +98,10 @@ try {
   await page.getByRole("button", { name: "Connect Base wallet" }).focus();
   await page.keyboard.press("Enter");
   await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Browser wallet Detected" })
+    .click();
+  await page
     .getByText("Base wallet confirmed.", { exact: false })
     .waitFor({ timeout: 60000 });
   for (let attempt = 0; attempt < 15; attempt++) {

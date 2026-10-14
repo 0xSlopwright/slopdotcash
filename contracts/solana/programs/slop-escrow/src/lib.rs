@@ -14,12 +14,15 @@ const MIN_BINDING_DELAY: i64 = if cfg!(feature = "short-delay-for-tests") {
 };
 const MAX_BINDING_DELAY: i64 = 30 * 86400;
 /// An identity authority rotation is public for at least the binding delay floor and at most
-/// 90 days; production uses at least 7 days (reviewed-manifest floor).
+/// 90 days; production manifests require at least 7 days.
 const MAX_ROTATION_DELAY: i64 = 90 * 86400;
-/// Vetoes a project owner may record for an actor that has never been paid through the
-/// shared binding. Each veto can only delay the actor by one more binding delay, so this
+/// Size of a Project account created before the identity authority rotation fields existed.
+/// `migrate_project` grows such an account to the current layout.
+pub const LEGACY_PROJECT_SIZE: usize = 265;
+/// Vetoes a project owner may record for an actor between two payments to that actor in
+/// the project. Each veto can only delay the actor by one more binding delay, so this
 /// bounds the owner's delay power.
-const MAX_VETOES_BEFORE_ACTIVE: u8 = 3;
+const MAX_VETOES_BETWEEN_PAYMENTS: u8 = 3;
 #[program]
 pub mod slop_escrow {
     use super::*;
@@ -42,8 +45,7 @@ pub mod slop_escrow {
             EscrowError::InvalidIdentity
         );
         require!(
-            (MIN_BINDING_DELAY..=MAX_BINDING_DELAY).contains(&binding_delay)
-                && (MIN_BINDING_DELAY..=MAX_ROTATION_DELAY).contains(&rotation_delay),
+            valid_delay(binding_delay) && valid_rotation_delay(rotation_delay),
             EscrowError::InvalidDelay
         );
         let p = &mut ctx.accounts.project;
@@ -55,9 +57,54 @@ pub mod slop_escrow {
         p.mint = ctx.accounts.mint.key();
         p.bump = ctx.bumps.project;
         p.binding_delay = binding_delay;
-        // Binding PDAs derive from the authority at initialize, so they survive a rotation.
-        p.binding_namespace = identity_authority;
         p.rotation_delay = rotation_delay;
+        Ok(())
+    }
+    // Grows a Project account created before the rotation fields existed to the current
+    // layout. Only the project owner can run it, once, and it sets the rotation delay that
+    // `initialize` sets for new projects. Borsh appends the new fields after the old ones, so
+    // every existing field keeps its offset; the new bytes start as zero (no pending rotation).
+    pub fn migrate_project(ctx: Context<MigrateProject>, rotation_delay: i64) -> Result<()> {
+        require!(
+            valid_rotation_delay(rotation_delay),
+            EscrowError::InvalidDelay
+        );
+        let info = ctx.accounts.project.to_account_info();
+        {
+            let data = info.try_borrow_data()?;
+            require!(
+                data.len() == LEGACY_PROJECT_SIZE && &data[..8] == Project::DISCRIMINATOR,
+                EscrowError::NotLegacyProject
+            );
+            require!(
+                data[8..40] == ctx.accounts.owner.key().to_bytes(),
+                EscrowError::InvalidIdentity
+            );
+        }
+        let size = 8 + Project::INIT_SPACE;
+        let rent = Rent::get()?.minimum_balance(size);
+        let lamports = info.lamports();
+        if rent > lamports {
+            anchor_lang::system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.to_account_info(),
+                    anchor_lang::system_program::Transfer {
+                        from: ctx.accounts.owner.to_account_info(),
+                        to: info.clone(),
+                    },
+                ),
+                rent - lamports,
+            )?;
+        }
+        info.resize(size)?;
+        let mut data = info.try_borrow_mut_data()?;
+        let mut project = Project::try_deserialize(&mut &data[..])?;
+        project.rotation_delay = rotation_delay;
+        project.try_serialize(&mut &mut data[..])?;
+        emit!(ProjectMigrated {
+            project: info.key(),
+            rotation_delay
+        });
         Ok(())
     }
     // The owner starts a public two-party rotation of the identity authority. The current
@@ -119,8 +166,8 @@ pub mod slop_escrow {
         });
         Ok(())
     }
-    // Anyone executes a confirmed proposal once its delay has passed. Bindings derive from the
-    // binding namespace, not the current authority, so every existing binding stays valid.
+    // Anyone executes a confirmed proposal once its delay has passed. Binding PDAs derive from
+    // the project and actor, not the authority, so every existing binding stays valid.
     pub fn execute_authority_rotation(ctx: Context<ExecuteAuthorityRotation>) -> Result<()> {
         let p = &mut ctx.accounts.project;
         let next = p.pending_identity_authority;
@@ -204,10 +251,10 @@ pub mod slop_escrow {
         Ok(())
     }
     // The attester and the destination keypair both sign this exact transaction, including
-    // deployment and predecessor. The destination is the co-signer, so the authority alone
-    // cannot bind a wallet it does not hold. `expires_at` limits submission, not claim
-    // lifetime. A new binding replaces the latest one; the active slot (the binding a payment
-    // last used) is untouched.
+    // deployment, project and predecessor. The destination is a co-signer, so the authority
+    // alone cannot bind a wallet it does not hold. `expires_at` limits submission, not claim
+    // lifetime. A new binding replaces the latest one for this project; no earlier binding
+    // can pay afterwards.
     pub fn bind_wallet(
         ctx: Context<BindWallet>,
         actor_id: u64,
@@ -256,17 +303,17 @@ pub mod slop_escrow {
     }
     // The owner stops the latest binding for this project before it pays: while it waits
     // out its own delay, or while an unpaid award to the actor (passed as `obligation`) is
-    // still inside its commit delay. A binding that has paid cannot be vetoed, and an
-    // actor that has never been paid can be vetoed at most MAX_VETOES_BEFORE_ACTIVE times.
-    // A new authority binding (next version) is required afterwards.
+    // still inside its commit delay. A binding that has paid cannot be vetoed, and the
+    // owner can veto at most MAX_VETOES_BETWEEN_PAYMENTS times between two payments to the
+    // actor. A new authority binding (next version) is required afterwards.
     pub fn veto_binding(ctx: Context<VetoBinding>, actor_id: u64, version: u64) -> Result<()> {
-        let b = &ctx.accounts.binding;
         let p = &ctx.accounts.project;
+        let b = &ctx.accounts.binding;
         require!(
             b.version == version && b.actor_id == actor_id && version > 0,
             EscrowError::StaleBinding
         );
-        require!(version != b.active_version, EscrowError::BindingActive);
+        require!(version != b.paid_version, EscrowError::BindingActive);
         let now = Clock::get()?.unix_timestamp;
         let commit_window = match &ctx.accounts.obligation {
             Some(a) => now < add_i64(a.committed_at, p.binding_delay)?,
@@ -276,14 +323,11 @@ pub mod slop_escrow {
             now < activates_at(b, p)? || commit_window,
             EscrowError::BindingActive
         );
-        if b.active_version == 0 {
-            let ledger = &mut ctx.accounts.ledger;
-            require!(
-                ledger.count < MAX_VETOES_BEFORE_ACTIVE,
-                EscrowError::VetoLimit
-            );
-            ledger.count += 1;
-        }
+        require!(
+            b.veto_count < MAX_VETOES_BETWEEN_PAYMENTS,
+            EscrowError::VetoLimit
+        );
+        ctx.accounts.binding.veto_count += 1;
         emit!(BindingVetoed {
             project: ctx.accounts.project.key(),
             actor_id,
@@ -291,9 +335,9 @@ pub mod slop_escrow {
         });
         Ok(())
     }
-    // Pays an award once its commit delay has passed, to the latest binding if that
-    // binding's delay has passed and this project has not vetoed it, otherwise to the
-    // binding a payment last used. The first payment through a binding makes it active.
+    // Pays an award once its commit delay has passed, only to this project's latest
+    // binding, once that binding's delay has passed and the owner has not vetoed it. While
+    // a newer binding waits or after its veto, no earlier binding pays.
     pub fn pay(ctx: Context<Pay>, expected_version: u64) -> Result<()> {
         let p = &ctx.accounts.project;
         let a = &ctx.accounts.obligation;
@@ -305,27 +349,12 @@ pub mod slop_escrow {
             EscrowError::AwardPending
         );
         require!(b.version > 0, EscrowError::StaleBinding);
+        require!(now >= activates_at(b, p)?, EscrowError::BindingPending);
         // A veto address can only be created by veto_binding; an empty system account
         // proves the owner did not veto that binding version.
-        let latest_ready = now >= activates_at(b, p)? && unvetoed(&ctx.accounts.veto);
-        // Naming the latest version while it cannot pay reports why, not a stale version.
-        if !latest_ready && (expected_version == b.version || b.active_version == 0) {
-            return Err(if now < activates_at(b, p)? {
-                error!(EscrowError::BindingPending)
-            } else {
-                error!(EscrowError::BindingVetoed)
-            });
-        }
-        let (destination, version) = if latest_ready {
-            (b.destination, b.version)
-        } else {
-            require!(
-                unvetoed(&ctx.accounts.active_veto),
-                EscrowError::BindingVetoed
-            );
-            (b.active_destination, b.active_version)
-        };
-        require!(version == expected_version, EscrowError::StaleBinding);
+        require!(unvetoed(&ctx.accounts.veto), EscrowError::BindingVetoed);
+        require!(b.version == expected_version, EscrowError::StaleBinding);
+        let (destination, version) = (b.destination, b.version);
         require!(
             ctx.accounts.destination.owner == destination
                 && ctx.accounts.destination.key()
@@ -362,10 +391,8 @@ pub mod slop_escrow {
         p.payout_fees = add(p.payout_fees, fee)?;
         ctx.accounts.obligation.paid = true;
         let b = &mut ctx.accounts.binding;
-        if b.active_version != version {
-            b.active_destination = destination;
-            b.active_version = version;
-        }
+        b.paid_version = version;
+        b.veto_count = 0;
         emit!(AwardPaid {
             project: p.key(),
             award_id: ctx.accounts.obligation.award_id,
@@ -461,6 +488,12 @@ pub mod slop_escrow {
 /// The only valid award ID for a source in this project.
 pub fn award_id_for(project: &Pubkey, source_digest: &[u8; 32]) -> [u8; 32] {
     hashv(&[b"slop-escrow-award", project.as_ref(), source_digest]).to_bytes()
+}
+fn valid_delay(binding_delay: i64) -> bool {
+    (MIN_BINDING_DELAY..=MAX_BINDING_DELAY).contains(&binding_delay)
+}
+fn valid_rotation_delay(rotation_delay: i64) -> bool {
+    (MIN_BINDING_DELAY..=MAX_ROTATION_DELAY).contains(&rotation_delay)
 }
 fn activates_at(b: &WalletBinding, p: &Project) -> Result<i64> {
     add_i64(b.bound_at, p.binding_delay)
@@ -564,7 +597,7 @@ pub struct BindWallet<'info> {
     pub destination: Signer<'info>,
     #[account(has_one=identity_authority)]
     pub project: Box<Account<'info, Project>>,
-    #[account(init_if_needed,payer=payer,space=8+WalletBinding::INIT_SPACE,seeds=[b"wallet",project.binding_namespace.as_ref(),&network,&actor_id.to_le_bytes()],bump)]
+    #[account(init_if_needed,payer=payer,space=8+WalletBinding::INIT_SPACE,seeds=[b"wallet",project.key().as_ref(),&actor_id.to_le_bytes()],bump)]
     pub binding: Box<Account<'info, WalletBinding>>,
     pub system_program: Program<'info, System>,
 }
@@ -575,12 +608,10 @@ pub struct VetoBinding<'info> {
     pub owner: Signer<'info>,
     #[account(has_one=owner)]
     pub project: Box<Account<'info, Project>>,
-    #[account(seeds=[b"wallet",project.binding_namespace.as_ref(),&project.network,&actor_id.to_le_bytes()],bump)]
+    #[account(mut,seeds=[b"wallet",project.key().as_ref(),&actor_id.to_le_bytes()],bump)]
     pub binding: Box<Account<'info, WalletBinding>>,
     #[account(init,payer=owner,space=8+BindingVeto::INIT_SPACE,seeds=[b"veto",project.key().as_ref(),&actor_id.to_le_bytes(),&version.to_le_bytes()],bump)]
     pub veto: Account<'info, BindingVeto>,
-    #[account(init_if_needed,payer=owner,space=8+VetoLedger::INIT_SPACE,seeds=[b"veto-count",project.key().as_ref(),&actor_id.to_le_bytes()],bump)]
-    pub ledger: Account<'info, VetoLedger>,
     /// An unpaid award to this actor in this project whose commit delay has not passed;
     /// it extends the veto window to that award's commit delay.
     #[account(constraint=obligation.project==project.key() @ EscrowError::InvalidAward,constraint=obligation.actor_id==actor_id @ EscrowError::InvalidAward,constraint=!obligation.paid @ EscrowError::AlreadyPaid)]
@@ -593,7 +624,7 @@ pub struct Pay<'info> {
     pub project: Box<Account<'info, Project>>,
     #[account(mut,has_one=project,seeds=[b"award",project.key().as_ref(),&obligation.award_id],bump)]
     pub obligation: Box<Account<'info, Obligation>>,
-    #[account(mut,seeds=[b"wallet",project.binding_namespace.as_ref(),&project.network,&obligation.actor_id.to_le_bytes()],bump,constraint=binding.actor_id==obligation.actor_id,constraint=binding.network==project.network)]
+    #[account(mut,seeds=[b"wallet",project.key().as_ref(),&obligation.actor_id.to_le_bytes()],bump,constraint=binding.actor_id==obligation.actor_id,constraint=binding.network==project.network)]
     pub binding: Box<Account<'info, WalletBinding>>,
     pub mint: Account<'info, Mint>,
     #[account(mut,seeds=[b"vault",project.key().as_ref()],bump,token::mint=mint,token::authority=project)]
@@ -607,9 +638,16 @@ pub struct Pay<'info> {
     /// CHECK: must be the empty veto address for this project, actor and latest binding version.
     #[account(seeds=[b"veto",project.key().as_ref(),&obligation.actor_id.to_le_bytes(),&binding.version.to_le_bytes()],bump)]
     pub veto: UncheckedAccount<'info>,
-    /// CHECK: must be the empty veto address for this project, actor and active binding version.
-    #[account(seeds=[b"veto",project.key().as_ref(),&obligation.actor_id.to_le_bytes(),&binding.active_version.to_le_bytes()],bump)]
-    pub active_veto: UncheckedAccount<'info>,
+}
+#[derive(Accounts)]
+pub struct MigrateProject<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    /// CHECK: a legacy-size Project account owned by this program; the handler checks its size,
+    /// discriminator and stored owner before it grows the account.
+    #[account(mut,owner=crate::ID @ EscrowError::NotLegacyProject)]
+    pub project: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 #[derive(Accounts)]
 pub struct ProposeAuthorityRotation<'info> {
@@ -683,7 +721,8 @@ pub struct Project {
     pub bump: u8,
     pub binding_delay: i64,
     pub service_fees: u64,
-    pub binding_namespace: Pubkey,
+    /// Fields after this point were added with the authority rotation; `migrate_project` grows
+    /// accounts created without them.
     pub pending_identity_authority: Pubkey,
     pub rotation_effective_at: i64,
     pub rotation_confirmed: bool,
@@ -709,8 +748,8 @@ pub struct Obligation {
     pub paid: bool,
     pub committed_at: i64,
 }
-/// Shared across every project with the same authority and network. The first seven
-/// fields are the latest binding; the active slot is the binding a payment last used.
+/// One binding per project and actor, so each project's delay, vetoes and payments are
+/// its own. The first seven fields are the latest binding, the only one that can pay.
 #[account]
 #[derive(InitSpace)]
 pub struct WalletBinding {
@@ -721,17 +760,18 @@ pub struct WalletBinding {
     pub destination: Pubkey,
     pub version: u64,
     pub bound_at: i64,
-    pub active_destination: Pubkey,
-    pub active_version: u64,
+    /// The version the last payment in this project used; 0 before the first payment.
+    pub paid_version: u64,
+    /// Vetoes recorded since the last payment in this project.
+    pub veto_count: u8,
 }
 #[account]
 #[derive(InitSpace)]
 pub struct BindingVeto {}
-/// Vetoes this project has recorded for an actor before the actor's first payment.
-#[account]
-#[derive(InitSpace)]
-pub struct VetoLedger {
-    pub count: u8,
+#[event]
+pub struct ProjectMigrated {
+    pub project: Pubkey,
+    pub rotation_delay: i64,
 }
 #[event]
 pub struct AuthorityRotationProposed {
@@ -827,15 +867,15 @@ pub enum EscrowError {
     BindingPending,
     #[msg("Project owner vetoed this wallet binding")]
     BindingVetoed,
-    #[msg("Wallet binding is already active")]
+    #[msg("Wallet binding has paid or its veto window has closed")]
     BindingActive,
     #[msg("Destination must be the bound wallet's associated token account")]
     WrongDestination,
     #[msg("Award is still inside its commit delay")]
     AwardPending,
-    #[msg("Owner veto limit reached before the actor's first payment")]
+    #[msg("Owner veto limit reached since the actor's last payment")]
     VetoLimit,
-    #[msg("Binding delay must be between one hour and 30 days")]
+    #[msg("Binding delay must be 1 hour to 30 days; rotation delay 1 hour to 90 days")]
     InvalidDelay,
     #[msg("Binding submission expired")]
     BindingExpired,
@@ -849,10 +889,31 @@ pub enum EscrowError {
     RotationUnconfirmed,
     #[msg("The rotation delay has not passed")]
     RotationNotReady,
+    #[msg("Account is not a legacy-size project of this program")]
+    NotLegacyProject,
 }
 
 #[account]
 #[derive(InitSpace)]
 pub struct Origin {
     pub obligation: Pubkey,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // The deployable build (no `short-delay-for-tests`) must keep the one-hour floor.
+    #[cfg(not(feature = "short-delay-for-tests"))]
+    #[test]
+    fn production_delay_bounds() {
+        assert!(!valid_delay(0));
+        assert!(!valid_delay(3599));
+        assert!(valid_delay(3600));
+        assert!(valid_delay(30 * 86400));
+        assert!(!valid_delay(30 * 86400 + 1));
+        assert!(!valid_rotation_delay(3599));
+        assert!(valid_rotation_delay(3600));
+        assert!(valid_rotation_delay(90 * 86400));
+        assert!(!valid_rotation_delay(90 * 86400 + 1));
+    }
 }
