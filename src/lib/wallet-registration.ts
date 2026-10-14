@@ -201,7 +201,7 @@ export function canonicalWalletInput(
       ? { address: typed }
       : { error: "Enter a valid Solana public address (32-byte base58)." };
   const address = typed.toLowerCase();
-  if (!/^0x[0-9a-f]{40}$/u.test(address) || !isWalletAddress(chain, address))
+  if (!isWalletAddress(chain, address))
     return {
       error: "Enter a valid public address (0x and 40 hexadecimal characters).",
     };
