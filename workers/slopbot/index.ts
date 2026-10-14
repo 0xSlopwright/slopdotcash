@@ -143,11 +143,18 @@ export default {
     if (!(await store.recordDelivery(env.SLOPBOT_DB, deliveryId, event))) {
       return new Response("duplicate delivery", { status: 202 });
     }
-    const payload = JSON.parse(body) as Payload;
-    await handleInstallation(env, event, payload);
-    const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
-    if (job !== null) await env.SLOPBOT_QUEUE.send(job);
-    return new Response(job === null ? "ignored" : "queued", { status: 202 });
+    try {
+      const payload = JSON.parse(body) as Payload;
+      await handleInstallation(env, event, payload);
+      const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
+      if (job !== null) await env.SLOPBOT_QUEUE.send(job);
+      return new Response(job === null ? "ignored" : "queued", {
+        status: 202,
+      });
+    } catch (error) {
+      await store.releaseDelivery(env.SLOPBOT_DB, deliveryId);
+      throw error;
+    }
   },
 
   async queue(

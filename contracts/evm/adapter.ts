@@ -7,11 +7,19 @@ export interface BaseEscrowConfig {
   vault: string;
   asset: string;
   owner: string;
+  /** The identity authority at activation. Later authorities come only from the factory's
+   * registrar-proposed 7-day timelock, so it is not compared with live state. */
   identityAuthority: string;
   feeRecipient: string;
   codeSha256: string;
   /** Reviewed delay, in seconds, before a destination binding can pay. */
   bindingDelaySeconds: string;
+  /** The EscrowFactory that created the vault and holds the identity authority. */
+  factory: string;
+  /** sha256 of the factory's runtime code: its rotation rules and 7-day delay. */
+  factoryCodeSha256: string;
+  /** The factory registrar, the only account that can propose an authority rotation. */
+  registrar: string;
 }
 
 export interface FinalizedEscrowEvent {
@@ -80,7 +88,51 @@ async function rpc(
   return body.result;
 }
 
-/** codeSha256 hashes decoded immutable runtime code bytes, not hex text or creation code. */
+/** The reviewed factory rotates the identity authority only after this notice period. */
+export const BASE_AUTHORITY_ROTATION_DELAY = 7n * 24n * 60n * 60n;
+async function runtimeSha256(
+  config: BaseEscrowConfig,
+  address: string,
+  blockTag: unknown,
+) {
+  const code = await rpc(config, "eth_getCode", [address, blockTag]);
+  if (typeof code !== "string" || !/^0x(?:[0-9a-fA-F]{2})+$/.test(code))
+    throw new Error("Escrow runtime code unavailable");
+  const bytes = Uint8Array.from(code.slice(2).match(/../g) ?? [], (part) =>
+    Number.parseInt(part, 16),
+  );
+  return Array.from(sha256(bytes), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+async function getter(
+  config: BaseEscrowConfig,
+  to: string,
+  signature: string,
+  blockTag: unknown,
+  argument = "",
+) {
+  const selector = Array.from(
+    keccak_256(new TextEncoder().encode(signature)).slice(0, 4),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  const value = await rpc(config, "eth_call", [
+    { to, data: `0x${selector}${argument}` },
+    blockTag,
+  ]);
+  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(value))
+    throw new Error("Malformed escrow state");
+  return value.toLowerCase();
+}
+const addressWord = (value: string) =>
+  `0x${value.slice(2).toLowerCase().padStart(64, "0")}`;
+
+/**
+ * codeSha256 and factoryCodeSha256 hash decoded immutable runtime code bytes, not hex text or
+ * creation code. The vault must be the one its pinned factory created for its project, and the
+ * factory must have the reviewed registrar, asset, fee recipient, delays and code, so a vault
+ * from a factory with other rotation rules fails.
+ */
 export async function verifyBaseDeployment(
   config: BaseEscrowConfig,
   blockTag: unknown = "finalized",
@@ -92,61 +144,67 @@ export async function verifyBaseDeployment(
       config.owner,
       config.identityAuthority,
       config.feeRecipient,
+      config.factory,
+      config.registrar,
     ].every((value) => ADDRESS.test(value)) ||
     !/^[0-9a-f]{64}$/.test(config.codeSha256) ||
+    !/^[0-9a-f]{64}$/.test(config.factoryCodeSha256) ||
     !/^(0|[1-9][0-9]*)$/.test(config.bindingDelaySeconds) ||
     BigInt(config.bindingDelaySeconds) > U64
   )
     throw new Error("Reviewed deployment identity is incomplete");
   if (quantity(await rpc(config, "eth_chainId", [])) !== config.chainId)
     throw new Error("Wrong chain");
-  const code = await rpc(config, "eth_getCode", [config.vault, blockTag]);
-  if (typeof code !== "string" || !/^0x(?:[0-9a-fA-F]{2})+$/.test(code))
-    throw new Error("Escrow runtime code unavailable");
-  const bytes = Uint8Array.from(code.slice(2).match(/../g) ?? [], (part) =>
-    Number.parseInt(part, 16),
-  );
-  const actual = Array.from(sha256(bytes), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-  if (actual !== config.codeSha256)
+  if (
+    (await runtimeSha256(config, config.vault, blockTag)) !== config.codeSha256
+  )
     throw new Error("Escrow runtime code does not match reviewed deployment");
-  for (const [getter, expected] of [
-    ["token()", config.asset],
-    ["owner()", config.owner],
-    ["refundDestination()", config.owner],
-    ["identityAuthority()", config.identityAuthority],
-    ["feeRecipient()", config.feeRecipient],
+  if (
+    (await runtimeSha256(config, config.factory, blockTag)) !==
+    config.factoryCodeSha256
+  )
+    throw new Error("Escrow factory code does not match reviewed deployment");
+  for (const [target, signature, expected] of [
+    [config.vault, "token()", config.asset],
+    [config.vault, "owner()", config.owner],
+    [config.vault, "refundDestination()", config.owner],
+    [config.vault, "feeRecipient()", config.feeRecipient],
+    [config.vault, "factory()", config.factory],
+    [config.factory, "registrar()", config.registrar],
+    [config.factory, "token()", config.asset],
+    [config.factory, "feeRecipient()", config.feeRecipient],
   ]) {
-    const selector =
-      "0x" +
-      Array.from(
-        keccak_256(new TextEncoder().encode(getter)).slice(0, 4),
-        (byte) => byte.toString(16).padStart(2, "0"),
-      ).join("");
-    const value = await rpc(config, "eth_call", [
-      { to: config.vault, data: selector },
-      blockTag,
-    ]);
     if (
-      typeof value !== "string" ||
-      !/^0x0{24}[0-9a-fA-F]{40}$/.test(value) ||
-      value.slice(-40).toLowerCase() !== expected.slice(2).toLowerCase()
+      (await getter(config, target, signature, blockTag)) !==
+      addressWord(expected)
     )
       throw new Error(
-        "Escrow asset or authority does not match reviewed deployment",
+        "Escrow asset, factory or registrar does not match reviewed deployment",
       );
   }
-  const delay = await rpc(config, "eth_call", [
-    { to: config.vault, data: "0x7b5290e8" },
-    blockTag,
-  ]);
+  for (const [target, signature, expected] of [
+    [config.vault, "bindingDelay()", BigInt(config.bindingDelaySeconds)],
+    [config.factory, "bindingDelay()", BigInt(config.bindingDelaySeconds)],
+    [
+      config.factory,
+      "AUTHORITY_ROTATION_DELAY()",
+      BASE_AUTHORITY_ROTATION_DELAY,
+    ],
+  ] as const) {
+    if (BigInt(await getter(config, target, signature, blockTag)) !== expected)
+      throw new Error("Escrow delays do not match reviewed deployment");
+  }
+  const projectId = await getter(config, config.vault, "projectId()", blockTag);
   if (
-    typeof delay !== "string" ||
-    !/^0x[0-9a-fA-F]{64}$/.test(delay) ||
-    BigInt(delay) !== BigInt(config.bindingDelaySeconds)
+    (await getter(
+      config,
+      config.factory,
+      "vaults(bytes32)",
+      blockTag,
+      projectId.slice(2),
+    )) !== addressWord(config.vault)
   )
-    throw new Error("Escrow binding delay does not match reviewed deployment");
+    throw new Error("Escrow vault was not created by the reviewed factory");
 }
 
 /** The only award ID ProjectEscrow accepts: keccak256(abi.encode(chainId, vault, sourceDigest)). */

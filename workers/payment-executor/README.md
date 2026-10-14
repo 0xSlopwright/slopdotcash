@@ -20,14 +20,21 @@ the destination wallet's signature (PAY-05, escrow review H-1). On Base the
 contributor signs an EIP-712 `DestinationBinding` for the exact chain, vault,
 actor, destination, expected version, claim digest and expiry through the
 account API (`/wallets/bind-challenge`, then `/wallets/bind-authorize`), which
-verifies and stores it in `payment_binding_authorizations`. The attester reads
-the stored signature for the on-chain version it is about to bind, verifies it
-again, and submits it unchanged; with no stored signature it refuses, and the
-award waits for the contributor. On Solana the destination keypair must sign
+takes the chain ID from the reviewed deployment, stores the signature in the
+low-s, 27-or-28 encoding the vault accepts, and appends it to
+`payment_binding_authorizations`. A renewal with a new expiry is a new row, so
+an expired authorization never blocks the claim. The attester reads the stored
+signature with the latest expiry for the on-chain version it is about to bind,
+verifies it again, and submits it unchanged; with no stored signature it
+refuses, and the award waits for the contributor. On Solana the destination keypair must sign
 the same transaction: `POST /v1/pay` on the attester prepares, half-signs and
 journals the `bind_wallet` transaction and returns its bytes; the contributor's
 wallet signs them; `POST /v1/complete-bind` checks that the bytes, the identity
-signature and the wallet signature all match before broadcasting. The
+signature and the wallet signature all match before broadcasting. The signed-in
+contributor reaches both through the account API
+(`/wallets/solana-bind/prepare`, then `/wallets/solana-bind/complete`), which
+selects the contributor's current claim and payout attempt and calls the
+attester through its service binding. The
 transaction must be completed inside its blockhash lifetime, so a Solana
 binding is always an interactive step; the relayer reports a missing binding
 and never requests one.

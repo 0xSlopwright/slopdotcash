@@ -144,14 +144,17 @@ async function loadPolicy(
   return files;
 }
 
-async function pullDiff(
+export async function pullDiff(
   github: GitHubClient,
   owner: string,
   repo: string,
   number: number,
+  changedFiles: number,
 ) {
   let diff = "";
   let truncated = false;
+  let filesRead = 0;
+  let sizeLimitReached = false;
   for (let page = 1; page <= 3; page += 1) {
     const files = await github.get<
       { filename: string; status: string; patch?: string }[]
@@ -160,15 +163,20 @@ async function pullDiff(
     );
     if (files === null || files.length === 0) break;
     for (const file of files) {
+      filesRead += 1;
+      if (file.patch === undefined) truncated = true;
       const chunk = `--- ${file.filename} (${file.status})\n${file.patch ?? "(binary or too large to show)"}\n`;
       if (diff.length + chunk.length > MAX_DIFF_CHARS) {
         truncated = true;
+        sizeLimitReached = true;
         break;
       }
       diff += chunk;
     }
-    if (truncated || files.length < 100) break;
+    if (sizeLimitReached || files.length < 100 || filesRead >= changedFiles)
+      break;
   }
+  if (filesRead < changedFiles) truncated = true;
   return { diff, truncated };
 }
 
@@ -226,7 +234,13 @@ async function loadContext(
   const { diff, truncated } =
     pull === null
       ? { diff: "", truncated: false }
-      : await pullDiff(github, job.owner, job.repo, job.number);
+      : await pullDiff(
+          github,
+          job.owner,
+          job.repo,
+          job.number,
+          pull.changed_files,
+        );
   const itemText = `Title: ${issue.title}\n\nBody:\n${issue.body ?? ""}${pull === null ? "" : `\n\nDiff:\n${diff}`}`;
   const revision =
     pull?.head.sha ?? (await sha256Hex(`${issue.title}\n${issue.body ?? ""}`));
@@ -413,7 +427,8 @@ async function closureState(
     db,
     `SELECT COUNT(*) AS n FROM slopbot_actions r WHERE r.repository_id = ? AND r.action = 'human_reopen'
        AND r.created_at > datetime('now', '-7 days')
-       AND EXISTS (SELECT 1 FROM slopbot_actions c WHERE c.item_node_id = r.item_node_id AND c.action = 'close')`,
+       AND EXISTS (SELECT 1 FROM slopbot_actions c WHERE c.repository_id = r.repository_id
+         AND c.item_node_id = r.item_node_id AND c.action = 'close' AND c.created_at <= r.created_at)`,
     job.repositoryId,
   );
   if (closes7 > 0 && reopens7 / closes7 > REOPEN_BREAKER_RATIO)
@@ -437,7 +452,7 @@ function disclosure(call: CallRecord | null): string {
   return `${call.provider} / ${call.requestedModel} (route step ${call.routeStep}, ${served})`;
 }
 
-function commentBody(input: {
+export function commentBody(input: {
   verdict: Verdict;
   action: "label" | "close";
   blockedClose: string | null;
@@ -472,7 +487,9 @@ function commentBody(input: {
       ? ""
       : `- Confirmation: ${disclosure(input.confirm)}`,
     `- Limitations: static review only; tests were not run.${
-      context.diffTruncated ? " The diff was too large to review in full." : ""
+      context.diffTruncated
+        ? " The pull request diff was not available in full."
+        : ""
     }${verdict.limitations.length ? ` ${neutralize(verdict.limitations.join(" "))}` : ""}`,
     "",
     "</details>",

@@ -77,7 +77,9 @@ export function assertEscrowPolicy(value) {
       "codeSha256",
       "bindingDelaySeconds",
       "rotationDelaySeconds",
-      "bindingNamespace",
+      "factory",
+      "factoryCodeSha256",
+      "registrar",
     ]);
     const network = ESCROW_NETWORKS[deployment.network];
     if (
@@ -105,12 +107,16 @@ export function assertEscrowPolicy(value) {
           deployment.projectPda !== null ||
           deployment.networkDomain !== null ||
           deployment.rotationDelaySeconds !== null ||
-          deployment.bindingNamespace !== null
-        : (deployment.upgradeAuthority !== null &&
+          !isFundingAddress("base", deployment.factory) ||
+          !isFundingAddress("base", deployment.registrar) ||
+          !/^[0-9a-f]{64}$/.test(deployment.factoryCodeSha256)
+        : deployment.factory !== null ||
+          deployment.factoryCodeSha256 !== null ||
+          deployment.registrar !== null ||
+          (deployment.upgradeAuthority !== null &&
             !isFundingAddress("solana", deployment.upgradeAuthority)) ||
           !isFundingAddress("solana", deployment.programId) ||
           !isFundingAddress("solana", deployment.projectPda) ||
-          !isFundingAddress("solana", deployment.bindingNamespace) ||
           !/^[0-9a-f]{64}$/.test(deployment.networkDomain))
     )
       throw new TypeError("Escrow asset or program does not match the network");
@@ -146,11 +152,29 @@ export function assertEscrowPolicy(value) {
       throw new TypeError(
         "Escrow binding delay is missing or below the production minimum",
       );
+    // Three owner vetoes and the last binding's own delay must outlast the
+    // rotation notice, so the new authority replaces a stolen key's last
+    // binding before it can pay. Base fixes 7 days, under four 48-hour delays.
+    if (
+      value.chain === "solana" &&
+      Number(deployment.rotationDelaySeconds) >=
+        4 * Number(deployment.bindingDelaySeconds)
+    )
+      throw new TypeError(
+        "Escrow rotation delay must be shorter than four binding delays",
+      );
     if (
       deployment.owner === deployment.identityAuthority ||
       deployment.vault === deployment.owner ||
       deployment.vault === deployment.feeRecipient ||
-      deployment.vault === deployment.identityAuthority
+      deployment.vault === deployment.identityAuthority ||
+      (value.chain === "base" &&
+        [
+          deployment.owner,
+          deployment.identityAuthority,
+          deployment.feeRecipient,
+          deployment.vault,
+        ].includes(deployment.registrar))
     )
       throw new TypeError("Escrow authorities must have separate roles");
     if (
