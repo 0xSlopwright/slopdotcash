@@ -11,6 +11,8 @@ import {
   assemblePoints,
   assertPointsJournal,
   awardForScore,
+  latestPoints,
+  type PointAward,
   type PointsIndex,
   type PointsJournal,
   pointMembers,
@@ -165,6 +167,40 @@ async function archivePaths(directory: string): Promise<string[]> {
   }
   return paths;
 }
+/**
+ * Awards from the retained review history and the evaluator manifests are
+ * supplied only by those files: no snapshot census enumerates them, so a
+ * maintainer who deletes or excludes an entry supplies no replacement award
+ * and the prior positive revision would remain latest forever. Reconcile
+ * such a removal with one zero-valued successor for every latest award that
+ * only this source can own: its category is one this batch supplies, and its
+ * key is absent from both the current batch and every snapshot award this
+ * run read. A key that a snapshot still supplies stays snapshot-owned and
+ * is never zeroed here. An already-zero latest award needs no successor, so
+ * replaying the same inputs appends nothing.
+ */
+export function retainedHistoryCorrections(
+  journal: PointsJournal,
+  currentAwards: PointAward[],
+  snapshotAwards: PointAward[],
+): PointAward[] {
+  const currentKeys = new Set(currentAwards.map((a) => a.key));
+  const snapshotKeys = new Set(snapshotAwards.map((a) => a.key));
+  const corrections: PointAward[] = [];
+  for (const revision of latestPoints(journal).values()) {
+    const award = revision.award;
+    if (
+      award.amount > 0 &&
+      (award.category === "substantive-review" ||
+        award.category === "evaluated-contribution") &&
+      !currentKeys.has(award.key) &&
+      !snapshotKeys.has(award.key)
+    )
+      corrections.push({ ...award, amount: 0 });
+  }
+  return corrections;
+}
+
 export async function generatePoints(
   options: { online?: boolean; bootstrap?: boolean } = {},
 ) {
@@ -199,6 +235,11 @@ export async function generatePoints(
   snapshots.sort((a, b) =>
     a.snapshot.generatedAt.localeCompare(b.snapshot.generatedAt),
   );
+  // Every snapshot award this run read, including archives already applied
+  // to the journal: these keys are snapshot-owned for removal purposes.
+  const snapshotAwards = snapshots.flatMap(({ snapshot }) =>
+    snapshot.ledger.filter((e) => e.actor.kind === "User").map(awardForScore),
+  );
   // Replaying an older archive after a newer batch must not roll back corrections.
   const applied = new Set(journal.coverage.map((c) => c.digest));
   for (const { snapshot, digest } of snapshots) {
@@ -227,9 +268,13 @@ export async function generatePoints(
   // revision for a changed one; filtering by existing keys here would drop
   // every correction silently and freeze the first recorded amount forever.
   const reviewed = [...reviews.events, ...evaluations];
+  const reviewedAwards = reviewed.map(awardForScore);
   journal = appendPointAwards(
     journal,
-    reviewed.map(awardForScore),
+    [
+      ...reviewedAwards,
+      ...retainedHistoryCorrections(journal, reviewedAwards, snapshotAwards),
+    ],
     hash(JSON.stringify(reviewed)),
     "slop-score-v2",
     now,
