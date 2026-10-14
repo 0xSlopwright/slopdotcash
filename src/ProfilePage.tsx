@@ -93,11 +93,15 @@ export function ProfilePage({
     state.views,
     state.cycleIndex,
   );
-  const globalRank = globalLeaders.findIndex(
+  const globalIndex = globalLeaders.findIndex(
     (leader) => leader.actor.login.toLowerCase() === login.toLowerCase(),
   );
   const globalLeader =
-    globalRank === -1 ? undefined : globalLeaders[globalRank];
+    globalIndex === -1 ? undefined : globalLeaders[globalIndex];
+  const globalRank = globalLeader
+    ? globalLeaders.findIndex((leader) => leader.score === globalLeader.score) +
+      1
+    : null;
   // A frozen month with no cycle directory still records the contributor.
   const preparations =
     fundingReviews.status === "ready"
@@ -249,9 +253,9 @@ export function ProfilePage({
         cycles={state.cycleIndex}
         summary={
           <>
-            {globalRank >= 0 ? (
+            {globalRank !== null ? (
               <div>
-                <strong>#{globalRank + 1}</strong>
+                <strong>#{globalRank}</strong>
                 <span>overall rank</span>
               </div>
             ) : null}
