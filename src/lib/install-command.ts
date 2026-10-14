@@ -1,4 +1,7 @@
-import { SKILL_AUTHORITY_PYTHON } from "../../skills/contribute-to-eliza/scripts/skill-authority.mjs";
+import {
+  pythonRuntimeProbe,
+  SKILL_AUTHORITY_PYTHON,
+} from "../../skills/contribute-to-eliza/scripts/skill-authority.mjs";
 
 /**
  * Generates the independently authenticated, resource-limited skill installer.
@@ -102,9 +105,7 @@ export function createInstallCommand(
     authority.apiOrigin,
     authority.rawOrigin,
   ].some((value) => new URL(value).protocol === "https:");
-  const pythonProbe = requiresHttpsTrust
-    ? 'import os, re, ssl, sys; d = ssl.get_default_verify_paths().capath; raise SystemExit(0 if sys.version_info.major == 3 and (ssl.create_default_context().get_ca_certs() or (d and os.path.isdir(d) and any(re.fullmatch("[0-9a-f]{8}[.][0-9]+", n) for n in os.listdir(d)))) else 1)'
-    : "import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)";
+  const pythonProbe = pythonRuntimeProbe(requiresHttpsTrust);
   const pythonRequirement = requiresHttpsTrust
     ? "Python 3 with a usable HTTPS CA trust store is required for authenticated skill installation."
     : "Python 3 is required for authenticated skill installation.";
