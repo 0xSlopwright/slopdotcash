@@ -104,6 +104,19 @@ function parseSecureUrl(value: unknown, field: string): URL {
   } catch (error) {
     throw new TypeError(`${field} is not a URL`, { cause: error });
   }
+  // The URL parser drops empty delimiters: `parsed.hash` and
+  // `parsed.search` are both empty for a trailing `#` or `?`, so those forms
+  // pass the parsed checks and mint a distinct source id and work key for
+  // the same page. Reject the delimiters in the raw string instead: no
+  // fragment anywhere, and no query delimiter with an empty query (the
+  // first `?` is the delimiter; a later `?` is query content).
+  const queryStart = value.indexOf("?");
+  if (
+    value.includes("#") ||
+    (queryStart !== -1 && queryStart === value.length - 1)
+  ) {
+    throw new TypeError(`${field} must be a plain https URL`);
+  }
   if (
     parsed.protocol !== "https:" ||
     !parsed.hostname ||

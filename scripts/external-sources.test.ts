@@ -54,6 +54,28 @@ describe("assertExternalSourceUrl canonical hosts", () => {
     }
   });
 
+  it("rejects explicit empty fragments and empty queries", () => {
+    for (const [url, platform] of [
+      ["https://example.com/a#", "web"],
+      ["https://example.com/a?x=1#", "web"],
+      ["https://example.com/a?", "web"],
+      ["https://example.com/a?#", "web"],
+      ["https://x.com/someone/status/123#", "x"],
+      ["https://x.com/someone/status/123?", "x"],
+      ["https://www.youtube.com/watch?v=ABCDEFGHIJK#", "youtube"],
+    ] as const) {
+      expect(() => assertExternalSourceUrl(url, platform, "url")).toThrow();
+    }
+    // A `?` inside a non-empty query is query content, not an empty query.
+    expect(
+      assertExternalSourceUrl(
+        "https://example.com/search?q=what?",
+        "web",
+        "url",
+      ),
+    ).toBe("https://example.com/search?q=what?");
+  });
+
   it("keeps one work key for one piece of work", () => {
     expect(externalWorkKey("https://x.com/alice/status/123", "x")).toBe(
       externalWorkKey("https://x.com/bob/status/123", "x"),
@@ -155,6 +177,26 @@ describe("assertExternalArchiveUrl exact binding", () => {
         assertExternalArchiveUrl(url, SOURCE, "archiveUrl"),
       ).toThrow();
     }
+  });
+
+  it("rejects archive URLs with explicit empty delimiters", () => {
+    for (const url of [
+      "https://web.archive.org/web/20260101000000/https://example.com/a?",
+      "https://web.archive.org/web/20260101000000/https://example.com/a#",
+    ]) {
+      expect(() =>
+        assertExternalArchiveUrl(url, SOURCE, "archiveUrl"),
+      ).toThrow();
+    }
+    // The empty-query source itself is rejected, so no source is left
+    // whose exact capture the archive check would refuse.
+    expect(() =>
+      assertExternalArchiveUrl(
+        "https://web.archive.org/web/20260101000000/https://example.com/a?",
+        "https://example.com/a?",
+        "archiveUrl",
+      ),
+    ).toThrow();
   });
 
   it("rejects a trailing-dot archive host", () => {
