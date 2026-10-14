@@ -144,6 +144,9 @@ const USAGE_NEUTRAL_EVIDENCE_POLICY_AT = "2026-08-19T00:00:00.000Z" as const;
 // ordinary formal review scores only when the code changed after it requested
 // changes, at most once per pull request and at triage weight.
 export const OUTCOME_FIRST_POLICY_AT = "2026-10-01T00:00:00.000Z" as const;
+// #683: first successful production deployment of SCR-05 (run 38001124966).
+export const PAYMENT_REVIEW_POLICY_AT = "2026-10-09T23:21:35.388Z" as const;
+export const PAYMENT_REVIEW_POLICY = "scr-05-payments-production-v1" as const;
 // A 35-day collection window guarantees a complete prior UTC calendar month;
 // project reward views still exclude everything before their reward start.
 export const SCORE_WINDOW_DAYS = 35;
@@ -2621,6 +2624,48 @@ export function shareScoreThirds(total: number, actors: number): number[] {
 export function createLeaderboardSnapshot(
   input: LeaderboardInput,
 ): LeaderboardSnapshot {
+  const snapshot = createSnapshotWithReviewCutoff(
+    input,
+    OUTCOME_FIRST_POLICY_AT,
+  );
+  if (parseIsoTime(input.windowTo) > parseIsoTime(OUTCOME_FIRST_POLICY_AT)) {
+    const payments = createSnapshotWithReviewCutoff(
+      input,
+      PAYMENT_REVIEW_POLICY_AT,
+    );
+    snapshot.paymentReviewBasis = {
+      policy: PAYMENT_REVIEW_POLICY,
+      effectiveAt: PAYMENT_REVIEW_POLICY_AT,
+      leaders: payments.leaders,
+      ledger: changedPaymentRecords(snapshot.ledger, payments.ledger),
+      removedEventIds: removedPaymentRecordIds(
+        snapshot.ledger,
+        payments.ledger,
+      ),
+      removedAttributionIds: removedPaymentRecordIds(
+        snapshot.attributions,
+        payments.attributions,
+      ),
+      attributionOrder: payments.attributions.map((record) => record.id),
+      reviewExclusions: payments.reviewExclusions ?? [],
+      attributions: changedPaymentRecords(
+        snapshot.attributions,
+        payments.attributions,
+      ),
+      invalidAttributionMarkers: payments.invalidAttributionMarkers,
+      attributionCoverage: payments.attributionCoverage,
+      opportunities: payments.opportunities,
+    };
+  }
+  assertPublishableLeaderboardSnapshot(snapshot);
+  return snapshot;
+}
+
+/** Reuse the complete eligibility pipeline; only ordinary review timing differs. */
+function createSnapshotWithReviewCutoff(
+  input: LeaderboardInput,
+  reviewCutoff: string,
+): LeaderboardSnapshot {
   const mergedPullRequestOutcomes = dedupeByNodeId(
     input.mergedPullRequestOutcomes,
   ).sort(
@@ -3409,9 +3454,7 @@ export function createLeaderboardSnapshot(
           `Qualifying review ${review.id} is missing its submitted timestamp`,
         );
       }
-      if (
-        parseIsoTime(review.submittedAt) < parseIsoTime(OUTCOME_FIRST_POLICY_AT)
-      ) {
+      if (parseIsoTime(review.submittedAt) < parseIsoTime(reviewCutoff)) {
         awardReview(
           review,
           false,
@@ -6101,6 +6144,130 @@ export function assertLeaderboardSnapshot(
     );
   }
   assertMethodologyValue(snapshot.methodology, "snapshot.methodology");
+  if (snapshot.paymentReviewBasis !== undefined) {
+    const basis = assertObject(
+      snapshot.paymentReviewBasis,
+      "snapshot.paymentReviewBasis",
+    );
+    if (
+      basis.policy !== PAYMENT_REVIEW_POLICY ||
+      basis.effectiveAt !== PAYMENT_REVIEW_POLICY_AT
+    ) {
+      throw new Error(
+        "snapshot payment review policy must match the approved production cutoff",
+      );
+    }
+    // Validate the alternate ledger with the same totals, identity, attribution,
+    // duplicate-credit and source-coverage contracts as the score ledger.
+    assertLeaderboardSnapshot(
+      paymentReviewSnapshot(value as LeaderboardSnapshot),
+    );
+  }
+}
+
+// Store only differences for the two largest arrays. Duplicating the complete
+// ledger and attribution arrays would exceed Cloudflare's 25 MiB asset limit.
+function changedPaymentRecords<T extends { id: string }>(
+  before: T[],
+  after: T[],
+): T[] {
+  const original = new Map(
+    before.map((record) => [record.id, JSON.stringify(record)]),
+  );
+  return after.filter(
+    (record) => original.get(record.id) !== JSON.stringify(record),
+  );
+}
+
+function removedPaymentRecordIds<T extends { id: string }>(
+  before: T[],
+  after: T[],
+): string[] {
+  const retained = new Set(after.map((record) => record.id));
+  return before
+    .filter((record) => !retained.has(record.id))
+    .map((record) => record.id);
+}
+
+function applyPaymentRecords<T extends { id: string }>(
+  original: T[],
+  changes: T[],
+  removed: string[],
+): T[] {
+  if (
+    !Array.isArray(changes) ||
+    !Array.isArray(removed) ||
+    new Set(removed).size !== removed.length ||
+    new Set(changes.map((record) => record?.id)).size !== changes.length
+  ) {
+    throw new Error(
+      "Payment basis changes must contain unique records and removals",
+    );
+  }
+  const records = new Map(original.map((record) => [record.id, record]));
+  for (const id of removed) {
+    if (!records.delete(id) || changes.some((record) => record.id === id)) {
+      throw new Error(
+        "Payment basis removal must name an existing unchanged record",
+      );
+    }
+  }
+  for (const record of changes) records.set(record.id, record);
+  return [...records.values()];
+}
+
+/** Payment callers must never silently use the retroactive score ledger. */
+export function paymentReviewSnapshot(
+  snapshot: LeaderboardSnapshot,
+): LeaderboardSnapshot {
+  const basis = snapshot.paymentReviewBasis;
+  if (
+    !basis ||
+    basis.policy !== PAYMENT_REVIEW_POLICY ||
+    basis.effectiveAt !== PAYMENT_REVIEW_POLICY_AT
+  ) {
+    throw new Error(
+      "Payment allocation requires the production-release review basis; regenerate the source snapshot",
+    );
+  }
+  const attributions = applyPaymentRecords(
+    snapshot.attributions,
+    basis.attributions,
+    basis.removedAttributionIds,
+  );
+  const byId = new Map(attributions.map((record) => [record.id, record]));
+  if (
+    !Array.isArray(basis.attributionOrder) ||
+    basis.attributionOrder.length !== byId.size ||
+    new Set(basis.attributionOrder).size !== byId.size ||
+    basis.attributionOrder.some((id) => !byId.has(id))
+  ) {
+    throw new Error(
+      "Payment attribution order must name each reconstructed record once",
+    );
+  }
+  return {
+    ...snapshot,
+    paymentReviewBasis: undefined,
+    leaders: basis.leaders,
+    ledger: applyPaymentRecords(
+      snapshot.ledger,
+      basis.ledger,
+      basis.removedEventIds,
+    ).sort(
+      (left, right) =>
+        right.points - left.points ||
+        left.source.number - right.source.number ||
+        left.id.localeCompare(right.id),
+    ),
+    reviewExclusions: basis.reviewExclusions,
+    attributions: basis.attributionOrder.map(
+      (id) => byId.get(id) as ModelAttribution,
+    ),
+    invalidAttributionMarkers: basis.invalidAttributionMarkers,
+    attributionCoverage: basis.attributionCoverage,
+    opportunities: basis.opportunities,
+  };
 }
 
 function assertLeaderboardOrdering(
