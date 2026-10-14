@@ -5,6 +5,7 @@ import type { Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import * as store from "./persistence";
 import { type ReviewEnv, recordHumanSignal, reviewItem } from "./review";
+import { readWebhookBody } from "./webhook-body";
 
 type Queue = { send(body: Job): Promise<void> };
 type Env = ReviewEnv & { SLOPBOT_WEBHOOK_SECRET: string; SLOPBOT_QUEUE: Queue };
@@ -123,10 +124,11 @@ export default {
     if (request.method !== "POST" || url.pathname !== "/github/webhook") {
       return new Response("not found", { status: 404 });
     }
-    const length = Number(request.headers.get("content-length") ?? "0");
-    if (length > MAX_WEBHOOK_BYTES)
-      return new Response("payload too large", { status: 413 });
-    const body = await request.text();
+    const loaded = await readWebhookBody(request, MAX_WEBHOOK_BYTES);
+    if (!loaded.ok) {
+      return new Response(loaded.message, { status: loaded.status });
+    }
+    const body = loaded.body;
     if (
       !(await verifyWebhookSignature(
         env.SLOPBOT_WEBHOOK_SECRET,
