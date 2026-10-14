@@ -1,6 +1,7 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
+import { decodeSolanaSignature } from "../../src/lib/solana-signature";
 import { solanaAddressBytes } from "../../src/lib/wallets";
 
 function hex(bytes: Uint8Array) {
@@ -25,15 +26,11 @@ export function verifyPaymentWalletSignature(
 ): boolean {
   try {
     if (chain === "solana") {
-      if (!/^[A-Za-z0-9+/]{86}==$/.test(signature)) return false;
-      const bytes = Uint8Array.from(atob(signature), (c) => c.charCodeAt(0));
-      // atob discards the unused low bits of the final character, so a
-      // changed encoding of the same bytes passes the pattern alone.
-      // Re-encode and bind the exact string before the signature is stored
-      // as a payment authorization, as the signer-access validator does.
-      let binary = "";
-      for (const byte of bytes) binary += String.fromCharCode(byte);
-      if (btoa(binary) !== signature) return false;
+      // The shared decoder binds the exact canonical string before the
+      // signature is stored as a payment authorization; this caller's
+      // contract stays false on every non-canonical form.
+      const bytes = decodeSolanaSignature(signature);
+      if (bytes === null) return false;
       return ed25519.verify(
         bytes,
         new TextEncoder().encode(message),
