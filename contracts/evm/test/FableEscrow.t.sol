@@ -12,18 +12,25 @@ interface Vm {
     function expectRevert(bytes4) external;
     function expectRevert() external;
     function assume(bool) external;
+    function addr(uint256) external pure returns (address);
+    function sign(uint256, bytes32) external pure returns (uint8, bytes32, bytes32);
 }
 
 /// @dev Minimal harness: no forge-std is vendored in the scratch project.
 contract FableBase {
     Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
-    address internal constant OWNER = address(0xA11CE);
+    // Destinations are keyed wallets: every binding carries the destination's own signature.
+    uint256 internal constant OWNER_KEY = 0xA11CE;
+    uint256 internal constant FEE_KEY = 0xFEE;
+    uint256 internal constant CONTRIBUTOR_KEY = 0xC0DE;
+    uint256 internal constant ATTACKER_KEY = 0xBAD;
+    address internal OWNER = vm.addr(OWNER_KEY);
     address internal constant AUTHORITY = address(0xA07);
-    address internal constant FEE = address(0xFEE);
+    address internal FEE = vm.addr(FEE_KEY);
     address internal constant REGISTRAR = address(0x5E6);
-    address internal constant CONTRIBUTOR = address(0xC0DE);
-    address internal constant ATTACKER = address(0xBAD);
+    address internal CONTRIBUTOR = vm.addr(CONTRIBUTOR_KEY);
+    address internal ATTACKER = vm.addr(ATTACKER_KEY);
     uint64 internal constant DELAY = 48 hours;
     bytes32 internal constant PROJECT = keccak256("project");
 
@@ -54,11 +61,22 @@ contract FableBase {
         vault.commitAward(id, actor, gross, source);
     }
 
+    function keyOf(address wallet) internal view returns (uint256) {
+        if (wallet == OWNER) return OWNER_KEY;
+        if (wallet == FEE) return FEE_KEY;
+        if (wallet == CONTRIBUTOR) return CONTRIBUTOR_KEY;
+        if (wallet == ATTACKER) return ATTACKER_KEY;
+        revert("unknown wallet key");
+    }
+
+    /// @dev The destination wallet signs the exact binding; the authority submits it.
     function bind(uint64 actor, address dest, uint64 expected) internal {
+        bytes32 claim = keccak256(abi.encode(actor, dest, expected));
+        uint64 expiresAt = uint64(block.timestamp + 1 hours);
+        (uint8 v, bytes32 r, bytes32 s) =
+            vm.sign(keyOf(dest), vault.bindingDigest(actor, dest, expected, claim, expiresAt));
         vm.prank(AUTHORITY);
-        vault.bindDestination(
-            actor, dest, expected, keccak256(abi.encode(actor, dest, expected)), uint64(block.timestamp + 1 hours)
-        );
+        vault.bindDestination(actor, dest, expected, claim, expiresAt, abi.encodePacked(r, s, v));
     }
 
     function conservationHolds() internal view returns (bool) {
@@ -74,127 +92,109 @@ contract FableBase {
 
 contract FableEscrowTest is FableBase {
     // ------------------------------------------------------------------
-    // F-1: no authority rotation, no award cancel, no rescue. A lost or
-    // compromised authority key strands every unpaid award for actors that
-    // have no active binding. Owner veto converts theft into indefinite lock.
+    // F-1: an award to an actor with no binding cannot be paid, and its
+    // reserve is not available to the owner as free balance.
     // ------------------------------------------------------------------
-    function test_F1_lostAuthorityStrandsUnpaidAwards() public {
+    function test_F1_unboundAwardStaysReserved() public {
         depositAs(1_000e6);
         bytes32 id = commit(keccak256("src-1"), 42, 100e6);
-        // Authority key is "lost": nobody can bind actor 42. Payment is impossible.
+        vm.warp(block.timestamp + DELAY);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.pay(id, 1);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.pay(id, 0);
-        // The reserved 100e6 is unreachable by the owner: free is 900e6 only.
         vm.prank(OWNER);
         vm.expectRevert(ProjectEscrow.InsufficientFreeBalance.selector);
         vault.withdrawUnused(900e6 + 1);
         vm.prank(OWNER);
         vm.expectRevert(ProjectEscrow.InsufficientFreeBalance.selector);
         vault.chargeService(900e6 + 1, keccak256("inv"));
-        // Compromised-key variant: attacker binds, owner vetoes, forever. The
-        // honest contributor can never be bound because only the compromised
-        // key can bind, and the award cannot be refunded or cancelled.
-        for (uint64 round = 0; round < 5; round++) {
-            bind(42, ATTACKER, round);
-            vm.warp(block.timestamp + DELAY - 1);
-            vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-            vault.pay(id, round + 1);
-            vm.prank(OWNER);
-            vault.cancelBinding(42, round + 1);
-            vm.warp(block.timestamp + 365 days);
-            vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-            vault.pay(id, round + 1);
-        }
         require(vault.reservedPrincipal() == 98e6 && vault.reservedFees() == 2e6, "reserve still locked");
         require(conservationHolds(), "conservation");
     }
 
     // ------------------------------------------------------------------
-    // F-2: an ACTIVE ("final") binding is stripped by authority rotation plus
-    // owner cancel; the owner can repeat the cancel for every later version
-    // without bound, so the documented "delay" is unbounded in practice.
+    // F-2 (fixed, review M-2): a binding that has paid cannot be cancelled,
+    // and a rotation or its cancel never reopens payment to the earlier
+    // wallet. The owner's cancels between payments are capped.
     // ------------------------------------------------------------------
-    function test_F2_activeBindingLostAfterRotateAndCancel() public {
+    function test_F2_paidBindingIsFinalAndRotationFreezesPayment() public {
         depositAs(1_000e6);
-        bytes32 id = commit(keccak256("src-2"), 7, 50e6);
+        bytes32 first = commit(keccak256("src-2"), 7, 50e6);
+        bytes32 second = commit(keccak256("src-2b"), 7, 50e6);
         bind(7, CONTRIBUTOR, 0);
         vm.warp(block.timestamp + DELAY);
-        // v1 is active and final: owner cannot cancel it.
+        vault.pay(first, 1);
+        // v1 has paid: the owner cannot cancel it.
         vm.prank(OWNER);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.cancelBinding(7, 1);
-        // Authority rotates (to the same destination even) before anyone pays.
-        bind(7, CONTRIBUTOR, 1);
-        // Owner now cancels v2; v1 is gone, nothing pays.
+        // The authority rotates; the owner cancels v2. Neither v1 nor v2 can pay.
+        bind(7, ATTACKER, 1);
         vm.prank(OWNER);
         vault.cancelBinding(7, 2);
         vm.warp(block.timestamp + 10 * DELAY);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        vault.pay(id, 1);
+        vault.pay(second, 2);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        vault.pay(id, 2);
-        // Owner can keep doing this for every future version.
-        for (uint64 v = 2; v < 12; v++) {
+        vault.pay(second, 1);
+        // The owner can cancel at most MAX_CANCELS_BETWEEN_PAYMENTS rotations before the next payment.
+        uint64 cap = vault.MAX_CANCELS_BETWEEN_PAYMENTS();
+        for (uint64 v = 2; v < cap + 1; v++) {
             bind(7, CONTRIBUTOR, v);
             vm.prank(OWNER);
             vault.cancelBinding(7, v + 1);
         }
-        vm.warp(block.timestamp + 10 * DELAY);
-        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        vault.pay(id, 12);
-        (,,,, bool paid) = vault.awards(id);
-        require(!paid, "never paid");
+        bind(7, CONTRIBUTOR, cap + 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ProjectEscrow.CancelLimit.selector);
+        vault.cancelBinding(7, cap + 2);
+        vm.warp(block.timestamp + DELAY);
+        vault.pay(second, cap + 2);
+        require(usdc.balanceOf(CONTRIBUTOR) == 98e6 && usdc.balanceOf(ATTACKER) == 0, "both awards to the contributor");
+        require(vault.paidVersion(7) == cap + 2, "latest paid version recorded");
     }
 
     // ------------------------------------------------------------------
-    // F-3: bindingDelay is unbounded at the factory. Two failure modes:
-    // (a) delay near uint64 max makes every bindDestination revert on checked
-    //     overflow, so no award in any vault of that factory can ever pay;
-    // (b) delay == uint64.max - now yields activatesAt == the cancel sentinel,
-    //     so the binding is born cancelled and pay never succeeds.
+    // F-3 (fixed, review L-1): the factory bounds bindingDelay, so a delay
+    // near uint64 max cannot overflow every binding and the former cancel
+    // sentinel is gone. A cancel is now an explicit flag.
     // ------------------------------------------------------------------
-    function test_F3a_hugeDelayBricksBinding() public {
+    function test_F3_delayIsBoundedAndCancelIsAFlag() public {
         vm.prank(REGISTRAR);
-        EscrowFactory f = new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, type(uint64).max);
+        vm.expectRevert(ProjectEscrow.InvalidInput.selector);
+        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, type(uint64).max);
         vm.prank(REGISTRAR);
-        ProjectEscrow v = ProjectEscrow(f.create(keccak256("p2"), OWNER, OWNER));
-        vm.prank(AUTHORITY);
-        vm.expectRevert(); // arithmetic overflow panic, not InvalidBinding
-        v.bindDestination(1, CONTRIBUTOR, 0, keccak256("c"), uint64(block.timestamp));
-    }
-
-    function test_F3b_sentinelCollision() public {
-        uint64 delay = type(uint64).max - uint64(block.timestamp);
-        vm.prank(REGISTRAR);
-        EscrowFactory f = new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, delay);
-        vm.prank(REGISTRAR);
-        ProjectEscrow v = ProjectEscrow(f.create(keccak256("p3"), OWNER, OWNER));
-        vm.prank(AUTHORITY);
-        v.bindDestination(1, CONTRIBUTOR, 0, keccak256("c"), uint64(block.timestamp));
-        (,,, uint64 activatesAt) = v.bindings(1);
-        require(activatesAt == type(uint64).max, "born cancelled");
+        vm.expectRevert(ProjectEscrow.InvalidInput.selector);
+        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, type(uint64).max - uint64(block.timestamp));
+        bind(1, CONTRIBUTOR, 0);
+        (,,, uint64 activatesAt, bool cancelled) = vault.bindings(1);
+        require(activatesAt == uint64(block.timestamp) + DELAY && !cancelled, "pending, not cancelled");
+        vm.prank(OWNER);
+        vault.cancelBinding(1, 1);
+        (,,, uint64 later, bool cancelledAfter) = vault.bindings(1);
+        require(later == activatesAt && cancelledAfter, "cancel sets the flag and leaves the time");
     }
 
     // ------------------------------------------------------------------
-    // F-4: cancelBinding is idempotent and re-emits BindingCancelled for a
-    // version that is already cancelled (event duplication for indexers).
+    // F-4 (fixed, review L-5): cancelBinding reverts on a version that is
+    // already cancelled, so BindingCancelled cannot be re-emitted.
     // ------------------------------------------------------------------
     event BindingCancelled(uint64 indexed actorId, uint64 version);
 
-    function test_F4_cancelIsIdempotentAndReemits() public {
+    function test_F4_cancelIsNotIdempotent() public {
         bind(9, CONTRIBUTOR, 0);
         vm.prank(OWNER);
         vault.cancelBinding(9, 1);
+        vm.prank(OWNER);
+        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
+        vault.cancelBinding(9, 1);
         vm.warp(block.timestamp + 10 * DELAY);
-        // Second cancel of the same version succeeds long after the original window.
         vm.prank(OWNER);
+        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.cancelBinding(9, 1);
-        vm.prank(OWNER);
-        vault.cancelBinding(9, 1);
-        (, uint64 version,, uint64 activatesAt) = vault.bindings(9);
-        require(version == 1 && activatesAt == type(uint64).max, "still cancelled");
+        (, uint64 version,,, bool cancelled) = vault.bindings(9);
+        require(version == 1 && cancelled, "still cancelled");
     }
 
     // ------------------------------------------------------------------
@@ -204,10 +204,11 @@ contract FableEscrowTest is FableBase {
         depositAs(1_000e6);
         bytes32 id = commit(keccak256("src-s1"), 3, 100e6);
         bind(3, CONTRIBUTOR, 0);
-        (,,, uint64 activatesAt) = vault.bindings(3);
-        // One second before activation: pay fails, cancel allowed.
+        (,,, uint64 activatesAt,) = vault.bindings(3);
+        // One second before activation: pay fails (the award's commit delay ends at the same instant
+        // as the binding delay), cancel allowed.
         vm.warp(activatesAt - 1);
-        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
+        vm.expectRevert(ProjectEscrow.AwardPending.selector);
         vault.pay(id, 1);
         // At activation: cancel fails, pay succeeds. No instant allows both.
         vm.warp(activatesAt);
@@ -232,7 +233,7 @@ contract FableEscrowTest is FableBase {
         bytes32 id = commit(keccak256("src-s2"), 5, 100e6);
         bind(5, CONTRIBUTOR, 0);
         vm.warp(block.timestamp + DELAY);
-        bind(5, ATTACKER, 1); // rotation by authority, pending again
+        bind(5, ATTACKER, 1); // rotation by authority, pending again; v1 never paid, so it is replaced
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.pay(id, 1);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
@@ -355,13 +356,13 @@ contract FableEscrowTest is FableBase {
     function test_sound_bindRejectsVaultAndExpired() public {
         vm.prank(AUTHORITY);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        vault.bindDestination(1, address(vault), 0, keccak256("c"), uint64(block.timestamp));
+        vault.bindDestination(1, address(vault), 0, keccak256("c"), uint64(block.timestamp), "");
         vm.prank(AUTHORITY);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        vault.bindDestination(1, CONTRIBUTOR, 0, keccak256("c"), uint64(block.timestamp - 1));
+        vault.bindDestination(1, CONTRIBUTOR, 0, keccak256("c"), uint64(block.timestamp - 1), "");
         vm.prank(AUTHORITY);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        vault.bindDestination(1, CONTRIBUTOR, 1, keccak256("c"), uint64(block.timestamp)); // wrong expected version
+        vault.bindDestination(1, CONTRIBUTOR, 1, keccak256("c"), uint64(block.timestamp), ""); // wrong expected version
     }
 
     function test_sound_blockedDestinationLeavesReserve() public {
@@ -372,7 +373,7 @@ contract FableEscrowTest is FableBase {
         usdc.blockAddress(CONTRIBUTOR);
         vm.expectRevert(); // token revert propagates as TransferFailed via callToken
         vault.pay(id, 1);
-        (,,,, bool paidB) = vault.awards(id);
+        (,,,,, bool paidB) = vault.awards(id);
         require(vault.reservedPrincipal() == 98e6 && !paidB, "reserve intact");
         usdc.blockAddress(FEE);
         vm.prank(OWNER);

@@ -18,6 +18,14 @@ export interface EscrowDeployment {
   sourceCommit: string;
   codeSha256: string;
   bindingDelaySeconds: string;
+  /** Solana only; null on Base, where the factory fixes 7 days. */
+  rotationDelaySeconds: string | null;
+  /** Base only; null on Solana. The EscrowFactory that created the vault and rotates its identity authority. */
+  factory: string | null;
+  /** Base only; null on Solana. sha256 of the factory runtime code. */
+  factoryCodeSha256: string | null;
+  /** Base only; null on Solana. The factory registrar, which alone proposes an authority rotation. */
+  registrar: string | null;
 }
 export interface EscrowPolicy {
   schemaVersion: "1";
@@ -29,6 +37,7 @@ export interface EscrowPolicy {
   deployments: EscrowDeployment[];
 }
 export declare const MIN_PRODUCTION_BINDING_DELAY: number;
+export declare const MIN_PRODUCTION_ROTATION_DELAY: number;
 export declare const ESCROW_NETWORKS: Readonly<
   Record<
     EscrowDeployment["network"],

@@ -39,8 +39,12 @@ contract OpusHandler {
         return uint64(1 + (s % 5));
     }
 
+    function _destKey(uint256 s) internal pure returns (uint256) {
+        return OpusWallets.HANDLER_KEY_BASE + (s % 7);
+    }
+
     function _dest(uint256 s) internal pure returns (address) {
-        return address(uint160(0x1000 + (s % 7)));
+        return vm.addr(_destKey(s));
     }
 
     function deposit(uint256 amount) external {
@@ -65,14 +69,18 @@ contract OpusHandler {
 
     function bind(uint256 actorSeed, uint256 destSeed) external {
         uint64 actor = _actor(actorSeed);
-        (, uint64 v,,) = escrow.bindings(actor);
+        (, uint64 v,,,) = escrow.bindings(actor);
+        address dest = _dest(destSeed);
+        bytes32 claim = keccak256(abi.encode(nonce++));
+        uint64 expiresAt = uint64(block.timestamp);
+        bytes memory signature = OpusWallets.sign(vm, escrow, _destKey(destSeed), actor, dest, v, claim, expiresAt);
         vm.prank(authority);
-        escrow.bindDestination(actor, _dest(destSeed), v, keccak256(abi.encode(nonce++)), uint64(block.timestamp));
+        escrow.bindDestination(actor, dest, v, claim, expiresAt, signature);
     }
 
     function cancel(uint256 actorSeed) external {
         uint64 actor = _actor(actorSeed);
-        (, uint64 v,,) = escrow.bindings(actor);
+        (, uint64 v,,,) = escrow.bindings(actor);
         vm.prank(owner);
         escrow.cancelBinding(actor, v);
     }
@@ -84,12 +92,14 @@ contract OpusHandler {
     function pay(uint256 idx, address caller) external {
         if (ids.length == 0) return;
         bytes32 id = ids[idx % ids.length];
-        (uint64 actor, uint64 gross, uint64 fee,,) = escrow.awards(id);
-        (address dest, uint64 v,, uint64 activatesAt) = escrow.bindings(actor);
+        (uint64 actor, uint64 gross, uint64 fee,, uint64 committedAt,) = escrow.awards(id);
+        (address dest, uint64 v) = escrow.payableBinding(actor);
+        (, uint64 latest,, uint64 activatesAt, bool cancelled) = escrow.bindings(actor);
         uint256 before = usdc.balanceOf(dest);
         vm.prank(caller);
         escrow.pay(id, v);
-        if (block.timestamp < activatesAt) paidBeforeActivation = true;
+        if (block.timestamp < committedAt + escrow.bindingDelay()) paidBeforeActivation = true;
+        if (v == latest && (block.timestamp < activatesAt || cancelled)) paidBeforeActivation = true;
         if (usdc.balanceOf(dest) - before != gross - fee) paidToWrongDestination = true;
         timesPaid[id] += 1;
         ghostNetToContributors += gross - fee;
@@ -99,8 +109,8 @@ contract OpusHandler {
     function payStaleVersion(uint256 idx, uint64 version) external {
         if (ids.length == 0) return;
         bytes32 id = ids[idx % ids.length];
-        (uint64 actor,,,,) = escrow.awards(id);
-        (, uint64 v,,) = escrow.bindings(actor);
+        (uint64 actor,,,,,) = escrow.awards(id);
+        (, uint64 v) = escrow.payableBinding(actor);
         if (version == v) return;
         try escrow.pay(id, version) {
             paidToWrongDestination = true; // a non-current version must never pay
@@ -184,7 +194,7 @@ contract OpusInvariantTest is OpusBase {
         uint256 reservedF;
         for (uint256 i = 0; i < n; i++) {
             bytes32 id = handler.ids(i);
-            (, uint64 gross, uint64 fee,, bool paid) = escrow.awards(id);
+            (, uint64 gross, uint64 fee,,, bool paid) = escrow.awards(id);
             require(handler.timesPaid(id) <= 1, "paid twice");
             require(paid == (handler.timesPaid(id) == 1), "paid flag");
             require(fee == gross / 50, "fee formula");
