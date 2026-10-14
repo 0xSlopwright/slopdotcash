@@ -4,7 +4,7 @@ import {
   pointMembers,
   type PointAward,
   type PointsJournal,
-} from "./points";
+} from "../src/lib/points";
 
 const AT = "2026-10-14T17:30:00.000Z";
 const MONTH = "2026-10";
