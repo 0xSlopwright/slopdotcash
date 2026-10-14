@@ -157,7 +157,12 @@ export async function pullDiff(
   let sizeLimitReached = false;
   for (let page = 1; page <= 3; page += 1) {
     const files = await github.get<
-      { filename: string; status: string; patch?: string }[]
+      {
+        filename: string;
+        previous_filename?: string;
+        status: string;
+        patch?: string;
+      }[]
     >(
       `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100&page=${page}`,
     );
@@ -165,7 +170,11 @@ export async function pullDiff(
     for (const file of files) {
       filesRead += 1;
       if (file.patch === undefined) truncated = true;
-      const chunk = `--- ${file.filename} (${file.status})\n${file.patch ?? "(binary or too large to show)"}\n`;
+      const fileName =
+        file.previous_filename === undefined
+          ? file.filename
+          : `${file.previous_filename} -> ${file.filename}`;
+      const chunk = `--- ${fileName} (${file.status})\n${file.patch ?? "(binary or too large to show)"}\n`;
       if (diff.length + chunk.length > MAX_DIFF_CHARS) {
         truncated = true;
         sizeLimitReached = true;
