@@ -200,7 +200,8 @@ export async function ownerPlan(input, runtime) {
           .instruction(),
       );
     } else if (input.operation === "veto") {
-      // Stops a pending wallet binding for this project before it can pay.
+      // Stops the latest wallet binding for this project before it pays. An optional
+      // `obligationId` names an unpaid award whose commit delay extends the window.
       const actor = amount(input.githubUserId),
         version = amount(input.bindingVersion);
       instructions.push(
@@ -211,8 +212,7 @@ export async function ownerPlan(input, runtime) {
             project,
             binding: pda(
               Buffer.from("wallet"),
-              state.identityAuthority.toBuffer(),
-              Buffer.from(state.network),
+              project.toBuffer(),
               actor.toArrayLike(Buffer, "le", 8),
             ),
             veto: pda(
@@ -221,6 +221,14 @@ export async function ownerPlan(input, runtime) {
               actor.toArrayLike(Buffer, "le", 8),
               version.toArrayLike(Buffer, "le", 8),
             ),
+            obligation:
+              input.obligationId === undefined
+                ? null
+                : pda(
+                    Buffer.from("award"),
+                    project.toBuffer(),
+                    Buffer.from(hash(input.obligationId)),
+                  ),
             systemProgram: SystemProgram.programId,
           })
           .instruction(),

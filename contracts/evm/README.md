@@ -3,8 +3,10 @@
 This is an immutable escrow implementation for a single project and six-decimal
 USDC. It has no proxy, owner change, token approval, arbitrary call, rescue,
 claim expiry, or award cancellation entry point. An approved award remains
-reserved until it is paid. The owner can cancel only a pending wallet binding. This code has local EVM execution evidence. It has not received
-an independent security review or a public testnet deployment.
+reserved until it is paid. The owner can cancel only a wallet binding that has
+not paid yet, and only inside a bounded window. This code has local EVM
+execution evidence only. It has not received an independent security review or
+a public testnet deployment.
 
 ## Authority and identity
 
@@ -24,21 +26,39 @@ expected predecessor version, and an expiry for transaction submission. Once
 accepted, the binding persists. The authority must independently verify GitHub
 login, wallet control, and any rotation/recovery approval before submission.
 The on-chain authority can redirect unpaid funds if compromised. It cannot
-change awards or withdraw funds. To limit that risk, every new or rotated
-binding activates `bindingDelay` seconds after it is made, and `pay` rejects a
-binding before activation. During the delay the project owner can call
-`cancelBinding(actorId, version)`. A cancelled binding never pays; only a new
-authority binding (the next version, with a new delay) can follow. An active
-binding is final and cannot be cancelled. The owner can therefore delay a
-contributor's payout, but can never take an approved award back. Production
-deployments use a delay of at least 48 hours (`MIN_PRODUCTION_BINDING_DELAY`),
-and the adapter checks the deployed `bindingDelay` against the reviewed
-manifest. Use separate test identities for the owner,
-attester, registrar, and gas sponsor.
+change awards or withdraw funds. Two delays limit that risk, both of length
+`bindingDelay`. A new or rotated binding activates `bindingDelay` seconds after
+it is made. An award can be paid only `bindingDelay` seconds after it is
+committed (`committedAt`), so a binding placed before the actor had any award
+still gives the owner a full delay measured from the moment money is attached
+to it. The owner's exact power is `cancelBinding(actorId, version)` on the
+latest binding, allowed while that binding waits out its own delay or while an
+award to the actor is inside its commit delay, and never on a binding that has
+already paid. A cancelled binding never pays; only a new authority binding (the
+next version, with a new delay) can follow. Between two payments to an actor,
+the owner can cancel at most `MAX_CANCELS_BETWEEN_PAYMENTS` (3) times; the next
+binding cannot be cancelled and pays after its delay. A payment resets the
+count. The owner can therefore delay a
+contributor's payout by a bounded number of delays, but can never take an
+approved award back or redirect it. The constructor rejects a delay below one
+hour or above 30 days; production deployments use at least 48 hours
+(`MIN_PRODUCTION_BINDING_DELAY`), and the adapter checks the deployed
+`bindingDelay` against the reviewed manifest. Use separate test identities for
+the owner, attester, registrar, and gas sponsor.
 
-A payment carries the expected binding version. If rotation executes first,
-the old payment fails. If payment executes first, later rotation cannot repay
-the award. Every award ID and source digest is consumed permanently. Source
+Only the latest binding can pay. `bindings(actorId)` is the latest authority
+binding with its `activatesAt` and `cancelled` flag. `payableBinding(actorId)`
+returns it once its delay has passed and it is not cancelled, and version 0
+otherwise. `paidVersion(actorId)` records the version the last payment used, so
+that binding cannot be cancelled. While a rotation waits out its delay, or after
+the owner cancels it, no caller can pay any earlier wallet: a contributor who
+rotates away from a lost or compromised wallet freezes payment to it at once,
+and payment resumes only to the new binding once it is ready. This is the
+stale-binding rule in `docs/base-solana-payout-plan.md`: a finalized change
+invalidates payment to the earlier destination. A payment names the version it
+expects, and a payment naming any other version fails. If payment executes
+first, a later rotation cannot repay the award. Every award ID and source
+digest is consumed permanently. Source
 digests identify a single allocation origin including project, cycle, and actor; keep it stable across amount or snapshot
 revisions; do not supply a whole-cycle digest for each award. The award ID must
 equal `awardId(sourceDigest)`, which is
@@ -74,7 +94,7 @@ outside the supported asset model. Direct transfers to the vault do not create
 refundable credits and cannot be rescued in this version. The supported funding
 path is owner `approve` followed by `deposit`.
 
-The conservation identity is:
+The conservation identities are unchanged by the binding lifecycle:
 
 ```
 totalDeposited = freeBalance + reservedPrincipal + reservedFees
@@ -116,8 +136,17 @@ and the compiler pinned in `foundry.toml`. From the repository root:
 ```sh
 forge fmt --root contracts/evm --check
 forge build --root contracts/evm --sizes
+forge test --root contracts/evm
 bun contracts/evm/adapter.integration.ts
 ```
+
+`forge test` runs the Foundry suites under `test/`: regression tests for the
+binding lifecycle (commit delay, payment frozen during a rotation and after its
+cancel, cancel cap between payments, delay bounds, one-shot cancel), token and
+accounting checks, and invariant runs over random owner, authority and payer
+sequences. These suites are regression evidence, not a security review. The
+`base` job in `.github/workflows/escrow-tests.yml` runs the format check, build
+and `forge test` on every escrow change.
 
 The integration deploys `integration/TestDollar.sol`, a six-decimal test
 ERC-20. The test token is not Circle USDC; Circle integration, wallet signatures, OAuth, indexer finality,
