@@ -57,6 +57,7 @@
     "src/lib/run-receipts.ts",
     "src/lib/wallets.ts",
     "src/lib/leaderboard-types.ts",
+    "src/lib/reviewer-leaders.ts",
     "src/lib/profiles.ts",
     "src/lib/deployment.ts"
   ]
