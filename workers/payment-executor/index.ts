@@ -14,6 +14,7 @@ import {
   type Signer,
 } from "./core";
 import {
+  completeSolanaBinding,
   createSolanaAttester,
   createSolanaExecutor,
   preflightSolanaDeployment,
@@ -51,11 +52,15 @@ export class PaymentSignerJournal {
     private readonly env: Environment,
   ) {}
   async fetch(request: Request): Promise<Response> {
+    const pathname = new URL(request.url).pathname;
     if (
       request.method !== "POST" ||
-      !["/v1/pay", "/v1/attempt-status", "/v1/cancel-unsubmitted"].includes(
-        new URL(request.url).pathname,
-      )
+      ![
+        "/v1/pay",
+        "/v1/complete-bind",
+        "/v1/attempt-status",
+        "/v1/cancel-unsubmitted",
+      ].includes(pathname)
     )
       return new Response("Not found", { status: 404 });
     try {
@@ -63,16 +68,14 @@ export class PaymentSignerJournal {
         request as unknown as Response,
         4096,
         "payout execution",
-      )) as Parameters<ReturnType<typeof createBaseExecutor>["submit"]>[0];
-      if (
-        ["/v1/attempt-status", "/v1/cancel-unsubmitted"].includes(
-          new URL(request.url).pathname,
-        )
-      ) {
+      )) as Parameters<ReturnType<typeof createBaseExecutor>["submit"]>[0] & {
+        transaction?: unknown;
+      };
+      if (["/v1/attempt-status", "/v1/cancel-unsubmitted"].includes(pathname)) {
         if (this.env.SIGNER_ROLE !== "relayer")
           return new Response("Not found", { status: 404 });
         const operation =
-          new URL(request.url).pathname === "/v1/attempt-status"
+          pathname === "/v1/attempt-status"
             ? lookupAttempt
             : retireUnsignedAttempt;
         return Response.json(
@@ -121,9 +124,14 @@ export class PaymentSignerJournal {
         PAYMENT_DEPLOYMENTS: this.env.PAYMENT_DEPLOYMENTS,
         PAYMENT_RPC_URLS: this.env.PAYMENT_RPC_URLS,
         JOURNAL: this.state.storage,
-        ATTESTER: attester,
       };
       let engine: PaymentExecutor;
+      if (
+        pathname === "/v1/complete-bind" &&
+        (this.env.SIGNER_ROLE !== "attester" ||
+          this.env.CHAIN_FAMILY !== "solana")
+      )
+        return new Response("Not found", { status: 404 });
       if (this.env.CHAIN_FAMILY === "base") {
         await preflightBaseDeployment(this.env, input);
         if (!this.env.TEST_SIGNER_PRIVATE_KEY)
@@ -137,7 +145,11 @@ export class PaymentSignerJournal {
         engine =
           this.env.SIGNER_ROLE === "attester"
             ? createBaseAttester({ ...common, SIGNER: signer })
-            : createBaseExecutor({ ...common, SIGNER: signer });
+            : createBaseExecutor({
+                ...common,
+                SIGNER: signer,
+                ATTESTER: attester,
+              });
       } else if (this.env.CHAIN_FAMILY === "solana") {
         await preflightSolanaDeployment(this.env, input);
         const encodedSeed = this.env.TEST_SOLANA_SIGNER_SEED;
@@ -152,10 +164,24 @@ export class PaymentSignerJournal {
             return ed25519.sign(message, seed);
           },
         };
-        engine =
-          this.env.SIGNER_ROLE === "attester"
-            ? createSolanaAttester({ ...common, SOLANA_SIGNER: signer })
-            : createSolanaExecutor({ ...common, SOLANA_SIGNER: signer });
+        // A Solana binding needs the destination wallet's signature on the
+        // same bytes: the attester prepares and half-signs it, the wallet
+        // co-signs, and the completed transaction comes back here.
+        if (this.env.SIGNER_ROLE === "attester") {
+          const solana = { ...common, SOLANA_SIGNER: signer };
+          const { transaction, ...binding } = input;
+          if (pathname === "/v1/complete-bind") {
+            if (typeof transaction !== "string")
+              throw new Error("Signed transaction required");
+            return Response.json(
+              await completeSolanaBinding(solana, binding, transaction),
+            );
+          }
+          return Response.json(
+            await createSolanaAttester(solana).submit(binding),
+          );
+        }
+        engine = createSolanaExecutor({ ...common, SOLANA_SIGNER: signer });
       } else throw new Error("Unsupported signer family");
       const result = await engine.submit(input);
       return Response.json(result);
