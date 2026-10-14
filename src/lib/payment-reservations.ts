@@ -10,6 +10,7 @@ import { assertRewardAllocationManifest } from "./rewards";
 import {
   createNetworkSettlementExecutionPlan,
   MAX_TRANSFERS_PER_PLAN,
+  planCarriesPlatformFee,
 } from "./settlement-plan";
 
 export const PAYMENT_RESERVATION_PATH = "funding/payment-reservations.json";
@@ -68,11 +69,10 @@ function assertReservation(value: unknown): PaymentReservation {
     !/^(0|[1-9]\d{0,19})$/u.test(r.feeMinor) ||
     !Array.isArray(r.intentIds) ||
     r.intentIds.length < 1 ||
-    // A no-fee plan (every RFC #500 project vault) carries one intent per
-    // contributor transfer, so it can reach the full transfer-plan bound. A
-    // fee-carrying plan reaches at most one fewer because its fee transfer
-    // has no intent id. This bound must match the plan contract, not 200 - 1.
-    r.intentIds.length > MAX_TRANSFERS_PER_PLAN ||
+    // Same bound as the plan builder: a fee transfer has no intent id but
+    // takes one slot, so only a no-fee project-vault plan reaches the maximum.
+    r.intentIds.length + (planCarriesPlatformFee(r.instrumentId) ? 1 : 0) >
+      MAX_TRANSFERS_PER_PLAN ||
     r.intentIds.some(
       (id) => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,160}$/u.test(id),
     )
