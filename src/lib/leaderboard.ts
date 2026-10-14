@@ -344,6 +344,7 @@ interface AttributionDeclarationLine {
 interface AttributionMarkerRecord {
   end: number;
   payload: string;
+  slop: boolean;
   start: number;
   version: "v1" | "v2";
 }
@@ -433,8 +434,9 @@ function attributionMarkerRecords(body: string): AttributionMarkerRecord[] {
       return {
         end: record.start + leadingWhitespace + raw.length,
         payload: marker[3].trim(),
+        slop: marker[2] !== undefined,
         start: record.start + leadingWhitespace,
-        version: marker[2] ? "v2" : (marker[1].toLowerCase() as "v1" | "v2"),
+        version: marker[1] ? (marker[1].toLowerCase() as "v1" | "v2") : "v1",
       };
     })
     .filter((record): record is AttributionMarkerRecord => record !== null);
@@ -735,6 +737,7 @@ export function selectUniqueVerifiedEvidence(
 function parseMarker(
   value: string,
   version: "v1" | "v2",
+  slop = false,
 ):
   | {
       provider: string;
@@ -754,7 +757,7 @@ function parseMarker(
   if (!isRecord(parsed)) {
     return { error: "marker payload must be an object" };
   }
-  if (version === "v2") {
+  if (version === "v2" || (slop && Object.hasOwn(parsed, "run"))) {
     try {
       const run = assertRunReceiptMarker(parsed);
       const project = findProject(run.projectId);
@@ -1032,7 +1035,7 @@ export function assessModelAttribution(
     const markerMatchesToParse =
       markerMatches.length === 1 ? markerMatches : [];
     for (const match of markerMatchesToParse) {
-      const marker = parseMarker(match.payload, match.version);
+      const marker = parseMarker(match.payload, match.version, match.slop);
       if ("error" in marker) {
         invalidSourceIds.add(source.id);
         invalidMarkers.push({
