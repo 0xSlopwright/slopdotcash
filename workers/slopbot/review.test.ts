@@ -2,8 +2,9 @@
 // A model that obeys hostile item or policy text must still be unable to
 // close on invented grounds, target another item, plant links or mentions, or
 // make a planted marker create a penalty.
-import { describe, expect, test } from "bun:test";
+
 import { Database } from "bun:sqlite";
+import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { labelOnlyConfig, type Verdict, validateVerdict } from "./contracts";
 import {
