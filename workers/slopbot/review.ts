@@ -241,7 +241,7 @@ async function loadContext(
           job.number,
           pull.changed_files,
         );
-  const itemText = `Title: ${issue.title}\n\nBody:\n${issue.body ?? ""}${pull === null ? "" : `\n\nDiff:\n${diff}`}`;
+  const itemText = reviewedItemText(issue, pull, diff);
   const revision =
     pull?.head.sha ?? (await sha256Hex(`${issue.title}\n${issue.body ?? ""}`));
   const policyDigest = await sha256Hex(
@@ -276,6 +276,14 @@ function buildPrompt(context: Context, itemKind: string) {
   };
 }
 
+function reviewedItemText(
+  issue: Issue,
+  pull: Pull | null,
+  diff: string,
+): string {
+  return `Title: ${issue.title}\n\nBody:\n${issue.body ?? ""}${pull === null ? "" : `\n\nDiff:\n${diff}`}`;
+}
+
 async function duplicateOf(
   env: ReviewEnv,
   job: Job,
@@ -283,7 +291,7 @@ async function duplicateOf(
   contentDigest: string,
 ): Promise<Verdict | null> {
   const prior = await env.SLOPBOT_DB.prepare(
-    `SELECT item_number FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND content_digest = ?
+    `SELECT item_number, item_kind FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND content_digest = ?
        AND item_node_id != ? ORDER BY created_at DESC LIMIT 1`,
   )
     .bind(
@@ -292,12 +300,33 @@ async function duplicateOf(
       contentDigest,
       context.issue.node_id,
     )
-    .first<{ item_number: number }>();
+    .first<{ item_number: number; item_kind: "issue" | "pull_request" }>();
   if (prior === null) return null;
   const other = await context.github.get<Issue>(
     `/repos/${job.owner}/${job.repo}/issues/${prior.item_number}`,
   );
   if (other === null || other.state !== "open") return null;
+  const otherPull =
+    prior.item_kind === "pull_request"
+      ? await context.github.get<Pull>(
+          `/repos/${job.owner}/${job.repo}/pulls/${prior.item_number}`,
+        )
+      : null;
+  if (prior.item_kind === "pull_request" && otherPull === null) return null;
+  const { diff } =
+    otherPull === null
+      ? { diff: "" }
+      : await pullDiff(
+          context.github,
+          job.owner,
+          job.repo,
+          prior.item_number,
+          otherPull.changed_files,
+        );
+  // The stored digest identifies a historical candidate, not its current
+  // contents. An edited open original must not make this item a duplicate.
+  if (reviewedItemText(other, otherPull, diff) !== context.itemText)
+    return null;
   return {
     category: "duplicate",
     confidence: 1,
