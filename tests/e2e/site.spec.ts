@@ -232,6 +232,20 @@ test("equal contributors share cycle and profile ranks", async ({
     await expect(row).toBeVisible();
     await expect(row.locator(".rank-cell")).toHaveText(`#${expectedRank}`);
   }
+  const followingLeader = view.leaders
+    .filter((leader) => leader.scoreThirds < tiedScore)
+    .sort((left, right) => right.scoreThirds - left.scoreThirds)[0];
+  if (!followingLeader)
+    throw new Error("Public snapshot has no contributor after the score tie");
+  const followingRow = page.locator(".project-leader-row").filter({
+    has: page.locator(
+      `a[href="/contributors/${encodeURIComponent(followingLeader.actor.login)}"]`,
+    ),
+  });
+  await expect(followingRow.locator(".rank-cell")).toHaveText(
+    `#${expectedRank + tiedLeaders.length}`,
+  );
+
   const leaders = createGlobalLeaders(snapshot, views, cycles);
   const profileIndex = leaders.findIndex(
     (leader, index) => index > 0 && leader.score === leaders[index - 1].score,
