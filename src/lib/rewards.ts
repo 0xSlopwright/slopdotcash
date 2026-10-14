@@ -1815,7 +1815,7 @@ export function assertRewardSettlementManifest(
   const paidMinor = sumMinor(
     recipients.map((recipient) => recipient.paidMinor),
   );
-  const feeMinor = feeForPrincipal(paidMinor, allocation.feeBasisPoints);
+  const feeMinor = feeForPrincipal(approvedMinor, allocation.feeBasisPoints);
   const platformFeeRecord = record(
     manifest.platformFee,
     "settlement platformFee",

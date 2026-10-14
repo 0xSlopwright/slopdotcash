@@ -427,7 +427,8 @@ async function closureState(
     db,
     `SELECT COUNT(*) AS n FROM slopbot_actions r WHERE r.repository_id = ? AND r.action = 'human_reopen'
        AND r.created_at > datetime('now', '-7 days')
-       AND EXISTS (SELECT 1 FROM slopbot_actions c WHERE c.item_node_id = r.item_node_id AND c.action = 'close')`,
+       AND EXISTS (SELECT 1 FROM slopbot_actions c WHERE c.repository_id = r.repository_id
+         AND c.item_node_id = r.item_node_id AND c.action = 'close' AND c.created_at <= r.created_at)`,
     job.repositoryId,
   );
   if (closes7 > 0 && reopens7 / closes7 > REOPEN_BREAKER_RATIO)
