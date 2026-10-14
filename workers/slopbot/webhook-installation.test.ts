@@ -60,7 +60,7 @@ class TestDatabase {
     this.sqlite.exec(
       readFileSync(
         new URL(
-          "../../migrations/0017_slopbot_delivery_processing.sql",
+          "../../migrations/0018_slopbot_delivery_processing.sql",
           import.meta.url,
         ),
         "utf8",

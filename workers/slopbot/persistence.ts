@@ -1,5 +1,5 @@
 // D1 access for Slopbot (migrations/0013_slopbot.sql and
-// 0017_slopbot_delivery_processing.sql). Cost and credit rows are append-only;
+// 0018_slopbot_delivery_processing.sql). Cost and credit rows are append-only;
 // the balance is always derived, never stored.
 import { PRICE_VERSION, priceUsage } from "./contracts";
 import type { CallRecord } from "./models";
