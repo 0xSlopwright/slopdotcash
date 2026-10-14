@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  canonicalReviewIdentity,
   POINTS_RULE,
   type PointAward,
   type PointsJournal,
@@ -189,6 +190,51 @@ describe("evaluated-review dedup set fragment scoping", () => {
       // string; keying the dedup set on the raw URL lets them evade the
       // evaluated-review suppression and double-count (110 instead of 100).
       expect(aliceTotal(journal([evaluated, review]))).toBe(100);
+    },
+  );
+
+  it("dedups when the evaluated award uses a registered repository alias and the review uses the canonical id", () => {
+    const evaluated = award({
+      key: "e1",
+      projectId: "asi",
+      category: "evaluated-contribution",
+      amount: 100,
+      sourceUrl: "https://github.com/SlopDotCash/asi/pull/1#discussion_r1",
+      workUnitId: "w1",
+    });
+    const review = award({
+      key: "r1",
+      projectId: "asi",
+      category: "substantive-review",
+      amount: 10,
+      sourceId: "s1",
+      sourceUrl: "https://github.com/elizaOS/asi/pull/1#pullrequestreview-2",
+      workUnitId: "w2",
+    });
+    // The journal validator accepts the alias path (SlopDotCash/asi) as a
+    // review source for the canonically-registered elizaOS/asi repository.
+    // Without alias canonicalization the two URLs yield different dedup
+    // identities and the substantive review double-counts (110 instead of
+    // 100), bypassing the PRD section 14 no-duplicate rule.
+    expect(aliceTotal(journal([evaluated, review]))).toBe(100);
+  });
+
+  it.each([
+    [
+      "explicit non-default port",
+      "https://github.com:444/SlopDotCash/slopdotcash/pull/5#discussion_r1",
+    ],
+    [
+      "non-empty query",
+      "https://github.com/SlopDotCash/slopdotcash/pull/5?x=1#discussion_r1",
+    ],
+  ])(
+    "yields no identity for a review URL the journal validator rejects (%s)",
+    (_name, sourceUrl) => {
+      // assertEvaluatorAwardManifest rejects both forms while the helper
+      // used to return an identity, so such a URL could falsely suppress
+      // credit for a legitimate review.
+      expect(canonicalReviewIdentity(sourceUrl)).toBeUndefined();
     },
   );
 

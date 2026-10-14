@@ -335,12 +335,22 @@ export function applyPointsSnapshot(
  *
  * URL parsing normalizes the evasion forms the validator accepts while
  * retaining the raw string: owner/repo casing variants, the explicit
- * default port (:443, dropped as default), an empty query marker, and
- * dot-segment paths (including percent-encoded dot-segments).
+ * default port (:443, dropped as default by the URL parser), an empty query
+ * marker, and dot-segment paths (including percent-encoded dot-segments).
+ *
+ * The owner/repo is resolved through the registered project repository
+ * inventory (project.json manifests via findProjectByRepositoryId), so a
+ * registered alias maps to the canonical repository id: the validator
+ * accepts alias paths as review sources, and without this the same PR
+ * reached through the canonical id and through an alias would get different
+ * identities and evade the evaluated-review suppression (PRD section 14
+ * anti-duplication rule). URLs outside the registry keep the case-folded
+ * owner/repo path as their identity.
  *
  * It returns undefined for anything else, so genuinely different URLs
- * (other hosts, other paths, other PR numbers, non-review fragments)
- * never share an identity and are never deduped together.
+ * (other hosts, other paths, other PR numbers, non-review fragments) and
+ * URLs the validator itself rejects (an explicit non-default port, a
+ * non-empty query) never share an identity and are never deduped together.
  */
 export function canonicalReviewIdentity(url: string): string | undefined {
   let parsed: URL;
@@ -352,12 +362,33 @@ export function canonicalReviewIdentity(url: string): string | undefined {
   if (parsed.protocol !== "https:") return undefined;
   if (parsed.hostname.toLowerCase() !== "github.com") return undefined;
   if (parsed.username || parsed.password) return undefined;
+  // Mirrors the strict evaluator URL parser (githubUrl in
+  // src/lib/evaluator-awards.ts): the URL parser drops an explicit default
+  // port, so :443 stays accepted; an explicit non-default port or any
+  // non-empty query is rejected by the validator and must yield no identity.
+  if (parsed.port) return undefined;
+  if (parsed.search) return undefined;
   const path = /^\/([^/]+)\/([^/]+)\/pull\/([1-9]\d*)$/.exec(parsed.pathname);
   if (!path) return undefined;
   const fragment = parsed.hash.toLowerCase();
   if (!/^#(pullrequestreview-|discussion_r)\d+$/.test(fragment))
     return undefined;
-  return `${path[1].toLowerCase()}/${path[2].toLowerCase()}/pull/${path[3]}`;
+  // Canonicalize registered repository aliases: the validator accepts a
+  // review source URL through any registered alias, so keying on the raw
+  // owner/repo would let an evaluated award on the canonical id and a
+  // substantive review on an alias (or vice versa) miss the dedup set and
+  // double-count.
+  const ownerRepo = `${path[1]}/${path[2]}`;
+  const project = findProjectByRepositoryId(ownerRepo);
+  const canonical = project?.repositories.find(
+    (repository) =>
+      repository.id.toLowerCase() === ownerRepo.toLowerCase() ||
+      (repository.aliases ?? []).some(
+        (alias) => alias.toLowerCase() === ownerRepo.toLowerCase(),
+      ),
+  );
+  const repositoryId = (canonical?.id ?? ownerRepo).toLowerCase();
+  return `${repositoryId}/pull/${path[3]}`;
 }
 export function pointMembers(
   journal: PointsJournal,
