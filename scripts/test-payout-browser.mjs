@@ -87,6 +87,10 @@ try {
   await page.goto("http://127.0.0.1:18549/earnings");
   await page.getByRole("heading", { name: "Your payouts" }).waitFor();
   await page.getByRole("button", { name: "Connect Base wallet" }).waitFor();
+  await page
+    .getByRole("button", { name: "Connect Robinhood Chain wallet" })
+    .waitFor();
+  await page.getByRole("heading", { name: "Robinhood Chain" }).waitFor();
   await page.screenshot({
     path: "evidence/payout-desktop-before.png",
     fullPage: true,
@@ -124,6 +128,34 @@ try {
     paid.payments[0].state !== "paid"
   )
     throw new Error("Wrong payment result");
+  // The same signer registers a separate Robinhood Chain claim from the
+  // keyboard; the Base lineage and its paid receipt stay unchanged.
+  await page
+    .getByRole("button", { name: "Connect Robinhood Chain wallet" })
+    .focus();
+  await page.keyboard.press("Enter");
+  // The picker offers the same EVM wallet for Robinhood Chain; choose it from the keyboard.
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Browser wallet Detected" })
+    .focus();
+  await page.keyboard.press("Enter");
+  await page
+    .getByText("Robinhood Chain wallet confirmed.", { exact: false })
+    .waitFor({ timeout: 60000 });
+  const both = await (
+    await fetch("http://127.0.0.1:18548/api/v1/payments/me")
+  ).json();
+  const walletOn = (chain) => both.wallets.filter((w) => w.chain === chain);
+  if (
+    walletOn("base").length !== 1 ||
+    walletOn("robinhood").length !== 1 ||
+    !walletOn("robinhood")[0].authorized ||
+    walletOn("robinhood")[0].claimId === walletOn("base")[0].claimId ||
+    both.payments[0].state !== "paid" ||
+    both.balances.some((b) => b.chain === "robinhood")
+  )
+    throw new Error("Robinhood Chain wallet registration changed Base state");
   await page.screenshot({
     path: "evidence/payout-desktop-paid.png",
     fullPage: true,

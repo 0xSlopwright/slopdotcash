@@ -44,8 +44,8 @@ export interface ProjectRewardPolicy {
     readonly monthlyCapMinor: string;
   }[];
   readonly kind: RewardKind;
-  readonly currency: "USDC" | null;
-  readonly chain: "solana" | "base" | null;
+  readonly currency: "USDC" | "USDG" | null;
+  readonly chain: "solana" | "base" | "robinhood" | null;
   readonly rewardStartAt: string;
   readonly cycle: "calendar-month-utc";
   readonly monthlyCapMinor: string;
