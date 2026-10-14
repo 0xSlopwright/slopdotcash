@@ -431,12 +431,21 @@ export async function verifyRewardSettlementOnchain(input: {
           if (!getTransaction) {
             throw new TypeError("Solana settlement needs the Solana reader");
           }
-          return assertFinalizedUsdcTransfer(
+          const verified = assertFinalizedUsdcTransfer(
             await getTransaction(signature),
             signature,
             plan.sourceOwner,
             transfers,
           );
+          if (
+            !Number.isSafeInteger(verified.blockTime) ||
+            verified.blockTime * 1_000 < Date.parse(plan.createdAt)
+          ) {
+            throw new TypeError(
+              "Solana settlement transaction predates its plan or differs from evidence",
+            );
+          }
+          return verified;
         };
   const settlement: RewardSettlementManifest = assertRewardSettlementManifest(
     input.settlement,
