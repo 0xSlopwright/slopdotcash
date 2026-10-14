@@ -98,6 +98,7 @@ test("equal contributors share cycle and profile ranks", async ({
     (route) => route.fulfill({ json: null }),
   );
   const snapshot = await loadSnapshot(request);
+  const cycles = await loadCycles(request);
   const publishedTie = snapshot.leaders.findIndex(
     (leader, index) =>
       index > 0 &&
@@ -175,7 +176,6 @@ test("equal contributors share cycle and profile ranks", async ({
     snapshot.leaders.map((leader) => leader.rank),
   );
   expect(renamed).toEqual(originalRenamed);
-  const cycles = await loadCycles(request);
   const views = PROJECTS.filter(
     (project) =>
       projectCycleHasOpened(snapshot, project.id) &&
