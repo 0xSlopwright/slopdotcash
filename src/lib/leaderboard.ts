@@ -505,7 +505,17 @@ function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function compareRankedEntries(
+export function compareRankedEntries(
+  left: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
+  right: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
+): number {
+  return (
+    right.scoreThirds - left.scoreThirds ||
+    compareCodeUnits(left.actor.id, right.actor.id)
+  );
+}
+
+function compareLegacyRankedEntries(
   left: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
   right: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
 ): number {
@@ -518,6 +528,17 @@ function compareRankedEntries(
     compareCodeUnits(left.actor.login, right.actor.login) ||
     compareCodeUnits(left.actor.id, right.actor.id)
   );
+}
+
+/** Assign competition ranks to entries already sorted by exact score. */
+export function assignLeaderboardRanks(
+  leaders: { rank: number; scoreThirds: number }[],
+): void {
+  leaders.forEach((entry, index) => {
+    const previous = leaders[index - 1];
+    entry.rank =
+      previous?.scoreThirds === entry.scoreThirds ? previous.rank : index + 1;
+  });
 }
 
 export function dedupeByNodeId<T extends { id: string }>(records: T[]): T[] {
@@ -3721,8 +3742,8 @@ export function createLeaderboardSnapshot(
   const leaders = [...entries.values()]
     .filter((entry) => entry.score > 0)
     .sort(compareRankedEntries)
-    .map<LeaderboardEntry>((entry, index) => ({
-      rank: index + 1,
+    .map<LeaderboardEntry>((entry) => ({
+      rank: 0,
       actor: entry.actor,
       score: Math.floor(entry.scoreThirds / 3),
       scoreThirds: entry.scoreThirds,
@@ -3739,6 +3760,8 @@ export function createLeaderboardSnapshot(
       rawActivity: { ...entry.rawActivity },
       reportedModels: uniqueSorted(entry.models),
     }));
+
+  assignLeaderboardRanks(leaders);
 
   const snapshot: LeaderboardSnapshot = {
     schemaVersion: LEADERBOARD_SCHEMA_VERSION,
@@ -4349,13 +4372,9 @@ function assertNonNegativeNumber(value: unknown, path: string): void {
 function assertLeaderValue(
   value: unknown,
   path: string,
-  rank: number,
 ): asserts value is LeaderboardEntry {
   const entry = assertObject(value, path);
   assertPositiveInteger(entry.rank, `${path}.rank`);
-  if (entry.rank !== rank) {
-    throw new Error(`${path}.rank is not contiguous`);
-  }
   assertActorValue(entry.actor, `${path}.actor`);
   assertNonNegativeInteger(entry.score, `${path}.score`);
   assertNonNegativeInteger(entry.scoreThirds, `${path}.scoreThirds`);
@@ -5396,7 +5415,7 @@ export function assertLeaderboardSnapshot(
     throw new Error("snapshot.leaders must be an array");
   }
   const validatedLeaders = snapshot.leaders.map((valueEntry, index) => {
-    assertLeaderValue(valueEntry, `snapshot.leaders[${index}]`, index + 1);
+    assertLeaderValue(valueEntry, `snapshot.leaders[${index}]`);
     return valueEntry;
   });
   if (
@@ -5405,18 +5424,8 @@ export function assertLeaderboardSnapshot(
   ) {
     throw new Error("snapshot.leaders must contain unique actors");
   }
-  for (let index = 1; index < validatedLeaders.length; index += 1) {
-    if (
-      compareRankedEntries(
-        validatedLeaders[index - 1],
-        validatedLeaders[index],
-      ) > 0
-    ) {
-      throw new Error(
-        "snapshot.leaders must follow the published rank ordering",
-      );
-    }
-  }
+  assertLeaderboardOrdering(validatedLeaders, true);
+  assertLeaderboardRanks(validatedLeaders, true);
 
   if (!Array.isArray(snapshot.ledger)) {
     throw new Error("snapshot.ledger must be an array");
@@ -6082,11 +6091,47 @@ export function assertLeaderboardSnapshot(
   assertMethodologyValue(snapshot.methodology, "snapshot.methodology");
 }
 
+function assertLeaderboardOrdering(
+  leaders: LeaderboardEntry[],
+  allowLegacy: boolean,
+): void {
+  const orderedBy = (compare: typeof compareRankedEntries) =>
+    leaders.every(
+      (entry, index) => index === 0 || compare(leaders[index - 1], entry) <= 0,
+    );
+  if (
+    !orderedBy(compareRankedEntries) &&
+    !(allowLegacy && orderedBy(compareLegacyRankedEntries))
+  ) {
+    throw new Error("snapshot.leaders must follow score and actor ID ordering");
+  }
+}
+
+function assertLeaderboardRanks(
+  leaders: LeaderboardEntry[],
+  allowLegacy: boolean,
+): void {
+  let rank = 0;
+  const competitionRanks = leaders.every((entry, index) => {
+    if (entry.scoreThirds !== leaders[index - 1]?.scoreThirds) rank = index + 1;
+    return entry.rank === rank;
+  });
+  // Immutable snapshots published before tie handling retain their complete
+  // contiguous rank vector. Never accept a mixture of the two conventions.
+  const legacyRanks =
+    allowLegacy && leaders.every((entry, index) => entry.rank === index + 1);
+  if (!competitionRanks && !legacyRanks) {
+    throw new Error("snapshot.leaders must use equal-score competition ranks");
+  }
+}
+
 export function assertPublishableLeaderboardSnapshot(
   value: unknown,
   now = Date.now(),
 ): asserts value is LeaderboardSnapshot {
   assertLeaderboardSnapshot(value);
+  assertLeaderboardOrdering(value.leaders, false);
+  assertLeaderboardRanks(value.leaders, false);
   // Archived and deployed snapshots retain their collected inventory. A new
   // publication must collect every current active target; paused projects are not collected.
   if (
