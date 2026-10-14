@@ -27,7 +27,7 @@ const networkLabels: Record<string, string> = {
   "solana-devnet": "Solana Devnet · test USDC",
   "solana-testnet": "Solana Testnet · test token",
   "robinhood-mainnet": "Robinhood Chain · USDG",
-  "robinhood-testnet": "Robinhood Chain Testnet · test token",
+  "robinhood-testnet": "Robinhood Chain Testnet · test USDG",
   anvil: "Local EVM test · test USDC",
 };
 
@@ -125,7 +125,14 @@ function account(value: unknown): PaymentsAccount {
         ].includes(p.deliveryState),
     ) ||
     data.balances.some(
-      (b) => !b || !ESCROW_CHAINS.includes(b.chain) || !money(b.netMicro),
+      (b) =>
+        !b ||
+        !ESCROW_CHAINS.includes(b.chain) ||
+        typeof b.network !== "string" ||
+        (Object.hasOwn(ESCROW_NETWORKS, b.network) &&
+          ESCROW_NETWORKS[b.network as keyof typeof ESCROW_NETWORKS].chain !==
+            b.chain) ||
+        !money(b.netMicro),
     ) ||
     !Array.isArray(data.directTransfers) ||
     !data.directTransfers.every(isDirectTransfer) ||
@@ -331,17 +338,28 @@ export function EarningsPage() {
           <section aria-label="Payout wallets" className="earnings-wallets">
             {ESCROW_CHAINS.map((chain) => {
               const wallet = data.wallets.find((w) => w.chain === chain);
-              const balance =
-                data.balances.find((b) => b.chain === chain)?.netMicro ?? "0";
+              // Each network keeps its own asset, so balances stay separate.
+              const unpaid = data.balances.filter(
+                (b) => b.chain === chain && b.netMicro !== "0",
+              );
+              const defaultNetwork = chainDefaultNetwork(chain);
               return (
                 <article key={chain} className="funding-workbench">
                   <h2>{networkName[chain]}</h2>
-                  <p>
-                    <strong>
-                      {amount(balance, chainDefaultNetwork(chain))}
-                    </strong>{" "}
-                    unpaid
-                  </p>
+                  {unpaid.length === 0 ? (
+                    <p>
+                      <strong>{amount("0", defaultNetwork)}</strong> unpaid
+                    </p>
+                  ) : (
+                    unpaid.map((b) => (
+                      <p key={b.network}>
+                        <strong>{amount(b.netMicro, b.network)}</strong> unpaid
+                        {b.network === defaultNetwork
+                          ? ""
+                          : ` on ${networkLabels[b.network] ?? b.network}`}
+                      </p>
+                    ))
+                  )}
                   {wallet ? (
                     <p className="wallet-address">{wallet.address}</p>
                   ) : (

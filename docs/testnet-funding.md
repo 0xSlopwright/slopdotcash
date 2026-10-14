@@ -25,7 +25,11 @@ keep account state at `finalized` (it replies `historical state is not available
 RPC URL for Robinhood Chain Testnet as the third argument for this network.
 Alchemy is the provider the Robinhood documentation names. The public RPC
 remains acceptable for a one-off deployment broadcast, not for this check and
-not for the scanner.
+not for the scanner. Test USDG for the escrow
+(`0x7E955252E15c84f5768B83c41a71F9eba181802F`, listed in the
+[Paxos USDG testnet guide](https://docs.paxos.com/guides/stablecoin/usdg/testnet))
+comes from the Paxos faucet at `https://faucet.paxos.com/`, not from the
+Robinhood gas faucet.
 
 JSON output reports the integer balance as a decimal string (`wei` or
 `lamports`), the finalized block or slot, and `nonzero`. A zero balance is a

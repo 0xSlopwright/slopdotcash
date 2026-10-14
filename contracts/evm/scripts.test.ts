@@ -29,6 +29,11 @@ describe("deploy script constants match the registry", () => {
       ESCROW_NETWORKS["robinhood-mainnet"].asset,
     );
   });
+  test("Robinhood Chain Testnet USDG", () => {
+    expect(constant("DeployRobinhoodTestnet.s.sol", "TEST_USDG")).toBe(
+      ESCROW_NETWORKS["robinhood-testnet"].asset,
+    );
+  });
   test("chain id guards name the registry chain ids", () => {
     const mainnet = readFileSync(
       "contracts/evm/script/DeployRobinhood.s.sol",
@@ -44,6 +49,5 @@ describe("deploy script constants match the registry", () => {
     expect(testnet).toContain(
       `block.chainid == ${ESCROW_NETWORKS["robinhood-testnet"].chainId},`,
     );
-    expect(testnet).toContain("TestDollar");
   });
 });

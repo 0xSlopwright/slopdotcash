@@ -29,7 +29,8 @@ export interface PaymentsAccount {
     activationEligibleAt: string | null;
   }[];
   payments: AccountPayment[];
-  balances: { chain: PaymentChain; netMicro: string }[];
+  /** Unpaid net per settlement network; never summed across networks or assets. */
+  balances: { chain: PaymentChain; network: string; netMicro: string }[];
   /** Imported from reviewed disclosures; never an escrow `paid` state. */
   directTransfers: DirectTransfer[];
   /** Legacy README observations; history only, never a payout destination. */

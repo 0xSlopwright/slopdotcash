@@ -8,6 +8,7 @@ import {
 import type {
   AccountPayment,
   DirectTransfer,
+  PaymentChain,
   PaymentsAccount,
 } from "../../src/lib/payments/contracts";
 import { isWalletAddress, isWalletChain } from "../../src/lib/wallets";
@@ -363,20 +364,27 @@ export async function handlePaymentsApi(
             !/^0x[0-9a-fA-F]{130}$/.test(body.signature)))
       )
         return json(400, { error: "invalid_request" });
+      // A registry network fixes both the chain id and the claim's chain, so a
+      // Base claim never yields Robinhood Chain consent or the reverse. Only
+      // the local Anvil chain id (31337) may name a network outside the registry.
+      const policy = Object.hasOwn(ESCROW_NETWORKS, body.network)
+        ? ESCROW_NETWORKS[body.network as keyof typeof ESCROW_NETWORKS]
+        : undefined;
       if (
-        Object.hasOwn(ESCROW_NETWORKS, body.network) &&
-        ESCROW_NETWORKS[body.network as keyof typeof ESCROW_NETWORKS]
-          .chainId !== body.chainId
+        policy
+          ? policy.family !== "evm" || policy.chainId !== body.chainId
+          : body.chainId !== "31337"
       )
         return json(400, {
           error: "invalid_request",
           detail: "Chain id does not match the named network",
         });
+      const claimChains = policy ? [policy.chain] : EVM_CHAINS;
       const wallet = await deps.db
         .prepare(
-          `SELECT w.id,w.wallet_address,w.record_sha256 FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id WHERE w.id=? AND w.github_user_id=? AND w.chain IN (${EVM_CHAINS.map(() => "?").join(",")}) AND w.source='d1_registry' AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)`,
+          `SELECT w.id,w.wallet_address,w.record_sha256 FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id WHERE w.id=? AND w.github_user_id=? AND w.chain IN (${claimChains.map(() => "?").join(",")}) AND w.source='d1_registry' AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)`,
         )
-        .bind(body.claimId, member.github_id, ...EVM_CHAINS)
+        .bind(body.claimId, member.github_id, ...claimChains)
         .first<{ id: string; wallet_address: string; record_sha256: string }>();
       if (!wallet) return json(409, { error: "claim_not_current" });
       const nowSeconds = Math.floor(Date.parse(now) / 1000);
@@ -442,13 +450,33 @@ export async function handlePaymentsApi(
       ) as AccountPayment[];
       for (const p of payments)
         p.netMicro = (BigInt(p.grossMicro) - BigInt(p.feeMicro)).toString();
-      const balances = ESCROW_CHAINS.map((chain) => ({
-        chain,
-        netMicro: payments
-          .filter((p) => p.chain === chain && p.state === "reserved")
-          .reduce((sum, p) => sum + BigInt(p.netMicro), 0n)
-          .toString(),
-      }));
+      // One balance per settlement network: networks carry different assets
+      // (USDC, USDG, test tokens), so amounts are never summed across them.
+      const reservedByNetwork = new Map<
+        string,
+        { chain: PaymentChain; network: string; net: bigint }
+      >();
+      for (const p of payments) {
+        const key = `${p.chain}\u0000${p.network}`;
+        const row = reservedByNetwork.get(key) ?? {
+          chain: p.chain,
+          network: p.network,
+          net: 0n,
+        };
+        if (p.state === "reserved") row.net += BigInt(p.netMicro);
+        reservedByNetwork.set(key, row);
+      }
+      const balances = [...reservedByNetwork.values()]
+        .sort(
+          (a, b) =>
+            ESCROW_CHAINS.indexOf(a.chain) - ESCROW_CHAINS.indexOf(b.chain) ||
+            a.network.localeCompare(b.network),
+        )
+        .map(({ chain, network, net }) => ({
+          chain,
+          network,
+          netMicro: net.toString(),
+        }));
       const account: PaymentsAccount = {
         githubUserId: member.github_id,
         wallets: JSON.parse(walletRows?.items ?? "[]"),

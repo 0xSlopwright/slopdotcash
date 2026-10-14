@@ -1053,7 +1053,10 @@ export function assertRewardAllocationManifest(
     typeof manifest.projectId !== "string" ||
     (manifest.status !== "proposed" && manifest.status !== "approved") ||
     !isWalletChain(manifest.chain) ||
-    manifest.currency !== fundingAssetForNetwork(manifest.chain)
+    // The monthly rail settles USDC on Base or Solana; Robinhood Chain pays
+    // only through escrow.
+    manifest.currency !== "USDC" ||
+    fundingAssetForNetwork(manifest.chain) !== "USDC"
   ) {
     throw new TypeError("allocation manifest protocol header is invalid");
   }

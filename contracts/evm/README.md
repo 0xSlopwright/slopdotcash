@@ -16,10 +16,10 @@ public testnet deployment.
 | --- | --- | --- | --- |
 | Base Sepolia | 84532 | Circle test USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | `DeployBaseSepolia.s.sol` |
 | Base | 8453 | Circle USDC `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | `DeployBase.s.sol` |
-| Robinhood Chain Testnet | 46630 | `TestDollar` deployed by the script (no USDG on the testnet) | `DeployRobinhoodTestnet.s.sol` |
+| Robinhood Chain Testnet | 46630 | Paxos test USDG `0x7E955252E15c84f5768B83c41a71F9eba181802F` | `DeployRobinhoodTestnet.s.sol` |
 | Robinhood Chain | 4663 | Paxos USDG `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` | `DeployRobinhood.s.sol` |
 
-The contract reads only `block.timestamp` and `block.chainid`, never `block.number`, so Arbitrum Nitro's block-number semantics on Robinhood Chain do not affect award ids or delays. `foundry.toml` targets Cancun; the testnet deployment records the ArbOS version read from the `ArbSys` precompile as the proof that the opcodes are supported there.
+The contract reads only `block.timestamp` and `block.chainid`, never `block.number`, so Arbitrum Nitro's block-number semantics on Robinhood Chain do not affect award ids or delays. `foundry.toml` targets Cancun. Opcode support on Robinhood Chain is not yet proven: the first testnet deployment must record the ArbOS version read from the `ArbSys` precompile and a successful deployment receipt before any activation.
 
 ## Authority and identity
 
@@ -163,9 +163,8 @@ Deposits and transfers must move exact amounts. Token failures or blocked
 recipients revert the full payment. The accepted token
 must have six decimals and ordinary exact-transfer behavior. The deployment
 script fixes its token: the Base scripts name Circle's USDC addresses and the
-Robinhood Chain mainnet script names Paxos USDG, while the Robinhood Chain
-Testnet script deploys its own `TestDollar`; verify the asset again before any
-deployment. Arbitrary tokens with dishonest `balanceOf` results are
+Robinhood Chain scripts name Paxos USDG (the testnet script uses the Paxos
+testnet USDG address); verify the asset again before any deployment. Arbitrary tokens with dishonest `balanceOf` results are
 outside the supported asset model. Direct transfers to the vault do not create
 refundable credits and cannot be rescued in this version. The supported funding
 path is owner `approve` followed by `deposit`.

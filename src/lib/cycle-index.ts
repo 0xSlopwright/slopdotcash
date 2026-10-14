@@ -10,7 +10,6 @@ import {
   assertAllocationFundingBasis,
   LAST_LEGACY_CAP_CYCLE,
 } from "./allocation-funding";
-import { fundingAssetForNetwork } from "./funding-address.mjs";
 import { findProject } from "./projects.mjs";
 import {
   isWalletAddress,
@@ -86,7 +85,7 @@ export interface CycleIndexEntry {
     fundingBasis?: AllocationFundingBasis;
     carriedMinor?: string;
     reviewBudgetCapMinor?: string;
-    currency: "USDC" | "USDG" | null;
+    currency: "USDC" | null;
     capMinor: string;
     suggestedMinor: string;
     approvedMinor: string;
@@ -512,10 +511,9 @@ function cycleEntry(value: unknown, index: number): CycleIndexEntry {
     ],
     `${field}.reward`,
   );
-  if (
-    reward.currency !== null &&
-    reward.currency !== fundingAssetForNetwork(project.reward.chain)
-  ) {
+  // Cycles are the monthly USDC rail; the currency is frozen per cycle and
+  // never follows a later change of the project's settlement network.
+  if (reward.currency !== null && reward.currency !== "USDC") {
     throw new TypeError(`${field}.reward.currency is invalid`);
   }
   const share = reward.sharePartsPerMillion;
@@ -547,7 +545,7 @@ function cycleEntry(value: unknown, index: number): CycleIndexEntry {
     ...(hasFundingBasis
       ? { fundingBasis: assertAllocationFundingBasis(reward.fundingBasis) }
       : {}),
-    currency: reward.currency as "USDC" | "USDG" | null,
+    currency: reward.currency as "USDC" | null,
     capMinor: minor(reward.capMinor, `${field}.reward.capMinor`),
     suggestedMinor: minor(
       reward.suggestedMinor,
@@ -785,8 +783,7 @@ function cycleEntry(value: unknown, index: number): CycleIndexEntry {
     (!normalizedReward.fundingBasis && cycleId > LAST_LEGACY_CAP_CYCLE) ||
     (normalizedReward.fundingBasis !== undefined &&
       normalizedReward.fundingBasis.cycleId !== cycleId) ||
-    normalizedReward.currency !==
-      fundingAssetForNetwork(project.reward.chain) ||
+    normalizedReward.currency !== "USDC" ||
     normalizedReward.capMinor !==
       (normalizedReward.fundingBasis
         ? allocationFundingMinor(normalizedReward.fundingBasis).toString()

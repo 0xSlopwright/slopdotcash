@@ -50,7 +50,7 @@ const solanaDeployment = {
 const robinhoodDeployment = {
   ...evmDeployment,
   network: "robinhood-testnet",
-  asset: "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86",
+  asset: "0x7e955252e15c84f5768b83c41a71f9eba181802f",
 };
 const policy = (chain: string, deployment: object) => ({
   schemaVersion: "1",
@@ -109,8 +109,8 @@ describe("escrow chain families", () => {
       family: "evm",
       testnet: true,
       chainId: "46630",
-      asset: null,
-      assetSymbol: "TEST",
+      asset: "0x7e955252e15c84f5768b83c41a71f9eba181802f",
+      assetSymbol: "USDG",
       gasCeiling: "2000000",
       scanPageBlocks: "9000",
     });

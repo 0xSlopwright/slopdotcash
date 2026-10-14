@@ -55,9 +55,9 @@ export const ESCROW_NETWORKS = Object.freeze({
     family: "evm",
     testnet: true,
     chainId: "46630",
-    /** No USDG exists on the testnet; each deployment names its reviewed test token. */
-    asset: null,
-    assetSymbol: "TEST",
+    /** Paxos testnet USDG, listed by the Paxos USDG testnet guide and read back on chain (design record). */
+    asset: "0x7e955252e15c84f5768b83c41a71f9eba181802f",
+    assetSymbol: "USDG",
     gasCeiling: "2000000",
     scanPageBlocks: "9000",
   },

@@ -844,7 +844,7 @@ try {
     await handlePaymentsApi(request("/me"), { db })
   ).json()) as {
     payments: { state: string; netMicro: string }[];
-    balances: { chain: string; netMicro: string }[];
+    balances: { chain: string; network: string; netMicro: string }[];
   };
   assert.equal(account.payments[0].state, "paid");
   assert.equal(account.payments[0].netMicro, "98000000");
@@ -1210,6 +1210,36 @@ try {
     /Test deployment required/,
     "The Robinhood Chain mainnet entry is refused by the testnet preflight",
   );
+  // Cross-labelled records: the registry network fixes the chain, so a
+  // Robinhood Chain testnet record labelled `base`, or a Base Sepolia record
+  // labelled `robinhood`, is refused before any secret or RPC use.
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...rcEnv,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([
+          { ...rcDeployment, chain: "base" },
+        ]),
+      },
+      rcInput,
+    ),
+    /Test deployment required/,
+    "A robinhood-testnet record labelled chain base is refused",
+  );
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...rcEnv,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([
+          { ...rcDeployment, network: "base-sepolia", chainId: "84532" },
+        ]),
+        PAYMENT_RPC_URLS: JSON.stringify({ "base-sepolia": rcRpcUrl }),
+      },
+      { ...rcInput, network: "base-sepolia" },
+    ),
+    /Test deployment required/,
+    "A base-sepolia record labelled chain robinhood is refused",
+  );
   // Wrong RPC chain: pointing the testnet record at the 31337 Anvil fails the chain-id readback.
   await assert.rejects(
     preflightEvmDeployment(
@@ -1272,6 +1302,48 @@ try {
     await mismatch.text(),
     /Chain id does not match the named network/,
   );
+  // The registry network also fixes the claim chain: the current Base claim
+  // cannot yield Robinhood Chain binding consent, and an unregistered network
+  // is refused unless it names the local Anvil chain id.
+  const currentBaseClaim = (
+    sql
+      .query<{ id: string }, []>(
+        "SELECT w.id FROM wallet_claims w WHERE w.github_user_id='123' AND w.chain='base' AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)",
+      )
+      .get() as { id: string }
+  ).id;
+  assert.equal(
+    (
+      await handlePaymentsApi(
+        request("/wallets/bind-challenge", {
+          claimId: currentBaseClaim,
+          network: "robinhood-testnet",
+          vault: rcVault,
+          chainId: rcChainId,
+          expectedVersion: "0",
+        }),
+        { db },
+      )
+    ).status,
+    409,
+    "A Base claim cannot sign Robinhood Chain binding consent",
+  );
+  assert.equal(
+    (
+      await handlePaymentsApi(
+        request("/wallets/bind-challenge", {
+          claimId: "claim-rc",
+          network: "unlisted-network",
+          vault: rcVault,
+          chainId: rcChainId,
+          expectedVersion: "0",
+        }),
+        { db },
+      )
+    ).status,
+    400,
+    "An unregistered network is refused outside the local Anvil chain id",
+  );
   await authorizeBinding(
     db,
     "claim-rc",
@@ -1333,13 +1405,20 @@ try {
         state: string;
         netMicro: string;
       }[];
-      balances: { chain: string; netMicro: string }[];
+      balances: { chain: string; network: string; netMicro: string }[];
     };
   const rcReserved = await readAccount();
   assert.equal(
     rcReserved.balances.find((b) => b.chain === "robinhood")?.netMicro,
     "98000000",
     "The reserved Robinhood Chain award shows its net before payment",
+  );
+  assert.deepEqual(
+    rcReserved.balances
+      .filter((b) => b.chain === "robinhood")
+      .map((b) => b.network),
+    ["robinhood-testnet"],
+    "Balances are reported per network, never summed across assets",
   );
   assert.equal(
     rcReserved.balances.find((b) => b.chain === "base")?.netMicro,
@@ -1615,7 +1694,7 @@ try {
     await new Promise(() => {});
   }
   console.log(
-    "Local EVM workflow passed (Base on 31337, Robinhood Chain Testnet on 46630): escrow, signed consent, separate signed execution, durable ambiguous-send recovery, finalized binding retry, finalized scanner replay, safe unsigned retirement, delayed successor rotation, exact net balances; Robinhood Chain Testnet registry preflight (chain id, mainnet and wrong-RPC refusals, 2,000,000 gas ceiling), chain = robinhood ledger, separate wallet lineages, binding chain id guard, and a paid award.",
+    "Local EVM workflow passed (Base on 31337, Robinhood Chain Testnet on 46630): escrow, signed consent, separate signed execution, durable ambiguous-send recovery, finalized binding retry, finalized scanner replay, safe unsigned retirement, delayed successor rotation, exact net balances; Robinhood Chain Testnet registry preflight (chain id, mainnet and wrong-RPC refusals, 2,000,000 gas ceiling), chain = robinhood ledger, separate wallet lineages, binding chain id and claim chain guards, cross-labelled record refusals, per-network balances, and a paid award.",
   );
 } finally {
   sql.close();

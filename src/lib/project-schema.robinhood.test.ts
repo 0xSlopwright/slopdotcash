@@ -14,7 +14,7 @@ const deployment = {
   upgradeAuthority: null,
   projectPda: null,
   networkDomain: null,
-  asset: "0x2000000000000000000000000000000000000002",
+  asset: "0x7e955252e15c84f5768b83c41a71f9eba181802f",
   owner: evm,
   identityAuthority: "0x3000000000000000000000000000000000000003",
   feeRecipient: "0x4000000000000000000000000000000000000004",

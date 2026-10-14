@@ -208,18 +208,18 @@ function selectDeployment(
 }
 
 /**
- * Public chain identity check runs before the hosted worker reads its signer
- * secret. A deployment is accepted only when it is an EVM registry testnet
- * whose chain id matches the registry, or the local Anvil chain under the
+ * Public chain identity check, with no RPC and no secrets. A deployment is
+ * accepted only when it is an EVM registry testnet whose chain and chain id
+ * both match the registry entry, or the local Anvil chain under the
  * integration override; every mainnet network is rejected here.
  */
-export async function preflightEvmDeployment(
+function selectReviewedEvmDeployment(
   env: Pick<
     ExecutorEnvironment,
-    "PAYMENT_DEPLOYMENTS" | "PAYMENT_RPC_URLS" | "ALLOW_LOCAL_TEST_CHAIN"
+    "PAYMENT_DEPLOYMENTS" | "ALLOW_LOCAL_TEST_CHAIN"
   >,
   input: DispatchPayment,
-): Promise<Deployment> {
+): Omit<Deployment, "rpcUrl"> & { chain: EscrowChain } {
   const selected = selectDeployment(env, input);
   const policy = Object.hasOwn(ESCROW_NETWORKS, selected.network)
     ? ESCROW_NETWORKS[selected.network as keyof typeof ESCROW_NETWORKS]
@@ -228,6 +228,7 @@ export async function preflightEvmDeployment(
     policy !== undefined &&
     policy.family === "evm" &&
     policy.testnet &&
+    policy.chain === selected.chain &&
     policy.chainId === selected.chainId;
   const localChain =
     policy === undefined &&
@@ -239,6 +240,21 @@ export async function preflightEvmDeployment(
     !(reviewedTestnet || localChain)
   )
     throw new Error("Test deployment required");
+  return selected as Omit<Deployment, "rpcUrl"> & { chain: EscrowChain };
+}
+
+/**
+ * Runs before the hosted worker reads its signer secret: the registry identity
+ * check, then the RPC chain id and the deployed vault.
+ */
+export async function preflightEvmDeployment(
+  env: Pick<
+    ExecutorEnvironment,
+    "PAYMENT_DEPLOYMENTS" | "PAYMENT_RPC_URLS" | "ALLOW_LOCAL_TEST_CHAIN"
+  >,
+  input: DispatchPayment,
+): Promise<Deployment> {
+  const selected = selectReviewedEvmDeployment(env, input);
   if (!/^[1-9][0-9]{0,9}$/.test(selected.gasCeiling ?? ""))
     throw new Error("Reviewed gas ceiling required");
   const rpcUrls = JSON.parse(env.PAYMENT_RPC_URLS) as Record<string, string>;
@@ -272,8 +288,7 @@ async function authorize(
     !/^[A-Za-z0-9_-]{1,128}$/.test(input.idempotencyKey)
   )
     throw new Error("Invalid payout request");
-  const chain = selectDeployment(env, input).chain;
-  if (!isEscrowChain(chain)) throw new Error("Test deployment required");
+  const { chain } = selectReviewedEvmDeployment(env, input);
   const authorization = await authorizeRegistry(env, input, chain);
   const deployment = await preflightEvmDeployment(env, input);
   if (deployment.projectId !== authorization.projectId)

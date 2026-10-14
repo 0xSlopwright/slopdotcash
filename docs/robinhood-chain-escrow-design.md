@@ -22,7 +22,7 @@ Every value below was read from a primary source on the date given. Re-verify be
 | USDG token (mainnet) | `0x5fc5360d0400a0fd4f2af552add042d716f1d168` | Robinhood docs, Token Contracts page; Paxos docs, USDG mainnet guide (both list this address) |
 | USDG metadata on chain | name "Global Dollar", symbol USDG, `decimals() == 6` | `eth_call` on the mainnet RPC |
 | USDG contract shape | ERC-1967 proxy; implementation `0x68184c449e1a8f34fa18d289737129fd27b66f8f`; `paused()` false; Paxos freeze interface present | `eth_getCode`, `eth_getStorageAt` (implementation slot), `eth_call` |
-| USDG on testnet | none; no code at the mainnet address on 46630, no faucet distributes USDG | `eth_getCode` on the testnet RPC; Robinhood and Paxos docs |
+| USDG on testnet | `0x7e955252e15c84f5768b83c41a71f9eba181802f`; name "Global Dollar", symbol USDG, `decimals() == 6`, ERC-1967 proxy (re-verified 13 October 2026; the 12 October reading of "none" checked only the mainnet address) | [Paxos USDG testnet guide](https://docs.paxos.com/guides/stablecoin/usdg/testnet); `eth_call` on `https://rpc.testnet.chain.robinhood.com` |
 | Finality tags | the RPC serves `safe` and `finalized`; `finalized` ran about 18 minutes behind head | `eth_getBlockByNumber` with each tag |
 | Finality model | soft confirmation from the sequencer, then posted to Ethereum, then Ethereum finality | Robinhood docs, Transaction Finality page |
 | `block.number` opcode | returns an estimate of the Ethereum block number, not the L2 block | Robinhood docs, Differences from Ethereum page |
@@ -57,7 +57,7 @@ The escrow contract reads `block.timestamp` and `block.chainid` only. It never r
 |---|---|---|---|---|---|---|---|---|
 | `base-sepolia` | `base` | `evm` | true | 84532 | Circle test USDC | USDC | 500000 | 2000 |
 | `base-mainnet` | `base` | `evm` | false | 8453 | Circle USDC | USDC | 500000 | 2000 |
-| `robinhood-testnet` | `robinhood` | `evm` | true | 46630 | null (reviewed test token per deployment) | TEST | 2000000 | 9000 |
+| `robinhood-testnet` | `robinhood` | `evm` | true | 46630 | Paxos test USDG `0x7e955252e15c84f5768b83c41a71f9eba181802f` | USDG | 2000000 | 9000 |
 | `robinhood-mainnet` | `robinhood` | `evm` | false | 4663 | `0x5fc5360d0400a0fd4f2af552add042d716f1d168` | USDG | 2000000 | 9000 |
 | `solana-devnet` | `solana` | `solana` | true | n/a | Circle devnet USDC | USDC | n/a | n/a |
 | `solana-testnet` | `solana` | `solana` | true | n/a | null | TEST | n/a | n/a |
@@ -78,11 +78,11 @@ No Solidity change. `ProjectEscrow.sol` accepts any token whose `decimals()` is 
 New Foundry scripts under `contracts/evm/script/`:
 
 - `DeployRobinhood.s.sol`: `require(block.chainid == 4663)`, USDG constant equal to the registry asset, fee recipient and identity authority read from the environment as public addresses, binding delay 48 hours (`MIN_PRODUCTION_BINDING_DELAY`), authority rotation delay as fixed in the factory by #675. Production release remains outside this script, as it is for Base.
-- `DeployRobinhoodTestnet.s.sol`: `require(block.chainid == 46630)`, deploys `integration/TestDollar.sol` (six decimals) and then the factory bound to it, with fee recipient and identity authority from the environment. The test token is not USDG and the README says so, mirroring the Solana Testnet labeled test mint.
+- `DeployRobinhoodTestnet.s.sol`: `require(block.chainid == 46630)`, binds the factory to the Paxos testnet USDG constant (equal to the registry asset), with fee recipient and identity authority from the environment, mirroring `DeployBaseSepolia.s.sol`.
 
 USDG is an upgradeable proxy with a pause switch and a per-address freeze, the same risk class as Circle's USDC on Base. The contract already fails closed: a frozen or paused recipient reverts `pay`, the award stays reserved, and a frozen fee recipient blocks only `claimFees`. The README's asset section gains a USDG paragraph stating this.
 
-`foundry.toml` targets the Cancun EVM. Arbitrum Nitro supports Cancun opcodes from ArbOS 30, and the testnet deployment is the proof for this chain: the runbook records the ArbOS version read from the `ArbSys` precompile and the deployment receipt. If deployment fails on an opcode, the fallback is a per-script `evm_version` of Shanghai, recorded as a deviation.
+`foundry.toml` targets the Cancun EVM. Arbitrum Nitro supports Cancun opcodes from ArbOS 30; support on this chain is an acceptance gate, not yet evidence: the first testnet deployment (PR C runbook) must record the ArbOS version read from the `ArbSys` precompile and the deployment receipt. If deployment fails on an opcode, the fallback is a per-script `evm_version` of Shanghai, recorded as a deviation.
 
 Fee recipient: the Base fee address is a plain account with no history on either chain, so the same key could receive on Robinhood Chain. Whether to reuse it, and which address is the identity authority, are decisions for the repository owner, recorded in the deployment evidence and the project manifest. This design does not assume them.
 
@@ -122,7 +122,7 @@ Account API types. `PaymentChain` in `src/lib/payments/contracts.ts` becomes `"b
 
 ### 5. Site
 
-- Labels: "Robinhood Chain · USDG" for `robinhood-mainnet`, "Robinhood Chain Testnet · test token" for `robinhood-testnet`.
+- Labels: "Robinhood Chain · USDG" for `robinhood-mainnet`, "Robinhood Chain Testnet · test USDG" for `robinhood-testnet`.
 - Amount formatting on the payouts, escrow funding and proposal pages takes the symbol from the network's `assetSymbol` instead of appending "USDC".
 - Wallet registration offers Solana, Base and Robinhood Chain; the address hint for Robinhood Chain is the same EVM rule as Base.
 - Payouts page wallet cards and the connect flow name the chain the contributor chose. The EVM connect branch stays `personal_sign`, which is chain-independent; it does not call `wallet_switchEthereumChain`, because signing consent does not require the wallet to be on that network. Copy says so in one sentence.
@@ -141,15 +141,15 @@ Account API types. `PaymentChain` in `src/lib/payments/contracts.ts` becomes `"b
 
 ### 7. Testnet runbook (prepare only)
 
-Delivered as `docs/robinhood-chain-testnet-runbook.md` with an evidence template. An agent prepares; a human broadcasts. Steps:
+To be delivered in PR C as `docs/robinhood-chain-testnet-runbook.md` with an evidence template; it is not part of PR B. An agent prepares; a human broadcasts. Steps:
 
 1. Create a dedicated Foundry keystore account for the testnet deployer; never a raw key in a command, file or environment dump.
 2. Fund it from `https://faucet.testnet.chain.robinhood.com`; confirm with `node scripts/check-payout-test-funding.mjs robinhood-testnet <address>` (the script gains the network with chain id `0xb626` and the public testnet RPC).
 3. Obtain an archive RPC key (Alchemy is the documented provider) for the scanner; the public RPC is rate-limited and not for production use.
 4. Simulate `DeployRobinhoodTestnet.s.sol` without broadcast; review the printed addresses; broadcast with the keystore account.
 5. Verify source on the testnet Blockscout; read back `token()`, `owner()`, `identityAuthority()`, `feeRecipient()`, `bindingDelay()` and the runtime code SHA-256; read the ArbOS version from the `ArbSys` precompile.
-6. Create one vault for a test project manifest; record the deployment under `escrow.deployments` with `network: "robinhood-testnet"` and the test token as `asset`.
-7. Run the canonical acceptance scenario from the architecture plan with the test token: fund 1,000; commit 100 and 50; pay 98 plus 2; refund free funds at the withdrawal fee; bind the late wallet with a contributor signature; pay 49 plus 1; replay and prove no duplicate payment.
+6. Create one vault for a test project manifest; record the deployment under `escrow.deployments` with `network: "robinhood-testnet"` and the testnet USDG address as `asset`.
+7. Run the canonical acceptance scenario from the architecture plan with testnet USDG: fund 1,000; commit 100 and 50; pay 98 plus 2; refund free funds at the withdrawal fee; bind the late wallet with a contributor signature; pay 49 plus 1; replay and prove no duplicate payment.
 8. Record the evidence manifest: source SHA, compiler settings, factory and vault addresses, deployment transactions, chain id, token address and code hash, registrar, fee recipient, identity authority, ArbOS version, finalized block of each receipt.
 
 ### 8. Delivery
@@ -179,5 +179,5 @@ Each PR cites FND-01, FND-02, PAY-06, PAY-07 and MVP-02, MVP-06, MVP-07 in its d
 - **Sequencer reordering before posting.** Nothing is paid or indexed before the `finalized` tag, which is Ethereum finality.
 - **Gas spikes from Ethereum data fees.** Per-network gas ceiling; the 10 gwei price cap protects the relayer from paying an absurd price, and a transaction over the ceiling is held with a human-readable cause, not retried to a different value.
 - **Migration on a live table.** A copy-aside rebuild that re-inserts the parent rows under the original name, so D1's single-transaction apply commits with deferred foreign keys; applied on staging first, pinned by the transactional migration test, with row counts asserted by that test.
-- **Cancun opcode support.** Confirmed by the testnet deployment; fallback is a recorded `evm_version` deviation.
+- **Cancun opcode support.** Not yet proven on this chain; the first testnet deployment is the acceptance gate, and the fallback is a recorded `evm_version` deviation.
 - **Address copied from the wrong source.** The registry carries the USDG address that two official pages list and the chain confirms; the deploy script's constant must equal the registry value, checked by a test.
