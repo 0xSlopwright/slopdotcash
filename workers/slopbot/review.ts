@@ -250,7 +250,7 @@ async function loadContext(
           job.number,
           pull.changed_files,
         );
-  const itemText = `Title: ${issue.title}\n\nBody:\n${issue.body ?? ""}${pull === null ? "" : `\n\nDiff:\n${diff}`}`;
+  const itemText = reviewedItemText(issue, pull, diff);
   const revision =
     pull?.head.sha ?? (await sha256Hex(`${issue.title}\n${issue.body ?? ""}`));
   const policyDigest = await sha256Hex(
@@ -285,6 +285,14 @@ function buildPrompt(context: Context, itemKind: string) {
   };
 }
 
+function reviewedItemText(
+  issue: Issue,
+  pull: Pull | null,
+  diff: string,
+): string {
+  return `Title: ${issue.title}\n\nBody:\n${issue.body ?? ""}${pull === null ? "" : `\n\nDiff:\n${diff}`}`;
+}
+
 async function duplicateOf(
   env: ReviewEnv,
   job: Job,
@@ -292,7 +300,7 @@ async function duplicateOf(
   contentDigest: string,
 ): Promise<Verdict | null> {
   const prior = await env.SLOPBOT_DB.prepare(
-    `SELECT item_number FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND content_digest = ?
+    `SELECT item_number, item_kind FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND content_digest = ?
        AND item_node_id != ? ORDER BY created_at DESC LIMIT 1`,
   )
     .bind(
@@ -301,12 +309,33 @@ async function duplicateOf(
       contentDigest,
       context.issue.node_id,
     )
-    .first<{ item_number: number }>();
+    .first<{ item_number: number; item_kind: "issue" | "pull_request" }>();
   if (prior === null) return null;
   const other = await context.github.get<Issue>(
     `/repos/${job.owner}/${job.repo}/issues/${prior.item_number}`,
   );
   if (other === null || other.state !== "open") return null;
+  const otherPull =
+    prior.item_kind === "pull_request"
+      ? await context.github.get<Pull>(
+          `/repos/${job.owner}/${job.repo}/pulls/${prior.item_number}`,
+        )
+      : null;
+  if (prior.item_kind === "pull_request" && otherPull === null) return null;
+  const { diff } =
+    otherPull === null
+      ? { diff: "" }
+      : await pullDiff(
+          context.github,
+          job.owner,
+          job.repo,
+          prior.item_number,
+          otherPull.changed_files,
+        );
+  // The stored digest identifies a historical candidate, not its current
+  // contents. An edited open original must not make this item a duplicate.
+  if (reviewedItemText(other, otherPull, diff) !== context.itemText)
+    return null;
   return {
     category: "duplicate",
     confidence: 1,
@@ -322,21 +351,19 @@ async function duplicateOf(
   };
 }
 
-function prefilter(context: Context): Verdict | null {
-  if (
-    context.pull !== null &&
-    (context.pull.changed_files === 0 ||
-      context.pull.additions + context.pull.deletions === 0)
-  ) {
+export function prefilter(
+  context: Pick<Context, "pull" | "issue">,
+): Verdict | null {
+  if (context.pull !== null && context.pull.changed_files === 0) {
     return {
       category: "empty",
       confidence: 1,
       rule_refs: [
-        { source: "universal", quote: "pull request changes no lines" },
+        { source: "universal", quote: "pull request changes no files" },
       ],
       evidence: [],
       summary:
-        "This pull request does not change any lines, so there is nothing to review.",
+        "This pull request does not change any files, so there is nothing to review.",
       limitations: [],
     };
   }
@@ -422,28 +449,29 @@ async function closureState(
       : (Date.now() - Date.parse(install.created_at)) / 86_400_000;
   const reviewed = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND status = 'completed'",
-    job.repositoryId,
+    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE installation_id = ? AND status = 'completed'",
+    job.installationId,
   );
   if (ageDays < SHADOW_DAYS || reviewed < SHADOW_MIN_REVIEWS)
     return { allowed: false, why: "shadow period" };
   const closes7 = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > datetime('now', '-7 days')",
+    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')",
     job.repositoryId,
   );
   const reopens7 = await store.count(
     db,
     `SELECT COUNT(*) AS n FROM slopbot_actions r WHERE r.repository_id = ? AND r.action = 'human_reopen'
-       AND r.created_at > datetime('now', '-7 days')
-       AND EXISTS (SELECT 1 FROM slopbot_actions c WHERE c.item_node_id = r.item_node_id AND c.action = 'close')`,
+       AND r.created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
+       AND EXISTS (SELECT 1 FROM slopbot_actions c WHERE c.repository_id = r.repository_id
+         AND c.item_node_id = r.item_node_id AND c.action = 'close' AND c.created_at <= r.created_at)`,
     job.repositoryId,
   );
   if (closes7 > 0 && reopens7 / closes7 > REOPEN_BREAKER_RATIO)
     return { allowed: false, why: "reopen-rate circuit breaker" };
   const closesToday = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > datetime('now', '-1 day')",
+    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')",
     job.repositoryId,
   );
   if (closesToday >= context.config.config.dailyCloseCap)
@@ -567,7 +595,7 @@ export async function reviewItem(
   );
   const authorReviewsToday = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND status = 'completed' AND created_at > datetime('now', '-1 day')",
+    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND status = 'completed' AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')",
     job.repositoryId,
     issue.user.id,
   );
@@ -669,10 +697,7 @@ async function runReview(
       billable,
     );
     if (result.verdict === null) {
-      await store.finishReview(db, reviewKey, "failed", {
-        skipReason: "every model route step failed",
-      });
-      return "model route failed";
+      throw new Error("every model route step failed");
     }
     verdict = result.verdict;
     triage = result.servedBy;
