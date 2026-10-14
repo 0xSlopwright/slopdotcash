@@ -16,8 +16,11 @@ import {
   createFundingReview,
   type FundingPreparation,
 } from "../src/lib/funding-review-data";
-import { assertPublishableLeaderboardSnapshot } from "../src/lib/leaderboard";
-import { createProjectView } from "../src/lib/project-view";
+import {
+  assertPublishableLeaderboardSnapshot,
+  paymentReviewSnapshot,
+} from "../src/lib/leaderboard";
+import { createPaymentProjectView } from "../src/lib/project-view";
 import { PROJECTS, type ProjectDefinition } from "../src/lib/projects.mjs";
 import type { WalletChain } from "../src/lib/wallets";
 import { fetchPublishedGithubWallet } from "./github-wallets";
@@ -140,7 +143,11 @@ export async function prepareMonthlyFunding(
         : period.start;
     if (snapshot.window.from > expectedFrom)
       throw new TypeError("Incomplete project month in snapshot");
-    const view = createProjectView(snapshot, project.id, options.cycleId);
+    const view = createPaymentProjectView(
+      snapshot,
+      project.id,
+      options.cycleId,
+    );
     if (
       view.cycle.from !== expectedFrom ||
       view.cycle.to !== period.end ||
@@ -229,7 +236,11 @@ export async function prepareMonthlyFunding(
         snapshotTo: snapshot.window.to,
         periodFrom: view.cycle.from,
         periodTo: view.cycle.to,
-        snapshotLedgerCount: snapshot.ledger.length,
+        snapshotLedgerCount:
+          options.cycleId >= "2026-10" &&
+          view.project.reward.kind === "monthly-pool"
+            ? paymentReviewSnapshot(snapshot).ledger.length
+            : snapshot.ledger.length,
         sourceMergedPullRequests: snapshot.source.counts.mergedPullRequests,
         mergedCensus: null,
         scoredMerges: new Set(

@@ -93,7 +93,7 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
                   <th scope="col">
                     {view.reward.kind === "monthly-pool" &&
                     monthlyPoolUnfunded(view.project.reward)
-                      ? "Share of score"
+                      ? "Share of payment weight"
                       : "Simulated share"}
                   </th>
                 </tr>
@@ -180,7 +180,7 @@ export function RewardValue({
           ? Math.round((leader.adjustedWeight * 1_000_000) / totalWeight)
           : 0,
       )}{" "}
-      of score
+      of payment weight
     </>
   );
 }
