@@ -1,6 +1,6 @@
 # Private bounty design review
 
-Date: 13 October 2026. Scope: product and workflow research, not a contract audit. This review supports [PRD SEC-01–15](slop-product-requirements.md#19-private-security-bounty-programs--mvp) and [MVP-13](slop-mvp-plan.md#mvp-13-delivery-and-acceptance). It does not activate a program, change Umia, approve a report or move funds.
+Date: 13 October 2026. Scope: product and workflow research, not a contract audit. This review supports [PRD SEC-01–18](slop-product-requirements.md#19-private-security-bounty-programs--mvp) and [MVP-13](slop-mvp-plan.md#mvp-13-delivery-and-acceptance). It does not activate a program, change Umia, approve a report or move funds.
 
 ## Confirmed product direction
 
@@ -64,3 +64,17 @@ The product rule and 75/25 economics are settled. Each program must still approv
 7. Real private-intake, access-control, remediation and settlement acceptance evidence under MVP-13 before any program is advertised as open.
 
 These choices gate implementation of the dependent behavior and program activation; they do not prevent completing the PRD and MVP update. No new public issues, legal terms, live infrastructure or financial actions are created by this research.
+
+## Follow-up: email, evidence and trust
+
+The owner requested Cloudflare email readiness and explicit maintainer trust handling. PRD SEC-16–18 now require notification delivery evidence, a version-bound private submission record, four separate verification stages, and defined dispute authority. Neither a report hash nor a transfer receipt proves that a vulnerability qualifies.
+
+Source inspection found an uncommitted `workers/notify/` implementation in the primary checkout. It sends project-application notices to a fixed admin list using an internal service binding. It is absent from the bounty documentation branch and the inspected `origin/development` tree. Its local presence is not proof of deployment, domain enablement, researcher delivery or a secure case notification flow. Preserve that work and integrate it through its owning reviewed change rather than copying it into an unrelated documentation commit.
+
+Cloudflare distinguishes [restricted send bindings](https://developers.cloudflare.com/email-service/configuration/send-bindings/), [sending-domain onboarding](https://developers.cloudflare.com/email-service/get-started/send-emails/) and [sending limits](https://developers.cloudflare.com/email-service/platform/limits/). The first may serve verified destinations; broad researcher notifications need a qualified sending configuration. Check actual recipient eligibility and quota. Provider acceptance, inbox delivery and human acknowledgment are separate observations.
+
+Read-only CLI checks on 13 October found that the current Wrangler account does not own the Slop zone, Pages project, notify Worker or `slop-private` database. Its one verified destination proves nothing about Slop email readiness. The browser exposes the separate Developer@elizalabs.ai account and its active `slop.cash` domain; inspect that account before any change. Never configure a replacement service in the wrong account.
+
+Recommended trust model: evidence-bound human technical acceptance, separate financial authorization, independent appeal with explicit powers, and objective payment reconciliation. Prefunding helps only to the extent that the actual instrument restricts withdrawal and provides a release mechanism. Umia technical approval and Slop funding authority must be agreed separately. No discretionary “honor system” can honestly be described as a guaranteed bounty payment.
+
+Browser inspection in the owning account confirmed that Email Routing for `slop.cash` is enabled with locked DNS records, and both existing application-notification recipients are verified. Email Sending currently lists only other domains; `slop.cash` is not enabled for that broader sending mode. Its activation preview proposes bounce MX/SPF/DKIM records and a root DMARC policy of `p=reject`. Activation was not submitted: the required deploy/DNS issue claim is absent. This distinction matters: existing restricted admin delivery may be possible, but broad bounty notification readiness and actual inbox delivery remain unverified.
