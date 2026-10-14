@@ -413,8 +413,8 @@ async function closureState(
       : (Date.now() - Date.parse(install.created_at)) / 86_400_000;
   const reviewed = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND status = 'completed'",
-    job.repositoryId,
+    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE installation_id = ? AND status = 'completed'",
+    job.installationId,
   );
   if (ageDays < SHADOW_DAYS || reviewed < SHADOW_MIN_REVIEWS)
     return { allowed: false, why: "shadow period" };
