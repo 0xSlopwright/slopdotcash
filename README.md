@@ -170,8 +170,8 @@ bun run test:e2e
 
 `bun run verify` checks project, evaluation, funding, cycle, and protocol
 integrity; audits dependencies; runs type, format, and lint checks; and
-produces the static build. The repository has no unit test suite; behavior is
-covered by `bun run test:e2e`.
+produces the static build. It also runs the Slopbot unit suite; browser behavior
+is covered by `bun run test:e2e`.
 
 ## Trust and deployment
 
