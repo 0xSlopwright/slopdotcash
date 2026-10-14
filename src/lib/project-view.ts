@@ -9,6 +9,7 @@ import {
   allocationFundingMinor,
   deriveAllocationFundingBasis,
 } from "./allocation-funding";
+import { fundingAssetForNetwork } from "./funding-address.mjs";
 import type {
   CapUsageStatus,
   GitHubActor,
@@ -74,8 +75,8 @@ export interface ReceiptConflict {
 export type ProjectRewardProjection =
   | {
       kind: "monthly-pool";
-      currency: "USDC";
-      chain: "solana" | "base";
+      currency: "USDC" | "USDG";
+      chain: "solana" | "base" | "robinhood";
       capMinor: string;
       projectedPrincipalMinor: string;
       platformFeeMinor: string;
@@ -670,7 +671,10 @@ export function createProjectView(
     }
     reward = {
       kind: "monthly-pool",
-      currency: "USDC",
+      // Escrow chains settle in USDC or USDG (FND-02), never another asset.
+      currency: fundingAssetForNetwork(escrow?.chain ?? "solana") as
+        | "USDC"
+        | "USDG",
       chain: escrow?.chain ?? "solana",
       capMinor,
       projectedPrincipalMinor: [...projected.values()]

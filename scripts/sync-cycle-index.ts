@@ -253,6 +253,7 @@ export async function verifyProposalAgainstSnapshot(
     ...(proposal.fundingBasis
       ? { fundingBasis: proposal.fundingBasis }
       : { legacyCapMinor: proposal.capMinor }),
+    frozenChain: proposal.chain,
     cycleId: proposal.cycleId,
     generatedAt: proposal.generatedAt,
     projectId: proposal.projectId,

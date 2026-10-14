@@ -13,6 +13,7 @@ import { createProjectView } from "../src/lib/project-view";
 import { findProject, type ProjectId } from "../src/lib/projects.mjs";
 import { createRewardCycleProposal } from "../src/lib/reward-cycle";
 import type { WalletProof } from "../src/lib/rewards";
+import type { WalletChain } from "../src/lib/wallets";
 import { fetchPublishedGithubWallet } from "./github-wallets";
 import {
   loadPriorCycleAccrual,
@@ -192,7 +193,7 @@ export function walletObservationRequests(
  * prior README proof, so no row gains a new README proof.
  */
 export function cycleWalletObserver(options: {
-  chain: "solana" | "base";
+  chain: WalletChain;
   token?: string;
   fetch?: typeof fetch;
 }) {
