@@ -420,13 +420,13 @@ async function closureState(
     return { allowed: false, why: "shadow period" };
   const closes7 = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > datetime('now', '-7 days')",
+    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')",
     job.repositoryId,
   );
   const reopens7 = await store.count(
     db,
     `SELECT COUNT(*) AS n FROM slopbot_actions r WHERE r.repository_id = ? AND r.action = 'human_reopen'
-       AND r.created_at > datetime('now', '-7 days')
+       AND r.created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
        AND EXISTS (SELECT 1 FROM slopbot_actions c WHERE c.repository_id = r.repository_id
          AND c.item_node_id = r.item_node_id AND c.action = 'close' AND c.created_at <= r.created_at)`,
     job.repositoryId,
@@ -435,7 +435,7 @@ async function closureState(
     return { allowed: false, why: "reopen-rate circuit breaker" };
   const closesToday = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > datetime('now', '-1 day')",
+    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')",
     job.repositoryId,
   );
   if (closesToday >= context.config.config.dailyCloseCap)
@@ -559,7 +559,7 @@ export async function reviewItem(
   );
   const authorReviewsToday = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND status = 'completed' AND created_at > datetime('now', '-1 day')",
+    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND status = 'completed' AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')",
     job.repositoryId,
     issue.user.id,
   );
