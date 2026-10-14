@@ -36,7 +36,10 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { createSkillAuthorizationProgram } from "./skill-authority.mjs";
+import {
+  createSkillAuthorizationProgram,
+  pythonRuntimeProbe,
+} from "./skill-authority.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const skillDirectory = resolve(scriptDirectory, "..");
@@ -1080,9 +1083,7 @@ export function authorizeSkill(
     [testAuthority.apiOrigin, testAuthority.rawOrigin].some(
       (value) => new URL(value).protocol === "https:",
     );
-  const pythonProbe = requiresHttpsTrust
-    ? "import ssl, sys; raise SystemExit(0 if sys.version_info.major == 3 and ssl.create_default_context().get_ca_certs() else 1)"
-    : "import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)";
+  const pythonProbe = pythonRuntimeProbe(requiresHttpsTrust);
   const python = ["python3", "python"].find(
     (candidate) =>
       spawnSync(candidate, ["-c", pythonProbe], {
