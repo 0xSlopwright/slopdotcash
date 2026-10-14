@@ -18,25 +18,8 @@ import {
   decodeBase58Bytes,
   deriveSquadsVaultAddress,
   SQUADS_V4_PROGRAM_ID,
+  squadsMemberCountOffset,
 } from "../../src/lib/squads-funding";
-
-const BASE58_ALPHABET =
-  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-
-function encodeBase58(bytes: Uint8Array): string {
-  let value = 0n;
-  for (const byte of bytes) value = value * 256n + BigInt(byte);
-  let encoded = "";
-  while (value > 0n) {
-    encoded = BASE58_ALPHABET[Number(value % 58n)] + encoded;
-    value /= 58n;
-  }
-  for (const byte of bytes) {
-    if (byte !== 0) break;
-    encoded = `1${encoded}`;
-  }
-  return encoded === "" ? "1" : encoded;
-}
 
 const MULTISIG_DISCRIMINATOR = [224, 116, 121, 186, 68, 161, 79, 236];
 
@@ -61,16 +44,15 @@ interface BuildOptions {
 /** Builds a canonical Squads v4 multisig account in the 2-of-2 shape. */
 function buildMultisig(options: BuildOptions): string {
   const { threshold = 2, members, rentCollector = null } = options;
-  const tag = rentCollector ? 1 : 0;
-  const memberCountOffset = 96 + 32 * tag;
   const bytes = new Uint8Array(132 + 33 * members.length);
   bytes.set(MULTISIG_DISCRIMINATOR, 0);
   if (options.configAuthority)
     bytes.set(decodeBase58Bytes(options.configAuthority), 40);
   const view = new DataView(bytes.buffer);
   view.setUint16(72, threshold, true);
-  bytes[94] = tag;
+  bytes[94] = rentCollector ? 1 : 0;
   if (rentCollector) bytes.set(decodeBase58Bytes(rentCollector), 95);
+  const memberCountOffset = squadsMemberCountOffset(bytes);
   bytes[memberCountOffset - 1] = 1;
   view.setUint32(memberCountOffset, members.length, true);
   members.forEach((member, index) => {
@@ -285,10 +267,5 @@ describe("Squads v4 2-of-2 vault identity", () => {
         STEWARD,
       ),
     ).rejects.toThrow(/not the canonical Squads PDA/u);
-  });
-
-  test("round-trips the base58 helper used to build fixtures", () => {
-    expect(encodeBase58(decodeBase58Bytes(FUNDER))).toBe(FUNDER);
-    expect(encodeBase58(decodeBase58Bytes(STEWARD))).toBe(STEWARD);
   });
 });

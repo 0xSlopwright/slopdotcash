@@ -300,7 +300,7 @@ function squadsMultisigBytes(accountValue: unknown): Uint8Array {
  * reserves those 32 bytes, so an unset collector leaves zero padding at the end
  * of the account instead of moving the members back. The member vector
  * therefore moves forward by 32 bytes only when the collector is set. */
-function squadsMemberCountOffset(bytes: Uint8Array): number {
+export function squadsMemberCountOffset(bytes: Uint8Array): number {
   const rentCollectorTag = bytes[94];
   if (rentCollectorTag !== 0 && rentCollectorTag !== 1)
     throw new TypeError("Squads multisig rent collector is not canonical");
@@ -549,10 +549,7 @@ export async function assertSquadsCreatorSeat(
     );
   const bytes = squadsMultisigBytes(accountValue);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const rentCollectorTag = bytes[94];
-  if (rentCollectorTag !== 0 && rentCollectorTag !== 1)
-    throw new TypeError("Squads multisig rent collector is not canonical");
-  const memberCountOffset = 96 + 32 * rentCollectorTag;
+  const memberCountOffset = squadsMemberCountOffset(bytes);
   const threshold = view.getUint16(72, true);
   const memberCount = view.getUint32(memberCountOffset, true);
   if (
