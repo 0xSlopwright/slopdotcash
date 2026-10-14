@@ -57,6 +57,15 @@ export function finalizeRewardAllocation(
       `Reward allocation has ${unresolved.length} unresolved proposed payment(s)`,
     );
   }
+  // A cycle with no approved row pays nothing. It needs no allocation file: the
+  // proposal already carries its held rows, and a plan cannot pay an empty set.
+  if (
+    !proposal.allocations.some((allocation) => allocation.state === "approved")
+  ) {
+    throw new RangeError(
+      "A reward allocation with no approved payment is already closed and has no allocation to approve",
+    );
+  }
   const approvedMinor = proposal.allocations
     .reduce((total, allocation) => total + BigInt(allocation.approvedMinor), 0n)
     .toString();
