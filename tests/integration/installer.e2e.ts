@@ -321,7 +321,7 @@ describe("authenticated skill installer lifecycle", () => {
     mkdirSync(emptyCa);
     writeFileSync(
       join(emptyCa, "sitecustomize.py"),
-      "import ssl\nclass EmptyContext:\n    def get_ca_certs(self): return []\nssl.create_default_context = lambda *args, **kwargs: EmptyContext()\n",
+      "import ssl\nclass EmptyContext:\n    def get_ca_certs(self): return []\nssl.create_default_context = lambda *args, **kwargs: EmptyContext()\nclass EmptyPaths:\n    capath = None\nssl.get_default_verify_paths = lambda: EmptyPaths()\n",
     );
     const rejectedPython = join(bin, "python3");
     writeExecutable(
