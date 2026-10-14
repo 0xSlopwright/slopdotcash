@@ -522,6 +522,15 @@ export async function verifyRewardSettlementOnchain(input: {
           requiredSender: instrument.creatorMember,
         },
       );
+      // The fee is a separate transfer with no plan entry, so the contributor
+      // ordering check below is vacuous when no contributor payout verified.
+      // Bind it to the plan directly: a pre-plan fee transfer is replay.
+      if (
+        !Number.isSafeInteger(fee.blockTime) ||
+        fee.blockTime * 1_000 < Date.parse(plan.createdAt)
+      ) {
+        throw new TypeError("Project vault fee transaction predates its plan");
+      }
       if (verified.some((payout) => payout.blockTime > fee.blockTime)) {
         throw new TypeError(
           "Project vault fee was sent before the contributor payout completed",
