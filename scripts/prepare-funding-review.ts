@@ -19,7 +19,7 @@ import {
   type FundingReviewIndex,
 } from "../src/lib/funding-review-data";
 import { assertLeaderboardSnapshot } from "../src/lib/leaderboard";
-import { createProjectView } from "../src/lib/project-view";
+import { createPaymentProjectView } from "../src/lib/project-view";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const fundingReviewSha256 = (bytes: string | Buffer): string =>
@@ -101,7 +101,7 @@ export async function importFundingPreparations(options: {
     if (typeof p.project !== "string" || projectIds.has(p.project))
       throw new TypeError("Duplicate audit project");
     projectIds.add(p.project);
-    const view = createProjectView(snapshot, p.project, options.cycleId);
+    const view = createPaymentProjectView(snapshot, p.project, options.cycleId);
     if (
       view.cycle.status !== "closed" ||
       view.cycle.to !== view.cycle.endsAt ||

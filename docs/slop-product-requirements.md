@@ -444,6 +444,30 @@ For new cycles under the adopted rule, calculate each actor's project-cycle allo
 
 Show both metric families on profiles, project pages, maintainer review queues, and leaderboard detail. Provide project/UTC-period filters, denominator counts, source coverage, last refresh, and bot-only rejection rate. Attribute negative events only to the responsible artifact author, not commenters/reviewers. Monthly outcome metrics use transition occurrence time; historical views are as-of-period-end, with subsequent corrections labeled. Ratios are diagnostic and do not add another automatic score multiplier or debit on top of the closure event.
 
+### SCR-05 payment cutoff amendment — 14 October 2026
+
+For issue #683, the repository owner directed: "apply from production release
+in terms of payments." Payment allocation uses the previous ordinary review
+rule for reviews submitted before **2026-10-09T23:21:35.388Z**. This is the
+successful production deployment boundary recorded by
+[release run 38001124966](https://github.com/SlopDotCash/slopdotcash/actions/runs/38001124966/job/114068214607),
+commit `ce41e2fc7c03421a4fc7d2d3595ca27e7f716c4b`, deployment
+`acbedf05-1ae4-483e-918e-58090907bb24`. The timestamp uses the deploy command completion log, at millisecond precision.
+It is not the PR merge time.
+
+From that instant, the outcome-first ordinary review rule applies to payments.
+Before it, each reviewer's first qualifying approval or request for changes
+retains standard payment weight. Existing self-review, bot, substance,
+pre-merge, duplicate and evaluated-award rules remain in force.
+
+Public Slop Score and Points retain the October 1 cutoff. Record the separate
+payment basis in each new source snapshot with policy
+`scr-05-payments-production-v1`. Payment proposals and their verification must
+use this basis from October; refuse a snapshot that lacks it. Do not rewrite
+closed earlier cycles. Preserve merge weights, funding limits, fees, review
+windows, approval requirements and settlement evidence. This amendment does
+not approve an award or promise funding.
+
 ### Leaderboard behavior
 
 **LDR-01.** Provide Monthly and Recorded history views across projects, plus a project filter and Contributor/Maintainer category. Monthly periods use UTC occurrence dates and show exact bounds. An All time label is allowed only with complete stated coverage; otherwise display Recorded history and its start date.
