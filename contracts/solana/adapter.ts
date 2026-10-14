@@ -24,8 +24,11 @@ const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 /** Project account size: 249 bytes of v2 state, the i64 binding delay and the u64 service fees. */
 export const PROJECT_SIZE = 265;
-/** Wallet binding size: 152 bytes of v2 state plus the i64 bound_at time. */
-export const BINDING_SIZE = 160;
+/** Wallet binding size: 160 bytes of latest-binding state plus the u64 paid version and u8 veto count. */
+export const BINDING_SIZE = 169;
+/** Obligation size: 137 bytes of v2 state plus the i64 commit time. */
+export const OBLIGATION_SIZE = 145;
+export const OBLIGATION_DISCRIMINATOR = "a8ce8d6a584caca7";
 type Obj = Record<string, unknown>;
 const object = (value: unknown): Obj => {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -335,7 +338,7 @@ export function solanaPaymentAdapter(
             commitment: "finalized",
             encoding: "base64",
             filters: [
-              { dataSize: 137 },
+              { dataSize: OBLIGATION_SIZE },
               { memcmp: { offset: 48, bytes: config.projectPda } },
               { memcmp: { offset: 80, bytes: b64(award), encoding: "base64" } },
             ],
@@ -348,8 +351,8 @@ export function solanaPaymentAdapter(
       const obligation = account(
         object(found[0]).account,
         config.programId,
-        137,
-        "a8ce8d6a584caca7",
+        OBLIGATION_SIZE,
+        OBLIGATION_DISCRIMINATOR,
       );
       const gross = uint(obligation, 8),
         actor = uint(obligation, 112),
@@ -389,9 +392,10 @@ export function solanaPaymentAdapter(
           accounts[4] !== config.vault
         )
           throw new Error("Payment differs from award");
+        // The program skips the fee transfer when the fee is zero.
         const expected = [
           { to: accounts[5], amount: net },
-          { to: accounts[6], amount: fee },
+          ...(fee > 0n ? [{ to: accounts[6], amount: fee }] : []),
         ];
         if (children.length !== expected.length)
           throw new Error("Unexpected payout instructions");

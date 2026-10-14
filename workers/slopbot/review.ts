@@ -413,8 +413,8 @@ async function closureState(
       : (Date.now() - Date.parse(install.created_at)) / 86_400_000;
   const reviewed = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND status = 'completed'",
-    job.repositoryId,
+    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE installation_id = ? AND status = 'completed'",
+    job.installationId,
   );
   if (ageDays < SHADOW_DAYS || reviewed < SHADOW_MIN_REVIEWS)
     return { allowed: false, why: "shadow period" };
@@ -427,7 +427,8 @@ async function closureState(
     db,
     `SELECT COUNT(*) AS n FROM slopbot_actions r WHERE r.repository_id = ? AND r.action = 'human_reopen'
        AND r.created_at > datetime('now', '-7 days')
-       AND EXISTS (SELECT 1 FROM slopbot_actions c WHERE c.item_node_id = r.item_node_id AND c.action = 'close')`,
+       AND EXISTS (SELECT 1 FROM slopbot_actions c WHERE c.repository_id = r.repository_id
+         AND c.item_node_id = r.item_node_id AND c.action = 'close' AND c.created_at <= r.created_at)`,
     job.repositoryId,
   );
   if (closes7 > 0 && reopens7 / closes7 > REOPEN_BREAKER_RATIO)
@@ -660,10 +661,7 @@ async function runReview(
       billable,
     );
     if (result.verdict === null) {
-      await store.finishReview(db, reviewKey, "failed", {
-        skipReason: "every model route step failed",
-      });
-      return "model route failed";
+      throw new Error("every model route step failed");
     }
     verdict = result.verdict;
     triage = result.servedBy;
