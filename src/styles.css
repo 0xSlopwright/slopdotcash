@@ -4431,14 +4431,20 @@ small {
 .wallet-picker::backdrop {
   background: rgb(0 0 0 / 65%);
 }
+/* When the heading cannot share a line with Close, wrap-reverse keeps Close
+   on the top line and gives the heading the full dialog width below it. */
 .wallet-picker-header {
   display: flex;
+  flex-wrap: wrap-reverse;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.5rem 1rem;
 }
 .wallet-picker-header h2 {
+  flex: 1 1 10rem;
+  min-width: 0;
   margin: 0;
+  overflow-wrap: anywhere;
   font-size: 1.3rem;
 }
 .wallet-picker-close {
@@ -4447,6 +4453,7 @@ small {
   flex-shrink: 0;
   width: 44px;
   height: 44px;
+  margin-inline-start: auto;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -4463,6 +4470,7 @@ small {
 }
 .wallet-picker-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
   width: 100%;
@@ -4482,7 +4490,8 @@ small {
   background: var(--line);
 }
 .wallet-picker-row span {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-wrap: anywhere;
   font-weight: 600;
 }
@@ -4501,4 +4510,28 @@ small {
 .wallet-picker-note {
   margin-bottom: 0;
   font-size: 0.875rem;
+}
+/* Narrow or zoomed viewports: keep the dialog border inside the viewport and
+   return padding to the content. */
+@media (max-width: 320px) {
+  .wallet-picker {
+    width: calc(100vw - 1rem);
+    max-width: calc(100vw - 1rem);
+    padding: 1rem;
+  }
+  .wallet-picker-row {
+    padding: 0.75rem;
+  }
+}
+/* 200% browser zoom on a 320px screen: stack each wallet row and trim padding
+   so a wallet name gets the full row width. */
+@media (max-width: 240px) {
+  .wallet-picker {
+    padding: 0.75rem;
+  }
+  .wallet-picker-row {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 0.75rem 0.5rem;
+  }
 }
