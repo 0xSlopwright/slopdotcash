@@ -4,9 +4,11 @@
  * generate-points.ts: corrections, removals, replay, and rejection.
  */
 import { describe, expect, it } from "bun:test";
+import type { LeaderboardSnapshot } from "../src/lib/leaderboard";
 import type { ScoreEvent } from "../src/lib/leaderboard-types";
 import {
   appendPointAwards,
+  applyPointsSnapshot,
   awardForScore,
   emptyPointsJournal,
   latestPoints,
@@ -48,6 +50,8 @@ function reviewEvent(scoreThirds: number): ScoreEvent {
   } as ScoreEvent;
 }
 
+const SNAPSHOT_DIGEST = "c".repeat(64);
+
 function seedJournal(award: PointAward): PointsJournal {
   return appendPointAwards(
     emptyPointsJournal(T0),
@@ -58,6 +62,20 @@ function seedJournal(award: PointAward): PointsJournal {
   );
 }
 
+/** A snapshot whose ledger lists the review event, as the leaderboard
+ * generator produces after it injects the retained history events. */
+function snapshotListing(event: ScoreEvent): LeaderboardSnapshot {
+  return {
+    ledger: [event],
+    repositories: [{ id: "elizaOS/eliza" }],
+    ruleVersion: "slop-score-v2",
+    window: {
+      from: "2026-08-01T00:00:00.000Z",
+      to: "2026-09-30T00:00:00.000Z",
+    },
+  } as unknown as LeaderboardSnapshot;
+}
+
 describe("retained review history corrections", () => {
   it("appends exactly one predecessor-linked revision for a changed award and updates the projection", () => {
     const before = awardForScore(reviewEvent(3));
@@ -65,7 +83,7 @@ describe("retained review history corrections", () => {
     const journal = seedJournal(before);
     const next = appendPointAwards(
       journal,
-      [after, ...retainedHistoryCorrections(journal, [after], [])],
+      [after, ...retainedHistoryCorrections(journal, [after])],
       DIGEST,
       "slop-score-v2",
       T1,
@@ -82,7 +100,7 @@ describe("retained review history corrections", () => {
     const journal = seedJournal(award);
     const replayed = appendPointAwards(
       journal,
-      [award, ...retainedHistoryCorrections(journal, [award], [])],
+      [award, ...retainedHistoryCorrections(journal, [award])],
       DIGEST,
       "slop-score-v2",
       T1,
@@ -94,7 +112,7 @@ describe("retained review history corrections", () => {
   it("appends one zero-valued successor when a retained review is removed, and replay adds no further revision", () => {
     const award = awardForScore(reviewEvent(3));
     const journal = seedJournal(award);
-    const corrections = retainedHistoryCorrections(journal, [], []);
+    const corrections = retainedHistoryCorrections(journal, []);
     expect(corrections).toEqual([{ ...award, amount: 0 }]);
     const corrected = appendPointAwards(
       journal,
@@ -109,19 +127,64 @@ describe("retained review history corrections", () => {
     expect(pointMembers(corrected)).toEqual([]);
     const replayed = appendPointAwards(
       corrected,
-      retainedHistoryCorrections(corrected, [], []),
+      retainedHistoryCorrections(corrected, []),
       DIGEST,
       "slop-score-v2",
       T2,
     );
-    expect(retainedHistoryCorrections(corrected, [], [])).toEqual([]);
+    expect(retainedHistoryCorrections(corrected, [])).toEqual([]);
     expect(replayed.revisions.length).toBe(2);
   });
 
-  it("never zeroes an award that a snapshot from this run still supplies", () => {
-    const award = awardForScore(reviewEvent(3));
-    const journal = seedJournal(award);
-    expect(retainedHistoryCorrections(journal, [], [award])).toEqual([]);
+  it("zeroes a removed retained award even when an archived snapshot still lists it", () => {
+    const event = reviewEvent(3);
+    const award = awardForScore(event);
+    // The award entered the journal through the retained batch. A snapshot
+    // generated afterwards lists the same event because the leaderboard
+    // generator injects the retained history into its ledger; applying that
+    // snapshot records its coverage but appends no revision for the
+    // identical award, so the batch provenance is unchanged.
+    const withSnapshot = applyPointsSnapshot(
+      seedJournal(award),
+      snapshotListing(event),
+      SNAPSHOT_DIGEST,
+      T1,
+    );
+    expect(withSnapshot.coverage.map((c) => c.digest)).toContain(
+      SNAPSHOT_DIGEST,
+    );
+    expect(withSnapshot.revisions.length).toBe(1);
+    // The maintainer then removes the entry from its manifest. The archived
+    // snapshot copy must not suppress the correction forever.
+    expect(retainedHistoryCorrections(withSnapshot, [])).toEqual([
+      { ...award, amount: 0 },
+    ]);
+  });
+
+  it("never zeroes a snapshot-owned award when the old snapshot is absent from the current inputs", () => {
+    const event = reviewEvent(3);
+    const award = awardForScore(event);
+    // The award entered the journal through a snapshot application, which
+    // recorded the snapshot digest in the journal coverage. A later run
+    // whose inputs no longer include that snapshot must leave the award
+    // untouched: recorded totals persist subject to explicit corrections.
+    const journal = applyPointsSnapshot(
+      emptyPointsJournal(T0),
+      snapshotListing(event),
+      SNAPSHOT_DIGEST,
+      T0,
+    );
+    expect(latestPoints(journal).get(award.key)?.award.amount).toBe(30);
+    expect(retainedHistoryCorrections(journal, [])).toEqual([]);
+    const next = appendPointAwards(
+      journal,
+      retainedHistoryCorrections(journal, []),
+      DIGEST,
+      "slop-score-v2",
+      T1,
+    );
+    expect(next.revisions.length).toBe(1);
+    expect(pointMembers(next)[0]?.total).toBe(30);
   });
 
   it("rejects a moved or invalid successor and leaves the journal unchanged", () => {
