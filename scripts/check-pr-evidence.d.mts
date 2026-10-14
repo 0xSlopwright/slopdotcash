@@ -9,6 +9,8 @@ export interface ArtifactVerificationFinding {
   artifactKind: string;
   contentSha256?: string;
   detail?: string;
+  /** Numeric response status, set only for `artifact-http-error`. */
+  httpStatus?: number;
   id: string;
   label: string;
   status: string;
@@ -25,6 +27,10 @@ export interface ArtifactVerificationOptions {
   ) => Promise<Response>;
   timeoutMs?: number;
   token?: string;
+  /** Extra fetches of one artifact after a transport failure (0 to 5). */
+  transientRetries?: number;
+  /** Linear backoff unit between those fetches, in milliseconds. */
+  transientRetryDelayMs?: number;
 }
 
 export interface ArtifactPlanOptions {
@@ -36,6 +42,12 @@ export function planReferencedArtifacts(
   requiredRows?: readonly EvidenceRow[],
   options?: ArtifactPlanOptions,
 ): { referenceCount: number; uniqueArtifactCount: number };
+
+/** True for a timeout, a network error, or HTTP 408, 429 or 5xx. */
+export function isTransientArtifactFailure(result: {
+  status: string;
+  httpStatus?: number;
+}): boolean;
 
 export function verifyReferencedArtifacts(
   body: string,

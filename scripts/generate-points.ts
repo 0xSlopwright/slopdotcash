@@ -12,9 +12,11 @@ import {
   assertPointsJournal,
   awardForScore,
   latestPoints,
+  type PointAward,
   type PointsIndex,
   type PointsJournal,
   pointMembers,
+  pointRevisionId,
 } from "../src/lib/points";
 import { syncCycleIndex } from "./sync-cycle-index";
 
@@ -166,6 +168,116 @@ async function archivePaths(directory: string): Promise<string[]> {
   }
   return paths;
 }
+/**
+ * Awards from the retained review history and the evaluator manifests are
+ * supplied only by those files, so a maintainer who deletes or excludes an
+ * entry supplies no replacement award and the prior positive revision would
+ * remain latest forever. Reconcile such a removal with one zero-valued
+ * successor, but only for an award proven to originate from this batch.
+ * Presence in a snapshot proves nothing: the leaderboard generator injects
+ * these same retained events into its snapshot ledgers, so a snapshot copy
+ * is a downstream copy of this batch, not an independent source, and an
+ * archived snapshot copy must not suppress a correction forever. Ownership
+ * is therefore read from the latest revision's durable provenance, never
+ * from the snapshots a single run happens to read and never from earlier
+ * revisions in the chain. A snapshot application records its digest in
+ * the journal coverage when it appends a revision, while a batch append
+ * never records coverage. An award is batch-owned when its latest
+ * revision carries the batch rule with a digest absent from the coverage.
+ * A snapshot-owned award is never zeroed here, even when the snapshot
+ * that supplied it is absent from this run's inputs; snapshot corrections
+ * stay with applyPointsSnapshot. An already-zero latest award needs no
+ * successor, so replaying the same inputs appends nothing.
+ */
+export function retainedHistoryCorrections(
+  journal: PointsJournal,
+  currentAwards: PointAward[],
+): PointAward[] {
+  const currentKeys = new Set(currentAwards.map((a) => a.key));
+  const coverageDigests = new Set(journal.coverage.map((c) => c.digest));
+  const corrections: PointAward[] = [];
+  for (const revision of latestPoints(journal).values()) {
+    const award = revision.award;
+    if (
+      award.amount > 0 &&
+      (award.category === "substantive-review" ||
+        award.category === "evaluated-contribution") &&
+      !currentKeys.has(award.key) &&
+      revision.sourceRule === "slop-score-v2" &&
+      !coverageDigests.has(revision.sourceDigest)
+    )
+      corrections.push({ ...award, amount: 0 });
+  }
+  return corrections;
+}
+
+/**
+ * Applies the retained history batch in full: the supplied awards, the
+ * removal corrections they imply, and explicit source provenance.
+ * generatePoints applies snapshots before this batch, and a snapshot
+ * ledger can contain the identical retained award (the leaderboard
+ * generator injects the retained events into its snapshots). In that
+ * order appendPointAwards correctly appends no revision for the identical
+ * award, so without a further record the journal's only provenance for
+ * the award is the snapshot digest in the coverage, and a later removal
+ * from the retained manifest can never be corrected. When the latest
+ * revision of a supplied award is snapshot-sourced for exactly this
+ * reason, this function appends one provenance successor: the same award,
+ * unchanged, recorded with the batch digest and the batch rule. The
+ * latest revision then proves batch ownership durably, independently of
+ * ingestion order, in every later run. Replaying the same batch appends
+ * nothing, because the latest revision already carries batch provenance.
+ */
+export function applyRetainedHistoryBatch(
+  journal: PointsJournal,
+  awards: PointAward[],
+  sourceDigest: string,
+  recordedAt: string,
+): PointsJournal {
+  let result = appendPointAwards(
+    journal,
+    [...awards, ...retainedHistoryCorrections(journal, awards)],
+    sourceDigest,
+    "slop-score-v2",
+    recordedAt,
+  );
+  const coverageDigests = new Set(result.coverage.map((c) => c.digest));
+  const latest = latestPoints(result);
+  const confirmations = [...awards]
+    .sort((a, b) => a.key.localeCompare(b.key))
+    .filter((award) => {
+      const revision = latest.get(award.key);
+      return (
+        award.amount > 0 &&
+        (award.category === "substantive-review" ||
+          award.category === "evaluated-contribution") &&
+        revision !== undefined &&
+        JSON.stringify(revision.award) === JSON.stringify(award) &&
+        coverageDigests.has(revision.sourceDigest)
+      );
+    });
+  if (confirmations.length) {
+    const output = { ...result, revisions: [...result.revisions] };
+    for (const award of confirmations) {
+      const previous = latest.get(award.key);
+      if (!previous) continue;
+      const revision = {
+        previous: previous.id,
+        recordedAt,
+        sourceDigest,
+        sourceRule: "slop-score-v2",
+        award,
+      };
+      const next = { id: pointRevisionId(revision), ...revision };
+      output.revisions.push(next);
+      latest.set(award.key, next);
+    }
+    assertPointsJournal(output);
+    result = output;
+  }
+  return result;
+}
+
 export async function generatePoints(
   options: { online?: boolean; bootstrap?: boolean } = {},
 ) {
@@ -222,19 +334,20 @@ export async function generatePoints(
   const reviews = JSON.parse(
     await readFile("data/accepted-review-history.json", "utf8"),
   );
-  const existingKeys = latestPoints(journal);
-  const reviewed = [
-    ...reviews.events.filter(
-      (e: Parameters<typeof awardForScore>[0]) =>
-        !existingKeys.has(awardForScore(e).key),
-    ),
-    ...evaluations,
-  ];
-  journal = appendPointAwards(
+  // The history file is the only source for these awards, so a maintainer
+  // correction to it must reach the journal. appendPointAwards already skips
+  // an award identical to the latest revision and appends a successor
+  // revision for a changed one; filtering by existing keys here would drop
+  // every correction silently and freeze the first recorded amount forever.
+  const reviewed = [...reviews.events, ...evaluations];
+  const reviewedAwards = reviewed.map(awardForScore);
+  // Snapshots were applied above, so an identical retained award may
+  // already carry snapshot provenance; applyRetainedHistoryBatch persists
+  // explicit batch provenance for it and reconciles removals.
+  journal = applyRetainedHistoryBatch(
     journal,
-    reviewed.map(awardForScore),
+    reviewedAwards,
     hash(JSON.stringify(reviewed)),
-    "slop-score-v2",
     now,
   );
   journal.generatedAt = now;
