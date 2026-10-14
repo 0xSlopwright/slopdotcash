@@ -338,7 +338,8 @@ export function pointMembers(
         (a) =>
           a.amount > 0 &&
           a.category === "evaluated-contribution" &&
-          a.sourceUrl.includes("#pullrequestreview-"),
+          a.sourceUrl.includes("#pullrequestreview-") ||
+          a.sourceUrl.includes("#discussion_r"),
       )
       .map((a) => `${a.actor.id}:${a.sourceUrl.split("#")[0]}`),
   );
