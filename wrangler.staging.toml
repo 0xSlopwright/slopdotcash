@@ -5,6 +5,7 @@ compatibility_date = "2026-07-30"
 [vars]
 PUBLIC_SITE_URL = "https://staging.slop.cash"
 SLOP_ENVIRONMENT = "staging"
+PAYMENTS_ALLOWED_ORIGIN = "https://staging.slop.cash"
 
 [[d1_databases]]
 binding = "SLOP_DB"
