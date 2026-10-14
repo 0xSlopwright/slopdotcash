@@ -183,25 +183,27 @@ test("equal contributors share cycle and profile ranks", async ({
         snapshot.repositories.some((entry) => entry.id === repository.id),
       ),
   ).map((project) => createProjectView(snapshot, project.id));
-  const view = views.find((entry) =>
-    entry.leaders.some(
-      (leader, index) =>
+  // The following row proves that ranks skip past the tie, so the selected
+  // tie must have a lower-scored contributor after it in the same view.
+  const tie = views
+    .flatMap((entry) =>
+      entry.leaders.map((leader, index) => ({ view: entry, leader, index })),
+    )
+    .find(
+      ({ view: entry, leader, index }) =>
         index > 0 &&
         leader.scoreThirds === entry.leaders[index - 1].scoreThirds &&
-        leader.adjustedWeight !== entry.leaders[index - 1].adjustedWeight,
-    ),
-  );
-  if (!view)
-    throw new Error(
-      "Public snapshot has no tied scores with different weights",
+        leader.adjustedWeight !== entry.leaders[index - 1].adjustedWeight &&
+        entry.leaders.some(
+          (candidate) => candidate.scoreThirds < leader.scoreThirds,
+        ),
     );
-  const tiedIndex = view.leaders.findIndex(
-    (leader, index) =>
-      index > 0 &&
-      leader.scoreThirds === view.leaders[index - 1].scoreThirds &&
-      leader.adjustedWeight !== view.leaders[index - 1].adjustedWeight,
-  );
-  const tiedScore = view.leaders[tiedIndex].scoreThirds;
+  if (!tie)
+    throw new Error(
+      "Public snapshot has no weighted score tie above another contributor",
+    );
+  const { view } = tie;
+  const tiedScore = tie.leader.scoreThirds;
   const expectedRank =
     view.leaders.filter((leader) => leader.scoreThirds > tiedScore).length + 1;
   const tiedLeaders = view.leaders.filter(

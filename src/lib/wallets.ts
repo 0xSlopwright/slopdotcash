@@ -4,13 +4,15 @@
  * custody of the key; payout reviewers preserve the exact source observation.
  */
 
+import { chainFamily } from "./escrow-policy.mjs";
+
 export const WALLET_MARKER_VERSION = "1" as const;
 export const WALLET_MARKER_PREFIX = "slop-wallet:v1" as const;
 export const WALLET_CLAIM_REPOSITORY = "SlopDotCash/slopdotcash" as const;
 export const WALLET_CLAIM_TITLE = "Slop wallet claim" as const;
 
 /** Networks a contributor may publish a payout wallet for, one claim each. */
-export const WALLET_CHAINS = ["solana", "base"] as const;
+export const WALLET_CHAINS = ["solana", "base", "robinhood"] as const;
 export type WalletChain = (typeof WALLET_CHAINS)[number];
 
 export interface PublishedWallet<Chain extends WalletChain = WalletChain> {
@@ -84,7 +86,7 @@ export function solanaAddressBytes(value: string): Uint8Array {
 }
 
 /**
- * Returns true only for a canonical lowercase 20-byte Base account. One
+ * Returns true only for a canonical lowercase 20-byte EVM account (Base or Robinhood Chain). One
  * spelling per account keeps record digests and duplicate checks exact, and
  * the zero address is refused because a transfer to it burns the funds.
  */
@@ -100,7 +102,9 @@ export function isBaseAddress(value: unknown): value is string {
 export function isWalletAddress(chain: WalletChain, value: unknown): boolean {
   return (
     isWalletChain(chain) &&
-    (chain === "base" ? isBaseAddress(value) : isSolanaAddress(value))
+    (chainFamily(chain) === "evm"
+      ? isBaseAddress(value)
+      : isSolanaAddress(value))
   );
 }
 
@@ -163,7 +167,7 @@ export function parsePublishedWallets(
     }
     if (!isWalletChain(marker.chain)) {
       throw new TypeError(
-        "GitHub profile wallet marker must use Solana or Base",
+        "GitHub profile wallet marker must use Solana, Base or Robinhood Chain",
       );
     }
     if (wallets[marker.chain]) {
@@ -173,8 +177,8 @@ export function parsePublishedWallets(
     }
     if (!isWalletAddress(marker.chain, marker.address)) {
       throw new TypeError(
-        marker.chain === "base"
-          ? "GitHub profile wallet marker has an invalid Base address"
+        chainFamily(marker.chain) === "evm"
+          ? "GitHub profile wallet marker has an invalid EVM address"
           : "GitHub profile wallet marker has an invalid Solana address",
       );
     }

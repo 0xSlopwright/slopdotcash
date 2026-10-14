@@ -2322,7 +2322,7 @@ function HowItWorksPage() {
         <details>
           <summary>How do I get paid?</summary>
           <p>
-            Register a public Base or Solana address in{" "}
+            Register a public Solana, Base or Robinhood Chain address in{" "}
             <Link href="/account#wallets">Account wallets</Link> with your
             GitHub account. No wallet connection or signing is needed. Payments
             are USDC on the project's settlement network, Base or Solana, sent

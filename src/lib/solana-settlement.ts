@@ -71,6 +71,15 @@ export function assertSettlementChronology<
   }
 }
 
+/** Settlement evidence must be sealed after its plan: no transfer carries a
+ * per-plan memo, so an earlier transfer with equal amounts would be replay. */
+function predatesPlan(blockTime: number, planCreatedAt: string): boolean {
+  return (
+    !Number.isSafeInteger(blockTime) ||
+    blockTime * 1_000 < Date.parse(planCreatedAt)
+  );
+}
+
 function record(value: unknown, field: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError(`${field} must be an object`);
@@ -372,9 +381,9 @@ function contributorTransferByIntent(
 /**
  * Fetches and checks every finalized contributor and fee transaction on the
  * allocation's network. Solana reads one finalized transaction per signature;
- * Base proves each hash through the read-only quorum verifier. A Base request
- * carries no memo, so a Base transaction must also be confirmed after the plan
- * was created: an earlier transfer with equal amounts cannot be replayed.
+ * Base proves each hash through the read-only quorum verifier. Every
+ * transaction on either network must be confirmed after the plan was created:
+ * an earlier transfer with equal amounts cannot be replayed.
  */
 export async function verifyRewardSettlementOnchain(input: {
   allocation: unknown;
@@ -415,8 +424,7 @@ export async function verifyRewardSettlementOnchain(input: {
           });
           if (
             verified.transactionHash !== transactionHash ||
-            !Number.isSafeInteger(verified.blockTime) ||
-            verified.blockTime * 1_000 < Date.parse(plan.createdAt)
+            predatesPlan(verified.blockTime, plan.createdAt)
           ) {
             throw new TypeError(
               "Base settlement transaction predates its plan or differs from evidence",
@@ -431,12 +439,18 @@ export async function verifyRewardSettlementOnchain(input: {
           if (!getTransaction) {
             throw new TypeError("Solana settlement needs the Solana reader");
           }
-          return assertFinalizedUsdcTransfer(
+          const verified = assertFinalizedUsdcTransfer(
             await getTransaction(signature),
             signature,
             plan.sourceOwner,
             transfers,
           );
+          if (predatesPlan(verified.blockTime, plan.createdAt)) {
+            throw new TypeError(
+              "Solana settlement transaction predates its plan",
+            );
+          }
+          return verified;
         };
   const settlement: RewardSettlementManifest = assertRewardSettlementManifest(
     input.settlement,
@@ -513,6 +527,11 @@ export async function verifyRewardSettlementOnchain(input: {
           requiredSender: instrument.creatorMember,
         },
       );
+      // The fee has no plan entry, and the ordering check below is vacuous
+      // when no contributor payout verified, so bind it to the plan directly.
+      if (predatesPlan(fee.blockTime, plan.createdAt)) {
+        throw new TypeError("Project vault fee transaction predates its plan");
+      }
       if (verified.some((payout) => payout.blockTime > fee.blockTime)) {
         throw new TypeError(
           "Project vault fee was sent before the contributor payout completed",

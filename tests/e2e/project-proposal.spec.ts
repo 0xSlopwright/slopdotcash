@@ -341,3 +341,64 @@ test("failed or partial GitHub lookups never fill unknown facts", async ({
   }
   expect(errors).toEqual([]);
 });
+
+test("Robinhood Chain drafts a USDG escrow manifest", async ({ page }) => {
+  const errors = observe(page);
+  await routeGitHub(page);
+  await page.goto("/projects/new", { waitUntil: "networkidle" });
+  await page
+    .getByLabel("Public GitHub repository")
+    .fill("example/open-protein");
+  await page.getByRole("button", { name: "Look up on GitHub" }).click();
+  await expect(page.locator(".lookup-status")).toContainText(
+    "Found example/open-protein",
+  );
+  await page.getByRole("button", { name: "Next: Contribution rules" }).click();
+  await page.getByLabel("Project name").fill("Open Protein");
+  await page
+    .getByLabel("Short description")
+    .fill("Reproducible protein-folding benchmarks.");
+  await page.getByLabel("Goal").fill("Make protein research reproducible.");
+  await page
+    .getByLabel("Acceptance criteria")
+    .fill("Accepted pull requests with verified tests.");
+  await page.getByRole("button", { name: "Next: Rewards" }).click();
+  const network = page.getByLabel("Payout network");
+  await network.selectOption("robinhood");
+  await expect(network.locator("option:checked")).toHaveText("Robinhood Chain");
+  await page.getByLabel("Monthly pool target, USD").fill("1000");
+  await page.getByRole("button", { name: "Next: Funding" }).click();
+  await expect(page.locator(".activation-gates")).toContainText(
+    "A reviewed Robinhood Chain deployment is required first.",
+  );
+  await page.getByRole("button", { name: "Next: Review" }).click();
+  const preview = page.getByRole("article", { name: "Listing preview" });
+  await expect(preview).toContainText("Robinhood Chain · payments disabled");
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "Download manifest" }).click(),
+  ]);
+  const path = await download.path();
+  if (!path) throw new Error("Missing manifest download");
+  const manifest = JSON.parse(await readFile(path, "utf8"));
+  // USDG is the one Robinhood Chain asset, and the chain is escrow only.
+  expect(manifest).toMatchObject({
+    reward: {
+      chain: "robinhood",
+      currency: "USDG",
+      monthlyCapMinor: "1000000000",
+      paymentMode: "disabled",
+      fundingState: "pledged",
+    },
+    escrow: { chain: "robinhood", deployments: [] },
+    funding: { addresses: [] },
+  });
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
+  expect(errors).toEqual([]);
+});

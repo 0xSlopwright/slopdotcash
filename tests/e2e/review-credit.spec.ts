@@ -396,6 +396,35 @@ test("a commit co-author's score ratification earns no review credit", () => {
   expect(maintainerRatifies.reviews).toEqual(["other-maintainer:1"]);
 });
 
+test("a maintainer who also reviews earns one review award, not two", () => {
+  // The maintainer posts a micro ratification and also submits a qualifying
+  // pre-merge request for changes. The ratification must not stack on top of
+  // the formal review award: one artifact gives an actor at most one review
+  // award.
+  const changesRequested: PullRequestReview = {
+    id: "PRR_maintainer",
+    body: "Please handle the empty input case before this merges.",
+    state: "CHANGES_REQUESTED",
+    submittedAt: "2026-10-05T06:00:00.000Z",
+    url: `${url}#pullrequestreview-9`,
+    author: maintainer,
+    inlineCommentCount: 1,
+    commitId: "1".repeat(40),
+  };
+  const result = reviewCredit(
+    [
+      comment(
+        "IC_1",
+        maintainer,
+        scoreRecord("micro", []),
+        "2026-10-05T12:00:00.000Z",
+      ),
+    ],
+    [changesRequested],
+  );
+  expect(result.reviews).toEqual(["other-maintainer:1"]);
+});
+
 test("a commit co-author's signed review proposal earns no review credit", () => {
   const ratifiedProposal = (by: GitHubActor) =>
     reviewCredit([

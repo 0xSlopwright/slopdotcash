@@ -16,6 +16,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -60,6 +61,34 @@ function freshRoot(label: string): string {
   const root = mkdtempSync(join(tmpdir(), `eliza-installer-${label}-`));
   roots.push(root);
   return root;
+}
+
+function pythonOnlyPath(root: string): string {
+  const candidate =
+    process.env.SLOP_TEST_PYTHON ?? process.env.SLOP_PYTHON ?? "python3";
+  const executable = execFileSync(
+    candidate,
+    [
+      "-c",
+      "import os, sys; assert sys.version_info.major == 3; print(os.path.realpath(sys.executable))",
+    ],
+    { encoding: "utf8" },
+  ).trim();
+  const bin = join(root, "python-only");
+  if (process.platform === "win32") {
+    execFileSync(executable, ["-m", "venv", bin]);
+    const scripts = join(bin, "Scripts");
+    if (!existsSync(join(scripts, "python.exe"))) {
+      throw new Error("Windows Python venv did not create python.exe");
+    }
+    for (const name of readdirSync(scripts)) {
+      if (/^python3(?:\.\d+)?\.exe$/iu.test(name)) rmSync(join(scripts, name));
+    }
+    return scripts;
+  }
+  mkdirSync(bin);
+  symlinkSync(executable, join(bin, "python"));
+  return bin;
 }
 
 function baseFiles(marker: string): Record<string, Buffer> {
@@ -122,8 +151,9 @@ function writeArtifact(
     )}\n`,
   );
   mkdirSync(dirname(archivePath), { recursive: true });
+  const python = testPython();
   execFileSync(
-    "python3",
+    python,
     [
       "-c",
       `
@@ -150,7 +180,7 @@ with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as arc
     ],
     { cwd: repositoryRoot },
   );
-  execFileSync("python3", [normalizeArchive, archivePath], {
+  execFileSync(python, [normalizeArchive, archivePath], {
     cwd: repositoryRoot,
   });
   writeFileSync(
@@ -850,7 +880,7 @@ exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(au
       "origin",
       "https://github.com/elizaOS/eliza.git",
     ]);
-    const invoke = (args: string[]) =>
+    const invoke = (args: string[], environment: Record<string, string> = {}) =>
       spawnSync(
         process.execPath,
         [
@@ -860,7 +890,11 @@ exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(au
         ],
         {
           encoding: "utf8",
-          env: { ...process.env, XDG_CONFIG_HOME: join(root, "state") },
+          env: {
+            ...process.env,
+            XDG_CONFIG_HOME: join(root, "state"),
+            ...environment,
+          },
           timeout: 20_000,
         },
       );
@@ -881,6 +915,34 @@ exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(au
     expect(started.status, started.stderr).toBe(0);
     const runId = JSON.parse(started.stdout).runId;
     expect(invoke(["authorize", "--json"]).status).toBe(0);
+    const fallbackPath = pythonOnlyPath(root);
+    const probeEnvironment = { ...process.env, PATH: fallbackPath };
+    const missingPython3 = spawnSync("python3", ["--version"], {
+      encoding: "utf8",
+      env: probeEnvironment,
+    });
+    expect(
+      (missingPython3.error as NodeJS.ErrnoException | undefined)?.code,
+    ).toBe("ENOENT");
+    const availablePython = spawnSync(
+      "python",
+      ["-c", "import sys; raise SystemExit(sys.version_info.major != 3)"],
+      { encoding: "utf8", env: probeEnvironment },
+    );
+    expect(availablePython.status, availablePython.stderr).toBe(0);
+    const fallback = invoke(["authorize", "--json"], {
+      PATH: fallbackPath,
+    });
+    expect(fallback.status, fallback.stderr).toBe(0);
+    const emptyPath = join(root, "no-python");
+    mkdirSync(emptyPath);
+    const unavailablePython = invoke(["authorize", "--json"], {
+      PATH: emptyPath,
+    });
+    expect(unavailablePython.status).not.toBe(0);
+    expect(unavailablePython.stderr).toContain(
+      "Python 3 is required for fresh skill authorization",
+    );
 
     configureAuthority(root, {
       developHead: revisionB,
@@ -1662,7 +1724,7 @@ fcntl.flock(lock_file, fcntl.LOCK_EX)
 print("locked", flush=True)
 time.sleep(60)
 `;
-    const holder = spawn("python3", ["-c", lockHolderScript, lock], {
+    const holder = spawn(testPython(), ["-c", lockHolderScript, lock], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     await new Promise<void>((resolvePromise, rejectPromise) => {
