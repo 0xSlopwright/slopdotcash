@@ -4,9 +4,9 @@ Date: 6 October 2026. Project-token reward scope added: 13 October 2026; project
 
 ## Scope
 
-The MVP retains current product capabilities and completes account, project, contribution, review, discovery, funding, and payout journeys on Base and Solana, with Robinhood Chain and Ethereum as further escrow settlement networks (FND-02), and stablecoin or reviewed project-token rewards on each network (TOK-01–07). A new network or asset activates no project. It also requires optional participant-scoped Slopbot, Slop Score as the default leaderboard sort, issue/PR outcome metrics, closure penalties, admin featuring/bans, and mandatory community security vetting. Source availability is not proof of production readiness. Private security bounty programs, other Robinhood integrations, fee-wallet conversion of project-token fees (TOK-07), bridges, swaps, and additional chains are future work.
+The MVP retains current product capabilities and completes account, project, contribution, review, discovery, funding, and payout journeys on Base and Solana, with Robinhood Chain and Ethereum as further escrow settlement networks (FND-02), and stablecoin or reviewed project-token rewards on each network (TOK-01–07). A new network or asset activates no project. It also requires optional participant-scoped Slopbot, Slop Score as the default leaderboard sort, issue/PR outcome metrics, closure penalties, admin featuring/bans, and mandatory community security vetting. Source availability is not proof of production readiness. Private security bounty programs are an MVP addition under SEC-01–18 and MVP-13; the repository owner approved this scope on 14 October 2026. Other Robinhood integrations, fee-wallet conversion of project-token fees (TOK-07), bridges, swaps, and additional chains are future work.
 
-The maintainer-approved fee for new payout obligations is 2% deducted from the gross award: 100 USDC gross means 98 to the contributor and 2 fee. Reserve the 100 once, show net contributor earnings, and preserve recorded legacy terms. The repository owner approved the PAY-05 actor-binding proof and recovery authority (the bounded identity attester) on 14 October 2026; execution authority remains a separate approval gate.
+For ordinary payout obligations, the maintainer-approved fee is 2% deducted from the gross award: 100 USDC gross means 98 to the contributor and 2 fee. Reserve the 100 once, show net contributor earnings, and preserve recorded legacy terms. The repository owner approved the PAY-05 actor-binding proof and recovery authority (the bounded identity attester) on 14 October 2026; execution authority remains a separate approval gate. Security bounties instead use the project-specific gross amount and the owner-approved 75/25 researcher/Slop split in SEC-05, without another ordinary payout fee.
 
 For a project-token reward, the product owner decided on 14 October 2026 that the same 2% is deducted in the project token, rounded down once per award, and paid in that token directly to the network fee wallet at payout (TOK-06). No contract converts the fee. Slop's backend will later convert fees already in the fee wallet to USDC with a scheduled job inside that wallet (TOK-07). That job is future work outside the MVP; it needs its own approved requirement before implementation.
 
@@ -39,6 +39,7 @@ The rest of the PRD is blocked until maintainers approve an explicit MVP complet
 | MVP-09a | LDR-04 | Slopbot Automation row | MVP-05a cost ledger; never ranked with people |
 | MVP-10 | ADM-01–06, NOT-01, UX-01–17, PRD sections 16–17 | Unified pages, bot health, security evidence, admin featuring/bans, notifications and recovery | Relevant prior packages; permissions, canonical sync, cached/direct-route enforcement, appeals and browser evidence |
 | MVP-12 | VET-01–08 | Revision-bound secure-VM vetting, full declared telemetry, binary/obfuscation quarantine, Astra and Opus reviews, confirmed-malware bans | MVP-00/01 and project drafts; required before community/featured executable onboarding; isolated clean/malicious fixture evidence |
+| MVP-13 | SEC-01–18 | Private loss-of-funds bounty programs with configurable gross amount, 75/25 split, human eligibility decisions, appeals, safe remediation and private payment records | MVP-00/01/03 and scoped identity/notification/financial reuse; the matrix below and program-specific launch gates must pass; no inherited public cycle export |
 | MVP-11 | DEP-01, PRD sections 20–23 | Versioned migration and limited production activation | All release gates; authorized production proof and reconciliation |
 
 No package is marked implemented by this document. Create bounded implementation issues only after approval, tied to a real missing requirement and existing work. Reuse or reconcile open vault, settlement, installer, queue and deployment proposals before starting duplicate work.
@@ -52,8 +53,9 @@ No package is marked implemented by this document. Create bounded implementation
 5. Registered actors receive exact payments; late registration triggers the remaining funded award; retries do not repay; donor funds cannot be refunded.
 6. Slopbot closes an eligible policy-violating issue/PR under delegated rules. Confirm one points/score debit, ratios, retry deduplication, and reversal after reopen/appeal; preserve earned obligations.
 7. An admin promotes a cleared community project, bans a project, and verifies that discovery/skill routes stop serving it. A confirmed malicious scan also invokes the recorded ban policy. Reinstatement requires independent review and a new scan.
-8. A human handles an exclusion, wallet incident, and appeal without erasing history; the site defaults to Slop Score and can sort by Points or Money received.
-9. A maintainer selects a reviewed project token and network. A contributor filters token-reward projects, reads the token-denominated terms, and receives a verified award through the same journey: 98% of the gross in the token to the contributor and 2% in the token to the fee wallet. Repeat funding, approval, late wallet registration, execution, reconciliation and duplicate-retry checks on each network. Verify a non-six-decimal asset and clear unsupported or frozen-asset states. Legacy USDC cycles do not change.
+8. A researcher privately reports a critical defect using safe local evidence. A maintainer confirms potential loss, reserves the configured gross bounty, handles an appeal if needed, and verifies the researcher and Slop shares. Retest and disclosure remain separate.
+9. A human handles an exclusion, wallet incident, and appeal without erasing history; the site defaults to Slop Score and can sort by Points or Money received.
+10. A maintainer selects a reviewed project token and network. A contributor filters token-reward projects, reads the token-denominated terms, and receives a verified award through the same journey: 98% of the gross in the token to the contributor and 2% in the token to the fee wallet. Repeat funding, approval, late wallet registration, execution, reconciliation and duplicate-retry checks on each network. Verify a non-six-decimal asset and clear unsupported or frozen-asset states. Legacy USDC cycles do not change.
 
 ## Release gates
 
@@ -68,11 +70,12 @@ No package is marked implemented by this document. Create bounded implementation
 - **UI:** desktop/mobile, keyboard, 200% zoom, WCAG AA, copy/download/link checks, console/network evidence, uploaded walkthrough and test videos.
 - **Deployment:** DEP-01 separates `development` staging and `main` production, including an isolated staging login and write backend; approved protected workflow and environment; production website/API/contract checks are separate. Claim the deploy/DNS lever before any such change.
 - **Operations:** named incident/recovery owners, tested restore, scoped operator access, alerts, support/appeals and approved privacy/retention terms.
+- **Private bounties:** MVP-13 complete; approved scope and safe harbor, verified intake and escalation, isolated permissions, fixed versioned financial terms, capacity/exhaustion policy, independent appeals, verified funds and payment rail, no case leakage, private exact-head remediation evidence and no inferred activation.
 - **Pilot:** small authorized mainnet exposure; no broad enabling until actual payments and public totals reconcile.
 
 ## Future backlog
 
-Private software and smart-contract bounty programs require their own approved program specification: authorized scope, safe harbor, private case storage, auto-submission, maintainer notifications, triage, duplicate/severity appeals, remediation/retest, agreed 50/50 collected-principal split, and privacy-aware settlement. Do not present that workflow as part of the current public contribution product.
+Private report auto-submission, native Slop-hosted exploit attachments and additional intake-provider adapters remain future extensions. MVP-13 uses human-submitted GitHub private advisories with restricted Slop policy/decision/payment records. No future automation is an exception to the public-issue rule.
 
 Robinhood Chain escrow settlement is MVP scope, approved by the repository owner on 14 October 2026 (FND-02, `docs/robinhood-chain-escrow-design.md`); other Robinhood integrations are defined separately. Ethereum escrow settlement and project-token rewards are MVP scope under TOK-01–06 and MVP-07b. Additional chain adapters require a funded use case and the same authority/accounting/finality acceptance as the MVP chains.
 
@@ -104,3 +107,39 @@ Track every page and project-state variant from the review. Record any omitted s
 Do not use arbitrary copy quotas, decorative charts, extra tests or new abstractions as completion criteria.
 Use the same inputs and states for before/after comparisons. Keep hashes, financial precision, consent and historical records available.
 Documentation-only updates require link and consistency checks. Application E2E and UI videos apply to later implementation changes.
+
+## MVP-13 delivery and acceptance
+
+Scope updated 13 October 2026 and approved by the repository owner on 14 October 2026, including the 75/25 researcher/Slop split and the $10,000 gross Umia commitment. The PRD is the policy authority; [design research](private-bounty-design-review.md) explains the source evidence and alternatives. This package is required MVP scope, not a claim of implementation or authority to activate a project or move money.
+
+Deliver in dependency order:
+
+1. Adopt program terms and resolve SEC-01–06/15 launch decisions. Extend canonical registry-backed project setup with bounty-only and separate reward modes. Preserve existing projects and historical terms.
+2. Add public terms and verified private-intake handoff. Add restricted case metadata, case membership and minimal notifications. Reuse account identity; separate public ingestion credentials and prevent all case exports.
+3. Add human triage, evidence references, duplicate/appeal decisions and separate remediation/award/disclosure state. Qualify private reproduction and exact-head fix review without relying on public CI.
+4. Add gross funding capacity, exact 75/25 reservation and private settlement evidence. Reuse supported financial verifiers only after the selected rail and confidentiality contract are approved. Keep the case available without a wallet.
+5. Complete the matrix below on isolated staging and an authorized GitHub test repository. Use synthetic security examples. Record private evidence privately and provide only sanitized walkthroughs in public PRs. Then qualify authorized Umia intake and actual funding separately before opening the program.
+
+| Scenario | Required outcome and evidence |
+| --- | --- |
+| Program setup and migration | Two projects have different gross amounts and sponsors; bounty-only setup needs no monthly pool; canonical immutable revisions and generated public terms agree; no hardcoded Umia activation |
+| Amounts and public copy | $10,000 gross yields $7,500/$2,500; $100,000 yields $75,000/$25,000; reject inexact minor-unit splits; no extra ordinary fee; cards, skills, approval and receipts agree |
+| Intake readiness | Enabled GitHub private reporting succeeds; disabled, stale, forbidden and unavailable states block unsafe handoff; verified emergency contact remains private; no public fallback |
+| Direct and interrupted submission | Nonmember can report on GitHub and link later; local draft is not submitted; expired login preserves a safe return path; ambiguous result is reconciled before retry; original receipt/policy survives |
+| Eligibility truth table | Critical plus proven potential loss qualifies with no real loss; critical without loss, noncritical loss concerns and nonsensitive accepted work do not auto-earn; uncertain cases remain private and appealable |
+| Evidence and remediation | Authorized reviewer safely reproduces the funds-loss mechanism at the exact source/fork state; private patch review and independent tests pass; deployed mitigation is separately verified; no secret-bearing public PR/video/log |
+| Identity and access | Reporter A cannot read reporter B; project A cannot read project B; sponsor/ordinary admin/Slopbot/public ingester lack exploit access; role loss, transfer, logout and revoked sessions revoke access; GitHub platform access limits are disclosed |
+| Duplicates and conflicts | Same root cause cannot reserve twice across reports/patches; simultaneous reports follow approved terms; another person's evidence stays private; conflicted reviewers cannot decide appeals; corrections preserve history |
+| Funding exhaustion | Pledge is not balance; concurrent reservations respect capacity; valid pending claims follow published exhaustion terms; pause leaves emergency intake and obligations intact; no monthly/donation double use |
+| Umia funding accounting | Verify Slop's actual funding separately from its commitment; reserve $10,000 gross; pay $7,500 net under the approved rail; account for retained $2,500 without a fake self-transfer or external revenue |
+| Settlement recovery | Walletless, changed destination, partial payment, wrong asset/network/payee, ambiguous transfer, provider reversal, queue restart and repeated dispatch stay distinct; finalized evidence reconciles once; no manual paid toggle |
+| No public leaks | Inspect unauthenticated/authenticated wrong-role APIs, built assets, caches, logs, email, analytics, leaderboard/points/model rankings, cycles, downloads and notifications; no case content, identifiers, hashes, counts or inferable deltas |
+| Disclosure | Paid does not publish; fixed does not publish; deadline does not publish; authorized redaction and optional identity consent are independent; chain timing/amount visibility is disclosed before payment |
+| Ordinary-work compatibility | Umia accepts other useful work without bounty; no cash via later fix PR or public recognition; other projects retain separate approved ordinary rewards without double payment |
+| Operations and closure | Test notification failure, missed response escalation, intake outage, backup restore, project ban/closure and account recovery; restrict access but preserve obligations; no public penalty for a private case disposition |
+| Cloudflare email readiness | Owning account/domain, authenticated sender, Worker and private service binding, audience permissions and quota are verified; controlled end-to-end send reaches maintainer/reporter inboxes; bounce/suppression/retry and staging isolation work; acceptance/delivery/human acknowledgment stay distinct |
+| Submission and decision proof | Bind policy and evidence version to a private receipt; reject forged case links; reproduce the loss mechanism; record human technical and financial decisions separately; edited evidence cannot silently change an approved award |
+| Maintainer trust and dispute | Named payer and independent reviewer; advisory/binding authority disclosed; disagreement, nonresponse and alleged duplicate each follow private deadlines and appeals; no model verdict or timeout releases funds; Umia/Slop authority split agreed before launch |
+| Real UI and release | Desktop/mobile, keyboard, 200% zoom, WCAG AA, safe links, zero first-party failures and application console errors; uploaded sanitized walkthrough and test video; exact tested/deployed revision and authorized pilot evidence |
+
+The launch record must name security, finance, privacy and incident owners; exact program and code revisions; approved deadlines and economic edge policies; permission/notification results; funding evidence; tested payment rail; and unresolved limits. A source merge, synthetic scenario or private-reporting enablement alone cannot establish production bounty readiness. No program is opened by this documentation change.
