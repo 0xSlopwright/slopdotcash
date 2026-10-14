@@ -1,7 +1,7 @@
 ALTER TABLE slopbot_installations ADD COLUMN source_updated_at INTEGER;
 
 UPDATE slopbot_installations
-SET source_updated_at = (CAST(strftime('%s', 'now') AS INTEGER) + 1) * 1000;
+SET source_updated_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000;
 
 ALTER TABLE slopbot_deliveries ADD COLUMN installation_processed_at TEXT;
 

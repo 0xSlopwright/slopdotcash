@@ -45,6 +45,7 @@ class TestStatement {
 
 class TestDatabase {
   readonly sqlite = new Database(":memory:");
+  readonly migrationSecond: number | null;
   installationFailure: "before" | "after" | null = null;
 
   constructor(seedBeforeDeliveryMigration?: (sqlite: Database) => void) {
@@ -55,6 +56,7 @@ class TestDatabase {
       ),
     );
     seedBeforeDeliveryMigration?.(this.sqlite);
+    const before = this.unixSecond();
     this.sqlite.exec(
       readFileSync(
         new URL(
@@ -64,6 +66,8 @@ class TestDatabase {
         "utf8",
       ),
     );
+    const after = this.unixSecond();
+    this.migrationSecond = before === after ? before : null;
   }
 
   prepare(sql: string) {
@@ -97,6 +101,14 @@ class TestDatabase {
     const failure = this.installationFailure;
     this.installationFailure = null;
     return failure;
+  }
+
+  private unixSecond() {
+    return (
+      this.sqlite
+        .query("SELECT CAST(strftime('%s', 'now') AS INTEGER) AS value")
+        .get() as { value: number }
+    ).value;
   }
 
   suspendedAt() {
@@ -186,6 +198,22 @@ function harness(seedBeforeDeliveryMigration?: (sqlite: Database) => void) {
   return { db, deliver };
 }
 
+function seedActiveInstallation(sqlite: Database) {
+  sqlite
+    .query(
+      `INSERT INTO slopbot_installations
+         (installation_id, account_id, account_login, account_type, created_at, suspended_at)
+       VALUES (?, ?, ?, ?, ?, NULL)`,
+    )
+    .run(
+      INSTALLATION_ID,
+      777,
+      "acme",
+      "Organization",
+      "2020-01-01T00:00:00.500Z",
+    );
+}
+
 describe("installation webhook delivery", () => {
   test("does not replay an older suspend after its committed response was lost", async () => {
     const { db, deliver } = harness();
@@ -262,19 +290,7 @@ describe("installation webhook delivery", () => {
 
   test("does not replay a pre-migration ambiguous delivery", async () => {
     const { db, deliver } = harness((sqlite) => {
-      sqlite
-        .query(
-          `INSERT INTO slopbot_installations
-             (installation_id, account_id, account_login, account_type, created_at, suspended_at)
-           VALUES (?, ?, ?, ?, ?, NULL)`,
-        )
-        .run(
-          INSTALLATION_ID,
-          777,
-          "acme",
-          "Organization",
-          "2020-01-01T00:00:00.500Z",
-        );
+      seedActiveInstallation(sqlite);
       sqlite
         .query(
           "INSERT INTO slopbot_deliveries (delivery_id, event, received_at) VALUES (?, 'installation', ?)",
@@ -289,5 +305,22 @@ describe("installation webhook delivery", () => {
     );
 
     expect(db.suspendedAt()?.suspended_at).toBeNull();
+  });
+
+  test("applies a lifecycle event generated during the migration second", async () => {
+    let context = harness(seedActiveInstallation);
+    while (context.db.migrationSecond === null) {
+      context = harness(seedActiveInstallation);
+    }
+
+    await context.deliver(
+      "suspend",
+      "suspend-during-migration",
+      context.db.migrationSecond,
+    );
+
+    expect(context.db.suspendedAt()).toEqual({
+      suspended_at: expect.any(String),
+    });
   });
 });
