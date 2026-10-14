@@ -15,6 +15,7 @@ import {
 } from "./pr-evidence-policy.mjs";
 
 export {
+  isTransientArtifactFailure,
   MAX_ARTIFACTS_PER_ROW,
   MAX_ARTIFACTS_TOTAL,
   verifyReferencedArtifacts,

@@ -57,6 +57,14 @@ if (forbidden.status !== 403)
 const me = await request(`${site}/api/v1/points/me`);
 if (me.status !== 200 || (await me.json()) !== null)
   throw new Error("Staging anonymous account state is invalid");
+const payments = await request(`${site}/api/v1/payments/me`);
+if (
+  payments.status !== 401 ||
+  (await payments.json()).error !== "not_signed_in"
+)
+  throw new Error(
+    `Staging payment authentication is unavailable: ${payments.status}`,
+  );
 const write = await post(site, "/api/v1/points/visibility", { public: true });
 if (write.status !== 401)
   throw new Error("Staging accepted an unauthenticated account write");
