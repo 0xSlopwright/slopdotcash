@@ -704,15 +704,15 @@ test("starts Eliza with one prompt and no separate payout form", async ({
     );
   const view = createProjectView(await loadSnapshot(request), "eliza");
   expect(shareCells).toHaveLength(view.leaders.length);
-  // No committed funds: every row is a share of the score, never dollars.
+  // No committed funds: every row is a share of payment weight, never dollars.
   for (const cell of shareCells) {
-    expect(cell).toMatch(/^\d+\.\d{2}% of score$/u);
+    expect(cell).toMatch(/^\d+\.\d{2}% of payment weight$/u);
   }
   expect(view.leaders.every((leader) => leader.projectedMinor === "0")).toBe(
     true,
   );
   await expect(
-    page.getByRole("columnheader", { name: "Share of score" }),
+    page.getByRole("columnheader", { name: "Share of payment weight" }),
   ).toBeVisible();
   await expect(
     page.getByText(/Not funded yet\. No payouts are approved\./u),

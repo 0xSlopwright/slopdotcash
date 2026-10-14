@@ -18,8 +18,11 @@ import {
   type FundingPreparation,
   type FundingReviewIndex,
 } from "../src/lib/funding-review-data";
-import { assertLeaderboardSnapshot } from "../src/lib/leaderboard";
-import { createProjectView } from "../src/lib/project-view";
+import {
+  assertLeaderboardSnapshot,
+  paymentReviewSnapshot,
+} from "../src/lib/leaderboard";
+import { createPaymentProjectView } from "../src/lib/project-view";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const fundingReviewSha256 = (bytes: string | Buffer): string =>
@@ -101,7 +104,7 @@ export async function importFundingPreparations(options: {
     if (typeof p.project !== "string" || projectIds.has(p.project))
       throw new TypeError("Duplicate audit project");
     projectIds.add(p.project);
-    const view = createProjectView(snapshot, p.project, options.cycleId);
+    const view = createPaymentProjectView(snapshot, p.project, options.cycleId);
     if (
       view.cycle.status !== "closed" ||
       view.cycle.to !== view.cycle.endsAt ||
@@ -177,7 +180,11 @@ export async function importFundingPreparations(options: {
           snapshotTo: snapshot.window.to,
           periodFrom: view.cycle.from,
           periodTo: view.cycle.to,
-          snapshotLedgerCount: snapshot.ledger.length,
+          snapshotLedgerCount:
+            options.cycleId >= "2026-10" &&
+            view.project.reward.kind === "monthly-pool"
+              ? paymentReviewSnapshot(snapshot).ledger.length
+              : snapshot.ledger.length,
           sourceMergedPullRequests: snapshot.source.counts.mergedPullRequests,
           mergedCensus: p.mergedCensus,
           scoredMerges: p.scoredMerges,

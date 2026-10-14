@@ -3970,7 +3970,9 @@ export async function writeLeaderboardAtomically(
   await mkdir(dirname(outputPath), { recursive: true });
   const temporaryPath = `${outputPath}.${process.pid}.${Date.now()}.tmp`;
   try {
-    await Bun.write(temporaryPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+    // The two review bases must fit Pages' 25 MiB per-file limit. Whitespace
+    // alone adds over 5 MiB to the complete October publication.
+    await Bun.write(temporaryPath, `${JSON.stringify(snapshot)}\n`);
     await rename(temporaryPath, outputPath);
   } finally {
     // error-policy:J6 a failed atomic write may leave only its unique temporary file.

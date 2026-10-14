@@ -73,6 +73,16 @@ No package is marked implemented by this document. Create bounded implementation
 - **Private bounties:** MVP-13 complete; approved scope and safe harbor, verified intake and escalation, isolated permissions, fixed versioned financial terms, capacity/exhaustion policy, independent appeals, verified funds and payment rail, no case leakage, private exact-head remediation evidence and no inferred activation.
 - **Pilot:** small authorized mainnet exposure; no broad enabling until actual payments and public totals reconcile.
 
+## Issue #683 payment cutoff correction
+
+MVP-07 and MVP-09 implement the owner's 14 October 2026 decision in the
+SCR-05 payment cutoff amendment. Reuse the existing eligibility and allocation
+code with the production-release cutoff for payment weights only. Keep public
+Score and Points unchanged. Verify pre-release approval eligibility,
+post-release exclusions, exact cutoff behavior, duplicate protection, frozen
+source reconstruction and refusal of missing payment evidence. Funding and
+settlement authorization remain separate gates.
+
 ## Future backlog
 
 Private report auto-submission, native Slop-hosted exploit attachments and additional intake-provider adapters remain future extensions. MVP-13 uses human-submitted GitHub private advisories with restricted Slop policy/decision/payment records. No future automation is an exception to the public-issue rule.
