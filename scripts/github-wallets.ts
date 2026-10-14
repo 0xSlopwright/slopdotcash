@@ -24,46 +24,59 @@ type FetchLike = (
   init?: RequestInit,
 ) => Promise<Response>;
 
+/** Terminal lookup failure: never retried, never reclassified as transport. */
+class TerminalWalletLookupError extends Error {}
+
 async function boundedApiBody(response: Response): Promise<string> {
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     const parsedLength = Number(declaredLength);
     if (!/^\d+$/u.test(declaredLength) || !Number.isSafeInteger(parsedLength)) {
-      throw new Error(
+      throw new TerminalWalletLookupError(
         "GitHub wallet lookup returned an invalid Content-Length",
       );
     }
     if (parsedLength > MAX_API_RESPONSE_BYTES) {
-      throw new Error("GitHub wallet lookup response is oversized");
+      throw new TerminalWalletLookupError(
+        "GitHub wallet lookup response is oversized",
+      );
     }
   }
   const reader = response.body?.getReader();
   if (!reader)
-    throw new Error("GitHub wallet lookup returned no readable body");
+    throw new TerminalWalletLookupError(
+      "GitHub wallet lookup returned no readable body",
+    );
   const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decode = (chunk?: Uint8Array, stream = false): string => {
+    try {
+      return decoder.decode(chunk, { stream });
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      throw new TerminalWalletLookupError(
+        "GitHub wallet lookup response is not valid UTF-8",
+        { cause: error },
+      );
+    }
+  };
   let byteLength = 0;
   let body = "";
   try {
     for (;;) {
+      // Stream reads throw TypeError on interrupted transport; callers retry it.
       const chunk = await reader.read();
       if (chunk.done) break;
       byteLength += chunk.value.byteLength;
       if (byteLength > MAX_API_RESPONSE_BYTES) {
-        await reader.cancel("response exceeded size limit");
-        throw new RangeError(
+        // Cancellation is best effort; the size violation stays terminal.
+        await reader.cancel("response exceeded size limit").catch(() => {});
+        throw new TerminalWalletLookupError(
           "GitHub wallet lookup response exceeded its size limit",
         );
       }
-      body += decoder.decode(chunk.value, { stream: true });
+      body += decode(chunk.value, true);
     }
-    body += decoder.decode();
-  } catch (error) {
-    if (error instanceof TypeError) {
-      throw new Error("GitHub wallet lookup response is not valid UTF-8", {
-        cause: error,
-      });
-    }
-    throw error;
+    body += decode();
   } finally {
     reader.releaseLock();
   }
@@ -112,9 +125,9 @@ async function apiJson(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      let response: Response;
+      let body: string;
       try {
-        response = await fetchImpl(`${API_ORIGIN}${path}`, {
+        const response = await fetchImpl(`${API_ORIGIN}${path}`, {
           headers: {
             Accept: "application/vnd.github+json",
             ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -124,7 +137,23 @@ async function apiJson(
           redirect: "error",
           signal: controller.signal,
         });
+        if (
+          [502, 503, 504].includes(response.status) &&
+          attempt < MAX_API_ATTEMPTS
+        ) {
+          await retryDelay(attempt);
+          continue;
+        }
+        if (response.status === 404 || response.status === 409) return null;
+        if (!response.ok) {
+          throw new TerminalWalletLookupError(
+            `GitHub wallet lookup failed with HTTP ${response.status}`,
+          );
+        }
+        // Interrupted body reads use the same transport retry boundary.
+        body = await boundedApiBody(response);
       } catch (error) {
+        if (error instanceof TerminalWalletLookupError) throw error;
         const retryable =
           controller.signal.aborted || transientNetworkError(error);
         if (retryable && attempt < MAX_API_ATTEMPTS) {
@@ -136,20 +165,6 @@ async function apiJson(
           { cause: error },
         );
       }
-      if (
-        [502, 503, 504].includes(response.status) &&
-        attempt < MAX_API_ATTEMPTS
-      ) {
-        await retryDelay(attempt);
-        continue;
-      }
-      if (response.status === 404 || response.status === 409) return null;
-      if (!response.ok) {
-        throw new Error(
-          `GitHub wallet lookup failed with HTTP ${response.status}`,
-        );
-      }
-      const body = await boundedApiBody(response);
       try {
         return JSON.parse(body);
       } catch (error) {
@@ -172,9 +187,9 @@ async function registryJson(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
-      let response: Response;
+      let body: string;
       try {
-        response = await fetchImpl(`${WALLET_AUTHORITY}${path}`, {
+        const response = await fetchImpl(`${WALLET_AUTHORITY}${path}`, {
           headers: {
             Accept: "application/json",
             "User-Agent": "slop-wallet-observer/1",
@@ -182,7 +197,23 @@ async function registryJson(
           redirect: "error",
           signal: controller.signal,
         });
+        if (
+          [502, 503, 504].includes(response.status) &&
+          attempt < MAX_API_ATTEMPTS
+        ) {
+          await retryDelay(attempt);
+          continue;
+        }
+        if (response.status === 404) return null;
+        if (!response.ok) {
+          throw new TerminalWalletLookupError(
+            `Slop wallet registry failed with HTTP ${response.status}`,
+          );
+        }
+        // Interrupted body reads use the same transport retry boundary.
+        body = await boundedApiBody(response);
       } catch (error) {
+        if (error instanceof TerminalWalletLookupError) throw error;
         const retryable =
           controller.signal.aborted || transientNetworkError(error);
         if (retryable && attempt < MAX_API_ATTEMPTS) {
@@ -194,20 +225,6 @@ async function registryJson(
           { cause: error },
         );
       }
-      if (
-        [502, 503, 504].includes(response.status) &&
-        attempt < MAX_API_ATTEMPTS
-      ) {
-        await retryDelay(attempt);
-        continue;
-      }
-      if (response.status === 404) return null;
-      if (!response.ok) {
-        throw new Error(
-          `Slop wallet registry failed with HTTP ${response.status}`,
-        );
-      }
-      const body = await boundedApiBody(response);
       try {
         return JSON.parse(body);
       } catch (error) {
