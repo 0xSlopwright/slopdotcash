@@ -7,7 +7,11 @@ import type { FundingCommitmentInstrument } from "./funding-instruments.mjs";
 import { assertFreshCyclePaymentPolicy } from "./funding-readiness";
 import { fundingReviewProposalSha256 } from "./funding-review-submission";
 import { assertRewardAllocationManifest } from "./rewards";
-import { createNetworkSettlementExecutionPlan } from "./settlement-plan";
+import {
+  createNetworkSettlementExecutionPlan,
+  MAX_TRANSFERS_PER_PLAN,
+  planCarriesPlatformFee,
+} from "./settlement-plan";
 
 export const PAYMENT_RESERVATION_PATH = "funding/payment-reservations.json";
 export const PAYMENT_RESERVATION_CHECK = "Trusted payment reservation gate";
@@ -65,7 +69,10 @@ function assertReservation(value: unknown): PaymentReservation {
     !/^(0|[1-9]\d{0,19})$/u.test(r.feeMinor) ||
     !Array.isArray(r.intentIds) ||
     r.intentIds.length < 1 ||
-    r.intentIds.length > 199 ||
+    // Same bound as the plan builder: a fee transfer has no intent id but
+    // takes one slot, so only a no-fee project-vault plan reaches the maximum.
+    r.intentIds.length + (planCarriesPlatformFee(r.instrumentId) ? 1 : 0) >
+      MAX_TRANSFERS_PER_PLAN ||
     r.intentIds.some(
       (id) => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,160}$/u.test(id),
     )
