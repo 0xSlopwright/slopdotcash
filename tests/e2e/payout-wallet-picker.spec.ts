@@ -138,7 +138,10 @@ async function providers(page: Page, reject = false) {
   );
 }
 
-async function openPicker(page: Page, chain: "Base" | "Solana") {
+async function openPicker(
+  page: Page,
+  chain: "Base" | "Solana" | "Robinhood Chain",
+) {
   await page
     .getByRole("button", { name: `Connect ${chain} wallet`, exact: true })
     .click();
@@ -149,7 +152,7 @@ async function openPicker(page: Page, chain: "Base" | "Solana") {
   return dialog;
 }
 
-test("modal routes Base to MetaMask and Solana to Backpack despite Phantom globals", async ({
+test("modal routes Base and Robinhood Chain to MetaMask and Solana to Backpack despite Phantom globals", async ({
   page,
 }, info) => {
   const writes = await payments(page);
@@ -186,6 +189,20 @@ test("modal routes Base to MetaMask and Solana to Backpack despite Phantom globa
   await expect(
     page.getByRole("status").filter({ hasText: "Solana wallet confirmed" }),
   ).toBeVisible();
+  // Robinhood Chain is an EVM chain: the picker offers the EVM wallets only,
+  // and the claim is registered for chain robinhood, separate from Base.
+  const robinhood = await openPicker(page, "Robinhood Chain");
+  await expect(
+    robinhood.getByRole("button", { name: "Backpack Detected" }),
+  ).toHaveCount(0);
+  await robinhood
+    .getByRole("button", { name: "MetaMask Detected", exact: true })
+    .click();
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "Robinhood Chain wallet confirmed" }),
+  ).toBeVisible();
   expect(
     await page.evaluate(
       () => (window as unknown as { walletCalls: string[] }).walletCalls,
@@ -195,14 +212,17 @@ test("modal routes Base to MetaMask and Solana to Backpack despite Phantom globa
     "MetaMask:personal_sign",
     "Backpack:connect",
     "Backpack:signMessage",
+    "MetaMask:eth_requestAccounts",
+    "MetaMask:personal_sign",
   ]);
   expect(
     writes.filter((w) => w.path === "wallets/register").map((w) => w.body),
   ).toEqual([
     { chain: "base", address: evmAddress },
     { chain: "solana", address: solanaAddress },
+    { chain: "robinhood", address: evmAddress },
   ]);
-  expect(writes.filter((w) => w.path === "wallets/authorize")).toHaveLength(2);
+  expect(writes.filter((w) => w.path === "wallets/authorize")).toHaveLength(3);
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth - innerWidth,

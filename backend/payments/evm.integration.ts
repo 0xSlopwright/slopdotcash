@@ -1257,6 +1257,22 @@ try {
     chainId: 46630n,
     vault: rcVault,
     bindingDelaySeconds: delay,
+    factory: rcFactory,
+    factoryCodeSha256: createHash("sha256")
+      .update(
+        Buffer.from(
+          (
+            (await rpc(
+              "eth_getCode",
+              [rcFactory, "latest"],
+              rcRpcUrl,
+            )) as string
+          ).slice(2),
+          "hex",
+        ),
+      )
+      .digest("hex"),
+    registrar: owner,
     // One settlement network per project (payment_project_network_locked), so
     // the second chain belongs to its own fixture project.
     projectId: "robinhood-fixture",
@@ -1402,7 +1418,7 @@ try {
     vault: rcVault,
     chainId: rcChainId,
   };
-  const bindChallenge = (
+  const rcBindChallenge = (
     claimId: string,
     network: string,
     deployments: PaymentDeploymentIdentity[],
@@ -1430,7 +1446,7 @@ try {
       "A robinhood-testnet record naming the mainnet chain id is refused",
     ],
   ] as const) {
-    const response = await bindChallenge("claim-rc", "robinhood-testnet", [
+    const response = await rcBindChallenge("claim-rc", "robinhood-testnet", [
       record,
     ]);
     assert.equal(response.status, 400, reason);
@@ -1438,7 +1454,7 @@ try {
   }
   assert.equal(
     (
-      await bindChallenge("claim-rc", "unlisted-network", [
+      await rcBindChallenge("claim-rc", "unlisted-network", [
         { ...rcIdentity, network: "unlisted-network" },
       ])
     ).status,
@@ -1457,7 +1473,7 @@ try {
   ).id;
   assert.equal(
     (
-      await bindChallenge(
+      await rcBindChallenge(
         currentBaseClaim,
         "robinhood-testnet",
         paymentDeployments,

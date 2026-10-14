@@ -23,7 +23,9 @@ const deployment = {
   codeSha256: "ab".repeat(32),
   bindingDelaySeconds: "60",
   rotationDelaySeconds: null,
-  bindingNamespace: null,
+  factory: "0x5000000000000000000000000000000000000005",
+  factoryCodeSha256: "cd".repeat(32),
+  registrar: "0x6000000000000000000000000000000000000006",
 };
 
 // Same keys as the generated escrow block in src/ProjectProposalPage.tsx.

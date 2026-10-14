@@ -134,6 +134,12 @@ try {
     .getByRole("button", { name: "Connect Robinhood Chain wallet" })
     .focus();
   await page.keyboard.press("Enter");
+  // The picker offers the same EVM wallet for Robinhood Chain; choose it from the keyboard.
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Browser wallet Detected" })
+    .focus();
+  await page.keyboard.press("Enter");
   await page
     .getByText("Robinhood Chain wallet confirmed.", { exact: false })
     .waitFor({ timeout: 60000 });
