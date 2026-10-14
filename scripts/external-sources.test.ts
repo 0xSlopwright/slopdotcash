@@ -75,18 +75,73 @@ describe("assertExternalArchiveUrl exact binding", () => {
     ).toContain("web.archive.org");
     expect(
       assertExternalArchiveUrl(
-        "https://web.archive.org/web/20260101000000id_/http://example.com/a",
-        SOURCE,
-        "archiveUrl",
-      ),
-    ).toContain("web.archive.org");
-    expect(
-      assertExternalArchiveUrl(
         "https://archive.ph/AbCdEf",
         SOURCE,
         "archiveUrl",
       ),
     ).toContain("archive.ph");
+  });
+
+  it("accepts a Wayback capture whose target carries the exact query", () => {
+    expect(
+      assertExternalArchiveUrl(
+        "https://web.archive.org/web/20260101000000/https://example.com/a?x=1",
+        "https://example.com/a?x=1",
+        "archiveUrl",
+      ),
+    ).toContain("web.archive.org");
+    expect(
+      assertExternalArchiveUrl(
+        "https://web.archive.org/web/20260101000000/https://www.youtube.com/watch?v=ABCDEFGHIJK",
+        "https://www.youtube.com/watch?v=ABCDEFGHIJK",
+        "archiveUrl",
+      ),
+    ).toContain("web.archive.org");
+  });
+
+  it("rejects a Wayback capture whose target query differs", () => {
+    for (const url of [
+      "https://web.archive.org/web/20260101000000/https://example.com/a?other=1",
+      "https://web.archive.org/web/20260101000000/https://example.com/a?x=2",
+    ]) {
+      expect(() =>
+        assertExternalArchiveUrl(url, SOURCE, "archiveUrl"),
+      ).toThrow();
+      expect(() =>
+        assertExternalArchiveUrl(
+          url,
+          "https://example.com/a?x=1",
+          "archiveUrl",
+        ),
+      ).toThrow();
+    }
+  });
+
+  it("requires a byte-equivalent target, with no scheme downgrade", () => {
+    expect(() =>
+      assertExternalArchiveUrl(
+        "https://web.archive.org/web/20260101000000id_/http://example.com/a",
+        SOURCE,
+        "archiveUrl",
+      ),
+    ).toThrow();
+  });
+
+  it("preserves percent encoding in the captured target", () => {
+    expect(
+      assertExternalArchiveUrl(
+        "https://web.archive.org/web/20260101000000/https://example.com/a%20b",
+        "https://example.com/a%20b",
+        "archiveUrl",
+      ),
+    ).toContain("web.archive.org");
+    expect(() =>
+      assertExternalArchiveUrl(
+        "https://web.archive.org/web/20260101000000/https://example.com/a%2520b",
+        "https://example.com/a%20b",
+        "archiveUrl",
+      ),
+    ).toThrow();
   });
 
   it("rejects a Wayback capture of a different URL that ends with the source string", () => {

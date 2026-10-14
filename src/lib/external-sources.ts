@@ -218,15 +218,20 @@ export function assertExternalArchiveUrl(
 ): string {
   const parsed = parseSecureUrl(value, field);
   const host = parsed.hostname.toLowerCase();
-  const capturedPath = decodeURIComponent(parsed.pathname);
-  const waybackTarget = /^\/web\/\d{14}(?:[a-z_]+)?\/(https?:\/\/.*)$/u.exec(
-    capturedPath,
-  )?.[1];
+  // The embedded target is the raw path suffix plus the outer search string:
+  // a URL parser puts the target's query in `search`, not in `pathname`.
+  // Keep the raw percent encoding; decoding would equate distinct targets
+  // (for example `%20` and `%2520`) and reject an exact encoded capture.
+  const waybackPathTarget =
+    /^\/web\/\d{14}(?:[a-z_]+)?\/(https?:\/\/.*)$/u.exec(parsed.pathname)?.[1];
+  const waybackTarget =
+    waybackPathTarget === undefined
+      ? undefined
+      : `${waybackPathTarget}${parsed.search}`;
   const wayback =
     host === "web.archive.org" &&
     waybackTarget !== undefined &&
-    (waybackTarget === sourceUrl ||
-      waybackTarget === sourceUrl.replace(/^https:/u, "http:"));
+    waybackTarget === sourceUrl;
   const archiveToday =
     host === "archive.ph" && /^\/[A-Za-z0-9]{5,}$/u.test(parsed.pathname);
   if (!(wayback || archiveToday)) {
