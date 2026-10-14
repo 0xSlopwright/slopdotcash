@@ -274,9 +274,10 @@ export async function buildFundingIndex(
       if (
         !instruments.some(
           (instrument) =>
-            // A 2-of-2 Squads vault, or a Base Sablier stream whose
-            // recipient attests (RFC #472).
+            // A 2-of-2 Squads vault, a 2-of-3 project vault (RFC #500), or a
+            // Base Sablier stream whose recipient attests (RFC #472).
             (instrument.kind === "squads-v4-vault" ||
+              instrument.kind === "squads-project-vault" ||
               (instrument.kind === "sablier-lockup-v4" &&
                 instrument.network === "base")) &&
             fundingInstrumentId(instrument) === report.instrumentId &&

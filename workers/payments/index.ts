@@ -25,6 +25,10 @@ export interface PaymentDeployment {
   feeRecipient: string;
   codeSha256: string;
   bindingDelaySeconds: string;
+  rotationDelaySeconds?: string;
+  factory?: string;
+  factoryCodeSha256?: string;
+  registrar?: string;
   upgradeAuthority: string | null;
   networkDomain?: string;
   chainId?: string;
@@ -236,18 +240,28 @@ export async function ingestPaymentEvent(
   const rpcUrl = rpcUrls[deployment.network];
   if (!rpcUrl) throw new Error("Private RPC configuration unavailable");
   let adapter: PaymentChainAdapter;
-  if (deployment.chain === "base" && deployment.chainId) {
+  if (
+    deployment.chain === "base" &&
+    deployment.chainId &&
+    deployment.factory &&
+    deployment.factoryCodeSha256 &&
+    deployment.registrar
+  ) {
     adapter = basePaymentAdapter(env.PAYMENTS_DB, {
       ...deployment,
       rpcUrl,
       chainId: BigInt(deployment.chainId),
+      factory: deployment.factory,
+      factoryCodeSha256: deployment.factoryCodeSha256,
+      registrar: deployment.registrar,
     });
   } else if (
     deployment.chain === "solana" &&
     deployment.programId &&
     deployment.projectPda &&
     deployment.asset &&
-    deployment.networkDomain
+    deployment.networkDomain &&
+    deployment.rotationDelaySeconds
   ) {
     const genesis = (
       JSON.parse(env.PAYMENT_SOLANA_GENESIS ?? "{}") as Record<string, string>
@@ -261,6 +275,7 @@ export async function ingestPaymentEvent(
       projectPda: deployment.projectPda,
       mint: deployment.asset,
       networkDomain: deployment.networkDomain,
+      rotationDelaySeconds: deployment.rotationDelaySeconds,
     });
   } else throw new Error("Reviewed chain deployment incomplete");
   await indexPaymentEvent(env.PAYMENTS_DB, adapter, message, now.toISOString());
