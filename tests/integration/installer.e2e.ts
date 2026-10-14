@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -19,7 +20,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createInstallCommand } from "../../src/lib/install-command";
 import {
@@ -174,21 +175,66 @@ function command(
   );
 }
 
+function productionCommand(): string {
+  return createInstallCommand(
+    "https://slop.cash/projects/eliza",
+    `\${CODEX_HOME:-\${HOME}/.codex}/skills`,
+    primaryInstallOptions,
+  );
+}
+
+function shellPath(value: string): string {
+  const windows = /^([A-Za-z]):[\\/](.*)$/u.exec(value);
+  return windows
+    ? `/${windows[1]?.toLowerCase()}/${windows[2]?.replaceAll("\\", "/")}`
+    : value;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function testPython(): string {
+  const configured = process.env.SLOP_TEST_PYTHON ?? process.env.SLOP_PYTHON;
+  for (const candidate of configured ? [configured] : ["python3", "python"]) {
+    const result = spawnSync(
+      candidate,
+      [
+        "-c",
+        "import os, ssl, sys; ok = sys.version_info.major == 3 and bool(ssl.create_default_context().get_ca_certs()); print(os.path.realpath(sys.executable)) if ok else None; sys.exit(0 if ok else 1)",
+      ],
+      { encoding: "utf8" },
+    );
+    if (result.status === 0 && result.stdout.trim())
+      return result.stdout.trim();
+  }
+  throw new Error("installer tests require Python 3 with a usable CA store");
+}
+
+function writeExecutable(path: string, contents: string): void {
+  writeFileSync(path, contents);
+  chmodSync(path, 0o755);
+}
+
 function run(
   script: string,
   installationRoot: string,
   environment: Record<string, string> = {},
 ) {
-  return spawnSync("bash", process.platform === "win32" ? [] : ["-c", script], {
-    encoding: "utf8",
-    input: process.platform === "win32" ? script : undefined,
-    env: {
-      ...process.env,
-      CODEX_HOME: join(installationRoot, "codex"),
-      HOME: join(installationRoot, "home"),
-      ...environment,
+  return spawnSync(
+    process.env.SLOP_TEST_BASH ?? "bash",
+    process.platform === "win32" ? [] : ["-c", script],
+    {
+      encoding: "utf8",
+      input: process.platform === "win32" ? script : undefined,
+      env: {
+        ...process.env,
+        CODEX_HOME: join(installationRoot, "codex"),
+        HOME: join(installationRoot, "home"),
+        ...environment,
+      },
     },
-  });
+  );
 }
 
 function currentLink(root: string): string {
@@ -260,6 +306,165 @@ afterEach(() => {
 });
 
 describe("authenticated skill installer lifecycle", () => {
+  it("falls back when python3 has no usable HTTPS trust store", () => {
+    const root = freshRoot("python-ca-fallback");
+    const files = baseFiles("revision-a");
+    const artifact = writeArtifact(root, revisionA, files);
+    const authority = configureAuthority(root, {
+      developHead: revisionA,
+      revisions: { [revisionA]: { files } },
+    });
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const realPython = shellQuote(shellPath(testPython()));
+    const emptyCa = join(root, "empty-ca");
+    mkdirSync(emptyCa);
+    writeFileSync(
+      join(emptyCa, "sitecustomize.py"),
+      "import ssl\nclass EmptyContext:\n    def get_ca_certs(self): return []\nssl.create_default_context = lambda *args, **kwargs: EmptyContext()\nclass EmptyPaths:\n    capath = None\nssl.get_default_verify_paths = lambda: EmptyPaths()\n",
+    );
+    const rejectedPython = join(bin, "python3");
+    writeExecutable(
+      rejectedPython,
+      `#!/bin/sh
+if [ "\${1-}" != "-c" ]; then
+  exit 86
+fi
+PYTHONPATH=${shellQuote(shellPath(emptyCa))} exec ${realPython} "$@"
+`,
+    );
+    const acceptedPython = join(bin, "python");
+    writeExecutable(
+      acceptedPython,
+      `#!/bin/sh
+if [ "\${1-}" = "-c" ]; then
+  exec ${realPython} "$@"
+fi
+if [ "\${1-}" != "-" ]; then
+  exit 87
+fi
+exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(authority.apiOrigin)} ${shellQuote(authority.rawOrigin)} "$5" "$6" "$7" "$8" "$9" "\${10}"
+`,
+    );
+
+    const installRoot = join(root, "install");
+    const installed = run(productionCommand(), installRoot, {
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+    });
+
+    expect(installed.status, installed.stderr).toBe(0);
+    expect(currentLink(installRoot)).toBe(
+      `.contribute-to-eliza-versions/${revisionA}`,
+    );
+  });
+
+  it("uses a qualified python3 without probing python", () => {
+    const root = freshRoot("python3-priority");
+    const files = baseFiles("revision-a");
+    const artifact = writeArtifact(root, revisionA, files);
+    const authority = configureAuthority(root, {
+      developHead: revisionA,
+      revisions: { [revisionA]: { files } },
+    });
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const realPython = shellQuote(shellPath(testPython()));
+    writeExecutable(
+      join(bin, "python3"),
+      `#!/bin/sh
+if [ "\${1-}" = "-c" ]; then
+  exec ${realPython} "$@"
+fi
+if [ "\${1-}" != "-" ]; then
+  exit 87
+fi
+exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(authority.apiOrigin)} ${shellQuote(authority.rawOrigin)} "$5" "$6" "$7" "$8" "$9" "\${10}"
+`,
+    );
+    writeExecutable(join(bin, "python"), "#!/bin/sh\nexit 88\n");
+
+    const installRoot = join(root, "install");
+    const installed = run(productionCommand(), installRoot, {
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+    });
+
+    expect(installed.status, installed.stderr).toBe(0);
+    expect(currentLink(installRoot)).toBe(
+      `.contribute-to-eliza-versions/${revisionA}`,
+    );
+  });
+
+  it("uses python3 when trust roots are discovered lazily from a hashed CA directory", () => {
+    const root = freshRoot("python3-capath");
+    const files = baseFiles("revision-a");
+    const artifact = writeArtifact(root, revisionA, files);
+    const authority = configureAuthority(root, {
+      developHead: revisionA,
+      revisions: { [revisionA]: { files } },
+    });
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const realPython = shellQuote(shellPath(testPython()));
+    const lazyCa = join(root, "lazy-ca");
+    mkdirSync(lazyCa);
+    writeFileSync(join(lazyCa, "deadbeef.0"), "");
+    const lazyTrust = join(root, "lazy-trust");
+    mkdirSync(lazyTrust);
+    writeFileSync(
+      join(lazyTrust, "sitecustomize.py"),
+      `import ssl\nclass EmptyContext:\n    def get_ca_certs(self): return []\nssl.create_default_context = lambda *args, **kwargs: EmptyContext()\nclass LazyPaths:\n    capath = ${JSON.stringify(lazyCa)}\nssl.get_default_verify_paths = lambda: LazyPaths()\n`,
+    );
+    writeExecutable(
+      join(bin, "python3"),
+      `#!/bin/sh
+if [ "\${1-}" = "-c" ]; then
+  PYTHONPATH=${shellQuote(shellPath(lazyTrust))} exec ${realPython} "$@"
+fi
+if [ "\${1-}" != "-" ]; then
+  exit 87
+fi
+exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(authority.apiOrigin)} ${shellQuote(authority.rawOrigin)} "$5" "$6" "$7" "$8" "$9" "\${10}"
+`,
+    );
+    writeExecutable(join(bin, "python"), "#!/bin/sh\nexit 88\n");
+
+    const installRoot = join(root, "install");
+    const installed = run(productionCommand(), installRoot, {
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+    });
+
+    expect(installed.status, installed.stderr).toBe(0);
+    expect(currentLink(installRoot)).toBe(
+      `.contribute-to-eliza-versions/${revisionA}`,
+    );
+  });
+
+  it("fails closed when neither Python candidate is qualified", () => {
+    const root = freshRoot("python-unqualified");
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeExecutable(join(bin, "python3"), "#!/bin/sh\nexit 89\n");
+    writeExecutable(join(bin, "python"), "#!/bin/sh\nexit 90\n");
+
+    const installRoot = join(root, "install");
+    const installed = run(productionCommand(), installRoot, {
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+    });
+
+    expect(installed.status).toBe(1);
+    expect(installed.stderr.trim()).toBe(
+      "Python 3 with a usable HTTPS CA trust store is required for authenticated skill installation.",
+    );
+    expect(
+      existsSync(join(installRoot, "codex", "skills", "contribute-to-eliza")),
+    ).toBe(false);
+    expect(
+      existsSync(
+        join(installRoot, "codex", "skills", ".contribute-to-eliza-versions"),
+      ),
+    ).toBe(false);
+  });
+
   it("installs current develop, no-ops at the same revision, and atomically advances to an ancestor", () => {
     const root = freshRoot("advance");
     const installRoot = join(root, "install");

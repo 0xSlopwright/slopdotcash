@@ -8,6 +8,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
   assertLeaderboardSnapshot,
+  assignLeaderboardRanks,
+  compareRankedEntries,
   LEADERBOARD_SCHEMA_VERSION,
   type LeaderboardEntry,
   type LeaderboardSnapshot,
@@ -107,10 +109,6 @@ function actorId(value: unknown): string {
     throw new TypeError("actor.id must be a non-empty string");
   }
   return actor.id;
-}
-
-function codeUnitCompare(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function eventThirds(event: ScoreEvent): number {
@@ -255,19 +253,8 @@ function rebuildLeaders(
       ),
     };
   });
-  leaders.sort(
-    (left, right) =>
-      right.scoreThirds - left.scoreThirds ||
-      codeUnitCompare(
-        left.actor.login.toLowerCase(),
-        right.actor.login.toLowerCase(),
-      ) ||
-      codeUnitCompare(left.actor.login, right.actor.login) ||
-      codeUnitCompare(left.actor.id, right.actor.id),
-  );
-  leaders.forEach((leader, index) => {
-    leader.rank = index + 1;
-  });
+  leaders.sort(compareRankedEntries);
+  assignLeaderboardRanks(leaders);
   return leaders;
 }
 
@@ -325,7 +312,11 @@ export function preparePullRequestLedger(value: unknown): LeaderboardSnapshot {
   );
   if (candidate.schemaVersion === LEADERBOARD_SCHEMA_VERSION) {
     assertLeaderboardSnapshot(candidate);
-    return candidate as unknown as LeaderboardSnapshot;
+    const leaders = candidate.leaders
+      .map((leader) => ({ ...leader }))
+      .sort(compareRankedEntries);
+    assignLeaderboardRanks(leaders);
+    return { ...candidate, leaders };
   }
   if (candidate.schemaVersion !== "5") {
     throw new TypeError("deployed ledger is not schema 5 or 6");

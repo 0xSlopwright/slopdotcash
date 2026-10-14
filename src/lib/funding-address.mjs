@@ -100,6 +100,11 @@ function validBitcoinAddress(value) {
   if (witnessVersion === 0) {
     return (program.length === 20 || program.length === 32) && encoding === 1;
   }
+  // BIP341 defines a version 1 (Taproot) program as exactly 32 bytes. Any
+  // other version 1 length is not a Taproot output and is anyone-can-spend,
+  // so it can never be a safe funding receiving address. Future versions
+  // keep the BIP350 forward-compatible 2-40 byte range.
+  if (witnessVersion === 1 && program.length !== 32) return false;
   return encoding === 0x2bc830a3;
 }
 
