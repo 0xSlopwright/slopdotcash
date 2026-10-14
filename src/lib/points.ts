@@ -325,6 +325,40 @@ export function applyPointsSnapshot(
   ];
   return result;
 }
+/**
+ * Canonical identity of a GitHub pull-request review URL: the case-folded
+ * owner/repo path plus the PR number. It mirrors exactly what the journal
+ * validator (assertEvaluatorAwardManifest) accepts as a review source:
+ * https scheme, github.com host, /owner/repo/pull/<number> path, and a
+ * review fragment (#pullrequestreview-<id> or #discussion_r<id>, matched
+ * case-insensitively like the validator).
+ *
+ * URL parsing normalizes the evasion forms the validator accepts while
+ * retaining the raw string: owner/repo casing variants, the explicit
+ * default port (:443, dropped as default), an empty query marker, and
+ * dot-segment paths (including percent-encoded dot-segments).
+ *
+ * It returns undefined for anything else, so genuinely different URLs
+ * (other hosts, other paths, other PR numbers, non-review fragments)
+ * never share an identity and are never deduped together.
+ */
+export function canonicalReviewIdentity(url: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== "https:") return undefined;
+  if (parsed.hostname.toLowerCase() !== "github.com") return undefined;
+  if (parsed.username || parsed.password) return undefined;
+  const path = /^\/([^/]+)\/([^/]+)\/pull\/([1-9]\d*)$/.exec(parsed.pathname);
+  if (!path) return undefined;
+  const fragment = parsed.hash.toLowerCase();
+  if (!/^#(pullrequestreview-|discussion_r)\d+$/.test(fragment))
+    return undefined;
+  return `${path[1].toLowerCase()}/${path[2].toLowerCase()}/pull/${path[3]}`;
+}
 export function pointMembers(
   journal: PointsJournal,
   month = journal.generatedAt.slice(0, 7),
@@ -332,27 +366,29 @@ export function pointMembers(
 ): PointsMember[] {
   const groups = new Map<string, PointAward>();
   const awards = [...latestPoints(journal).values()].map((r) => r.award);
-  // GitHub repository paths are case-insensitive and the journal validator
-  // accepts owner/repo casing variants while preserving the raw URL string,
-  // so the dedup key must be case-normalized: otherwise a casing variant of
-  // the same PR URL evades the evaluated-review suppression and double-counts
-  // (PRD §14 anti-duplication rule).
-  const dedupKey = (url: string): string => url.split("#")[0].toLowerCase();
+  // The dedup key is the canonical parsed PR identity, not the raw URL:
+  // the journal validator accepts URL variants (owner/repo casing, default
+  // port, empty query, dot-segments, mixed-case review fragment) while
+  // keeping the raw string, so keying on the raw string lets variants evade
+  // the evaluated-review suppression and double-count (PRD section 14
+  // anti-duplication rule).
   const evaluatedReviews = new Set(
     awards
-      .filter(
-        (a) =>
-          a.amount > 0 &&
-          a.category === "evaluated-contribution" &&
-          (a.sourceUrl.includes("#pullrequestreview-") ||
-            a.sourceUrl.includes("#discussion_r")),
-      )
-      .map((a) => `${a.actor.id}:${dedupKey(a.sourceUrl)}`),
+      .filter((a) => a.amount > 0 && a.category === "evaluated-contribution")
+      .map((a) => {
+        const identity = canonicalReviewIdentity(a.sourceUrl);
+        return identity === undefined ? undefined : `${a.actor.id}:${identity}`;
+      })
+      .filter((key): key is string => key !== undefined),
   );
   for (const a of awards) {
+    const reviewIdentity =
+      a.category === "substantive-review"
+        ? canonicalReviewIdentity(a.sourceUrl)
+        : undefined;
     if (
-      a.category === "substantive-review" &&
-      evaluatedReviews.has(`${a.actor.id}:${dedupKey(a.sourceUrl)}`)
+      reviewIdentity !== undefined &&
+      evaluatedReviews.has(`${a.actor.id}:${reviewIdentity}`)
     )
       continue;
     if (!a.amount || (projectId && a.projectId !== projectId)) continue;

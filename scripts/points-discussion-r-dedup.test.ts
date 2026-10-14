@@ -144,4 +144,95 @@ describe("evaluated-review dedup set fragment scoping", () => {
     // substantive review double-counts (110 instead of 100).
     expect(aliceTotal(journal([evaluated, review]))).toBe(100);
   });
+
+  it.each([
+    [
+      "mixed-case review fragment",
+      "https://github.com/SlopDotCash/slopdotcash/pull/5#Discussion_R123",
+    ],
+    [
+      "explicit default port",
+      "https://github.com:443/SlopDotCash/slopdotcash/pull/5#discussion_r123",
+    ],
+    [
+      "empty query marker",
+      "https://github.com/SlopDotCash/slopdotcash/pull/5?#discussion_r123",
+    ],
+    [
+      "dot-segment path",
+      "https://github.com/SlopDotCash/slopdotcash/tmp/../pull/5#discussion_r123",
+    ],
+    [
+      "percent-encoded dot-segment path",
+      "https://github.com/SlopDotCash/slopdotcash/%2e/pull/5#discussion_r123",
+    ],
+  ])(
+    "dedups when the evaluated award URL is a validator-accepted variant (%s)",
+    (_name, sourceUrl) => {
+      const evaluated = award({
+        key: "e1",
+        category: "evaluated-contribution",
+        amount: 100,
+        sourceUrl,
+        workUnitId: "w1",
+      });
+      const review = award({
+        key: "r1",
+        category: "substantive-review",
+        amount: 10,
+        sourceId: "s1",
+        sourceUrl:
+          "https://github.com/SlopDotCash/slopdotcash/pull/5#pullrequestreview-1",
+        workUnitId: "w2",
+      });
+      // assertEvaluatorAwardManifest accepts each variant and keeps the raw
+      // string; keying the dedup set on the raw URL lets them evade the
+      // evaluated-review suppression and double-count (110 instead of 100).
+      expect(aliceTotal(journal([evaluated, review]))).toBe(100);
+    },
+  );
+
+  it("does not dedup a substantive review for a different PR number", () => {
+    const evaluated = award({
+      key: "e1",
+      category: "evaluated-contribution",
+      amount: 100,
+      sourceUrl:
+        "https://github.com/SlopDotCash/slopdotcash/pull/6#discussion_r123",
+      workUnitId: "w1",
+    });
+    const review = award({
+      key: "r1",
+      category: "substantive-review",
+      amount: 10,
+      sourceId: "s1",
+      sourceUrl:
+        "https://github.com/SlopDotCash/slopdotcash/pull/5#pullrequestreview-1",
+      workUnitId: "w2",
+    });
+    // Same repo, different PR: genuinely different work units, so both count.
+    expect(aliceTotal(journal([evaluated, review]))).toBe(110);
+  });
+
+  it("does not dedup a substantive review whose URL is not a review URL", () => {
+    const evaluated = award({
+      key: "e1",
+      category: "evaluated-contribution",
+      amount: 100,
+      sourceUrl:
+        "https://github.com/SlopDotCash/slopdotcash/pull/5#discussion_r123",
+      workUnitId: "w1",
+    });
+    const review = award({
+      key: "r1",
+      category: "substantive-review",
+      amount: 10,
+      sourceId: "s1",
+      sourceUrl: "https://github.com/SlopDotCash/slopdotcash/pull/5",
+      workUnitId: "w2",
+    });
+    // A fragment-free URL is not a review identity, so the canonical dedup
+    // never suppresses it; the points engine still counts it.
+    expect(aliceTotal(journal([evaluated, review]))).toBe(110);
+  });
 });
