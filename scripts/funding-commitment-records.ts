@@ -38,6 +38,17 @@ async function boundedJson(path: string): Promise<unknown> {
   }
 }
 
+/** Orders ledger records by observation time, then record id. */
+export function sortByObservation(values: unknown[]): void {
+  values.sort((left, right) => {
+    const a = left as { observedAt?: string; recordId?: string };
+    const b = right as { observedAt?: string; recordId?: string };
+    return `${a.observedAt ?? ""}:${a.recordId ?? ""}`.localeCompare(
+      `${b.observedAt ?? ""}:${b.recordId ?? ""}`,
+    );
+  });
+}
+
 /** Every verified funding commitment record of one project, validated. */
 export async function loadProjectCommitmentRecords(
   projectId: string,
@@ -70,18 +81,8 @@ export async function loadProjectCommitmentRecords(
     .sort();
   const records: unknown[] = [];
   for (const path of paths) records.push(await boundedJson(path));
-  // The ledger validator reads correction chains in feed order: each record's
-  // `supersedes` must name the immediately preceding record for its
-  // network:transactionId. Feed chronological order (observedAt, then recordId),
-  // not filesystem path order: correction record IDs are hand-minted and do
-  // not sort in time order. This mirrors sortByObservation in
-  // scripts/sync-funding-index.ts.
-  records.sort((left, right) => {
-    const a = left as { observedAt?: string; recordId?: string };
-    const b = right as { observedAt?: string; recordId?: string };
-    return `${a.observedAt ?? ""}:${a.recordId ?? ""}`.localeCompare(
-      `${b.observedAt ?? ""}:${b.recordId ?? ""}`,
-    );
-  });
+  // Record IDs are content hashes, so path order is not time order. The
+  // ledger validator needs each correction after the record it supersedes.
+  sortByObservation(records);
   return assertProjectCommitmentLedger(records, instruments);
 }

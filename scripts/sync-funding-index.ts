@@ -22,6 +22,7 @@ import {
   publicSignerReport,
 } from "../src/lib/signer-capability";
 import { canonicalFundingDecisionBytes } from "./check-funding-record-pr";
+import { sortByObservation } from "./funding-commitment-records";
 import { signerReportPath } from "./signer-access-ledger";
 import { assertSignerAccessReport } from "./verify-signer-access";
 
@@ -212,16 +213,6 @@ function latestObservedAt(
       ? record.observedAt
       : latest;
   }, initial);
-}
-
-function sortByObservation(values: unknown[]): void {
-  values.sort((left, right) => {
-    const a = left as { observedAt?: string; recordId?: string };
-    const b = right as { observedAt?: string; recordId?: string };
-    return `${a.observedAt ?? ""}:${a.recordId ?? ""}`.localeCompare(
-      `${b.observedAt ?? ""}:${b.recordId ?? ""}`,
-    );
-  });
 }
 
 export async function buildFundingIndex(
