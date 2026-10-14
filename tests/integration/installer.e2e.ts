@@ -16,6 +16,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -60,6 +61,31 @@ function freshRoot(label: string): string {
   const root = mkdtempSync(join(tmpdir(), `eliza-installer-${label}-`));
   roots.push(root);
   return root;
+}
+
+function pythonOnlyPath(root: string): string {
+  const candidate =
+    process.env.SLOP_TEST_PYTHON ?? process.env.SLOP_PYTHON ?? "python3";
+  const executable = execFileSync(
+    candidate,
+    [
+      "-c",
+      "import os, sys; assert sys.version_info.major == 3; print(os.path.realpath(sys.executable))",
+    ],
+    { encoding: "utf8" },
+  ).trim();
+  const bin = join(root, "python-only");
+  if (process.platform === "win32") {
+    execFileSync(executable, ["-m", "venv", bin]);
+    const scripts = join(bin, "Scripts");
+    for (const name of readdirSync(scripts)) {
+      if (/^python3(?:\.\d+)?\.exe$/iu.test(name)) rmSync(join(scripts, name));
+    }
+    return scripts;
+  }
+  mkdirSync(bin);
+  symlinkSync(executable, join(bin, "python"));
+  return bin;
 }
 
 function baseFiles(marker: string): Record<string, Buffer> {
@@ -850,7 +876,7 @@ exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(au
       "origin",
       "https://github.com/elizaOS/eliza.git",
     ]);
-    const invoke = (args: string[]) =>
+    const invoke = (args: string[], environment: Record<string, string> = {}) =>
       spawnSync(
         process.execPath,
         [
@@ -860,7 +886,11 @@ exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(au
         ],
         {
           encoding: "utf8",
-          env: { ...process.env, XDG_CONFIG_HOME: join(root, "state") },
+          env: {
+            ...process.env,
+            XDG_CONFIG_HOME: join(root, "state"),
+            ...environment,
+          },
           timeout: 20_000,
         },
       );
@@ -881,6 +911,19 @@ exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(au
     expect(started.status, started.stderr).toBe(0);
     const runId = JSON.parse(started.stdout).runId;
     expect(invoke(["authorize", "--json"]).status).toBe(0);
+    const fallback = invoke(["authorize", "--json"], {
+      PATH: pythonOnlyPath(root),
+    });
+    expect(fallback.status, fallback.stderr).toBe(0);
+    const emptyPath = join(root, "no-python");
+    mkdirSync(emptyPath);
+    const unavailablePython = invoke(["authorize", "--json"], {
+      PATH: emptyPath,
+    });
+    expect(unavailablePython.status).not.toBe(0);
+    expect(unavailablePython.stderr).toContain(
+      "Python 3 is required for fresh skill authorization",
+    );
 
     configureAuthority(root, {
       developHead: revisionB,

@@ -1074,8 +1074,33 @@ export function authorizeSkill(
         readFileSync(join(skillDirectory, path)).toString("base64"),
       ]),
   );
+  const environment = executionEnvironmentWithGitHub();
+  const requiresHttpsTrust =
+    !testAuthority ||
+    [testAuthority.apiOrigin, testAuthority.rawOrigin].some(
+      (value) => new URL(value).protocol === "https:",
+    );
+  const pythonProbe = requiresHttpsTrust
+    ? "import ssl, sys; raise SystemExit(0 if sys.version_info.major == 3 and ssl.create_default_context().get_ca_certs() else 1)"
+    : "import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)";
+  const python = ["python3", "python"].find(
+    (candidate) =>
+      spawnSync(candidate, ["-c", pythonProbe], {
+        encoding: "utf8",
+        env: environment,
+        stdio: "ignore",
+        timeout: 10_000,
+      }).status === 0,
+  );
+  if (!python) {
+    fail(
+      requiresHttpsTrust
+        ? "Python 3 with a usable HTTPS CA trust store is required for fresh skill authorization"
+        : "Python 3 is required for fresh skill authorization",
+    );
+  }
   const result = spawnSync(
-    "python3",
+    python,
     ["-c", createSkillAuthorizationProgram(testAuthority)],
     {
       input: JSON.stringify({
@@ -1086,7 +1111,7 @@ export function authorizeSkill(
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 10 * 60_000,
-      env: executionEnvironmentWithGitHub(),
+      env: environment,
     },
   );
   if (result.status !== 0 || result.signal || result.error) {
