@@ -726,6 +726,7 @@ jobs:
           # Deploy the private notification service before Pages activates its binding.
           ./node_modules/.bin/wrangler deploy \
             --config workers/notify/wrangler.toml \
+            --tag="$GITHUB_SHA" \
             --message="slop.cash release $GITHUB_SHA"
 
           bun scripts/verify-identity-schedules.mjs
