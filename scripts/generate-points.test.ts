@@ -16,7 +16,10 @@ import {
   type PointsJournal,
   pointMembers,
 } from "../src/lib/points";
-import { retainedHistoryCorrections } from "./generate-points";
+import {
+  applyRetainedHistoryBatch,
+  retainedHistoryCorrections,
+} from "./generate-points";
 
 const DIGEST = "a".repeat(64);
 const T0 = "2026-10-01T00:00:00.000Z";
@@ -51,6 +54,7 @@ function reviewEvent(scoreThirds: number): ScoreEvent {
 }
 
 const SNAPSHOT_DIGEST = "c".repeat(64);
+const T3 = "2026-10-04T00:00:00.000Z";
 
 function seedJournal(award: PointAward): PointsJournal {
   return appendPointAwards(
@@ -159,6 +163,50 @@ describe("retained review history corrections", () => {
     expect(retainedHistoryCorrections(withSnapshot, [])).toEqual([
       { ...award, amount: 0 },
     ]);
+  });
+
+  it("persists batch provenance in production order: snapshot, identical retained batch, then retained removal", () => {
+    const event = reviewEvent(3);
+    const award = awardForScore(event);
+    // Production order in generatePoints: snapshots are applied first.
+    // The snapshot ledger lists the retained event because the leaderboard
+    // generator injects the retained history into its snapshots, so the
+    // snapshot application creates the only revision and records its
+    // digest in the journal coverage.
+    let journal = applyPointsSnapshot(
+      emptyPointsJournal(T0),
+      snapshotListing(event),
+      SNAPSHOT_DIGEST,
+      T0,
+    );
+    expect(journal.revisions.length).toBe(1);
+    expect(latestPoints(journal).get(award.key)?.sourceDigest).toBe(
+      SNAPSHOT_DIGEST,
+    );
+    // The identical retained batch then supplies the same award. It must
+    // persist explicit batch provenance even though the award itself is
+    // unchanged: one provenance successor with the batch digest, the same
+    // amount, linked to the snapshot revision.
+    journal = applyRetainedHistoryBatch(journal, [award], DIGEST, T1);
+    expect(journal.revisions.length).toBe(2);
+    expect(journal.revisions[1]?.previous).toBe(journal.revisions[0]?.id);
+    expect(journal.revisions[1]?.sourceDigest).toBe(DIGEST);
+    expect(journal.revisions[1]?.sourceRule).toBe("slop-score-v2");
+    expect(journal.revisions[1]?.award).toEqual(award);
+    expect(pointMembers(journal)[0]?.total).toBe(30);
+    // Replaying the identical retained batch appends no further revision.
+    journal = applyRetainedHistoryBatch(journal, [award], DIGEST, T1);
+    expect(journal.revisions.length).toBe(2);
+    // The maintainer then removes the entry from the retained manifest.
+    // The batch provenance, not the snapshot copy, decides: exactly one
+    // zero-valued successor, and a replay of the removal adds nothing.
+    journal = applyRetainedHistoryBatch(journal, [], DIGEST, T2);
+    expect(journal.revisions.length).toBe(3);
+    expect(journal.revisions[2]?.previous).toBe(journal.revisions[1]?.id);
+    expect(latestPoints(journal).get(award.key)?.award.amount).toBe(0);
+    expect(pointMembers(journal)).toEqual([]);
+    journal = applyRetainedHistoryBatch(journal, [], DIGEST, T3);
+    expect(journal.revisions.length).toBe(3);
   });
 
   it("never zeroes a snapshot-owned award when the old snapshot is absent from the current inputs", () => {
