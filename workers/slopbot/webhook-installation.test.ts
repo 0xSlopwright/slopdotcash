@@ -47,15 +47,23 @@ class TestDatabase {
   readonly sqlite = new Database(":memory:");
   installationFailure: "before" | "after" | null = null;
 
-  constructor() {
-    for (const migration of [
-      "../../migrations/0013_slopbot.sql",
-      "../../migrations/0017_slopbot_delivery_processing.sql",
-    ]) {
-      this.sqlite.exec(
-        readFileSync(new URL(migration, import.meta.url), "utf8"),
-      );
-    }
+  constructor(seedBeforeDeliveryMigration?: (sqlite: Database) => void) {
+    this.sqlite.exec(
+      readFileSync(
+        new URL("../../migrations/0013_slopbot.sql", import.meta.url),
+        "utf8",
+      ),
+    );
+    seedBeforeDeliveryMigration?.(this.sqlite);
+    this.sqlite.exec(
+      readFileSync(
+        new URL(
+          "../../migrations/0017_slopbot_delivery_processing.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
   }
 
   prepare(sql: string) {
@@ -127,8 +135,8 @@ async function sign(body: string): Promise<string> {
     .join("")}`;
 }
 
-function harness() {
-  const db = new TestDatabase();
+function harness(seedBeforeDeliveryMigration?: (sqlite: Database) => void) {
+  const db = new TestDatabase(seedBeforeDeliveryMigration);
   databases.push(db);
   const env = {
     SLOPBOT_WEBHOOK_SECRET: SECRET,
@@ -250,5 +258,36 @@ describe("installation webhook delivery", () => {
     await deliver("suspend", "suspend-6", updatedAt);
 
     expect(db.suspendedAt()).toEqual({ suspended_at: expect.any(String) });
+  });
+
+  test("does not replay a pre-migration ambiguous delivery", async () => {
+    const { db, deliver } = harness((sqlite) => {
+      sqlite
+        .query(
+          `INSERT INTO slopbot_installations
+             (installation_id, account_id, account_login, account_type, created_at, suspended_at)
+           VALUES (?, ?, ?, ?, ?, NULL)`,
+        )
+        .run(
+          INSTALLATION_ID,
+          777,
+          "acme",
+          "Organization",
+          "2020-01-01T00:00:00.500Z",
+        );
+      sqlite
+        .query(
+          "INSERT INTO slopbot_deliveries (delivery_id, event, received_at) VALUES (?, 'installation', ?)",
+        )
+        .run("unsuspend-before-migration", "2020-01-01T00:02:01Z");
+    });
+
+    await deliver(
+      "suspend",
+      "lost-suspend-before-migration",
+      "2020-01-01T00:01:00Z",
+    );
+
+    expect(db.suspendedAt()?.suspended_at).toBeNull();
   });
 });
