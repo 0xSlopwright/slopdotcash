@@ -5,6 +5,7 @@ import type {
 } from "../../backend/payments/dispatch";
 import {
   buildPaymentWalletMessage,
+  verifyBaseBindingSignature,
   verifyPaymentWalletSignature,
 } from "../../backend/payments/possession";
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
@@ -59,6 +60,9 @@ interface Deployment {
   feeRecipient: string;
   codeSha256: string;
   bindingDelaySeconds: string;
+  factory: string;
+  factoryCodeSha256: string;
+  registrar: string;
 }
 export interface Authorization extends DispatchPayment {
   projectId: string;
@@ -242,11 +246,12 @@ async function authorize(
     throw new Error("Reviewed project deployment mismatch");
   return { authorization, deployment };
 }
+/** Award state: awards(id) returns actorId, gross, fee, sourceDigest, committedAt, paid. */
 async function obligation(config: Deployment, authorization: Authorization) {
   const state = await call(
     config,
     `0xe76af61d${authorization.obligationId.slice(2)}`,
-    5,
+    6,
   );
   if (
     BigInt(`0x${state[0]}`).toString() !== authorization.githubUserId ||
@@ -256,21 +261,32 @@ async function obligation(config: Deployment, authorization: Authorization) {
     BigInt(authorization.feeMicro) !== BigInt(authorization.grossMicro) / 50n
   )
     throw new Error("Finalized award differs from approved ledger");
-  return BigInt(`0x${state[4]}`) !== 0n;
+  return {
+    committedAt: BigInt(`0x${state[4]}`),
+    paid: BigInt(`0x${state[5]}`) !== 0n,
+  };
 }
-const CANCELLED = (1n << 64n) - 1n;
+/** Latest binding: bindings(actor) returns destination, version, claimDigest, activatesAt, cancelled. */
 async function binding(config: Deployment, actor: string) {
-  const state = await call(config, `0xa45d1232${word(actor)}`, 4);
+  const state = await call(config, `0xa45d1232${word(actor)}`, 5);
   return {
     destination: `0x${state[0].slice(24)}`,
     version: BigInt(`0x${state[1]}`).toString(),
     claimDigest: state[2],
     activatesAt: BigInt(`0x${state[3]}`),
+    cancelled: BigInt(`0x${state[4]}`) !== 0n,
   };
 }
-/** Pending and owner-cancelled bindings cannot pay; never sign a transaction that must revert. */
-async function assertBindingActive(config: Deployment, activatesAt: bigint) {
-  if (activatesAt === CANCELLED)
+/**
+ * Pending and owner-cancelled bindings cannot pay, and an award cannot pay until bindingDelay after its
+ * commit; never sign a transaction that must revert.
+ */
+async function assertPayable(
+  config: Deployment,
+  current: { activatesAt: bigint; cancelled: boolean },
+  committedAt: bigint,
+) {
+  if (current.cancelled)
     throw new Error(
       "Project owner cancelled this destination binding; identity review required",
     );
@@ -279,9 +295,15 @@ async function assertBindingActive(config: Deployment, activatesAt: bigint) {
     "latest",
     false,
   ])) as { timestamp: string };
-  if (BigInt(latest.timestamp) < activatesAt)
+  const now = BigInt(latest.timestamp);
+  if (now < current.activatesAt)
     throw new Error(
-      `Destination binding activates at ${new Date(Number(activatesAt) * 1000).toISOString()}; retry after activation`,
+      `Destination binding activates at ${new Date(Number(current.activatesAt) * 1000).toISOString()}; retry after activation`,
+    );
+  const payableAt = committedAt + BigInt(config.bindingDelaySeconds);
+  if (now < payableAt)
+    throw new Error(
+      `Award is inside its commit delay until ${new Date(Number(payableAt) * 1000).toISOString()}; retry after it ends`,
     );
 }
 /** A reverted bind changed nothing on-chain, so a fresh bind may replace it. */
@@ -438,24 +460,54 @@ export function createBaseAttester(env: ExecutorEnvironment): PaymentExecutor {
         !(await retireRevertedBind(env, deployment, key, existing))
       )
         return signAndSubmit(env, deployment, key, fingerprint, "", input);
-      if (await obligation(deployment, authorization))
+      if ((await obligation(deployment, authorization)).paid)
         throw new Error("Award already paid");
       const current = await binding(deployment, input.githubUserId);
       if (current.version !== "0")
         await authorizeWalletRotation(env, input, current.claimDigest);
       else await holdSuccessorClaim(env, input);
+      // The destination wallet's own EIP-712 signature over this exact binding,
+      // collected by the account API. The attester submits it unchanged and
+      // cannot bind without it.
+      const accepted = await env.PAYMENTS_DB.prepare(
+        "SELECT expires_at expiresAt,signature FROM payment_binding_authorizations WHERE claim_id=? AND github_user_id=? AND network=? AND vault=? AND chain_id=? AND expected_version=? AND CAST(expires_at AS INTEGER)>? ORDER BY CAST(expires_at AS INTEGER) DESC LIMIT 1",
+      )
+        .bind(
+          input.claimId,
+          input.githubUserId,
+          input.network,
+          input.vault.toLowerCase(),
+          deployment.chainId,
+          current.version,
+          Math.floor(Date.now() / 1000) + 600,
+        )
+        .first<{ expiresAt: string; signature: string }>();
+      if (!accepted)
+        throw new Error(
+          `Destination wallet signature required for binding version ${current.version}`,
+        );
+      const request = {
+        githubUserId: input.githubUserId,
+        destination: input.destination,
+        expectedVersion: current.version,
+        claimDigest: `0x${input.claimDigest}`,
+        expiresAt: accepted.expiresAt,
+      };
+      if (
+        !verifyBaseBindingSignature(
+          BigInt(deployment.chainId),
+          deployment.vault,
+          request,
+          accepted.signature,
+        )
+      )
+        throw new Error("Destination wallet signature rejected");
       return signAndSubmit(
         env,
         deployment,
         key,
         fingerprint,
-        buildBindCalldata({
-          githubUserId: input.githubUserId,
-          destination: input.destination,
-          expectedVersion: current.version,
-          claimDigest: `0x${input.claimDigest}`,
-          expiresAt: String(Math.floor(Date.now() / 1000) + 3600),
-        }),
+        buildBindCalldata({ ...request, walletSignature: accepted.signature }),
         input,
       );
     },
@@ -487,7 +539,8 @@ export function createBaseExecutor(env: ExecutorEnvironment): PaymentExecutor {
       );
       if (await env.JOURNAL.get<Attempt>(key))
         return signAndSubmit(env, deployment, key, fingerprint, "", input);
-      if (await obligation(deployment, authorization))
+      const award = await obligation(deployment, authorization);
+      if (award.paid)
         throw new Error("Award already paid; index finalized evidence");
       const current = await binding(deployment, input.githubUserId);
       if (
@@ -501,7 +554,7 @@ export function createBaseExecutor(env: ExecutorEnvironment): PaymentExecutor {
           "Destination binding awaits finality; retry the same attempt",
         );
       }
-      await assertBindingActive(deployment, current.activatesAt);
+      await assertPayable(deployment, current, award.committedAt);
       // Re-read registry authorization before signing. The contract resolves any subsequent rotation race.
       await authorize(env, input);
       return signAndSubmit(
