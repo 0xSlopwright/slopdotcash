@@ -332,6 +332,12 @@ export function pointMembers(
 ): PointsMember[] {
   const groups = new Map<string, PointAward>();
   const awards = [...latestPoints(journal).values()].map((r) => r.award);
+  // GitHub repository paths are case-insensitive and the journal validator
+  // accepts owner/repo casing variants while preserving the raw URL string,
+  // so the dedup key must be case-normalized: otherwise a casing variant of
+  // the same PR URL evades the evaluated-review suppression and double-counts
+  // (PRD §14 anti-duplication rule).
+  const dedupKey = (url: string): string => url.split("#")[0].toLowerCase();
   const evaluatedReviews = new Set(
     awards
       .filter(
@@ -341,12 +347,12 @@ export function pointMembers(
           (a.sourceUrl.includes("#pullrequestreview-") ||
             a.sourceUrl.includes("#discussion_r")),
       )
-      .map((a) => `${a.actor.id}:${a.sourceUrl.split("#")[0]}`),
+      .map((a) => `${a.actor.id}:${dedupKey(a.sourceUrl)}`),
   );
   for (const a of awards) {
     if (
       a.category === "substantive-review" &&
-      evaluatedReviews.has(`${a.actor.id}:${a.sourceUrl.split("#")[0]}`)
+      evaluatedReviews.has(`${a.actor.id}:${dedupKey(a.sourceUrl)}`)
     )
       continue;
     if (!a.amount || (projectId && a.projectId !== projectId)) continue;

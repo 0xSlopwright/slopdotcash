@@ -120,4 +120,28 @@ describe("evaluated-review dedup set fragment scoping", () => {
     });
     expect(aliceTotal(journal([correction, review]))).toBe(10);
   });
+
+  it("dedups when the evaluated award URL differs only in repo-path casing", () => {
+    const evaluated = award({
+      key: "e1",
+      category: "evaluated-contribution",
+      amount: 100,
+      sourceUrl:
+        "https://github.com/slopdotcash/SLOPDOTCASH/pull/5#discussion_r123",
+      workUnitId: "w1",
+    });
+    const review = award({
+      key: "r1",
+      category: "substantive-review",
+      amount: 10,
+      sourceId: "s1",
+      sourceUrl:
+        "https://github.com/SlopDotCash/slopdotcash/pull/5#pullrequestreview-1",
+      workUnitId: "w2",
+    });
+    // The journal validator accepts owner/repo casing variants and preserves
+    // the raw URL; without case normalization the dedup key misses and the
+    // substantive review double-counts (110 instead of 100).
+    expect(aliceTotal(journal([evaluated, review]))).toBe(100);
+  });
 });
