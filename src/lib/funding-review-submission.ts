@@ -184,8 +184,7 @@ export async function applyFundingReviewSubmission(
     // $0 row, still needs its public reason and still flips the row, but it
     // must not renew the 14-day window.
     const amountChanged = adjustment.amountMinor !== row.suggestedMinor;
-    const changed =
-      amountChanged || excluded !== (row.state === "excluded");
+    const changed = amountChanged || excluded !== (row.state === "excluded");
     if (changed && !adjustment.reason)
       throw new TypeError("Material changes require a public reason");
     if (!changed)
