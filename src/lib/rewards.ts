@@ -10,12 +10,17 @@ import {
   assertAllocationFundingBasis,
   LAST_LEGACY_CAP_CYCLE,
 } from "./allocation-funding";
+import { chainFamily } from "./escrow-policy.mjs";
 import { isEvmTransactionHash } from "./evm-funding";
-import { isSolanaTransactionId } from "./funding-address.mjs";
+import {
+  fundingAssetForNetwork,
+  isSolanaTransactionId,
+} from "./funding-address.mjs";
 import { findProject } from "./projects.mjs";
 import {
   isWalletAddress,
   isWalletChain,
+  WALLET_CHAINS,
   WALLET_CLAIM_REPOSITORY,
   type WalletChain,
 } from "./wallets";
@@ -299,15 +304,15 @@ function sha256(value: unknown, path: string): string {
   return text(value, path, { pattern: /^[0-9a-f]{64}$/u });
 }
 
-/** A finalized Solana signature or a confirmed Base transaction hash. */
+/** A finalized Solana signature or a confirmed EVM transaction hash. */
 function transactionId(
   value: unknown,
   path: string,
   chain: SettlementNetwork,
 ): string {
-  if (chain === "base") {
+  if (chainFamily(chain) === "evm") {
     if (!isEvmTransactionHash(value)) {
-      throw new TypeError(`${path} is not a canonical Base transaction hash`);
+      throw new TypeError(`${path} is not a canonical EVM transaction hash`);
     }
     return value;
   }
@@ -395,14 +400,14 @@ function assertWallet(
     (expectedChain !== null && wallet.chain !== expectedChain)
   ) {
     throw new TypeError(
-      `${path}.chain must be ${expectedChain ?? "solana or base"}`,
+      `${path}.chain must be ${expectedChain ?? WALLET_CHAINS.join(", ")}`,
     );
   }
   const chain = wallet.chain;
   if (!isWalletAddress(chain, wallet.address)) {
     throw new TypeError(
-      chain === "base"
-        ? `${path}.address is not a canonical Base address`
+      chainFamily(chain) === "evm"
+        ? `${path}.address is not a canonical EVM address`
         : `${path}.address is not a Solana public key`,
     );
   }
@@ -1047,8 +1052,11 @@ export function assertRewardAllocationManifest(
     manifest.kind !== "reward-allocation" ||
     typeof manifest.projectId !== "string" ||
     (manifest.status !== "proposed" && manifest.status !== "approved") ||
+    !isWalletChain(manifest.chain) ||
+    // The monthly rail settles USDC on Base or Solana; Robinhood Chain pays
+    // only through escrow.
     manifest.currency !== "USDC" ||
-    !isWalletChain(manifest.chain)
+    fundingAssetForNetwork(manifest.chain) !== "USDC"
   ) {
     throw new TypeError("allocation manifest protocol header is invalid");
   }
@@ -1728,6 +1736,9 @@ export function assertRewardSettlementManifest(
       "settlement does not account for every approved intent",
     );
   }
+  if (recipients.length === 0) {
+    throw new TypeError("settlement has no recipients");
+  }
 
   const finalizedIntents = new Set<string>();
   const attempts = array(manifest.attempts, "settlement attempts").map(
@@ -1812,7 +1823,7 @@ export function assertRewardSettlementManifest(
   const paidMinor = sumMinor(
     recipients.map((recipient) => recipient.paidMinor),
   );
-  const feeMinor = feeForPrincipal(paidMinor, allocation.feeBasisPoints);
+  const feeMinor = feeForPrincipal(approvedMinor, allocation.feeBasisPoints);
   const platformFeeRecord = record(
     manifest.platformFee,
     "settlement platformFee",

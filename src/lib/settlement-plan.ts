@@ -120,6 +120,7 @@ interface PlanInput {
 
 const NETWORK_LABEL: Record<SettlementNetwork, string> = {
   base: "Base address",
+  robinhood: "Robinhood Chain address",
   solana: "Solana public key",
 };
 

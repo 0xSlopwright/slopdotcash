@@ -78,6 +78,14 @@ const EVIDENCE_FORMAT = {
     platformFee: "platformFeeTransactionHash",
     isTransaction: isEvmTransactionHash,
   },
+  // Robinhood Chain shares Base's EVM evidence format. The legacy rail cannot
+  // reach it (the manifest schema refuses that), so this only keeps the map total.
+  robinhood: {
+    kind: "base-settlement-evidence",
+    transaction: "transactionHash",
+    platformFee: "platformFeeTransactionHash",
+    isTransaction: isEvmTransactionHash,
+  },
 } as const;
 
 interface VerifyArguments {
@@ -273,6 +281,18 @@ export function projectVaultPlatformFee(input: {
   state: "not-applicable" | "paid";
 } {
   if (input.feeTransfer) {
+    // The plan revalidator rebuilds the fee transfer from the stored plan, so
+    // it cannot detect a redirected recipient on its own: bind it here to the
+    // reviewed fresh-cycle payment policy, the same authority the reservation
+    // flow uses when the plan is created.
+    const feeRecipient = assertFreshCyclePaymentPolicy(
+      input.policy,
+    ).feeRecipient;
+    if (input.feeTransfer.recipientOwner !== feeRecipient) {
+      throw new TypeError(
+        "Settlement plan fee recipient differs from the reviewed payment policy",
+      );
+    }
     return {
       recipient: input.feeTransfer.recipientOwner,
       dueMinor: input.feeTransfer.amountMinor,

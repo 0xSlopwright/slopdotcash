@@ -3307,33 +3307,6 @@ export function createLeaderboardSnapshot(
       }
     }
 
-    if (
-      ratification?.source.author &&
-      !sameActor(ratification.source.author, pullRequest.author) &&
-      !isCreditActor(ratification.source.author.id) &&
-      !hasEvaluatedReviewReservation(ratification.source.author.id) &&
-      !awardedReviewers.has(ratification.source.author.id)
-    ) {
-      addScore(entries, ledger, {
-        id: `${pullRequest.id}:ratifier:${ratification.source.id}`,
-        actor: ratification.source.author,
-        category: "substantive-review",
-        points: 1 / 3,
-        scoreThirds: 1,
-        workUnitId: `${ratification.record.workUnitId}_ratification`,
-        occurredAt: ratification.source.createdAt,
-        repository: repositoryIdFromUrl(pullRequest.url),
-        source: {
-          id: ratification.source.id,
-          kind: "comment",
-          number: pullRequest.number,
-          title: pullRequest.title,
-          url: ratification.source.url,
-        },
-        reason:
-          "Immutable maintainer score ratification for an accepted outcome.",
-      });
-    }
     const orderedReviews = dedupeByNodeId(pullRequest.reviews).sort(
       (left, right) => {
         if (left.submittedAt === right.submittedAt) {
@@ -3502,6 +3475,38 @@ export function createLeaderboardSnapshot(
         });
       }
       if (history.length > 1) event.reviewHistory = history;
+    }
+    // The maintainer ratification is a fallback review award. Award it only
+    // after every formal review on this artifact so an actor who already
+    // received review credit does not also earn the separate ratification.
+    // This mirrors the automated-review path above, which registers its
+    // reviewer in awardedReviewers before its own ratification guard.
+    if (
+      ratification?.source.author &&
+      !sameActor(ratification.source.author, pullRequest.author) &&
+      !isCreditActor(ratification.source.author.id) &&
+      !hasEvaluatedReviewReservation(ratification.source.author.id) &&
+      !awardedReviewers.has(ratification.source.author.id)
+    ) {
+      addScore(entries, ledger, {
+        id: `${pullRequest.id}:ratifier:${ratification.source.id}`,
+        actor: ratification.source.author,
+        category: "substantive-review",
+        points: 1 / 3,
+        scoreThirds: 1,
+        workUnitId: `${ratification.record.workUnitId}_ratification`,
+        occurredAt: ratification.source.createdAt,
+        repository: repositoryIdFromUrl(pullRequest.url),
+        source: {
+          id: ratification.source.id,
+          kind: "comment",
+          number: pullRequest.number,
+          title: pullRequest.title,
+          url: ratification.source.url,
+        },
+        reason:
+          "Immutable maintainer score ratification for an accepted outcome.",
+      });
     }
   }
 

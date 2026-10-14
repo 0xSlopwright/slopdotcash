@@ -1,4 +1,6 @@
-export type PaymentChain = "base" | "solana";
+import type { EscrowChain } from "../escrow-policy.mjs";
+
+export type PaymentChain = EscrowChain;
 export interface AccountPayment {
   id: string;
   projectId: string;
@@ -27,7 +29,8 @@ export interface PaymentsAccount {
     activationEligibleAt: string | null;
   }[];
   payments: AccountPayment[];
-  balances: { chain: PaymentChain; netMicro: string }[];
+  /** Unpaid net per settlement network; never summed across networks or assets. */
+  balances: { chain: PaymentChain; network: string; netMicro: string }[];
   /** Imported from reviewed disclosures; never an escrow `paid` state. */
   directTransfers: DirectTransfer[];
   /** Legacy README observations; history only, never a payout destination. */
@@ -74,5 +77,9 @@ export function transactionUrl(
     return `https://explorer.solana.com/tx/${encodeURIComponent(id)}`;
   if (network === "solana-devnet" || network === "solana-testnet")
     return `https://explorer.solana.com/tx/${encodeURIComponent(id)}?cluster=${network.slice(7)}`;
+  if (network === "robinhood-mainnet")
+    return `https://robinhoodchain.blockscout.com/tx/${encodeURIComponent(id)}`;
+  if (network === "robinhood-testnet")
+    return `https://explorer.testnet.chain.robinhood.com/tx/${encodeURIComponent(id)}`;
   return null;
 }
