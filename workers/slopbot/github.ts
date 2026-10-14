@@ -24,7 +24,7 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 export async function verifyWebhookSignature(
   secret: string,
-  body: string,
+  body: Uint8Array<ArrayBuffer>,
   header: string | null,
 ): Promise<boolean> {
   if (header === null || !header.startsWith("sha256=")) return false;
@@ -35,7 +35,7 @@ export async function verifyWebhookSignature(
     false,
     ["sign"],
   );
-  const expected = `sha256=${hex(await crypto.subtle.sign("HMAC", key, encoder.encode(body)))}`;
+  const expected = `sha256=${hex(await crypto.subtle.sign("HMAC", key, body))}`;
   return timingSafeEqual(expected, header);
 }
 
