@@ -3,8 +3,9 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import {
   type BindingInput,
-  baseBindingDigest,
+  evmBindingDigest,
 } from "../../contracts/evm/adapter";
+import { chainFamily, isEscrowChain } from "../../src/lib/escrow-policy.mjs";
 import { solanaAddressBytes } from "../../src/lib/wallets";
 
 function hex(bytes: Uint8Array) {
@@ -21,7 +22,7 @@ export function personalMessageHash(message: string): Uint8Array {
   return keccak_256(data);
 }
 /** Recovers the externally owned account that produced a 65-byte secp256k1 signature over a digest. */
-function recoverBaseSigner(digest: Uint8Array, signature: string): string {
+function recoverEvmSigner(digest: Uint8Array, signature: string): string {
   if (!/^0x[0-9a-fA-F]{130}$/.test(signature))
     throw new Error("Invalid signature");
   const bytes = Uint8Array.from(signature.slice(2).match(/../g) ?? [], (b) =>
@@ -46,7 +47,7 @@ const MAX_S = BigInt(
  * byte of 27 or 28. Wallets that return a recovery byte of 0 or 1 sign the same digest, so
  * that byte is rewritten; a high-s signature is rejected because the vault rejects it.
  */
-export function canonicalBaseSignature(signature: string): string | null {
+export function canonicalEvmSignature(signature: string): string | null {
   if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) return null;
   const body = signature.slice(2).toLowerCase();
   const v = Number.parseInt(body.slice(128), 16);
@@ -59,24 +60,24 @@ export function canonicalBaseSignature(signature: string): string | null {
   return `0x${body.slice(0, 128)}${recovery.toString(16)}`;
 }
 /**
- * The destination wallet's EIP-712 acceptance of one exact Base binding (ProjectEscrow.bindingDigest),
- * in the encoding the vault accepts (see canonicalBaseSignature). EOA only.
+ * The destination wallet's EIP-712 acceptance of one exact EVM binding (ProjectEscrow.bindingDigest),
+ * in the encoding the vault accepts (see canonicalEvmSignature). EOA only.
  */
-export function verifyBaseBindingSignature(
+export function verifyEvmBindingSignature(
   chainId: bigint,
   vault: string,
   input: BindingInput,
   signature: string,
 ): boolean {
-  if (canonicalBaseSignature(signature) !== signature.toLowerCase())
+  if (canonicalEvmSignature(signature) !== signature.toLowerCase())
     return false;
   try {
     const digest = Uint8Array.from(
-      baseBindingDigest(chainId, vault, input).slice(2).match(/../g) ?? [],
+      evmBindingDigest(chainId, vault, input).slice(2).match(/../g) ?? [],
       (b) => Number.parseInt(b, 16),
     );
     return (
-      recoverBaseSigner(digest, signature) === input.destination.toLowerCase()
+      recoverEvmSigner(digest, signature) === input.destination.toLowerCase()
     );
   } catch {
     return false;
@@ -100,9 +101,9 @@ export function verifyPaymentWalletSignature(
         { zip215: false },
       );
     }
-    if (chain !== "base") return false;
+    if (!isEscrowChain(chain) || chainFamily(chain) !== "evm") return false;
     return (
-      recoverBaseSigner(personalMessageHash(message), signature) ===
+      recoverEvmSigner(personalMessageHash(message), signature) ===
       address.toLowerCase()
     );
   } catch {

@@ -7,8 +7,8 @@ calldata, amounts, tokens, programs, or arbitrary destinations.
 
 Deploy a separate Worker for each test network, isolated database, and role. The identity attester has only
 that chain's test identity key. The gas relayer has only its own test gas key.
-Each Worker has its own SQLite Durable Object journal. On Base the relayer
-reaches the attester through a private service binding. Both roles
+Each Worker has its own SQLite Durable Object journal. On EVM networks the
+relayer reaches the attester through a private service binding. Both roles
 independently read the current wallet authorization from D1, reconstruct the
 exact signed consent, verify the wallet signature, check its GitHub actor and
 immutable claim digest, and inspect the finalized obligation. This trusts the
@@ -83,10 +83,12 @@ the old attempt failed only after confirmed retirement; a null lookup alone is
 never proof that signing cannot race the lookup.
 
 Signer keys must be dedicated to these Workers. Manual external transactions
-using the same keys would invalidate the nonce ownership assumption. A Base
+using the same keys would invalidate the nonce ownership assumption. An EVM
 transaction stuck due to fee pricing requires operator reconciliation; there
-is no automatic gas-price replacement in this version. Base signing limits gas
-to 500,000 and max gas price to 10 gwei. Never delete or restore an old journal
+is no automatic gas-price replacement in this version. EVM signing limits gas
+to the deployment record's `gasCeiling` (copied from the network registry:
+500,000 on Base) and max gas price to 10 gwei; a record without a ceiling is
+refused. Never delete or restore an old journal
 snapshot to clear an error. A restore must preserve every signed attempt and
 reconcile the chain before resuming.
 
@@ -151,7 +153,7 @@ operational material and has no read route other than transaction-ID lookup.
 
 ## Validation boundaries
 
-`bun backend/payments/base.integration.ts` executes the account API, signed
+`bun backend/payments/evm.integration.ts` executes the account API, signed
 wallet consent, finalized reservation scanner, real separate EIP1559 signers,
 payment dispatch, disk-backed journal recovery after a deliberately lost RPC
 response, and finalized payout indexing against actual Anvil contracts. It
