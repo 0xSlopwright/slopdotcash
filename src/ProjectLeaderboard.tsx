@@ -55,6 +55,10 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
       reviewer,
     ]),
   );
+  const leaders = [...view.leaders].sort(
+    (left, right) =>
+      left.rank - right.rank || left.actor.id.localeCompare(right.actor.id),
+  );
   return (
     <>
       <section className="section project-leader-section">
@@ -95,7 +99,7 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
                 </tr>
               </thead>
               <tbody>
-                {view.leaders.map((leader) => (
+                {leaders.map((leader) => (
                   <tr
                     className="leader-row project-leader-row"
                     key={leader.actor.id}
