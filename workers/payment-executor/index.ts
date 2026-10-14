@@ -5,11 +5,11 @@ import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import { solanaBase58 } from "../../contracts/solana/adapter";
 import { readBoundedJson } from "../../src/lib/browser-json";
 import {
-  createBaseAttester,
-  createBaseExecutor,
+  createEvmAttester,
+  createEvmExecutor,
   type JournalStore,
   lookupAttempt,
-  preflightBaseDeployment,
+  preflightEvmDeployment,
   retireUnsignedAttempt,
   type Signer,
 } from "./core";
@@ -20,7 +20,7 @@ import {
   preflightSolanaDeployment,
 } from "./solana";
 
-export { createBaseAttester, createBaseExecutor } from "./core";
+export { createEvmAttester, createEvmExecutor } from "./core";
 
 interface Fetcher {
   fetch(request: Request): Promise<Response>;
@@ -34,7 +34,7 @@ interface Environment {
   PAYMENT_DEPLOYMENTS: string;
   PAYMENT_RPC_URLS: string;
   SIGNER_ROLE: "attester" | "relayer";
-  CHAIN_FAMILY: "base" | "solana";
+  CHAIN_FAMILY: "evm" | "solana";
   /** Dedicated test-only key; each independently deployed role has a different secret. */
   TEST_SIGNER_PRIVATE_KEY?: `0x${string}`;
   TEST_SOLANA_SIGNER_SEED?: string;
@@ -68,7 +68,7 @@ export class PaymentSignerJournal {
         request as unknown as Response,
         4096,
         "payout execution",
-      )) as Parameters<ReturnType<typeof createBaseExecutor>["submit"]>[0] & {
+      )) as Parameters<ReturnType<typeof createEvmExecutor>["submit"]>[0] & {
         transaction?: unknown;
       };
       if (["/v1/attempt-status", "/v1/cancel-unsubmitted"].includes(pathname)) {
@@ -132,8 +132,8 @@ export class PaymentSignerJournal {
           this.env.CHAIN_FAMILY !== "solana")
       )
         return new Response("Not found", { status: 404 });
-      if (this.env.CHAIN_FAMILY === "base") {
-        await preflightBaseDeployment(this.env, input);
+      if (this.env.CHAIN_FAMILY === "evm") {
+        await preflightEvmDeployment(this.env, input);
         if (!this.env.TEST_SIGNER_PRIVATE_KEY)
           throw new Error("Test signer unavailable");
         const account = privateKeyToAccount(this.env.TEST_SIGNER_PRIVATE_KEY);
@@ -144,8 +144,8 @@ export class PaymentSignerJournal {
         };
         engine =
           this.env.SIGNER_ROLE === "attester"
-            ? createBaseAttester({ ...common, SIGNER: signer })
-            : createBaseExecutor({
+            ? createEvmAttester({ ...common, SIGNER: signer })
+            : createEvmExecutor({
                 ...common,
                 SIGNER: signer,
                 ATTESTER: attester,

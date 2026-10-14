@@ -6,8 +6,6 @@ import { fileURLToPath } from "node:url";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import {
   type BindingInput,
-  baseAwardId,
-  baseBindingDigest,
   buildBindCalldata,
   buildCancelBindingCalldata,
   buildClaimFeesCalldata,
@@ -15,9 +13,11 @@ import {
   buildDepositCalldata,
   buildPayCalldata,
   buildWithdrawCalldata,
-  readBaseAuthorityRotation,
-  verifyBaseDeployment,
+  evmAwardId,
+  evmBindingDigest,
+  readEvmAuthorityRotation,
   verifyBinding,
+  verifyEvmDeployment,
   verifyPayment,
   verifyReserve,
 } from "./adapter";
@@ -121,12 +121,12 @@ try {
       "latest",
     ])) as string
   ).slice(-40)}`;
-  const id = baseAwardId(31337n, vault, source);
+  const id = evmAwardId(31337n, vault, source);
   /** The destination wallet signs the exact binding; the authority submits it unchanged. */
   const acceptBinding = (binding: BindingInput) => {
     const signed = secp256k1.sign(
       Uint8Array.from(
-        baseBindingDigest(31337n, vault, binding).slice(2).match(/../g) ?? [],
+        evmBindingDigest(31337n, vault, binding).slice(2).match(/../g) ?? [],
         (pair) => Number.parseInt(pair, 16),
       ),
       recipientKey,
@@ -204,18 +204,18 @@ try {
     delay,
   ]);
   await assert.rejects(
-    verifyBaseDeployment({ ...config, factory: otherFactory }, "latest"),
+    verifyEvmDeployment({ ...config, factory: otherFactory }, "latest"),
     /asset, factory or registrar/,
   );
   await assert.rejects(
-    verifyBaseDeployment(
+    verifyEvmDeployment(
       { ...config, factoryCodeSha256: "f".repeat(64) },
       "latest",
     ),
     /factory code/,
   );
   await assert.rejects(
-    verifyBaseDeployment({ ...config, registrar: attester }, "latest"),
+    verifyEvmDeployment({ ...config, registrar: attester }, "latest"),
     /asset, factory or registrar/,
   );
   await assert.rejects(
@@ -440,14 +440,14 @@ try {
   // the change takes effect after 7 days. The adapter pins the factory and its
   // rotation rules, not the authority in force, so verification continues
   // through the rotation without a manifest change.
-  assert.deepEqual(await readBaseAuthorityRotation(config, "latest"), {
+  assert.deepEqual(await readEvmAuthorityRotation(config, "latest"), {
     factory: factory.toLowerCase(),
     identityAuthority: attester.toLowerCase(),
     pendingIdentityAuthority: null,
     effectiveAt: null,
   });
   await send(factory, "proposeIdentityAuthority(address)", [nextAttester]);
-  const pending = await readBaseAuthorityRotation(config, "latest");
+  const pending = await readEvmAuthorityRotation(config, "latest");
   assert.equal(pending.pendingIdentityAuthority, nextAttester.toLowerCase());
   assert.ok(BigInt(pending.effectiveAt ?? "0") > 0n);
   const premature = await send(
@@ -468,11 +468,11 @@ try {
   await rpc("anvil_mine", ["0x1"]);
   await send(factory, "executeIdentityAuthorityRotation()", [], recipient);
   assert.equal(
-    (await readBaseAuthorityRotation(config, "latest")).identityAuthority,
+    (await readEvmAuthorityRotation(config, "latest")).identityAuthority,
     nextAttester.toLowerCase(),
   );
   await rpc("anvil_mine", ["0x40"]);
-  await verifyBaseDeployment(config);
+  await verifyEvmDeployment(config);
   assert.equal(
     (await verifyPayment(config, paymentTx, 0, id)).netMicro,
     "98000000",
