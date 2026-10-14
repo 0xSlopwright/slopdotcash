@@ -288,7 +288,7 @@ runs from `main`, is idempotent, refuses partial cycles, and records
 zero-award months.
 
 Monthly allocations use integer USDC micro-units and largest remainder. The 1%
-fee applies to approved principal only. Never use floats for money or let
+monthly-pool fee applies to approved principal only. Never use floats for money or let
 rollover increase a later monthly cap.
 
 A review budget is an optional additive cash line. Review events remain in the
@@ -458,6 +458,10 @@ relayer services may execute isolated test-chain transactions under those rules.
 This supersedes the legacy unsigned-only model for that protocol only. Never
 use production credentials or move mainnet funds during testnet qualification.
 New gross awards deduct 2% before contributor earnings are displayed or paid.
+For a project-token reward (PRD TOK-06, owner decision of 14 October 2026),
+the 2% is deducted in that token and paid in that token to the network fee
+wallet at payout. No contract converts it. Later USDC conversion inside the fee
+wallet is future backend work (TOK-07) that needs its own approved requirement.
 Unused-fund withdrawals deduct 10%; funded obligations cannot be withdrawn.
 Historical v1 records retain their original fee and authority rules. No project
 activates escrow merely because the new code is present. Keep project deployment

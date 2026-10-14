@@ -3,7 +3,7 @@ import { getWallets } from "@wallet-standard/app";
 import type { Wallet, WalletWithFeatures } from "@wallet-standard/base";
 import type { StandardConnectFeature } from "@wallet-standard/features";
 import { useEffect, useState } from "react";
-import type { PaymentChain } from "./payments/contracts";
+import type { EscrowFamily } from "./escrow-policy.mjs";
 
 type EthereumWallet = {
   request(input: { method: string; params?: unknown[] }): Promise<unknown>;
@@ -38,7 +38,8 @@ export type PayoutWallet = {
   id: string;
   name: string;
   icon?: string;
-  chain: PaymentChain;
+  /** EVM wallets serve every EVM chain; the consent message names the chain. */
+  family: EscrowFamily;
   connect(): Promise<{
     address: string;
     sign(message: string): Promise<string>;
@@ -63,14 +64,14 @@ function evmWallet(
     id,
     name,
     icon,
-    chain: "base",
+    family: "evm",
     async connect() {
       if (!trusted()) throw new Error(conflictMessage);
       const addresses = await provider.request({
         method: "eth_requestAccounts",
       });
       if (!Array.isArray(addresses) || typeof addresses[0] !== "string")
-        throw new Error("Your wallet did not return a Base address.");
+        throw new Error("Your wallet did not return an address.");
       const address = addresses[0].toLowerCase();
       return {
         address,
@@ -172,7 +173,7 @@ export function usePayoutWallets(): PayoutWallet[] {
           id: solanaIds.get(wallet) as string,
           name: wallet.name,
           icon: wallet.icon,
-          chain: "solana",
+          family: "solana",
           async connect() {
             const { accounts } =
               await supported.features["standard:connect"].connect();
@@ -220,7 +221,7 @@ export function usePayoutWallets(): PayoutWallet[] {
         next.push({
           id: `legacy-solana-${index}`,
           name,
-          chain: "solana",
+          family: "solana",
           async connect() {
             const { publicKey } = await provider.connect();
             return {

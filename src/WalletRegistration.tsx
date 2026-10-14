@@ -1,12 +1,17 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { browserDeployment } from "./lib/browser-deployment";
+import { chainFamily } from "./lib/escrow-policy.mjs";
 import {
   prepareWalletRegistration,
   type RegisteredWalletClaim,
   type WalletAuthorization,
   type WalletRegistrationSession,
 } from "./lib/wallet-registration";
-import { isWalletAddress, type WalletChain } from "./lib/wallets";
+import {
+  isWalletAddress,
+  isWalletChain,
+  type WalletChain,
+} from "./lib/wallets";
 
 const PENDING_WALLET = "slop-wallet-authorization";
 const WALLET_ADDRESS = "slop-wallet-address";
@@ -42,14 +47,17 @@ export function WalletRegistration() {
   const [address, setAddress] = useState(savedAddress);
   const [chain, setChain] = useState<WalletChain>(() => {
     try {
-      return sessionStorage.getItem("slop-wallet-chain") === "base"
-        ? "base"
-        : "solana";
+      const saved = sessionStorage.getItem("slop-wallet-chain");
+      return isWalletChain(saved) ? saved : "solana";
     } catch {
       return "solana";
     }
   });
-  const chainLabel = chain === "base" ? "Base" : "Solana";
+  const chainLabel = {
+    solana: "Solana",
+    base: "Base",
+    robinhood: "Robinhood Chain",
+  }[chain];
   const [canResume, setCanResume] = useState(false);
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [phase, setPhase] = useState<
@@ -85,8 +93,8 @@ export function WalletRegistration() {
     const exactAddress = address.trim();
     if (!isWalletAddress(chain, exactAddress)) {
       setMessage(
-        chain === "base"
-          ? "Enter a valid lowercase Base public address (0x and 40 hexadecimal characters)."
+        chainFamily(chain) === "evm"
+          ? "Enter a valid lowercase public address (0x and 40 hexadecimal characters)."
           : "Enter a valid Solana public address (32-byte base58).",
       );
       return;
@@ -192,8 +200,8 @@ export function WalletRegistration() {
     >
       <h2 id={`${addressId}-heading`}>Wallets</h2>
       <p>
-        Register a public Base or Solana address for USDC awards. Registration
-        records a receiving address; it does not authorize payment.
+        Register a public Solana, Base or Robinhood Chain address for awards.
+        Registration records a receiving address; it does not authorize payment.
       </p>
       <details>
         <summary>About wallet registration</summary>
@@ -261,6 +269,7 @@ export function WalletRegistration() {
         >
           <option value="solana">Solana</option>
           <option value="base">Base</option>
+          <option value="robinhood">Robinhood Chain</option>
         </select>
         <label htmlFor={addressId}>{chainLabel} public address</label>
         <input
