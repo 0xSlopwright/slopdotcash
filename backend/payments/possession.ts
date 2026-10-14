@@ -27,6 +27,13 @@ export function verifyPaymentWalletSignature(
     if (chain === "solana") {
       if (!/^[A-Za-z0-9+/]{86}==$/.test(signature)) return false;
       const bytes = Uint8Array.from(atob(signature), (c) => c.charCodeAt(0));
+      // atob discards the unused low bits of the final character, so a
+      // changed encoding of the same bytes passes the pattern alone.
+      // Re-encode and bind the exact string before the signature is stored
+      // as a payment authorization, as the signer-access validator does.
+      let binary = "";
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      if (btoa(binary) !== signature) return false;
       return ed25519.verify(
         bytes,
         new TextEncoder().encode(message),

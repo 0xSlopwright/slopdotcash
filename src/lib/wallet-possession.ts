@@ -199,6 +199,19 @@ function decodeSignature(signature: unknown): Uint8Array {
   if (bytes.length !== 64) {
     throw new TypeError("Wallet possession signature must be exactly 64 bytes");
   }
+  // atob discards the unused low bits of the final character, so a changed
+  // encoding of the same bytes passes the pattern alone. Re-encode the
+  // decoded bytes and bind the exact string, as the signer-access validator
+  // does for the same Solana Ed25519 signature form.
+  let reencoded = "";
+  for (let index = 0; index < bytes.length; index += 1) {
+    reencoded += String.fromCharCode(bytes[index]);
+  }
+  if (btoa(reencoded) !== signature) {
+    throw new TypeError(
+      "Wallet possession signature must be 64 bytes of canonical padded base64",
+    );
+  }
   return bytes;
 }
 
