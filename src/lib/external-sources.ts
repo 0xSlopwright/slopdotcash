@@ -107,6 +107,7 @@ function parseSecureUrl(value: unknown, field: string): URL {
   if (
     parsed.protocol !== "https:" ||
     !parsed.hostname ||
+    parsed.hostname.endsWith(".") ||
     parsed.username ||
     parsed.password ||
     parsed.port ||
@@ -218,10 +219,14 @@ export function assertExternalArchiveUrl(
   const parsed = parseSecureUrl(value, field);
   const host = parsed.hostname.toLowerCase();
   const capturedPath = decodeURIComponent(parsed.pathname);
+  const waybackTarget = /^\/web\/\d{14}(?:[a-z_]+)?\/(https?:\/\/.*)$/u.exec(
+    capturedPath,
+  )?.[1];
   const wayback =
     host === "web.archive.org" &&
-    /^\/web\/\d{14}(?:[a-z_]+)?\/https?:\/\//u.test(capturedPath) &&
-    capturedPath.endsWith(sourceUrl.replace(/^https:\/\//u, ""));
+    waybackTarget !== undefined &&
+    (waybackTarget === sourceUrl ||
+      waybackTarget === sourceUrl.replace(/^https:/u, "http:"));
   const archiveToday =
     host === "archive.ph" && /^\/[A-Za-z0-9]{5,}$/u.test(parsed.pathname);
   if (!(wayback || archiveToday)) {
