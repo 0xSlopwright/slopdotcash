@@ -12,25 +12,26 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
 import {
   type BindingInput,
-  baseAwardId,
-  baseBindingDigest,
-  type baseBindingTypedData,
   buildBindCalldata,
   buildPayCalldata,
+  evmAwardId,
+  evmBindingDigest,
+  type evmBindingTypedData,
   verifyBinding,
 } from "../../contracts/evm/adapter";
 import { sha256Hex } from "../../workers/identity/crypto";
 import {
-  createBaseAttester,
-  createBaseExecutor,
+  createEvmAttester,
+  createEvmExecutor,
   type JournalStore,
   lookupAttempt,
+  preflightEvmDeployment,
   retireUnsignedAttempt,
 } from "../../workers/payment-executor/core";
-import { scanBasePayments } from "../../workers/payments/scanner";
+import { scanEvmPayments } from "../../workers/payments/scanner";
 import type { D1Database } from "../trace/cloudflare-persistence";
-import { basePaymentAdapter } from "./base-adapter";
 import { dispatchPayment } from "./dispatch";
+import { evmPaymentAdapter } from "./evm-adapter";
 import { handlePaymentsApi, type PaymentDeploymentIdentity } from "./handler";
 import { indexPaymentEvent } from "./ledger";
 import { personalMessageHash } from "./possession";
@@ -144,7 +145,7 @@ const recipientAccount = privateKeyToAccount(`0x${"0".repeat(63)}1`);
 /** viem signs the same EIP-712 structure the vault hashes; a mismatch fails at the handler. */
 function signBinding(
   account: { signTypedData: (data: never) => Promise<`0x${string}`> },
-  typedData: ReturnType<typeof baseBindingTypedData>,
+  typedData: ReturnType<typeof evmBindingTypedData>,
 ) {
   const { EIP712Domain: _domain, ...types } = typedData.types;
   return account.signTypedData({
@@ -182,7 +183,7 @@ async function authorizeBinding(
       }),
       { db, paymentDeployments },
     )
-  ).json()) as { typedData: ReturnType<typeof baseBindingTypedData> };
+  ).json()) as { typedData: ReturnType<typeof evmBindingTypedData> };
   assert.equal(challenge.typedData.message.expectedVersion, expectedVersion);
   const response = await handlePaymentsApi(
     request("/wallets/bind-authorize", {
@@ -296,7 +297,7 @@ try {
     ])) as string
   ).slice(-40)}`;
   deploymentTransactions.set(vault, createTx);
-  award = baseAwardId(31337n, vault, source);
+  award = evmAwardId(31337n, vault, source);
   await send(asset, "mint(address,uint256)", [owner, "200000000"]);
   await send(asset, "approve(address,uint256)", [vault, "200000000"]);
   await send(vault, "deposit(uint64)", ["200000000"]);
@@ -330,13 +331,28 @@ try {
     projectId: "integration-fixture",
     network: "anvil",
   };
-  const adapter = basePaymentAdapter(db, config);
-  const scan = () =>
-    scanBasePayments(
+  const adapter = evmPaymentAdapter(db, { ...config, chain: "base" });
+  // A scan deployment must state its reviewed page size; the scanner never assumes one.
+  await assert.rejects(
+    scanEvmPayments(
       db,
       {
         ...config,
         chain: "base",
+        deploymentTransaction: deploymentTransactions.get(vault),
+      },
+      rpcUrl,
+      async () => {},
+    ),
+    /scan page size/,
+  );
+  const scan = () =>
+    scanEvmPayments(
+      db,
+      {
+        ...config,
+        chain: "base",
+        scanPageBlocks: "2000",
         deploymentTransaction: deploymentTransactions.get(vault),
       },
       rpcUrl,
@@ -428,7 +444,7 @@ try {
       }),
       { db, paymentDeployments },
     )
-  ).json()) as { typedData: ReturnType<typeof baseBindingTypedData> };
+  ).json()) as { typedData: ReturnType<typeof evmBindingTypedData> };
   assert.ok(bindChallenge.typedData, JSON.stringify(bindChallenge));
   assert.equal(bindChallenge.typedData.message.destination, recipient);
   assert.equal(
@@ -472,11 +488,96 @@ try {
     ).status,
     403,
   );
+  // Hosted preflight rules survive the family refactor: a record without a
+  // gas ceiling, a mainnet registry network, and an unknown chain string are
+  // each refused before any signer secret or RPC is touched.
+  const preflightBase = {
+    PAYMENT_DEPLOYMENTS: "",
+    PAYMENT_RPC_URLS: JSON.stringify({ anvil: rpcUrl, "base-mainnet": rpcUrl }),
+    ALLOW_LOCAL_TEST_CHAIN: true,
+  };
+  const preflightInput = {
+    obligationId: award,
+    network: "anvil",
+    vault,
+    githubUserId: "123",
+    claimId: "claim",
+    claimDigest: "0".repeat(64),
+    destination: recipientAccount.address.toLowerCase(),
+  };
+  const { gasCeiling: _omitted, ...withoutCeiling } = {
+    ...config,
+    chain: "base",
+    chainId: "31337",
+    gasCeiling: "500000",
+    scanPageBlocks: "2000",
+  };
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...preflightBase,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([withoutCeiling]),
+      },
+      preflightInput,
+    ),
+    /Reviewed gas ceiling required/,
+  );
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...preflightBase,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([
+          {
+            ...withoutCeiling,
+            network: "base-mainnet",
+            chainId: "8453",
+            gasCeiling: "500000",
+          },
+        ]),
+      },
+      { ...preflightInput, network: "base-mainnet" },
+    ),
+    /Test deployment required/,
+  );
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...preflightBase,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([
+          { ...withoutCeiling, chain: "evm", gasCeiling: "500000" },
+        ]),
+      },
+      preflightInput,
+    ),
+    /Test deployment required/,
+  );
+  // A registry network must carry the registry's chain id even under the
+  // local override: naming base-sepolia with Anvil's 31337 is refused. (The
+  // pre-refactor preflight accepted this combination; the narrowing is
+  // deliberate and only reachable with ALLOW_LOCAL_TEST_CHAIN set.)
+  await assert.rejects(
+    preflightEvmDeployment(
+      {
+        ...preflightBase,
+        PAYMENT_DEPLOYMENTS: JSON.stringify([
+          { ...withoutCeiling, network: "base-sepolia", gasCeiling: "500000" },
+        ]),
+      },
+      { ...preflightInput, network: "base-sepolia" },
+    ),
+    /Test deployment required/,
+  );
   // Without the contributor's acceptance the attester cannot bind at all.
-  const unsignedAttester = createBaseAttester({
+  const unsignedAttester = createEvmAttester({
     PAYMENTS_DB: db,
     PAYMENT_DEPLOYMENTS: JSON.stringify([
-      { ...config, chain: "base", chainId: "31337" },
+      {
+        ...config,
+        chain: "base",
+        chainId: "31337",
+        gasCeiling: "500000",
+        scanPageBlocks: "2000",
+      },
     ]),
     PAYMENT_RPC_URLS: JSON.stringify({ anvil: rpcUrl }),
     ALLOW_LOCAL_TEST_CHAIN: true,
@@ -669,7 +770,13 @@ try {
     },
   });
   const deployments = JSON.stringify([
-    { ...config, chain: "base", chainId: "31337" },
+    {
+      ...config,
+      chain: "base",
+      chainId: "31337",
+      gasCeiling: "500000",
+      scanPageBlocks: "2000",
+    },
   ]);
   const shared = {
     PAYMENTS_DB: db,
@@ -680,7 +787,7 @@ try {
     ALLOW_LOCAL_TEST_CHAIN: true,
   };
   let rejectFirstBinding = true;
-  const attesterEngine = createBaseAttester({
+  const attesterEngine = createEvmAttester({
     ...shared,
     SIGNER: {
       address: attesterAccount.address,
@@ -700,7 +807,7 @@ try {
     JOURNAL: attesterJournal,
   });
   const makeExecutor = () =>
-    createBaseExecutor({
+    createEvmExecutor({
       ...shared,
       SIGNER: gasAccount,
       JOURNAL: gasJournal,
@@ -867,11 +974,7 @@ try {
   ).trim();
   assert.equal(refundBalance.split(" ")[0], "90000000");
   // A later award follows an authenticated successor only after the 24-hour delay.
-  const rotationAward = baseAwardId(
-    31337n,
-    vault,
-    `0x${"a".padStart(64, "0")}`,
-  );
+  const rotationAward = evmAwardId(31337n, vault, `0x${"a".padStart(64, "0")}`);
   await send(asset, "mint(address,uint256)", [owner, "100000000"]);
   await send(asset, "approve(address,uint256)", [vault, "100000000"]);
   await send(vault, "deposit(uint64)", ["100000000"]);
@@ -1052,7 +1155,7 @@ try {
     "Original award is never replayed during rotation",
   );
   if (process.argv.includes("--serve")) {
-    const browserAward = baseAwardId(
+    const browserAward = evmAwardId(
       31337n,
       vault,
       `0x${"5".padStart(64, "0")}`,
@@ -1114,7 +1217,7 @@ try {
               // The fixture wallet (key 1) accepts the binding, as the page would.
               const accepted = secp256k1.sign(
                 Uint8Array.from(
-                  baseBindingDigest(31337n, vault, acceptance)
+                  evmBindingDigest(31337n, vault, acceptance)
                     .slice(2)
                     .match(/../g) ?? [],
                   (b) => Number.parseInt(b, 16),

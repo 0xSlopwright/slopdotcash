@@ -1,5 +1,6 @@
-import { baseBindingTypedData } from "../../contracts/evm/adapter";
+import { evmBindingTypedData } from "../../contracts/evm/adapter";
 import { readBoundedJson } from "../../src/lib/browser-json";
+import { ESCROW_CHAINS, EVM_CHAINS } from "../../src/lib/escrow-policy.mjs";
 import type {
   AccountPayment,
   DirectTransfer,
@@ -10,8 +11,8 @@ import { sha256Hex } from "../../workers/identity/crypto";
 import type { D1Database } from "../trace/cloudflare-persistence";
 import {
   buildPaymentWalletMessage,
-  canonicalBaseSignature,
-  verifyBaseBindingSignature,
+  canonicalEvmSignature,
+  verifyEvmBindingSignature,
   verifyPaymentWalletSignature,
 } from "./possession";
 import { slopbotInvoice } from "./slopbot-billing";
@@ -340,7 +341,7 @@ export async function handlePaymentsApi(
         ? json(200, { authorized: true })
         : json(409, { error: "claim_not_current" });
     }
-    // A Base destination binding needs the destination wallet's EIP-712
+    // An EVM destination binding needs the destination wallet's EIP-712
     // signature over the exact chain, vault, actor, destination, expected
     // version, claim digest and expiry (PAY-05). The challenge is stateless:
     // the authorize step verifies every field against the current claim, and
@@ -374,7 +375,7 @@ export async function handlePaymentsApi(
       const vault = body.vault.toLowerCase();
       const deployments = deps.paymentDeployments.filter(
         (d) =>
-          d.chain === "base" &&
+          (EVM_CHAINS as readonly string[]).includes(d.chain) &&
           d.network === body.network &&
           d.vault.toLowerCase() === vault &&
           typeof d.chainId === "string" &&
@@ -385,9 +386,9 @@ export async function handlePaymentsApi(
       const chainId = BigInt(deployments[0].chainId as string);
       const wallet = await deps.db
         .prepare(
-          "SELECT w.id,w.wallet_address,w.record_sha256 FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id WHERE w.id=? AND w.github_user_id=? AND w.chain='base' AND w.source='d1_registry' AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)",
+          `SELECT w.id,w.wallet_address,w.record_sha256 FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id WHERE w.id=? AND w.github_user_id=? AND w.chain=? AND w.source='d1_registry' AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)`,
         )
-        .bind(body.claimId, member.github_id)
+        .bind(body.claimId, member.github_id, deployments[0].chain)
         .first<{ id: string; wallet_address: string; record_sha256: string }>();
       if (!wallet) return json(409, { error: "claim_not_current" });
       const nowSeconds = Math.floor(Date.parse(now) / 1000);
@@ -404,7 +405,7 @@ export async function handlePaymentsApi(
       if (!authorize)
         return json(200, {
           claimId: wallet.id,
-          typedData: baseBindingTypedData(chainId, vault, binding),
+          typedData: evmBindingTypedData(chainId, vault, binding),
         });
       // Only an authorization the attester can still submit is stored.
       if (
@@ -414,10 +415,10 @@ export async function handlePaymentsApi(
         return json(400, { error: "authorization_expires_too_soon" });
       // Store the encoding the vault accepts: a recovery byte of 0 or 1
       // becomes 27 or 28; a high-s signature is refused.
-      const signature = canonicalBaseSignature(body.signature as string);
+      const signature = canonicalEvmSignature(body.signature as string);
       if (
         !signature ||
-        !verifyBaseBindingSignature(chainId, vault, binding, signature)
+        !verifyEvmBindingSignature(chainId, vault, binding, signature)
       )
         return json(403, { error: "wallet_signature_required" });
       // Rows are append-only evidence. A new signature with another expiry is
@@ -456,7 +457,7 @@ export async function handlePaymentsApi(
         .first<{ signature: string }>();
       if (
         !stored ||
-        !verifyBaseBindingSignature(chainId, vault, binding, stored.signature)
+        !verifyEvmBindingSignature(chainId, vault, binding, stored.signature)
       )
         throw new Error("Binding authorization was not stored");
       return json(200, { authorized: true, expiresAt });
@@ -550,7 +551,7 @@ export async function handlePaymentsApi(
       ) as AccountPayment[];
       for (const p of payments)
         p.netMicro = (BigInt(p.grossMicro) - BigInt(p.feeMicro)).toString();
-      const balances = (["base", "solana"] as const).map((chain) => ({
+      const balances = ESCROW_CHAINS.map((chain) => ({
         chain,
         netMicro: payments
           .filter((p) => p.chain === chain && p.state === "reserved")
