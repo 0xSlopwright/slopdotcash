@@ -511,6 +511,8 @@ function cycleEntry(value: unknown, index: number): CycleIndexEntry {
     ],
     `${field}.reward`,
   );
+  // Cycles are the monthly USDC rail; the currency is frozen per cycle and
+  // never follows a later change of the project's settlement network.
   if (reward.currency !== null && reward.currency !== "USDC") {
     throw new TypeError(`${field}.reward.currency is invalid`);
   }
