@@ -20,7 +20,11 @@ import type {
   ScoreOpportunity,
   WorkItem,
 } from "./leaderboard";
-import { assignLeaderboardRanks, SCORE_CAPS } from "./leaderboard";
+import {
+  assignLeaderboardRanks,
+  paymentReviewSnapshot,
+  SCORE_CAPS,
+} from "./leaderboard";
 import {
   findProject,
   type ProjectDefinition,
@@ -537,6 +541,22 @@ export function createProjectView(
   const { conflicts, runs } = selectUniqueRuns(snapshot, project);
   const actors = new Map<string, GitHubActor>();
   for (const event of ledger) actors.set(event.actor.id, event.actor);
+  // Score and Points use the public ledger. Monetary previews must use the
+  // same weights as the proposal, including payment-only reviewers at score 0.
+  const paymentView =
+    snapshot.paymentReviewBasis &&
+    cycleId >= "2026-10" &&
+    project.reward.kind === "monthly-pool"
+      ? createProjectView(
+          paymentReviewSnapshot(snapshot),
+          projectId,
+          requestedCycleId,
+          fundingBasis,
+          archivedProject,
+        )
+      : null;
+  for (const leader of paymentView?.leaders ?? [])
+    actors.set(leader.actor.id, leader.actor);
 
   const leaders = [...actors.values()].map<ProjectContributor>((actor) => {
     const events = ledger.filter((event) => event.actor.id === actor.id);
@@ -627,6 +647,16 @@ export function createProjectView(
         left.id.localeCompare(right.id),
     );
 
+  if (paymentView) {
+    const weights = new Map(
+      paymentView.leaders.map((leader) => [
+        leader.actor.id,
+        leader.adjustedWeight,
+      ]),
+    );
+    for (const leader of leaders)
+      leader.adjustedWeight = weights.get(leader.actor.id) ?? 0;
+  }
   let reward: ProjectRewardProjection;
   if (project.reward.kind === "monthly-pool") {
     const capMinor =
@@ -749,4 +779,24 @@ export function createProjectView(
     receiptConflicts: conflicts,
     reward,
   };
+}
+
+/** Allocation-only view. Archived pre-October cycles keep their original basis. */
+export function createPaymentProjectView(
+  snapshot: LeaderboardSnapshot,
+  projectId: ProjectId,
+  cycleId: string,
+  fundingBasis?: Parameters<typeof createProjectView>[3],
+  archivedProject?: ProjectDefinition,
+): ProjectView {
+  const project = archivedProject ?? findProject(projectId);
+  return createProjectView(
+    cycleId >= "2026-10" && project?.reward.kind === "monthly-pool"
+      ? paymentReviewSnapshot(snapshot)
+      : snapshot,
+    projectId,
+    cycleId,
+    fundingBasis,
+    archivedProject,
+  );
 }
