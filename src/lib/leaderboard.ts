@@ -2897,6 +2897,9 @@ export function createLeaderboardSnapshot(
   }
 
   const commitOwners = commitCreditOwners(mergedPullRequestOutcomes);
+  // SCR-04 credit actors by pull request. A shared work unit can suppress a
+  // pull request's merge events; its credit actors stay self-reviewers.
+  const creditActorIds = new Map<string, ReadonlySet<string>>();
   for (const pullRequest of mergedPullRequestOutcomes) {
     const repositoryId = repositoryIdFromUrl(pullRequest.url);
     const ratification = detailEligibleMergedPullRequestIds.has(pullRequest.id)
@@ -2917,6 +2920,10 @@ export function createLeaderboardSnapshot(
       : author
         ? [author]
         : [];
+    creditActorIds.set(
+      pullRequest.id,
+      new Set(actors.map((actor) => actor.id)),
+    );
     if (actors.length === 0) continue;
     const totalThirds =
       ratification?.record.scoreThirds ??
@@ -3217,6 +3224,11 @@ export function createLeaderboardSnapshot(
     const reviewLedgerStart = ledger.length;
     const ratification = scoreRatifications.get(pullRequest.id);
     const awardedReviewers = new Set<string>();
+    // SCR-04: a review by any credit actor of this pull request is a
+    // self-review on every review path, not only for its author.
+    const isCreditActor = (actorId: string | undefined): boolean =>
+      actorId !== undefined &&
+      (creditActorIds.get(pullRequest.id)?.has(actorId) ?? false);
     const hasEvaluatedReviewReservation = (actorId: string): boolean =>
       evaluatedReviewReservations.has(
         `${repositoryId}\0${pullRequest.number}\0${actorId}`,
@@ -3231,7 +3243,8 @@ export function createLeaderboardSnapshot(
       if (
         rawReview === null ||
         !source.author ||
-        sameActor(source.author, pullRequest.author)
+        sameActor(source.author, pullRequest.author) ||
+        isCreditActor(source.author.id)
       )
         continue;
       if (hasEvaluatedReviewReservation(source.author.id)) continue;
@@ -3297,6 +3310,7 @@ export function createLeaderboardSnapshot(
     if (
       ratification?.source.author &&
       !sameActor(ratification.source.author, pullRequest.author) &&
+      !isCreditActor(ratification.source.author.id) &&
       !hasEvaluatedReviewReservation(ratification.source.author.id) &&
       !awardedReviewers.has(ratification.source.author.id)
     ) {
@@ -3401,14 +3415,7 @@ export function createLeaderboardSnapshot(
       }
       const exclusionReason =
         reviewExclusionReason(review, pullRequest) ??
-        (ledger.some(
-          (event) =>
-            event.category === "merged-pull-request" &&
-            event.source.id === pullRequest.id &&
-            event.actor.id === review.author?.id,
-        )
-          ? "self-review"
-          : null);
+        (isCreditActor(review.author?.id) ? "self-review" : null);
       if (exclusionReason !== null) {
         excludeReview(pullRequest, review, exclusionReason);
         continue;
