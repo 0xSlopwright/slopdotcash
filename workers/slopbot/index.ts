@@ -8,7 +8,11 @@ import { type ReviewEnv, recordHumanSignal, reviewItem } from "./review";
 import { readWebhookBody } from "./webhook-body";
 
 type Queue = { send(body: Job): Promise<void> };
-type Env = ReviewEnv & { SLOPBOT_WEBHOOK_SECRET: string; SLOPBOT_QUEUE: Queue };
+type Env = Omit<ReviewEnv, "SLOPBOT_DB"> & {
+  SLOPBOT_DB: store.D1TransactionalDatabase;
+  SLOPBOT_WEBHOOK_SECRET: string;
+  SLOPBOT_QUEUE: Queue;
+};
 
 const MAX_WEBHOOK_BYTES = 25 * 1024 * 1024;
 const REVIEW_ACTIONS: Record<string, ReadonlySet<string>> = {
@@ -26,6 +30,7 @@ type Payload = {
   installation?: {
     id: number;
     account?: { id: number; login: string; type: string };
+    updated_at?: string | number;
   };
   repository?: { id: number; name: string; owner: { login: string } };
   sender?: { id: number; type: string };
@@ -87,31 +92,58 @@ function jobFor(
   return null;
 }
 
-async function handleInstallation(env: Env, event: string, payload: Payload) {
+async function handleInstallation(
+  env: Env,
+  payload: Payload,
+  deliveryId: string,
+) {
   const installation = payload.installation;
-  if (event !== "installation" || installation?.account === undefined) return;
+  if (installation?.account === undefined) {
+    await store.completeInstallationDelivery(env.SLOPBOT_DB, deliveryId, null);
+    return;
+  }
+  const rawUpdatedAt = installation.updated_at;
+  const sourceUpdatedAt =
+    typeof rawUpdatedAt === "number"
+      ? rawUpdatedAt * 1000
+      : typeof rawUpdatedAt === "string"
+        ? Date.parse(rawUpdatedAt)
+        : Number.NaN;
+  if (!Number.isSafeInteger(sourceUpdatedAt) || sourceUpdatedAt < 0) {
+    throw new Error("installation.updated_at is invalid");
+  }
   if (
     payload.action === "created" ||
     payload.action === "new_permissions_accepted"
   ) {
-    await store.upsertInstallation(env.SLOPBOT_DB, {
-      id: installation.id,
-      account: installation.account,
+    await store.completeInstallationDelivery(env.SLOPBOT_DB, deliveryId, {
+      kind: "upsert",
+      installation: { id: installation.id, account: installation.account },
+      sourceUpdatedAt,
     });
   } else if (payload.action === "deleted") {
-    await store.setInstallationState(
-      env.SLOPBOT_DB,
-      installation.id,
-      "removed",
-    );
+    await store.completeInstallationDelivery(env.SLOPBOT_DB, deliveryId, {
+      kind: "state",
+      installation: { id: installation.id, account: installation.account },
+      state: "removed",
+      sourceUpdatedAt,
+    });
   } else if (payload.action === "suspend") {
-    await store.setInstallationState(
-      env.SLOPBOT_DB,
-      installation.id,
-      "suspended",
-    );
+    await store.completeInstallationDelivery(env.SLOPBOT_DB, deliveryId, {
+      kind: "state",
+      installation: { id: installation.id, account: installation.account },
+      state: "suspended",
+      sourceUpdatedAt,
+    });
   } else if (payload.action === "unsuspend") {
-    await store.setInstallationState(env.SLOPBOT_DB, installation.id, "active");
+    await store.completeInstallationDelivery(env.SLOPBOT_DB, deliveryId, {
+      kind: "state",
+      installation: { id: installation.id, account: installation.account },
+      state: "active",
+      sourceUpdatedAt,
+    });
+  } else {
+    await store.completeInstallationDelivery(env.SLOPBOT_DB, deliveryId, null);
   }
 }
 
@@ -141,12 +173,25 @@ export default {
     const deliveryId = request.headers.get("x-github-delivery") ?? "";
     if (deliveryId === "")
       return new Response("missing delivery id", { status: 400 });
+    if (event === "installation") {
+      const payload = JSON.parse(new TextDecoder().decode(body)) as Payload;
+      if (
+        !(await store.claimInstallationDelivery(
+          env.SLOPBOT_DB,
+          deliveryId,
+          event,
+        ))
+      ) {
+        return new Response("duplicate delivery", { status: 202 });
+      }
+      await handleInstallation(env, payload, deliveryId);
+      return new Response("ignored", { status: 202 });
+    }
     if (!(await store.recordDelivery(env.SLOPBOT_DB, deliveryId, event))) {
       return new Response("duplicate delivery", { status: 202 });
     }
     try {
       const payload = JSON.parse(new TextDecoder().decode(body)) as Payload;
-      await handleInstallation(env, event, payload);
       const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
       if (job !== null) await env.SLOPBOT_QUEUE.send(job);
       return new Response(job === null ? "ignored" : "queued", {
