@@ -34,11 +34,7 @@
               },
               {
                 "kind": "account",
-                "path": "identity_authority"
-              },
-              {
-                "kind": "arg",
-                "path": "network"
+                "path": "project"
               },
               {
                 "kind": "arg",
@@ -408,7 +404,24 @@
         },
         {
           "name": "binding",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [119, 97, 108, 108, 101, 116]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "account",
+                "path": "obligation.actor_id",
+                "account": "Obligation"
+              }
+            ]
+          }
         },
         {
           "name": "mint",
@@ -469,31 +482,6 @@
               }
             ]
           }
-        },
-        {
-          "name": "active_veto",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [118, 101, 116, 111]
-              },
-              {
-                "kind": "account",
-                "path": "project"
-              },
-              {
-                "kind": "account",
-                "path": "obligation.actor_id",
-                "account": "Obligation"
-              },
-              {
-                "kind": "account",
-                "path": "binding.active_version",
-                "account": "WalletBinding"
-              }
-            ]
-          }
         }
       ],
       "args": [
@@ -517,7 +505,24 @@
           "name": "project"
         },
         {
-          "name": "binding"
+          "name": "binding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [119, 97, 108, 108, 101, 116]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "actor_id"
+              }
+            ]
+          }
         },
         {
           "name": "veto",
@@ -539,26 +544,6 @@
               {
                 "kind": "arg",
                 "path": "version"
-              }
-            ]
-          }
-        },
-        {
-          "name": "ledger",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [118, 101, 116, 111, 45, 99, 111, 117, 110, 116]
-              },
-              {
-                "kind": "account",
-                "path": "project"
-              },
-              {
-                "kind": "arg",
-                "path": "actor_id"
               }
             ]
           }
@@ -663,10 +648,6 @@
       "discriminator": [80, 27, 252, 196, 96, 153, 254, 192]
     },
     {
-      "name": "VetoLedger",
-      "discriminator": [27, 80, 180, 216, 138, 251, 176, 217]
-    },
-    {
       "name": "WalletBinding",
       "discriminator": [51, 211, 204, 185, 168, 68, 52, 176]
     }
@@ -756,7 +737,7 @@
     {
       "code": 6011,
       "name": "BindingActive",
-      "msg": "Wallet binding is already active"
+      "msg": "Wallet binding has paid or its veto window has closed"
     },
     {
       "code": 6012,
@@ -771,7 +752,7 @@
     {
       "code": 6014,
       "name": "VetoLimit",
-      "msg": "Owner veto limit reached before the actor's first payment"
+      "msg": "Owner veto limit reached since the actor's last payment"
     },
     {
       "code": 6015,
@@ -1091,25 +1072,10 @@
       }
     },
     {
-      "name": "VetoLedger",
-      "docs": [
-        "Vetoes this project has recorded for an actor before the actor's first payment."
-      ],
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "count",
-            "type": "u8"
-          }
-        ]
-      }
-    },
-    {
       "name": "WalletBinding",
       "docs": [
-        "Shared across every project with the same authority and network. The first seven",
-        "fields are the latest binding; the active slot is the binding a payment last used."
+        "One binding per project and actor, so each project's delay, vetoes and payments are",
+        "its own. The first seven fields are the latest binding, the only one that can pay."
       ],
       "type": {
         "kind": "struct",
@@ -1147,12 +1113,16 @@
             "type": "i64"
           },
           {
-            "name": "active_destination",
-            "type": "pubkey"
+            "name": "paid_version",
+            "docs": [
+              "The version the last payment in this project used; 0 before the first payment."
+            ],
+            "type": "u64"
           },
           {
-            "name": "active_version",
-            "type": "u64"
+            "name": "veto_count",
+            "docs": ["Vetoes recorded since the last payment in this project."],
+            "type": "u8"
           }
         ]
       }

@@ -221,8 +221,8 @@ contract SonnetParity {
         require(t.balanceOf(dest1) == 98, "paid after the cap");
     }
 
-    // Fixed (review M-2): a binding that has paid keeps paying through a rotation and its cancel.
-    function test_activeBindingSupersededThenCancelled() public {
+    // Fixed (review M-2): a rotation or its cancel never reopens payment to the earlier destination.
+    function test_rotationAndCancelFreezePreviousDestination() public {
         _dep(1000);
         bytes32 s1 = bytes32(uint256(11));
         bytes32 id1 = e.awardId(s1);
@@ -238,23 +238,30 @@ contract SonnetParity {
         e.commitAward(id3, 7, 100, s3);
         vm.prank(auth);
         e.bindDestination(7, dest1, 0, bytes32(uint256(1)), type(uint64).max);
-        vm.warp(block.timestamp + D + 1); // v1 active and payable
+        vm.warp(block.timestamp + D + 1); // v1 payable
         e.pay(id1, 1);
-        // authority rotates to a new destination; the pending v2 does not pay, v1 still does
+        // authority rotates to a new destination; neither the pending v2 nor v1 pays
         vm.prank(auth);
         e.bindDestination(7, dest2, 1, bytes32(uint256(2)), type(uint64).max);
         vm.expectRevert();
         e.pay(id2, 2);
+        vm.expectRevert();
         e.pay(id2, 1);
-        // owner cancels the replacement; v1 still pays
+        // v2 pays after its delay
+        vm.warp(block.timestamp + D);
+        e.pay(id2, 2);
+        // a cancelled v3 does not reopen v2
+        vm.prank(auth);
+        e.bindDestination(7, dest1, 2, bytes32(uint256(3)), type(uint64).max);
         vm.prank(owner);
-        e.cancelBinding(7, 2);
+        e.cancelBinding(7, 3);
         vm.warp(block.timestamp + D + 1);
         vm.expectRevert();
+        e.pay(id3, 3);
+        vm.expectRevert();
         e.pay(id3, 2);
-        e.pay(id3, 1);
         _inv();
-        require(t.balanceOf(dest1) == 294 && t.balanceOf(dest2) == 0, "all three to the active binding");
+        require(t.balanceOf(dest1) == 98 && t.balanceOf(dest2) == 98, "one to each ready binding, none stale");
     }
 
     function test_selfPayoutExitFeeAndFragments() public {

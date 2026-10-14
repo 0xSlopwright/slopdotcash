@@ -212,8 +212,7 @@ export async function ownerPlan(input, runtime) {
             project,
             binding: pda(
               Buffer.from("wallet"),
-              state.identityAuthority.toBuffer(),
-              Buffer.from(state.network),
+              project.toBuffer(),
               actor.toArrayLike(Buffer, "le", 8),
             ),
             veto: pda(
@@ -221,11 +220,6 @@ export async function ownerPlan(input, runtime) {
               project.toBuffer(),
               actor.toArrayLike(Buffer, "le", 8),
               version.toArrayLike(Buffer, "le", 8),
-            ),
-            ledger: pda(
-              Buffer.from("veto-count"),
-              project.toBuffer(),
-              actor.toArrayLike(Buffer, "le", 8),
             ),
             obligation:
               input.obligationId === undefined

@@ -304,10 +304,10 @@ async function authorized(
       solanaUint(obligation, 8)
   )
     throw new Error("Finalized award mismatch");
+  // Bindings are per project: seeds are the project PDA and the actor.
   const bindingAddress = pda(config.programId, [
     encoder.encode("wallet"),
-    project.slice(104, 136),
-    project.slice(72, 104),
+    bytes(config.projectPda),
     le(BigInt(input.githubUserId)),
   ]);
   const binding = await read(
@@ -506,6 +506,21 @@ export function createSolanaAttester(
     },
   };
 }
+/**
+ * Unix time of the latest confirmed block. A payment executes in a later slot, whose
+ * clock is not earlier, so this never runs ahead of the program's clock.
+ */
+async function confirmedChainTime(config: SolanaEscrowConfig): Promise<bigint> {
+  const slot = await solanaRpc(config, "getSlot", [
+    { commitment: "confirmed" },
+  ]);
+  if (typeof slot !== "number" || !Number.isSafeInteger(slot))
+    throw new Error("Invalid confirmed slot");
+  const time = await solanaRpc(config, "getBlockTime", [slot]);
+  if (typeof time !== "number" || !Number.isSafeInteger(time))
+    throw new Error("Confirmed block time unavailable");
+  return BigInt(time);
+}
 export function createSolanaExecutor(
   env: SolanaExecutorEnvironment,
 ): PaymentExecutor {
@@ -521,12 +536,12 @@ export function createSolanaExecutor(
         await env.ATTESTER.submit(input);
         throw new Error("Destination binding awaiting finality");
       }
-      // The executor pays only the claimed destination, which is the latest binding. The
-      // program would also accept the binding a payment last used, but a claimed rotation
-      // waits for its delay here rather than paying the previous wallet.
+      // The program pays only the latest binding, which is the claimed destination.
+      // Delays are compared with the chain clock, not the host clock: the program uses
+      // the chain clock, and an early transaction would fail and block retries.
       const version = solanaUint(ctx.binding, 144);
       const delay = int64(ctx.project, 249);
-      const now = BigInt(Math.floor(Date.now() / 1000));
+      const now = await confirmedChainTime(ctx.config);
       const activatesAt = int64(ctx.binding, 152) + delay;
       if (now < activatesAt)
         throw new Error(
@@ -537,14 +552,12 @@ export function createSolanaExecutor(
         throw new Error(
           `Award is inside its commit delay until ${new Date(Number(payableAt) * 1000).toISOString()}; retry after it ends`,
         );
-      const vetoFor = (bindingVersion: bigint) =>
-        pda(ctx.config.programId, [
-          encoder.encode("veto"),
-          bytes(ctx.config.projectPda),
-          le(BigInt(input.githubUserId)),
-          le(bindingVersion),
-        ]);
-      const veto = vetoFor(version);
+      const veto = pda(ctx.config.programId, [
+        encoder.encode("veto"),
+        bytes(ctx.config.projectPda),
+        le(BigInt(input.githubUserId)),
+        le(version),
+      ]);
       const vetoed = (await solanaRpc(ctx.config, "getAccountInfo", [
         veto,
         { commitment: "finalized", encoding: "base64" },
@@ -570,7 +583,6 @@ export function createSolanaExecutor(
           { key: ata(ctx.config.mint, feeOwner), write: true },
           { key: TOKEN, write: false },
           { key: veto, write: false },
-          { key: vetoFor(solanaUint(ctx.binding, 192)), write: false },
         ],
         data: instructionData("pay", le(version)),
       };

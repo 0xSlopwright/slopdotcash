@@ -46,20 +46,26 @@ const seed = (s) => Buffer.from(s);
 const actorSeed = (id) => bn(id).toArrayLike(Buffer, "le", 8);
 const DELAY = 8;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-// The validator clock follows wall time; wait past the binding delay.
-const activate = () => sleep((DELAY + 2) * 1000);
+// The program reads the validator clock, which can lag wall time on a loaded host.
+// Wait until the validator clock itself has moved past the binding delay.
+const chainTime = async () =>
+  provider.connection.getBlockTime(
+    await provider.connection.getSlot("confirmed"),
+  );
+async function activate() {
+  const target = (await chainTime()) + DELAY + 2;
+  while ((await chainTime()) < target) await sleep(500);
+}
 const authority = Keypair.generate();
 const feeOwner = Keypair.generate();
 const recipient = Keypair.generate();
 const late = Keypair.generate();
 let mint, source, feeAccount, destination, lateDestination, project, vault;
-const binding = (id) =>
-  pda(
-    seed("wallet"),
-    key(authority.publicKey),
-    Buffer.from(network),
-    actorSeed(id),
-  );
+// Bindings are per project, so one project's delay, vetoes and payments never
+// change another project's binding.
+const bindingIn = (projectKey, id) =>
+  pda(seed("wallet"), key(projectKey), actorSeed(id));
+const binding = (id) => bindingIn(project, id);
 const awardOf = (origin) =>
   Buffer.from(
     solanaAwardId(
@@ -71,16 +77,13 @@ const awardOf = (origin) =>
 const obligation = (id) => pda(seed("award"), key(project), awardOf(id));
 // Submission expiry for bind_wallet; the binding itself never expires.
 const expiry = () => bn(Math.floor(Date.now() / 1000) + 3600);
-const ledger = (actor) =>
-  pda(seed("veto-count"), key(project), actorSeed(actor));
-// The veto accounts always follow the stored latest and active versions, whatever
-// version the payer names.
-async function versionsOf(actor, named) {
+// The veto account always follows the stored latest version, whatever version the
+// payer names.
+async function latestVersion(actor, named) {
   try {
-    const b = await program.account.walletBinding.fetch(binding(actor));
-    return { latest: b.version, active: b.activeVersion };
+    return (await program.account.walletBinding.fetch(binding(actor))).version;
   } catch {
-    return { latest: bn(named), active: bn(0) };
+    return bn(named);
   }
 }
 async function commit(
@@ -129,7 +132,7 @@ async function bind(
 const veto = (actor, version) =>
   pda(seed("veto"), key(project), actorSeed(actor), actorSeed(version));
 async function payInstruction(id, actor, address, version = 1) {
-  const versions = await versionsOf(actor, version);
+  const latest = await latestVersion(actor, version);
   return program.methods.pay(bn(version)).accountsStrict({
     project,
     obligation: obligation(id),
@@ -139,8 +142,7 @@ async function payInstruction(id, actor, address, version = 1) {
     destination: address,
     feeAccount,
     tokenProgram: TOKEN_PROGRAM_ID,
-    veto: veto(actor, versions.latest),
-    activeVeto: veto(actor, versions.active),
+    veto: veto(actor, latest),
   });
 }
 async function pay(id, actor, address, version = 1) {
@@ -155,7 +157,6 @@ function vetoBinding(actor, version, signer = payer, award = null) {
       project,
       binding: binding(actor),
       veto: veto(actor, version),
-      ledger: ledger(actor),
       obligation: award ? obligation(award) : null,
       systemProgram: SystemProgram.programId,
     })
@@ -565,7 +566,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
 });
 
 // Binding lifecycle after the 12 October 2026 review (M-1, M-2, L-1 to L-5).
-test("commit delay, active binding through rotation, veto cap, bounded delay, bind and fee checks", async () => {
+test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay, project-scoped bindings, bind and fee checks", async () => {
   const ata = async (owner) =>
     createAccount(provider.connection, payer, mint, owner);
   const walletA = Keypair.generate(),
@@ -605,48 +606,48 @@ test("commit delay, active binding through rotation, veto cap, bounded delay, bi
   // A binding that has paid cannot be vetoed, even while a new award is in its window.
   await commit("m1b", 201, 1_000_000);
   await assert.rejects(vetoBinding(201, 2, payer, "m1b"), /BindingActive/);
-  assert.equal(
-    (
-      await program.account.walletBinding.fetch(binding(201))
-    ).activeVersion.toString(),
-    "2",
-  );
-  // M-2: a rotation leaves the active binding payable, and a veto of the pending
-  // rotation only keeps payments on the active binding.
+  let state201 = await program.account.walletBinding.fetch(binding(201));
+  assert.equal(state201.paidVersion.toString(), "2");
+  assert.equal(state201.vetoCount, 0);
+  // M-2: while a rotation waits out its delay, and after the owner vetoes it, no
+  // payment goes to the earlier wallet. A rotation away from a compromised wallet
+  // therefore freezes payment to it at once.
   await commit("m2", 201, 10_000_000);
   await activate();
   await bind(201, walletB.publicKey, 2);
   await assert.rejects(pay("m2", 201, ataB, 3), /BindingPending/);
-  await pay("m2", 201, ataA, 2);
-  await pay("m1b", 201, ataA, 2);
-  await commit("m3", 201, 10_000_000);
+  await assert.rejects(pay("m2", 201, ataA, 2), /BindingPending/);
   await vetoBinding(201, 3);
   await activate();
-  await assert.rejects(pay("m3", 201, ataB, 3), /BindingVetoed/);
-  await pay("m3", 201, ataA, 2);
-  assert.equal(await balance(ataA), 30_380_000n);
-  assert.equal(await balance(ataB), 0n);
-  // The cap does not apply once the actor has an active binding.
+  await assert.rejects(pay("m2", 201, ataB, 3), /BindingVetoed/);
+  await assert.rejects(pay("m2", 201, ataA, 2), /BindingVetoed/);
+  // The veto cap applies between payments too: after the paid version, the owner
+  // can veto three rotations, and the fourth pays once its delay passes.
   await bind(201, walletB.publicKey, 3);
   await vetoBinding(201, 4);
   await bind(201, walletB.publicKey, 4);
   await vetoBinding(201, 5);
   await bind(201, walletB.publicKey, 5);
-  await vetoBinding(201, 6);
-  // A rotation that is not vetoed moves the destination once its delay passes.
-  await commit("m4", 201, 10_000_000);
-  await bind(201, walletB.publicKey, 6);
+  await assert.rejects(vetoBinding(201, 6), /VetoLimit/);
   await activate();
-  await assert.rejects(pay("m4", 201, ataA, 2), /StaleBinding/);
-  await pay("m4", 201, ataB, 7);
-  assert.equal(await balance(ataB), 9_800_000n);
+  await assert.rejects(pay("m2", 201, ataA, 2), /StaleBinding/);
+  await pay("m2", 201, ataB, 6);
+  await pay("m1b", 201, ataB, 6);
+  assert.equal(await balance(ataA), 9_800_000n);
+  assert.equal(await balance(ataB), 10_780_000n);
+  state201 = await program.account.walletBinding.fetch(binding(201));
+  assert.equal(state201.paidVersion.toString(), "6");
+  assert.equal(state201.vetoCount, 0);
   // Veto cap: before the actor's first payment the owner gets three vetoes.
   await commit("c1", 202, 10_000_000);
   for (let version = 1; version <= 3; version++) {
     await bind(202, walletC.publicKey, version - 1);
     await vetoBinding(202, version);
   }
-  assert.equal((await program.account.vetoLedger.fetch(ledger(202))).count, 3);
+  assert.equal(
+    (await program.account.walletBinding.fetch(binding(202))).vetoCount,
+    3,
+  );
   await bind(202, walletC.publicKey, 3);
   await assert.rejects(vetoBinding(202, 4), /VetoLimit/);
   await activate();
@@ -736,4 +737,18 @@ test("commit delay, active binding through rotation, veto cap, bounded delay, bi
     /InvalidIdentity/,
   );
   await initialize(30 * 86400, feeOwner.publicKey, "max");
+  // Another project with the same identity authority and network has its own
+  // binding account: actor 201's bindings, vetoes and payments here do not exist
+  // there, so that project's delay and veto cap start from its own binding.
+  await initialize(DELAY, feeOwner.publicKey, "other");
+  const other = pda(
+    seed("project"),
+    key(payer.publicKey),
+    Buffer.from(hash(`bounds:other:${DELAY}${RUN}`)),
+  );
+  assert.notEqual(bindingIn(other, 201).toBase58(), binding(201).toBase58());
+  assert.equal(
+    await provider.connection.getAccountInfo(bindingIn(other, 201)),
+    null,
+  );
 });

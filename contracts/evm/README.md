@@ -5,8 +5,8 @@ USDC. It has no proxy, owner change, token approval, arbitrary call, rescue,
 claim expiry, or award cancellation entry point. An approved award remains
 reserved until it is paid. The owner can cancel only a wallet binding that has
 not paid yet, and only inside a bounded window. This code has local EVM
-execution evidence and an AI-assisted internal review (12 October 2026). It has
-not received an independent security review or a public testnet deployment.
+execution evidence only. It has not received an independent security review or
+a public testnet deployment.
 
 ## Authority and identity
 
@@ -35,9 +35,10 @@ to it. The owner's exact power is `cancelBinding(actorId, version)` on the
 latest binding, allowed while that binding waits out its own delay or while an
 award to the actor is inside its commit delay, and never on a binding that has
 already paid. A cancelled binding never pays; only a new authority binding (the
-next version, with a new delay) can follow. For an actor that has never been
-paid, the owner can cancel at most `MAX_CANCELS_BEFORE_ACTIVE` (3) times; the
-next binding pays after its delay. The owner can therefore delay a
+next version, with a new delay) can follow. Between two payments to an actor,
+the owner can cancel at most `MAX_CANCELS_BETWEEN_PAYMENTS` (3) times; the next
+binding cannot be cancelled and pays after its delay. A payment resets the
+count. The owner can therefore delay a
 contributor's payout by a bounded number of delays, but can never take an
 approved award back or redirect it. The constructor rejects a delay below one
 hour or above 30 days; production deployments use at least 48 hours
@@ -45,17 +46,17 @@ hour or above 30 days; production deployments use at least 48 hours
 `bindingDelay` against the reviewed manifest. Use separate test identities for
 the owner, attester, registrar, and gas sponsor.
 
-Each actor has two binding slots. `bindings(actorId)` is the latest authority
-binding with its `activatesAt` and `cancelled` flag. `activeBindings(actorId)`
-is the binding the last payment used; the first payment through a binding
-promotes it. `payableBinding(actorId)` returns the binding a payment would use
-now: the latest one once its delay has passed and it is not cancelled,
-otherwise the active one. A rotation therefore moves the destination only
-after its delay, and until then the active binding keeps paying; cancelling the
-pending rotation leaves the active binding payable. The executor pays only the
-destination the contributor currently claims, so a claimed rotation waits for
-its delay rather than paying the previous wallet. A payment names the version
-it expects, and a payment naming any other version fails. If payment executes
+Only the latest binding can pay. `bindings(actorId)` is the latest authority
+binding with its `activatesAt` and `cancelled` flag. `payableBinding(actorId)`
+returns it once its delay has passed and it is not cancelled, and version 0
+otherwise. `paidVersion(actorId)` records the version the last payment used, so
+that binding cannot be cancelled. While a rotation waits out its delay, or after
+the owner cancels it, no caller can pay any earlier wallet: a contributor who
+rotates away from a lost or compromised wallet freezes payment to it at once,
+and payment resumes only to the new binding once it is ready. This is the
+stale-binding rule in `docs/base-solana-payout-plan.md`: a finalized change
+invalidates payment to the earlier destination. A payment names the version it
+expects, and a payment naming any other version fails. If payment executes
 first, a later rotation cannot repay the award. Every award ID and source
 digest is consumed permanently. Source
 digests identify a single allocation origin including project, cycle, and actor; keep it stable across amount or snapshot
@@ -139,11 +140,13 @@ forge test --root contracts/evm
 bun contracts/evm/adapter.integration.ts
 ```
 
-`forge test` runs the Foundry suites under `test/`: the review tests from the
-12 October 2026 AI-assisted review adapted to the fixed behaviour, invariant
-runs over random owner, authority and payer sequences, and the binding
-lifecycle tests (commit delay, active binding through rotation and cancel,
-cancel cap, delay bounds, one-shot cancel).
+`forge test` runs the Foundry suites under `test/`: regression tests for the
+binding lifecycle (commit delay, payment frozen during a rotation and after its
+cancel, cancel cap between payments, delay bounds, one-shot cancel), token and
+accounting checks, and invariant runs over random owner, authority and payer
+sequences. These suites are regression evidence, not a security review. The
+`base` job in `.github/workflows/escrow-tests.yml` runs the format check, build
+and `forge test` on every escrow change.
 
 The integration deploys `integration/TestDollar.sol`, a six-decimal test
 ERC-20. The test token is not Circle USDC; Circle integration, wallet signatures, OAuth, indexer finality,

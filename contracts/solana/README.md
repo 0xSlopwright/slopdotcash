@@ -13,8 +13,10 @@ The same source digest cannot be committed again under a different award ID.
 The award ID must equal `sha256("slop-escrow-award" || project PDA || source digest)`,
 so another project cannot reserve the same ID first.
 A narrow identity authority binds numeric GitHub actors to destinations with an
-expected predecessor version. Binding PDAs include authority, network, actor and
-the program deployment. Permissionless payment callers select neither amount nor
+expected predecessor version. Binding PDAs are per project: their seeds are the
+project PDA and the actor, inside the program deployment, and `bind_wallet` also
+checks the project's network domain. A binding in one project never pays, delays
+or vetoes anything in another project. Permissionless payment callers select neither amount nor
 recipient; the binding and expected version select the recipient. The backend must
 verify GitHub login and the contributor's wallet authorization before the identity
 signer submits this transaction. An identity key can redirect future unpaid awards;
@@ -32,27 +34,21 @@ award to the actor (passed as the optional `obligation` account) is inside its
 commit delay, and never on a binding that has paid. A veto creates a permanent
 `veto` PDA for that project, actor and version, and `pay` in that project never
 uses a vetoed version. Only a new authority binding (the next version, with a
-new delay) can follow. For an actor that has never been paid, a project can
-veto at most three times (a `veto-count` PDA per project and actor); the next
-binding pays after its delay. An owner can therefore delay a contributor's
-payout by a bounded number of delays, but never take an approved award back or
-redirect it.
+new delay) can follow. Between two payments to an actor, the owner can veto at
+most three times (`veto_count` on the binding, reset by each payment); the next
+binding cannot be vetoed and pays after its delay. An owner can therefore delay
+a contributor's payout by a bounded number of delays, but never take an approved
+award back or redirect it.
 
-The binding account holds two slots. The latest binding (`destination`,
-`version`, `bound_at`, `claim_digest`) is what the authority last wrote. The
-active slot (`active_destination`, `active_version`) is the binding a payment
-last used; the first payment through a binding promotes it. `pay` uses the
-latest binding once its delay has passed and this project has not vetoed it,
-otherwise the active binding if this project has not vetoed that version, and
-takes an `active_veto` account for that check. A rotation therefore moves the
-destination only after its delay, and until then the active binding keeps
-paying; vetoing the pending rotation leaves the active binding payable. The
-executor pays only the destination the contributor currently claims, so a
-claimed rotation waits for its delay rather than paying the previous wallet.
-Bindings and the active slot are shared across projects with the same identity
-authority and network. A veto affects only the vetoing project, and a project
-that vetoes a version another project then pays through has no payable binding
-until the next version activates. `pay` requires the destination to be the
+Only the latest binding (`destination`, `version`, `bound_at`, `claim_digest`)
+can pay. `pay` requires its delay to have passed in this project and requires
+the empty `veto` address for that version. `paid_version` records the version
+the last payment in this project used, so that binding cannot be vetoed. While
+a rotation waits out its delay, or after the owner vetoes it, no payment goes
+to any earlier wallet: a contributor who rotates away from a lost or compromised
+wallet freezes payment to it at once. This is the stale-binding rule in
+`docs/base-solana-payout-plan.md`: a finalized change invalidates payment to
+the earlier destination. `pay` requires the destination to be the
 paying wallet's associated token account, and `bind_wallet` rejects a zero
 claim digest, a destination equal to the project or vault PDA, and a submission
 past its `expires_at`. `initialize` rejects a fee recipient equal to the owner
@@ -98,7 +94,8 @@ Run `npm run test:e2e` to load that binary into an isolated local validator and
 execute the SPL payment, durable executor, and unsigned owner-plan workflows.
 These use real token accounts, transactions, finalized receipts and balance
 checks. They cover the canonical lifecycle, delayed wallet registration, wallet
-rotation, binding delay and owner veto, reserve protection, split withdrawals,
+rotation that freezes payment to the earlier wallet, project-scoped bindings,
+binding delay and owner veto with its cap, reserve protection, split withdrawals,
 frozen destination rollback, duplicate payment and forged award rejection, wrong
 destination, unauthorized binding, a third-party payment mixed with unrelated
 token transfers, and a foreign project that mentions this project's account.
@@ -109,7 +106,11 @@ validator execution. Use Anchor 0.32.1 and the platform tools pinned in the scri
 The end-to-end suite waits the binding delay out in seconds, so `test-e2e.sh`
 builds with the `short-delay-for-tests` Cargo feature, which lowers the on-chain
 delay floor from one hour to one second. `deploy-testnet.sh` never sets it;
-a reviewed deployment digest must come from a build without it.
+a reviewed deployment digest must come from a build without it. Before that,
+`test-e2e.sh` builds the deployable program without the feature, loads it into
+the validator and runs `integration/production-delay.e2e.mjs`, which proves that
+`initialize` rejects 3,599 seconds and accepts 3,600 seconds. `cargo test` checks
+the same bounds on the host build.
 
 ## Public test deployment
 
@@ -164,7 +165,10 @@ The shared service in `workers/payment-executor/solana.ts` validates the current
 SQLite/D1 wallet consent and the finalized deployment before signing. Each role
 holds a different test signer. The gas signer cannot be the owner or identity
 signer. It creates recipient and fee ATAs idempotently and pays the exact bound
-version. The identity role stores the claim digest in the wallet binding. A
+version. The identity role stores the claim digest in the wallet binding. The
+executor compares both delays with the time of the latest confirmed block, not
+the host clock, so a fast host clock cannot submit a payment the program must
+reject. A
 successor needs the shared 24-hour signed-lineage policy and reconciliation of
 older attempts. The program itself never authorizes GitHub sessions.
 

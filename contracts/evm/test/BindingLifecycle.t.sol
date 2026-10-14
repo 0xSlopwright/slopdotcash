@@ -4,9 +4,8 @@ pragma solidity 0.8.30;
 import "./OpusBase.sol";
 
 /// Binding lifecycle after the 12 October 2026 review (M-1, M-2, L-1, L-5): the delay is anchored to the
-/// award's commit as well as the bind, the binding a payment used stays payable through later rotations
-/// and cancels, the owner's cancel is capped before the first payment, the delay is bounded, and cancel
-/// is an explicit one-shot flag.
+/// award's commit as well as the bind, only the latest ready binding pays, the owner's cancel is capped
+/// between payments, the delay is bounded, and cancel is an explicit one-shot flag.
 contract BindingLifecycleTest is OpusBase {
     uint64 constant ALICE = 4242;
 
@@ -62,9 +61,9 @@ contract BindingLifecycleTest is OpusBase {
         check(usdc.balanceOf(ALICE_WALLET) == 98e6, "paid at the boundary");
     }
 
-    /// M-1 and M-2 together: a later award to an actor with an active binding still waits its commit
-    /// delay, but the owner cannot cancel the binding that has already paid.
-    function test_laterAwardWaitsButActiveBindingIsNotCancellable() public {
+    /// M-1 and M-2 together: a later award to an actor with a paid binding still waits its commit delay,
+    /// but the owner cannot cancel the binding that has already paid.
+    function test_laterAwardWaitsButPaidBindingIsNotCancellable() public {
         bytes32 first = commit(keccak256("first"), ALICE, 100e6);
         uint64 v = bindAs(ALICE, ALICE_WALLET);
         vm.warp(block.timestamp + DELAY);
@@ -78,43 +77,45 @@ contract BindingLifecycleTest is OpusBase {
         escrow.cancelBinding(ALICE, v);
         vm.warp(block.timestamp + DELAY);
         payAs(second, v);
-        check(usdc.balanceOf(ALICE_WALLET) == 196e6, "both paid to the active binding");
+        check(usdc.balanceOf(ALICE_WALLET) == 196e6, "both paid to the paid binding");
     }
 
-    /// M-2: rotation leaves the active binding payable during the new binding's delay, and moves the
-    /// destination only once that delay has passed.
-    function test_rotationLeavesActiveBindingPayable() public {
+    /// Rotation: while a newer binding waits out its delay, no caller can pay the previous wallet. The
+    /// destination moves only once the new binding is ready.
+    function test_rotationFreezesPaymentToPreviousWallet() public {
         bytes32 first = commit(keccak256("first"), ALICE, 100e6);
         bytes32 second = commit(keccak256("second"), ALICE, 100e6);
         uint64 v1 = bindAs(ALICE, ALICE_WALLET);
         vm.warp(block.timestamp + DELAY);
         payAs(first, v1);
-        (address active, uint64 activeVersion) = escrow.activeBindings(ALICE);
-        check(active == ALICE_WALLET && activeVersion == v1, "first payment activated v1");
+        check(escrow.paidVersion(ALICE) == v1, "first payment recorded v1");
         address newWallet = address(0xA2);
         uint64 v2 = bindAs(ALICE, newWallet);
         (address payable_, uint64 payableVersion) = escrow.payableBinding(ALICE);
-        check(payable_ == ALICE_WALLET && payableVersion == v1, "v1 payable while v2 pending");
+        check(payable_ == address(0) && payableVersion == 0, "nothing payable while v2 pending");
+        vm.prank(RELAYER);
+        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
+        escrow.pay(second, v1);
+        vm.prank(ATTACKER);
+        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
+        escrow.pay(second, v1);
         vm.prank(RELAYER);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         escrow.pay(second, v2);
-        payAs(second, v1);
-        check(usdc.balanceOf(ALICE_WALLET) == 196e6, "second award paid to the active binding");
-        bytes32 third = commit(keccak256("third"), ALICE, 100e6);
         vm.warp(block.timestamp + DELAY);
         (payable_, payableVersion) = escrow.payableBinding(ALICE);
         check(payable_ == newWallet && payableVersion == v2, "v2 payable after its delay");
         vm.prank(RELAYER);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        escrow.pay(third, v1);
-        payAs(third, v2);
-        check(usdc.balanceOf(newWallet) == 98e6, "third award follows the rotation");
-        (active, activeVersion) = escrow.activeBindings(ALICE);
-        check(active == newWallet && activeVersion == v2, "v2 is now the active binding");
+        escrow.pay(second, v1);
+        payAs(second, v2);
+        check(usdc.balanceOf(ALICE_WALLET) == 98e6 && usdc.balanceOf(newWallet) == 98e6, "second award followed v2");
+        check(escrow.paidVersion(ALICE) == v2, "v2 is now the paid version");
     }
 
-    /// M-2: cancelling the pending rotation drops only the pending slot; the active binding keeps paying.
-    function test_cancelPendingLeavesActiveBindingPayable() public {
+    /// Rotation: an owner cancel of the newer binding does not reopen payment to the previous wallet. Only
+    /// a fresh authority binding, after its own delay, can pay.
+    function test_cancelledRotationDoesNotPayPreviousWallet() public {
         bytes32 first = commit(keccak256("first"), ALICE, 100e6);
         bytes32 second = commit(keccak256("second"), ALICE, 100e6);
         uint64 v1 = bindAs(ALICE, ALICE_WALLET);
@@ -126,21 +127,42 @@ contract BindingLifecycleTest is OpusBase {
         vm.prank(RELAYER);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         escrow.pay(second, v2);
-        payAs(second, v1);
-        check(usdc.balanceOf(ALICE_WALLET) == 196e6 && usdc.balanceOf(ATTACKER) == 0, "active paid, pending not");
-        // The cap does not apply once the actor has an active binding: the owner may refuse every later
-        // rotation, and each refusal only keeps payments on the binding already in use.
-        for (uint64 i = 0; i < 10; i++) {
-            uint64 v = bindAs(ALICE, ATTACKER);
-            cancelAs(ALICE, v);
-        }
-        check(escrow.cancelCount(ALICE) == 0, "cancels after activation are not counted");
+        vm.prank(RELAYER);
+        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
+        escrow.pay(second, v1);
+        uint64 v3 = bindAs(ALICE, ALICE_WALLET);
+        vm.warp(block.timestamp + DELAY);
+        payAs(second, v3);
+        check(usdc.balanceOf(ALICE_WALLET) == 196e6 && usdc.balanceOf(ATTACKER) == 0, "paid only after rebind");
+        check(escrow.cancelCount(ALICE) == 0, "a payment resets the cancel count");
     }
 
-    /// M-2 cap: before the first payment the owner can cancel at most MAX_CANCELS_BEFORE_ACTIVE times.
+    /// Cap after a payment: the owner can again cancel at most MAX_CANCELS_BETWEEN_PAYMENTS rotations, so
+    /// a paid actor's next award is also delayed by a bounded number of delays.
+    function test_cancelCapAppliesBetweenPayments() public {
+        bytes32 first = commit(keccak256("first"), ALICE, 100e6);
+        bytes32 second = commit(keccak256("second"), ALICE, 100e6);
+        uint64 v1 = bindAs(ALICE, ALICE_WALLET);
+        vm.warp(block.timestamp + DELAY);
+        payAs(first, v1);
+        uint8 cap = escrow.MAX_CANCELS_BETWEEN_PAYMENTS();
+        for (uint8 i = 0; i < cap; i++) {
+            uint64 v = bindAs(ALICE, ALICE_WALLET);
+            cancelAs(ALICE, v);
+        }
+        uint64 last = bindAs(ALICE, ALICE_WALLET);
+        vm.prank(OWNER);
+        vm.expectRevert(ProjectEscrow.CancelLimit.selector);
+        escrow.cancelBinding(ALICE, last);
+        vm.warp(block.timestamp + DELAY);
+        payAs(second, last);
+        check(usdc.balanceOf(ALICE_WALLET) == 196e6, "second award paid after the cap");
+    }
+
+    /// M-2 cap: before the first payment the owner can cancel at most MAX_CANCELS_BETWEEN_PAYMENTS times.
     function test_cancelCapBeforeFirstPayment() public {
         bytes32 id = commit(keccak256("award"), ALICE, 100e6);
-        uint8 cap = escrow.MAX_CANCELS_BEFORE_ACTIVE();
+        uint8 cap = escrow.MAX_CANCELS_BETWEEN_PAYMENTS();
         for (uint8 i = 0; i < cap; i++) {
             uint64 v = bindAs(ALICE, ATTACKER);
             cancelAs(ALICE, v);

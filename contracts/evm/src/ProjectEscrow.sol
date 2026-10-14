@@ -17,9 +17,11 @@ uint64 constant MAX_BINDING_DELAY = 30 days;
 /// @dev The identity authority can redirect unpaid awards; it cannot change amounts. A new binding waits
 /// bindingDelay before it can pay, and an award waits bindingDelay after it is committed, so a stolen
 /// authority key cannot pay itself before the sponsor can react, even with a binding placed in advance.
-/// The owner can cancel a binding only inside those windows and only before it has paid: the binding the
-/// last payment used stays payable through a later rotation or cancel, so the owner can delay a payout but
-/// never retract it. Fees accrue in the vault and are pulled separately, so a blocked fee recipient cannot
+/// Only the latest binding pays: while a newer binding waits out its delay or after the owner cancels it,
+/// no payment goes to any earlier wallet, so a rotation away from a compromised wallet freezes payment
+/// instead of racing it. The owner can cancel the latest binding only inside those windows, never after it
+/// has paid, and at most MAX_CANCELS_BETWEEN_PAYMENTS times between two payments to the actor, so the owner
+/// can delay a payout by a bounded number of delays but never retract it. Fees accrue in the vault and are pulled separately, so a blocked fee recipient cannot
 /// stop payouts or refunds.
 /// Tokens must have exact transfers and six decimals (USDC). No upgrade or reserve rescue exists.
 contract ProjectEscrow {
@@ -32,8 +34,8 @@ contract ProjectEscrow {
         bool paid;
     }
 
-    /// @dev The latest authority binding for an actor. It is pending until activatesAt, and becomes the
-    /// active binding the first time a payment uses it.
+    /// @dev The latest authority binding for an actor. It is pending until activatesAt and is the only
+    /// binding that can pay.
     struct Binding {
         address destination;
         uint64 version;
@@ -42,15 +44,9 @@ contract ProjectEscrow {
         bool cancelled;
     }
 
-    /// @dev The binding the last payment to an actor used. It survives a later rotation or cancel.
-    struct ActiveBinding {
-        address destination;
-        uint64 version;
-    }
-
-    /// @notice Cancels the owner may make for an actor that has never been paid. Each cancel can only
-    /// delay the actor by one more bindingDelay, so this bounds the owner's delay power.
-    uint8 public constant MAX_CANCELS_BEFORE_ACTIVE = 3;
+    /// @notice Cancels the owner may make for an actor between two payments to that actor. Each cancel can
+    /// only delay the actor by one more bindingDelay, so this bounds the owner's delay power.
+    uint8 public constant MAX_CANCELS_BETWEEN_PAYMENTS = 3;
 
     IERC20 public immutable token;
     bytes32 public immutable projectId;
@@ -72,8 +68,10 @@ contract ProjectEscrow {
     mapping(bytes32 => Award) public awards;
     mapping(bytes32 => bool) public consumedSources;
     mapping(uint64 => Binding) public bindings;
-    mapping(uint64 => ActiveBinding) public activeBindings;
+    /// @notice The binding version the last payment to an actor used; 0 before the first payment.
+    mapping(uint64 => uint64) public paidVersion;
     mapping(uint64 => uint64) public lastCommittedAt;
+    /// @notice Cancels recorded for an actor since the actor's last payment.
     mapping(uint64 => uint8) public cancelCount;
     mapping(bytes32 => bool) public chargedInvoices;
     bool private entered;
@@ -206,51 +204,45 @@ contract ProjectEscrow {
 
     /// @notice The sponsor can stop the latest binding before it pays: while it waits out its own delay, or
     /// while an award committed to the actor is still inside its commit delay. A binding that has paid
-    /// cannot be cancelled, and an actor that has never been paid can be cancelled at most
-    /// MAX_CANCELS_BEFORE_ACTIVE times. Only a new authority binding can follow a cancel.
+    /// cannot be cancelled, and the owner can cancel at most MAX_CANCELS_BETWEEN_PAYMENTS times between two
+    /// payments to the actor. Only a new authority binding can follow a cancel; no payment goes out until it
+    /// is ready.
     function cancelBinding(uint64 actorId, uint64 expectedVersion) external onlyOwner {
         Binding storage binding = bindings[actorId];
-        uint64 activeVersion = activeBindings[actorId].version;
         if (
             binding.version == 0 || binding.version != expectedVersion || binding.cancelled
-                || binding.version == activeVersion
+                || binding.version == paidVersion[actorId]
         ) revert InvalidBinding();
         uint64 committedAt = lastCommittedAt[actorId];
         bool pending = block.timestamp < binding.activatesAt;
         bool commitWindow = committedAt != 0 && block.timestamp < committedAt + bindingDelay;
         if (!pending && !commitWindow) revert InvalidBinding();
-        if (activeVersion == 0) {
-            if (cancelCount[actorId] >= MAX_CANCELS_BEFORE_ACTIVE) revert CancelLimit();
-            cancelCount[actorId] += 1;
-        }
+        if (cancelCount[actorId] >= MAX_CANCELS_BETWEEN_PAYMENTS) revert CancelLimit();
+        cancelCount[actorId] += 1;
         binding.cancelled = true;
         emit BindingCancelled(actorId, expectedVersion);
     }
 
     /// @notice The binding a payment to this actor would use now: the latest binding once its delay has
-    /// passed and it is not cancelled, otherwise the binding the last payment used. Version 0 means none.
+    /// passed and it is not cancelled. Version 0 means no binding can pay; an earlier binding never pays.
     function payableBinding(uint64 actorId) public view returns (address destination, uint64 version) {
         Binding storage binding = bindings[actorId];
         if (binding.version != 0 && !binding.cancelled && block.timestamp >= binding.activatesAt) {
             return (binding.destination, binding.version);
         }
-        ActiveBinding storage active = activeBindings[actorId];
-        return (active.destination, active.version);
+        return (address(0), 0);
     }
 
     /// @notice Pays an award to its actor's payable binding once both the binding delay and the award's
-    /// commit delay have passed. The first payment through a binding makes it the active binding.
+    /// commit delay have passed. Anyone can call it, because the destination is fixed by the contract.
     function pay(bytes32 id, uint64 expectedBindingVersion) external nonReentrant {
         Award storage award = awards[id];
         if (award.actorId == 0 || award.paid) revert InvalidInput();
         if (block.timestamp < award.committedAt + bindingDelay) revert AwardPending();
         (address destination, uint64 version) = payableBinding(award.actorId);
         if (version == 0 || version != expectedBindingVersion) revert InvalidBinding();
-        ActiveBinding storage active = activeBindings[award.actorId];
-        if (active.version != version) {
-            active.destination = destination;
-            active.version = version;
-        }
+        paidVersion[award.actorId] = version;
+        cancelCount[award.actorId] = 0;
         uint64 net = award.gross - award.fee;
         award.paid = true;
         reservedPrincipal -= net;

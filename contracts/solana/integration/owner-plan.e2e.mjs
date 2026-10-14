@@ -158,12 +158,7 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
       identityAuthority: identity.publicKey,
       project,
       binding: PublicKey.findProgramAddressSync(
-        [
-          Buffer.from("wallet"),
-          identity.publicKey.toBuffer(),
-          Buffer.from(deployment.networkDomain, "hex"),
-          actor,
-        ],
+        [Buffer.from("wallet"), project.toBuffer(), actor],
         programId,
       )[0],
       systemProgram: anchor.web3.SystemProgram.programId,

@@ -24,8 +24,8 @@ const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 /** Project account size: 249 bytes of v2 state, the i64 binding delay and the u64 service fees. */
 export const PROJECT_SIZE = 265;
-/** Wallet binding size: 160 bytes of latest-binding state plus the active destination and version. */
-export const BINDING_SIZE = 200;
+/** Wallet binding size: 160 bytes of latest-binding state plus the u64 paid version and u8 veto count. */
+export const BINDING_SIZE = 169;
 /** Obligation size: 137 bytes of v2 state plus the i64 commit time. */
 export const OBLIGATION_SIZE = 145;
 export const OBLIGATION_DISCRIMINATOR = "a8ce8d6a584caca7";
