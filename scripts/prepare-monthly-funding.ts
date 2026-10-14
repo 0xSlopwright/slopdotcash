@@ -16,7 +16,10 @@ import {
   createFundingReview,
   type FundingPreparation,
 } from "../src/lib/funding-review-data";
-import { assertPublishableLeaderboardSnapshot } from "../src/lib/leaderboard";
+import {
+  assertPublishableLeaderboardSnapshot,
+  paymentReviewSnapshot,
+} from "../src/lib/leaderboard";
 import { createPaymentProjectView } from "../src/lib/project-view";
 import { PROJECTS, type ProjectDefinition } from "../src/lib/projects.mjs";
 import type { WalletChain } from "../src/lib/wallets";
@@ -233,7 +236,11 @@ export async function prepareMonthlyFunding(
         snapshotTo: snapshot.window.to,
         periodFrom: view.cycle.from,
         periodTo: view.cycle.to,
-        snapshotLedgerCount: snapshot.ledger.length,
+        snapshotLedgerCount:
+          options.cycleId >= "2026-10" &&
+          view.project.reward.kind === "monthly-pool"
+            ? paymentReviewSnapshot(snapshot).ledger.length
+            : snapshot.ledger.length,
         sourceMergedPullRequests: snapshot.source.counts.mergedPullRequests,
         mergedCensus: null,
         scoredMerges: new Set(

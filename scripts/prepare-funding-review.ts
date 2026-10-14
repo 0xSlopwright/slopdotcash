@@ -18,7 +18,10 @@ import {
   type FundingPreparation,
   type FundingReviewIndex,
 } from "../src/lib/funding-review-data";
-import { assertLeaderboardSnapshot } from "../src/lib/leaderboard";
+import {
+  assertLeaderboardSnapshot,
+  paymentReviewSnapshot,
+} from "../src/lib/leaderboard";
 import { createPaymentProjectView } from "../src/lib/project-view";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -177,7 +180,11 @@ export async function importFundingPreparations(options: {
           snapshotTo: snapshot.window.to,
           periodFrom: view.cycle.from,
           periodTo: view.cycle.to,
-          snapshotLedgerCount: snapshot.ledger.length,
+          snapshotLedgerCount:
+            options.cycleId >= "2026-10" &&
+            view.project.reward.kind === "monthly-pool"
+              ? paymentReviewSnapshot(snapshot).ledger.length
+              : snapshot.ledger.length,
           sourceMergedPullRequests: snapshot.source.counts.mergedPullRequests,
           mergedCensus: p.mergedCensus,
           scoredMerges: p.scoredMerges,
