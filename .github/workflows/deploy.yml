@@ -74,10 +74,10 @@ jobs:
       VITE_SLOP_ENVIRONMENT: ${{ (github.ref == 'refs/heads/development' || github.base_ref == 'development') && 'staging' || 'production' }}
     runs-on: ubuntu-24.04
     concurrency:
-      # A newer trusted revision supersedes stale live-data generation, while
-      # each pull request retains its own independently superseding lane.
+      # Let a running staging check finish; newer development pushes replace
+      # only the pending revision. PR and production supersessions still cancel.
       group: slop-quality-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/development' }}
     # The public elizaOS ledger can contain several thousand accepted outcomes.
     # Leave room for complete fail-closed hydration plus four browser projects.
     timeout-minutes: 180
