@@ -1,0 +1,21 @@
+name = "slop-notify"
+main = "index.ts"
+compatibility_date = "2026-07-30"
+workers_dev = false
+preview_urls = false
+
+# No routes: the Pages app reaches this Worker only through the SLOP_NOTIFY
+# service binding at https://notify.internal.
+
+[vars]
+NOTIFY_FROM_ADDRESS = "notifications@slop.cash"
+
+[[send_email]]
+name = "ADMIN_EMAIL"
+allowed_destination_addresses = ["shawmakesmagic@gmail.com", "drew.piers@gmail.com"]
+
+[observability]
+enabled = true
+
+  [observability.logs]
+  invocation_logs = false

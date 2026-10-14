@@ -19,6 +19,10 @@ bucket_name = "slop-private-traces"
 binding = "SLOP_IDENTITY"
 service = "slop-identity"
 
+[[services]]
+binding = "SLOP_NOTIFY"
+service = "slop-notify"
+
 # Cloudflare's non-inheritable bindings must be declared separately for every
 # environment. Keeping preview explicit and binding-free prevents preview
 # deployments from reaching the permanent production trace store.

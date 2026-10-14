@@ -112,6 +112,9 @@ jobs:
       - name: Install frozen workspace dependencies
         run: bun install --frozen-lockfile --ignore-scripts
 
+      - name: Verify private notification service
+        run: bun test workers/notify/notify.test.ts
+
       - name: Reject known production dependency vulnerabilities
         run: bun run audit:dependencies
 
@@ -719,6 +722,11 @@ jobs:
             throw new TypeError("identity Worker deployment is not bound to the tested commit");
           }
           NODE
+
+          # Deploy the private notification service before Pages activates its binding.
+          ./node_modules/.bin/wrangler deploy \
+            --config workers/notify/wrangler.toml \
+            --message="slop.cash release $GITHUB_SHA"
 
           bun scripts/verify-identity-schedules.mjs
 
