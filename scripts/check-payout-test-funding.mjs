@@ -1,5 +1,6 @@
 /** Read-only test gas check: never loads keys, requests funds, or signs. */
 import { pathToFileURL } from "node:url";
+import { chainFamily } from "../src/lib/escrow-policy.mjs";
 import { isFundingAddress } from "../src/lib/funding-address.mjs";
 
 const NETWORKS = Object.freeze({
@@ -7,6 +8,12 @@ const NETWORKS = Object.freeze({
     chain: "base",
     rpc: "https://sepolia.base.org",
     identity: "0x14a34",
+    unit: "wei",
+  },
+  "robinhood-testnet": {
+    chain: "robinhood",
+    rpc: "https://rpc.testnet.chain.robinhood.com",
+    identity: "0xb626",
     unit: "wei",
   },
   "solana-devnet": {
@@ -26,11 +33,13 @@ const NETWORKS = Object.freeze({
 export async function checkTestFunding(network, address, endpoint) {
   const config = NETWORKS[network];
   if (!config)
-    throw new Error("Expected base-sepolia, solana-devnet, or solana-testnet");
+    throw new Error(
+      "Expected base-sepolia, solana-devnet, solana-testnet, or robinhood-testnet",
+    );
   if (
     !isFundingAddress(
       config.chain,
-      config.chain === "base" && typeof address === "string"
+      chainFamily(config.chain) === "evm" && typeof address === "string"
         ? address.toLowerCase()
         : address,
     )
@@ -65,13 +74,13 @@ export async function checkTestFunding(network, address, endpoint) {
     return body.result;
   }
   const identity = await rpc(
-    config.chain === "base" ? "eth_chainId" : "getGenesisHash",
+    chainFamily(config.chain) === "evm" ? "eth_chainId" : "getGenesisHash",
   );
   if (identity !== config.identity)
     throw new Error("RPC network identity mismatch");
   let amount;
   let block;
-  if (config.chain === "base") {
+  if (chainFamily(config.chain) === "evm") {
     const finalized = await rpc("eth_getBlockByNumber", ["finalized", false]);
     if (
       !finalized ||

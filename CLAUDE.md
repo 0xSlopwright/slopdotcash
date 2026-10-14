@@ -22,13 +22,22 @@ alias only.
 - Slop never infers copyright ownership, legal capacity, assignment, wallet
   control, or payment authority.
 - Slop never holds keys, signs transactions, broadcasts payments, or claims
-  success before public evidence proves it, except for one key on the opt-in
-  `squads-project-vault` instrument (RFC #500, `funding/README.md`). For that
-  instrument only: Slop holds one of three keys on a project vault. That key
-  can vote on a payout the creator proposed. It cannot propose a transfer,
-  execute one, change the signers, or act alone. Slop holds no customer
-  balance, takes no fee from the vault, and never broadcasts a transfer of
-  vault funds.
+  success before public evidence proves it, except for the two narrowly scoped
+  keys below. No other exception exists.
+  - One key on the opt-in `squads-project-vault` instrument (RFC #500,
+    `funding/README.md`). For that instrument only: Slop holds one of three
+    keys on a project vault. That key can vote on a payout the creator
+    proposed. It cannot propose a transfer, execute one, change the signers,
+    or act alone. Slop holds no customer balance, takes no fee from the vault,
+    and never broadcasts a transfer of vault funds.
+  - The escrow identity attester key (PAY-05, approved by the repository owner
+    on 14 October 2026). It only attests the authenticated GitHub actor for a
+    destination binding that the destination wallet also signs, and it submits
+    only that binding transaction. It cannot choose an amount, move, pay or
+    route funds alone, or reach free or reserved funds. Each binding waits the
+    reviewed binding delay, and the project owner can cancel it in that time.
+    A public timelocked rotation replaces the key, and the attester cannot
+    block it.
 - Never publish secrets, prompts, responses, source files, credentials, session
   identifiers, private trajectories, or signing material.
 
@@ -279,7 +288,7 @@ runs from `main`, is idempotent, refuses partial cycles, and records
 zero-award months.
 
 Monthly allocations use integer USDC micro-units and largest remainder. The 1%
-fee applies to approved principal only. Never use floats for money or let
+monthly-pool fee applies to approved principal only. Never use floats for money or let
 rollover increase a later monthly cap.
 
 A review budget is an optional additive cash line. Review events remain in the
@@ -331,7 +340,8 @@ claim copyright.
 
 ## Deployment
 
-`development` deploys to `staging.slop.cash`. Promote changes through a reviewed
+`development` is the default integration branch and deploys to `staging.slop.cash`.
+Promote changes through a reviewed
 PR from `development` to `main`. Only `main` deploys to `slop.cash`.
 Staging has a separate Pages project, D1 database, private R2 bucket, identity
 Worker, and secrets. Staging login and writes never use production storage.
@@ -449,6 +459,10 @@ relayer services may execute isolated test-chain transactions under those rules.
 This supersedes the legacy unsigned-only model for that protocol only. Never
 use production credentials or move mainnet funds during testnet qualification.
 New gross awards deduct 2% before contributor earnings are displayed or paid.
+For a project-token reward (PRD TOK-06, owner decision of 14 October 2026),
+the 2% is deducted in that token and paid in that token to the network fee
+wallet at payout. No contract converts it. Later USDC conversion inside the fee
+wallet is future backend work (TOK-07) that needs its own approved requirement.
 Unused-fund withdrawals deduct 10%; funded obligations cannot be withdrawn.
 Historical v1 records retain their original fee and authority rules. No project
 activates escrow merely because the new code is present. Keep project deployment

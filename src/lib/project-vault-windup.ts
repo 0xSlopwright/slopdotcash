@@ -161,7 +161,9 @@ export function projectVaultWindupRefunds(
   instrument: { multisig: string; vault: string; vaultIndex: number },
   approvedAt: string,
 ): ProjectVaultWindupRefund[] {
-  return fundingRecords
+  // Only the latest record per transaction counts, as in the balance below:
+  // a superseded refund was corrected or disputed and is not evidence.
+  return currentProjectCommitmentRecords(fundingRecords)
     .filter(
       (row) =>
         row.event === "refund" &&

@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "./Link";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
+import { fundingAssetForNetwork } from "./lib/funding-address.mjs";
 import {
   boundedText,
   immutableProposalTermsUrl,
@@ -17,6 +18,11 @@ import {
 import type { ProjectDefinition } from "./lib/projects.mjs";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
 
+const SETTLEMENT_CHAIN_NAMES: Record<string, string> = {
+  base: "Base",
+  solana: "Solana",
+  robinhood: "Robinhood Chain",
+};
 const PROJECT_PROPOSAL_ROOT = `${SOURCE_REPOSITORY}/new/development`;
 const PROPOSAL_DRAFT_KEY = "slop:project-proposal:v1";
 const REQUIREMENTS_URL = `${SOURCE_REPOSITORY}/issues/333`;
@@ -607,7 +613,7 @@ export default function ProjectProposalPage() {
       },
       reward: {
         kind: "monthly-pool",
-        currency: "USDC",
+        currency: fundingAssetForNetwork(p.settlementChain),
         chain: p.settlementChain,
         rewardStartAt: now.toISOString(),
         cycle: "calendar-month-utc",
@@ -1174,6 +1180,7 @@ ${manifestText}`;
               options={[
                 ["base", "Base"],
                 ["solana", "Solana"],
+                ["robinhood", "Robinhood Chain"],
               ]}
               value={p.settlementChain}
             />
@@ -1225,7 +1232,7 @@ ${manifestText}`;
             <ul className="activation-gates">
               <li>
                 <strong>Project vault:</strong> not deployed. A reviewed{" "}
-                {p.settlementChain === "solana" ? "Solana" : "Base"} deployment
+                {SETTLEMENT_CHAIN_NAMES[p.settlementChain] ?? "Base"} deployment
                 is required first.
               </li>
               <li>
@@ -1277,7 +1284,7 @@ ${manifestText}`;
                 <div>
                   <dt>Payout network</dt>
                   <dd>
-                    {p.settlementChain === "solana" ? "Solana" : "Base"} ·
+                    {SETTLEMENT_CHAIN_NAMES[p.settlementChain] ?? "Base"} ·
                     payments disabled
                   </dd>
                 </div>
