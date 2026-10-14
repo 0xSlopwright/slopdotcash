@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { type APIRequestContext, test as base, expect } from "@playwright/test";
+import { preparePullRequestLedger } from "../../scripts/prepare-pr-ledger";
 import { assertCycleIndex, type CycleIndex } from "../../src/lib/cycle-index";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
 import { githubUserIdFromNodeId } from "../../src/lib/github-actor";
@@ -14,6 +15,7 @@ import { createGlobalLeaders } from "../../src/lib/global-leaderboard";
 import { communityProjects } from "../../src/lib/home-projects";
 import {
   assertLeaderboardSnapshot,
+  assertPublishableLeaderboardSnapshot,
   type LeaderboardSnapshot,
 } from "../../src/lib/leaderboard";
 import {
@@ -109,6 +111,70 @@ test("equal contributors share cycle and profile ranks", async ({
         .length + 1,
     );
   }
+  const publishedIds = snapshot.leaders.map((leader) => leader.actor.id);
+  const scoreGroups = [
+    ...new Set(snapshot.leaders.map((leader) => leader.scoreThirds)),
+  ];
+  expect(publishedIds).toEqual(
+    scoreGroups.flatMap((score) =>
+      snapshot.leaders
+        .filter((leader) => leader.scoreThirds === score)
+        .map((leader) => leader.actor.id)
+        .sort(),
+    ),
+  );
+
+  const renamed = structuredClone(snapshot);
+  const tiedIds = snapshot.leaders
+    .slice(publishedTie - 1, publishedTie + 1)
+    .map((leader) => leader.actor.id)
+    .sort();
+  const logins = new Map([
+    [tiedIds[0], "rank-order-z"],
+    [tiedIds[1], "rank-order-a"],
+  ]);
+  const objects: unknown[] = [renamed];
+  while (objects.length > 0) {
+    const value = objects.pop();
+    if (value === null || typeof value !== "object") continue;
+    const record = value as Record<string, unknown>;
+    const login =
+      typeof record.id === "string" ? logins.get(record.id) : undefined;
+    if (login && typeof record.login === "string") {
+      record.login = login;
+      record.url = `https://github.com/${login}`;
+    }
+    objects.push(...Object.values(record));
+  }
+  const compareStrings = (left: string, right: string) =>
+    left < right ? -1 : left > right ? 1 : 0;
+  renamed.leaders.sort(
+    (left, right) =>
+      right.scoreThirds - left.scoreThirds ||
+      compareStrings(
+        left.actor.login.toLowerCase(),
+        right.actor.login.toLowerCase(),
+      ) ||
+      compareStrings(left.actor.login, right.actor.login) ||
+      compareStrings(left.actor.id, right.actor.id),
+  );
+  renamed.leaders.forEach((leader, index) => {
+    leader.rank = index + 1;
+  });
+  const originalRenamed = structuredClone(renamed);
+  assertLeaderboardSnapshot(renamed);
+  expect(() => assertPublishableLeaderboardSnapshot(renamed)).toThrow(
+    "actor ID ordering",
+  );
+  const adapted = preparePullRequestLedger(renamed);
+  assertPublishableLeaderboardSnapshot(adapted);
+  expect(adapted.leaders.map((leader) => leader.actor.id)).toEqual(
+    publishedIds,
+  );
+  expect(adapted.leaders.map((leader) => leader.rank)).toEqual(
+    snapshot.leaders.map((leader) => leader.rank),
+  );
+  expect(renamed).toEqual(originalRenamed);
   const cycles = await loadCycles(request);
   const views = PROJECTS.filter(
     (project) =>

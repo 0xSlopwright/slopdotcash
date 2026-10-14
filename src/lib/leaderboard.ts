@@ -505,7 +505,17 @@ function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function compareRankedEntries(
+export function compareRankedEntries(
+  left: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
+  right: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
+): number {
+  return (
+    right.scoreThirds - left.scoreThirds ||
+    compareCodeUnits(left.actor.id, right.actor.id)
+  );
+}
+
+function compareLegacyRankedEntries(
   left: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
   right: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
 ): number {
@@ -5414,18 +5424,7 @@ export function assertLeaderboardSnapshot(
   ) {
     throw new Error("snapshot.leaders must contain unique actors");
   }
-  for (let index = 1; index < validatedLeaders.length; index += 1) {
-    if (
-      compareRankedEntries(
-        validatedLeaders[index - 1],
-        validatedLeaders[index],
-      ) > 0
-    ) {
-      throw new Error(
-        "snapshot.leaders must follow the published rank ordering",
-      );
-    }
-  }
+  assertLeaderboardOrdering(validatedLeaders, true);
   assertLeaderboardRanks(validatedLeaders, true);
 
   if (!Array.isArray(snapshot.ledger)) {
@@ -6092,6 +6091,22 @@ export function assertLeaderboardSnapshot(
   assertMethodologyValue(snapshot.methodology, "snapshot.methodology");
 }
 
+function assertLeaderboardOrdering(
+  leaders: LeaderboardEntry[],
+  allowLegacy: boolean,
+): void {
+  const orderedBy = (compare: typeof compareRankedEntries) =>
+    leaders.every(
+      (entry, index) => index === 0 || compare(leaders[index - 1], entry) <= 0,
+    );
+  if (
+    !orderedBy(compareRankedEntries) &&
+    !(allowLegacy && orderedBy(compareLegacyRankedEntries))
+  ) {
+    throw new Error("snapshot.leaders must follow score and actor ID ordering");
+  }
+}
+
 function assertLeaderboardRanks(
   leaders: LeaderboardEntry[],
   allowLegacy: boolean,
@@ -6115,6 +6130,7 @@ export function assertPublishableLeaderboardSnapshot(
   now = Date.now(),
 ): asserts value is LeaderboardSnapshot {
   assertLeaderboardSnapshot(value);
+  assertLeaderboardOrdering(value.leaders, false);
   assertLeaderboardRanks(value.leaders, false);
   // Archived and deployed snapshots retain their collected inventory. A new
   // publication must collect every current active target; paused projects are not collected.
