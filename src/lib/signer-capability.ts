@@ -61,7 +61,25 @@ export interface PublicSignerReport {
 }
 
 const INSTRUMENT_ID =
-  /^(?:squads-(?:v4|project)-vault:solana:[1-9A-HJ-NP-Za-km-z]{32,44}:(?:0|[1-9][0-9]*):[1-9A-HJ-NP-Za-km-z]{32,44}|sablier-lockup-v4:base:0x[0-9a-f]{40}:[1-9][0-9]{0,77})$/u;
+  /^(?:squads-(?:v4|project)-vault:solana:[1-9A-HJ-NP-Za-km-z]{32,44}:(?:0|[1-9][0-9]{0,2}):[1-9A-HJ-NP-Za-km-z]{32,44}|sablier-lockup-v4:base:0x[0-9a-f]{40}:[1-9][0-9]{0,77})$/u;
+
+const MAX_UINT256 = (1n << 256n) - 1n;
+
+/**
+ * The numeric component of an instrument identity is bounded by the
+ * instrument it names, as in every other validator of this exact string:
+ * a Squads vault index is an unsigned byte (funding-instruments,
+ * payment-reservations, squads-execution), and a Sablier stream id is a
+ * uint256 (sablier-funding). An identity outside those ranges names an
+ * instrument that cannot exist.
+ */
+function isSignerInstrumentId(value: unknown): value is string {
+  if (typeof value !== "string" || !INSTRUMENT_ID.test(value)) return false;
+  const numeric = value.split(":")[3];
+  return value.startsWith(BASE_STREAM_INSTRUMENT_PREFIX)
+    ? BigInt(numeric) <= MAX_UINT256
+    : Number(numeric) <= 255;
+}
 
 export function isBaseStreamSignerInstrument(instrumentId: string): boolean {
   return instrumentId.startsWith(BASE_STREAM_INSTRUMENT_PREFIX);
@@ -116,7 +134,7 @@ export function assertPublicSignerReport(value: unknown): PublicSignerReport {
     typeof r.cycleId !== "string" ||
     !/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(r.cycleId) ||
     typeof r.instrumentId !== "string" ||
-    !INSTRUMENT_ID.test(r.instrumentId) ||
+    !isSignerInstrumentId(r.instrumentId) ||
     typeof r.role !== "string" ||
     !(requiredSignerRoles(r.instrumentId) as readonly string[]).includes(
       r.role,
