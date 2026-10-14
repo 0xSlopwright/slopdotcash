@@ -12,7 +12,7 @@ if (
   names.some(
     (name) =>
       name.length > 63 ||
-      !/^slop-payments-(base-sepolia|solana-devnet|solana-testnet)(-[a-z0-9]+)*-(attester|relayer|dispatcher)$/.test(
+      !/^slop-payments-(base-sepolia|solana-devnet|solana-testnet|robinhood-testnet)(-[a-z0-9]+)*-(attester|relayer|dispatcher)$/.test(
         name,
       ),
   )

@@ -78,6 +78,14 @@ const EVIDENCE_FORMAT = {
     platformFee: "platformFeeTransactionHash",
     isTransaction: isEvmTransactionHash,
   },
+  // Robinhood Chain shares Base's EVM evidence format. The legacy rail cannot
+  // reach it (the manifest schema refuses that), so this only keeps the map total.
+  robinhood: {
+    kind: "base-settlement-evidence",
+    transaction: "transactionHash",
+    platformFee: "platformFeeTransactionHash",
+    isTransaction: isEvmTransactionHash,
+  },
 } as const;
 
 interface VerifyArguments {
