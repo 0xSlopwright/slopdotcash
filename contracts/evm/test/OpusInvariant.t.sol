@@ -39,8 +39,12 @@ contract OpusHandler {
         return uint64(1 + (s % 5));
     }
 
+    function _destKey(uint256 s) internal pure returns (uint256) {
+        return OpusWallets.HANDLER_KEY_BASE + (s % 7);
+    }
+
     function _dest(uint256 s) internal pure returns (address) {
-        return address(uint160(0x1000 + (s % 7)));
+        return vm.addr(_destKey(s));
     }
 
     function deposit(uint256 amount) external {
@@ -66,8 +70,12 @@ contract OpusHandler {
     function bind(uint256 actorSeed, uint256 destSeed) external {
         uint64 actor = _actor(actorSeed);
         (, uint64 v,,,) = escrow.bindings(actor);
+        address dest = _dest(destSeed);
+        bytes32 claim = keccak256(abi.encode(nonce++));
+        uint64 expiresAt = uint64(block.timestamp);
+        bytes memory signature = OpusWallets.sign(vm, escrow, _destKey(destSeed), actor, dest, v, claim, expiresAt);
         vm.prank(authority);
-        escrow.bindDestination(actor, _dest(destSeed), v, keccak256(abi.encode(nonce++)), uint64(block.timestamp));
+        escrow.bindDestination(actor, dest, v, claim, expiresAt, signature);
     }
 
     function cancel(uint256 actorSeed) external {

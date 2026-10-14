@@ -125,7 +125,7 @@ export async function reviewExists(
 ): Promise<boolean> {
   const row = await db
     .prepare(
-      "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND status != 'failed'",
+      "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND status IN ('running', 'completed')",
     )
     .bind(reviewKey)
     .first();
@@ -151,6 +151,21 @@ export async function startReview(
   db: D1Database,
   row: ReviewRow,
 ): Promise<"new" | "retry" | "exists"> {
+  // Eligibility skips are not completed reviews. Claim the same revision
+  // again when its draft/installation/budget state permits review. A skip
+  // before any model call is still a first billable attempt; prior calls
+  // retain the existing Slop-caused retry treatment.
+  const resumed = await db
+    .prepare(
+      `UPDATE slopbot_reviews SET status = 'running', content_digest = ?,
+        created_at = CASE WHEN EXISTS (SELECT 1 FROM slopbot_costs WHERE review_key = ?)
+          THEN created_at ELSE ? END, skip_reason = NULL, completed_at = NULL
+       WHERE review_key = ? AND status = 'skipped'
+       RETURNING EXISTS (SELECT 1 FROM slopbot_costs WHERE review_key = ?) AS retry`,
+    )
+    .bind(row.contentDigest, row.reviewKey, now(), row.reviewKey, row.reviewKey)
+    .first<{ retry: number }>();
+  if (resumed !== null) return resumed.retry === 1 ? "retry" : "new";
   const retried = await db
     .prepare(
       "UPDATE slopbot_reviews SET status = 'running' WHERE review_key = ? AND status = 'failed'",
