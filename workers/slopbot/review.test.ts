@@ -4,7 +4,7 @@
 // make a planted marker create a penalty.
 import { describe, expect, test } from "bun:test";
 import { labelOnlyConfig, type Verdict, validateVerdict } from "./contracts";
-import { grounded, neutralize } from "./review";
+import { commentBody, grounded, neutralize, pullDiff } from "./review";
 import { route } from "./routing";
 
 const policy = [
@@ -163,5 +163,77 @@ describe("neutralize", () => {
 
   test("bounds the echoed length", () => {
     expect(neutralize("x".repeat(5000))).toHaveLength(1500);
+  });
+});
+
+describe("pullDiff", () => {
+  test("marks a pull request with more than three full pages as truncated", async () => {
+    const requests: string[] = [];
+    const github = {
+      get: async (path: string) => {
+        requests.push(path);
+        const page = Number(
+          new URL(`https://example.test${path}`).searchParams.get("page"),
+        );
+        return Array.from({ length: 100 }, (_, index) => ({
+          filename: `file-${(page - 1) * 100 + index + 1}.ts`,
+          status: "modified",
+          patch: "+changed",
+        }));
+      },
+    } as unknown as Parameters<typeof pullDiff>[0];
+
+    const result = await pullDiff(github, "owner", "repo", 7, 301);
+
+    expect(requests).toHaveLength(3);
+    expect(result.diff).toContain("file-300.ts");
+    expect(result.truncated).toBe(true);
+  });
+
+  test("continues pagination after an omitted GitHub patch", async () => {
+    const requests: string[] = [];
+    const github = {
+      get: async (path: string) => {
+        requests.push(path);
+        const page = Number(
+          new URL(`https://example.test${path}`).searchParams.get("page"),
+        );
+        if (page === 1) {
+          return Array.from({ length: 100 }, (_, index) => ({
+            filename: index === 0 ? "large.bin" : `file-${index + 1}.ts`,
+            status: "modified",
+            patch: index === 0 ? undefined : "+changed",
+          }));
+        }
+        return [{ filename: "tail.ts", status: "modified", patch: "+tail" }];
+      },
+    } as unknown as Parameters<typeof pullDiff>[0];
+
+    const result = await pullDiff(github, "owner", "repo", 8, 101);
+
+    expect(requests).toHaveLength(2);
+    expect(result.diff).toContain("(binary or too large to show)");
+    expect(result.diff).toContain("tail.ts");
+    expect(result.truncated).toBe(true);
+  });
+});
+
+describe("commentBody", () => {
+  test("describes an incomplete pull request diff without assuming its cause", () => {
+    const body = commentBody({
+      verdict: verdict({}),
+      action: "label",
+      blockedClose: null,
+      context: {
+        revision: "abc123",
+        policyDigest: "1234567890abcdef",
+        diffTruncated: true,
+      } as unknown as Parameters<typeof commentBody>[0]["context"],
+      triage: null,
+      confirm: null,
+    });
+
+    expect(body).toContain("The pull request diff was not available in full.");
+    expect(body).not.toContain("The diff was too large");
   });
 });
