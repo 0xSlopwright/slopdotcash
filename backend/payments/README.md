@@ -33,7 +33,7 @@ Apply migration `0011_payments.sql` after prior migrations. Run the account and
 queue integration workflow with:
 
 ```
-bun backend/payments/base.integration.ts
+bun backend/payments/evm.integration.ts
 ```
 
 The Base vertical workflow deploys real local contracts, reserves a walletless
@@ -75,8 +75,16 @@ manifest output. Solana additionally needs `PAYMENT_SOLANA_GENESIS` trust roots.
 The manifest supplies its program, project PDA, token vault, network domain,
 and asset. Both chain adapters fetch actual finalized evidence independently.
 
-`BASE_PAYMENT_EXECUTOR` and `SOLANA_PAYMENT_EXECUTOR` are separate internal
-service bindings, not public URLs. The scoped signing implementations live in
+Each EVM deployment record also carries `gasCeiling` (executor gas units) and
+`scanPageBlocks` (blocks per `eth_getLogs` page, inclusive), copied from the
+network registry by `scripts/prepare-payment-deployments.ts`. A record missing
+either value is refused; no worker substitutes a default.
+
+`EVM_PAYMENT_EXECUTOR` and `SOLANA_PAYMENT_EXECUTOR` are separate internal
+service bindings, not public URLs. The dispatcher picks one by the
+deployment's execution family from the network registry
+(`src/lib/escrow-policy.mjs`), never by the literal chain name. The scoped
+signing implementations live in
 `workers/payment-executor`. Neither relayer key may approve awards or withdraw
 funds. A separate attester signs only a verified destination binding. Keys are
 runtime secrets; no production credentials are read by the local tests.
@@ -97,7 +105,28 @@ ledger. Missing index coverage is explicit. Account `deliveryState` distinguishe
 needs-wallet, awaiting-binding, submitted, held, and paid; only `state=paid`
 represents finalized chain payment.
 
-For browser QA, `bun backend/payments/base.integration.ts --serve` starts a local
+Migration `0014` adds `payment_direct_transfers`: transfers that a project
+creator sent outside escrow, imported from the reviewed `disclosures/*.json`
+records. Each deploy runs `scripts/prepare-payments-import.ts` after the
+migrations. It writes nothing unless every disclosure reproduces from its
+frozen preparation. Rows are permanent, and a disclosure that contradicts an
+imported transaction fails the import. Direct transfers never become an
+obligation or `state=paid`, and project totals never add them to verified
+payouts. `GET /me` returns them as `directTransfers`.
+`GET /api/v1/payments/projects/<id>/direct-transfers` and
+`GET /api/v1/payments/actors/<numeric-github-id>/direct-transfers` publish
+the same disclosed facts.
+
+Migration `0015` adds `wallet_observations`: legacy Solana addresses that a
+contributor published in a GitHub profile README and that a reviewed
+preparation or cycle proposal froze at an immutable commit. The same import
+writes them with proof level `profile_readme` (PRD WAL-01). They are history
+only. They never become `wallet_claims`, payment authorizations, or payout
+destinations. `GET /me` returns them as `walletObservations`, and the payouts
+page asks the contributor to connect and confirm a wallet. Registry-sourced
+frozen wallets are already D1 claims and are not imported again.
+
+For browser QA, `bun backend/payments/evm.integration.ts --serve` starts a local
 HTTP fixture on port 18548 with a seeded GitHub session, real migrated SQLite,
 and an isolated Anvil chain. It exposes `/fixture`, the account login read, and
 the actual payments API. Wallet registration and signing trigger real local

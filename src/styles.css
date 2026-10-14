@@ -721,13 +721,48 @@ p {
 }
 
 .hero-action {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   color: var(--orange-dark);
   font-size: clamp(30px, 7vw, 94px);
   letter-spacing: -0.065em;
   line-height: 0.88;
   text-wrap: balance;
+}
+
+.hero-switch-sizer,
+.hero-typewriter {
+  grid-area: 1 / 1;
+}
+
+.hero-switch-sizer {
+  visibility: hidden;
+}
+
+.hero-typewriter {
+  position: relative;
+  align-self: start;
+}
+
+.hero-mobile-action {
+  display: none;
+}
+
+.hero-typewriter-caret {
+  width: 0.055em;
+  height: 0.78em;
+  display: inline-block;
+  margin-left: 0.04em;
+  animation: typewriter-caret 720ms steps(1, end) infinite;
+  background: currentColor;
+  transform: translateY(0.04em);
+}
+
+@keyframes typewriter-caret {
+  50% {
+    opacity: 0;
+  }
 }
 
 .hero-copy {
@@ -2444,6 +2479,15 @@ small {
     line-height: 0.9;
   }
 
+  .hero-typewriter {
+    display: none;
+  }
+
+  .hero-mobile-action {
+    display: block;
+    grid-area: 1 / 1;
+  }
+
   .hero-copy {
     margin-top: 24px;
   }
@@ -2816,6 +2860,9 @@ small {
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
+  }
+  .hero-typewriter-caret {
+    display: none;
   }
   *,
   *::before,
@@ -3261,6 +3308,41 @@ small {
 .points-panel p {
   max-width: 72ch;
 }
+.home-leaderboard-section > .points-panel + .points-panel {
+  margin-top: 3rem;
+}
+/* Slopbot is a separate, unranked Automation row (PRD LDR-04). */
+.automation-row {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem 1.125rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.automation-name {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+}
+.automation-name small {
+  color: var(--muted);
+}
+.automation-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 1rem;
+  margin: 0;
+}
+.automation-metrics dt {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+.automation-metrics dd {
+  margin: 0.25rem 0 0;
+  font-size: 1.125rem;
+  font-weight: 700;
+}
 .points-meta {
   font-size: 0.875rem;
   line-height: 1.6;
@@ -3417,6 +3499,12 @@ small {
 }
 .profile-activity li {
   margin-block: 0.5rem;
+}
+.profile-activity summary + p {
+  margin-top: 0.75rem;
+}
+.profile-activity details p a {
+  text-decoration: underline;
 }
 .points-panel > label > input[type="search"] {
   max-width: 100%;
@@ -4314,4 +4402,136 @@ small {
 .recipient-table thead th,
 .recipient-table td:first-of-type {
   white-space: nowrap;
+}
+
+.issue-outcome-counts {
+  max-width: 32rem;
+}
+.issue-outcome-counts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.issue-outcome-counts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.wallet-picker {
+  width: min(420px, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  box-sizing: border-box;
+  margin: auto;
+  padding: 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.wallet-picker::backdrop {
+  background: rgb(0 0 0 / 65%);
+}
+/* When the heading cannot share a line with Close, wrap-reverse keeps Close
+   on the top line and gives the heading the full dialog width below it. */
+.wallet-picker-header {
+  display: flex;
+  flex-wrap: wrap-reverse;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+.wallet-picker-header h2 {
+  flex: 1 1 10rem;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 1.3rem;
+}
+.wallet-picker-close {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  margin-inline-start: auto;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.wallet-picker-close:hover {
+  background: var(--line);
+}
+.wallet-picker-list {
+  display: grid;
+  gap: 0.75rem;
+  margin-block: 1.5rem;
+}
+.wallet-picker-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: transparent;
+  color: inherit;
+  text-decoration: none;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.wallet-picker-row:hover {
+  border-color: var(--orange);
+  background: var(--line);
+}
+.wallet-picker-row span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+}
+.wallet-picker-row small {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  font-size: 0.875rem;
+}
+.wallet-picker-row:focus-visible,
+.wallet-picker-close:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 3px;
+}
+.wallet-picker-note {
+  margin-bottom: 0;
+  font-size: 0.875rem;
+}
+/* Narrow or zoomed viewports: keep the dialog border inside the viewport and
+   return padding to the content. */
+@media (max-width: 320px) {
+  .wallet-picker {
+    width: calc(100vw - 1rem);
+    max-width: calc(100vw - 1rem);
+    padding: 1rem;
+  }
+  .wallet-picker-row {
+    padding: 0.75rem;
+  }
+}
+/* 200% browser zoom on a 320px screen: stack each wallet row and trim padding
+   so a wallet name gets the full row width. */
+@media (max-width: 240px) {
+  .wallet-picker {
+    padding: 0.75rem;
+  }
+  .wallet-picker-row {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 0.75rem 0.5rem;
+  }
 }

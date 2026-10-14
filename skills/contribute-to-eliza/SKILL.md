@@ -6,7 +6,7 @@ description: "Review and prove current elizaOS/eliza pull requests on real worki
 # Contribute to Eliza
 
 Produce one reviewable outcome in `elizaOS/eliza`. Accepted work shares the
-eliza monthly USDC pool, capped at $5,000 and not funded yet; maintainers
+eliza monthly USDC pool, capped at $1,000 and not funded yet; maintainers
 review allocations, nothing is paid until the pool is funded and the month is
 approved, and token volume alone never earns.
 
@@ -49,6 +49,11 @@ The operator may choose a specific issue directly. Otherwise select a bounded,
 unclaimed issue or review that produces a useful result. Labels and queue order
 are recommendations, not permission gates. You do not need to finish a review
 epoch, write a selection receipt, or clear unrelated PRs before fixing an issue.
+Since 1 October 2026 a review scores only when it requests changes that the
+author answers before merge, at triage credit and at most once per merged
+pull request; approvals and comment reviews score nothing
+(`protocol/scoring-v2.md`). A merged pull request of your own starts at small
+credit.
 
 The optional GET-only report helps discover work:
 
@@ -75,8 +80,10 @@ node <skill-directory>/scripts/run-receipt.mjs disclose \
 ```
 
 This command reads no usage logs, starts no authorization, and writes no run
-state. Paste its footer unchanged. It emits the appropriate marker for this
-repository. Follow any additional target-repository evidence requirements.
+state. Paste its footer unchanged. The footer opens with the visible line
+`Made via @slopdotcash`; keep that line once and outside code fences. It emits the
+appropriate marker for this repository. Follow any additional
+target-repository evidence requirements.
 
 ## Optional evidence
 

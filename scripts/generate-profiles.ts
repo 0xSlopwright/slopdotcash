@@ -1,13 +1,40 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { readBoundedJson } from "../src/lib/browser-json";
 import {
   assertProfiles,
   type ProfileIndex,
   type ProfileRecord,
 } from "../src/lib/profiles";
-import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
+import {
+  REGISTERED_REPOSITORIES,
+  TARGET_REPOSITORIES,
+} from "../src/lib/repositories.mjs";
+import { GitHubGraphqlClient } from "./generate-leaderboard";
+import {
+  type CensusRequest,
+  collectProfileIssues,
+} from "./profile-issue-census";
+
+type PullRequestPage = {
+  repository: {
+    id: string;
+    pullRequests: {
+      totalCount: number;
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+      nodes: {
+        id: string;
+        state: string;
+        author: {
+          __typename: string;
+          id?: string;
+          login: string;
+          avatarUrl: string;
+        } | null;
+      }[];
+    };
+  } | null;
+};
 
 const { values } = parseArgs({
   args: process.argv.slice(2),
@@ -15,13 +42,14 @@ const { values } = parseArgs({
     live: { type: "boolean" },
     seed: { type: "boolean" },
     input: { type: "string" },
+    previous: { type: "string" },
   },
 });
 if (values.live && values.input)
   throw new Error("Choose live collection or a profile input file.");
 const output = "public/data/profiles.json";
 const seed = "data/profiles/seed.json";
-const query = `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){id pullRequests(first:100,after:$after,orderBy:{field:CREATED_AT,direction:ASC}){totalCount pageInfo{hasNextPage endCursor} nodes{id state author{__typename login avatarUrl ... on User{id}}}}}rateLimit{remaining resetAt}}`;
+const query = `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){id pullRequests(first:100,after:$after,orderBy:{field:CREATED_AT,direction:ASC}){totalCount pageInfo{hasNextPage endCursor} nodes{id state author{__typename login avatarUrl ... on User{id}}}}}rateLimit{cost limit remaining resetAt}}`;
 async function publish(path: string, value: ProfileIndex) {
   await mkdir(path.slice(0, path.lastIndexOf("/")), { recursive: true });
   await writeFile(`${path}.tmp`, `${JSON.stringify(value)}\n`);
@@ -32,8 +60,28 @@ if (values.live) {
     process.env.GITHUB_TOKEN ??
     process.env.GH_TOKEN ??
     execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim();
+  if (!values.previous)
+    throw Error(
+      "Live profile collection requires --previous with the last published census (or the reviewed seed for the first publication)",
+    );
+  const previous = JSON.parse(await readFile(values.previous, "utf8"));
+  // The last census may predate a project activation or retirement. It only
+  // carries issue history forward, so it must name registered repositories,
+  // not exactly the current active set.
+  const registered = new Set(REGISTERED_REPOSITORIES.map((r) => r.id));
+  const previousInventory = Array.isArray(previous?.repositories)
+    ? previous.repositories.map((r: { repository: string }) => r.repository)
+    : [];
+  if (!previousInventory.every((id: string) => registered.has(id)))
+    throw Error("Previous census names an unregistered repository");
+  assertProfiles(previous, previousInventory);
+  const client = new GitHubGraphqlClient(token);
+  const request: CensusRequest = async <T>(
+    query: string,
+    variables: Record<string, string | null>,
+  ): Promise<T> => (await client.execute(query, variables)) as T;
   const result: ProfileIndex = {
-    schemaVersion: "1",
+    schemaVersion: "2",
     startedAt: new Date().toISOString(),
     generatedAt: "",
     repositories: [],
@@ -49,58 +97,15 @@ if (values.live) {
       excluded = 0;
     const ids = new Set<string>();
     do {
-      const response = await fetch("https://api.github.com/graphql", {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${token}`,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          query,
-          variables: { owner: repo.owner, name: repo.name, after: cursor },
-        }),
-        signal: AbortSignal.timeout(60000),
+      const data: PullRequestPage = await request<PullRequestPage>(query, {
+        owner: repo.owner,
+        name: repo.name,
+        after: cursor,
       });
-      if (!response.ok) throw Error(`Profile census GitHub ${response.status}`);
-      const value = (await readBoundedJson(
-        response,
-        4 * 1024 * 1024,
-        "profile census",
-      )) as {
-        errors?: unknown;
-        data?: {
-          repository: {
-            id: string;
-            pullRequests: {
-              totalCount: number;
-              pageInfo: { hasNextPage: boolean; endCursor: string | null };
-              nodes: {
-                id: string;
-                state: string;
-                author: {
-                  __typename: string;
-                  id?: string;
-                  login: string;
-                  avatarUrl: string;
-                } | null;
-              }[];
-            };
-          };
-          rateLimit: { remaining: number };
-        };
-      };
-      if (
-        value.errors ||
-        !value.data?.repository ||
-        value.data.rateLimit.remaining < 100
-      )
-        throw Error("Incomplete profile census or insufficient GitHub budget");
-      if (
-        repo.expectedNodeId &&
-        repo.expectedNodeId !== value.data.repository.id
-      )
+      if (!data.repository) throw Error("Profile repository is unavailable");
+      if (repo.expectedNodeId && repo.expectedNodeId !== data.repository.id)
         throw Error("Profile repository identity changed");
-      const page = value.data.repository.pullRequests;
+      const page = data.repository.pullRequests;
       if (reported !== undefined && page.totalCount < reported)
         throw Error(
           "PR inventory shrank during census; retry without publishing partial counts",
@@ -119,7 +124,7 @@ if (values.live) {
           excluded++;
           continue;
         }
-        const person = people.get(actor.id) ?? {
+        const person: ProfileRecord = people.get(actor.id) ?? {
           id: actor.id,
           login: actor.login,
           avatarUrl: actor.avatarUrl,
@@ -155,6 +160,12 @@ if (values.live) {
     });
     console.log(`${repo.id}: ${ids.size} PRs reconciled`);
   }
+  result.issues = await collectProfileIssues(
+    request,
+    people,
+    previous,
+    result.startedAt,
+  );
   result.people = [...people.values()].sort((a, b) => a.id.localeCompare(b.id));
   result.generatedAt = new Date().toISOString();
   assertProfiles(result);

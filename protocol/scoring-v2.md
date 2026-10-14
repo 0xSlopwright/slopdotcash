@@ -18,10 +18,12 @@ weighted monthly total is aggregated:
 | XL | 45 | 15 |
 | Exceptional | 75 | 25 |
 
-Every accepted merge begins as a provisional micro work unit. A Claude review
-agent may propose a higher tier, but only an immutable maintainer-authored
-`slop-score` record bound to the pull-request node ID and exact head SHA can
-ratify it. Related or artificially split PRs share one `workUnitId`; confirmed
+Every accepted merge begins as a provisional work unit: micro when merged
+before 2026-10-01T00:00:00Z, small from then on (PRD SCR-05). A Claude review
+agent may propose another tier,
+but only an immutable maintainer-authored `slop-score` record bound to the
+pull-request node ID and exact head SHA can ratify it, including micro for
+trivial work. Related or artificially split PRs share one `workUnitId`; confirmed
 duplicates, valueless changes, and split-only work may be excluded by a public
 human decision. XL, exceptional, security-sensitive, and related-party cases
 require a second maintainer.
@@ -47,7 +49,8 @@ other actors follow in actor-ID order; the first actors receive the remainder.
 Each actor keeps at least one third. The author's event keeps the
 `<pull-request-node-id>:merged` ID and the only evidence bonus; each other
 actor's event is `<pull-request-node-id>:merged:<actor-node-id>`. A formal
-review by any credit actor of the same pull request is a self-review.
+review, a `slop-review` record, or a `slop-score` ratification by any credit
+actor of the same pull request is a self-review and earns no review credit.
 
 ## Review credit
 
@@ -55,6 +58,17 @@ Review is paid from the same project pool: triage 1/3, standard 1, deep
 reproduction 3, and specialist review 8. A separate maintainer ratification
 earns 1/3 unless that actor already received review credit on the artifact.
 Self-review, post-merge review, duplicate review, and bot activity do not score.
+
+Before 2026-10-01T00:00:00Z, every reviewer's first qualifying pre-merge
+`APPROVED` or `CHANGES_REQUESTED` formal review scores standard credit. From
+that instant (PRD SCR-05), an ordinary formal review scores only when it
+changed the accepted outcome: a `CHANGES_REQUESTED` review of a commit that is
+not the merged head. One merged pull request gives at most one ordinary review
+award, triage credit, to the latest such review. Approvals, requests the merge
+ignored, and reviews without a recorded commit publish `unchanged-outcome`;
+other qualifying reviews publish `pull-request-review-awarded`. Higher review
+tiers still come only from maintainer-ratified review records or evaluated
+contributions.
 
 Formal review collection is independent of the reviewed pull-request author's
 full-detail hydration cap. Before detail hydration, the generator performs a
@@ -72,7 +86,8 @@ Each collected formal review that does not score appears in the public
 canonical public URL and repository, and one closed reason enum. This makes
 self-review, bot, post-merge, duplicate-reviewer, non-decision, insufficient-
 substance, pre-existing evaluated-contribution awards, external-prize-policy,
-and reviewer-cycle-cap exclusions auditable without publishing review bodies
+reviewer-cycle-cap, unchanged-outcome, and pull-request-review-awarded
+exclusions auditable without publishing review bodies
 in a second surface.
 
 An existing evaluated-contribution review award remains authoritative for its

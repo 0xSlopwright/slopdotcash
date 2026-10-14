@@ -10,8 +10,9 @@ never makes public funding accessibility true.
 Deploy the trusted reservation workflow and verifier before activation. Configure
 classic protection on canonical `SlopDotCash/slopdotcash` `main`: strict
 up-to-date PR checks requiring `Trusted payment reservation gate` from the verified
-GitHub Actions app, approving review with stale dismissal and last-push approval,
-resolved conversations, admin enforcement, no review bypass, force push or deletion.
+GitHub Actions app, required pull requests (no approving review count is
+required), resolved conversations, admin enforcement, no pull-request bypass,
+force push or deletion.
 The loader verifies these through GitHub REST; it never changes settings.
 Ruleset-only protection is not implemented by this bounded verifier.
 
@@ -102,7 +103,10 @@ project.
 1. Review a project manifest with optional `funding.freshCyclePaymentPolicy`:
    `schemaVersion: "1"`, `kind: "fresh-cycle-payment-policy"`, `projectId`, exact
    `cycleId`, truthful UTC `effectiveAt`, bounded UTC `planningExpiresAt`,
-   `instrumentSha256`, and the fixed reviewed `feeRecipient`. The instrument hash
+   `instrumentSha256`, and the fixed reviewed `feeRecipient`. On Solana,
+   `feeRecipient` must be Slop's published Solana fee recipient
+   `9EyxVhhnCJH4QL5bDsRyukrkHFyitFMuf45UDdLxm4BY` (owner decision, 9 October
+   2026). The schema refuses any other address. The instrument hash
    is SHA-256 of compact JSON of the strict normalized reviewed Squads instrument.
    Enable the monthly pool only with this policy and its exact active instrument.
    Additive review budgets are outside this mode.
@@ -152,8 +156,10 @@ same four steps with a Base Sablier Lockup v4 stream instead of a Squads vault:
   a reviewed `recipientGithub` (actor ID, node ID, login) for its `recipient`.
   `instrumentSha256` binds that normalized stream object.
 - `feeRecipient` must be Slop's published Base fee recipient
-  `0xb7b0d5e45016d6d31629d9ab375df770fd2aaf77` (lowercase canonical form). The
-  schema refuses any other Base address.
+  `0x8f77c37d8650776bfe73c9b12b15209ee15d9b86` (lowercase canonical form). The
+  schema refuses any other Base address. On 9 October 2026 the owner replaced
+  the 8 October recipient `0xb7b0d5e45016d6d31629d9ab375df770fd2aaf77`. That
+  address is retired.
 - The reservation `instrumentId` is `sablier-lockup-v4:base:<contract>:<stream>`.
   The reserved plan is a `base-usdc-transfer-plan` whose source is the stream
   recipient. The fee is a separate transfer in the same plan.

@@ -1,9 +1,14 @@
+import { join } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
+
+const { site } = deploymentOrigins(
+  deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
+);
 
 test("social membership shows connection points, respects privacy and survives disconnect", async ({
   page,
-  baseURL,
 }, info) => {
   const errors: string[] = [];
   const failures: string[] = [];
@@ -12,7 +17,7 @@ test("social membership shows connection points, respects privacy and survives d
     if (m.type() === "error") errors.push(m.text());
   });
   page.on("response", (r) => {
-    if (new URL(r.url()).origin === "https://slop.cash" && r.status() >= 400)
+    if (new URL(r.url()).origin === site && r.status() >= 400)
       failures.push(`${r.status()} ${r.url()}`);
   });
   const me = {
@@ -33,16 +38,20 @@ test("social membership shows connection points, respects privacy and survives d
     verifiedAt: me.joinedAt,
     public: 0,
   };
-  // Serve tested local bytes at the product origin. Provider and membership responses
-  // are explicit doubles; real OAuth security is covered by the SQLite/API tests.
-  await page.route("https://slop.cash/**", async (route) => {
-    const original = new URL(route.request().url());
-    const response = await route.fetch({
-      url: `${baseURL}${original.pathname}${original.search}`,
+  // Serve the built bytes at the product origin without a second HTTP proxy.
+  // Proxy requests can outlive navigation and reset reused localhost sockets.
+  // Provider and membership responses below remain explicit doubles.
+  await page.route(`${site}/**`, async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    await route.fulfill({
+      path: join(
+        process.cwd(),
+        "dist",
+        route.request().resourceType() === "document" ? "index.html" : pathname,
+      ),
     });
-    await route.fulfill({ response });
   });
-  await page.route("https://slop.cash/api/v1/points/**", async (route) => {
+  await page.route(`${site}/api/v1/points/**`, async (route) => {
     const path = new URL(route.request().url()).pathname;
     let value: unknown;
     if (path.endsWith("/x/me"))
@@ -86,7 +95,7 @@ test("social membership shows connection points, respects privacy and survives d
       });
     },
   );
-  await page.goto("https://slop.cash/points");
+  await page.goto(`${site}/points`);
   const accountButton = page.getByRole("button", {
     name: "Your account",
     exact: true,
@@ -130,7 +139,7 @@ test("social membership shows connection points, respects privacy and survives d
   await expect(accountPanel).toHaveCount(0);
   await accountButton.click();
   await accountPanel.getByRole("link", { name: "Account settings" }).click();
-  await expect(page).toHaveURL("https://slop.cash/account");
+  await expect(page).toHaveURL(`${site}/account`);
   await expect(
     page.getByRole("heading", { name: "Account", exact: true }),
   ).toBeVisible();
@@ -145,7 +154,7 @@ test("social membership shows connection points, respects privacy and survives d
     .getByLabel("Show my X account with my public membership", { exact: true })
     .click();
   await expect(social.getByText("X visibility updated.")).toBeVisible();
-  await page.goto("https://slop.cash/points#people");
+  await page.goto(`${site}/points#people`);
   await community.getByLabel("GitHub username").fill("social-member");
   await expect(
     community.getByRole("link", { name: "X · @social_member" }),
@@ -168,7 +177,7 @@ test("social membership shows connection points, respects privacy and survives d
   await expect(
     social.getByText("X disconnected. Your earned points are retained."),
   ).toBeVisible();
-  await page.goto("https://slop.cash/points#people");
+  await page.goto(`${site}/points#people`);
   await community.getByLabel("GitHub username").fill("social-member");
   await expect(
     community.getByRole("link", { name: "X · @social_member" }),

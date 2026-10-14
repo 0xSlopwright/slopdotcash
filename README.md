@@ -133,12 +133,13 @@ skills/         canonical contributor and CI reviewer skills
 evaluations/    reviewed awards for useful otherwise-unscored work
 cycles/         append-only monthly reward and settlement records
 funding/        append-only direct-funding evidence
+disclosures/    payouts sent outside the verified settlement flow
 protocol/       public privacy and attribution contracts
 backend/        private trace metadata and storage boundary
 workers/        narrowly scoped Cloudflare services
 src/            React product and strict browser/domain contracts
 scripts/        ingestion, packaging, rewards, settlement, and evidence
-tests/          unit, integration, accessibility, and real-browser coverage
+tests/          real-browser end-to-end, accessibility, and installer coverage
 ```
 
 Generated files under `public/brand/`, `public/downloads/`,
@@ -168,8 +169,9 @@ bun run test:e2e
 ```
 
 `bun run verify` checks project, evaluation, funding, cycle, and protocol
-integrity; audits dependencies; runs type, format, lint, unit, and skill tests;
-and produces the static build.
+integrity; audits dependencies; runs type, format, and lint checks; and
+produces the static build. It also runs the Slopbot unit suite; browser behavior
+is covered by `bun run test:e2e`.
 
 ## Trust and deployment
 
@@ -187,7 +189,13 @@ they do not replace source authorization.
 
 ## Contributing
 
-Start with [CONTRIBUTING.md](CONTRIBUTING.md). Security-sensitive reports must
+Start with [CONTRIBUTING.md](CONTRIBUTING.md). This repository has a $1,000
+monthly Slop contributor pool. Star and fork the repository first. Accepted work
+is reproduced bugs, security, verification, vault, settlement, and scoring
+correctness, and measured improvements inside the approved MVP. UI changes are
+not accepted unless they fix a broken user flow. Prove the result with real LLM
+calls where a model is involved, and test the workflow in the agent clients
+that use it. Security-sensitive reports must
 use the target repository’s private reporting channel; never publish secrets,
 private traces, prompts, credentials, private keys, or vulnerability details in
 an issue or pull request.
@@ -205,8 +213,8 @@ it generated earlier. A missing declared input stops publication; leftover publi
 files never select the source.
 
 `bun run verify:contracts` and `bun run verify:code` are shared by local verification
-and CI. The former checks source records; the latter checks types, formatting,
-lint and tests. Live chain verification and browser checks remain separate.
+and CI. The former checks source records; the latter checks types, formatting
+and lint. Live chain verification and browser checks remain separate.
 
 - `bun run check:unused` checks application locals and parameters; review exports,
   generated entry points, CLI tools, and configuration before removing dependencies.
@@ -221,8 +229,7 @@ lint and tests. Live chain verification and browser checks remain separate.
 Browser evidence is retained separately under `test-results/preview` and
 `test-results/pages`, with matching `playwright-report/` subdirectories. CI keeps
 successful screenshots and results as well as failure diagnostics. Tests use
-finite per-case budgets; pure domain tests run in Node, while shared publication
-fixtures remain serial. `bun run verify` remains the complete local source gate;
+finite per-case budgets. `bun run verify` remains the complete local source gate;
 run `bun run test:e2e` separately for the full browser matrix.
 
 ## Release environments

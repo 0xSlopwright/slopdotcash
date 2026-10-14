@@ -10,9 +10,11 @@ preview_urls = false
 [vars]
 NOTIFY_FROM_ADDRESS = "notifications@slop.cash"
 
+# Recipients come only from the ADMIN_EMAILS secret, set outside the
+# repository with `wrangler secret put ADMIN_EMAILS`. Callers cannot supply a
+# recipient, so this binding sends only to that configured list.
 [[send_email]]
 name = "ADMIN_EMAIL"
-allowed_destination_addresses = ["shawmakesmagic@gmail.com", "drew.piers@gmail.com"]
 
 [observability]
 enabled = true

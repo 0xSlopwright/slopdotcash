@@ -45,6 +45,16 @@ custom domain, `identity-staging.slop.cash`. Configure production environment
 branch allowlists and the production Pages branch to `main` during cutover.
 Production retains its existing storage and secrets. Do not change those IDs.
 
+Before the first staging publication, verify in Cloudflare that `slop-staging`
+has no Pages deployment. Run the checked-in `slop.cash` workflow manually on
+`development` with `bootstrap_staging_profiles` set to `true`. This one-time
+option uses the reviewed profile seed as the previous census while it collects
+fresh GitHub records. It does not copy production account data. The option is
+rejected outside a manual `development` run. Leave it `false` after staging has
+published: ordinary releases must read the prior staging census and fail if
+that history cannot be fetched. Never use this option to recover from an outage
+or a failed refresh of an existing staging site.
+
 ## Acceptance and recovery
 
 Run `bun run verify` and `bun run test:e2e` at the proposed source revision.

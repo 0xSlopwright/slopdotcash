@@ -1,6 +1,14 @@
+import { ExternalLink, Wallet as WalletIcon, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { readBoundedJson } from "./lib/browser-json";
-import type { PaymentChain, PaymentsAccount } from "./lib/payments/contracts";
+import {
+  type PaymentChain,
+  type PaymentsAccount,
+  transactionUrl,
+} from "./lib/payments/contracts";
+import { isDirectTransfer } from "./lib/use-direct-transfers";
+import { type PayoutWallet, usePayoutWallets } from "./lib/use-payout-wallets";
+import { formatDate, formatDateTime } from "./Presentation";
 
 const networkName = { base: "Base", solana: "Solana" };
 
@@ -12,19 +20,6 @@ const networkLabels: Record<string, string> = {
   "solana-testnet": "Solana Testnet · test token",
   anvil: "Local Base test · test USDC",
 };
-function transactionUrl(network: string, id: string | null): string | null {
-  if (!id) return null;
-  if (network === "base-sepolia")
-    return `https://sepolia.basescan.org/tx/${encodeURIComponent(id)}`;
-  if (network === "base-mainnet")
-    return `https://basescan.org/tx/${encodeURIComponent(id)}`;
-  if (network === "solana-mainnet")
-    return `https://explorer.solana.com/tx/${encodeURIComponent(id)}`;
-  if (network === "solana-devnet" || network === "solana-testnet")
-    return `https://explorer.solana.com/tx/${encodeURIComponent(id)}?cluster=${network.slice(7)}`;
-  return null;
-}
-
 function amount(value: string): string {
   const number = BigInt(value);
   const fraction = (number % 1_000_000n)
@@ -33,6 +28,8 @@ function amount(value: string): string {
     .replace(/0+$/, "");
   return `${(number / 1_000_000n).toLocaleString()}${fraction ? `.${fraction}` : ""} USDC`;
 }
+
+class SignedOutError extends Error {}
 
 async function request(path: string, body?: unknown, signal?: AbortSignal) {
   const response = await fetch(`/api/v1/payments/${path}`, {
@@ -47,8 +44,7 @@ async function request(path: string, body?: unknown, signal?: AbortSignal) {
       ? AbortSignal.any([signal, AbortSignal.timeout(30_000)])
       : AbortSignal.timeout(30_000),
   });
-  if (response.status === 401)
-    throw new Error("Sign in with GitHub to view your earnings.");
+  if (response.status === 401) throw new SignedOutError();
   if (!response.ok) {
     if (response.status === 409)
       throw new Error(
@@ -105,32 +101,32 @@ function account(value: unknown): PaymentsAccount {
     ) ||
     data.balances.some(
       (b) => !b || !["base", "solana"].includes(b.chain) || !money(b.netMicro),
+    ) ||
+    !Array.isArray(data.directTransfers) ||
+    !data.directTransfers.every(isDirectTransfer) ||
+    !Array.isArray(data.walletObservations) ||
+    data.walletObservations.some(
+      (o) =>
+        !o ||
+        !["base", "solana"].includes(o.chain) ||
+        typeof o.address !== "string" ||
+        o.proofLevel !== "profile_readme" ||
+        !/^https:\/\/github\.com\//u.test(o.sourceUrl) ||
+        Number.isNaN(Date.parse(o.observedAt)),
     )
   )
     throw new Error("The payment record could not be verified. Please retry.");
   return data;
 }
 
-type EthereumWallet = {
-  request(input: { method: string; params?: unknown[] }): Promise<unknown>;
-};
-type SolanaWallet = {
-  connect(): Promise<{ publicKey: { toString(): string } }>;
-  signMessage(
-    message: Uint8Array,
-    display: "utf8",
-  ): Promise<{ signature: Uint8Array }>;
-};
-type WalletWindow = Window & {
-  ethereum?: EthereumWallet;
-  solana?: SolanaWallet;
-  phantom?: { solana?: SolanaWallet };
-};
-
 export function EarningsPage() {
+  const wallets = usePayoutWallets();
+  const [picker, setPicker] = useState<PaymentChain | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
   const [data, setData] = useState<PaymentsAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [signedOut, setSignedOut] = useState(false);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<PaymentChain | null>(null);
   const [revision, setRevision] = useState(0);
@@ -150,12 +146,19 @@ export function EarningsPage() {
     setError("");
     request("me", undefined, controller.signal)
       .then((value) => {
-        if (!controller.signal.aborted) setData(account(value));
+        if (!controller.signal.aborted) {
+          setSignedOut(false);
+          setData(account(value));
+        }
       })
       .catch((e: unknown) => {
-        if (!controller.signal.aborted)
+        if (controller.signal.aborted) return;
+        if (e instanceof SignedOutError) {
+          setSignedOut(true);
+          setData(null);
+        } else
           setError(
-            e instanceof Error ? e.message : "Could not load your earnings.",
+            e instanceof Error ? e.message : "Could not load your payouts.",
           );
       })
       .finally(() => {
@@ -164,51 +167,19 @@ export function EarningsPage() {
     return () => controller.abort();
   }, [revision]);
 
-  async function connect(chain: PaymentChain) {
+  useEffect(() => {
+    if (picker) dialog.current?.showModal();
+    else dialog.current?.close();
+  }, [picker]);
+
+  async function connect(chosen: PayoutWallet) {
+    const chain = chosen.chain;
+    setPicker(null);
     setBusy(chain);
     setError("");
     setMessage("");
     try {
-      const provider = window as WalletWindow;
-      let address: string;
-      let sign: (message: string) => Promise<string>;
-      if (chain === "base") {
-        const wallet = provider.ethereum;
-        if (!wallet)
-          throw new Error(
-            "Open this page in your Base wallet’s browser or enable its browser extension.",
-          );
-        const addresses = await wallet.request({
-          method: "eth_requestAccounts",
-        });
-        if (!Array.isArray(addresses) || typeof addresses[0] !== "string")
-          throw new Error("Your wallet did not return a Base address.");
-        address = addresses[0].toLowerCase();
-        sign = async (text) => {
-          const hex = `0x${Array.from(new TextEncoder().encode(text), (n) => n.toString(16).padStart(2, "0")).join("")}`;
-          const signature = await wallet.request({
-            method: "personal_sign",
-            params: [hex, address],
-          });
-          if (typeof signature !== "string")
-            throw new Error("Your wallet did not return a signature.");
-          return signature;
-        };
-      } else {
-        const wallet = provider.phantom?.solana ?? provider.solana;
-        if (!wallet)
-          throw new Error(
-            "Open this page in your Solana wallet’s browser or enable its browser extension.",
-          );
-        address = (await wallet.connect()).publicKey.toString();
-        sign = async (text) => {
-          const result = await wallet.signMessage(
-            new TextEncoder().encode(text),
-            "utf8",
-          );
-          return btoa(String.fromCharCode(...result.signature));
-        };
-      }
+      const { address, sign } = await chosen.connect();
       const claim = (await request("wallets/register", { chain, address })) as {
         claimId: string;
       };
@@ -244,7 +215,11 @@ export function EarningsPage() {
         refresh();
       }
     } catch (e) {
-      if (mounted.current)
+      if (!mounted.current) return;
+      if (e instanceof SignedOutError) {
+        setSignedOut(true);
+        setData(null);
+      } else
         setError(
           e instanceof Error
             ? e.message
@@ -257,13 +232,104 @@ export function EarningsPage() {
 
   return (
     <main className="shell route-main earnings-page" aria-labelledby={heading}>
-      <h1 id={heading}>Your earnings</h1>
-      <p>Contributor amounts include the 2% payout fee deduction.</p>
-      {loading && <p role="status">Checking your earnings…</p>}
+      <h1 id={heading}>Your payouts</h1>
+      <p>
+        This page shows escrow payouts after the 2% fee deduction. Legacy
+        project cycles keep their recorded fee policy.
+      </p>
+      <dialog
+        ref={dialog}
+        className="wallet-picker"
+        aria-labelledby={`${heading}-wallet-picker`}
+        onCancel={() => setPicker(null)}
+        onClose={() => setPicker(null)}
+      >
+        <div className="wallet-picker-header">
+          <h2 id={`${heading}-wallet-picker`}>
+            Connect a {picker ? networkName[picker] : ""} wallet
+          </h2>
+          <button
+            type="button"
+            className="wallet-picker-close"
+            aria-label="Close wallet picker"
+            onClick={() => setPicker(null)}
+          >
+            <X size={20} aria-hidden="true" />
+          </button>
+        </div>
+        <p>
+          Choose a wallet for your {picker ? networkName[picker] : ""} payouts.
+        </p>
+        <div className="wallet-picker-list">
+          {wallets
+            .filter((wallet) => wallet.chain === picker)
+            .map((wallet) => (
+              <button
+                type="button"
+                key={wallet.id}
+                className="wallet-picker-row"
+                onClick={() => void connect(wallet)}
+              >
+                {wallet.icon &&
+                /^data:image\/(?:png|jpeg|webp|svg\+xml)[;,]/u.test(
+                  wallet.icon,
+                ) ? (
+                  <img src={wallet.icon} width={32} height={32} alt="" />
+                ) : (
+                  <WalletIcon size={24} aria-hidden="true" />
+                )}
+                <span>{wallet.name}</span>
+                <small>Detected</small>
+              </button>
+            ))}
+          {!wallets.some((wallet) => wallet.chain === picker) && (
+            <>
+              <p>
+                No wallet detected. Install a wallet, then reload this page.
+              </p>
+              <a
+                className="wallet-picker-row"
+                href="https://metamask.io/download"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <WalletIcon size={24} aria-hidden="true" />
+                <span>MetaMask</span>
+                <small>
+                  Install <ExternalLink size={16} aria-hidden="true" />
+                </small>
+              </a>
+              <a
+                className="wallet-picker-row"
+                href="https://phantom.com/download"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <WalletIcon size={24} aria-hidden="true" />
+                <span>Phantom</span>
+                <small>
+                  Install <ExternalLink size={16} aria-hidden="true" />
+                </small>
+              </a>
+            </>
+          )}
+        </div>
+        <p className="wallet-picker-note">
+          Base and Solana can use different wallets.
+        </p>
+      </dialog>
+      {loading && <p role="status">Checking your payouts…</p>}
+      {signedOut && !loading && (
+        <div>
+          <p>Sign in with GitHub to view your payouts.</p>
+          <a className="button" href="/login?next=earnings">
+            Sign in with GitHub
+          </a>
+        </div>
+      )}
       {error && (
         <div role="alert">
           <p>{error}</p>
-          <a href="/login?next=earnings">Log in with GitHub</a>{" "}
           <button type="button" onClick={refresh}>
             Retry
           </button>
@@ -292,6 +358,30 @@ export function EarningsPage() {
                       this network.
                     </p>
                   )}
+                  {!wallet?.authorized &&
+                    data.walletObservations
+                      .filter(
+                        (o) =>
+                          o.chain === chain && o.address !== wallet?.address,
+                      )
+                      .slice(0, 1)
+                      .map((o) => (
+                        <p key={o.sourceUrl}>
+                          Your{" "}
+                          <a
+                            href={o.sourceUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            GitHub profile README
+                          </a>{" "}
+                          listed{" "}
+                          <span className="wallet-address">{o.address}</span> on{" "}
+                          {formatDate(o.observedAt)}. That record is history
+                          only. Connect and confirm a wallet to receive escrow
+                          payments.
+                        </p>
+                      ))}
                   {wallet && (
                     <p>
                       {wallet.authorized
@@ -303,15 +393,15 @@ export function EarningsPage() {
                     Date.parse(wallet.activationEligibleAt) > Date.now() && (
                       <p>
                         Wallet change becomes eligible after{" "}
-                        {new Date(wallet.activationEligibleAt).toLocaleString()}
-                        . Existing awards remain reserved.
+                        {formatDateTime(wallet.activationEligibleAt)}. Existing
+                        awards remain reserved.
                       </p>
                     )}
                   <button
                     className="button secondary-button"
                     type="button"
                     disabled={busy !== null}
-                    onClick={() => void connect(chain)}
+                    onClick={() => setPicker(chain)}
                   >
                     {busy === chain
                       ? "Confirm in your wallet…"
@@ -338,8 +428,8 @@ export function EarningsPage() {
             </button>
             {data.payments.length === 0 ? (
               <p>
-                No funded awards yet. Proposed rewards appear on project pages
-                until they are approved and funded.
+                No funded escrow awards yet. Proposed rewards appear on project
+                pages until they are approved and funded.
               </p>
             ) : (
               <section
@@ -381,12 +471,12 @@ export function EarningsPage() {
                         <td>
                           {
                             {
-                              paid: "Paid — verified on chain",
+                              paid: "Paid, verified on chain",
                               needs_wallet: `Add or confirm ${networkName[payment.chain]} wallet`,
                               awaiting_binding: "Awaiting automatic payment",
                               submitted:
-                                "Submitted — waiting for chain verification",
-                              held: "Payment held — funds remain reserved",
+                                "Submitted, waiting for chain verification",
+                              held: "Payment held, funds remain reserved",
                             }[payment.deliveryState]
                           }
                           {transactionUrl(
@@ -416,6 +506,67 @@ export function EarningsPage() {
               </section>
             )}
           </section>
+          {data.directTransfers.length > 0 && (
+            <section aria-labelledby={`${heading}-direct`}>
+              <h2 id={`${heading}-direct`}>Sent outside escrow</h2>
+              <p>
+                A project creator sent these transfers directly, before escrow
+                payouts. Each one is in a published disclosure and on chain. No
+                payout fee was deducted.
+              </p>
+              <section
+                className="points-table"
+                aria-label="Direct payment details; scroll horizontally for all columns"
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll the payment history on narrow screens.
+                tabIndex={0}
+              >
+                <table>
+                  <caption>Direct transfers by contribution month</caption>
+                  <thead>
+                    <tr>
+                      <th>Project</th>
+                      <th>Month</th>
+                      <th>Network</th>
+                      <th>Received</th>
+                      <th>Transaction</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.directTransfers.map((t) => (
+                      <tr key={`${t.network}:${t.transactionId}`}>
+                        <td>
+                          <a
+                            href={`/projects/${encodeURIComponent(t.projectId)}`}
+                          >
+                            {t.projectId}
+                          </a>
+                        </td>
+                        <td>{t.contributionMonth}</td>
+                        <td>{networkLabels[t.network] ?? t.network}</td>
+                        <td>{amount(t.amountMicro)}</td>
+                        <td>
+                          {transactionUrl(t.network, t.transactionId) ? (
+                            <a
+                              href={
+                                transactionUrl(t.network, t.transactionId) ??
+                                undefined
+                              }
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              View transfer
+                            </a>
+                          ) : (
+                            t.transactionId
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+            </section>
+          )}
         </>
       )}
     </main>

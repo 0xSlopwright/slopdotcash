@@ -30,7 +30,7 @@ related parties. An actor cannot disappear from the reviewed decisions.
 
 Before emitting unsigned owner transactions, `prepare-escrow-commitments.ts`
 checks exact archive bytes on this application's canonical GitHub origin and
-`develop`. It verifies the merged PR which published each file and uses GitHub's
+`main`. It verifies the merged PR which published each file and uses GitHub's
 `merged_at` timestamp for the review clock. The last publication among the
 snapshot, identities, archived project policy, proposal, and financial decisions
 starts the 14 days. A caller-supplied `generatedAt`, Git author date, local file

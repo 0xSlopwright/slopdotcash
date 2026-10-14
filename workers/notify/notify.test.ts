@@ -2,12 +2,12 @@ import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  ADMIN_NOTIFICATION_RECIPIENTS,
   PROJECT_APPLICATION_NOTICE_PATH,
   type ProjectApplicationNotice,
 } from "./contracts";
 import { handleNotifyRequest, type NotifyWorkerDependencies } from "./handler";
 
+const ADMINS = ["admin-one@example.test", "admin-two@example.test"];
 const LINE_SEPARATOR = String.fromCodePoint(0x2028);
 const NOW = new Date("2026-10-11T12:00:05.000Z");
 const ENDPOINT = `https://notify.internal${PROJECT_APPLICATION_NOTICE_PATH}`;
@@ -28,6 +28,7 @@ function harness(fail: (to: string) => boolean = () => false) {
   const sent: Sent[] = [];
   let counter = 0;
   const deps: NotifyWorkerDependencies = {
+    adminEmails: ADMINS.join(", "),
     fromAddress: "notifications@slop.cash",
     now: () => NOW,
     randomId: () => `msg-${String(++counter).padStart(16, "0")}`,
@@ -84,9 +85,7 @@ describe("slop notify worker", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("content-type")).toMatch(/^application\/json/u);
     expect(await response.json()).toEqual({ status: "sent", recipients: 2 });
-    expect(sent.map((message) => message.to)).toEqual([
-      ...ADMIN_NOTIFICATION_RECIPIENTS,
-    ]);
+    expect(sent.map((message) => message.to)).toEqual(ADMINS);
 
     for (const message of sent) {
       expect(message.from).toBe("notifications@slop.cash");
@@ -248,6 +247,23 @@ describe("slop notify worker", () => {
     expect(sent).toHaveLength(0);
   });
 
+  it.each([
+    ["missing", undefined],
+    ["empty", ""],
+    ["header injection", "admin-one@example.test\r\nBcc: evil@example.test"],
+    ["duplicate", "admin-one@example.test,ADMIN-ONE@example.test"],
+  ])("refuses a %s admin list without sending", async (_label, adminEmails) => {
+    spyOn(console, "error").mockImplementation(() => {});
+    const { deps, sent } = harness();
+    const response = await handleNotifyRequest(post(NOTICE), {
+      ...deps,
+      adminEmails,
+    });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "service_misconfigured" });
+    expect(sent).toHaveLength(0);
+  });
+
   it("refuses an invalid sender address without sending", async () => {
     spyOn(console, "error").mockImplementation(() => {});
     const { deps, sent } = harness();
@@ -261,31 +277,22 @@ describe("slop notify worker", () => {
 
   it("reports a failed delivery without claiming success", async () => {
     spyOn(console, "error").mockImplementation(() => {});
-    const { deps, sent } = harness(
-      (to) => to === ADMIN_NOTIFICATION_RECIPIENTS[0],
-    );
+    const { deps, sent } = harness((to) => to === ADMINS[0]);
     const response = await handleNotifyRequest(post(NOTICE), deps);
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({
       error: "delivery_failed",
       sent: 1,
     });
-    expect(sent.map((message) => message.to)).toEqual([
-      ADMIN_NOTIFICATION_RECIPIENTS[1],
-    ]);
+    expect(sent.map((message) => message.to)).toEqual([ADMINS[1]]);
   });
 
-  it("keeps wrangler.toml destinations equal to the recipient contract", () => {
+  it("keeps recipients and routes out of wrangler.toml", () => {
     const toml = readFileSync(
       join(process.cwd(), "workers/notify/wrangler.toml"),
       "utf8",
     );
-    const destinations =
-      /^allowed_destination_addresses\s*=\s*(\[[^\]]*\])$/mu.exec(toml);
-    expect(destinations).not.toBeNull();
-    expect(JSON.parse(destinations?.[1] ?? "null")).toEqual([
-      ...ADMIN_NOTIFICATION_RECIPIENTS,
-    ]);
+    expect(toml).not.toMatch(/@(?!slop\.cash")[A-Za-z0-9.-]+/u);
     expect(toml).toMatch(
       /^NOTIFY_FROM_ADDRESS = "notifications@slop\.cash"$/mu,
     );

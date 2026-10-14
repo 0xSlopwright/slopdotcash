@@ -46,7 +46,10 @@ if (!deployment)
 const domain = await request("/domains/staging.slop.cash");
 if (domain.success !== true || domain.result?.status !== "active")
   throw new Error("Staging custom domain is not active");
-for (const origin of [deployment.url, "https://staging.slop.cash"]) {
+for (const origin of [
+  new URL(deployment.url).origin,
+  "https://staging.slop.cash",
+]) {
   execFileSync(
     "node",
     ["scripts/dist-manifest.mjs", "verify", "dist", origin, commitHash],

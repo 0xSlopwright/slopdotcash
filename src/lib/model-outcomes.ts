@@ -22,6 +22,8 @@ const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
   "z.ai": "zai",
   "z-ai": "zai",
   "moonshot-ai": "moonshotai",
+  spacexai: "xai",
+  "x-ai": "xai",
 };
 
 export interface ModelIdentityKey {
@@ -33,7 +35,9 @@ export interface ModelIdentityKey {
 /**
  * Folds case and known provider aliases so that `OpenAI/GPT-5.6` and
  * `openai/gpt-5.6` count as one model. A provider repeated inside the model
- * field is stripped. Anything else stays exactly as declared.
+ * field is stripped, and a dashed single-digit version such as
+ * `claude-opus-5-5` folds to its dotted form `claude-opus-5.5`. Anything else
+ * stays exactly as declared.
  */
 export function modelIdentityKey(
   provider: string,
@@ -55,6 +59,10 @@ export function modelIdentityKey(
       break;
     }
   }
+  normalizedModel = normalizedModel.replaceAll(
+    /(^|[a-z]-)(\d)-(\d)(?!\d)/gu,
+    "$1$2.$3",
+  );
   return {
     provider: normalizedProvider,
     model: normalizedModel,

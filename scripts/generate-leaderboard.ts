@@ -48,6 +48,7 @@ import {
   type TargetRepository,
 } from "../src/lib/repositories.mjs";
 import {
+  isTransientArtifactFailure,
   planReferencedArtifacts,
   verifyReferencedArtifacts,
 } from "./check-pr-evidence.mjs";
@@ -79,6 +80,9 @@ export const MAX_EVIDENCE_ARTIFACTS_PER_SOURCE =
   MAX_EVIDENCE_ARTIFACTS_PER_SNAPSHOT;
 export const EVIDENCE_VERIFICATION_CONCURRENCY = 4;
 export const EVIDENCE_ARTIFACT_TIMEOUT_MS = 5_000;
+/** Extra fetches of one artifact after a transport failure. */
+export const EVIDENCE_TRANSIENT_RETRIES = 2;
+export const EVIDENCE_TRANSIENT_RETRY_DELAY_MS = 1_000;
 export const EVIDENCE_CONTENT_DIGEST_LIMIT_BYTES = 32 * 1024 * 1024;
 export const DEFAULT_OUTPUT_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -267,6 +271,7 @@ export interface GenerateOptions {
   evidenceFetch?: FetchLike;
   evidenceToken?: string;
   evidenceTimeoutMs?: number;
+  evidenceRetryDelayMs?: number;
   evaluatedContributions?: ScoreEvent[];
   retainedReviewEvents?: ScoreEvent[];
   retainedReviewAttributions?: ModelAttribution[];
@@ -1396,6 +1401,17 @@ async function readGraphqlResponseBody(response: Response): Promise<string> {
     );
   }
   const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decode = (chunk?: Uint8Array, stream = false): string => {
+    try {
+      return decoder.decode(chunk, { stream });
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      throw new GraphqlResponseBoundaryError(
+        "GitHub GraphQL response is not valid UTF-8",
+        { cause: error },
+      );
+    }
+  };
   let byteLength = 0;
   let body = "";
   try {
@@ -1409,18 +1425,10 @@ async function readGraphqlResponseBody(response: Response): Promise<string> {
           `GitHub GraphQL response exceeds ${MAX_GRAPHQL_RESPONSE_BYTES} bytes`,
         );
       }
-      body += decoder.decode(chunk.value, { stream: true });
+      // Stream reads can also throw TypeError; preserve those for transport retries.
+      body += decode(chunk.value, true);
     }
-    body += decoder.decode();
-  } catch (error) {
-    if (error instanceof GraphqlResponseBoundaryError) throw error;
-    if (error instanceof TypeError) {
-      throw new GraphqlResponseBoundaryError(
-        "GitHub GraphQL response is not valid UTF-8",
-        { cause: error },
-      );
-    }
-    throw error;
+    body += decode();
   } finally {
     reader.releaseLock();
   }
@@ -3418,9 +3426,36 @@ async function mapWithFixedConcurrency<T, R>(
   return results;
 }
 
+interface UnavailableEvidenceArtifact {
+  pullRequestUrl: string;
+  artifactUrl: string;
+  status: string;
+  detail: string | null;
+}
+
 interface CandidateEvidenceVerdict {
   artifacts: VerifiedEvidenceArtifact[];
   failedCategories: EvidenceCategory[];
+  unavailable: UnavailableEvidenceArtifact[];
+}
+
+/**
+ * A score-bearing artifact stayed unavailable after its transport retries.
+ * Missing data is unavailable, never a fabricated zero (protocol/points-v1.md),
+ * and incomplete evidence must fail snapshot collection
+ * (protocol/scoring-v2.md), so no scored snapshot is returned or written.
+ */
+export class EvidenceUnavailableError extends Error {
+  readonly unavailable: readonly UnavailableEvidenceArtifact[];
+
+  constructor(unavailable: UnavailableEvidenceArtifact[]) {
+    const first = unavailable[0];
+    super(
+      `Evidence collection is incomplete: ${unavailable.length} score-bearing artifact(s) stayed unavailable after ${EVIDENCE_TRANSIENT_RETRIES + 1} attempts (first: ${first.artifactUrl} in ${first.pullRequestUrl}, ${first.status}${first.detail ? ` ${first.detail}` : ""})`,
+    );
+    this.name = "EvidenceUnavailableError";
+    this.unavailable = unavailable;
+  }
 }
 
 export interface PullRequestEvidenceVerificationResult {
@@ -3441,7 +3476,10 @@ export async function verifyPullRequestEvidence(
   pullRequests: PullRequestRecord[],
   options: Pick<
     GenerateOptions,
-    "evidenceFetch" | "evidenceTimeoutMs" | "evidenceToken"
+    | "evidenceFetch"
+    | "evidenceTimeoutMs"
+    | "evidenceToken"
+    | "evidenceRetryDelayMs"
   > = {},
 ): Promise<PullRequestEvidenceVerificationResult> {
   const candidates = evidenceVerificationCandidates(pullRequests);
@@ -3481,6 +3519,8 @@ export async function verifyPullRequestEvidence(
     selectedCandidates,
     EVIDENCE_VERIFICATION_CONCURRENCY,
     async ({ pullRequest, source }): Promise<CandidateEvidenceVerdict> => {
+      // The verifier retries only the artifact that failed in transport. A
+      // terminal finding such as HTTP 404 keeps its first verdict.
       const verification = await verifyReferencedArtifacts(
         source.body,
         SCORE_EVIDENCE_ROWS,
@@ -3491,8 +3531,23 @@ export async function verifyPullRequestEvidence(
           fetchImpl: options.evidenceFetch,
           timeoutMs: options.evidenceTimeoutMs ?? EVIDENCE_ARTIFACT_TIMEOUT_MS,
           token: options.evidenceToken,
+          transientRetries: EVIDENCE_TRANSIENT_RETRIES,
+          transientRetryDelayMs:
+            options.evidenceRetryDelayMs ?? EVIDENCE_TRANSIENT_RETRY_DELAY_MS,
         },
       );
+      const unavailable = verification.findings
+        .filter(
+          (finding) =>
+            SCORE_EVIDENCE_CATEGORY.has(finding.id) &&
+            isTransientArtifactFailure(finding),
+        )
+        .map((finding) => ({
+          pullRequestUrl: pullRequest.url,
+          artifactUrl: finding.url,
+          status: finding.status,
+          detail: finding.detail ?? null,
+        }));
       const failedCategories = new Set<EvidenceCategory>();
       for (const finding of verification.findings) {
         const category = SCORE_EVIDENCE_CATEGORY.get(finding.id);
@@ -3534,9 +3589,16 @@ export async function verifyPullRequestEvidence(
           } satisfies VerifiedEvidenceArtifact,
         ];
       });
-      return { artifacts, failedCategories: [...failedCategories] };
+      return {
+        artifacts,
+        failedCategories: [...failedCategories],
+        unavailable,
+      };
     },
   );
+  // Fail closed before any artifact list is returned for scoring.
+  const unavailable = verdicts.flatMap((verdict) => verdict.unavailable);
+  if (unavailable.length > 0) throw new EvidenceUnavailableError(unavailable);
   const failedByPullRequest = new Set<string>();
   for (const [index, verdict] of verdicts.entries()) {
     const pullRequestId = selectedCandidates[index].pullRequest.id;

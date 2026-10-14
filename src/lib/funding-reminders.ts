@@ -114,7 +114,7 @@ export function cycleSettlementReminder(input: {
     return {
       kind: "unfunded",
       message:
-        "Unfunded pool reminder: no funding is committed and payments are disabled. Allocations remain projected; payments require reviewed accessibility evidence and activation.",
+        "Unfunded pool reminder: no funding is committed and payments are disabled. Allocations stay projected until funding is committed, verified as accessible, and activated.",
     };
   }
   return reminder;

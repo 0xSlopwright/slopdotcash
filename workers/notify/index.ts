@@ -7,12 +7,14 @@ type SendEmailBinding = {
 
 type Env = {
   ADMIN_EMAIL: SendEmailBinding;
+  ADMIN_EMAILS?: string;
   NOTIFY_FROM_ADDRESS: string;
 };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     return handleNotifyRequest(request, {
+      adminEmails: env.ADMIN_EMAILS,
       fromAddress: env.NOTIFY_FROM_ADDRESS,
       now: () => new Date(),
       randomId: () => crypto.randomUUID(),

@@ -1,10 +1,19 @@
 /**
- * Slop's published Base mainnet platform-fee recipient, chosen by the
- * repository owner on 8 October 2026 (RFC #472), in lowercase canonical form.
+ * Slop's published Base platform-fee recipient, in lowercase canonical form.
+ * The repository owner chose it on 9 October 2026. It replaces the retired
+ * 8 October 2026 address (RFC #472).
  * A Base fresh-cycle policy may name only this address.
  */
 export const BASE_PLATFORM_FEE_RECIPIENT =
-  "0xb7b0d5e45016d6d31629d9ab375df770fd2aaf77";
+  "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86";
+
+/**
+ * Slop's published Solana platform-fee recipient (base58 public key), chosen
+ * by the repository owner on 9 October 2026. A Solana fresh-cycle policy may
+ * name only this address.
+ */
+export const SOLANA_PLATFORM_FEE_RECIPIENT =
+  "9EyxVhhnCJH4QL5bDsRyukrkHFyitFMuf45UDdLxm4BY";
 
 /** Optional exact-cycle activation contract. Runtime readiness and canonical reservation remain mandatory. */
 export function assertFreshCyclePaymentPolicy(value) {
@@ -27,12 +36,10 @@ export function assertFreshCyclePaymentPolicy(value) {
     typeof value.instrumentSha256 !== "string" ||
     !/^[a-f0-9]{64}$/u.test(value.instrumentSha256) ||
     typeof value.feeRecipient !== "string" ||
-    // A Solana public key, or the published Base fee recipient (RFC #472).
-    // The plan builder checks it against the cycle's settlement network.
-    !(
-      /^[1-9A-HJ-NP-Za-km-z]{32,44}$/u.test(value.feeRecipient) ||
-      value.feeRecipient === BASE_PLATFORM_FEE_RECIPIENT
-    ) ||
+    // Only a published Slop fee recipient. The plan builder checks it
+    // against the cycle's settlement network.
+    (value.feeRecipient !== SOLANA_PLATFORM_FEE_RECIPIENT &&
+      value.feeRecipient !== BASE_PLATFORM_FEE_RECIPIENT) ||
     !utc(value.effectiveAt) ||
     !utc(value.planningExpiresAt) ||
     value.effectiveAt >= value.planningExpiresAt

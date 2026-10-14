@@ -278,12 +278,16 @@ bun run rewards:close-month -- --cycle 2026-07
 bun run rewards:approve --project eliza --cycle 2026-07
 bun run rewards:plan-settlement --project eliza --cycle 2026-07 \
   --source-wallet <CREATOR_SOLANA_ADDRESS> \
-  --fee-wallet <PLATFORM_SOLANA_ADDRESS>
+  --fee-wallet 9EyxVhhnCJH4QL5bDsRyukrkHFyitFMuf45UDdLxm4BY
 bun run rewards:verify-settlement --project eliza --cycle 2026-07
 bun run cycles:verify
 ```
 
-No command reads a private key or signs a transaction. Keep seed phrases and
+`--fee-wallet` must equal the project's reviewed
+`freshCyclePaymentPolicy.feeRecipient`. For a new Solana policy, that is
+Slop's published Solana fee recipient
+`9EyxVhhnCJH4QL5bDsRyukrkHFyitFMuf45UDdLxm4BY` (owner decision, 9 October
+2026). No command reads a private key or signs a transaction. Keep seed phrases and
 private keys out of Git, issues, CI, skills, prompts, and local telemetry.
 
 For an allocation with a frozen funding basis, a Solana execution plan must
@@ -327,8 +331,10 @@ A Base cycle uses the same reservation and release commands as Solana
 (`protocol/fresh-cycle-payments.md`). The plan source is the frozen Base
 stream recipient, the signer is the reviewed `recipientGithub` actor with an
 EIP-191 proof, and the fee goes to Slop's published Base fee recipient
-`0xb7b0d5e45016d6d31629d9ab375df770fd2aaf77`. No project uses Base today and
-no payment is enabled.
+`0x8f77c37d8650776bfe73c9b12b15209ee15d9b86`. On 9 October 2026 the owner
+replaced the 8 October recipient
+`0xb7b0d5e45016d6d31629d9ab375df770fd2aaf77`, which is retired. No project
+uses Base today and no payment is enabled.
 
 ### Read-only Base payout check
 

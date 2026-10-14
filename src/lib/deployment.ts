@@ -7,6 +7,7 @@ export function deploymentOrigins(tier: DeploymentTier = "production") {
     staging ? [site] : [site, "https://slop.tech", "https://eliza.army"],
   );
   return {
+    branch: staging ? "development" : "main",
     site,
     api: staging ? site : "https://api.slop.cash",
     identity: staging

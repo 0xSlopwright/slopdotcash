@@ -40,10 +40,10 @@ Slop any authority it does not already lack on chain.
 ## 2. Before every vote on a payout
 
 Slop votes to approve a payout only when all of the following hold. Each step
-is run from a clean checkout of `develop`, and its output is kept.
+is run from a clean checkout of `main`, and its output is kept.
 
 1. **The allocation is approved and bound.** `allocation.json` for the cycle
-   has `status: "approved"`, and `funding/executions/ledger.json` on `develop`
+   has `status: "approved"`, and `funding/executions/ledger.json` on `main`
    holds the binding for this project and cycle. Check with the approval
    report in `src/lib/project-vault-approval.ts`: the state must be
    `approved-bound`, never `approved-unbound`. This is RFC #500 section 3.

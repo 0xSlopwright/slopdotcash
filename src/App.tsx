@@ -23,6 +23,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { AutomationSection } from "./Automation";
 import { CycleArchivePage, CyclePage } from "./CyclePages";
 import { EarningsPage } from "./Earnings";
 import { EscrowFunding } from "./EscrowFunding";
@@ -40,11 +41,12 @@ import {
   type PromotionCycle,
   projectPromotionEligible,
 } from "./lib/allocation-funding";
+import { browserDeployment } from "./lib/browser-deployment";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
 import { currentProjectFundingRecords } from "./lib/funding";
 import { commitmentVerifiedNetMinor } from "./lib/funding-commitment";
-import { homeProjects } from "./lib/home-projects";
+import { communityProjects, homeProjects } from "./lib/home-projects";
 import { createInstallCommand } from "./lib/install-command";
 import {
   type ModelOutcomeSummary,
@@ -60,8 +62,10 @@ import {
   type PublicSignerReport,
   publicSignerStatus,
 } from "./lib/signer-capability";
+import { pageTitle, SITE_ORIGIN, STATIC_PAGE_TITLES } from "./lib/site-routes";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
 import { useCycleIndex } from "./lib/use-cycle-index";
+import { useDirectTransfers } from "./lib/use-direct-transfers";
 import { type DataState, useSnapshot } from "./lib/use-snapshot";
 import {
   summarizeWhoBuilds,
@@ -79,9 +83,11 @@ import {
   PublicXLink,
 } from "./Points";
 import {
+  cycleLifecycleLabel,
   DataNotice,
   EmptyState,
   ExternalLinkAnchor,
+  formatCycleMonth,
   formatDate,
   formatMicroUsdc,
   monthlyPoolLabel,
@@ -130,6 +136,13 @@ const FundingReview = lazy(() =>
 const SOCIAL_X = "https://x.com/SlopCash";
 const SOCIAL_LINKEDIN = "https://www.linkedin.com/company/slop-cash";
 const SOCIAL_TELEGRAM = "https://t.me/slopcashofficial";
+// DSC-01: the hero names only launched work; add a phrase here only when it
+// describes a shipped program.
+const HERO_ACTIONS = ["SHIPPING OPEN SOURCE."] as const;
+const HERO_HOLD_MS = 2_400;
+const HERO_TYPE_MS = 55;
+const HERO_DELETE_MS = 30;
+const HERO_GAP_MS = 220;
 
 export function publicFooterDomain(
   hostname: string,
@@ -199,7 +212,11 @@ function internalRoute(pathname: string): Route {
   if (segments.length === 1 && segments[0] === "cycles") {
     return { kind: "cycle-archive" };
   }
-  if (segments[0] === "projects" && segments[1] === "new") {
+  if (
+    segments.length === 2 &&
+    segments[0] === "projects" &&
+    segments[1] === "new"
+  ) {
     return { kind: "new-project" };
   }
   if (
@@ -259,10 +276,93 @@ function useRoute(): Route {
   return useMemo(() => internalRoute(path), [path]);
 }
 
+const PRIVATE_PAGE_TITLES = new Map<Route["kind"], string>([
+  ["account", "Account"],
+  ["login", "Log in"],
+  ["earnings", "Your payouts"],
+]);
+
+/** The title and canonical path of a route; a missing page has no canonical. */
+function routeHead(route: Route): { title: string; path: string | null } {
+  const notFound = { title: pageTitle("Page not found"), path: null };
+  const privateTitle = PRIVATE_PAGE_TITLES.get(route.kind);
+  if (privateTitle) {
+    return { title: pageTitle(privateTitle), path: `/${route.kind}` };
+  }
+  if (route.kind === "profile") {
+    const login = route.login ?? "";
+    return {
+      title: pageTitle(login),
+      path: `/contributors/${encodeURIComponent(login)}`,
+    };
+  }
+  if (
+    route.kind === "project" ||
+    route.kind === "funding-project" ||
+    route.kind === "manage-project" ||
+    route.kind === "cycle"
+  ) {
+    const project = findProject(route.projectId ?? "");
+    if (!project) return notFound;
+    if (route.kind === "cycle") {
+      return {
+        title: pageTitle(`${project.name} ${route.cycleId} cycle`),
+        path: `/cycles/${project.id}/${encodeURIComponent(route.cycleId ?? "")}`,
+      };
+    }
+    const base = `/projects/${project.slug}`;
+    if (route.kind === "funding-project") {
+      return {
+        title: pageTitle(`${project.name} funding`),
+        path: `${base}/funding`,
+      };
+    }
+    if (route.kind === "manage-project") {
+      return {
+        title: pageTitle(`Manage ${project.name}`),
+        path: `${base}/manage`,
+      };
+    }
+    return { title: pageTitle(project.name), path: base };
+  }
+  const path = window.location.pathname.replace(/(.)\/$/u, "$1");
+  const title = STATIC_PAGE_TITLES.get(path);
+  return title ? { title: pageTitle(title), path } : notFound;
+}
+
+function useDocumentHead(route: Route) {
+  useEffect(() => {
+    const { title, path } = routeHead(route);
+    document.title = title;
+    const canonical = document.head.querySelector<HTMLLinkElement>(
+      'link[rel="canonical"]',
+    );
+    const ogUrl = document.head.querySelector<HTMLMetaElement>(
+      'meta[property="og:url"]',
+    );
+    if (path === null) {
+      canonical?.remove();
+      return;
+    }
+    const href = `${SITE_ORIGIN}${path}`;
+    if (canonical) canonical.href = href;
+    else {
+      const link = document.createElement("link");
+      link.rel = "canonical";
+      link.href = href;
+      document.head.append(link);
+    }
+    ogUrl?.setAttribute("content", href);
+  }, [route]);
+}
+
 function Header() {
   const domain = publicFooterDomain(window.location.hostname);
   return (
     <header className="site-header">
+      <a className="skip-link" href="#main">
+        Skip to content
+      </a>
       <div className="shell header-inner">
         <Link ariaLabel="Slop home" className="wordmark" href="/">
           <SlopMark size={36} />
@@ -323,6 +423,61 @@ function Footer() {
         </div>
       </div>
     </footer>
+  );
+}
+
+function TypewriterHeroHeading() {
+  const [index, setIndex] = useState(0);
+  const [characters, setCharacters] = useState(HERO_ACTIONS[0].length);
+  const [phase, setPhase] = useState<"deleting" | "holding" | "typing">(
+    "holding",
+  );
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (HERO_ACTIONS.length < 2) return;
+    const target = HERO_ACTIONS[index];
+    let delay = 1;
+    let advance: () => void;
+    if (phase === "holding") {
+      delay = HERO_HOLD_MS;
+      advance = () => setPhase("deleting");
+    } else if (phase === "deleting" && characters > 0) {
+      delay = HERO_DELETE_MS;
+      advance = () => setCharacters((value) => Math.max(0, value - 1));
+    } else if (phase === "deleting") {
+      delay = HERO_GAP_MS;
+      advance = () => {
+        setIndex((value) => (value + 1) % HERO_ACTIONS.length);
+        setPhase("typing");
+      };
+    } else if (characters < target.length) {
+      delay = HERO_TYPE_MS;
+      advance = () => setCharacters((value) => value + 1);
+    } else {
+      advance = () => setPhase("holding");
+    }
+    const timer = window.setTimeout(advance, delay);
+    return () => window.clearTimeout(timer);
+  }, [characters, index, phase]);
+  const action = HERO_ACTIONS[index];
+  return (
+    <h1 aria-label="MAKE MONEY SHIPPING OPEN SOURCE.">
+      <span aria-hidden="true" className="hero-message">
+        <span>MAKE MONEY</span>
+        <span className="hero-action">
+          {HERO_ACTIONS.map((candidate) => (
+            <span className="hero-switch-sizer" key={candidate}>
+              {candidate}
+            </span>
+          ))}
+          <span className="hero-typewriter">
+            {action.slice(0, characters)}
+            <span className="hero-typewriter-caret" />
+          </span>
+          <span className="hero-mobile-action">{action}</span>
+        </span>
+      </span>
+    </h1>
   );
 }
 
@@ -396,15 +551,16 @@ function ProjectCard({
       : [];
   const vaultBalance =
     vaults.length === 0
-      ? "Unavailable"
+      ? "Not funded"
       : funding.status === "loading"
         ? "Loading…"
-        : funding.status === "error" ||
-            !vaultRecords.some((record) => record.state === "verified-on-chain")
+        : funding.status === "error"
           ? "Unavailable"
-          : formatMicroUsdc(
-              commitmentVerifiedNetMinor(vaultRecords).toString(),
-            );
+          : !vaultRecords.some((record) => record.state === "verified-on-chain")
+            ? "Not verified"
+            : formatMicroUsdc(
+                commitmentVerifiedNetMinor(vaultRecords).toString(),
+              );
   const amount =
     project.reward.kind === "monthly-pool"
       ? monthlyPoolCapLabel(project.reward)
@@ -454,7 +610,9 @@ function ProjectRow({ project }: { project: ProjectDefinition }) {
           <strong>{project.name}</strong>
           <small>{project.description}</small>
         </span>
-        <span className="project-row-amount">{amount}</span>
+        <span className="project-row-amount">
+          {project.status === "paused" ? "Paused" : amount}
+        </span>
         <ChevronRight aria-hidden="true" />
       </Link>
     </li>
@@ -478,6 +636,10 @@ function CommunityProjects({ projects }: { projects: ProjectDefinition[] }) {
       aria-labelledby="community-projects"
     >
       <h3 id="community-projects">Community</h3>
+      <p className="project-tier-note">
+        Community-listed through a reviewed manifest, not featured by Slop.
+        Paused projects are listed but not collected yet.
+      </p>
       <ul className="project-rows">
         {visible.map((project) => (
           <ProjectRow key={project.id} project={project} />
@@ -530,20 +692,13 @@ function bootstrapAgentPrompt(): string {
 
 function HomePage() {
   const [funding] = useFundingIndex();
-  const promotedProjects = homeProjects();
-  const featuredProjects = promotedProjects.filter(
+  const featuredProjects = homeProjects().filter(
     (project) => project.listingTier === "featured",
-  );
-  const communityProjects = promotedProjects.filter(
-    (project) => project.listingTier === "community",
   );
   return (
     <main>
       <section className="hero shell">
-        <h1 className="hero-message">
-          <span>MAKE MONEY</span>{" "}
-          <span className="hero-action">SHIPPING OPEN SOURCE.</span>
-        </h1>
+        <TypewriterHeroHeading />
         <p className="hero-copy">Paste this into your coding agent.</p>
         <AgentPromptBox openIn prompt={bootstrapAgentPrompt()} />
       </section>
@@ -567,7 +722,7 @@ function HomePage() {
             ))}
           </div>
         </section>
-        <CommunityProjects projects={communityProjects} />
+        <CommunityProjects projects={communityProjects()} />
       </section>
       <section className="how-section" id="how-it-works">
         <div className="shell">
@@ -599,7 +754,7 @@ function HomePage() {
                   <BadgeCheck aria-hidden="true" />
                   <span>
                     <strong>Get merged.</strong> Accepted work raises your Slop
-                    Score. Owners approve rewards.
+                    Score. Maintainers approve rewards.
                   </span>
                 </li>
               </ol>
@@ -652,11 +807,53 @@ function projectAgentPrompt(project: ProjectDefinition): string {
   return `Read ${origin}/SKILL.md and follow it to contribute to github.com/${repository}.`;
 }
 
-const AGENT_DEEP_LINKS = [
-  { name: "Cursor", href: "https://cursor.com/link/prompt?text=" },
-  { name: "ChatGPT", href: "https://chatgpt.com/?q=" },
-  { name: "Claude", href: "https://claude.ai/new?q=" },
-] as const;
+// Each link hands the prompt to the agent's own launch surface. Web chats
+// prefill a new conversation; OpenClaw asks before it runs the message; Hermes
+// has no prompt link, so it opens its confirmed skill install for SKILL.md.
+const AGENT_DEEP_LINKS: readonly {
+  name: string;
+  logo: string;
+  href: (prompt: string, skillUrl: string) => string;
+}[] = [
+  {
+    name: "Cursor",
+    logo: "cursor",
+    href: (prompt) =>
+      `https://cursor.com/link/prompt?text=${encodeURIComponent(prompt)}`,
+  },
+  {
+    name: "Claude",
+    logo: "claude",
+    href: (prompt) => `https://claude.ai/new?q=${encodeURIComponent(prompt)}`,
+  },
+  {
+    name: "ChatGPT",
+    logo: "chatgpt",
+    href: (prompt) => `https://chatgpt.com/?q=${encodeURIComponent(prompt)}`,
+  },
+  {
+    name: "Grok",
+    logo: "grok",
+    href: (prompt) => `https://grok.com/?q=${encodeURIComponent(prompt)}`,
+  },
+  {
+    name: "Meta AI (Muse Spark)",
+    logo: "meta-ai",
+    href: (prompt) =>
+      `https://www.meta.ai/?prompt=${encodeURIComponent(prompt)}`,
+  },
+  {
+    name: "OpenClaw",
+    logo: "openclaw",
+    href: (prompt) => `openclaw://agent?message=${encodeURIComponent(prompt)}`,
+  },
+  {
+    name: "Hermes Agent",
+    logo: "hermes-agent",
+    href: (_prompt, skillUrl) =>
+      `hermes://skill/install?identifier=${encodeURIComponent(skillUrl)}`,
+  },
+];
 
 function AgentPromptBox({
   prompt,
@@ -722,22 +919,36 @@ function AgentPromptBox({
     </div>
   );
   if (!openIn) return box;
+  const origin = window.location.origin.replace(/\/$/u, "");
   return (
     <div className="agent-prompt">
       {box}
-      <p className="agent-open-in">
+      <div className="agent-open-in">
         <span>Open in</span>
-        {AGENT_DEEP_LINKS.map((agent) => (
-          <ExternalLinkAnchor
-            href={`${agent.href}${encodeURIComponent(prompt)}`}
-            key={agent.name}
-            onClick={() => void copyText(prompt).catch(() => undefined)}
-          >
-            {agent.name}
-          </ExternalLinkAnchor>
-        ))}
-        <span>or any desktop agent</span>
-      </p>
+        <ul>
+          {AGENT_DEEP_LINKS.map((agent) => {
+            const href = agent.href(prompt, `${origin}/SKILL.md`);
+            const web = href.startsWith("https://");
+            return (
+              <li key={agent.name}>
+                <a
+                  href={href}
+                  onClick={() => void copyText(prompt).catch(() => undefined)}
+                  rel={web ? "noreferrer" : undefined}
+                  target={web ? "_blank" : undefined}
+                  title={agent.name}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`agent-logo agent-logo-${agent.logo}`}
+                  />
+                  <span className="visually-hidden">{agent.name}</span>
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </div>
   );
 }
@@ -842,15 +1053,13 @@ function InstallPanel({ project }: { project: ProjectDefinition }) {
       {project.reward.kind === "monthly-pool" &&
       allocationFundingMinor(project.reward) === 0n ? (
         <p>
-          Unfunded trial: this skill records accepted work and scores with a $0
-          funding-backed projection.
+          This project has no funding yet. Accepted work still earns Slop Score.
         </p>
       ) : null}
       <p className="install-note">
         Any model can join. The skill publishes the exact provider, model, and
         client. Signed receipts and permanent private traces are optional; only
-        Slop operators can access uploaded trace contents. Payout setup uses an
-        authenticated, append-only Slop wallet registry.
+        Slop operators can access uploaded trace contents.
       </p>
       <details className="install-advanced">
         <summary>Advanced options</summary>
@@ -915,6 +1124,9 @@ function ProjectPaymentHistory({
   project: ProjectDefinition;
   state: DataState;
 }) {
+  const [directState, retryDirect] = useDirectTransfers({
+    projectId: project.id,
+  });
   if (state.status !== "ready") return null;
   const cycles = state.cycleIndex.cycles
     .filter((cycle) => cycle.projectId === project.id)
@@ -932,6 +1144,18 @@ function ProjectPaymentHistory({
     0n,
   );
   const externalPrize = project.reward.kind === "external-prize-share";
+  const direct = new Map<string, { amount: bigint; count: number }>();
+  for (const payment of directState.status === "ready"
+    ? directState.transfers
+    : []) {
+    const month = direct.get(payment.contributionMonth) ?? {
+      amount: 0n,
+      count: 0,
+    };
+    month.amount += BigInt(payment.amountMicro);
+    month.count += 1;
+    direct.set(payment.contributionMonth, month);
+  }
   return (
     <section className="section payment-history">
       <div className="simple-heading">
@@ -952,6 +1176,28 @@ function ProjectPaymentHistory({
           <span>{formatMicroUsdc(fees.toString())} in 1% payout fees</span>
         </p>
       )}
+      {directState.status === "error" && !externalPrize ? (
+        <p role="status">
+          Direct payment records are unavailable.{" "}
+          <button type="button" onClick={retryDirect}>
+            Retry direct payments
+          </button>
+        </p>
+      ) : null}
+      {[...direct].map(([month, { amount, count }]) => (
+        <p className="money-summary" key={month}>
+          <strong>{formatMicroUsdc(amount.toString())} paid directly</strong>
+          <span>
+            {formatCycleMonth(month)} · {count} finalized transfers outside Slop
+            settlement ·{" "}
+            <ExternalLinkAnchor
+              href={`${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/disclosures/${project.id}-${month}-direct-payments.json`}
+            >
+              Disclosure
+            </ExternalLinkAnchor>
+          </span>
+        </p>
+      ))}
       {cycles.length === 0 ? (
         <EmptyState text="No cycles have closed yet." />
       ) : (
@@ -986,7 +1232,7 @@ function ProjectPaymentHistory({
                       <td>{formatMicroUsdc(cycle.reward.paidMinor)}</td>
                     </>
                   )}
-                  <td>{cycle.state.replaceAll("-", " ")}</td>
+                  <td>{cycleLifecycleLabel(cycle)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1398,7 +1644,9 @@ function ProjectFundingPage({
             </dd>
           </div>
         </dl>
-        <p>{project.funding.disclosure}</p>
+        {activeAddresses.length > 0 ? (
+          <p>{project.funding.disclosure}</p>
+        ) : null}
         {funding.status === "loading" ? (
           <div className="data-notice" role="status">
             <span className="pulse" /> Reading funding records…
@@ -1516,6 +1764,7 @@ function ProjectFundingPage({
               project={project}
               sourceRepositoryUrl={SOURCE_REPOSITORY}
               cycleIndex={state.status === "ready" ? state.cycleIndex : null}
+              cycleIndexLoading={state.status === "loading"}
               funding={funding.status === "ready" ? funding.index : null}
             />
           </Suspense>
@@ -1696,6 +1945,7 @@ function ProjectPage({
           </p>
         ) : null}
         <ProjectPaymentHistory project={project} state={state} />
+        <AutomationSection project={project} />
         {view && state.status === "ready" ? (
           <ProjectLeaderboard
             state={state}
@@ -1710,7 +1960,7 @@ function ProjectPage({
 }
 
 function HowItWorksPage() {
-  const protocolRoot = `${SOURCE_REPOSITORY}/blob/develop/protocol`;
+  const protocolRoot = `${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/protocol`;
   return (
     <main className="shell evidence-page how-it-works">
       <section className="evidence-page-hero">
@@ -1813,10 +2063,12 @@ function HowItWorksPage() {
             </p>
             <p>
               Review is scored work: triage 1/3, standard review 1, deep
-              reproduction 3, specialist review 8. Self-review, post-merge
-              review, duplicate review, and bot activity do not score. A valid
-              signed receipt with a finalized private trace adds a fixed 15%
-              weight.
+              reproduction 3, specialist review 8. Since October 2026, an
+              ordinary review scores only when the merged code answered its
+              request for changes, once per pull request. Self-review,
+              post-merge review, duplicate review, and bot activity do not
+              score. A valid signed receipt with a finalized private trace adds
+              a fixed 15% weight.
             </p>
             <p>
               Token volume, cost, lines, commits, confidence, and account count
@@ -1924,9 +2176,11 @@ function HowItWorksPage() {
             <span>A frozen monthly proposal in its 14-day public window.</span>
           </li>
           <li>
-            <small className="payment-gate">Creator approval</small>
+            <small className="payment-gate">Maintainer approval</small>
             <strong>Approved</strong>
-            <span>Immutable payout intents after the creator signs off.</span>
+            <span>
+              Immutable payout intents after the maintainer signs off.
+            </span>
           </li>
           <li>
             <small className="payment-gate">Unsigned plan</small>
@@ -1976,9 +2230,10 @@ function HowItWorksPage() {
           </p>
           <p>
             For monthly v1 cycles, the first-of-month workflow freezes a
-            proposal for 14 days of public review. Wallet changes restart
-            review. Awards below $2 accrue to the next cycle. Historical records
-            keep their recorded fee and authority rules.
+            proposal for 14 days of public review. Only an amount change
+            restarts review; a wallet registered after the proposal applies to
+            the next cycle. Awards below $2 accrue to the next cycle. Historical
+            records keep their recorded fee and authority rules.
           </p>
         </details>
       </section>
@@ -2007,11 +2262,14 @@ function HowItWorksPage() {
         </details>
         <details>
           <summary>Do reviews score?</summary>
-          <p>Yes. A review counts as a standard review, 1 point, when:</p>
+          <p>
+            Only when it changes what merges. Since October 2026, a review
+            scores 1/3 of a point when:
+          </p>
           <ul>
             <li>
-              It is submitted as Approve or Request changes. A plain Comment
-              review does not score.
+              It is submitted as Request changes. Approve and Comment reviews do
+              not score.
             </li>
             <li>It is on someone else&apos;s pull request.</li>
             <li>
@@ -2019,15 +2277,15 @@ function HowItWorksPage() {
               comment.
             </li>
             <li>
-              It is submitted before the pull request merges, and the pull
-              request does merge.
+              The author pushes new code after it, and the pull request then
+              merges.
             </li>
           </ul>
           <p>
-            One review scores per person per pull request, and reviews by or of
-            bot accounts do not score. If you left a Comment review, you can
-            submit a new Approve or Request changes review while the pull
-            request is still open.
+            Each pull request gives one review award, to the latest request for
+            changes that the merged code answered. Reviews by or of bot accounts
+            do not score. A maintainer can award a higher review tier for an
+            unusually valuable review.
           </p>
         </details>
         <details>
@@ -2041,12 +2299,15 @@ function HowItWorksPage() {
           </p>
         </details>
         <details>
-          <summary>Why does my merge show only 1/3 of a point?</summary>
+          <summary>
+            What is my merge worth before a maintainer scores it?
+          </summary>
           <p>
-            Every merge starts as a provisional micro unit. A review agent may
-            propose a higher tier from the table above, and the score moves up
-            only when a maintainer ratifies that tier on the exact merged
-            commit. Related or split pull requests share one work unit.
+            Since October 2026, every merge starts as a provisional small unit,
+            1 point; earlier merges started at 1/3. A review agent may propose
+            another tier from the table above, and the score changes only when a
+            maintainer ratifies that tier on the exact merged commit. Related or
+            split pull requests share one work unit.
           </p>
         </details>
         <details>
@@ -2065,19 +2326,19 @@ function HowItWorksPage() {
             <Link href="/account#wallets">Account wallets</Link> with your
             GitHub account. No wallet connection or signing is needed. Payments
             are USDC on the project's settlement network, Base or Solana, sent
-            by the project creator, never by Slop. A wallet must be registered
-            before a month freezes to apply to that month. Without one, your row
-            stays unclaimed and carries forward.
+            by the project maintainer, never by Slop. A wallet must be
+            registered before a month freezes to apply to that month. Without
+            one, your row stays unclaimed and carries forward.
           </p>
         </details>
         <details>
           <summary>When are payments sent?</summary>
           <p>
             At 00:11 UTC on the first of each month, the previous month freezes
-            into a proposal. After 14 days of public review the creator approves
-            it and sends USDC from their own wallet. Slop shows a payment as
-            paid only after the transfers are confirmed on-chain. Amounts below
-            $2 carry to the next month.
+            into a proposal. After 14 days of public review the maintainer
+            approves it and sends USDC from their own wallet. Slop shows a
+            payment as paid only after the transfers are confirmed on-chain.
+            Amounts below $2 carry to the next month.
           </p>
         </details>
         <details>
@@ -2094,7 +2355,7 @@ function HowItWorksPage() {
           <summary>What is the 14-day review?</summary>
           <p>
             It reviews the monthly allocation, not your code. After the freeze
-            the proposal is public for 14 days, and the creator may approve,
+            the proposal is public for 14 days, and the maintainer may approve,
             hold, exclude, reduce, or increase rows, each with a public reason.
             It is separate from pull request reviews on GitHub.
           </p>
@@ -2207,7 +2468,7 @@ function WhoBuildsOnSlop({
   const knownRepositories = outside.recognizable.slice(0, 10);
   const dateLabel = whoBuildsDateLabel(outside.generatedAt);
   const pinnedFile = (path: string) =>
-    `${SOURCE_REPOSITORY}/blob/develop/${path}`;
+    `${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/${path}`;
   const repositoryUrl = (repo: string) => `https://github.com/${repo}`;
   const massCount = outside.massAccounts.length;
   const massNote =
@@ -2397,8 +2658,11 @@ function SponsorsPage({
   state: DataState;
   retry: () => void;
 }) {
-  const protocolRoot = `${SOURCE_REPOSITORY}/blob/develop/protocol`;
+  const protocolRoot = `${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/protocol`;
   const now = Date.now();
+  const hasReviewBudget = PROJECTS.some(
+    (project) => project.reward.reviewBudget,
+  );
   return (
     <main className="shell evidence-page">
       <section className="evidence-page-hero">
@@ -2427,7 +2691,7 @@ function SponsorsPage({
                 <th scope="col">Project</th>
                 <th scope="col">Pool</th>
                 <th scope="col">Payments</th>
-                <th scope="col">Review line</th>
+                {hasReviewBudget ? <th scope="col">Review line</th> : null}
                 <th scope="col">Receiving addresses</th>
               </tr>
             </thead>
@@ -2446,11 +2710,13 @@ function SponsorsPage({
                     </th>
                     <td>{sponsorPoolLabel(project.reward)}</td>
                     <td>{project.reward.paymentMode}</td>
-                    <td>
-                      {project.reward.reviewBudget
-                        ? reviewBudgetLabel(project.reward.reviewBudget)
-                        : "none"}
-                    </td>
+                    {hasReviewBudget ? (
+                      <td>
+                        {project.reward.reviewBudget
+                          ? reviewBudgetLabel(project.reward.reviewBudget)
+                          : "none"}
+                      </td>
+                    ) : null}
                     <td>
                       {activeAddresses === 0
                         ? "none published"
@@ -2467,9 +2733,12 @@ function SponsorsPage({
         <div>
           <h2>Awards, fee and total.</h2>
           <p>
-            Monthly pools add a separate 1% fee to approved awards. Contributors
-            receive the full approved amount. Paid requires finalized evidence
-            for both the awards and fee.
+            Legacy monthly pools add a separate 1% fee to approved awards.
+            Contributors receive the full approved amount. New escrow payouts
+            deduct 2% from the gross award: 100 USDC becomes 98 USDC for the
+            contributor and 2 USDC in fees. Each cycle keeps its recorded
+            policy. Paid requires finalized evidence for both the awards and
+            fee.
           </p>
           <p>
             External prize shares use the terms published for that project. The
@@ -2478,10 +2747,10 @@ function SponsorsPage({
         </div>
         <dl
           className="equation-card"
-          aria-label="Example: $5,000 in approved awards"
+          aria-label="Legacy example: $5,000 in approved awards"
         >
           <div>
-            <dt>Example approved awards</dt>
+            <dt>Legacy example approved awards</dt>
             <dd>$5,000</dd>
           </div>
           <div>
@@ -2499,7 +2768,7 @@ function SponsorsPage({
           <h2>Start with a pull request.</h2>
           <p>
             Add a project to prepare a GitHub proposal. New projects start
-            paused. Existing stewards update receiving addresses and funding
+            paused. Existing maintainers update receiving addresses and funding
             instruments through a reviewed manifest change.
           </p>
         </div>
@@ -2509,7 +2778,7 @@ function SponsorsPage({
           </li>
           <li>
             <ExternalLinkAnchor
-              href={`${SOURCE_REPOSITORY}/tree/develop/projects`}
+              href={`${SOURCE_REPOSITORY}/tree/${browserDeployment.branch}/projects`}
             >
               Reviewed manifests
             </ExternalLinkAnchor>
@@ -2556,7 +2825,7 @@ function SponsorsPage({
           <li>
             <strong>03 · You decide and sign</strong>
             <p>
-              Project owners review proposed awards within the cap and record
+              Maintainers review proposed awards within the cap and record
               changes with a public reason. Authorized signers execute the
               reviewed transfer plan outside Slop. Slop marks the cycle paid
               only when finalized on-chain evidence reconciles every approved
@@ -2570,7 +2839,7 @@ function SponsorsPage({
             <ul>
               <li>The monthly cap, with exact-cycle overrides.</li>
               <li>
-                Project owners may adjust proposed awards within the cap, with a
+                Maintainers may adjust proposed awards within the cap, with a
                 public reason. Amount changes restart the 14-day review.
               </li>
               <li>
@@ -2669,7 +2938,7 @@ function SponsorsPage({
               execute, redirect, or block a transfer.
             </li>
             <li>
-              Direct gifts go straight from your wallet to the steward&apos;s
+              Direct gifts go straight from your wallet to the project&apos;s
               published address and are recorded append-only under funding
               records, self-reported until a verifier confirms them on-chain.
             </li>
@@ -2706,6 +2975,10 @@ function SponsorsPage({
           Audience report ·{" "}
           {whoBuildsDateLabel(WHO_BUILDS_SNAPSHOT.generatedAt)}
         </summary>
+        <p>
+          This report shows sponsors the public GitHub work of the people on the
+          leaderboard. It does not change points or payments.
+        </p>
         <WhoBuildsOnSlop retry={retry} state={state} />
       </details>
       <section className="custody-proof mechanism-sources">
@@ -2722,7 +2995,7 @@ function SponsorsPage({
           </li>
           <li>
             <ExternalLinkAnchor
-              href={`${SOURCE_REPOSITORY}/blob/develop/funding/README.md`}
+              href={`${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/funding/README.md`}
             >
               Funding records
             </ExternalLinkAnchor>
@@ -3224,7 +3497,8 @@ export function App() {
 
 function AppContent({ route }: { route: Route }) {
   useInitialHashScroll();
-  const needsSnapshot = ![
+  useDocumentHead(route);
+  const snapshotFree: Route["kind"][] = [
     "home",
     "points",
     "account",
@@ -3233,11 +3507,10 @@ function AppContent({ route }: { route: Route }) {
     "how-it-works",
     "new-project",
     "manage-project",
-    "wallet",
     "unknown",
-    "verification",
     "cycle-archive",
-  ].includes(route.kind);
+  ];
+  const needsSnapshot = !snapshotFree.includes(route.kind);
   const [state, retry] = useSnapshot(needsSnapshot);
   const [archive, retryArchive] = useCycleIndex(route.kind === "cycle-archive");
   let content: ReactNode;
@@ -3297,15 +3570,18 @@ function AppContent({ route }: { route: Route }) {
   return (
     <>
       <Header />
-      <Suspense
-        fallback={
-          <main className="shell route-main" role="status">
-            Loading page…
-          </main>
-        }
-      >
-        {content}
-      </Suspense>
+      {/* Routes render their own main; the skip link lands on this container. */}
+      <div className="skip-target" id="main" tabIndex={-1}>
+        <Suspense
+          fallback={
+            <main className="shell route-main" role="status">
+              Loading page…
+            </main>
+          }
+        >
+          {content}
+        </Suspense>
+      </div>
       <Footer />
     </>
   );

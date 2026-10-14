@@ -10,7 +10,7 @@ const fixtureLog = openSync("evidence/payout-browser-fixture.log", "w");
 const previewLog = openSync("evidence/payout-browser-preview.log", "w");
 const fixture = spawn(
   "bun",
-  ["backend/payments/base.integration.ts", "--serve"],
+  ["backend/payments/evm.integration.ts", "--serve"],
   { stdio: ["ignore", fixtureLog, fixtureLog] },
 );
 const preview = spawn(
@@ -85,7 +85,7 @@ try {
     };
   }, signer.address);
   await page.goto("http://127.0.0.1:18549/earnings");
-  await page.getByRole("heading", { name: "Your earnings" }).waitFor();
+  await page.getByRole("heading", { name: "Your payouts" }).waitFor();
   await page.getByRole("button", { name: "Connect Base wallet" }).waitFor();
   await page.screenshot({
     path: "evidence/payout-desktop-before.png",
@@ -93,6 +93,10 @@ try {
   });
   await page.getByRole("button", { name: "Connect Base wallet" }).focus();
   await page.keyboard.press("Enter");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Browser wallet Detected" })
+    .click();
   await page
     .getByText("Base wallet confirmed.", { exact: false })
     .waitFor({ timeout: 60000 });
@@ -103,13 +107,13 @@ try {
       .waitFor({ state: "visible" });
     await page.waitForLoadState("networkidle");
     if (
-      await page.getByText("Paid — verified on chain", { exact: true }).count()
+      await page.getByText("Paid, verified on chain", { exact: true }).count()
     )
       break;
     await page.waitForTimeout(1000);
   }
   await page
-    .getByText("Paid — verified on chain", { exact: true })
+    .getByText("Paid, verified on chain", { exact: true })
     .waitFor({ timeout: 10000 });
   const paid = await (
     await fetch("http://127.0.0.1:18548/api/v1/payments/me")

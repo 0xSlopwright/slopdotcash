@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import { identityPublicOrigin } from "../workers/identity/contracts";
+import { browserDeployment } from "./lib/browser-deployment";
 import {
   fetchWithDeadline,
   readBoundedJson,
@@ -35,14 +36,19 @@ import {
 import { profileCounts } from "./lib/profiles";
 import { findProject, PROJECTS } from "./lib/projects.mjs";
 import { type DataState, useSnapshot } from "./lib/use-snapshot";
-import { DataNotice, formatMicroUsdc, formatScore } from "./Presentation";
+import {
+  DataNotice,
+  formatDate,
+  formatDateTime,
+  formatMicroUsdc,
+  formatScore,
+  NotFound,
+} from "./Presentation";
 import { ProfileActivity, useProfiles } from "./Profiles";
 import { WalletRegistration } from "./WalletRegistration";
 
 const productOrigin = () =>
-  ["https://slop.cash", "https://slop.tech", "https://eliza.army"].includes(
-    window.location.origin,
-  );
+  browserDeployment.browserOrigins.has(window.location.origin);
 
 interface Membership {
   actor: { id: string; login: string };
@@ -367,7 +373,7 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
             View profile
           </a>
           <a href="/earnings" onClick={navigate}>
-            Earnings and wallets
+            Payouts and wallets
           </a>
           <a href="/account" onClick={navigate}>
             Account settings
@@ -396,8 +402,7 @@ function Notice() {
     );
   return (
     <p className="points-meta">
-      Recorded history · updated{" "}
-      {new Date(state.journal.generatedAt).toLocaleString()}
+      Points updated {formatDateTime(state.journal.generatedAt)}
       {Date.now() - Date.parse(state.journal.generatedAt) > 8 * 3600000
         ? " · Stale: the next verified update is pending."
         : ""}
@@ -412,6 +417,7 @@ export function ProfilePoints({
   cycles,
   recordsLoading = false,
   showIdentity = false,
+  notFoundWhenUnrecorded = false,
 }: {
   login: string;
   work?: readonly ScoreEvent[];
@@ -420,6 +426,8 @@ export function ProfilePoints({
   showIdentity?: boolean;
   summary?: ReactNode;
   actorId?: string;
+  /** The caller found no score record, so no points record means no contributor. */
+  notFoundWhenUnrecorded?: boolean;
 }) {
   const { state, me } = useContext(Context);
   const census = useProfiles();
@@ -480,6 +488,21 @@ export function ProfilePoints({
           : undefined
       : undefined;
   const [copied, setCopied] = useState("");
+  if (
+    notFoundWhenUnrecorded &&
+    state.status === "ready" &&
+    census.state.status === "ready" &&
+    joinStatus === "absent" &&
+    !own &&
+    !m &&
+    !recorded &&
+    named.length === 0
+  )
+    return (
+      <NotFound as="section" title="Contributor not found">
+        <p>Slop has no public record for {login}.</p>
+      </NotFound>
+    );
   return (
     <section className="points-panel" aria-label="Slop Points">
       <ProfileActivity
@@ -646,7 +669,13 @@ function JoinPoints({
       setMessage("You’re signed in. Your welcome points are recorded.");
     } catch (e) {
       if (!c.signal.aborted)
-        setMessage(e instanceof Error ? e.message : "Sign-in unavailable");
+        setMessage(
+          e instanceof TypeError
+            ? "Could not reach Slop. Check your connection and try again."
+            : e instanceof Error
+              ? e.message
+              : "Sign-in unavailable",
+        );
     } finally {
       if (active.current === c) {
         setBusy(false);
@@ -671,7 +700,9 @@ function JoinPoints({
       <section className="points-panel">
         {showHeading ? <h2>Sign in to Slop</h2> : null}
         <p>Use GitHub to manage your profile.</p>
-        <a href="https://slop.cash/login">Continue with GitHub on slop.cash</a>
+        <a href={`${browserDeployment.site}/login`}>
+          Continue with GitHub on {new URL(browserDeployment.site).hostname}
+        </a>
       </section>
     );
   return (
@@ -779,7 +810,7 @@ export function AccountPage() {
         <a href="#profile">Profile</a>
         {me ? <a href="#connections">Connections</a> : null}
         <a href="#wallets">Wallets</a>
-        <a href="/earnings">Earnings</a>
+        <a href="/earnings">Payouts</a>
       </nav>
       <div id="profile">
         <JoinPoints />
@@ -984,8 +1015,8 @@ export function ContributorStandings({
       <Notice />
       {scores.status === "ready" ? (
         <p className="points-meta">
-          Score records: {scores.snapshot.window.from} to{" "}
-          {scores.snapshot.window.to}, plus closed cycles.
+          Score records: {formatDate(scores.snapshot.window.from)} to{" "}
+          {formatDate(scores.snapshot.window.to)}, plus closed cycles.
           {period === "month"
             ? ` Selected month: ${new Date().toISOString().slice(0, 7)} (UTC).`
             : " Recorded history; coverage may have gaps."}
@@ -1162,7 +1193,7 @@ export function ContributorStandings({
       <p className="points-meta">
         Slop Score measures accepted work. Points record recognition. Money
         received is verified finalized USDC principal. Equal values share a
-        rank. Historical review coverage follows verified records.
+        rank.
       </p>
       {compact ? (
         <p>
@@ -1510,8 +1541,11 @@ function People() {
       ) : null}
       {members.status === "preview" ? (
         <p>
-          Public members load only on slop.cash.{" "}
-          <a href="https://slop.cash/points#people">View public members</a>
+          Public members load only on {new URL(browserDeployment.site).hostname}
+          .{" "}
+          <a href={`${browserDeployment.site}/points#people`}>
+            View public members
+          </a>
         </p>
       ) : members.status === "loading" ? (
         <p role="status">Loading members…</p>
@@ -1566,7 +1600,7 @@ function People() {
                     {p.member ? <small>Public member</small> : null}
                     {steward.length ? (
                       <small>
-                        Project steward ·{" "}
+                        Project maintainer ·{" "}
                         {steward.map((s) => s.name).join(", ")}
                       </small>
                     ) : null}

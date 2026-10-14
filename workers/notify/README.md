@@ -6,8 +6,11 @@ submits a new project application. It exists because Pages Functions cannot use
 
 ## Route
 
-The Worker has no public route and `workers_dev` is off. The Pages app binds it
-as the service `SLOP_NOTIFY` and calls the only accepted route:
+The Worker has no public route and `workers_dev` is off. The caller is a
+service binding named `SLOP_NOTIFY` on the Pages app. That caller is the
+authenticated project-application submit path, which is not released yet, so
+the root Pages `wrangler.toml` has no `SLOP_NOTIFY` binding. Add the binding in the same
+change that ships the caller. The only accepted route is:
 
 ```http
 POST https://notify.internal/v1/project-applications
@@ -33,18 +36,24 @@ Results:
 
 | Status | Body                                         | Meaning                       |
 | ------ | -------------------------------------------- | ----------------------------- |
-| 202    | `{"status":"sent","recipients":2}`           | Every admin email was handed to Cloudflare. |
+| 202    | `{"status":"sent","recipients":<n>}`         | Every admin email was handed to Cloudflare. |
 | 502    | `{"error":"delivery_failed","sent":<n>}`     | At least one send failed; `n` were sent. |
-| 500    | `{"error":"service_misconfigured"}`          | The sender address is invalid; nothing was sent. |
+| 500    | `{"error":"service_misconfigured"}`          | The sender or admin list is invalid; nothing was sent. |
 
 A 202 means Cloudflare accepted the messages. It does not prove inbox delivery.
 
 ## Recipients
 
-The recipient list is fixed in `ADMIN_NOTIFICATION_RECIPIENTS` in
-`contracts.ts`. The `ADMIN_EMAIL` binding in `wrangler.toml` must allow exactly
-the same addresses. To change the list, update both files in the same pull
-request; the test suite fails when they differ.
+The admin addresses are not in the repository. Operators set them as the
+Worker secret `ADMIN_EMAILS`, a comma-separated list of 1 to 10 unique
+addresses:
+
+```sh
+./node_modules/.bin/wrangler secret put ADMIN_EMAILS --config workers/notify/wrangler.toml
+```
+
+The handler sends nothing and returns 500 when the secret is missing, empty, or
+contains an invalid or duplicate address. Callers cannot supply a recipient.
 
 ## Message
 
@@ -57,28 +66,27 @@ time, application id, and the admin review link.
 
 ## Operator prerequisites
 
-1. Enable Cloudflare Email Routing on the `slop.cash` zone.
-2. Add and verify both recipient addresses as Email Routing destination
-   addresses.
-3. Keep the sender `notifications@slop.cash` (`NOTIFY_FROM_ADDRESS`) on that
-   zone.
-4. Deploy this Worker, then bind it to the Pages project as the service
-   `SLOP_NOTIFY`.
+1. Configure Cloudflare email for the `slop.cash` zone so that the admin
+   addresses can receive mail from `notifications@slop.cash`
+   (`NOTIFY_FROM_ADDRESS`).
+2. Create the `slop-notify` Worker once and set its `ADMIN_EMAILS` secret.
+3. Set the repository variable `SLOP_NOTIFY_RELEASE` to `enabled`.
 
 ## Release and current scope
 
-The protected production job in `.github/workflows/deploy.yml` deploys this
-Worker from its checked-out release revision before publishing the Pages
-service binding. Preview deployments have no notification binding. Do not
+The protected production job in `.github/workflows/deploy.yml` releases this
+Worker only when `SLOP_NOTIFY_RELEASE` is `enabled`. It requires exactly the
+`ADMIN_EMAILS` secret, uploads a version tagged with the release commit,
+promotes it to 100%, and verifies that the active version carries that tag.
+Staging and preview deployments have no notification Worker or binding. Do not
 use a local deployment to bypass the release workflow.
 
-Run existing handler checks with `bun test workers/notify/notify.test.ts`.
-Verify the deployed version and email binding separately from domain readiness.
-The domain's Email Sending activation does not deploy this Worker.
+Run the handler checks with `bun run test:notify`; `bun run verify:code`
+includes them. A deployed version is not proof of a caller, domain readiness or
+inbox delivery.
 
-This service implements project-application notices only. The released application
-must supply an authenticated caller before these notices can be sent. Private
-bounty notifications require a separate approved event contract, restricted case
+This service implements project-application notices only. Private bounty
+notifications require a separate approved event contract, restricted case
 links and server-resolved recipient authorization under PRD SEC-16. Do not send
-exploit details through the project-application template. No report is submitted
-and no bounty award is approved by an email send.
+exploit details through the project-application template. No report is
+submitted and no bounty award is approved by an email send.

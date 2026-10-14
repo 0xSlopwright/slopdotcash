@@ -55,6 +55,10 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
       reviewer,
     ]),
   );
+  const leaders = [...view.leaders].sort(
+    (left, right) =>
+      left.rank - right.rank || left.actor.id.localeCompare(right.actor.id),
+  );
   return (
     <>
       <section className="section project-leader-section">
@@ -69,7 +73,7 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
               {monthlyPoolUnfunded(view.project.reward)
                 ? `${UNFUNDED_POOL_HEADLINE}.`
                 : `Shares simulate the ${monthlyPoolLabel(view.project.reward)} cap.`}{" "}
-              Not approved payouts.
+              No payouts are approved.
             </p>
           ) : null}
         </div>
@@ -95,7 +99,7 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
                 </tr>
               </thead>
               <tbody>
-                {view.leaders.map((leader) => (
+                {leaders.map((leader) => (
                   <tr
                     className="leader-row project-leader-row"
                     key={leader.actor.id}
@@ -110,7 +114,10 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
                         <span>
                           <strong>{leader.actor.login}</strong>
                           <small>
-                            {leader.acceptedOutcomeCount} accepted events
+                            {leader.acceptedOutcomeCount} accepted{" "}
+                            {leader.acceptedOutcomeCount === 1
+                              ? "event"
+                              : "events"}
                           </small>
                         </span>
                       </Link>

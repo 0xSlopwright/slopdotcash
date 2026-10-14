@@ -7,11 +7,15 @@
 import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
 import { type APIRequestContext, test as base, expect } from "@playwright/test";
+import { preparePullRequestLedger } from "../../scripts/prepare-pr-ledger";
 import { assertCycleIndex, type CycleIndex } from "../../src/lib/cycle-index";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
-import { homeProjects } from "../../src/lib/home-projects";
+import { githubUserIdFromNodeId } from "../../src/lib/github-actor";
+import { createGlobalLeaders } from "../../src/lib/global-leaderboard";
+import { communityProjects } from "../../src/lib/home-projects";
 import {
   assertLeaderboardSnapshot,
+  assertPublishableLeaderboardSnapshot,
   type LeaderboardSnapshot,
 } from "../../src/lib/leaderboard";
 import {
@@ -83,6 +87,176 @@ async function loadCycles(request: APIRequestContext): Promise<CycleIndex> {
   assertCycleIndex(value);
   return value;
 }
+
+test("equal contributors share cycle and profile ranks", async ({
+  page,
+  request,
+}) => {
+  // The local preview is not an allowed origin for the unrelated wallet API.
+  await page.route(
+    `${deployment.api}/api/v1/wallet-claims/actors/*/current`,
+    (route) => route.fulfill({ json: null }),
+  );
+  const snapshot = await loadSnapshot(request);
+  const cycles = await loadCycles(request);
+  const publishedTie = snapshot.leaders.findIndex(
+    (leader, index) =>
+      index > 0 &&
+      leader.scoreThirds === snapshot.leaders[index - 1].scoreThirds,
+  );
+  if (publishedTie < 0)
+    throw new Error("Public snapshot has no tied contributor scores");
+  for (const leader of snapshot.leaders) {
+    expect(leader.rank).toBe(
+      snapshot.leaders.filter((entry) => entry.scoreThirds > leader.scoreThirds)
+        .length + 1,
+    );
+  }
+  const publishedIds = snapshot.leaders.map((leader) => leader.actor.id);
+  const scoreGroups = [
+    ...new Set(snapshot.leaders.map((leader) => leader.scoreThirds)),
+  ];
+  expect(publishedIds).toEqual(
+    scoreGroups.flatMap((score) =>
+      snapshot.leaders
+        .filter((leader) => leader.scoreThirds === score)
+        .map((leader) => leader.actor.id)
+        .sort(),
+    ),
+  );
+
+  const renamed = structuredClone(snapshot);
+  const tiedIds = snapshot.leaders
+    .slice(publishedTie - 1, publishedTie + 1)
+    .map((leader) => leader.actor.id)
+    .sort();
+  const logins = new Map([
+    [tiedIds[0], "rank-order-z"],
+    [tiedIds[1], "rank-order-a"],
+  ]);
+  const objects: unknown[] = [renamed];
+  while (objects.length > 0) {
+    const value = objects.pop();
+    if (value === null || typeof value !== "object") continue;
+    const record = value as Record<string, unknown>;
+    const login =
+      typeof record.id === "string" ? logins.get(record.id) : undefined;
+    if (login && typeof record.login === "string") {
+      record.login = login;
+      record.url = `https://github.com/${login}`;
+    }
+    objects.push(...Object.values(record));
+  }
+  const compareStrings = (left: string, right: string) =>
+    left < right ? -1 : left > right ? 1 : 0;
+  renamed.leaders.sort(
+    (left, right) =>
+      right.scoreThirds - left.scoreThirds ||
+      compareStrings(
+        left.actor.login.toLowerCase(),
+        right.actor.login.toLowerCase(),
+      ) ||
+      compareStrings(left.actor.login, right.actor.login) ||
+      compareStrings(left.actor.id, right.actor.id),
+  );
+  renamed.leaders.forEach((leader, index) => {
+    leader.rank = index + 1;
+  });
+  const originalRenamed = structuredClone(renamed);
+  assertLeaderboardSnapshot(renamed);
+  expect(() => assertPublishableLeaderboardSnapshot(renamed)).toThrow(
+    "actor ID ordering",
+  );
+  const adapted = preparePullRequestLedger(renamed);
+  assertPublishableLeaderboardSnapshot(adapted);
+  expect(adapted.leaders.map((leader) => leader.actor.id)).toEqual(
+    publishedIds,
+  );
+  expect(adapted.leaders.map((leader) => leader.rank)).toEqual(
+    snapshot.leaders.map((leader) => leader.rank),
+  );
+  expect(renamed).toEqual(originalRenamed);
+  const views = PROJECTS.filter(
+    (project) =>
+      projectCycleHasOpened(snapshot, project.id) &&
+      project.repositories.every((repository) =>
+        snapshot.repositories.some((entry) => entry.id === repository.id),
+      ),
+  ).map((project) => createProjectView(snapshot, project.id));
+  const view = views.find((entry) =>
+    entry.leaders.some(
+      (leader, index) =>
+        index > 0 &&
+        leader.scoreThirds === entry.leaders[index - 1].scoreThirds &&
+        leader.adjustedWeight !== entry.leaders[index - 1].adjustedWeight,
+    ),
+  );
+  if (!view)
+    throw new Error(
+      "Public snapshot has no tied scores with different weights",
+    );
+  const tiedIndex = view.leaders.findIndex(
+    (leader, index) =>
+      index > 0 &&
+      leader.scoreThirds === view.leaders[index - 1].scoreThirds &&
+      leader.adjustedWeight !== view.leaders[index - 1].adjustedWeight,
+  );
+  const tiedScore = view.leaders[tiedIndex].scoreThirds;
+  const expectedRank =
+    view.leaders.filter((leader) => leader.scoreThirds > tiedScore).length + 1;
+  const tiedLeaders = view.leaders.filter(
+    (leader) => leader.scoreThirds === tiedScore,
+  );
+  await page.goto(`/projects/${view.project.id}`);
+  await page.getByText("Cycle allocation details", { exact: true }).click();
+  await expect(page.locator(".project-leader-row .rank-cell")).toHaveText(
+    [...view.leaders]
+      .sort(
+        (left, right) =>
+          right.scoreThirds - left.scoreThirds ||
+          left.actor.id.localeCompare(right.actor.id),
+      )
+      .map(
+        (leader) =>
+          `#${view.leaders.filter((entry) => entry.scoreThirds > leader.scoreThirds).length + 1}`,
+      ),
+  );
+  for (const leader of tiedLeaders) {
+    const row = page.locator(".project-leader-row").filter({
+      has: page.locator(
+        `a[href="/contributors/${encodeURIComponent(leader.actor.login)}"]`,
+      ),
+    });
+    await expect(row).toBeVisible();
+    await expect(row.locator(".rank-cell")).toHaveText(`#${expectedRank}`);
+  }
+  const followingLeader = view.leaders
+    .filter((leader) => leader.scoreThirds < tiedScore)
+    .sort((left, right) => right.scoreThirds - left.scoreThirds)[0];
+  if (!followingLeader)
+    throw new Error("Public snapshot has no contributor after the score tie");
+  const followingRow = page.locator(".project-leader-row").filter({
+    has: page.locator(
+      `a[href="/contributors/${encodeURIComponent(followingLeader.actor.login)}"]`,
+    ),
+  });
+  await expect(followingRow.locator(".rank-cell")).toHaveText(
+    `#${expectedRank + tiedLeaders.length}`,
+  );
+
+  const leaders = createGlobalLeaders(snapshot, views, cycles);
+  const profileIndex = leaders.findIndex(
+    (leader, index) => index > 0 && leader.score === leaders[index - 1].score,
+  );
+  if (profileIndex < 0)
+    throw new Error("Public snapshot has no tied overall contributors");
+  for (const leader of leaders.slice(profileIndex - 1, profileIndex + 1)) {
+    await page.goto(`/contributors/${encodeURIComponent(leader.actor.login)}`);
+    const rank = page.getByText("overall rank", { exact: true }).locator("..");
+    await expect(rank).toBeVisible();
+    await expect(rank.locator("strong")).toHaveText(`#${profileIndex}`);
+  }
+});
 
 test("shows signer loss and expired capability without payout availability", async ({
   page,
@@ -177,7 +351,7 @@ test("shows signer loss and expired capability without payout availability", asy
 test("discovers projects and one score-ranked homepage leaderboard", async ({
   page,
 }) => {
-  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/", { waitUntil: "networkidle" });
   await page.reload({ waitUntil: "networkidle" });
 
@@ -200,13 +374,15 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   );
   await expect(footer.getByRole("link", { name: "Slop Git" })).toHaveCount(0);
   await expect(page.locator(".footer-wordmark")).toHaveText("slop.cash");
-  await expect(page.getByRole("link", { name: "Protocol" })).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { exact: true, name: "Protocol" }),
+  ).toHaveCount(0);
   await expect(
     page.getByText(`© ${new Date().getUTCFullYear()} slop.cash.`),
   ).toBeVisible();
   await expect(page.locator('meta[property="og:image"]')).toHaveAttribute(
     "content",
-    "https://slop.cash/og-open-source.png",
+    "https://slop.cash/og-slop-cash.png",
   );
   await expect(
     page.getByRole("heading", {
@@ -224,19 +400,14 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
     page.getByRole("heading", { exact: true, name: "Featured" }),
   ).toBeVisible();
   const community = page.locator("section.community-projects");
-  const eligibleCommunity = homeProjects().filter(
-    (project) => project.listingTier === "community",
-  );
-  if (eligibleCommunity.length === 0) {
+  const listedCommunity = communityProjects();
+  if (listedCommunity.length === 0) {
     await expect(community).toHaveCount(0);
   } else {
     // Community projects list ten per page; every page stays reachable.
-    const pages = Math.ceil(eligibleCommunity.length / 10);
+    const pages = Math.ceil(listedCommunity.length / 10);
     for (let index = 0; index < pages; index += 1) {
-      for (const project of eligibleCommunity.slice(
-        index * 10,
-        (index + 1) * 10,
-      ))
+      for (const project of listedCommunity.slice(index * 10, (index + 1) * 10))
         await expect(
           community.locator(`a.project-row[href="/projects/${project.id}"]`),
         ).toBeVisible();
@@ -258,14 +429,14 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   await expect(
     elizaCard.getByText("Not funded yet", { exact: true }),
   ).toHaveCount(0);
-  await expect(elizaCard.getByText("$5k", { exact: true })).toBeVisible();
+  await expect(elizaCard.getByText("$1k", { exact: true })).toBeVisible();
   await expect(
     elizaCard.getByText("/mo target", { exact: true }),
   ).toBeVisible();
   await expect(
-    elizaCard.getByText("Vault: Unavailable", { exact: true }),
+    elizaCard.getByText("Vault: Not funded", { exact: true }),
   ).toBeVisible();
-  await expect(elizaCard.getByText("$5,000", { exact: true })).toHaveCount(0);
+  await expect(elizaCard.getByText("$1,000", { exact: true })).toHaveCount(0);
   await expect(
     elizaCard.getByText(/Build and verify the elizaOS framework/u),
   ).toBeVisible();
@@ -349,9 +520,10 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
     leaderboard.getByRole("link", { name: firstLogin, exact: true }),
   ).toBeVisible();
   await leaderboard.getByLabel("Find a contributor").fill("");
-  await expect(page.locator(".hero-action")).toHaveText(
+  await expect(page.locator(".hero-mobile-action")).toHaveText(
     "SHIPPING OPEN SOURCE.",
   );
+  await expect(page.locator(".hero-typewriter-caret")).toBeHidden();
   await expect(
     page.locator("#projects").getByRole("link", { name: "Add a project" }),
   ).toHaveAttribute("href", "/projects/new");
@@ -541,7 +713,7 @@ test("starts Eliza with one prompt and no separate payout form", async ({
     page.getByRole("columnheader", { name: "Share of score" }),
   ).toBeVisible();
   await expect(
-    page.getByText(/Not funded yet\. Not approved payouts\./u),
+    page.getByText(/Not funded yet\. No payouts are approved\./u),
   ).toBeVisible();
   await expect(page.getByText("Live from GitHub")).toHaveCount(0);
   await expect(page.getByText("How credit survives review")).toHaveCount(0);
@@ -577,6 +749,57 @@ test("never presents Delta Star's external prize as platform money", async ({
       "External prize shares; this cycle does not enter Slop settlement.",
     ),
   ).toBeVisible();
+});
+
+test("shows the frozen record for a cycle the live window still covers", {
+  tag: ["@pages"],
+}, async ({ page, request }) => {
+  const snapshot = await loadSnapshot(request);
+  const cycles = await loadCycles(request);
+  // A month with a frozen record that the rolling window also reaches is the
+  // case where a live recompute could replace what is under review.
+  const overlapping = cycles.cycles.find((cycle) => {
+    if (cycle.contributors.length === 0) return false;
+    try {
+      createProjectView(snapshot, cycle.projectId, cycle.cycleId);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  const cycle = overlapping ?? cycles.cycles.find((c) => c.contributors.length);
+  if (cycle) {
+    await page.goto(`/cycles/${cycle.projectId}/${cycle.cycleId}`, {
+      waitUntil: "networkidle",
+    });
+    const rows = page.locator(".archived-leader-row");
+    await expect(rows).toHaveCount(cycle.contributors.length);
+    await expect(rows.first().getByRole("link")).toHaveText(
+      cycle.contributors[0].actor.login,
+    );
+    await expect(
+      page.locator(
+        ".leader-row:not(.archived-leader-row, .archived-leader-head)",
+      ),
+    ).toHaveCount(0);
+  }
+
+  const project = PROJECTS.find(
+    (candidate) => candidate.reward.kind === "monthly-pool",
+  );
+  if (!project) throw new Error("Monthly project fixture is unavailable");
+  await page.goto(`/cycles/${project.id}/2025-01`, {
+    waitUntil: "networkidle",
+  });
+  await expect(
+    page.getByRole("heading", {
+      name: "No January 2025 cycle record",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "project page" }),
+  ).toHaveAttribute("href", `/projects/${project.slug}`);
 });
 
 test("renders contributor and cycle records from validated public data", {
@@ -639,8 +862,15 @@ test("renders contributor and cycle records from validated public data", {
   await expect(
     page
       .locator(".profile-totals")
-      .getByText(/^[A-Z][a-z]+ \d{4} simulated estimate/u),
+      .getByText(/^[A-Z][a-z]+ \d{4} (simulated estimate|pool)$/u),
   ).toBeVisible();
+  // Mirrors monthlyPoolUnfunded in src/Presentation.tsx.
+  const unfundedPools = PROJECTS.every(
+    (project) =>
+      project.reward.kind !== "monthly-pool" ||
+      project.reward.fundingState !== "committed" ||
+      BigInt(project.reward.committedMinor) === 0n,
+  );
   const simulated = PROJECTS.reduce((total, project) => {
     if (
       !projectCycleHasOpened(snapshot, project.id) ||
@@ -656,18 +886,26 @@ test("renders contributor and cycle records from validated public data", {
     return total + BigInt(leader?.simulatedMinor ?? "0");
   }, 0n);
   const estimate = page.locator(".profile-totals > div").filter({
-    hasText: /simulated estimate/u,
+    hasText: /simulated estimate|pool$/u,
   });
-  await expect(estimate.locator("strong")).toHaveText(
-    new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: simulated % 1_000_000n === 0n ? 0 : 2,
-      maximumFractionDigits: 2,
-    }).format(Number(simulated) / 1_000_000),
-  );
+  if (unfundedPools) {
+    await expect(estimate.locator("strong")).toHaveText("Not funded yet");
+    await expect(estimate).toHaveCount(1);
+  } else
+    await expect(estimate.locator("strong")).toHaveText(
+      new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: simulated % 1_000_000n === 0n ? 0 : 2,
+        maximumFractionDigits: 2,
+      }).format(Number(simulated) / 1_000_000),
+    );
   await expect(
-    page.getByText(/14-day review applies to monthly proposals/u),
+    page.getByText(
+      unfundedPools
+        ? /No monthly pool is funded, so no amount is estimated/u
+        : /14-day review applies to monthly proposals/u,
+    ),
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "Progress" })).toHaveCount(0);
   const acceptedRecords = snapshot.ledger.filter(
@@ -846,15 +1084,12 @@ test("keeps a frozen-month contributor reachable after the rolling window moves 
   test.skip(!frozenOnly, "every frozen-month contributor is still in window");
   if (!frozenOnly) return;
 
-  await page.route(
-    `${deployment.api}/api/v1/wallet-claims/actors/*/current`,
-    (route) =>
-      route.fulfill({
-        status: 404,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "not_found" }),
-      }),
-  );
+  // A frozen-only actor's record keeps only the GitHub node id, which
+  // encodes the numeric id that wallet claims are keyed by.
+  const githubActorId = githubUserIdFromNodeId(frozenOnly.actor.id);
+  expect(githubActorId).toMatch(/^[1-9]\d*$/u);
+  const walletCalls: string[] = [];
+  await routeWalletClaims(page, walletCalls, String(githubActorId));
   await page.goto(
     `/contributors/${encodeURIComponent(frozenOnly.actor.login)}`,
     { waitUntil: "networkidle" },
@@ -866,6 +1101,74 @@ test("keeps a frozen-month contributor reachable after the rolling window moves 
     page.getByRole("heading", { name: "Frozen months" }),
   ).toBeVisible();
   await expect(page.getByText("Contributor not found")).toHaveCount(0);
+  await expect(
+    page.getByRole("link", {
+      name: "Current payout wallet · 11111111111111111111111111111111",
+    }),
+  ).toBeVisible();
+  expect(walletCalls.map((url) => new URL(url).pathname)).toEqual([
+    `/api/v1/wallet-claims/actors/${githubActorId}/current`,
+  ]);
+});
+
+test("requests a window contributor's wallet once while funding reviews load", async ({
+  page,
+  request,
+}) => {
+  const snapshot = await loadSnapshot(request);
+  const leader = snapshot.leaders
+    .map((entry) => ({
+      login: entry.actor.login,
+      githubId:
+        /^https:\/\/avatars\.githubusercontent\.com\/u\/(\d+)(?:\?|$)/u.exec(
+          entry.actor.avatarUrl ?? "",
+        )?.[1],
+    }))
+    .find((actor) => actor.githubId);
+  test.skip(!leader?.githubId, "no window contributor with a GitHub id");
+  if (!leader?.githubId) return;
+
+  // Hold the funding reviews until the wallet is shown. A window actor does
+  // not need them, so their arrival must not start a second wallet request.
+  let releaseReviews = () => {};
+  const reviewsHeld = new Promise<void>((resolve) => {
+    releaseReviews = resolve;
+  });
+  await page.route("**/data/funding-reviews.json*", async (route) => {
+    await reviewsHeld;
+    await route.continue();
+  });
+  const walletCalls: string[] = [];
+  await page.route(
+    `${deployment.api}/api/v1/wallet-claims/actors/*/current*`,
+    async (route) => {
+      walletCalls.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          claimId: "e2e-solana-wallet-claim",
+          githubActorId: leader.githubId,
+          address: "11111111111111111111111111111111",
+        }),
+      });
+    },
+  );
+  await page.goto(`/contributors/${encodeURIComponent(leader.login)}`);
+  const walletLink = page.getByRole("link", {
+    name: "Current payout wallet · 11111111111111111111111111111111",
+  });
+  await expect(walletLink).toBeVisible();
+  const reviewsLoaded = page.waitForResponse((response) =>
+    new URL(response.url()).pathname.endsWith("/data/funding-reviews.json"),
+  );
+  releaseReviews();
+  await reviewsLoaded;
+  await page.waitForTimeout(500);
+  await expect(walletLink).toBeVisible();
+  expect(walletCalls.map((url) => new URL(url).pathname)).toEqual([
+    `/api/v1/wallet-claims/actors/${leader.githubId}/current`,
+  ]);
 });
 
 test("makes the public project draft boundary unmistakable", async ({
@@ -877,7 +1180,7 @@ test("makes the public project draft boundary unmistakable", async ({
   ).toBeVisible();
   await expect(page.locator(".manage-intro .draft-badge")).toHaveText("Draft");
   await expect(
-    page.getByText(/does not save or publish changes/u),
+    page.locator(".manage-intro").getByText(/Changes go to GitHub for review/u),
   ).toBeVisible();
   await expect(
     page.getByText("Payouts are disabled in the project manifest."),
@@ -1304,6 +1607,10 @@ for (const scenario of [
             }
           });
         }
+        // The skip link is the first stop; it hands keyboard users the content.
+        await page.keyboard.press("Tab");
+        await expect(page.locator(":focus")).toHaveAttribute("href", "#main");
+        await expect(page.locator(":focus")).toHaveText("Skip to content");
         await page.keyboard.press("Tab");
         await expect(page.locator(":focus")).toHaveAttribute("href", "/");
         const accessibility = await new AxeBuilder({ page })
@@ -1419,7 +1726,6 @@ for (const route of [
     page,
     request,
   }) => {
-    const snapshot = await loadSnapshot(request);
     let path = route;
     if (route === "latest cycle") {
       const [cycle] = (await loadCycles(request)).cycles;
@@ -1482,18 +1788,23 @@ for (const route of [
         contentType: "image/png",
       });
     }
-    if (
-      project?.repositories.some(
-        (repository) =>
-          !snapshot.repositories.some(
-            (collected) => collected.id === repository.id,
+    if (project) {
+      const snapshot = await loadSnapshot(request);
+      if (
+        project.repositories.some(
+          (repository) =>
+            !snapshot.repositories.some(
+              (collected) => collected.id === repository.id,
+            ),
+        )
+      ) {
+        await expect(
+          page.getByText(
+            "Activity for this project has not been collected yet.",
           ),
-      )
-    ) {
-      await expect(
-        page.getByText("Activity for this project has not been collected yet."),
-      ).toBeVisible();
-      await expect(page.getByText(/Live totals unavailable/u)).toHaveCount(0);
+        ).toBeVisible();
+        await expect(page.getByText(/Live totals unavailable/u)).toHaveCount(0);
+      }
     }
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
@@ -1771,7 +2082,9 @@ test("derives Solana addresses on the settlement verification page", async ({
   // No cycle has ever reached an approved allocation, so the honest state is an
   // empty ledger rather than a fabricated binding.
   await expect(
-    page.getByText("No execution has been bound yet.", { exact: false }),
+    page.getByText("No payment execution is recorded here yet", {
+      exact: false,
+    }),
   ).toBeVisible();
 
   await page.getByText("Advanced verification", { exact: true }).click();
@@ -1823,3 +2136,25 @@ test("derives Solana addresses on the settlement verification page", async ({
     contentType: "image/png",
   });
 });
+
+async function routeWalletClaims(
+  page: import("@playwright/test").Page,
+  calls: string[],
+  githubActorId: string,
+) {
+  await page.route(
+    `${deployment.api}/api/v1/wallet-claims/actors/*/current*`,
+    async (route) => {
+      calls.push(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          claimId: "e2e-solana-wallet-claim",
+          githubActorId,
+          address: "11111111111111111111111111111111",
+        }),
+      });
+    },
+  );
+}

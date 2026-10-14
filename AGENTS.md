@@ -22,13 +22,22 @@ alias only.
 - Slop never infers copyright ownership, legal capacity, assignment, wallet
   control, or payment authority.
 - Slop never holds keys, signs transactions, broadcasts payments, or claims
-  success before public evidence proves it, except for one key on the opt-in
-  `squads-project-vault` instrument (RFC #500, `funding/README.md`). For that
-  instrument only: Slop holds one of three keys on a project vault. That key
-  can vote on a payout the creator proposed. It cannot propose a transfer,
-  execute one, change the signers, or act alone. Slop holds no customer
-  balance, takes no fee from the vault, and never broadcasts a transfer of
-  vault funds.
+  success before public evidence proves it, except for the two narrowly scoped
+  keys below. No other exception exists.
+  - One key on the opt-in `squads-project-vault` instrument (RFC #500,
+    `funding/README.md`). For that instrument only: Slop holds one of three
+    keys on a project vault. That key can vote on a payout the creator
+    proposed. It cannot propose a transfer, execute one, change the signers,
+    or act alone. Slop holds no customer balance, takes no fee from the vault,
+    and never broadcasts a transfer of vault funds.
+  - The escrow identity attester key (PAY-05, approved by the repository owner
+    on 14 October 2026). It only attests the authenticated GitHub actor for a
+    destination binding that the destination wallet also signs, and it submits
+    only that binding transaction. It cannot choose an amount, move, pay or
+    route funds alone, or reach free or reserved funds. Each binding waits the
+    reviewed binding delay, and the project owner can cancel it in that time.
+    A public timelocked rotation replaces the key, and the attester cannot
+    block it.
 - Never publish secrets, prompts, responses, source files, credentials, session
   identifiers, private trajectories, or signing material.
 
@@ -62,6 +71,23 @@ results, deployment/provider/chain evidence where applicable, and resolution
 of blocking defects. A merged PR, a local test pass, partial rollout, or an
 agent's statement cannot close the MVP. After that record is approved, humans
 select and approve the next PRD phase before agents implement it.
+
+### Contributor bounty rules
+
+This repository is a Slop project with a $1,000 monthly contributor pool. Follow
+CONTRIBUTING.md "Before you start" and "Slop bounty: what is accepted":
+
+- Star and fork the repository first. Slop uses this to track participation.
+- Accepted: reproduced real bugs, security, verification, settlement, vault and
+  scoring correctness, and measured improvements inside approved MVP scope.
+- Not accepted: UI, style, or copy changes, except a fix to a broken user flow
+  with before and after video.
+- Prove model-backed behavior with real LLM calls. Configure `.env` from
+  `.env.example` and Worker `.dev.vars`; never commit values.
+- Test the affected workflow in the agent clients that use it (Claude Code,
+  Codex/ChatGPT, Hermes Agent, OpenClaw, Muse, Grok bot, elizaOS, Cursor).
+  Install other clients and drive them with computer use when needed. Record
+  each client, version, provider, model, and result.
 
 ## Human-responsible outside issues
 
@@ -173,7 +199,10 @@ issue or create placeholder submissions.
 The current reviewer skill is separate and advisory. The PRD specifies optional
 Slopbot closure and security-vetting enforcement as gated MVP additions. A
 document merge alone does not enable those powers; implement and review the
-versioned protocols and explicit permissions first.
+versioned protocols and explicit permissions first. The hosted Slopbot service
+is `workers/slopbot` under `protocol/slopbot-v2.md` (effective
+2026-11-01T00:00:00Z). Its global closure switch stays off until a reviewed
+production activation; it never merges, approves, scores, bans, or pays.
 
 It measures its own run, checks
 correctness, tests, security, evidence, duplication, abuse signals, scope, and

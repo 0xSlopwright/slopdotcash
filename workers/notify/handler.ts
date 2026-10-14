@@ -1,5 +1,5 @@
 import {
-  ADMIN_NOTIFICATION_RECIPIENTS,
+  MAX_ADMIN_RECIPIENTS,
   MAX_NOTICE_BODY_BYTES,
   NOTIFY_INTERNAL_HOST,
   PROJECT_APPLICATION_NOTICE_PATH,
@@ -8,6 +8,8 @@ import {
 } from "./contracts";
 
 export type NotifyWorkerDependencies = {
+  /** Raw `ADMIN_EMAILS` secret: comma-separated admin addresses. */
+  adminEmails: string | undefined;
   fromAddress: string;
   now: () => Date;
   randomId: () => string;
@@ -26,6 +28,28 @@ const NOTICE_KEYS = [
 
 const SENDER_ADDRESS = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?@slop\.cash$/u;
 const MESSAGE_ID_LOCAL = /^[A-Za-z0-9-]{16,64}$/u;
+const RECIPIENT_ADDRESS =
+  /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/u;
+
+/**
+ * Parses the operator-configured admin list. Returns null unless every entry
+ * is a plain address, entries are unique, and the count is within bounds, so
+ * a misconfigured secret sends nothing.
+ */
+export function parseAdminEmails(value: string | undefined): string[] | null {
+  if (typeof value !== "string") return null;
+  const recipients = value.split(",").map((entry) => entry.trim());
+  if (
+    recipients.length < 1 ||
+    recipients.length > MAX_ADMIN_RECIPIENTS ||
+    !recipients.every((entry) => RECIPIENT_ADDRESS.test(entry)) ||
+    new Set(recipients.map((entry) => entry.toLowerCase())).size !==
+      recipients.length
+  ) {
+    return null;
+  }
+  return recipients;
+}
 
 class InvalidRequest extends Error {}
 
@@ -313,8 +337,9 @@ export async function handleNotifyRequest(
     }
     throw error;
   }
-  if (!SENDER_ADDRESS.test(deps.fromAddress)) {
-    console.error("slop notify sender address is misconfigured");
+  const recipients = parseAdminEmails(deps.adminEmails);
+  if (!SENDER_ADDRESS.test(deps.fromAddress) || recipients === null) {
+    console.error("slop notify sender or recipients are misconfigured");
     return json(500, { error: "service_misconfigured" });
   }
   const date = deps.now();
@@ -322,7 +347,7 @@ export async function handleNotifyRequest(
   let failed = false;
   // Attempt every recipient so one rejected destination does not silence the
   // other, then report the exact delivered count without claiming success.
-  for (const recipient of ADMIN_NOTIFICATION_RECIPIENTS) {
+  for (const recipient of recipients) {
     const messageIdLocal = deps.randomId();
     if (!MESSAGE_ID_LOCAL.test(messageIdLocal)) {
       console.error("slop notify message id generator is misconfigured");
@@ -350,6 +375,6 @@ export async function handleNotifyRequest(
   if (failed) return json(502, { error: "delivery_failed", sent });
   return json(202, {
     status: "sent",
-    recipients: ADMIN_NOTIFICATION_RECIPIENTS.length,
+    recipients: recipients.length,
   });
 }

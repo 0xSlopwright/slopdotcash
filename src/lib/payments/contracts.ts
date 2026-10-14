@@ -28,10 +28,51 @@ export interface PaymentsAccount {
   }[];
   payments: AccountPayment[];
   balances: { chain: PaymentChain; netMicro: string }[];
+  /** Imported from reviewed disclosures; never an escrow `paid` state. */
+  directTransfers: DirectTransfer[];
+  /** Legacy README observations; history only, never a payout destination. */
+  walletObservations: WalletObservation[];
+}
+export interface WalletObservation {
+  chain: PaymentChain;
+  address: string;
+  proofLevel: "profile_readme";
+  sourceUrl: string;
+  observedAt: string;
+}
+/** A transfer a project creator sent outside escrow and Slop settlement. */
+export interface DirectTransfer {
+  projectId: string;
+  contributionMonth: string;
+  githubUserId: string;
+  login: string;
+  network: string;
+  chain: PaymentChain;
+  recipient: string;
+  amountMicro: string;
+  transactionId: string;
+  blockTime: string;
 }
 /** Fees are deducted from the gross award; integer micro-USDC only. */
 export function payoutFee(gross: bigint): bigint {
   if (gross <= 0n || gross > 18446744073709551615n)
     throw new Error("Invalid gross award");
   return gross / 50n;
+}
+
+/** Public explorer link for a payment transaction, or null when none exists. */
+export function transactionUrl(
+  network: string,
+  id: string | null,
+): string | null {
+  if (!id) return null;
+  if (network === "base-sepolia")
+    return `https://sepolia.basescan.org/tx/${encodeURIComponent(id)}`;
+  if (network === "base-mainnet")
+    return `https://basescan.org/tx/${encodeURIComponent(id)}`;
+  if (network === "solana-mainnet")
+    return `https://explorer.solana.com/tx/${encodeURIComponent(id)}`;
+  if (network === "solana-devnet" || network === "solana-testnet")
+    return `https://explorer.solana.com/tx/${encodeURIComponent(id)}?cluster=${network.slice(7)}`;
+  return null;
 }

@@ -4,12 +4,13 @@ import {
   ExternalLink,
   RotateCcw,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DonorFundingProfile, useFundingIndex } from "./FundingRecords";
 import { Link } from "./Link";
 import { browserDeployment } from "./lib/browser-deployment";
 import { readBoundedJson } from "./lib/browser-json";
 import { isFundingAddress } from "./lib/funding";
+import { githubUserIdFromNodeId } from "./lib/github-actor";
 import { createGlobalLeaders } from "./lib/global-leaderboard";
 import {
   type GitHubActor,
@@ -18,11 +19,15 @@ import {
 } from "./lib/leaderboard";
 import { findProject, type ProjectDefinition } from "./lib/projects.mjs";
 import { formatThirds } from "./lib/reviewer-leaders";
-import { useFundingReviews } from "./lib/use-funding-reviews";
+import {
+  type FundingReviewsState,
+  useFundingReviews,
+} from "./lib/use-funding-reviews";
 import type { DataState } from "./lib/use-snapshot";
 import { ProfilePoints } from "./Points";
 import {
   ContributorIdentity,
+  cycleLifecycleLabel,
   DataNotice,
   EmptyState,
   ExternalLinkAnchor,
@@ -32,6 +37,7 @@ import {
   formatMicroUsdc,
   formatScore,
   monthlyPoolUnfunded,
+  UNFUNDED_POOL_HEADLINE,
 } from "./Presentation";
 import { RewardValue } from "./ProjectLeaderboard";
 
@@ -46,7 +52,7 @@ export function ProfilePage({
 }) {
   const [funding, retryFunding] = useFundingIndex();
   const [fundingReviews] = useFundingReviews(true);
-  const currentWallet = useCurrentWallet(state, login);
+  const currentWallet = useCurrentWallet(state, login, fundingReviews);
   if (state.status !== "ready")
     return (
       <main className="shell route-main">
@@ -87,11 +93,15 @@ export function ProfilePage({
     state.views,
     state.cycleIndex,
   );
-  const globalRank = globalLeaders.findIndex(
+  const globalIndex = globalLeaders.findIndex(
     (leader) => leader.actor.login.toLowerCase() === login.toLowerCase(),
   );
   const globalLeader =
-    globalRank === -1 ? undefined : globalLeaders[globalRank];
+    globalIndex === -1 ? undefined : globalLeaders[globalIndex];
+  const globalRank = globalLeader
+    ? globalLeaders.findIndex((leader) => leader.score === globalLeader.score) +
+      1
+    : null;
   // A frozen month with no cycle directory still records the contributor.
   const preparations =
     fundingReviews.status === "ready"
@@ -147,6 +157,7 @@ export function ProfilePage({
           login={login}
           cycles={state.cycleIndex}
           showIdentity
+          notFoundWhenUnrecorded={fundingReviews.status === "ready"}
         />
       </main>
     );
@@ -205,7 +216,7 @@ export function ProfilePage({
     monthlyPools.every((view) => monthlyPoolUnfunded(view.project.reward));
   const simulatedLabel = `${
     cycleId ? formatCycleMonth(cycleId) : "monthly"
-  } simulated estimate${simulatedUnfunded ? ", unfunded" : ""}`;
+  } ${simulatedUnfunded ? "pool" : "simulated estimate"}`;
   const historicalWallet = history.find(({ contributor }) => contributor.wallet)
     ?.contributor.wallet;
   return (
@@ -242,9 +253,9 @@ export function ProfilePage({
         cycles={state.cycleIndex}
         summary={
           <>
-            {globalRank >= 0 ? (
+            {globalRank !== null ? (
               <div>
-                <strong>#{globalRank + 1}</strong>
+                <strong>#{globalRank}</strong>
                 <span>overall rank</span>
               </div>
             ) : null}
@@ -258,16 +269,24 @@ export function ProfilePage({
               <strong>{formatCompact(acceptedOutcomes)}</strong>
               <span>accepted this month</span>
             </div>
-            <div>
-              <strong>{formatMicroUsdc(simulated.toString())}</strong>
-              <span>{simulatedLabel}</span>
-            </div>
+            {simulatedUnfunded ? (
+              <div>
+                <strong>{UNFUNDED_POOL_HEADLINE}</strong>
+                <span>{simulatedLabel}</span>
+              </div>
+            ) : (
+              <div>
+                <strong>{formatMicroUsdc(simulated.toString())}</strong>
+                <span>{simulatedLabel}</span>
+              </div>
+            )}
           </>
         }
       />
       <p>
-        This estimate uses project budget targets. It is not an approved payout.
-        The 14-day review applies to monthly proposals, not this estimate.
+        {simulatedUnfunded
+          ? "No monthly pool is funded, so no amount is estimated. Approved payouts appear once a funded cycle is approved."
+          : "This estimate uses project budget targets. It is not an approved payout. The 14-day review applies to monthly proposals, not this estimate."}
       </p>
       <section className="section profile-section">
         <div className="profile-section-heading">
@@ -330,7 +349,7 @@ export function ProfilePage({
                     {findProject(cycle.projectId)?.name ?? cycle.projectId}
                   </strong>
                   <small>
-                    {cycle.cycleId} · {cycle.state.replaceAll("-", " ")}
+                    {cycle.cycleId} · {cycleLifecycleLabel(cycle)}
                   </small>
                 </span>
                 <span>
@@ -417,37 +436,38 @@ export function ProfilePage({
   );
 }
 
-function useCurrentWallet(state: DataState, login: string): CurrentWalletState {
+function useCurrentWallet(
+  state: DataState,
+  login: string,
+  fundingReviews: FundingReviewsState,
+): CurrentWalletState {
   const [wallet, setWallet] = useState<CurrentWalletState>({
     status: "loading",
   });
+  const normalizedLogin = login.toLowerCase();
+  // Funding reviews matter only for an actor outside the rolling window and
+  // the cycles. Reduce the inputs to primitive values, so a window actor's
+  // request does not restart when the reviews finish loading.
+  const lookup = useMemo(
+    () => findWalletLookup(state, normalizedLogin, fundingReviews),
+    [state, normalizedLogin, fundingReviews],
+  );
+  const lookupStatus = lookup.status;
+  const githubActorId = lookup.status === "actor" ? lookup.githubActorId : "";
   useEffect(() => {
-    if (state.status !== "ready") return;
-    const normalizedLogin = login.toLowerCase();
-    setWallet({ status: "loading" });
-    const actors: Array<{ id: string; login: string; avatarUrl?: string }> = [
-      ...state.views.flatMap((view) => [
-        ...view.leaders.map((leader) => leader.actor),
-        ...view.opportunities.map((opportunity) => opportunity.actor),
-      ]),
-      ...state.cycleIndex.cycles.flatMap((cycle) =>
-        cycle.contributors.map((contributor) => contributor.actor),
-      ),
-    ];
-    const actor = actors.find(
-      (candidate) => candidate.login.toLowerCase() === normalizedLogin,
-    );
-    const avatarActorId = actor?.avatarUrl
-      ? /^https:\/\/avatars\.githubusercontent\.com\/u\/(\d+)(?:\?|$)/u.exec(
-          actor.avatarUrl,
-        )?.[1]
-      : undefined;
-    const githubActorId =
-      actor && /^\d+$/u.test(actor.id) ? actor.id : avatarActorId;
-    if (!githubActorId) {
+    if (lookupStatus === "waiting") {
+      setWallet({ status: "loading" });
+      return;
+    }
+    if (lookupStatus === "error") {
+      setWallet({ status: "error", login: normalizedLogin });
+      return;
+    }
+    if (lookupStatus === "none") {
       setWallet({ status: "none", login: normalizedLogin });
       return;
     }
+    setWallet({ status: "loading" });
     let active = true;
     const controller = new AbortController();
     const timeout = window.setTimeout(
@@ -463,7 +483,6 @@ function useCurrentWallet(state: DataState, login: string): CurrentWalletState {
       },
     )
       .then(async (response) => {
-        if (response.status === 404) return null;
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return readBoundedJson(
           response,
@@ -510,11 +529,68 @@ function useCurrentWallet(state: DataState, login: string): CurrentWalletState {
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [state, login]);
-  if (wallet.status !== "loading" && wallet.login !== login.toLowerCase()) {
+  }, [lookupStatus, githubActorId, normalizedLogin]);
+  if (wallet.status !== "loading" && wallet.login !== normalizedLogin) {
     return { status: "loading" };
   }
   return wallet;
+}
+
+type WalletLookup =
+  | { status: "waiting" }
+  | { status: "error" }
+  | { status: "none" }
+  | { status: "actor"; githubActorId: string };
+
+function findWalletLookup(
+  state: DataState,
+  normalizedLogin: string,
+  fundingReviews: FundingReviewsState,
+): WalletLookup {
+  if (state.status !== "ready") return { status: "waiting" };
+  const actors: Array<{ id: string; login: string; avatarUrl?: string }> = [
+    ...state.views.flatMap((view) => [
+      ...view.leaders.map((leader) => leader.actor),
+      ...view.opportunities.map((opportunity) => opportunity.actor),
+    ]),
+    ...state.cycleIndex.cycles.flatMap((cycle) =>
+      cycle.contributors.map((contributor) => contributor.actor),
+    ),
+  ];
+  const windowActor = actors.find(
+    (candidate) => candidate.login.toLowerCase() === normalizedLogin,
+  );
+  // A frozen-month-only actor is in neither list; its review record has it.
+  if (!windowActor && fundingReviews.status === "loading") {
+    return { status: "waiting" };
+  }
+  if (!windowActor && fundingReviews.status !== "ready") {
+    return { status: "error" };
+  }
+  const actor: { id: string; login: string; avatarUrl?: string } | undefined =
+    windowActor ??
+    (fundingReviews.status === "ready"
+      ? fundingReviews.index.reviews
+          .flatMap((review) => review.contributors)
+          .map((contributor) => contributor.actor)
+          .find(
+            (candidate) => candidate.login.toLowerCase() === normalizedLogin,
+          )
+      : undefined);
+  if (!actor) return { status: "none" };
+  const avatarActorId = actor.avatarUrl
+    ? /^https:\/\/avatars\.githubusercontent\.com\/u\/(\d+)(?:\?|$)/u.exec(
+        actor.avatarUrl,
+      )?.[1]
+    : undefined;
+  // Frozen-month records keep only the GitHub node id, which encodes the
+  // numeric id that wallet claims are keyed by.
+  const githubActorId = /^\d+$/u.test(actor.id)
+    ? actor.id
+    : (githubUserIdFromNodeId(actor.id) ?? avatarActorId);
+  return githubActorId
+    ? { status: "actor", githubActorId }
+    : { status: "error" };
 }
 
 type CurrentWalletState =

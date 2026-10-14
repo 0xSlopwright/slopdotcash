@@ -22,7 +22,9 @@ import {
   type FundingReviewIndex,
 } from "./lib/funding-review-data";
 import { applyFundingReviewSubmission } from "./lib/funding-review-submission";
+import { transactionUrl } from "./lib/payments/contracts";
 import type { ProjectDefinition } from "./lib/projects.mjs";
+import { useDirectTransfers } from "./lib/use-direct-transfers";
 import { isSolanaAddress } from "./lib/wallets";
 import { formatDate, formatMicroUsdc } from "./Presentation";
 import { SquadsTracking } from "./SquadsTracking";
@@ -94,11 +96,13 @@ export function FundingReview({
   project,
   sourceRepositoryUrl,
   cycleIndex,
+  cycleIndexLoading,
   funding,
 }: {
   project: ProjectDefinition;
   sourceRepositoryUrl: string;
   cycleIndex: CycleIndex | null;
+  cycleIndexLoading: boolean;
   funding: ProjectFundingIndex | null;
 }) {
   const repo = sourceRepositoryUrl;
@@ -188,6 +192,13 @@ export function FundingReview({
   const currentContext = useRef("");
   currentContext.current = `${project.id}:${cycleId}`;
   const review = reviews.find((r) => r.cycleId === cycleId);
+  const [directState, retryDirect] = useDirectTransfers(
+    step === 4 ? { projectId: project.id } : null,
+  );
+  const direct =
+    directState.status === "ready"
+      ? directState.transfers.filter((t) => t.contributionMonth === cycleId)
+      : [];
   const published = cycleIndex?.cycles.find(
     (c) => c.projectId === project.id && c.cycleId === cycleId,
   );
@@ -526,7 +537,7 @@ export function FundingReview({
     published?.files.proposal.sha256 ??
     review?.sourceSnapshotSha256 ??
     "";
-  const workflowInputs = `branch: develop\nproject: ${project.id}\nmonth: ${cycleId}\naction: ${cycleAction}\nsource SHA-256: ${requiredSha}`;
+  const workflowInputs = `branch: main\nproject: ${project.id}\nmonth: ${cycleId}\naction: ${cycleAction}\nsource SHA-256: ${requiredSha}`;
   const paymentsDisabled = project.reward.paymentMode === "disabled";
   const reviewOpen =
     published?.state === "review" &&
@@ -537,7 +548,9 @@ export function FundingReview({
     text: string;
   }[] = [
     !cycleIndex
-      ? { tone: "blocked", text: "Cycle records are unavailable." }
+      ? cycleIndexLoading
+        ? { tone: "waiting", text: "Loading cycle records…" }
+        : { tone: "blocked", text: "Cycle records are unavailable." }
       : !canEdit
         ? {
             tone: published ? "done" : "waiting",
@@ -593,7 +606,9 @@ export function FundingReview({
           <p>
             Drafts stay on this device. GitHub review approves awards; signers
             send payments outside Slop.{" "}
-            <a href={`${repo}/blob/develop/funding/maintainer-payouts.md`}>
+            <a
+              href={`${repo}/blob/${browserDeployment.branch}/funding/maintainer-payouts.md`}
+            >
               Step-by-step guide
             </a>
           </p>
@@ -675,7 +690,9 @@ export function FundingReview({
                   <strong>
                     {cycleIndex
                       ? `${displayUsdc(published?.reward.paidMinor ?? "0")} USDC`
-                      : "Unavailable"}
+                      : cycleIndexLoading
+                        ? "Loading…"
+                        : "Unavailable"}
                   </strong>
                 </p>
               </div>
@@ -750,7 +767,7 @@ export function FundingReview({
                       review budget is verified in the funded proposal.
                     </p>
                   )}
-                  {!cycleIndex && (
+                  {!cycleIndex && !cycleIndexLoading && (
                     <p role="alert">
                       Published cycle state is unavailable. Review actions are
                       disabled until it loads.
@@ -799,7 +816,7 @@ export function FundingReview({
                       </button>
                       {published ? (
                         <a
-                          href={`${repo}/upload/develop/cycles/${project.id}/${cycleId}`}
+                          href={`${repo}/upload/development/cycles/${project.id}/${cycleId}`}
                           target="_blank"
                           rel="noreferrer"
                         >
@@ -899,7 +916,9 @@ export function FundingReview({
                           const panelId = `recipient-${r.actor.id}`;
                           const lockLabel = cycleIndex
                             ? walletLockLabel(published, r.actor.id)
-                            : "Lock status unavailable";
+                            : cycleIndexLoading
+                              ? "Loading lock status…"
+                              : "Lock status unavailable";
                           return (
                             <Fragment key={`${cycleId}:${r.actor.id}`}>
                               <tr className="recipient-row">
@@ -1326,7 +1345,7 @@ export function FundingReview({
                         >
                           Verify deposit on GitHub
                         </a>{" "}
-                        — select develop and enter project {project.id}, month{" "}
+                        then select main and enter project {project.id}, month{" "}
                         {cycleId}, and the public transaction signature. Review
                         the resulting evidence PR.
                       </p>
@@ -1469,7 +1488,7 @@ export function FundingReview({
                   <dl className="workflow-inputs">
                     <dt>Branch</dt>
                     <dd>
-                      <code>develop</code>
+                      <code>main</code>
                     </dd>
                     <dt>Project</dt>
                     <dd>
@@ -1565,7 +1584,7 @@ export function FundingReview({
                         >
                           Link your Squads proposal
                         </a>{" "}
-                        — select develop, {project.id}/{cycleId}, its public
+                        then select main, {project.id}/{cycleId}, its public
                         transaction index, and single or batch mode. The
                         workflow checks every transfer before opening a binding
                         PR.
@@ -1573,9 +1592,10 @@ export function FundingReview({
                     </>
                   )}
                   {!cycleIndex ? (
-                    <p role="alert">
-                      Payment records are unavailable. Retry the page’s data
-                      request.
+                    <p role={cycleIndexLoading ? "status" : "alert"}>
+                      {cycleIndexLoading
+                        ? "Loading payment records…"
+                        : "Payment records are unavailable. Retry the page’s data request."}
                     </p>
                   ) : !published ? (
                     <p>
@@ -1607,7 +1627,7 @@ export function FundingReview({
                             >
                               Verify settlement on GitHub
                             </a>{" "}
-                            — choose verify-settlement for {project.id}/
+                            then choose verify-settlement for {project.id}/
                             {cycleId} and bind the transaction evidence to plan
                             SHA-256{" "}
                             <code>{published.files.executionPlan.sha256}</code>.
@@ -1649,7 +1669,12 @@ export function FundingReview({
                                     {r.actor.login}
                                   </a>
                                 </th>
-                                <td>{PAYMENT_STATE_LABELS[r.state]}</td>
+                                <td>
+                                  {r.state === "unclaimed" &&
+                                  !published.approvedAt
+                                    ? "Proposed, needs a destination"
+                                    : PAYMENT_STATE_LABELS[r.state]}
+                                </td>
                                 <td>{formatMicroUsdc(r.approvedMinor)}</td>
                                 <td>{formatMicroUsdc(r.paidMinor)}</td>
                               </tr>
@@ -1659,6 +1684,86 @@ export function FundingReview({
                       </section>
                     </>
                   )}
+                  {directState.status === "loading" ? (
+                    <p role="status">Loading direct payment records…</p>
+                  ) : directState.status === "error" ? (
+                    <p role="alert">
+                      Direct payment records are unavailable.{" "}
+                      <button type="button" onClick={retryDirect}>
+                        Retry direct payments
+                      </button>
+                    </p>
+                  ) : direct.length > 0 ? (
+                    <>
+                      <p className="money-summary">
+                        <strong>
+                          Sent outside Slop settlement{" "}
+                          {formatMicroUsdc(
+                            direct
+                              .reduce((n, t) => n + BigInt(t.amountMicro), 0n)
+                              .toString(),
+                          )}
+                        </strong>
+                        <span>
+                          {direct.length.toLocaleString()} direct transfers
+                        </span>
+                      </p>
+                      <p>
+                        The project creator sent these transfers directly. They
+                        are recorded in a{" "}
+                        <a
+                          href={`${repo}/tree/${browserDeployment.branch}/disclosures`}
+                        >
+                          published disclosure
+                        </a>{" "}
+                        and on chain. They had no Slop proposal, review or
+                        approval.
+                      </p>
+                      <section
+                        className="plain-table-wrap"
+                        aria-label="Scrollable direct payment records"
+                      >
+                        <table className="plain-table">
+                          <caption className="visually-hidden">
+                            Direct transfers by contributor
+                          </caption>
+                          <thead>
+                            <tr>
+                              <th scope="col">Contributor</th>
+                              <th scope="col">Received</th>
+                              <th scope="col">Transaction</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {direct.map((t) => (
+                              <tr key={`${t.network}:${t.transactionId}`}>
+                                <th scope="row">
+                                  <a
+                                    href={`/contributors/${encodeURIComponent(t.login)}`}
+                                  >
+                                    {t.login}
+                                  </a>
+                                </th>
+                                <td>{formatMicroUsdc(t.amountMicro)}</td>
+                                <td>
+                                  <a
+                                    href={
+                                      transactionUrl(
+                                        t.network,
+                                        t.transactionId,
+                                      ) ?? undefined
+                                    }
+                                  >
+                                    View transfer
+                                  </a>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </section>
+                    </>
+                  ) : null}
                   <p>
                     Vault members sign outside Slop. A Squads approval or a
                     submitted transaction is not a payment. Paid needs finalized

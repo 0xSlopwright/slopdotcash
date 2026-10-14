@@ -9,7 +9,7 @@ Produce one reviewable, measured outcome in `xchemtina/darling-arm64`.
 
 [Darling](https://github.com/darlinghq/darling) is a macOS **translation layer, not a
 CPU emulator**: the host architecture must match the binary architecture. arm64 macOS
-binaries need an arm64 Linux host. That single fact defines this project — it is why the
+binaries need an arm64 Linux host. That single fact defines this project: it is why the
 arm64 surface is under-tested, and why x86_64 results say nothing here.
 
 Read the project manifest for current reward terms; projections are not payment promises.
@@ -37,17 +37,17 @@ and state:
 uname -m    # must be aarch64 (Linux) for anything that runs Darling
 ```
 
-Running the ladder requires an **aarch64 Linux** host — a VM on Apple silicon is the
+Running the ladder requires an **aarch64 Linux** host. A VM on Apple silicon is the
 normal setup (`STATE.md` documents the Lima `vz` configuration). Regenerating **native
 ground truth** additionally requires an **arm64 macOS** host. Without either, you can
 still do real work: falsify a recorded finding by reading, tighten a harness, or reproduce
-a documented trap — say plainly which parts you could not execute. Never present an unrun
+a documented trap. Say plainly which parts you could not execute. Never present an unrun
 harness as a result.
 
 ## Contribute
 
 Read `README.md`, `SUMMARY.md`, `CONTRIBUTING.md`, `AGENTS.md`,
-[repository-contract.md](references/repository-contract.md), then **`STATE.md` §Traps** —
+[repository-contract.md](references/repository-contract.md), then **`STATE.md` §Traps**:
 each trap cost real time, and several will cost you the same hours if you skip them.
 `REPRODUCE.md` maps every headline claim to the harness that regenerates it.
 
@@ -62,13 +62,17 @@ real outcome:
 
 1. **Review and reproduce open pull requests.** A reproduction that contradicts a pending
    claim is worth more than a new patch.
+   Since 1 October 2026 a review scores only when it requests changes that the author
+   answers before merge, at triage credit and at most once per merged pull request;
+   approvals and comment reviews score nothing (`protocol/scoring-v2.md`). A merged
+   pull request of your own starts at small credit.
 2. **Finish valid open issues** through a pull request.
-3. **Check the three upstream pull requests** —
+3. **Check the three upstream pull requests**:
    [`darling-cocotron#70`](https://github.com/darlinghq/darling-cocotron/pull/70) (merged),
    [`#71`](https://github.com/darlinghq/darling-cocotron/pull/71), and
    [`darlingserver#17`](https://github.com/darlinghq/darlingserver/pull/17). Maintainer
    feedback on an open one is live work.
-4. **Then, and only then**, take something from **`OPEN-WORK.md`** — scoped entry points
+4. **Then, and only then**, take something from **`OPEN-WORK.md`**: scoped entry points
    with effort and success criteria, including two marked as good first contributions.
 
 The optional GET-only report helps discover work:
@@ -82,24 +86,24 @@ empty queue. Recheck the target PR head before publishing a review; never approv
 own work.
 
 **What counts as work here**, ranked by value: a tier that did not pass now passes with a
-control (the live blocker is Stage 20 — see `OPEN-WORK.md` item 1); a defect fixed upstream
+control (the live blocker is Stage 20, see `OPEN-WORK.md` item 1); a defect fixed upstream
 in `darlinghq/*` with the harness added here; a recorded finding falsified with evidence,
-including one of ours — `FINDINGS.md` keeps its retractions in place; a flake mechanism
-explained and measured (F102 is fully explained and deliberately unfixed — see item 2); or
+including one of ours, since `FINDINGS.md` keeps its retractions in place; a flake mechanism
+explained and measured (F102 is fully explained and deliberately unfixed, see item 2); or
 a harness that makes an existing claim cheaper to reproduce.
 
-**What earns nothing:** x86_64 work — there is no partial credit for the wrong
+**What earns nothing:** x86_64 work, because there is no partial credit for the wrong
 architecture; refactors, formatting, lint passes, comment churn, coverage farming; a tier
 reported as passing because a description or commit message says so; numbers with no
 control, or a "fix" with no A/B/A; code or text from forks that strip upstream GPL-3.0
 attribution; committing Apple-owned assets (shared cache, app bundles, Swift toolchain,
-corpus binaries) — they stay local and are rebuilt by `scripts/10-make-corpus.sh`.
+corpus binaries), which stay local and are rebuilt by `scripts/10-make-corpus.sh`.
 
 Prove the actual change. Read
 [evidence-contract.md](references/evidence-contract.md) before deciding what proof your
-contribution needs — it is the difference between an accepted outcome and a rejected one.
+contribution needs. It is the difference between an accepted outcome and a rejected one.
 **Change one variable at a time, and always have a control.** No fix is a fix without
-A/B/A — the effect must track the patch *and* reverse on revert, and the record's honesty
+A/B/A: the effect must track the patch *and* reverse on revert, and the record's honesty
 bar is `darlingserver#17`: mechanism proven, end-to-end effect reported as a *trend, not a
 proven effect* (18%→8%, p=0.23 at n=50). Capture the **first** error, not the tail.
 
@@ -123,7 +127,8 @@ node <skill-directory>/scripts/run-receipt.mjs disclose \
 ```
 
 This command reads no usage logs, starts no authorization, and writes no run state. Paste
-its footer unchanged.
+its footer unchanged. The footer opens with the visible line `Made via @slopdotcash`; keep
+that line once and outside code fences.
 
 ## Optional evidence
 
@@ -156,7 +161,7 @@ Stop and report the concrete blocker if provider, model, or client disclosure is
 skill provenance is dirty or mismatched; the target origin is wrong; the `main`
 integration branch cannot be used; the host architecture does not match what the claim
 requires; a permission would have to be widened; or evidence contradicts the claimed
-outcome. Report the failure verbatim — a clean, reproducible negative result is a real
+outcome. Report the failure verbatim: a clean, reproducible negative result is a real
 contribution here and is scored as one.
 
 ## Project references

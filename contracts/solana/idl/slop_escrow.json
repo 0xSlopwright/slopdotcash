@@ -1,5 +1,5 @@
 {
-  "address": "5KFQm1jLFkcS1V5PFpUFg6omNHoDQZTaxqTwwEpnenSL",
+  "address": "4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj",
   "metadata": {
     "name": "slop_escrow",
     "version": "0.1.0",
@@ -21,6 +21,13 @@
           "relations": ["project"]
         },
         {
+          "name": "destination",
+          "docs": [
+            "The wallet being bound; its signature is the contributor's acceptance of this exact binding."
+          ],
+          "signer": true
+        },
+        {
           "name": "project"
         },
         {
@@ -34,11 +41,7 @@
               },
               {
                 "kind": "account",
-                "path": "identity_authority"
-              },
-              {
-                "kind": "arg",
-                "path": "network"
+                "path": "project"
               },
               {
                 "kind": "arg",
@@ -68,11 +71,107 @@
           "type": "u64"
         },
         {
-          "name": "destination",
-          "type": "pubkey"
+          "name": "claim_digest",
+          "type": {
+            "array": ["u8", 32]
+          }
         },
         {
-          "name": "claim_digest",
+          "name": "expires_at",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "cancel_authority_rotation",
+      "discriminator": [96, 136, 64, 98, 225, 94, 218, 47],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": ["project"]
+        },
+        {
+          "name": "project",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "charge_service",
+      "discriminator": [244, 35, 209, 10, 213, 122, 56, 146],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": ["project"]
+        },
+        {
+          "name": "project",
+          "writable": true
+        },
+        {
+          "name": "mint",
+          "relations": ["project"]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [118, 97, 117, 108, 116]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              }
+            ]
+          }
+        },
+        {
+          "name": "fee_account",
+          "writable": true
+        },
+        {
+          "name": "charge",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [115, 101, 114, 118, 105, 99, 101]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "invoice_digest"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "invoice_digest",
           "type": {
             "array": ["u8", 32]
           }
@@ -177,6 +276,22 @@
       ]
     },
     {
+      "name": "confirm_authority_rotation",
+      "discriminator": [3, 247, 66, 156, 194, 171, 127, 86],
+      "accounts": [
+        {
+          "name": "fee_recipient",
+          "signer": true,
+          "relations": ["project"]
+        },
+        {
+          "name": "project",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "deposit",
       "discriminator": [242, 35, 198, 137, 82, 225, 242, 182],
       "accounts": [
@@ -224,6 +339,17 @@
           "type": "u64"
         }
       ]
+    },
+    {
+      "name": "execute_authority_rotation",
+      "discriminator": [175, 179, 226, 16, 149, 224, 30, 172],
+      "accounts": [
+        {
+          "name": "project",
+          "writable": true
+        }
+      ],
+      "args": []
     },
     {
       "name": "initialize",
@@ -306,6 +432,38 @@
         {
           "name": "binding_delay",
           "type": "i64"
+        },
+        {
+          "name": "rotation_delay",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "migrate_project",
+      "discriminator": [1, 96, 78, 101, 244, 33, 203, 108],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "project",
+          "docs": [
+            "discriminator and stored owner before it grows the account."
+          ],
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "rotation_delay",
+          "type": "i64"
         }
       ]
     },
@@ -323,7 +481,25 @@
           "writable": true
         },
         {
-          "name": "binding"
+          "name": "binding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [119, 97, 108, 108, 101, 116]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "account",
+                "path": "obligation.actor_id",
+                "account": "Obligation"
+              }
+            ]
+          }
         },
         {
           "name": "mint",
@@ -347,6 +523,9 @@
         },
         {
           "name": "destination",
+          "docs": [
+            "The handler requires this to be the associated token account of whichever binding pays."
+          ],
           "writable": true
         },
         {
@@ -391,6 +570,27 @@
       ]
     },
     {
+      "name": "propose_authority_rotation",
+      "discriminator": [185, 202, 177, 179, 135, 170, 62, 115],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": ["project"]
+        },
+        {
+          "name": "project",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "next",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "veto_binding",
       "discriminator": [229, 13, 188, 173, 4, 57, 14, 0],
       "accounts": [
@@ -404,7 +604,24 @@
           "name": "project"
         },
         {
-          "name": "binding"
+          "name": "binding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [119, 97, 108, 108, 101, 116]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "actor_id"
+              }
+            ]
+          }
         },
         {
           "name": "veto",
@@ -429,6 +646,14 @@
               }
             ]
           }
+        },
+        {
+          "name": "obligation",
+          "docs": [
+            "An unpaid award to this actor in this project whose commit delay has not passed;",
+            "it extends the veto window to that award's commit delay."
+          ],
+          "optional": true
         },
         {
           "name": "system_program",
@@ -518,11 +743,31 @@
       "discriminator": [205, 168, 189, 202, 181, 247, 142, 19]
     },
     {
+      "name": "ServiceCharge",
+      "discriminator": [80, 27, 252, 196, 96, 153, 254, 192]
+    },
+    {
       "name": "WalletBinding",
       "discriminator": [51, 211, 204, 185, 168, 68, 52, 176]
     }
   ],
   "events": [
+    {
+      "name": "AuthorityRotated",
+      "discriminator": [89, 124, 120, 223, 3, 19, 185, 230]
+    },
+    {
+      "name": "AuthorityRotationCancelled",
+      "discriminator": [130, 2, 252, 115, 135, 42, 1, 109]
+    },
+    {
+      "name": "AuthorityRotationConfirmed",
+      "discriminator": [235, 159, 184, 253, 136, 76, 245, 116]
+    },
+    {
+      "name": "AuthorityRotationProposed",
+      "discriminator": [76, 59, 57, 23, 22, 166, 253, 33]
+    },
     {
       "name": "AwardCommitted",
       "discriminator": [20, 15, 203, 164, 118, 172, 208, 203]
@@ -534,6 +779,14 @@
     {
       "name": "BindingVetoed",
       "discriminator": [218, 122, 70, 149, 6, 123, 80, 103]
+    },
+    {
+      "name": "ProjectMigrated",
+      "discriminator": [120, 121, 121, 187, 64, 18, 169, 152]
+    },
+    {
+      "name": "ServiceCharged",
+      "discriminator": [177, 27, 12, 242, 174, 79, 142, 142]
     },
     {
       "name": "UnusedWithdrawn",
@@ -603,15 +856,141 @@
     {
       "code": 6011,
       "name": "BindingActive",
-      "msg": "Wallet binding is already active"
+      "msg": "Wallet binding has paid or its veto window has closed"
     },
     {
       "code": 6012,
       "name": "WrongDestination",
       "msg": "Destination must be the bound wallet's associated token account"
+    },
+    {
+      "code": 6013,
+      "name": "AwardPending",
+      "msg": "Award is still inside its commit delay"
+    },
+    {
+      "code": 6014,
+      "name": "VetoLimit",
+      "msg": "Owner veto limit reached since the actor's last payment"
+    },
+    {
+      "code": 6015,
+      "name": "InvalidDelay",
+      "msg": "Binding delay must be 1 hour to 30 days; rotation delay 1 hour to 90 days"
+    },
+    {
+      "code": 6016,
+      "name": "BindingExpired",
+      "msg": "Binding submission expired"
+    },
+    {
+      "code": 6017,
+      "name": "RotationPending",
+      "msg": "An identity authority rotation is already proposed"
+    },
+    {
+      "code": 6018,
+      "name": "NoRotationPending",
+      "msg": "No identity authority rotation is proposed"
+    },
+    {
+      "code": 6019,
+      "name": "RotationConfirmed",
+      "msg": "The fee recipient already confirmed this rotation"
+    },
+    {
+      "code": 6020,
+      "name": "RotationUnconfirmed",
+      "msg": "The fee recipient has not confirmed this rotation"
+    },
+    {
+      "code": 6021,
+      "name": "RotationNotReady",
+      "msg": "The rotation delay has not passed"
+    },
+    {
+      "code": 6022,
+      "name": "NotLegacyProject",
+      "msg": "Account is not a legacy-size project of this program"
     }
   ],
   "types": [
+    {
+      "name": "AuthorityRotated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "previous",
+            "type": "pubkey"
+          },
+          {
+            "name": "current",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityRotationCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityRotationConfirmed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "AuthorityRotationProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "current",
+            "type": "pubkey"
+          },
+          {
+            "name": "proposed",
+            "type": "pubkey"
+          },
+          {
+            "name": "effective_at",
+            "type": "i64"
+          }
+        ]
+      }
+    },
     {
       "name": "AwardCommitted",
       "type": {
@@ -757,6 +1136,10 @@
           {
             "name": "paid",
             "type": "bool"
+          },
+          {
+            "name": "committed_at",
+            "type": "i64"
           }
         ]
       }
@@ -837,6 +1220,90 @@
           {
             "name": "binding_delay",
             "type": "i64"
+          },
+          {
+            "name": "service_fees",
+            "type": "u64"
+          },
+          {
+            "name": "pending_identity_authority",
+            "docs": [
+              "Fields after this point were added with the authority rotation; `migrate_project` grows",
+              "accounts created without them."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "rotation_effective_at",
+            "type": "i64"
+          },
+          {
+            "name": "rotation_confirmed",
+            "type": "bool"
+          },
+          {
+            "name": "rotation_delay",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProjectMigrated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "rotation_delay",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ServiceCharge",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "invoice_digest",
+            "type": {
+              "array": ["u8", 32]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ServiceCharged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "invoice_digest",
+            "type": {
+              "array": ["u8", 32]
+            }
+          },
+          {
+            "name": "amount",
+            "type": "u64"
           }
         ]
       }
@@ -867,6 +1334,10 @@
     },
     {
       "name": "WalletBinding",
+      "docs": [
+        "One binding per project and actor, so each project's delay, vetoes and payments are",
+        "its own. The first seven fields are the latest binding, the only one that can pay."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
@@ -901,6 +1372,18 @@
           {
             "name": "bound_at",
             "type": "i64"
+          },
+          {
+            "name": "paid_version",
+            "docs": [
+              "The version the last payment in this project used; 0 before the first payment."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "veto_count",
+            "docs": ["Vetoes recorded since the last payment in this project."],
+            "type": "u8"
           }
         ]
       }

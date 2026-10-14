@@ -362,7 +362,9 @@ What enforces it, all read-only:
 - A Squads batch is compiled from the plan, so it covers contributor
   transfers only; a proposal with a fee child cannot match the plan.
 - Settlement proves the fee as a separate finalized transaction that credits
-  the reviewed `freshCyclePaymentPolicy.feeRecipient` exactly, debits only
+  the reviewed `freshCyclePaymentPolicy.feeRecipient` exactly (for a new
+  Solana policy, Slop's published
+  `9EyxVhhnCJH4QL5bDsRyukrkHFyitFMuf45UDdLxm4BY`), debits only
   the reviewed `creatorMember` of the instrument that funded the cycle,
   moves none of the vault's USDC, uses a signature that no other cycle's
   `settlement.json` records, and is not earlier than any finalized contributor
@@ -405,7 +407,8 @@ A Base stream that backs a fresh-cycle payment policy (RFC #472) must also
 name `recipientGithub`: the reviewed GitHub actor (actor ID, node ID, login)
 who attests control of `recipient`, the settlement source. The release path,
 its EIP-191 signer proof, its quorum readiness and Slop's published Base fee
-recipient `0xb7b0d5e45016d6d31629d9ab375df770fd2aaf77` are described in
+recipient `0x8f77c37d8650776bfe73c9b12b15209ee15d9b86` (9 October 2026; it
+replaces the retired `0xb7b0d5e45016d6d31629d9ab375df770fd2aaf77`) are described in
 [`protocol/fresh-cycle-payments.md`](../protocol/fresh-cycle-payments.md).
 
 A manifest may set `fundingState: "committed"` only while an active instrument

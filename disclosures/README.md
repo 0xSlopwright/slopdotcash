@@ -76,6 +76,15 @@ authorizes nothing. Confirming that a signature exists and is finalized is a
 separate step; the signatures are published here so anyone can do it
 independently.
 
+## Payments database
+
+Each deploy imports every observed transfer into the payments database
+(`payment_direct_transfers`, see `backend/payments/README.md`). The payouts
+page, project payment step and contributor profile read them from there. The
+import is a projection of these files. It stays separate from escrow payment
+state and verified settlement, and it fails if a file contradicts a
+transaction that was already imported.
+
 ## Adding one
 
 Open a pull request. Never include private keys, seed phrases, signing material

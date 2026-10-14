@@ -2,6 +2,10 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
 
+const deployment = deploymentOrigins(
+  deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
+);
+
 test(
   "serves GitHub login on direct navigation and reload",
   { tag: ["@pages"] },
@@ -28,8 +32,10 @@ test(
       header.getByRole("link", { name: "Log in", exact: true }),
     ).toHaveAttribute("href", "/login");
     await expect(
-      page.getByRole("link", { name: "Continue with GitHub on slop.cash" }),
-    ).toHaveAttribute("href", "https://slop.cash/login");
+      page.getByRole("link", {
+        name: `Continue with GitHub on ${new URL(deployment.site).hostname}`,
+      }),
+    ).toHaveAttribute("href", `${deployment.site}/login`);
     await page.keyboard.press("Escape");
     await page.keyboard.press("Tab");
     expect(
@@ -62,9 +68,12 @@ test(
 // Explicit identity and membership doubles; this proves the browser return
 // route, not live GitHub OAuth.
 for (const [next, expected] of [
-  ["/projects/new?step=2#draft", "https://slop.cash/projects/new?step=2#draft"],
-  ["//evil.example/steal", "https://slop.cash/contributors/return-member"],
-  ["earnings", "https://slop.cash/earnings"],
+  [
+    "/projects/new?step=2#draft",
+    `${deployment.site}/projects/new?step=2#draft`,
+  ],
+  ["//evil.example/steal", `${deployment.site}/contributors/return-member`],
+  ["earnings", `${deployment.site}/earnings`],
 ]) {
   test(`login returns ${next} to a safe destination`, async ({
     page,
@@ -72,9 +81,6 @@ for (const [next, expected] of [
   }) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const deployment = deploymentOrigins(
-      deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
-    );
     const expiresAt = new Date(
       Math.floor(Date.now() / 1000) * 1000 + 240_000,
     ).toISOString();
@@ -114,7 +120,7 @@ for (const [next, expected] of [
           },
         });
     });
-    await page.route("https://slop.cash/**", async (route) => {
+    await page.route(`${deployment.site}/**`, async (route) => {
       const url = new URL(route.request().url());
       if (url.pathname === "/api/v1/points/me") {
         if (signedIn) await route.fulfill({ json: member });
@@ -136,7 +142,9 @@ for (const [next, expected] of [
       });
       await route.fulfill({ response });
     });
-    await page.goto(`https://slop.cash/login?next=${encodeURIComponent(next)}`);
+    await page.goto(
+      `${deployment.site}/login?next=${encodeURIComponent(next)}`,
+    );
     const main = page.getByRole("main");
     await expect(main.locator("h1, h2")).toHaveCount(1);
     const action = main.getByRole("button", { name: "Continue with GitHub" });

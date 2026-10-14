@@ -1,5 +1,6 @@
 /** Shared identity start/poll protocol; consumers retain separate audiences and session exchanges. */
 import { identityPublicOrigin } from "../../workers/identity/contracts";
+import { deploymentTier } from "./deployment";
 
 const CLOCK_SKEW_MS = 2 * 60_000;
 export interface IdentityAuthorization {
@@ -55,7 +56,10 @@ export async function requestIdentityAssertion(options: {
     init: RequestInit,
   ) => Promise<{ status: number; body: Record<string, unknown> } | null>;
 }): Promise<string> {
-  const identityOrigin = identityPublicOrigin(options.origin);
+  const identityOrigin = identityPublicOrigin(
+    options.origin,
+    deploymentTier(import.meta.env.VITE_SLOP_ENVIRONMENT),
+  );
   const now = options.now ?? Date.now;
   const signal = options.signal;
   const post = (body: unknown): RequestInit => ({
