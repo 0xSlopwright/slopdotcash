@@ -394,6 +394,51 @@ exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(au
     );
   });
 
+  it("uses python3 when trust roots are discovered lazily from a hashed CA directory", () => {
+    const root = freshRoot("python3-capath");
+    const files = baseFiles("revision-a");
+    const artifact = writeArtifact(root, revisionA, files);
+    const authority = configureAuthority(root, {
+      developHead: revisionA,
+      revisions: { [revisionA]: { files } },
+    });
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const realPython = shellQuote(shellPath(testPython()));
+    const lazyCa = join(root, "lazy-ca");
+    mkdirSync(lazyCa);
+    writeFileSync(join(lazyCa, "deadbeef.0"), "");
+    const lazyTrust = join(root, "lazy-trust");
+    mkdirSync(lazyTrust);
+    writeFileSync(
+      join(lazyTrust, "sitecustomize.py"),
+      `import ssl\nclass EmptyContext:\n    def get_ca_certs(self): return []\nssl.create_default_context = lambda *args, **kwargs: EmptyContext()\nclass LazyPaths:\n    capath = ${JSON.stringify(lazyCa)}\nssl.get_default_verify_paths = lambda: LazyPaths()\n`,
+    );
+    writeExecutable(
+      join(bin, "python3"),
+      `#!/bin/sh
+if [ "\${1-}" = "-c" ]; then
+  PYTHONPATH=${shellQuote(shellPath(lazyTrust))} exec ${realPython} "$@"
+fi
+if [ "\${1-}" != "-" ]; then
+  exit 87
+fi
+exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(authority.apiOrigin)} ${shellQuote(authority.rawOrigin)} "$5" "$6" "$7" "$8" "$9" "\${10}"
+`,
+    );
+    writeExecutable(join(bin, "python"), "#!/bin/sh\nexit 88\n");
+
+    const installRoot = join(root, "install");
+    const installed = run(productionCommand(), installRoot, {
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ""}`,
+    });
+
+    expect(installed.status, installed.stderr).toBe(0);
+    expect(currentLink(installRoot)).toBe(
+      `.contribute-to-eliza-versions/${revisionA}`,
+    );
+  });
+
   it("fails closed when neither Python candidate is qualified", () => {
     const root = freshRoot("python-unqualified");
     const bin = join(root, "bin");
