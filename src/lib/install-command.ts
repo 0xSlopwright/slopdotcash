@@ -97,6 +97,17 @@ export function createInstallCommand(
   const artifactOrigin = validateArtifactOrigin(origin);
   const authority = resolveAuthorityOrigins(options);
   const requestTimeoutSeconds = resolveRequestTimeoutSeconds(options);
+  const requiresHttpsTrust = [
+    artifactOrigin,
+    authority.apiOrigin,
+    authority.rawOrigin,
+  ].some((value) => new URL(value).protocol === "https:");
+  const pythonProbe = requiresHttpsTrust
+    ? 'import os, re, ssl, sys; d = ssl.get_default_verify_paths().capath; raise SystemExit(0 if sys.version_info.major == 3 and (ssl.create_default_context().get_ca_certs() or (d and os.path.isdir(d) and any(re.fullmatch("[0-9a-f]{8}[.][0-9]+", n) for n in os.listdir(d)))) else 1)'
+    : "import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)";
+  const pythonRequirement = requiresHttpsTrust
+    ? "Python 3 with a usable HTTPS CA trust store is required for authenticated skill installation."
+    : "Python 3 is required for authenticated skill installation.";
   const { skillName, skillRepositoryPath } = options;
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/u.test(skillName)) {
     throw new TypeError("[Slop] skill name must be canonical kebab-case");
@@ -115,12 +126,19 @@ export function createInstallCommand(
   SKILLS_ROOT="${skillsRoot}"
   OPERATION="\${SLOP_SKILL_OPERATION:-install}"
   ROLLBACK_REVISION="\${SLOP_SKILL_REVISION:-}"
-  if ! command -v python3 >/dev/null 2>&1; then
-    printf '%s\\n' "python3 is required for authenticated skill installation." >&2
+  PYTHON_BIN=""
+  for CANDIDATE in python3 python; do
+    if command -v "$CANDIDATE" >/dev/null 2>&1 && "$CANDIDATE" -c ${shellQuote(pythonProbe)} >/dev/null 2>&1; then
+      PYTHON_BIN="$CANDIDATE"
+      break
+    fi
+  done
+  if [ -z "$PYTHON_BIN" ]; then
+    printf '%s\\n' ${shellQuote(pythonRequirement)} >&2
     exit 1
   fi
   trap 'exit 1' HUP INT TERM
-  python3 - ${shellQuote(artifactOrigin)} ${shellQuote(authority.apiOrigin)} ${shellQuote(authority.rawOrigin)} "$SKILLS_ROOT" "$OPERATION" "$ROLLBACK_REVISION" ${shellQuote(skillName)} ${shellQuote(skillRepositoryPath)} ${shellQuote(String(requestTimeoutSeconds))} <<'PY'
+  "$PYTHON_BIN" - ${shellQuote(artifactOrigin)} ${shellQuote(authority.apiOrigin)} ${shellQuote(authority.rawOrigin)} "$SKILLS_ROOT" "$OPERATION" "$ROLLBACK_REVISION" ${shellQuote(skillName)} ${shellQuote(skillRepositoryPath)} ${shellQuote(String(requestTimeoutSeconds))} <<'PY'
 import binascii
 import ctypes
 import hashlib
