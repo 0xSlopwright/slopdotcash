@@ -8,17 +8,25 @@
  * builder accepts and the reservation gate rejected.
  */
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import {
+  BASE_PLATFORM_FEE_RECIPIENT,
+  platformFeeRecipientForNetwork,
+  SOLANA_PLATFORM_FEE_RECIPIENT,
+} from "../src/lib/fresh-cycle-policy.mjs";
 import { assertFundingCommitments } from "../src/lib/funding-instruments.mjs";
 import { fundingReviewProposalSha256 } from "../src/lib/funding-review-submission";
 import {
   draftPaymentReservation,
   paymentRecordBytes,
 } from "../src/lib/payment-reservations";
+import { assertProjectDefinition } from "../src/lib/project-schema.mjs";
 import { assertRewardAllocationManifest } from "../src/lib/rewards";
 import {
   createNetworkSettlementExecutionPlan,
   MAX_TRANSFERS_PER_PLAN,
 } from "../src/lib/settlement-plan";
+import { reviewedReservationPolicy } from "./check-payment-reservations";
 
 const ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 function base58(bytes: Uint8Array): string {
@@ -183,5 +191,76 @@ describe("payment reservations cover the full transfer-plan bound", () => {
     );
     expect(reservation.intentIds.length).toBe(MAX_TRANSFERS_PER_PLAN);
     expect(reservation.feeMinor).toBe("0");
+  });
+});
+
+/**
+ * A fresh-cycle policy may name only the published fee recipient of the
+ * project's settlement network (protocol/fresh-cycle-payments.md). A project
+ * vault plan carries no platform fee, so the plan builder never checks the
+ * recipient; the manifest schema and the reservation gate must refuse the
+ * other network's address before a permanent reservation binds it.
+ */
+describe("a fresh-cycle policy names its settlement network's fee recipient", () => {
+  const eliza = JSON.parse(readFileSync("projects/eliza/project.json", "utf8"));
+
+  async function solanaProject(feeRecipient: string) {
+    const { instrument } = projectVaultInstrument();
+    return {
+      ...eliza,
+      reward: {
+        ...eliza.reward,
+        cycleCaps: [
+          { cycleId: CYCLE, monthlyCapMinor: "10000000000" },
+          ...eliza.reward.cycleCaps,
+        ],
+      },
+      funding: {
+        ...eliza.funding,
+        commitments: [instrument],
+        freshCyclePaymentPolicy: {
+          schemaVersion: "1",
+          kind: "fresh-cycle-payment-policy",
+          projectId: "eliza",
+          cycleId: CYCLE,
+          effectiveAt: "2026-07-31T00:00:00.000Z",
+          planningExpiresAt: "2026-09-01T00:00:00.000Z",
+          instrumentSha256: await fundingReviewProposalSha256(
+            new TextEncoder().encode(JSON.stringify(instrument)),
+          ),
+          feeRecipient,
+        },
+      },
+    };
+  }
+
+  it("accepts the Solana recipient on a Solana project", async () => {
+    const project = await solanaProject(SOLANA_PLATFORM_FEE_RECIPIENT);
+    expect(() => assertProjectDefinition(project)).not.toThrow();
+    expect(() => reviewedReservationPolicy(project)).not.toThrow();
+  });
+
+  it("the manifest schema refuses the Base recipient on a Solana project", async () => {
+    const project = await solanaProject(BASE_PLATFORM_FEE_RECIPIENT);
+    expect(() => assertProjectDefinition(project)).toThrow(
+      /fee recipient of the settlement network/,
+    );
+  });
+
+  it("the reservation gate refuses the Base recipient on a Solana project", async () => {
+    const project = await solanaProject(BASE_PLATFORM_FEE_RECIPIENT);
+    expect(() => reviewedReservationPolicy(project)).toThrow(
+      /fee recipient of the settlement network/,
+    );
+  });
+
+  it("maps each settlement network to its published recipient", () => {
+    expect(platformFeeRecipientForNetwork("solana")).toBe(
+      SOLANA_PLATFORM_FEE_RECIPIENT,
+    );
+    expect(platformFeeRecipientForNetwork("base")).toBe(
+      BASE_PLATFORM_FEE_RECIPIENT,
+    );
+    expect(platformFeeRecipientForNetwork("robinhood")).toBeNull();
   });
 });

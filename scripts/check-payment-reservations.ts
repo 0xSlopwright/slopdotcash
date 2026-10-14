@@ -1,7 +1,10 @@
 /** Runs only from an immutable trusted PR base. Head is data, never executed. */
 import { createHash } from "node:crypto";
 import { fundingInstrumentId } from "../src/lib/allocation-funding-basis.mjs";
-import { assertFreshCyclePaymentPolicy } from "../src/lib/fresh-cycle-policy.mjs";
+import {
+  assertFreshCyclePaymentPolicy,
+  platformFeeRecipientForNetwork,
+} from "../src/lib/fresh-cycle-policy.mjs";
 import { assertFundingCommitments } from "../src/lib/funding-instruments.mjs";
 import {
   assertPaymentReservationTransition,
@@ -27,6 +30,17 @@ export function reviewedReservationPolicy(project: unknown) {
   const policy = assertFreshCyclePaymentPolicy(
     p.funding?.freshCyclePaymentPolicy,
   );
+  // The manifest is read from git without the project schema, so bind the
+  // fee recipient to the settlement network here too.
+  if (
+    policy.feeRecipient !==
+    platformFeeRecipientForNetwork(
+      p.reward.chain === "base" ? "base" : "solana",
+    )
+  )
+    throw new TypeError(
+      "Policy must name the published fee recipient of the settlement network",
+    );
   const instruments = assertFundingCommitments(p.funding.commitments ?? []);
   // On Solana either reviewed Squads shape: the 2-of-2 commitment vault or
   // the 2-of-3 project vault (RFC #500). On Base a Sablier stream whose
