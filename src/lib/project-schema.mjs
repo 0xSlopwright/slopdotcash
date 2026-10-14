@@ -6,7 +6,10 @@ import { assertFreshCyclePaymentPolicy } from "./fresh-cycle-policy.mjs";
  * request cannot smuggle executable configuration or ambiguous reward terms.
  */
 
-import { assertFundingAddresses } from "./funding-address.mjs";
+import {
+  assertFundingAddresses,
+  fundingAssetForNetwork,
+} from "./funding-address.mjs";
 import {
   assertFundingCommitments,
   assertMonthlyCommitmentPolicy,
@@ -890,9 +893,11 @@ function validateReward(
     const paymentsDisabled = reward.paymentMode === "disabled";
     if (
       hasExternal ||
-      reward.currency !== "USDC" ||
+      // Each settlement network has one approved stablecoin (FND-02).
+      reward.currency !== fundingAssetForNetwork(reward.chain) ||
       // `reward.chain` is the project's one settlement network (RFC #472).
-      // An escrow project settles on its escrow chain.
+      // An escrow project settles on its escrow chain; the legacy rail is
+      // Base and Solana only (PAY-09).
       (escrow
         ? reward.chain !== escrow.chain
         : reward.chain !== "solana" && reward.chain !== "base") ||
@@ -1018,6 +1023,10 @@ function validateFunding(value, projectId, settlementNetwork) {
     // The instrument must settle on the project's network (RFC #472): a
     // Squads vault on Solana, or a Base Sablier stream with a reviewed
     // recipient actor who attests control of the source address.
+    if (settlementNetwork === "robinhood")
+      throw new TypeError(
+        "Robinhood Chain projects settle through the project escrow; a fresh-cycle instrument is not supported",
+      );
     const fundsNetwork = (v) =>
       settlementNetwork === "base"
         ? v.kind === "sablier-lockup-v4" &&

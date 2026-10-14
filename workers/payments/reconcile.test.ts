@@ -11,6 +11,7 @@ beforeAll(() => {
   server = Bun.serve({
     port: 0,
     async fetch(request) {
+      const robinhood = new URL(request.url).pathname === "/robinhood";
       const { id, method, params } = (await request.json()) as {
         id: number;
         method: string;
@@ -18,7 +19,9 @@ beforeAll(() => {
       };
       const result =
         method === "eth_chainId"
-          ? "0x7a69"
+          ? robinhood
+            ? "0xb626"
+            : "0x7a69"
           : method === "eth_getTransactionReceipt"
             ? {
                 status: "0x0",
@@ -59,4 +62,21 @@ test("a missing chain id is a mismatch, not a pass", async () => {
   await expect(
     finalizedEvmRevert(url, undefined, txHash, "base"),
   ).rejects.toThrow(/chain mismatch/);
+});
+
+test("records robinhood as the proof chain under its own chain id", async () => {
+  const proof = await finalizedEvmRevert(
+    `${url}/robinhood`,
+    "46630",
+    txHash,
+    "robinhood",
+  );
+  expect(proof).toEqual({
+    chain: "robinhood",
+    transactionId: txHash,
+    blockHash,
+    status: "reverted",
+    finality: "finalized",
+  });
+  expect(proof?.chain).toBe("robinhood");
 });

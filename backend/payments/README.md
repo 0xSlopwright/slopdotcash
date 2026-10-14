@@ -15,8 +15,9 @@ wallet API; concurrent successor changes return a conflict.
 
 A current authenticated registry claim must be explicitly authorized for
 automatic payments. `POST /wallets/challenge` takes `claimId` and returns a
-15-minute message. Sign that exact message with Base `personal_sign` or Solana
-Ed25519 `signMessage`. `POST /wallets/authorize` takes `claimId`, `challengeId`,
+15-minute message. Sign that exact message with `personal_sign` on Base or
+Robinhood Chain, or Solana Ed25519 `signMessage`. `POST /wallets/authorize`
+takes `claimId`, `challengeId`,
 and `signature` (Base hex r/s/v; Solana padded base64). The challenge binds
 actor, chain, address, claim, audience, and nonce; it can be used once. Contract
 wallets and off-curve Solana destinations need a separately reviewed recovery
@@ -36,7 +37,8 @@ queue integration workflow with:
 bun backend/payments/evm.integration.ts
 ```
 
-The Base vertical workflow deploys real local contracts, reserves a walletless
+The EVM vertical workflow deploys real local contracts on two Anvil chains
+(31337 as Base, 46630 as Robinhood Chain Testnet), reserves a walletless
 award, refunds free funds with the withdrawal fee, authorizes a late wallet,
 dispatches a payment, and indexes its finalized receipt into the account ledger.
 It checks actual contributor, fee, and refund token balances. It uses an isolated
@@ -44,7 +46,8 @@ Anvil test signer, not a deployed production signing service. The EVM adapter
 also has a separate Anvil integration workflow in `contracts/evm`.
 
 `workers/payments/index.ts` has no public fetch route. Its scheduled entry scans
-finalized Base logs and Solana signature history, then reconciles submitted or
+finalized EVM logs (Base, Robinhood Chain) and Solana signature history, then
+reconciles submitted or
 uncertain attempts and dispatches ready obligations. Cursors advance only after
 every recognized event is verified and indexed. Base starts from the reviewed
 deployment transaction. Solana stores one finalized signature page per run in a durable discovery
