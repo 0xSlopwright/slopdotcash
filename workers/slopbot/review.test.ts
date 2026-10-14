@@ -13,7 +13,13 @@ import {
   reviewExists,
   startReview,
 } from "./persistence";
-import { commentBody, grounded, neutralize, pullDiff } from "./review";
+import {
+  commentBody,
+  grounded,
+  neutralize,
+  prefilter,
+  pullDiff,
+} from "./review";
 import { route } from "./routing";
 
 const policy = [
@@ -123,6 +129,33 @@ test("a skipped revision can be claimed once without changing prior-call retry b
   } finally {
     sqlite.close();
   }
+});
+
+test("zero-line file changes are not deterministically empty", () => {
+  const issue = {
+    node_id: "PR_local",
+    number: 1,
+    state: "open",
+    title: "Move a file",
+    body: "Preserve the contents at the required path.",
+    user: { login: "fixture-author", id: 3, type: "User" },
+    assignees: [],
+  };
+  // GitHub reports zero added/deleted lines for pure renames and binary
+  // changes. The changed-files count still establishes that a change exists.
+  const pull = {
+    draft: false,
+    merged: false,
+    head: { sha: "a".repeat(40) },
+    changed_files: 1,
+    additions: 0,
+    deletions: 0,
+  };
+  expect(prefilter({ issue, pull })).toBeNull();
+  expect(
+    prefilter({ issue, pull: { ...pull, changed_files: 0 } })?.category,
+  ).toBe("empty");
+  expect(prefilter({ issue, pull: { ...pull, additions: 1 } })).toBeNull();
 });
 const context = {
   itemText: `Title: Rename variable\n\nBody:\n${hostileBody}`,
