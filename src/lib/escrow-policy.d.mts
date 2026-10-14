@@ -4,7 +4,9 @@ export interface EscrowDeployment {
     | "base-mainnet"
     | "solana-devnet"
     | "solana-testnet"
-    | "solana-mainnet";
+    | "solana-mainnet"
+    | "robinhood-testnet"
+    | "robinhood-mainnet";
   vault: string;
   programId: string | null;
   upgradeAuthority: string | null;
@@ -18,16 +20,16 @@ export interface EscrowDeployment {
   sourceCommit: string;
   codeSha256: string;
   bindingDelaySeconds: string;
-  /** Solana only; null on Base, where the factory fixes 7 days. */
+  /** Solana only; null on EVM chains, where the factory fixes 7 days. */
   rotationDelaySeconds: string | null;
-  /** Base only; null on Solana. The EscrowFactory that created the vault and rotates its identity authority. */
+  /** EVM chains only; null on Solana. The EscrowFactory that created the vault and rotates its identity authority. */
   factory: string | null;
-  /** Base only; null on Solana. sha256 of the factory runtime code. */
+  /** EVM chains only; null on Solana. sha256 of the factory runtime code. */
   factoryCodeSha256: string | null;
-  /** Base only; null on Solana. The factory registrar, which alone proposes an authority rotation. */
+  /** EVM chains only; null on Solana. The factory registrar, which alone proposes an authority rotation. */
   registrar: string | null;
 }
-export type EscrowChain = "base" | "solana";
+export type EscrowChain = "base" | "solana" | "robinhood";
 export type EscrowFamily = "evm" | "solana";
 export interface EscrowPolicy {
   schemaVersion: "1";

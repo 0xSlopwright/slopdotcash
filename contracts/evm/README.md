@@ -1,13 +1,24 @@
-# Base escrow v3
+# EVM escrow v3
 
-This is an immutable escrow implementation for a single project and six-decimal
-USDC. It has no proxy, owner change, token approval, arbitrary call, rescue,
-claim expiry, or award cancellation entry point. An approved award remains
-reserved until it is paid. The owner can cancel only a wallet binding that has
+This is an immutable escrow implementation for a single project and a
+six-decimal stablecoin: Circle USDC on Base, Paxos USDG on Robinhood Chain. It
+has no proxy, owner change, token approval, arbitrary call, rescue, claim
+expiry, or award cancellation entry point. An approved award remains reserved until it is paid. The owner can cancel only a wallet binding that has
 not paid yet, and only inside a bounded window. The only mutable authority is
 the factory's identity authority, replaced by a public 7-day timelock. This
 code has local EVM execution evidence only. It has not received an independent
 security review or a public testnet deployment.
+
+## Networks
+
+| Network | Chain id | Asset | Deploy script |
+| --- | --- | --- | --- |
+| Base Sepolia | 84532 | Circle test USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | `DeployBaseSepolia.s.sol` |
+| Base | 8453 | Circle USDC `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | `DeployBase.s.sol` |
+| Robinhood Chain Testnet | 46630 | Paxos test USDG `0x7E955252E15c84f5768B83c41a71F9eba181802F` | `DeployRobinhoodTestnet.s.sol` |
+| Robinhood Chain | 4663 | Paxos USDG `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` | `DeployRobinhood.s.sol` |
+
+The contract reads only `block.timestamp` and `block.chainid`, never `block.number`, so Arbitrum Nitro's block-number semantics on Robinhood Chain do not affect award ids or delays. `foundry.toml` targets Cancun. Opcode support on Robinhood Chain is not yet proven: the first testnet deployment must record the ArbOS version read from the `ArbSys` precompile and a successful deployment receipt before any activation.
 
 ## Authority and identity
 
@@ -164,11 +175,17 @@ refunds continue. Refunds go only to the owner: the constructor requires
 Deposits and transfers must move exact amounts. Token failures or blocked
 recipients revert the full payment. The accepted token
 must have six decimals and ordinary exact-transfer behavior. The deployment
-script fixes Circle's Base Sepolia test USDC address; verify that asset again
-before deployment. Arbitrary tokens with dishonest `balanceOf` results are
+script fixes its token: the Base scripts name Circle's USDC addresses and the
+Robinhood Chain scripts name Paxos USDG (the testnet script uses the Paxos
+testnet USDG address); verify the asset again before any deployment. Arbitrary tokens with dishonest `balanceOf` results are
 outside the supported asset model. Direct transfers to the vault do not create
 refundable credits and cannot be rescued in this version. The supported funding
 path is owner `approve` followed by `deposit`.
+
+USDG is an upgradeable proxy with a pause switch and a per-address freeze, the
+same risk class as Circle's USDC on Base. The contract fails closed: a frozen or
+paused recipient reverts `pay` and the award stays reserved; a frozen fee
+recipient blocks only `claimFees`.
 
 The conservation identities are unchanged by the binding lifecycle:
 
@@ -234,7 +251,8 @@ of wrong chains, vaults, obligations, event indices, and nonfinalized receipts.
 
 ## Testnet deployment
 
-The checked-in script rejects every chain except Base Sepolia (84532). It reads
+Each checked-in script rejects every chain except its own (Base Sepolia 84532,
+Robinhood Chain Testnet 46630). It reads
 only public destination addresses from the environment. Supply a dedicated
 test-only external signer through Foundry's account or hardware-wallet options.
 Do not put a private key in a command, environment dump, source file, or evidence.
@@ -250,6 +268,16 @@ cd contracts/evm
 forge script script/DeployBaseSepolia.s.sol:DeployBaseSepolia \
   --rpc-url "$BASE_SEPOLIA_RPC_URL" --account slop-test-deployer
 ```
+
+For Robinhood Chain Testnet:
+
+```sh
+cd contracts/evm
+forge script script/DeployRobinhoodTestnet.s.sol:DeployRobinhoodTestnet \
+  --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" --account slop-test-deployer
+```
+
+Set `ROBINHOOD_TESTNET_RPC_URL`, `TEST_FEE_RECIPIENT` and `TEST_IDENTITY_AUTHORITY`; the public RPC `https://rpc.testnet.chain.robinhood.com` is rate-limited and acceptable for a one-off deployment, not for the scanner.
 
 After the test deployment authority reviews that simulation, the same invocation
 with `--broadcast` submits testnet transactions. No public deployment was run as

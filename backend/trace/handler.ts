@@ -2,6 +2,7 @@ import {
   type DeploymentTier,
   deploymentOrigins,
 } from "../../src/lib/deployment";
+import { chainFamily } from "../../src/lib/escrow-policy.mjs";
 import {
   assertWalletPossessionChallenge,
   isSignableSolanaAddress,
@@ -358,7 +359,9 @@ async function createContributorWalletClaim(
     fail(
       400,
       "invalid_request",
-      chain === "base" ? "Invalid Base address" : "Invalid Solana address",
+      chainFamily(chain) === "evm"
+        ? "Invalid EVM address"
+        : "Invalid Solana address",
     );
   }
   const requestedPredecessor = optionalString(

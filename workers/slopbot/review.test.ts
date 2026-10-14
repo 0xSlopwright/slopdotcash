@@ -307,6 +307,30 @@ describe("neutralize", () => {
 });
 
 describe("pullDiff", () => {
+  test("renames from different source paths remain distinct", async () => {
+    const readRename = (source: string) =>
+      pullDiff(
+        {
+          get: async () => [
+            {
+              filename: "target.ts",
+              previous_filename: source,
+              status: "renamed",
+            },
+          ],
+        } as unknown as Parameters<typeof pullDiff>[0],
+        "owner",
+        "repo",
+        7,
+        1,
+      );
+    const first = await readRename("a.ts");
+    const second = await readRename("b.ts");
+    expect(first.diff).not.toBe(second.diff);
+    expect(first.diff).toContain("a.ts -> target.ts");
+    expect(second.diff).toContain("b.ts -> target.ts");
+  });
+
   test("marks a pull request with more than three full pages as truncated", async () => {
     const requests: string[] = [];
     const github = {

@@ -6,12 +6,30 @@ Run the read-only funding check with the intended public address:
 node scripts/check-payout-test-funding.mjs base-sepolia "$BASE_TEST_ADDRESS"
 node scripts/check-payout-test-funding.mjs solana-devnet "$SOLANA_TEST_ADDRESS"
 node scripts/check-payout-test-funding.mjs solana-testnet "$SOLANA_TEST_ADDRESS"
+node scripts/check-payout-test-funding.mjs robinhood-testnet "$ROBINHOOD_TEST_ADDRESS"
 ```
 
-An optional third argument selects an HTTPS RPC URL. Use a public URL without
-credentials. The command checks the Base chain ID or Solana genesis hash before
-reading a finalized balance. Mainnet network names are rejected. It neither
-reads signing keys nor requests funds, signs, or broadcasts a transaction.
+An optional third argument selects an HTTPS RPC URL. Prefer a public URL without
+credentials. If a network needs an archive endpoint that carries a key, keep
+the key out of shell history and recorded evidence: build the URL from an
+environment variable and redact it in any output you keep. The command checks
+the EVM chain id or Solana genesis hash before reading a finalized balance.
+Mainnet network names are rejected. It neither reads signing keys nor requests
+funds, signs, or broadcasts a transaction.
+
+Robinhood Chain Testnet (chain id 46630) gas comes from
+`https://faucet.testnet.chain.robinhood.com`. The check reads the chain id
+`0xb626` and then the balance at the `finalized` tag. The public RPC
+`https://rpc.testnet.chain.robinhood.com` answers the chain id but does not
+keep account state at `finalized` (it replies `historical state is not available`, which is an RPC limitation, not a zero balance), so pass an archive
+RPC URL for Robinhood Chain Testnet as the third argument for this network.
+Alchemy is the provider the Robinhood documentation names. The public RPC
+remains acceptable for a one-off deployment broadcast, not for this check and
+not for the scanner. Test USDG for the escrow
+(`0x7E955252E15c84f5768B83c41a71F9eba181802F`, listed in the
+[Paxos USDG testnet guide](https://docs.paxos.com/guides/stablecoin/usdg/testnet))
+comes from the Paxos faucet at `https://faucet.paxos.com/`, not from the
+Robinhood gas faucet.
 
 JSON output reports the integer balance as a decimal string (`wei` or
 `lamports`), the finalized block or slot, and `nonzero`. A zero balance is a

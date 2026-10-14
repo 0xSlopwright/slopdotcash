@@ -1,9 +1,14 @@
 import { evmBindingTypedData } from "../../contracts/evm/adapter";
 import { readBoundedJson } from "../../src/lib/browser-json";
-import { ESCROW_CHAINS, EVM_CHAINS } from "../../src/lib/escrow-policy.mjs";
+import {
+  ESCROW_CHAINS,
+  ESCROW_NETWORKS,
+  EVM_CHAINS,
+} from "../../src/lib/escrow-policy.mjs";
 import type {
   AccountPayment,
   DirectTransfer,
+  PaymentChain,
   PaymentsAccount,
 } from "../../src/lib/payments/contracts";
 import { isWalletAddress, isWalletChain } from "../../src/lib/wallets";
@@ -373,13 +378,28 @@ export async function handlePaymentsApi(
       if (!deps.paymentDeployments)
         return json(503, { error: "payment_deployments_unavailable" });
       const vault = body.vault.toLowerCase();
+      // A registry network fixes the deployment's chain and chain id, so a
+      // Base claim never yields Robinhood Chain consent or the reverse, even
+      // when a deployment record is mislabelled. Only the local Anvil chain
+      // id (31337) may name a network outside the registry.
+      const registered = (d: PaymentDeploymentIdentity) => {
+        const policy = Object.hasOwn(ESCROW_NETWORKS, d.network)
+          ? ESCROW_NETWORKS[d.network as keyof typeof ESCROW_NETWORKS]
+          : undefined;
+        return policy
+          ? policy.family === "evm" &&
+              policy.chain === d.chain &&
+              policy.chainId === d.chainId
+          : d.chainId === "31337";
+      };
       const deployments = deps.paymentDeployments.filter(
         (d) =>
           (EVM_CHAINS as readonly string[]).includes(d.chain) &&
           d.network === body.network &&
           d.vault.toLowerCase() === vault &&
           typeof d.chainId === "string" &&
-          /^[1-9][0-9]{0,18}$/.test(d.chainId),
+          /^[1-9][0-9]{0,18}$/.test(d.chainId) &&
+          registered(d),
       );
       if (deployments.length !== 1)
         return json(400, { error: "unknown_deployment" });
@@ -551,13 +571,33 @@ export async function handlePaymentsApi(
       ) as AccountPayment[];
       for (const p of payments)
         p.netMicro = (BigInt(p.grossMicro) - BigInt(p.feeMicro)).toString();
-      const balances = ESCROW_CHAINS.map((chain) => ({
-        chain,
-        netMicro: payments
-          .filter((p) => p.chain === chain && p.state === "reserved")
-          .reduce((sum, p) => sum + BigInt(p.netMicro), 0n)
-          .toString(),
-      }));
+      // One balance per settlement network: networks carry different assets
+      // (USDC, USDG, test tokens), so amounts are never summed across them.
+      const reservedByNetwork = new Map<
+        string,
+        { chain: PaymentChain; network: string; net: bigint }
+      >();
+      for (const p of payments) {
+        const key = `${p.chain}\u0000${p.network}`;
+        const row = reservedByNetwork.get(key) ?? {
+          chain: p.chain,
+          network: p.network,
+          net: 0n,
+        };
+        if (p.state === "reserved") row.net += BigInt(p.netMicro);
+        reservedByNetwork.set(key, row);
+      }
+      const balances = [...reservedByNetwork.values()]
+        .sort(
+          (a, b) =>
+            ESCROW_CHAINS.indexOf(a.chain) - ESCROW_CHAINS.indexOf(b.chain) ||
+            a.network.localeCompare(b.network),
+        )
+        .map(({ chain, network, net }) => ({
+          chain,
+          network,
+          netMicro: net.toString(),
+        }));
       const account: PaymentsAccount = {
         githubUserId: member.github_id,
         wallets: JSON.parse(walletRows?.items ?? "[]"),
