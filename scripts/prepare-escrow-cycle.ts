@@ -10,7 +10,7 @@ import {
 import { assertProjectDefinition } from "../src/lib/project-schema.mjs";
 import {
   allocateIntegerTotal,
-  createProjectView,
+  createPaymentProjectView,
 } from "../src/lib/project-view";
 import { findProject } from "../src/lib/projects.mjs";
 import {
@@ -120,7 +120,7 @@ export function buildEscrowCycle(
   assertLeaderboardSnapshot(snapshot);
   const generatedAt = input.generatedAt;
   const sourceSnapshotSha256 = digest(bytes);
-  const view = createProjectView(
+  const view = createPaymentProjectView(
     snapshot,
     project.id,
     input.cycleId,
@@ -231,7 +231,11 @@ export async function prepareEscrowCycle(input: {
   const bytes = await readFile(input.snapshotPath);
   const snapshot: unknown = JSON.parse(bytes.toString("utf8"));
   assertPublishableLeaderboardSnapshot(snapshot);
-  const view = createProjectView(snapshot, input.projectId, input.cycleId);
+  const view = createPaymentProjectView(
+    snapshot,
+    input.projectId,
+    input.cycleId,
+  );
   const identities = await resolveEscrowIdentities(
     view.leaders.map((leader) => leader.actor.id),
     input.githubToken,

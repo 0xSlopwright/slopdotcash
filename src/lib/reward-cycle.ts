@@ -13,7 +13,7 @@ import {
 } from "./allocation-funding";
 import { fundingAssetForNetwork } from "./funding-address.mjs";
 import type { LeaderboardSnapshot } from "./leaderboard";
-import { createProjectView } from "./project-view";
+import { createPaymentProjectView } from "./project-view";
 import type { ProjectId } from "./projects.mjs";
 import { findProject } from "./projects.mjs";
 import {
@@ -179,7 +179,7 @@ function intentComponent(value: string): string {
 
 export function ensureCompleteCycle(
   input: CreateRewardCycleProposalInput,
-  view: ReturnType<typeof createProjectView>,
+  view: ReturnType<typeof createPaymentProjectView>,
 ): void {
   const calendar = cycleBounds(input.cycleId);
   const expectedFrom = Math.max(
@@ -248,7 +248,7 @@ export function createRewardCycleProposal(
     throw new TypeError(
       "legacy cap reconstruction is restricted to historical trials",
     );
-  const view = createProjectView(
+  const view = createPaymentProjectView(
     input.snapshot,
     input.projectId,
     input.cycleId,

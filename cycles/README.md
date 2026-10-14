@@ -358,3 +358,21 @@ canonical hex and amounts are integer USDC micro-units.
 This check writes nothing. It does not create a plan, produce
 `settlement.json`, or move any cycle to `paid`. `rewards:verify-settlement`
 uses the same verifier for a Base cycle.
+
+### October review payment basis
+
+For #683, October and later payment proposals use the source snapshot's
+`paymentReviewBasis` (`scr-05-payments-production-v1`). Ordinary reviews
+submitted before `2026-10-09T23:21:35.388Z` retain the previous payment rule.
+The public Score and Points ledger remains separate. Regenerate a source
+snapshot that lacks this basis before proposing payment; never substitute the
+score ledger. The same basis must drive identity and wallet collection,
+allocation and frozen-source verification. Earlier closed cycles are unchanged.
+This changes eligibility weights only, not funding, approval or settlement.
+
+The payment basis stores changed ledger and attribution records plus removed
+record IDs. Reconstruct it with `paymentReviewSnapshot`; its `ledger` field
+alone is not a complete ledger. The source snapshot hash binds both views.
+Proposal `score` values are payment allocation weights. Cycle-index score
+values still come from the public score ledger, so closing a cycle does not
+add grandfathered payment weight to Score or Points.
