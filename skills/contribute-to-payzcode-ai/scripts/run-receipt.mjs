@@ -1101,14 +1101,27 @@ export function authorizeSkill(
 }
 
 function executionEnvironmentWithGitHub() {
+  // Proxy-only hosts reach GitHub through the standard proxy variables; the
+  // authority check honours them, so pass exactly those and nothing else.
+  const allowed = [
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+  ];
   return {
     ...executionEnvironment(),
     ...Object.fromEntries(
-      ["GH_TOKEN", "GITHUB_TOKEN", "SSL_CERT_FILE", "SSL_CERT_DIR"].flatMap(
-        (name) =>
-          typeof process.env[name] === "string"
-            ? [[name, process.env[name]]]
-            : [],
+      allowed.flatMap((name) =>
+        typeof process.env[name] === "string"
+          ? [[name, process.env[name]]]
+          : [],
       ),
     ),
   };
