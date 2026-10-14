@@ -660,10 +660,7 @@ async function runReview(
       billable,
     );
     if (result.verdict === null) {
-      await store.finishReview(db, reviewKey, "failed", {
-        skipReason: "every model route step failed",
-      });
-      return "model route failed";
+      throw new Error("every model route step failed");
     }
     verdict = result.verdict;
     triage = result.servedBy;
