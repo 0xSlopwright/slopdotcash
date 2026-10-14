@@ -7,7 +7,10 @@ import type { FundingCommitmentInstrument } from "./funding-instruments.mjs";
 import { assertFreshCyclePaymentPolicy } from "./funding-readiness";
 import { fundingReviewProposalSha256 } from "./funding-review-submission";
 import { assertRewardAllocationManifest } from "./rewards";
-import { createNetworkSettlementExecutionPlan } from "./settlement-plan";
+import {
+  createNetworkSettlementExecutionPlan,
+  MAX_TRANSFERS_PER_PLAN,
+} from "./settlement-plan";
 
 export const PAYMENT_RESERVATION_PATH = "funding/payment-reservations.json";
 export const PAYMENT_RESERVATION_CHECK = "Trusted payment reservation gate";
@@ -65,7 +68,11 @@ function assertReservation(value: unknown): PaymentReservation {
     !/^(0|[1-9]\d{0,19})$/u.test(r.feeMinor) ||
     !Array.isArray(r.intentIds) ||
     r.intentIds.length < 1 ||
-    r.intentIds.length > 199 ||
+    // A no-fee plan (every RFC #500 project vault) carries one intent per
+    // contributor transfer, so it can reach the full transfer-plan bound. A
+    // fee-carrying plan reaches at most one fewer because its fee transfer
+    // has no intent id. This bound must match the plan contract, not 200 - 1.
+    r.intentIds.length > MAX_TRANSFERS_PER_PLAN ||
     r.intentIds.some(
       (id) => typeof id !== "string" || !/^[A-Za-z0-9_-]{1,160}$/u.test(id),
     )
