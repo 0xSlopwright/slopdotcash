@@ -325,6 +325,71 @@ export function applyPointsSnapshot(
   ];
   return result;
 }
+/**
+ * Canonical identity of a GitHub pull-request review URL: the case-folded
+ * owner/repo path plus the PR number. It mirrors exactly what the journal
+ * validator (assertEvaluatorAwardManifest) accepts as a review source:
+ * https scheme, github.com host, /owner/repo/pull/<number> path, and a
+ * review fragment (#pullrequestreview-<id> or #discussion_r<id>, matched
+ * case-insensitively like the validator).
+ *
+ * URL parsing normalizes the evasion forms the validator accepts while
+ * retaining the raw string: owner/repo casing variants, the explicit
+ * default port (:443, dropped as default by the URL parser), an empty query
+ * marker, and dot-segment paths (including percent-encoded dot-segments).
+ *
+ * The owner/repo is resolved through the registered project repository
+ * inventory (project.json manifests via findProjectByRepositoryId), so a
+ * registered alias maps to the canonical repository id: the validator
+ * accepts alias paths as review sources, and without this the same PR
+ * reached through the canonical id and through an alias would get different
+ * identities and evade the evaluated-review suppression (PRD section 14
+ * anti-duplication rule). URLs outside the registry keep the case-folded
+ * owner/repo path as their identity.
+ *
+ * It returns undefined for anything else, so genuinely different URLs
+ * (other hosts, other paths, other PR numbers, non-review fragments) and
+ * URLs the validator itself rejects (an explicit non-default port, a
+ * non-empty query) never share an identity and are never deduped together.
+ */
+export function canonicalReviewIdentity(url: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== "https:") return undefined;
+  if (parsed.hostname.toLowerCase() !== "github.com") return undefined;
+  if (parsed.username || parsed.password) return undefined;
+  // Mirrors the strict evaluator URL parser (githubUrl in
+  // src/lib/evaluator-awards.ts): the URL parser drops an explicit default
+  // port, so :443 stays accepted; an explicit non-default port or any
+  // non-empty query is rejected by the validator and must yield no identity.
+  if (parsed.port) return undefined;
+  if (parsed.search) return undefined;
+  const path = /^\/([^/]+)\/([^/]+)\/pull\/([1-9]\d*)$/.exec(parsed.pathname);
+  if (!path) return undefined;
+  const fragment = parsed.hash.toLowerCase();
+  if (!/^#(pullrequestreview-|discussion_r)\d+$/.test(fragment))
+    return undefined;
+  // Canonicalize registered repository aliases: the validator accepts a
+  // review source URL through any registered alias, so keying on the raw
+  // owner/repo would let an evaluated award on the canonical id and a
+  // substantive review on an alias (or vice versa) miss the dedup set and
+  // double-count.
+  const ownerRepo = `${path[1]}/${path[2]}`;
+  const project = findProjectByRepositoryId(ownerRepo);
+  const canonical = project?.repositories.find(
+    (repository) =>
+      repository.id.toLowerCase() === ownerRepo.toLowerCase() ||
+      (repository.aliases ?? []).some(
+        (alias) => alias.toLowerCase() === ownerRepo.toLowerCase(),
+      ),
+  );
+  const repositoryId = (canonical?.id ?? ownerRepo).toLowerCase();
+  return `${repositoryId}/pull/${path[3]}`;
+}
 export function pointMembers(
   journal: PointsJournal,
   month = journal.generatedAt.slice(0, 7),
@@ -332,20 +397,29 @@ export function pointMembers(
 ): PointsMember[] {
   const groups = new Map<string, PointAward>();
   const awards = [...latestPoints(journal).values()].map((r) => r.award);
+  // The dedup key is the canonical parsed PR identity, not the raw URL:
+  // the journal validator accepts URL variants (owner/repo casing, default
+  // port, empty query, dot-segments, mixed-case review fragment) while
+  // keeping the raw string, so keying on the raw string lets variants evade
+  // the evaluated-review suppression and double-count (PRD section 14
+  // anti-duplication rule).
   const evaluatedReviews = new Set(
     awards
-      .filter(
-        (a) =>
-          a.amount > 0 &&
-          a.category === "evaluated-contribution" &&
-          a.sourceUrl.includes("#pullrequestreview-"),
-      )
-      .map((a) => `${a.actor.id}:${a.sourceUrl.split("#")[0]}`),
+      .filter((a) => a.amount > 0 && a.category === "evaluated-contribution")
+      .map((a) => {
+        const identity = canonicalReviewIdentity(a.sourceUrl);
+        return identity === undefined ? undefined : `${a.actor.id}:${identity}`;
+      })
+      .filter((key): key is string => key !== undefined),
   );
   for (const a of awards) {
+    const reviewIdentity =
+      a.category === "substantive-review"
+        ? canonicalReviewIdentity(a.sourceUrl)
+        : undefined;
     if (
-      a.category === "substantive-review" &&
-      evaluatedReviews.has(`${a.actor.id}:${a.sourceUrl.split("#")[0]}`)
+      reviewIdentity !== undefined &&
+      evaluatedReviews.has(`${a.actor.id}:${reviewIdentity}`)
     )
       continue;
     if (!a.amount || (projectId && a.projectId !== projectId)) continue;

@@ -4,7 +4,9 @@ export interface EscrowDeployment {
     | "base-mainnet"
     | "solana-devnet"
     | "solana-testnet"
-    | "solana-mainnet";
+    | "solana-mainnet"
+    | "robinhood-testnet"
+    | "robinhood-mainnet";
   vault: string;
   programId: string | null;
   upgradeAuthority: string | null;
@@ -18,28 +20,47 @@ export interface EscrowDeployment {
   sourceCommit: string;
   codeSha256: string;
   bindingDelaySeconds: string;
+  /** Solana only; null on EVM chains, where the factory fixes 7 days. */
+  rotationDelaySeconds: string | null;
+  /** EVM chains only; null on Solana. The EscrowFactory that created the vault and rotates its identity authority. */
+  factory: string | null;
+  /** EVM chains only; null on Solana. sha256 of the factory runtime code. */
+  factoryCodeSha256: string | null;
+  /** EVM chains only; null on Solana. The factory registrar, which alone proposes an authority rotation. */
+  registrar: string | null;
 }
+export type EscrowChain = "base" | "solana" | "robinhood";
+export type EscrowFamily = "evm" | "solana";
 export interface EscrowPolicy {
   schemaVersion: "1";
   effectiveCycle: string;
-  chain: "base" | "solana";
+  chain: EscrowChain;
   feeBasisPoints: 200;
   withdrawalFeeBasisPoints: 1000;
   feeMode: "deduct-from-gross";
   deployments: EscrowDeployment[];
 }
 export declare const MIN_PRODUCTION_BINDING_DELAY: number;
+export declare const MIN_PRODUCTION_ROTATION_DELAY: number;
+export interface EscrowNetwork {
+  chain: EscrowChain;
+  family: EscrowFamily;
+  testnet: boolean;
+  chainId?: string;
+  asset: string | null;
+  assetSymbol: string;
+  /** EVM only: executor gas ceiling in gas units, decimal string. */
+  gasCeiling?: string;
+  /** EVM only: blocks per eth_getLogs page, inclusive, decimal string. */
+  scanPageBlocks?: string;
+}
 export declare const ESCROW_NETWORKS: Readonly<
-  Record<
-    EscrowDeployment["network"],
-    {
-      chain: "base" | "solana";
-      testnet: boolean;
-      chainId?: string;
-      asset: string | null;
-    }
-  >
+  Record<EscrowDeployment["network"], EscrowNetwork>
 >;
+export declare const ESCROW_CHAINS: readonly EscrowChain[];
+export declare const EVM_CHAINS: readonly EscrowChain[];
+export declare function isEscrowChain(value: unknown): value is EscrowChain;
+export declare function chainFamily(chain: string): EscrowFamily;
 export declare function assertEscrowPolicy(value: unknown): EscrowPolicy;
 export declare function assertEscrowTransition(
   previous: EscrowPolicy | undefined,

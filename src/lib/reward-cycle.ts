@@ -11,6 +11,7 @@ import {
   deriveAllocationFundingBasis,
   LAST_LEGACY_CAP_CYCLE,
 } from "./allocation-funding";
+import { fundingAssetForNetwork } from "./funding-address.mjs";
 import type { LeaderboardSnapshot } from "./leaderboard";
 import { createProjectView } from "./project-view";
 import type { ProjectId } from "./projects.mjs";
@@ -24,6 +25,7 @@ import {
   MINIMUM_TRANSFER_MINOR,
   REVIEW_WINDOW_DAYS,
   type RewardAllocationManifest,
+  type SettlementNetwork,
   type UnsafeDestinationReport,
   type WalletProof,
 } from "./rewards";
@@ -45,6 +47,11 @@ export interface CreateRewardCycleProposalInput {
   fundingBasis?: AllocationFundingBasis;
   /** Reconstruction only: immutable trial records predate instrument binding. */
   legacyCapMinor?: string;
+  /**
+   * Reconstruction only: the settlement network the reviewed proposal froze.
+   * A later manifest change must not rewrite a closed cycle (PAY-09).
+   */
+  frozenChain?: SettlementNetwork;
   priorUnsafeDestinationReports?: ReadonlyMap<
     string,
     UnsafeDestinationReport[]
@@ -284,10 +291,15 @@ export function createRewardCycleProposal(
 
   if (!fundingBasis)
     throw new TypeError("Monthly proposal needs a funding basis");
-  // The proposal freezes the project's settlement network for this cycle.
-  const chain = view.project.reward.chain;
+  // The proposal freezes the project's settlement network for this cycle;
+  // reconstruction reuses the frozen value, never today's manifest.
+  const chain = input.frozenChain ?? view.project.reward.chain;
   if (chain === null)
     throw new TypeError("Monthly proposal needs a settlement network");
+  if (fundingAssetForNetwork(chain) !== "USDC")
+    throw new TypeError(
+      "The monthly reward rail settles USDC on Base or Solana only",
+    );
   // A previously reviewed balance survives a quiet month, so carried-only
   // actors get their own allocation rows after the leaders.
   const leaderIds = new Set(view.leaders.map((leader) => leader.actor.id));

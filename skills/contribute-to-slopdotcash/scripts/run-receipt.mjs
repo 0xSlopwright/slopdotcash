@@ -36,7 +36,10 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { createSkillAuthorizationProgram } from "./skill-authority.mjs";
+import {
+  createSkillAuthorizationProgram,
+  pythonRuntimeProbe,
+} from "./skill-authority.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const skillDirectory = resolve(scriptDirectory, "..");
@@ -1074,8 +1077,31 @@ export function authorizeSkill(
         readFileSync(join(skillDirectory, path)).toString("base64"),
       ]),
   );
+  const environment = executionEnvironmentWithGitHub();
+  const requiresHttpsTrust =
+    !testAuthority ||
+    [testAuthority.apiOrigin, testAuthority.rawOrigin].some(
+      (value) => new URL(value).protocol === "https:",
+    );
+  const pythonProbe = pythonRuntimeProbe(requiresHttpsTrust);
+  const python = ["python3", "python"].find(
+    (candidate) =>
+      spawnSync(candidate, ["-c", pythonProbe], {
+        encoding: "utf8",
+        env: environment,
+        stdio: "ignore",
+        timeout: 10_000,
+      }).status === 0,
+  );
+  if (!python) {
+    fail(
+      requiresHttpsTrust
+        ? "Python 3 with a usable HTTPS CA trust store is required for fresh skill authorization"
+        : "Python 3 is required for fresh skill authorization",
+    );
+  }
   const result = spawnSync(
-    "python3",
+    python,
     ["-c", createSkillAuthorizationProgram(testAuthority)],
     {
       input: JSON.stringify({
@@ -1086,7 +1112,7 @@ export function authorizeSkill(
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: 10 * 60_000,
-      env: executionEnvironmentWithGitHub(),
+      env: environment,
     },
   );
   if (result.status !== 0 || result.signal || result.error) {
@@ -1101,14 +1127,27 @@ export function authorizeSkill(
 }
 
 function executionEnvironmentWithGitHub() {
+  // Proxy-only hosts reach GitHub through the standard proxy variables; the
+  // authority check honours them, so pass exactly those and nothing else.
+  const allowed = [
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+  ];
   return {
     ...executionEnvironment(),
     ...Object.fromEntries(
-      ["GH_TOKEN", "GITHUB_TOKEN", "SSL_CERT_FILE", "SSL_CERT_DIR"].flatMap(
-        (name) =>
-          typeof process.env[name] === "string"
-            ? [[name, process.env[name]]]
-            : [],
+      allowed.flatMap((name) =>
+        typeof process.env[name] === "string"
+          ? [[name, process.env[name]]]
+          : [],
       ),
     ),
   };
