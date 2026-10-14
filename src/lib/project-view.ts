@@ -19,7 +19,7 @@ import type {
   ScoreOpportunity,
   WorkItem,
 } from "./leaderboard";
-import { SCORE_CAPS } from "./leaderboard";
+import { assignLeaderboardRanks, SCORE_CAPS } from "./leaderboard";
 import {
   findProject,
   type ProjectDefinition,
@@ -597,9 +597,11 @@ export function createProjectView(
       right.score - left.score ||
       compareActors(left.actor, right.actor),
   );
-  leaders.forEach((entry, index) => {
-    entry.rank = index + 1;
-  });
+  // Preserve allocation order because frozen payment intent IDs use its index.
+  const scoreLeaders = [...leaders].sort(
+    (left, right) => right.scoreThirds - left.scoreThirds,
+  );
+  assignLeaderboardRanks(scoreLeaders);
 
   const opportunities = snapshot.opportunities
     .filter((opportunity) => repositoryIds.has(opportunity.repository))
