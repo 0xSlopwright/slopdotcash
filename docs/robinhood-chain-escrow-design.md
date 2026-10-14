@@ -22,12 +22,22 @@ Every value below was read from a primary source on the date given. Re-verify be
 | USDG token (mainnet) | `0x5fc5360d0400a0fd4f2af552add042d716f1d168` | Robinhood docs, Token Contracts page; Paxos docs, USDG mainnet guide (both list this address) |
 | USDG metadata on chain | name "Global Dollar", symbol USDG, `decimals() == 6` | `eth_call` on the mainnet RPC |
 | USDG contract shape | ERC-1967 proxy; implementation `0x68184c449e1a8f34fa18d289737129fd27b66f8f`; `paused()` false; Paxos freeze interface present | `eth_getCode`, `eth_getStorageAt` (implementation slot), `eth_call` |
-| USDG on testnet | none; no code at the mainnet address on 46630, no faucet distributes USDG | `eth_getCode` on the testnet RPC; Robinhood and Paxos docs |
+| USDG on testnet | Paxos test USDG at `0x7e955252e15c84f5768b83c41a71f9eba181802f` (ERC-1967 proxy, implementation `0xf0863d7a29a55d0c4263c11bfac754312ff078df`, name "Global Dollar", symbol USDG, `decimals() == 6`, `paused()` false); the mainnet address has no code on 46630; no primary source states how to obtain test USDG on this testnet | Paxos docs, USDG testnet guide; `eth_getCode`, `eth_getStorageAt` (implementation slot) and `eth_call` on the testnet RPC, re-read 13 October 2026 |
 | Finality tags | the RPC serves `safe` and `finalized`; `finalized` ran about 18 minutes behind head | `eth_getBlockByNumber` with each tag |
 | Finality model | soft confirmation from the sequencer, then posted to Ethereum, then Ethereum finality | Robinhood docs, Transaction Finality page |
 | `block.number` opcode | returns an estimate of the Ethereum block number, not the L2 block | Robinhood docs, Differences from Ethereum page |
 | Gas estimation | `eth_estimateGas` folds the Ethereum data-posting fee into the returned gas units | Robinhood docs, Gas and Fees page |
 | Base fee recipient `0x8f77c37d8650776bfe73c9b12b15209ee15d9b86` | plain account, no code and no transactions on Base or Robinhood Chain | `eth_getCode` and `eth_getTransactionCount` on both RPCs |
+
+Primary sources: Robinhood docs pages [Connecting](https://docs.robinhood.com/chain/connecting), [Token Contracts](https://docs.robinhood.com/chain/contracts), [Transaction Finality](https://docs.robinhood.com/chain/transaction-finality), [Differences from Ethereum](https://docs.robinhood.com/chain/differences-from-ethereum) and [Gas and Fees](https://docs.robinhood.com/chain/gas-and-fees); Paxos [USDG testnet guide](https://docs.paxos.com/guides/stablecoin/usdg/testnet). Each on-chain row can be reproduced with a JSON-RPC call to the public endpoint named in the table, for example:
+
+```bash
+curl -s -H 'content-type: application/json' https://rpc.testnet.chain.robinhood.com \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"0x7e955252e15c84f5768b83c41a71f9eba181802f","data":"0x313ce567"},"latest"]}'
+# result ends in 06: six decimals
+```
+
+The testnet design below keeps a reviewed six-decimal test token per deployment (`asset: null`, symbol TEST), because no primary source confirms a way to obtain test USDG on Robinhood Chain Testnet in the amounts the acceptance scenario needs. If the runbook confirms a supply route, the registry may pin the Paxos test USDG address instead. That change is a reviewed registry edit, not a silent substitution.
 
 The escrow contract reads `block.timestamp` and `block.chainid` only. It never reads `block.number`, so the Arbitrum block-number semantics do not affect award ids, binding delays, or rotation delays. RPC block numbers used by the adapter, scanner and reconciler are L2 block numbers and stay consistent with each other.
 

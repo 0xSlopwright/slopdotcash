@@ -210,7 +210,7 @@ function selectDeployment(
 /**
  * Public chain identity check runs before the hosted worker reads its signer
  * secret. A deployment is accepted only when it is an EVM registry testnet
- * whose chain id matches the registry, or the local Anvil chain under the
+ * whose chain and chain id both match the registry, or the local Anvil chain under the
  * integration override; every mainnet network is rejected here.
  */
 export async function preflightEvmDeployment(
@@ -227,6 +227,7 @@ export async function preflightEvmDeployment(
   const reviewedTestnet =
     policy !== undefined &&
     policy.family === "evm" &&
+    policy.chain === selected.chain &&
     policy.testnet &&
     policy.chainId === selected.chainId;
   const localChain =
