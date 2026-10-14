@@ -602,6 +602,9 @@ try {
   ]);
   await rpc("anvil_mine", ["0x40"]);
   await scan();
+  // The award waits bindingDelay after its commit before any payment can be signed.
+  await rpc("evm_increaseTime", [Number(delay)]);
+  await rpc("anvil_mine", ["0x1"]);
   sql
     .prepare(
       "INSERT INTO payment_attempts(id,obligation_id,claim_id,created_at,state) VALUES('unsigned-old',?,'claim',?,'unknown')",

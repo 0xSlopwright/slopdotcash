@@ -151,18 +151,14 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
       new anchor.BN(0),
       Keypair.generate().publicKey,
       [...Buffer.from(hash("owner-plan-claim"), "hex")],
+      new anchor.BN(Math.floor(Date.now() / 1000) + 3600),
     )
     .accountsStrict({
       payer: owner.publicKey,
       identityAuthority: identity.publicKey,
       project,
       binding: PublicKey.findProgramAddressSync(
-        [
-          Buffer.from("wallet"),
-          identity.publicKey.toBuffer(),
-          Buffer.from(deployment.networkDomain, "hex"),
-          actor,
-        ],
+        [Buffer.from("wallet"), project.toBuffer(), actor],
         programId,
       )[0],
       systemProgram: anchor.web3.SystemProgram.programId,

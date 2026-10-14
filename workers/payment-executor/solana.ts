@@ -7,6 +7,8 @@ import type {
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import {
   BINDING_SIZE,
+  OBLIGATION_DISCRIMINATOR,
+  OBLIGATION_SIZE,
   PROJECT_SIZE,
   type SolanaEscrowConfig,
   solanaAccount,
@@ -284,7 +286,12 @@ async function authorized(
     bytes(config.projectPda),
     solanaDigest(input.obligationId),
   ]);
-  const obligation = await read(config, awardAddress, 137, "a8ce8d6a584caca7");
+  const obligation = await read(
+    config,
+    awardAddress,
+    OBLIGATION_SIZE,
+    OBLIGATION_DISCRIMINATOR,
+  );
   if (
     !obligation ||
     solanaPubkey(obligation, 48) !== config.projectPda ||
@@ -297,10 +304,10 @@ async function authorized(
       solanaUint(obligation, 8)
   )
     throw new Error("Finalized award mismatch");
+  // Bindings are per project: seeds are the project PDA and the actor.
   const bindingAddress = pda(config.programId, [
     encoder.encode("wallet"),
-    project.slice(104, 136),
-    project.slice(72, 104),
+    bytes(config.projectPda),
     le(BigInt(input.githubUserId)),
   ]);
   const binding = await read(
@@ -474,6 +481,8 @@ export function createSolanaAttester(
         );
       if (!ctx.binding) await holdSuccessorClaim(env, input);
       const version = ctx.binding ? solanaUint(ctx.binding, 144) : 0n;
+      // Submission expiry only; the binding itself has no expiry (see contracts/solana/README.md).
+      const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 3600);
       const ix: Instruction = {
         program: ctx.config.programId,
         accounts: [
@@ -490,11 +499,27 @@ export function createSolanaAttester(
           le(version),
           bytes(input.destination),
           solanaDigest(input.claimDigest),
+          le(expiresAt),
         ),
       };
       return send(env, ctx, input, "attester", [ix]);
     },
   };
+}
+/**
+ * Unix time of the latest confirmed block. A payment executes in a later slot, whose
+ * clock is not earlier, so this never runs ahead of the program's clock.
+ */
+async function confirmedChainTime(config: SolanaEscrowConfig): Promise<bigint> {
+  const slot = await solanaRpc(config, "getSlot", [
+    { commitment: "confirmed" },
+  ]);
+  if (typeof slot !== "number" || !Number.isSafeInteger(slot))
+    throw new Error("Invalid confirmed slot");
+  const time = await solanaRpc(config, "getBlockTime", [slot]);
+  if (typeof time !== "number" || !Number.isSafeInteger(time))
+    throw new Error("Confirmed block time unavailable");
+  return BigInt(time);
 }
 export function createSolanaExecutor(
   env: SolanaExecutorEnvironment,
@@ -511,11 +536,21 @@ export function createSolanaExecutor(
         await env.ATTESTER.submit(input);
         throw new Error("Destination binding awaiting finality");
       }
+      // The program pays only the latest binding, which is the claimed destination.
+      // Delays are compared with the chain clock, not the host clock: the program uses
+      // the chain clock, and an early transaction would fail and block retries.
       const version = solanaUint(ctx.binding, 144);
-      const activatesAt = int64(ctx.binding, 152) + int64(ctx.project, 249);
-      if (BigInt(Math.floor(Date.now() / 1000)) < activatesAt)
+      const delay = int64(ctx.project, 249);
+      const now = await confirmedChainTime(ctx.config);
+      const activatesAt = int64(ctx.binding, 152) + delay;
+      if (now < activatesAt)
         throw new Error(
           `Destination binding activates at ${new Date(Number(activatesAt) * 1000).toISOString()}; retry after activation`,
+        );
+      const payableAt = int64(ctx.obligation, 137) + delay;
+      if (now < payableAt)
+        throw new Error(
+          `Award is inside its commit delay until ${new Date(Number(payableAt) * 1000).toISOString()}; retry after it ends`,
         );
       const veto = pda(ctx.config.programId, [
         encoder.encode("veto"),
@@ -541,7 +576,7 @@ export function createSolanaExecutor(
         accounts: [
           { key: ctx.config.projectPda, write: true },
           { key: ctx.awardAddress, write: true },
-          { key: ctx.bindingAddress, write: false },
+          { key: ctx.bindingAddress, write: true },
           { key: ctx.config.mint, write: false },
           { key: ctx.config.vault, write: true },
           { key: ata(ctx.config.mint, input.destination), write: true },

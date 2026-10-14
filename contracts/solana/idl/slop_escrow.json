@@ -34,11 +34,7 @@
               },
               {
                 "kind": "account",
-                "path": "identity_authority"
-              },
-              {
-                "kind": "arg",
-                "path": "network"
+                "path": "project"
               },
               {
                 "kind": "arg",
@@ -76,6 +72,10 @@
           "type": {
             "array": ["u8", 32]
           }
+        },
+        {
+          "name": "expires_at",
+          "type": "i64"
         }
       ]
     },
@@ -403,7 +403,25 @@
           "writable": true
         },
         {
-          "name": "binding"
+          "name": "binding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [119, 97, 108, 108, 101, 116]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "account",
+                "path": "obligation.actor_id",
+                "account": "Obligation"
+              }
+            ]
+          }
         },
         {
           "name": "mint",
@@ -427,6 +445,9 @@
         },
         {
           "name": "destination",
+          "docs": [
+            "The handler requires this to be the associated token account of whichever binding pays."
+          ],
           "writable": true
         },
         {
@@ -484,7 +505,24 @@
           "name": "project"
         },
         {
-          "name": "binding"
+          "name": "binding",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [119, 97, 108, 108, 101, 116]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "actor_id"
+              }
+            ]
+          }
         },
         {
           "name": "veto",
@@ -509,6 +547,14 @@
               }
             ]
           }
+        },
+        {
+          "name": "obligation",
+          "docs": [
+            "An unpaid award to this actor in this project whose commit delay has not passed;",
+            "it extends the veto window to that award's commit delay."
+          ],
+          "optional": true
         },
         {
           "name": "system_program",
@@ -691,12 +737,32 @@
     {
       "code": 6011,
       "name": "BindingActive",
-      "msg": "Wallet binding is already active"
+      "msg": "Wallet binding has paid or its veto window has closed"
     },
     {
       "code": 6012,
       "name": "WrongDestination",
       "msg": "Destination must be the bound wallet's associated token account"
+    },
+    {
+      "code": 6013,
+      "name": "AwardPending",
+      "msg": "Award is still inside its commit delay"
+    },
+    {
+      "code": 6014,
+      "name": "VetoLimit",
+      "msg": "Owner veto limit reached since the actor's last payment"
+    },
+    {
+      "code": 6015,
+      "name": "InvalidDelay",
+      "msg": "Binding delay must be between one hour and 30 days"
+    },
+    {
+      "code": 6016,
+      "name": "BindingExpired",
+      "msg": "Binding submission expired"
     }
   ],
   "types": [
@@ -845,6 +911,10 @@
           {
             "name": "paid",
             "type": "bool"
+          },
+          {
+            "name": "committed_at",
+            "type": "i64"
           }
         ]
       }
@@ -1003,6 +1073,10 @@
     },
     {
       "name": "WalletBinding",
+      "docs": [
+        "One binding per project and actor, so each project's delay, vetoes and payments are",
+        "its own. The first seven fields are the latest binding, the only one that can pay."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
@@ -1037,6 +1111,18 @@
           {
             "name": "bound_at",
             "type": "i64"
+          },
+          {
+            "name": "paid_version",
+            "docs": [
+              "The version the last payment in this project used; 0 before the first payment."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "veto_count",
+            "docs": ["Vetoes recorded since the last payment in this project."],
+            "type": "u8"
           }
         ]
       }
