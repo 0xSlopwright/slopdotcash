@@ -66,7 +66,7 @@
     "verify:code": "bun run typecheck && bun run lint:check && bun run test:scripts && bun run test:slopbot && bun test ./scripts/staging-payments.test.ts",
     "payments:deployments": "bun scripts/prepare-payment-deployments.ts",
     "test:contracts:base": "bun contracts/evm/adapter.integration.ts",
-    "test:payments": "bun backend/payments/base.integration.ts",
+    "test:payments": "bun backend/payments/base.integration.ts && bun workers/payments/recovery.integration.ts",
     "rewards:propose-escrow": "bun scripts/prepare-escrow-cycle.ts",
     "rewards:plan-escrow": "bun scripts/prepare-escrow-commitments.ts",
     "build:contracts:solana": "bash contracts/solana/scripts/build-local.sh",
