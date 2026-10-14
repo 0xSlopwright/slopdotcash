@@ -45,6 +45,7 @@ const key = (x) => x.toBuffer();
 const seed = (s) => Buffer.from(s);
 const actorSeed = (id) => bn(id).toArrayLike(Buffer, "le", 8);
 const DELAY = 8;
+const ROTATION_DELAY = 4;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // The program reads the validator clock, which can lag wall time on a loaded host.
 // Wait until the validator clock itself has moved past the binding delay.
@@ -57,6 +58,9 @@ async function activate() {
   while ((await chainTime()) < target) await sleep(500);
 }
 const authority = Keypair.generate();
+const nextAuthority = Keypair.generate();
+// The identity authority in force; the rotation test below moves it to nextAuthority.
+let currentAuthority = authority;
 const feeOwner = Keypair.generate();
 const recipient = Keypair.generate();
 const late = Keypair.generate();
@@ -109,26 +113,58 @@ async function commit(
     })
     .rpc();
 }
+// The authority and the destination keypair both sign; the program reads the
+// destination from its signer account. `expiresAt` limits submission only.
 async function bind(
   actor,
-  address,
+  wallet,
   expected = 0,
   domain = network,
-  claim = hash(`claim:${actor}:${expected}`),
-  expiresAt = expiry(),
+  {
+    claim = hash(`claim:${actor}:${expected}`),
+    expiresAt = expiry(),
+    signer = currentAuthority,
+    cosigners = [wallet],
+  } = {},
 ) {
   return program.methods
-    .bindWallet(bn(actor), domain, bn(expected), address, claim, expiresAt)
+    .bindWallet(bn(actor), domain, bn(expected), claim, expiresAt)
     .accountsStrict({
       payer: payer.publicKey,
-      identityAuthority: authority.publicKey,
+      identityAuthority: signer.publicKey,
+      destination: wallet.publicKey,
       project,
       binding: binding(actor),
       systemProgram: SystemProgram.programId,
     })
-    .signers([authority])
+    .signers([signer, ...cosigners])
     .rpc();
 }
+const rotation = {
+  propose: (next, signer = payer) =>
+    program.methods
+      .proposeAuthorityRotation(next)
+      .accountsStrict({ owner: signer.publicKey, project })
+      .signers(signer === payer ? [] : [signer])
+      .rpc(),
+  confirm: (signer = feeOwner) =>
+    program.methods
+      .confirmAuthorityRotation()
+      .accountsStrict({ feeRecipient: signer.publicKey, project })
+      .signers(signer === payer ? [] : [signer])
+      .rpc(),
+  cancel: (signer = payer) =>
+    program.methods
+      .cancelAuthorityRotation()
+      .accountsStrict({ owner: signer.publicKey, project })
+      .signers(signer === payer ? [] : [signer])
+      .rpc(),
+  execute: () =>
+    program.methods
+      .executeAuthorityRotation()
+      .accountsStrict({ project })
+      .rpc(),
+};
 const veto = (actor, version) =>
   pda(seed("veto"), key(project), actorSeed(actor), actorSeed(version));
 async function payInstruction(id, actor, address, version = 1) {
@@ -263,6 +299,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
       authority.publicKey,
       feeOwner.publicKey,
       bn(DELAY),
+      bn(ROTATION_DELAY),
     )
     .accountsStrict({
       owner: payer.publicKey,
@@ -301,35 +338,25 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
   );
   // Let both awards pass their commit delay so the binding delay is what rejects.
   await activate();
-  await bind(101, recipient.publicKey);
+  // The authority alone cannot bind a wallet it does not hold: without the
+  // destination's signature the transaction never verifies.
+  await assert.rejects(bind(101, recipient, 0, network, { cosigners: [] }));
+  // The destination alone cannot bind itself either.
+  await assert.rejects(
+    bind(101, recipient, 0, network, { signer: recipient, cosigners: [] }),
+  );
+  await bind(101, recipient);
   await assert.rejects(pay("first", 101, destination), /BindingPending/);
   await activate();
   await assert.rejects(vetoBinding(101, 1), /BindingActive/);
-  await assert.rejects(bind(101, late.publicKey), /StaleBinding/);
-  await assert.rejects(bind(102, late.publicKey, 0, hash("different-network")));
+  await assert.rejects(bind(101, late), /StaleBinding/);
+  await assert.rejects(bind(102, late, 0, hash("different-network")));
   await assert.rejects(
     pay("first", 101, lateDestination),
     /ConstraintRaw|WrongDestination/,
   );
-  await assert.rejects(
-    program.methods
-      .bindWallet(
-        bn(101),
-        network,
-        bn(1),
-        late.publicKey,
-        hash("bad-claim"),
-        expiry(),
-      )
-      .accountsStrict({
-        payer: payer.publicKey,
-        identityAuthority: payer.publicKey,
-        project,
-        binding: binding(101),
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc(),
-  );
+  // A co-signing wallet with a non-authority signer is still rejected.
+  await assert.rejects(bind(101, late, 1, network, { signer: payer }));
   await freezeAccount(provider.connection, payer, destination, mint, payer);
   await assert.rejects(pay("first", 101, destination));
   assert.equal(await balance(feeAccount), 0n);
@@ -377,7 +404,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     wrongMint,
     late.publicKey,
   );
-  await bind(102, late.publicKey);
+  await bind(102, late);
   await activate();
   await assert.rejects(
     pay("late", 102, wrongDestination),
@@ -416,8 +443,9 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
   assert.equal(await balance(source), 747_000_000n);
   assert.equal(await balance(feeAccount), 105_000_000n);
   await assert.rejects(withdraw(1), /InsufficientFreeBalance/);
-  // A stolen authority key rebinds actor 102 to a thief. Only the owner can
-  // veto it, and only while it is pending; the vetoed version never pays.
+  // A stolen authority key rebinds actor 102 to a thief, who must expose a
+  // wallet by co-signing. Only the owner can veto it, and only while it is
+  // pending; the vetoed version never pays.
   const thief = Keypair.generate();
   const thiefDestination = await createAccount(
     provider.connection,
@@ -425,7 +453,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     mint,
     thief.publicKey,
   );
-  await bind(102, thief.publicKey, 1);
+  await bind(102, thief, 1);
   // Fund the identity key so the owner check, not rent, rejects its veto.
   await sendAndConfirmTransaction(
     provider.connection,
@@ -443,7 +471,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
   await activate();
   await assert.rejects(pay("late", 102, thiefDestination, 2), /BindingVetoed/);
   assert.equal(await balance(thiefDestination), 0n);
-  await bind(102, recipient.publicKey, 2);
+  await bind(102, recipient, 2);
   // Actor 102 has never been paid, so nothing pays while version 3 is pending.
   await assert.rejects(pay("late", 102, destination, 2), /BindingPending/);
   await activate();
@@ -515,6 +543,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     feeRecipient: feeOwner.publicKey.toBase58(),
     ...expectedDeployment,
     bindingDelaySeconds: String(DELAY),
+    rotationDelaySeconds: String(ROTATION_DELAY),
   });
   for (const [signature, kind] of [
     [firstCommit, "reserved"],
@@ -563,6 +592,89 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     /InsufficientFreeBalance/,
   );
   assert.equal(await balance(vault), 1_000_000n);
+  // Identity authority rotation: the owner proposes, the fee recipient
+  // confirms, anyone executes after the delay, and the current authority has
+  // no instruction that stops it. Existing bindings survive the rotation.
+  await mintTo(provider.connection, payer, mint, source, payer, 20_000_000n);
+  await program.methods
+    .deposit(bn(20_000_000))
+    .accountsStrict({
+      owner: payer.publicKey,
+      project,
+      mint,
+      source,
+      vault,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .rpc();
+  await commit("again", 101, 5_000_000);
+  await commit("rotated", 104, 10_000_000);
+  await assert.rejects(rotation.execute(), /NoRotationPending/);
+  await assert.rejects(rotation.confirm(), /NoRotationPending/);
+  await assert.rejects(rotation.cancel(), /NoRotationPending/);
+  await assert.rejects(rotation.propose(payer.publicKey), /InvalidIdentity/);
+  await assert.rejects(rotation.propose(feeOwner.publicKey), /InvalidIdentity/);
+  await assert.rejects(
+    rotation.propose(authority.publicKey),
+    /InvalidIdentity/,
+  );
+  await assert.rejects(
+    rotation.propose(nextAuthority.publicKey, authority),
+    /ConstraintHasOne/,
+  );
+  await rotation.propose(nextAuthority.publicKey);
+  let rotated = await program.account.project.fetch(project);
+  assert.equal(
+    rotated.pendingIdentityAuthority.toBase58(),
+    nextAuthority.publicKey.toBase58(),
+  );
+  assert.equal(rotated.rotationConfirmed, false);
+  await assert.rejects(
+    rotation.propose(Keypair.generate().publicKey),
+    /RotationPending/,
+  );
+  await assert.rejects(rotation.execute(), /RotationUnconfirmed/);
+  await assert.rejects(rotation.confirm(authority), /ConstraintHasOne/);
+  await rotation.cancel();
+  await assert.rejects(rotation.execute(), /NoRotationPending/);
+  await rotation.propose(nextAuthority.publicKey);
+  await rotation.confirm();
+  await assert.rejects(rotation.confirm(), /RotationConfirmed/);
+  await assert.rejects(rotation.execute(), /RotationNotReady/);
+  // The current authority still binds while the proposal waits.
+  await bind(104, late);
+  await sleep((ROTATION_DELAY + 2) * 1000);
+  await rotation.execute();
+  rotated = await program.account.project.fetch(project);
+  assert.equal(
+    rotated.identityAuthority.toBase58(),
+    nextAuthority.publicKey.toBase58(),
+  );
+  assert.equal(
+    rotated.pendingIdentityAuthority.toBase58(),
+    SystemProgram.programId.toBase58(),
+  );
+  currentAuthority = nextAuthority;
+  await assert.rejects(
+    bind(104, late, 1, network, { signer: authority }),
+    /ConstraintHasOne/,
+  );
+  // Bindings made before the rotation keep paying: actor 101 through its
+  // active version 1, actor 104 through the version bound during the window.
+  await activate();
+  await pay("again", 101, destination, 1);
+  assert.equal(await balance(destination), 151_900_001n);
+  await activate();
+  await pay("rotated", 104, lateDestination, 1);
+  assert.equal(await balance(lateDestination), 9_800_000n);
+  // The new authority binds the next version at the same PDA.
+  await bind(104, recipient, 1, network, { signer: nextAuthority });
+  assert.equal(
+    (
+      await program.account.walletBinding.fetch(binding(104))
+    ).version.toString(),
+    "2",
+  );
 });
 
 // Binding lifecycle after the 12 October 2026 review (M-1, M-2, L-1 to L-5).
@@ -590,7 +702,7 @@ test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay
     .rpc();
   // M-1: a binding armed before any award pays only after the award's own delay, and
   // the owner can veto it inside that window by naming the unpaid award.
-  await bind(201, walletA.publicKey);
+  await bind(201, walletA);
   await activate();
   await commit("m1", 201, 10_000_000);
   await assert.rejects(pay("m1", 201, ataA), /AwardPending/);
@@ -599,7 +711,7 @@ test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay
   await activate();
   await assert.rejects(pay("m1", 201, ataA), /BindingVetoed/);
   assert.equal(await balance(ataA), 0n);
-  await bind(201, walletA.publicKey, 1);
+  await bind(201, walletA, 1);
   await activate();
   await pay("m1", 201, ataA, 2);
   assert.equal(await balance(ataA), 9_800_000n);
@@ -614,7 +726,7 @@ test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay
   // therefore freezes payment to it at once.
   await commit("m2", 201, 10_000_000);
   await activate();
-  await bind(201, walletB.publicKey, 2);
+  await bind(201, walletB, 2);
   await assert.rejects(pay("m2", 201, ataB, 3), /BindingPending/);
   await assert.rejects(pay("m2", 201, ataA, 2), /BindingPending/);
   await vetoBinding(201, 3);
@@ -623,11 +735,11 @@ test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay
   await assert.rejects(pay("m2", 201, ataA, 2), /BindingVetoed/);
   // The veto cap applies between payments too: after the paid version, the owner
   // can veto three rotations, and the fourth pays once its delay passes.
-  await bind(201, walletB.publicKey, 3);
+  await bind(201, walletB, 3);
   await vetoBinding(201, 4);
-  await bind(201, walletB.publicKey, 4);
+  await bind(201, walletB, 4);
   await vetoBinding(201, 5);
-  await bind(201, walletB.publicKey, 5);
+  await bind(201, walletB, 5);
   await assert.rejects(vetoBinding(201, 6), /VetoLimit/);
   await activate();
   await assert.rejects(pay("m2", 201, ataA, 2), /StaleBinding/);
@@ -641,33 +753,38 @@ test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay
   // Veto cap: before the actor's first payment the owner gets three vetoes.
   await commit("c1", 202, 10_000_000);
   for (let version = 1; version <= 3; version++) {
-    await bind(202, walletC.publicKey, version - 1);
+    await bind(202, walletC, version - 1);
     await vetoBinding(202, version);
   }
   assert.equal(
     (await program.account.walletBinding.fetch(binding(202))).vetoCount,
     3,
   );
-  await bind(202, walletC.publicKey, 3);
+  await bind(202, walletC, 3);
   await assert.rejects(vetoBinding(202, 4), /VetoLimit/);
   await activate();
   await pay("c1", 202, ataC, 4);
   assert.equal(await balance(ataC), 9_800_000n);
   // L-4: bind_wallet rejects the project and vault PDAs, a zero claim digest and an
   // expired submission.
-  await assert.rejects(bind(203, project), /InvalidIdentity/);
-  await assert.rejects(bind(203, vault), /InvalidIdentity/);
+  // A PDA cannot co-sign, so the project and vault addresses never bind.
   await assert.rejects(
-    bind(203, walletD.publicKey, 0, network, Array(32).fill(0)),
+    bind(203, { publicKey: project }, 0, network, { cosigners: [] }),
+  );
+  await assert.rejects(
+    bind(203, { publicKey: vault }, 0, network, { cosigners: [] }),
+  );
+  await assert.rejects(
+    bind(203, walletD, 0, network, { claim: Array(32).fill(0) }),
     /InvalidIdentity/,
   );
   await assert.rejects(
-    bind(203, walletD.publicKey, 0, network, hash("claim"), bn(1)),
+    bind(203, walletD, 0, network, { expiresAt: bn(1) }),
     /BindingExpired/,
   );
   // L-2: a 49-unit award has a zero fee, so a frozen fee account does not stop it.
   await commit("zero-fee", 204, 49);
-  await bind(204, walletD.publicKey);
+  await bind(204, walletD);
   await activate();
   await freezeAccount(provider.connection, payer, feeAccount, mint, payer);
   const zeroFee = await pay("zero-fee", 204, ataD);
@@ -690,10 +807,12 @@ test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay
     vault: vault.toBase58(),
     mint: mint.toBase58(),
     owner: payer.publicKey.toBase58(),
+    // The authority at activation: verification continues after a rotation.
     identityAuthority: authority.publicKey.toBase58(),
     feeRecipient: feeOwner.publicKey.toBase58(),
     ...expectedDeployment,
     bindingDelaySeconds: String(DELAY),
+    rotationDelaySeconds: String(ROTATION_DELAY),
   });
   const zeroFeeEvidence = await zeroFeeAdapter.verifyFinalized({
     transactionId: zeroFee,
@@ -713,7 +832,14 @@ test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay
     const id = hash(`bounds:${label}:${delay}${RUN}`);
     const p = pda(seed("project"), key(payer.publicKey), Buffer.from(id));
     return program.methods
-      .initialize(id, network, authority.publicKey, feeRecipient, bn(delay))
+      .initialize(
+        id,
+        network,
+        authority.publicKey,
+        feeRecipient,
+        bn(delay),
+        bn(ROTATION_DELAY),
+      )
       .accountsStrict({
         owner: payer.publicKey,
         project: p,

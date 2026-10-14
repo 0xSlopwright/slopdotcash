@@ -5,6 +5,7 @@ import type {
 } from "../../backend/payments/dispatch";
 import {
   buildPaymentWalletMessage,
+  verifyBaseBindingSignature,
   verifyPaymentWalletSignature,
 } from "../../backend/payments/possession";
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
@@ -59,6 +60,9 @@ interface Deployment {
   feeRecipient: string;
   codeSha256: string;
   bindingDelaySeconds: string;
+  factory: string;
+  factoryCodeSha256: string;
+  registrar: string;
 }
 export interface Authorization extends DispatchPayment {
   projectId: string;
@@ -462,18 +466,48 @@ export function createBaseAttester(env: ExecutorEnvironment): PaymentExecutor {
       if (current.version !== "0")
         await authorizeWalletRotation(env, input, current.claimDigest);
       else await holdSuccessorClaim(env, input);
+      // The destination wallet's own EIP-712 signature over this exact binding,
+      // collected by the account API. The attester submits it unchanged and
+      // cannot bind without it.
+      const accepted = await env.PAYMENTS_DB.prepare(
+        "SELECT expires_at expiresAt,signature FROM payment_binding_authorizations WHERE claim_id=? AND github_user_id=? AND network=? AND vault=? AND chain_id=? AND expected_version=? AND CAST(expires_at AS INTEGER)>? ORDER BY CAST(expires_at AS INTEGER) DESC LIMIT 1",
+      )
+        .bind(
+          input.claimId,
+          input.githubUserId,
+          input.network,
+          input.vault.toLowerCase(),
+          deployment.chainId,
+          current.version,
+          Math.floor(Date.now() / 1000) + 600,
+        )
+        .first<{ expiresAt: string; signature: string }>();
+      if (!accepted)
+        throw new Error(
+          `Destination wallet signature required for binding version ${current.version}`,
+        );
+      const request = {
+        githubUserId: input.githubUserId,
+        destination: input.destination,
+        expectedVersion: current.version,
+        claimDigest: `0x${input.claimDigest}`,
+        expiresAt: accepted.expiresAt,
+      };
+      if (
+        !verifyBaseBindingSignature(
+          BigInt(deployment.chainId),
+          deployment.vault,
+          request,
+          accepted.signature,
+        )
+      )
+        throw new Error("Destination wallet signature rejected");
       return signAndSubmit(
         env,
         deployment,
         key,
         fingerprint,
-        buildBindCalldata({
-          githubUserId: input.githubUserId,
-          destination: input.destination,
-          expectedVersion: current.version,
-          claimDigest: `0x${input.claimDigest}`,
-          expiresAt: String(Math.floor(Date.now() / 1000) + 3600),
-        }),
+        buildBindCalldata({ ...request, walletSignature: accepted.signature }),
         input,
       );
     },
