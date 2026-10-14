@@ -1,10 +1,13 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
-import { verifyRewardSettlementOnchain } from "./solana-settlement";
+import {
+  verifyRewardSettlementOnchain,
+  type VerifiedSolanaTransaction,
+} from "../src/lib/solana-settlement";
 import {
   createSettlementExecutionPlan,
   SOLANA_MAINNET_USDC_MINT,
-} from "./settlement-plan";
+} from "../src/lib/settlement-plan";
 
 // Deterministic 32-byte Solana public keys, validated with isSolanaAddress.
 const SOURCE_OWNER = "8WAca8hqqN3XfBGcvgX8mTEKTUQyVAHUNRtyCcbkPo3y";
@@ -201,11 +204,15 @@ describe("verifyRewardSettlementOnchain Solana pre-plan replay guard", () => {
       ),
     });
     expect(verified).toHaveLength(1);
-    expect(verified[0].signature).toBe(POSITIVE_SIGNATURE);
-    expect(verified[0].blockTime).toBe(POST_PLAN_BLOCK_TIME);
+    // This test only exercises the Solana path, so every entry is a
+    // VerifiedSolanaTransaction; narrow the union before reading .signature
+    // (VerifiedBaseSettlementTransaction carries transactionHash instead).
+    const [transaction] = verified as [VerifiedSolanaTransaction];
+    expect(transaction.signature).toBe(POSITIVE_SIGNATURE);
+    expect(transaction.blockTime).toBe(POST_PLAN_BLOCK_TIME);
   });
 
-  it("routes the attempt through the plan's contributor transfer intent map", async () => {
+  it("rejects an attempt whose intent id is not covered by the settlement", async () => {
     // Sanity: the generated plan really carries the contributor transfer the
     // attempts reference, so the positive control above cannot be a no-op.
     const contributor = plan.transfers.find(
@@ -214,9 +221,11 @@ describe("verifyRewardSettlementOnchain Solana pre-plan replay guard", () => {
     expect(contributor?.intentIds).toEqual([INTENT_ID]);
     expect(contributor?.recipientOwner).toBe(RECIPIENT_OWNER);
 
-    // An attempt whose intent id is not in the plan is rejected before any
-    // transaction is even fetched, proving the intent mapping is enforced on
-    // the real verification path.
+    // An attempt whose intent id is unknown is rejected before any
+    // transaction is even fetched. Note: the rejection surfaces from the
+    // settlement manifest validator (assertRewardSettlementManifest), not
+    // from the plan's contributor transfer intent map — the test proves the
+    // unknown-intent attempt cannot reach on-chain verification either way.
     const settlement = buildSettlement(SIGNATURE);
     settlement.attempts[0].intentIds = ["pay_unplanned"];
     const getTransaction = buildGetTransaction(SIGNATURE, POST_PLAN_BLOCK_TIME);
