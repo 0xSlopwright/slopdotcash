@@ -1,5 +1,6 @@
 /// <reference types="bun-types" />
 import { describe, expect, it } from "bun:test";
+import type { FundingCommitmentInstrument } from "../src/lib/funding-instruments.mjs";
 import {
   createSettlementExecutionPlan,
   SOLANA_MAINNET_USDC_MINT,
@@ -226,6 +227,11 @@ describe("verifyRewardSettlementOnchain project-vault fee chronology guard", () 
   const VAULT_MULTISIG = "8o2tb5h4xnYS66yMzTvrUiWPqqfmx3jHFVWCnnvFEz4N";
   const VAULT_OWNER = "5vdqwRwVvefAmFcA6qNvRK9fJbZywUgqr5X1GQ9n56e3";
   const CREATOR_OWNER = "3XjjCR7iWuri2c4WyaTK2PeFyxSig5eHjcDCratfKYYd";
+  // Deterministic fixture addresses for the remaining required
+  // SquadsProjectVaultInstrument fields (typecheck completeness only).
+  const CREATOR_MULTISIG = "CeJxxMwd6S5m97vVH3SDLvmzXQJJkD81VYUHMaD3pjy2";
+  const SLOP_MEMBER = "DbvZpGgxCVfkA5L5SVX73L6mVtUdBv8QubT3YkqMTXSm";
+  const INDEPENDENT_MEMBER = "5xL2TYyEcpLhfxQ53LWyYMg9nJuzpENpV867Akfp3vc3";
   const INSTRUMENT_ID = `squads-project-vault:solana:${VAULT_MULTISIG}:0:${VAULT_OWNER}`;
   const FEE_SIGNATURE =
     "4T2oWuVZDGcfDusJdVNsCD2kDs7kykWne7MHangMKZmT1gq61t6yokCN3mZyAd82imMuTbTS2PHmmcohgzFrwfgc";
@@ -248,15 +254,41 @@ describe("verifyRewardSettlementOnchain project-vault fee chronology guard", () 
     feeRecipient: FEE_RECIPIENT,
     sourceOwner: VAULT_OWNER,
   });
+  /** A complete reviewed project-vault instrument fixture. Only
+   * `kind`/`multisig`/`vaultIndex`/`vault` (ID matching) and `creatorMember`
+   * (required sender of the fee transfer) are exercised at runtime; the rest
+   * is `SquadsProjectVaultInstrument` typecheck completeness. */
   const fundingInstruments = [
     {
       kind: "squads-project-vault",
+      network: "solana",
+      asset: "USDC",
       multisig: VAULT_MULTISIG,
-      vaultIndex: 0,
       vault: VAULT_OWNER,
+      vaultIndex: 0,
+      creatorActorId: "fixture-creator-actor",
       creatorMember: CREATOR_OWNER,
+      creatorMultisig: CREATOR_MULTISIG,
+      creatorVaultIndex: 0,
+      slopMember: SLOP_MEMBER,
+      independentMember: INDEPENDENT_MEMBER,
+      independentGithub: {
+        actorId: "fixture-independent-actor",
+        nodeId: "fixture-independent-node",
+        login: "fixture-independent",
+      },
+      timeLockSeconds: 86_400,
+      fallbackWaitSeconds: 604_800,
+      monthlyCommitment: {
+        cycleId: "2026-07",
+        amountMinor: "1000000000",
+        accessibility: "unknown",
+      },
+      deadline: "2026-12-31T00:00:00.000Z",
+      effectiveAt: "2026-07-01T00:00:00.000Z",
+      replacedAt: null,
     },
-  ];
+  ] satisfies readonly FundingCommitmentInstrument[];
 
   /** A finalized fee transfer from the creator wallet to the fee recipient,
    * moving exactly the due fee, sealed at `blockTime`. */
