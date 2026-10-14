@@ -6,7 +6,7 @@ Date: 6 October 2026. Status: MVP scope submitted for adoption alongside [Slop P
 
 The MVP retains current product capabilities and completes account, project, contribution, review, discovery, funding, and payout journeys on Base and Solana, with Robinhood Chain as a third escrow settlement network (FND-02) that activates no project. It also requires optional participant-scoped Slopbot, Slop Score as the default leaderboard sort, issue/PR outcome metrics, closure penalties, admin featuring/bans, and mandatory community security vetting. Source availability is not proof of production readiness. Private security bounty programs, other Robinhood integrations, Ethereum mainnet settlement, bridges, swaps, and additional chains are future work.
 
-The maintainer-approved fee for new payout obligations is 2% deducted from the gross award: 100 USDC gross means 98 to the contributor and 2 fee. Reserve the 100 once, show net contributor earnings, and preserve recorded legacy terms. Actor-binding proof and execution authority remain separate approval gates.
+The maintainer-approved fee for new payout obligations is 2% deducted from the gross award: 100 USDC gross means 98 to the contributor and 2 fee. Reserve the 100 once, show net contributor earnings, and preserve recorded legacy terms. The repository owner approved the PAY-05 actor-binding proof and recovery authority (the bounded identity attester) on 14 October 2026; execution authority remains a separate approval gate.
 
 ## Implementation scope and phase exit
 
