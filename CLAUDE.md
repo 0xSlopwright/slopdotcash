@@ -340,7 +340,8 @@ claim copyright.
 
 ## Deployment
 
-`development` deploys to `staging.slop.cash`. Promote changes through a reviewed
+`development` is the default integration branch and deploys to `staging.slop.cash`.
+Promote changes through a reviewed
 PR from `development` to `main`. Only `main` deploys to `slop.cash`.
 Staging has a separate Pages project, D1 database, private R2 bucket, identity
 Worker, and secrets. Staging login and writes never use production storage.

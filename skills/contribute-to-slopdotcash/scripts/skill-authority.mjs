@@ -480,6 +480,13 @@ def compare_is_ancestor(old_revision, new_revision):
 
 `;
 
+/** One Python 3 qualification shared by installation and run/write gates. */
+export function pythonRuntimeProbe(requiresHttpsTrust) {
+  return requiresHttpsTrust
+    ? 'import os, re, ssl, sys; d = ssl.get_default_verify_paths().capath; raise SystemExit(0 if sys.version_info.major == 3 and (ssl.create_default_context().get_ca_certs() or (d and os.path.isdir(d) and any(re.fullmatch("[0-9a-f]{8}[.][0-9]+", n) for n in os.listdir(d)))) else 1)'
+    : "import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)";
+}
+
 /** Run the same source authorization without installing or changing a version. */
 export function createSkillAuthorizationProgram(testAuthority) {
   const authority = testAuthority ?? {

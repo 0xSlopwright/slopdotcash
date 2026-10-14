@@ -281,6 +281,18 @@ export function projectVaultPlatformFee(input: {
   state: "not-applicable" | "paid";
 } {
   if (input.feeTransfer) {
+    // The plan revalidator rebuilds the fee transfer from the stored plan, so
+    // it cannot detect a redirected recipient on its own: bind it here to the
+    // reviewed fresh-cycle payment policy, the same authority the reservation
+    // flow uses when the plan is created.
+    const feeRecipient = assertFreshCyclePaymentPolicy(
+      input.policy,
+    ).feeRecipient;
+    if (input.feeTransfer.recipientOwner !== feeRecipient) {
+      throw new TypeError(
+        "Settlement plan fee recipient differs from the reviewed payment policy",
+      );
+    }
     return {
       recipient: input.feeTransfer.recipientOwner,
       dueMinor: input.feeTransfer.amountMinor,
