@@ -313,21 +313,19 @@ async function duplicateOf(
   };
 }
 
-function prefilter(context: Context): Verdict | null {
-  if (
-    context.pull !== null &&
-    (context.pull.changed_files === 0 ||
-      context.pull.additions + context.pull.deletions === 0)
-  ) {
+export function prefilter(
+  context: Pick<Context, "pull" | "issue">,
+): Verdict | null {
+  if (context.pull !== null && context.pull.changed_files === 0) {
     return {
       category: "empty",
       confidence: 1,
       rule_refs: [
-        { source: "universal", quote: "pull request changes no lines" },
+        { source: "universal", quote: "pull request changes no files" },
       ],
       evidence: [],
       summary:
-        "This pull request does not change any lines, so there is nothing to review.",
+        "This pull request does not change any files, so there is nothing to review.",
       limitations: [],
     };
   }
