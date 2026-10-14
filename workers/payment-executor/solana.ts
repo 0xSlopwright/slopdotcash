@@ -37,7 +37,6 @@ export interface SolanaExecutorEnvironment {
   PAYMENT_RPC_URLS: string;
   SOLANA_SIGNER: SolanaSigner;
   JOURNAL: JournalStore;
-  ATTESTER?: PaymentExecutor;
   /** Local integration only; hosted wrapper never forwards these fields. */
   ALLOW_LOCAL_TEST_CHAIN?: boolean;
   LOCAL_SOLANA_GENESIS?: string;
@@ -120,24 +119,36 @@ function short(value: number) {
   } while (value);
   return Uint8Array.from(output);
 }
+/** Legacy message: the payer first, then read-only co-signers, then the other accounts. */
 function message(
   payer: string,
   blockhash: string,
   instructions: Instruction[],
+  cosigners: string[] = [],
 ): Uint8Array {
   const accounts = new Map<string, boolean>([[payer, true]]);
+  for (const c of cosigners) {
+    if (c === payer) throw new Error("Co-signer cannot be the payer");
+    accounts.set(c, false);
+  }
   for (const i of instructions) {
     for (const a of i.accounts)
       accounts.set(a.key, Boolean(accounts.get(a.key) || a.write));
     if (!accounts.has(i.program)) accounts.set(i.program, false);
   }
+  const signers = new Set([payer, ...cosigners]);
+  if (cosigners.some((c) => accounts.get(c)))
+    throw new Error("Co-signers are read-only");
   const keys = [
     payer,
-    ...[...accounts].filter(([k, w]) => k !== payer && w).map(([k]) => k),
-    ...[...accounts].filter(([k, w]) => k !== payer && !w).map(([k]) => k),
+    ...cosigners,
+    ...[...accounts].filter(([k, w]) => !signers.has(k) && w).map(([k]) => k),
+    ...[...accounts].filter(([k, w]) => !signers.has(k) && !w).map(([k]) => k),
   ];
   if (keys.length > 32) throw new Error("Executor account limit");
-  const readonly = keys.filter((k) => !accounts.get(k)).length;
+  const readonly = keys.filter(
+    (k) => !signers.has(k) && !accounts.get(k),
+  ).length;
   const compiled = instructions.map((i) =>
     concat(
       Uint8Array.of(keys.indexOf(i.program)),
@@ -148,7 +159,7 @@ function message(
     ),
   );
   return concat(
-    Uint8Array.of(1, 0, readonly),
+    Uint8Array.of(signers.size, cosigners.length, readonly),
     short(keys.length),
     ...keys.map(bytes),
     bytes(blockhash),
@@ -304,7 +315,8 @@ async function authorized(
       solanaUint(obligation, 8)
   )
     throw new Error("Finalized award mismatch");
-  // Bindings are per project: seeds are the project PDA and the actor.
+  // Bindings are per project: seeds are the project PDA and the actor. They do not
+  // reference the identity authority, so they survive an authority rotation.
   const bindingAddress = pda(config.programId, [
     encoder.encode("wallet"),
     bytes(config.projectPda),
@@ -327,6 +339,13 @@ interface Attempt {
   transactionId: string;
   lastValidBlockHeight: number;
   generation: number;
+  /** Set while the destination wallet's signature is still missing from raw. */
+  cosigner?: string;
+}
+export interface PreparedBinding {
+  transactionId: string;
+  /** Base64 transaction carrying the identity signature and an empty slot for the destination wallet. */
+  transaction?: string;
 }
 async function send(
   env: SolanaExecutorEnvironment,
@@ -334,7 +353,8 @@ async function send(
   input: Input,
   role: string,
   instructions: Instruction[],
-): Promise<{ transactionId: string }> {
+  cosigner?: string,
+): Promise<PreparedBinding> {
   const key = `solana:${role}:${input.network}:${input.idempotencyKey}`,
     fingerprint = hex(
       sha256(
@@ -406,6 +426,7 @@ async function send(
       env.SOLANA_SIGNER.address,
       latest.value.blockhash,
       instructions,
+      cosigner ? [cosigner] : [],
     );
     attempt = await env.JOURNAL.transaction(async (store) => {
       if (await store.get(`retired:${input.network}:${input.idempotencyKey}`))
@@ -432,7 +453,11 @@ async function send(
         })
       )
         throw new Error("Invalid signer response");
-      const raw = concat(Uint8Array.of(1), signature, msg);
+      // A co-signed binding leaves the second signature slot empty until the
+      // destination wallet signs the same bytes.
+      const raw = cosigner
+        ? concat(Uint8Array.of(2), signature, new Uint8Array(64), msg)
+        : concat(Uint8Array.of(1), signature, msg);
       if (raw.length > 1232) throw new Error("Transaction too large");
       const candidate: Attempt = {
         obligationId: input.obligationId,
@@ -443,11 +468,20 @@ async function send(
         transactionId: solanaBase58(signature),
         lastValidBlockHeight: latest.value.lastValidBlockHeight,
         generation: latest.value.lastValidBlockHeight,
+        ...(cosigner ? { cosigner } : {}),
       };
       await store.put(key, candidate);
       return candidate;
     });
   }
+  if (attempt.cosigner)
+    return { transactionId: attempt.transactionId, transaction: attempt.raw };
+  return broadcast(ctx, attempt);
+}
+async function broadcast(
+  ctx: Context,
+  attempt: Attempt,
+): Promise<{ transactionId: string }> {
   const result = await solanaRpc(ctx.config, "sendTransaction", [
     attempt.raw,
     {
@@ -461,14 +495,68 @@ async function send(
     throw new Error("Broadcast signature mismatch");
   return { transactionId: attempt.transactionId };
 }
-export function createSolanaAttester(
+/** Verifies the authority and the destination signed the journaled binding bytes, then broadcasts. */
+export async function completeSolanaBinding(
   env: SolanaExecutorEnvironment,
-): PaymentExecutor {
+  input: Input,
+  transaction: string,
+): Promise<{ transactionId: string }> {
+  const ctx = await authorized(env, input);
+  const key = `solana:attester:${input.network}:${input.idempotencyKey}`;
+  const attempt = await env.JOURNAL.get<Attempt>(key);
+  if (!attempt || attempt.obligationId !== input.obligationId)
+    throw new Error("No prepared binding for this attempt");
+  if (!attempt.cosigner) return broadcast(ctx, attempt);
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(transaction))
+    throw new Error("Invalid signed transaction encoding");
+  const signed = Uint8Array.from(atob(transaction), (c) => c.charCodeAt(0));
+  const prepared = Uint8Array.from(atob(attempt.raw), (c) => c.charCodeAt(0));
+  const msg = prepared.slice(129);
+  if (
+    signed.length !== prepared.length ||
+    signed[0] !== 2 ||
+    hex(signed.slice(1, 65)) !== hex(prepared.slice(1, 65)) ||
+    hex(signed.slice(129)) !== hex(msg)
+  )
+    throw new Error("Signed transaction differs from the prepared binding");
+  const walletSignature = signed.slice(65, 129);
+  if (
+    attempt.cosigner !== input.destination ||
+    !ed25519.verify(walletSignature, msg, bytes(input.destination), {
+      zip215: false,
+    })
+  )
+    throw new Error("Destination wallet signature rejected");
+  const completed = await env.JOURNAL.transaction(async (store) => {
+    const current = await store.get<Attempt>(key);
+    if (
+      !current ||
+      current.transactionId !== attempt.transactionId ||
+      current.generation !== attempt.generation
+    )
+      throw new Error("Prepared binding changed; retry");
+    if (!current.cosigner) return current;
+    const next: Attempt = {
+      ...current,
+      raw: btoa(String.fromCharCode(...signed)),
+    };
+    delete next.cosigner;
+    await store.put(key, next);
+    return next;
+  });
+  return broadcast(ctx, completed);
+}
+/** Prepares and half-signs a binding; the destination wallet must co-sign the same bytes. */
+export function createSolanaAttester(env: SolanaExecutorEnvironment): {
+  submit(input: Input): Promise<PreparedBinding>;
+} {
   return {
     async submit(input) {
       const ctx = await authorized(env, input);
       if (solanaPubkey(ctx.project, 104) !== env.SOLANA_SIGNER.address)
         throw new Error("Signer is not identity authority");
+      if (input.destination === env.SOLANA_SIGNER.address)
+        throw new Error("Destination cannot be the identity authority");
       if (
         ctx.binding &&
         (solanaPubkey(ctx.binding, 112) !== input.destination ||
@@ -488,6 +576,7 @@ export function createSolanaAttester(
         accounts: [
           { key: env.SOLANA_SIGNER.address, write: true },
           { key: env.SOLANA_SIGNER.address, write: false },
+          { key: input.destination, write: false },
           { key: ctx.config.projectPda, write: false },
           { key: ctx.bindingAddress, write: true },
           { key: SYSTEM, write: false },
@@ -497,12 +586,11 @@ export function createSolanaAttester(
           le(BigInt(input.githubUserId)),
           solanaDigest(ctx.config.networkDomain),
           le(version),
-          bytes(input.destination),
           solanaDigest(input.claimDigest),
           le(expiresAt),
         ),
       };
-      return send(env, ctx, input, "attester", [ix]);
+      return send(env, ctx, input, "attester", [ix], input.destination);
     },
   };
 }
@@ -527,15 +615,16 @@ export function createSolanaExecutor(
   return {
     async submit(input) {
       const ctx = await authorized(env, input);
+      // A binding needs the destination wallet's own signature, so the relayer
+      // cannot request one; the contributor completes it through the attester.
       if (
         !ctx.binding ||
         solanaPubkey(ctx.binding, 112) !== input.destination ||
         hex(ctx.binding.slice(8, 40)) !== input.claimDigest
-      ) {
-        if (!env.ATTESTER) throw new Error("Identity attester unavailable");
-        await env.ATTESTER.submit(input);
-        throw new Error("Destination binding awaiting finality");
-      }
+      )
+        throw new Error(
+          "Destination binding awaits the contributor's co-signature; retry after it is finalized",
+        );
       // The program pays only the latest binding, which is the claimed destination.
       // Delays are compared with the chain clock, not the host clock: the program uses
       // the chain clock, and an early transaction would fail and block retries.

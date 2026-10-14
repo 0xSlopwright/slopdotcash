@@ -26,8 +26,8 @@ test("the deployable build rejects a binding delay below one hour", async () => 
     null,
     6,
   );
-  const initialize = (delay) => {
-    const id = hash(`production-delay:${delay}`);
+  const initialize = (delay, rotationDelay = 3600) => {
+    const id = hash(`production-delay:${delay}:${rotationDelay}`);
     const project = pda(
       Buffer.from("project"),
       payer.publicKey.toBuffer(),
@@ -40,6 +40,7 @@ test("the deployable build rejects a binding delay below one hour", async () => 
         Keypair.generate().publicKey,
         Keypair.generate().publicKey,
         new BN(delay),
+        new BN(rotationDelay),
       )
       .accountsStrict({
         owner: payer.publicKey,
@@ -53,5 +54,8 @@ test("the deployable build rejects a binding delay below one hour", async () => 
   };
   await assert.rejects(initialize(1), /InvalidDelay/);
   await assert.rejects(initialize(3599), /InvalidDelay/);
+  // The identity authority rotation delay has the same one-hour floor.
+  await assert.rejects(initialize(3600, 1), /InvalidDelay/);
+  await assert.rejects(initialize(3600, 3599), /InvalidDelay/);
   await initialize(3600);
 });

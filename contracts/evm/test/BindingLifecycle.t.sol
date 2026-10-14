@@ -89,7 +89,7 @@ contract BindingLifecycleTest is OpusBase {
         vm.warp(block.timestamp + DELAY);
         payAs(first, v1);
         check(escrow.paidVersion(ALICE) == v1, "first payment recorded v1");
-        address newWallet = address(0xA2);
+        address newWallet = vm.addr(OpusWallets.NEW_WALLET_KEY);
         uint64 v2 = bindAs(ALICE, newWallet);
         (address payable_, uint64 payableVersion) = escrow.payableBinding(ALICE);
         check(payable_ == address(0) && payableVersion == 0, "nothing payable while v2 pending");
@@ -177,20 +177,20 @@ contract BindingLifecycleTest is OpusBase {
         check(usdc.balanceOf(ALICE_WALLET) == 98e6, "fourth binding pays");
     }
 
-    /// L-1: both constructors bound the delay to [1 hour, 30 days].
+    /// L-1: the factory bounds the delay to [1 hour, 30 days]; vaults are created only by the factory,
+    /// so the vault constructor cannot be reached with any other delay.
     function test_delayBounds() public {
         uint64[4] memory bad = [uint64(0), 1 hours - 1, 30 days + 1, type(uint64).max];
         for (uint256 i = 0; i < bad.length; i++) {
             vm.expectRevert(ProjectEscrow.InvalidInput.selector);
             new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, bad[i]);
-            vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-            new ProjectEscrow(keccak256("p"), IERC20(address(usdc)), OWNER, OWNER, FEE, AUTHORITY, bad[i]);
         }
-        ProjectEscrow low =
-            new ProjectEscrow(keccak256("p"), IERC20(address(usdc)), OWNER, OWNER, FEE, AUTHORITY, 1 hours);
-        ProjectEscrow high =
-            new ProjectEscrow(keccak256("p"), IERC20(address(usdc)), OWNER, OWNER, FEE, AUTHORITY, 30 days);
-        check(low.bindingDelay() == 1 hours && high.bindingDelay() == 30 days, "bounds inclusive");
+        vm.expectRevert();
+        new ProjectEscrow(keccak256("p"), IERC20(address(usdc)), OWNER, OWNER, FEE, 1 hours);
+        deployWithDelay(1 hours);
+        ProjectEscrow low = escrow;
+        deployWithDelay(30 days);
+        check(low.bindingDelay() == 1 hours && escrow.bindingDelay() == 30 days, "bounds inclusive");
     }
 
     /// L-5: cancel reverts on a missing binding, a cancelled binding, and a binding that has paid.
