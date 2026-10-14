@@ -11,7 +11,6 @@ import {
   assemblePoints,
   assertPointsJournal,
   awardForScore,
-  latestPoints,
   type PointsIndex,
   type PointsJournal,
   pointMembers,
@@ -222,14 +221,12 @@ export async function generatePoints(
   const reviews = JSON.parse(
     await readFile("data/accepted-review-history.json", "utf8"),
   );
-  const existingKeys = latestPoints(journal);
-  const reviewed = [
-    ...reviews.events.filter(
-      (e: Parameters<typeof awardForScore>[0]) =>
-        !existingKeys.has(awardForScore(e).key),
-    ),
-    ...evaluations,
-  ];
+  // The history file is the only source for these awards, so a maintainer
+  // correction to it must reach the journal. appendPointAwards already skips
+  // an award identical to the latest revision and appends a successor
+  // revision for a changed one; filtering by existing keys here would drop
+  // every correction silently and freeze the first recorded amount forever.
+  const reviewed = [...reviews.events, ...evaluations];
   journal = appendPointAwards(
     journal,
     reviewed.map(awardForScore),
