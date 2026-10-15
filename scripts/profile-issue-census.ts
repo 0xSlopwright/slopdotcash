@@ -204,8 +204,12 @@ export async function collectProfileIssues(
   const previousPeople = new Map(
     previous.people.map((person) => [person.id, person]),
   );
+  const collected = new Set(TARGET_REPOSITORIES.map((r) => r.id));
   for (const old of prior.values()) {
-    if (seen.has(old.id)) continue;
+    // A project paused since the previous census is no longer collected, and
+    // the census may only name active repositories. Its issues are collected
+    // again if it is reactivated.
+    if (seen.has(old.id) || !collected.has(old.repository)) continue;
     const retained: ProfileIssue = {
       ...old,
       unavailableSince: old.unavailableSince ?? new Date().toISOString(),
