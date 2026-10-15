@@ -173,8 +173,16 @@ export default {
     const deliveryId = request.headers.get("x-github-delivery") ?? "";
     if (deliveryId === "")
       return new Response("missing delivery id", { status: 400 });
+    // Decode strictly before any durable write. A lossy decode would record
+    // the delivery id, and a corrected redelivery would then be dropped.
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(body);
+    } catch {
+      return new Response("invalid body", { status: 400 });
+    }
     if (event === "installation") {
-      const payload = JSON.parse(new TextDecoder().decode(body)) as Payload;
+      const payload = JSON.parse(text) as Payload;
       if (
         !(await store.claimInstallationDelivery(
           env.SLOPBOT_DB,
@@ -191,7 +199,7 @@ export default {
       return new Response("duplicate delivery", { status: 202 });
     }
     try {
-      const payload = JSON.parse(new TextDecoder().decode(body)) as Payload;
+      const payload = JSON.parse(text) as Payload;
       const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
       if (job !== null) await env.SLOPBOT_QUEUE.send(job);
       return new Response(job === null ? "ignored" : "queued", {
