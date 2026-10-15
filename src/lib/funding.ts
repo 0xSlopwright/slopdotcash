@@ -317,7 +317,7 @@ export function assertProjectFundingRecord(
       typeof donor.actorNodeId !== "string" ||
       !/^[A-Za-z0-9_=-]{4,128}$/u.test(donor.actorNodeId) ||
       typeof donor.login !== "string" ||
-      !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/u.test(donor.login)
+      !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u.test(donor.login)
     ) {
       throw new TypeError("funding record donor identity is invalid");
     }
