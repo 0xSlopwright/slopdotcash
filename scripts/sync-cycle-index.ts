@@ -347,7 +347,7 @@ async function buildCycle(
         },
         contributors: proposal.entries.map((entry) => ({
           actor: entry.actor,
-          score: entry.score,
+          score: Math.floor((exactScores.get(entry.actor.id) ?? 0) / 3),
           scoreThirds: exactScores.get(entry.actor.id) ?? 0,
           state: "external-share",
           suggestedMinor: "0",
@@ -568,7 +568,7 @@ async function buildCycle(
         const paid = settlementByIntent.get(entry.intentId);
         return {
           actor: entry.actor,
-          score: entry.score,
+          score: Math.floor((exactScores.get(entry.actor.id) ?? 0) / 3),
           scoreThirds: exactScores.get(entry.actor.id) ?? 0,
           state:
             paid?.state === "paid"
