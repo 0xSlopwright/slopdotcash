@@ -31,13 +31,12 @@ export function reviewedReservationPolicy(project: unknown) {
     p.funding?.freshCyclePaymentPolicy,
   );
   // The manifest is read from git without the project schema, so bind the
-  // fee recipient to the settlement network here too.
-  if (
-    policy.feeRecipient !==
-    platformFeeRecipientForNetwork(
-      p.reward.chain === "base" ? "base" : "solana",
-    )
-  )
+  // fee recipient to the settlement network here too. Only Base and Solana
+  // have a fresh-cycle instrument; any other network fails closed.
+  const feeRecipient = platformFeeRecipientForNetwork(p.reward.chain);
+  if (feeRecipient === null)
+    throw new TypeError("Policy requires a Base or Solana settlement network");
+  if (policy.feeRecipient !== feeRecipient)
     throw new TypeError(
       "Policy must name the published fee recipient of the settlement network",
     );

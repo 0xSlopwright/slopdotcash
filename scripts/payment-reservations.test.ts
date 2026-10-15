@@ -199,7 +199,8 @@ describe("payment reservations cover the full transfer-plan bound", () => {
  * project's settlement network (protocol/fresh-cycle-payments.md). A project
  * vault plan carries no platform fee, so the plan builder never checks the
  * recipient; the manifest schema and the reservation gate must refuse the
- * other network's address before a permanent reservation binds it.
+ * other network's address, and any network without a fresh-cycle instrument,
+ * before a permanent reservation binds it.
  */
 describe("a fresh-cycle policy names its settlement network's fee recipient", () => {
   const eliza = JSON.parse(readFileSync("projects/eliza/project.json", "utf8"));
@@ -251,6 +252,22 @@ describe("a fresh-cycle policy names its settlement network's fee recipient", ()
     const project = await solanaProject(BASE_PLATFORM_FEE_RECIPIENT);
     expect(() => reviewedReservationPolicy(project)).toThrow(
       /fee recipient of the settlement network/,
+    );
+  });
+
+  // Only Base and Solana have a fresh-cycle instrument. The gate reads the
+  // manifest without the project schema, so it must not settle any other
+  // network as Solana.
+  it.each([
+    ["Robinhood Chain", "robinhood"],
+    ["an unknown network", "ethereum"],
+    ["a missing network", null],
+  ])("the reservation gate refuses %s", async (_label, chain) => {
+    const solana = await solanaProject(SOLANA_PLATFORM_FEE_RECIPIENT);
+    const project = { ...solana, reward: { ...solana.reward, chain } };
+    expect(() => assertProjectDefinition(project)).toThrow();
+    expect(() => reviewedReservationPolicy(project)).toThrow(
+      /Base or Solana settlement network/,
     );
   });
 
