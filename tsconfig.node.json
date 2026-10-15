@@ -11,6 +11,7 @@
   },
   "include": [
     "tests/fixtures.ts",
+    "scripts/reward-time-validation.test.ts",
     "src/lib/payments/**/*.ts",
     "contracts/evm/adapter.ts",
     "contracts/solana/adapter.ts",
@@ -40,6 +41,7 @@
     "src/lib/evm-funding.ts",
     "src/lib/evm-settlement.ts",
     "src/lib/funding.ts",
+    "src/lib/record-validation.ts",
     "src/lib/funding-review-submission.ts",
     "src/lib/signer-capability.ts",
     "src/lib/funding-commitment.ts",

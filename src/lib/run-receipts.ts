@@ -1,3 +1,4 @@
+import { exactKeys, isRecord } from "./record-validation";
 /**
  * Defines the public, device-signed project-run receipt embedded in a GitHub
  * contribution footer. The receipt proves stable bytes and device continuity;
@@ -312,22 +313,6 @@ export function assertProjectRunReceipt(value: unknown): ProjectRunReceipt {
       device_signature: value.deviceSignature,
     },
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-  path: string,
-): void {
-  const actual = Object.keys(value).sort();
-  const canonical = [...expected].sort();
-  if (actual.join("\0") !== canonical.join("\0")) {
-    throw new TypeError(`${path} has unexpected or missing fields`);
-  }
 }
 
 function nonNegativeInteger(value: unknown, path: string): number {

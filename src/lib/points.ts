@@ -429,7 +429,7 @@ export function pointMembers(
       a.category,
       a.occurredAt.slice(0, 7),
       a.category === "substantive-review"
-        ? a.sourceUrl.split("#")[0]
+        ? (reviewIdentity ?? a.sourceUrl.split("#")[0])
         : a.workUnitId,
     ]);
     const prior = groups.get(key);

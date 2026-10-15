@@ -1,5 +1,8 @@
 import { assertEscrowPolicy } from "./escrow-policy.mjs";
-import { assertFreshCyclePaymentPolicy } from "./fresh-cycle-policy.mjs";
+import {
+  assertFreshCyclePaymentPolicy,
+  platformFeeRecipientForNetwork,
+} from "./fresh-cycle-policy.mjs";
 /**
  * Validates untrusted project folders before they enter discovery, ingestion,
  * skills, or money-shaped views. The schema is intentionally narrow so a pull
@@ -1026,6 +1029,15 @@ function validateFunding(value, projectId, settlementNetwork) {
     if (settlementNetwork === "robinhood")
       throw new TypeError(
         "Robinhood Chain projects settle through the project escrow; a fresh-cycle instrument is not supported",
+      );
+    if (
+      policy.feeRecipient !==
+      platformFeeRecipientForNetwork(
+        settlementNetwork === "base" ? "base" : "solana",
+      )
+    )
+      throw new TypeError(
+        "Fresh-cycle policy must name the published fee recipient of the settlement network",
       );
     const fundsNetwork = (v) =>
       settlementNetwork === "base"

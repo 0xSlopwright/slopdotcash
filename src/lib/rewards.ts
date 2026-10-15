@@ -1,3 +1,4 @@
+import { exactKeys, readRecord as record } from "./record-validation";
 /**
  * Validates public reward-allocation, external-share, and settlement manifests.
  * All monetary values remain canonical integer minor units and every approved
@@ -30,6 +31,18 @@ export const REVIEW_WINDOW_DAYS = 14;
 export const SHARE_PARTS_TOTAL = 1_000_000;
 export const PLATFORM_FEE_BASIS_POINTS = 100 as const;
 export const MINIMUM_TRANSFER_MINOR = "2000000" as const;
+
+/** Parse the exact UTC form used at reward lifecycle boundaries. */
+export function exactUtcMilliseconds(value: string, field: string): number {
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
+    !Number.isFinite(Date.parse(value)) ||
+    new Date(value).toISOString() !== value
+  ) {
+    throw new TypeError(`${field} must be an exact UTC timestamp`);
+  }
+  return Date.parse(value);
+}
 
 /**
  * The one network a cycle settles on. A proposal freezes the project's
@@ -237,23 +250,6 @@ export interface RewardSettlementManifest {
     paidMinor: string;
     feeMinor: string;
   };
-}
-
-function record(value: unknown, path: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  path: string,
-): void {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
-    throw new TypeError(`${path} has unexpected or missing fields`);
-  }
 }
 
 function text(

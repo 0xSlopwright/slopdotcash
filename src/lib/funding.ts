@@ -12,6 +12,12 @@ import {
 } from "./funding-commitment";
 import type { FundingCommitmentInstrument } from "./funding-instruments.mjs";
 import {
+  canonicalMinor,
+  exactKeys,
+  readRecord,
+  timestamp,
+} from "./record-validation";
+import {
   assertPublicSignerReport,
   type PublicSignerReport,
 } from "./signer-capability";
@@ -84,47 +90,6 @@ const FUNDING_VERIFIER_BY_NETWORK = {
   solana: "funding-solana-v1",
 } as const satisfies Record<FundingNetwork, string>;
 
-function object(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  field: string,
-) {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
-}
-
-function timestamp(value: unknown, field: string): string {
-  if (
-    typeof value !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
-  ) {
-    throw new TypeError(`${field} is invalid`);
-  }
-  return value;
-}
-
-function canonicalMinor(value: unknown, field: string): string {
-  if (
-    typeof value !== "string" ||
-    value.length > 40 ||
-    !/^(?:0|[1-9]\d*)$/u.test(value)
-  ) {
-    throw new TypeError(`${field} must be canonical integer minor units`);
-  }
-  if (BigInt(value) === 0n) throw new TypeError(`${field} must be positive`);
-  return value;
-}
-
 function validTransactionId(
   network: FundingNetwork,
   value: unknown,
@@ -162,7 +127,7 @@ function assertFinality(
   network: FundingNetwork,
   value: unknown,
 ) {
-  const finality = object(value, "funding record finality");
+  const finality = readRecord(value, "funding record finality");
   if (finality.kind === "unverified") {
     exactKeys(finality, ["kind"], "funding record finality");
     if (state !== "self-reported") {
@@ -201,7 +166,7 @@ export function assertProjectFundingRecord(
   value: unknown,
   addresses: readonly ProjectFundingAddress[],
 ): ProjectFundingRecord {
-  const record = object(value, "funding record");
+  const record = readRecord(value, "funding record");
   exactKeys(
     record,
     [
@@ -301,7 +266,7 @@ export function assertProjectFundingRecord(
     throw new TypeError("funding record state is invalid");
   }
   assertFinality(record.state, network, record.finality);
-  const donor = object(record.donor, "funding record donor");
+  const donor = readRecord(record.donor, "funding record donor");
   if (donor.attribution === "anonymous") {
     exactKeys(donor, ["attribution"], "funding record donor");
   } else {
@@ -317,7 +282,7 @@ export function assertProjectFundingRecord(
       typeof donor.actorNodeId !== "string" ||
       !/^[A-Za-z0-9_=-]{4,128}$/u.test(donor.actorNodeId) ||
       typeof donor.login !== "string" ||
-      !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/u.test(donor.login)
+      !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u.test(donor.login)
     ) {
       throw new TypeError("funding record donor identity is invalid");
     }
@@ -329,7 +294,7 @@ export function assertProjectFundingRecord(
       );
     }
   } else {
-    const verifier = object(record.verifier, "funding record verifier");
+    const verifier = readRecord(record.verifier, "funding record verifier");
     exactKeys(
       verifier,
       ["checkedAt", "evidenceUrl", "reason", "version"],
@@ -477,7 +442,7 @@ export function assertProjectFundingIndex(
     readonly FundingCommitmentInstrument[]
   >,
 ): ProjectFundingIndex {
-  const index = object(value, "funding index");
+  const index = readRecord(value, "funding index");
   exactKeys(
     index,
     [
@@ -515,7 +480,7 @@ export function assertProjectFundingIndex(
   }
   const grouped = new Map<string, unknown[]>();
   for (const candidate of index.records) {
-    const projectId = object(candidate, "funding index record").projectId;
+    const projectId = readRecord(candidate, "funding index record").projectId;
     if (typeof projectId !== "string" || !addressesByProject.has(projectId)) {
       throw new TypeError("funding index references an unknown project");
     }
@@ -542,7 +507,10 @@ export function assertProjectFundingIndex(
   }
   const groupedCommitments = new Map<string, unknown[]>();
   for (const candidate of index.commitments) {
-    const projectId = object(candidate, "funding index commitment").projectId;
+    const projectId = readRecord(
+      candidate,
+      "funding index commitment",
+    ).projectId;
     if (typeof projectId !== "string" || !commitmentsByProject.has(projectId)) {
       throw new TypeError(
         "funding index commitments reference an unknown project",

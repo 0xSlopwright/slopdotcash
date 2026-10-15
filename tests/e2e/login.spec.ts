@@ -18,7 +18,7 @@ test(
     expect((await page.goto("/login"))?.status()).toBe(200);
     expect((await page.reload())?.status()).toBe(200);
     await expect(
-      page.getByRole("heading", { name: "Log in", exact: true }),
+      page.getByRole("heading", { name: "Log in to slop.cash", exact: true }),
     ).toBeVisible();
     await expect(page.locator("main h1, main h2")).toHaveCount(1);
     const header = page.getByRole("banner");
@@ -30,7 +30,7 @@ test(
     ).toHaveCount(0);
     await expect(
       header.getByRole("link", { name: "Log in", exact: true }),
-    ).toHaveAttribute("href", "/login");
+    ).toHaveCount(0);
     await expect(
       page.getByRole("link", {
         name: `Continue with GitHub on ${new URL(deployment.site).hostname}`,
@@ -86,6 +86,7 @@ for (const [next, expected] of [
     ).toISOString();
     const flowId = `flow_${"f".repeat(24)}`;
     let signedIn = false;
+    let starts = 0;
     const member = {
       actor: { id: "U_return_member", login: "return-member" },
       joinedAt: "2026-10-01T00:00:00.000Z",
@@ -95,7 +96,8 @@ for (const [next, expected] of [
     };
     await page.context().route(`${deployment.identity}/**`, async (route) => {
       const path = new URL(route.request().url()).pathname;
-      if (path === "/v1/oauth/start")
+      if (path === "/v1/oauth/start") {
+        starts += 1;
         await route.fulfill({
           json: {
             flowId,
@@ -105,7 +107,7 @@ for (const [next, expected] of [
             authorizationUrl: `${deployment.identity}/v1/oauth/authorize?flow_id=${flowId}&state=${"s".repeat(48)}`,
           },
         });
-      else if (path === "/v1/oauth/authorize")
+      } else if (path === "/v1/oauth/authorize")
         await route.fulfill({
           contentType: "text/html",
           body: "<title>Synthetic OAuth fixture</title>",
@@ -133,6 +135,12 @@ for (const [next, expected] of [
         await route.fulfill({ json: member });
         return;
       }
+      if (url.pathname === "/api/v1/points/visibility") {
+        expect(signedIn).toBe(true);
+        member.public = route.request().postDataJSON().public;
+        await route.fulfill({ json: member });
+        return;
+      }
       if (url.pathname.startsWith("/api/")) {
         await route.fulfill({ status: 404, json: {} });
         return;
@@ -142,29 +150,35 @@ for (const [next, expected] of [
       });
       await route.fulfill({ response });
     });
-    await page.goto(
-      `${deployment.site}/login?next=${encodeURIComponent(next)}`,
-    );
+    await page.goto(`/login?next=${encodeURIComponent(next)}`);
+    await page
+      .getByRole("link", {
+        name: `Continue with GitHub on ${new URL(deployment.site).hostname}`,
+      })
+      .click();
     const main = page.getByRole("main");
     await expect(main.locator("h1, h2")).toHaveCount(1);
     const action = main.getByRole("button", { name: "Continue with GitHub" });
-    const consent = main.getByLabel(/Optional: show my membership publicly/u);
-    // The optional public-membership choice follows the one GitHub action.
-    expect(
-      await action.evaluate(
-        (button, label) =>
-          !!(
-            button.compareDocumentPosition(label as Node) &
-            Node.DOCUMENT_POSITION_FOLLOWING
-          ),
-        await consent.elementHandle(),
-      ),
-    ).toBe(true);
-    await expect(consent).not.toBeChecked();
+    await expect(main.getByRole("checkbox")).toHaveCount(0);
     const popup = page.waitForEvent("popup");
     await action.click();
     await (await popup).close();
     await expect(page).toHaveURL(expected);
+    await page.goto(`${deployment.site}/account#profile`);
+    const visibility = page.getByLabel("Show my membership publicly", {
+      exact: true,
+    });
+    await expect(visibility).not.toBeChecked();
+    // The controlled checkbox changes after the API acknowledges the save.
+    await visibility.click();
+    await expect(visibility).toBeChecked();
+    await page.reload();
+    await expect(visibility).toBeChecked();
+    await page.goto(
+      `${deployment.site}/login?next=${encodeURIComponent(next)}`,
+    );
+    await expect(page).toHaveURL(expected);
+    expect(starts).toBe(1);
     expect(errors).toEqual([]);
     // The destination keeps loading public data after the assertion.
     await page.unrouteAll({ behavior: "ignoreErrors" });
@@ -180,24 +194,30 @@ test("the header login link keeps the current page as the return route", async (
     .getByRole("link", { name: "Log in", exact: true });
   await expect(link).toHaveAttribute(
     "href",
-    `/login?next=${encodeURIComponent("/how-it-works#faq")}`,
+    `${deployment.site}/login?next=${encodeURIComponent("/how-it-works#faq")}`,
   );
   await page.evaluate(() => {
     window.location.hash = "verification";
   });
   await expect(link).toHaveAttribute(
     "href",
-    `/login?next=${encodeURIComponent("/how-it-works#verification")}`,
+    `${deployment.site}/login?next=${encodeURIComponent("/how-it-works#verification")}`,
   );
   await page.evaluate(() => {
     window.location.hash = "faq";
   });
   await expect(link).toHaveAttribute(
     "href",
-    `/login?next=${encodeURIComponent("/how-it-works#faq")}`,
+    `${deployment.site}/login?next=${encodeURIComponent("/how-it-works#faq")}`,
+  );
+  await page.route(`${deployment.site}/login?**`, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<title>Public login destination fixture</title>",
+    }),
   );
   await link.click();
   await expect(page).toHaveURL(
-    `/login?next=${encodeURIComponent("/how-it-works#faq")}`,
+    `${deployment.site}/login?next=${encodeURIComponent("/how-it-works#faq")}`,
   );
 });

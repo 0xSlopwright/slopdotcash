@@ -1,3 +1,4 @@
+import { exactKeys, readRecord } from "./record-validation";
 /**
  * Builds and validates unsigned USDC transfer plans from approved payout
  * intents. A cycle settles on the one network frozen in its allocation: Solana
@@ -413,23 +414,6 @@ export function createNetworkSettlementExecutionPlan(
     : createSettlementExecutionPlan(planInput);
 }
 
-function record(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  field: string,
-): void {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
-}
-
 function minor(value: unknown, field: string): string {
   if (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/u.test(value)) {
     throw new TypeError(`${field} must be canonical integer minor units`);
@@ -512,7 +496,7 @@ function assertMatchesExpected<Plan extends NetworkSettlementExecutionPlan>(
   if (canonicalJson(plan) !== canonicalJson(expected)) {
     throw new TypeError("Settlement plan differs from its approved allocation");
   }
-  const totals = record(plan.totals, "settlement plan totals");
+  const totals = readRecord(plan.totals, "settlement plan totals");
   minor(totals.contributorMinor, "settlement plan totals.contributorMinor");
   minor(totals.platformFeeMinor, "settlement plan totals.platformFeeMinor");
   minor(totals.totalMinor, "settlement plan totals.totalMinor");
@@ -524,13 +508,13 @@ export function assertSettlementExecutionPlan(
   value: unknown,
   allocation: RewardAllocationManifest,
 ): SettlementExecutionPlan {
-  const plan = record(value, "settlement plan");
+  const plan = readRecord(value, "settlement plan");
   exactKeys(plan, [...PLAN_BODY_KEYS, "cluster"], "settlement plan");
   assertPlanHeader(plan, allocation, "solana-usdc-transfer-plan");
   if (plan.cluster !== "mainnet-beta") {
     throw new TypeError("Settlement plan protocol header is invalid");
   }
-  const token = record(plan.token, "settlement plan token");
+  const token = readRecord(plan.token, "settlement plan token");
   exactKeys(token, ["decimals", "mint", "symbol"], "settlement plan token");
   if (
     token.symbol !== "USDC" ||
@@ -553,13 +537,13 @@ export function assertBaseSettlementExecutionPlan(
     allocation.projectId,
   ),
 ): BaseSettlementExecutionPlan {
-  const plan = record(value, "settlement plan");
+  const plan = readRecord(value, "settlement plan");
   exactKeys(plan, [...PLAN_BODY_KEYS, "chainId"], "settlement plan");
   assertPlanHeader(plan, allocation, "base-usdc-transfer-plan");
   if (plan.chainId !== BASE_MAINNET_CHAIN_ID) {
     throw new TypeError("Settlement plan protocol header is invalid");
   }
-  const token = record(plan.token, "settlement plan token");
+  const token = readRecord(plan.token, "settlement plan token");
   exactKeys(token, ["contract", "decimals", "symbol"], "settlement plan token");
   if (
     token.symbol !== "USDC" ||

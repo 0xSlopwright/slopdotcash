@@ -1,3 +1,4 @@
+import { exactKeys, readRecord as record } from "./record-validation";
 /**
  * The public record of a project vault windup against a bound proposal
  * (RFC #500 section 10). The creator may return the vault's balance to the
@@ -103,19 +104,6 @@ const KEYS = [
   "vaultBalanceMinor",
 ] as const;
 
-function record(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    throw new TypeError(`${field} must be an object`);
-  return value as Record<string, unknown>;
-}
-function exactKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  field: string,
-) {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0"))
-    throw new TypeError(`${field} has unexpected or missing fields`);
-}
 function minor(value: unknown, field: string): string {
   if (
     typeof value !== "string" ||

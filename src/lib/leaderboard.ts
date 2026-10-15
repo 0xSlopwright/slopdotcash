@@ -41,6 +41,7 @@ import type {
   WorkItemModelStatus,
   WorkItemSelection,
 } from "./leaderboard-types";
+import { isRecord } from "./record-validation";
 
 export type {
   AttributionAssessment,
@@ -350,10 +351,6 @@ interface AttributionMarkerRecord {
   slop: boolean;
   start: number;
   version: "v1" | "v2";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeLabel(value: string): string {

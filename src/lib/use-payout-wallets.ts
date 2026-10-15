@@ -40,7 +40,12 @@ export type PayoutWallet = {
   icon?: string;
   /** EVM wallets serve every EVM chain; the consent message names the chain. */
   family: EscrowFamily;
-  connect(): Promise<{
+  /**
+   * `chooseAccount` asks the wallet to show its account picker, for a change
+   * of an already confirmed wallet. Wallets without one return their
+   * connected account.
+   */
+  connect(options?: { chooseAccount?: boolean }): Promise<{
     address: string;
     sign(message: string): Promise<string>;
   }>;
@@ -65,8 +70,23 @@ function evmWallet(
     name,
     icon,
     family: "evm",
-    async connect() {
+    async connect({ chooseAccount = false } = {}) {
       if (!trusted()) throw new Error(conflictMessage);
+      // eth_requestAccounts returns the account that is already connected,
+      // so a change first asks for the account picker (EIP-2255).
+      if (chooseAccount) {
+        try {
+          await provider.request({
+            method: "wallet_requestPermissions",
+            params: [{ eth_accounts: {} }],
+          });
+        } catch (error) {
+          // A user rejection (EIP-1193 code 4001) stops the change; a wallet
+          // without the method falls back to its connected account.
+          if ((error as { code?: unknown } | null)?.code === 4001) throw error;
+        }
+        if (!trusted()) throw new Error(conflictMessage);
+      }
       const addresses = await provider.request({
         method: "eth_requestAccounts",
       });
@@ -124,6 +144,12 @@ export function usePayoutWallets(): PayoutWallet[] {
     const solanaIds = new Map<Wallet, string>();
     const standard = getWallets();
     function update() {
+      const standardWallets = standard.get();
+      // Reuse display metadata when a provider lacks a supported icon; routing
+      // uses the selected provider object, never a wallet name.
+      const icons = new Map(
+        standardWallets.map((wallet) => [wallet.name, wallet.icon]),
+      );
       const next = [...evm]
         .filter(
           ([uuid]) =>
@@ -156,7 +182,7 @@ export function usePayoutWallets(): PayoutWallet[] {
         });
       }
       const standardNames = new Set<string>();
-      for (const wallet of standard.get()) {
+      for (const wallet of standardWallets) {
         if (
           !wallet.chains.some((chain) => chain.startsWith("solana:")) ||
           !("standard:connect" in wallet.features) ||
@@ -237,7 +263,15 @@ export function usePayoutWallets(): PayoutWallet[] {
           },
         });
       });
-      setChoices(next);
+      setChoices(
+        next.map((wallet) => ({
+          ...wallet,
+          icon: [wallet.icon, icons.get(wallet.name)].find(
+            (icon) =>
+              icon && /^data:image\/(?:png|jpeg|webp|svg\+xml)[;,]/u.test(icon),
+          ),
+        })),
+      );
     }
     function announce(event: Event) {
       const detail = (event as CustomEvent).detail;

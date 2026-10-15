@@ -13,19 +13,9 @@
 
 import {
   assertRewardAllocationManifest,
+  exactUtcMilliseconds,
   type RewardAllocationManifest,
 } from "./rewards";
-
-function exactUtc(value: string, field: string): number {
-  if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
-  ) {
-    throw new TypeError(`${field} must be an exact UTC timestamp`);
-  }
-  return Date.parse(value);
-}
 
 /** The public reason recorded on every row the creator left undecided. */
 export function reviewLapseReason(endsAt: string): string {
@@ -49,7 +39,7 @@ export function lapseRewardAllocation(
     throw new TypeError("Reward allocation has already lapsed");
   }
   if (!Number.isFinite(now)) throw new TypeError("Current time must be finite");
-  const lapseTime = exactUtc(lapsedAt, "lapsedAt");
+  const lapseTime = exactUtcMilliseconds(lapsedAt, "lapsedAt");
   if (lapseTime > now + 5 * 60_000) {
     throw new RangeError("Reward allocation lapse cannot be in the future");
   }

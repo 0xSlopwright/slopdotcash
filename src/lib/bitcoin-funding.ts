@@ -1,3 +1,4 @@
+import { readRecord } from "./record-validation";
 /**
  * Verifies confirmed Bitcoin mainnet direct-funding credits from Esplora
  * transaction data by reconciling exact UTXO output sums, coherent fees, the
@@ -22,13 +23,6 @@ export interface VerifiedBitcoinTransaction {
   blockHeight: number;
   confirmations: number;
   transactionId: string;
-}
-
-function record(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
 }
 
 export function isBitcoinTransactionId(value: unknown): value is string {
@@ -94,13 +88,13 @@ export function assertConfirmedBtcFundingTransfer(
     throw new TypeError("Bitcoin funding amount exceeds the satoshi supply");
   }
   const tip = blockHeight(tipHeight, "Bitcoin tip height");
-  const transaction = record(transactionValue, "Bitcoin transaction");
+  const transaction = readRecord(transactionValue, "Bitcoin transaction");
   if (transaction.txid !== expectedTransactionId) {
     throw new TypeError(
       "Bitcoin transaction id does not match the funding record",
     );
   }
-  const status = record(transaction.status, "Bitcoin transaction.status");
+  const status = readRecord(transaction.status, "Bitcoin transaction.status");
   if (status.confirmed !== true) {
     throw new TypeError("Bitcoin transaction is unconfirmed");
   }
@@ -142,11 +136,11 @@ export function assertConfirmedBtcFundingTransfer(
   }
   let inputTotal = 0n;
   inputs.forEach((entry, index) => {
-    const input = record(entry, `Bitcoin vin[${index}]`);
+    const input = readRecord(entry, `Bitcoin vin[${index}]`);
     if (input.is_coinbase === true) {
       throw new TypeError("Bitcoin funding cannot come from a coinbase");
     }
-    const prevout = record(input.prevout, `Bitcoin vin[${index}].prevout`);
+    const prevout = readRecord(input.prevout, `Bitcoin vin[${index}].prevout`);
     if (prevout.scriptpubkey_address === recipient) {
       throw new TypeError(
         "Bitcoin funding transaction spends the recipient's own coins",
@@ -165,7 +159,7 @@ export function assertConfirmedBtcFundingTransfer(
   let outputTotal = 0n;
   let recipientCredit = 0n;
   outputs.forEach((entry, index) => {
-    const output = record(entry, `Bitcoin vout[${index}]`);
+    const output = readRecord(entry, `Bitcoin vout[${index}]`);
     const value = satoshis(output.value, `Bitcoin vout[${index}].value`);
     outputTotal += value;
     if (outputTotal > MAX_SATS) {

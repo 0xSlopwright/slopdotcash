@@ -15,6 +15,16 @@ export const BASE_PLATFORM_FEE_RECIPIENT =
 export const SOLANA_PLATFORM_FEE_RECIPIENT =
   "9EyxVhhnCJH4QL5bDsRyukrkHFyitFMuf45UDdLxm4BY";
 
+/**
+ * The published fee recipient a fresh-cycle policy on this settlement network
+ * may name, or null where no fresh-cycle instrument exists (Robinhood Chain).
+ */
+export function platformFeeRecipientForNetwork(network) {
+  if (network === "base") return BASE_PLATFORM_FEE_RECIPIENT;
+  if (network === "solana") return SOLANA_PLATFORM_FEE_RECIPIENT;
+  return null;
+}
+
 /** Optional exact-cycle activation contract. Runtime readiness and canonical reservation remain mandatory. */
 export function assertFreshCyclePaymentPolicy(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -36,8 +46,9 @@ export function assertFreshCyclePaymentPolicy(value) {
     typeof value.instrumentSha256 !== "string" ||
     !/^[a-f0-9]{64}$/u.test(value.instrumentSha256) ||
     typeof value.feeRecipient !== "string" ||
-    // Only a published Slop fee recipient. The plan builder checks it
-    // against the cycle's settlement network.
+    // Only a published Slop fee recipient. The project schema and the
+    // reservation gate bind it to the settlement network
+    // (platformFeeRecipientForNetwork); a no-fee plan never checks it.
     (value.feeRecipient !== SOLANA_PLATFORM_FEE_RECIPIENT &&
       value.feeRecipient !== BASE_PLATFORM_FEE_RECIPIENT) ||
     !utc(value.effectiveAt) ||

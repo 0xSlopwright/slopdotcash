@@ -20,6 +20,7 @@ import {
   assertExternalContributionShareManifest,
   assertRewardAllocationManifest,
   type ExternalContributionShareManifest,
+  exactUtcMilliseconds,
   feeForPrincipal,
   isSafeSuccessorWallet,
   MINIMUM_TRANSFER_MINOR,
@@ -158,17 +159,6 @@ function cycleBounds(cycleId: string): { from: number; to: number } {
   };
 }
 
-function validTimestamp(value: string, field: string): number {
-  if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
-  ) {
-    throw new TypeError(`${field} must be an exact UTC timestamp`);
-  }
-  return Date.parse(value);
-}
-
 function intentComponent(value: string): string {
   return value
     .toLowerCase()
@@ -186,7 +176,7 @@ export function ensureCompleteCycle(
     calendar.from,
     Date.parse(view.project.reward.rewardStartAt),
   );
-  const generatedAt = validTimestamp(input.generatedAt, "generatedAt");
+  const generatedAt = exactUtcMilliseconds(input.generatedAt, "generatedAt");
   if (
     view.cycle.from !== new Date(expectedFrom).toISOString() ||
     view.cycle.to !== new Date(calendar.to).toISOString() ||

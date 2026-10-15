@@ -597,3 +597,97 @@ test("a created successor carrying another login is not shown as saved", async (
   ).toBeHidden();
   expect(api.writes).toBe(1);
 });
+
+// EIP-55 example address: wallets copy it in this checksum case.
+const checksummed = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
+
+for (const [chain, label] of [
+  ["base", "Base"],
+  ["robinhood", "Robinhood Chain"],
+] as const) {
+  test(`a checksummed ${label} address is accepted and registered in lowercase`, async ({
+    page,
+    context,
+  }, info) => {
+    const evidence = observe(page);
+    const owner = { githubActorId: "123", githubLogin: "qa-fixture" };
+    const expiresAt = new Date(
+      Math.floor(Date.now() / 1000) * 1000 + 240_000,
+    ).toISOString();
+    const signIn = await routeSyntheticSignIn(context, owner, expiresAt);
+    const posted: Record<string, unknown>[] = [];
+    await context.route(`${deployment.api}/**`, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/v1/auth/session") {
+        await route.fulfill({
+          json: { tokenType: "Bearer", token: signIn.token, expiresAt },
+        });
+      } else if (path === "/api/v1/wallet-claims/current") {
+        expect(new URL(route.request().url()).searchParams.get("chain")).toBe(
+          chain,
+        );
+        await route.fulfill({ status: 404, json: { error: "not_found" } });
+      } else if (path === "/api/v1/wallet-claims") {
+        const body = route.request().postDataJSON();
+        posted.push(body);
+        const created = {
+          schemaVersion: 1,
+          ...owner,
+          address: body.address,
+          chain,
+          source: "d1_registry",
+          issueRepository: null,
+          issueNumber: null,
+          sourceBodySha256: sha({
+            schemaVersion: 1,
+            githubActorId: owner.githubActorId,
+            address: body.address,
+            chain,
+            supersedesClaimId: null,
+          }),
+          observedAt: new Date().toISOString(),
+          supersedesClaimId: null,
+        };
+        await route.fulfill({
+          json: {
+            ...created,
+            claimId: "qa_evm_claim",
+            recordDigest: sha(created),
+          },
+        });
+      } else throw new Error(`Unexpected API request ${path}`);
+    });
+    await page.goto("/account#wallets", { waitUntil: "networkidle" });
+    await page.getByLabel("Payout network").selectOption(chain);
+    const input = page.getByLabel(`${label} public address`);
+    // One mistyped capital fails the checksum before any sign-in starts.
+    await input.fill(`${checksummed.slice(0, -1)}D`);
+    await page.getByRole("button", { name: "Verify with GitHub" }).click();
+    await expect(page.getByRole("alert")).toContainText(
+      "capital letters that do not match its checksum",
+    );
+    expect(signIn.starts).toBe(0);
+    await input.fill(`  ${checksummed} `);
+    await page.getByRole("button", { name: "Verify with GitHub" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Confirm your public registration" }),
+    ).toBeVisible();
+    await expect(page.locator(".wallet-confirmation")).toContainText(
+      checksummed.toLowerCase(),
+    );
+    await audit(page, info, `wallet-${chain}-checksum-preview`);
+    await page
+      .getByRole("button", { name: "Register address", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Wallet registered", exact: true }),
+    ).toBeVisible();
+    expect(posted).toEqual([
+      { address: checksummed.toLowerCase(), chain, supersedesClaimId: null },
+    ]);
+    // The browser logs the fixture's "no current claim" 404; nothing else.
+    expect(
+      evidence.errors.filter((error) => !error.includes("status of 404")),
+    ).toEqual([]);
+  });
+}
