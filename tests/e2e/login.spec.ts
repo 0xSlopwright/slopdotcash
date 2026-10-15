@@ -183,24 +183,30 @@ test("the header login link keeps the current page as the return route", async (
     .getByRole("link", { name: "Log in", exact: true });
   await expect(link).toHaveAttribute(
     "href",
-    `/login?next=${encodeURIComponent("/how-it-works#faq")}`,
+    `${deployment.site}/login?next=${encodeURIComponent("/how-it-works#faq")}`,
   );
   await page.evaluate(() => {
     window.location.hash = "verification";
   });
   await expect(link).toHaveAttribute(
     "href",
-    `/login?next=${encodeURIComponent("/how-it-works#verification")}`,
+    `${deployment.site}/login?next=${encodeURIComponent("/how-it-works#verification")}`,
   );
   await page.evaluate(() => {
     window.location.hash = "faq";
   });
   await expect(link).toHaveAttribute(
     "href",
-    `/login?next=${encodeURIComponent("/how-it-works#faq")}`,
+    `${deployment.site}/login?next=${encodeURIComponent("/how-it-works#faq")}`,
+  );
+  await page.route(`${deployment.site}/login?**`, (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<title>Public login destination fixture</title>",
+    }),
   );
   await link.click();
   await expect(page).toHaveURL(
-    `/login?next=${encodeURIComponent("/how-it-works#faq")}`,
+    `${deployment.site}/login?next=${encodeURIComponent("/how-it-works#faq")}`,
   );
 });

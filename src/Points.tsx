@@ -300,11 +300,11 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
     return (
       <a
         className="account-control account-login"
-        href={
+        href={`${productOrigin() ? "" : browserDeployment.site}${
           window.location.pathname === "/login" || loginReturn === "/"
             ? "/login"
             : `/login?next=${encodeURIComponent(loginReturn)}`
-        }
+        }`}
         onClick={navigate}
       >
         Log in
