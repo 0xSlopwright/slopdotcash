@@ -241,8 +241,11 @@ export function validateProjectTransitions(
   for (const [projectId, prior] of previous) {
     const next = current.get(projectId);
     if (!next) {
+      // A paused project collects nothing, so maintainers may retire it.
+      // Cycle proposals keep their own append-only guard below.
+      if (prior.status === "paused") continue;
       throw new TypeError(
-        `project ${projectId} cannot be deleted; pause it and preserve its policy history`,
+        `project ${projectId} cannot be deleted; pause it first`,
       );
     }
     assertProjectPolicyTransition(prior, next);
