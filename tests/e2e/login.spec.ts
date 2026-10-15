@@ -169,7 +169,8 @@ for (const [next, expected] of [
       exact: true,
     });
     await expect(visibility).not.toBeChecked();
-    await visibility.check();
+    // The controlled checkbox changes after the API acknowledges the save.
+    await visibility.click();
     await expect(visibility).toBeChecked();
     await page.reload();
     await expect(visibility).toBeChecked();
