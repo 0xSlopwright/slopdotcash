@@ -1,4 +1,4 @@
-import { readRecord } from "./record-validation";
+import { exactKeys, readRecord } from "./record-validation";
 /**
  * Validates the maintainer-approved bridge between an evaluator finding and a
  * capped public score event. Raw model output never reaches the ledger: only a
@@ -53,18 +53,6 @@ export interface EvaluatorAwardEvent extends ScoreEvent {
     manifestPath: string;
     manifestSha256: string;
   };
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-  field: string,
-): void {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  if (actual.join("\0") !== wanted.join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
 }
 
 function text(

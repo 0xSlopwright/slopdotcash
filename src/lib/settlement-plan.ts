@@ -1,4 +1,4 @@
-import { readRecord } from "./record-validation";
+import { exactKeys, readRecord } from "./record-validation";
 /**
  * Builds and validates unsigned USDC transfer plans from approved payout
  * intents. A cycle settles on the one network frozen in its allocation: Solana
@@ -412,16 +412,6 @@ export function createNetworkSettlementExecutionPlan(
         fundingInstruments: [input.instrument],
       })
     : createSettlementExecutionPlan(planInput);
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  field: string,
-): void {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
 }
 
 function minor(value: unknown, field: string): string {

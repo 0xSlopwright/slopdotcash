@@ -1,4 +1,4 @@
-import { readRecord } from "../src/lib/record-validation";
+import { exactKeys, readRecord } from "../src/lib/record-validation";
 /**
  * Converts public transaction evidence into a paid settlement only after the
  * allocation's network proves exact USDC debits and credits for every approved
@@ -160,16 +160,6 @@ export function parseVerifySettlementArguments(
     rpcUrl: rpc.toString(),
     settledAt,
   };
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  keys: string[],
-  field: string,
-) {
-  if (Object.keys(value).sort().join("\0") !== keys.sort().join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
 }
 
 export function parseSettlementEvidence(
