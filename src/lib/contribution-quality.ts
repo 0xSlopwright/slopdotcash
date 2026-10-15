@@ -93,7 +93,8 @@ export function assertQualityEvidence(
       typeof census.sourceSha256 === "string" &&
       /^[a-f0-9]{64}$/.test(census.sourceSha256) &&
       typeof census.observedAt === "string" &&
-      Number.isFinite(Date.parse(census.observedAt)),
+      Number.isFinite(Date.parse(census.observedAt)) &&
+      new Date(census.observedAt).toISOString() === census.observedAt,
     "A complete repository census with source digest is required",
   );
   const actors = new Map(
