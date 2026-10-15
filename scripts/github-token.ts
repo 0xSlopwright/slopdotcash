@@ -21,5 +21,9 @@ export async function resolveGitHubToken(
   environment: Record<string, string | undefined> = process.env,
   ghTokenLoader: () => Promise<string> = loadGhToken,
 ): Promise<string> {
-  return environment.GITHUB_TOKEN?.trim() || (await ghTokenLoader());
+  return (
+    environment.GITHUB_TOKEN?.trim() ||
+    environment.GH_TOKEN?.trim() ||
+    (await ghTokenLoader())
+  );
 }
