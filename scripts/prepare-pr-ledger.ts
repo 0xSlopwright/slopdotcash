@@ -19,7 +19,11 @@ import {
   type ScoreEvent,
 } from "../src/lib/leaderboard";
 import { isUnavailableModelIdentifier } from "../src/lib/model-identity";
-import { REGISTERED_REPOSITORIES } from "../src/lib/repositories.mjs";
+import { findProject } from "../src/lib/projects.mjs";
+import {
+  REGISTERED_REPOSITORIES,
+  TARGET_REPOSITORIES,
+} from "../src/lib/repositories.mjs";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -101,6 +105,63 @@ function rebindTransferredRepositoryPresentation(
   return changed
     ? { ...candidate, repositories: reboundRepositories }
     : candidate;
+}
+
+/**
+ * A project activated in code has no collected rows in the deployed ledger
+ * yet. Insert its repositories, in registry order and without events, so the
+ * pull-request checks see the current target registry. Trusted builds collect
+ * the repository from GitHub instead.
+ */
+function addActivatedRepositories(candidate: JsonRecord): JsonRecord {
+  const repositories = array(candidate.repositories, "snapshot.repositories");
+  const source = record(candidate.source, "snapshot.source");
+  const sourceRepositories = array(
+    source.repositories,
+    "snapshot.source.repositories",
+  );
+  const deployedIds = repositories.map(
+    (value, index) => record(value, `snapshot.repositories[${index}]`).id,
+  );
+  const targetIds = TARGET_REPOSITORIES.map((repository) => repository.id);
+  let cursor = 0;
+  for (const id of deployedIds) {
+    cursor = targetIds.indexOf(String(id), cursor);
+    if (cursor < 0) return candidate;
+    cursor += 1;
+  }
+  if (deployedIds.length === targetIds.length) return candidate;
+  const nextRepositories: unknown[] = [];
+  const nextSourceRepositories: unknown[] = [];
+  for (const target of TARGET_REPOSITORIES) {
+    const index = deployedIds.indexOf(target.id);
+    if (index >= 0) {
+      nextRepositories.push(repositories[index]);
+      nextSourceRepositories.push(sourceRepositories[index]);
+      continue;
+    }
+    const project = findProject(target.projectId);
+    if (project?.repositories[0]?.id !== target.id) {
+      throw new TypeError(
+        `activated repository ${target.id} has no recorded GraphQL node ID`,
+      );
+    }
+    const {
+      aliases: _aliases,
+      expectedNodeId: _expectedNodeId,
+      ...published
+    } = target;
+    nextRepositories.push(published);
+    nextSourceRepositories.push({
+      id: target.id,
+      repositoryId: project.authority.repositoryNodeId,
+    });
+  }
+  return {
+    ...candidate,
+    repositories: nextRepositories,
+    source: { ...source, repositories: nextSourceRepositories },
+  };
 }
 
 function actorId(value: unknown): string {
@@ -307,8 +368,8 @@ export function preparePullRequestLedger(value: unknown): LeaderboardSnapshot {
   ) {
     throw new TypeError("snapshot.generatedAt cannot be in the future");
   }
-  const candidate = rebindTransferredRepositoryPresentation(
-    record(value, "snapshot"),
+  const candidate = addActivatedRepositories(
+    rebindTransferredRepositoryPresentation(record(value, "snapshot")),
   );
   if (candidate.schemaVersion === LEADERBOARD_SCHEMA_VERSION) {
     assertLeaderboardSnapshot(candidate);
