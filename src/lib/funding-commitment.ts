@@ -14,6 +14,12 @@ import {
   assertFundingCommitments,
   hasActiveFundingCommitment,
 } from "./funding-instruments.mjs";
+import {
+  canonicalMinor,
+  exactKeys,
+  object,
+  timestamp,
+} from "./funding-record-validation";
 
 export type {
   FundingCommitmentInstrument,
@@ -81,47 +87,6 @@ export interface ProjectCommitmentRecord {
 const SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const RECORD_ID_PATTERN = /^cmt_[a-z0-9](?:[a-z0-9_-]{6,79})$/u;
 const PROJECT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
-
-function object(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  field: string,
-) {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
-}
-
-function timestamp(value: unknown, field: string): string {
-  if (
-    typeof value !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
-  ) {
-    throw new TypeError(`${field} is invalid`);
-  }
-  return value;
-}
-
-function canonicalMinor(value: unknown, field: string): string {
-  if (
-    typeof value !== "string" ||
-    value.length > 40 ||
-    !/^(?:0|[1-9]\d*)$/u.test(value)
-  ) {
-    throw new TypeError(`${field} must be canonical integer minor units`);
-  }
-  if (BigInt(value) === 0n) throw new TypeError(`${field} must be positive`);
-  return value;
-}
 
 function isCommitmentNetwork(value: unknown): value is CommitmentNetwork {
   return value === "base" || value === "ethereum" || value === "solana";

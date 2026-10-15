@@ -12,6 +12,12 @@ import {
 } from "./funding-commitment";
 import type { FundingCommitmentInstrument } from "./funding-instruments.mjs";
 import {
+  canonicalMinor,
+  exactKeys,
+  object,
+  timestamp,
+} from "./funding-record-validation";
+import {
   assertPublicSignerReport,
   type PublicSignerReport,
 } from "./signer-capability";
@@ -83,47 +89,6 @@ const FUNDING_VERIFIER_BY_NETWORK = {
   ethereum: "funding-ethereum-v1",
   solana: "funding-solana-v1",
 } as const satisfies Record<FundingNetwork, string>;
-
-function object(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  field: string,
-) {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
-}
-
-function timestamp(value: unknown, field: string): string {
-  if (
-    typeof value !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
-  ) {
-    throw new TypeError(`${field} is invalid`);
-  }
-  return value;
-}
-
-function canonicalMinor(value: unknown, field: string): string {
-  if (
-    typeof value !== "string" ||
-    value.length > 40 ||
-    !/^(?:0|[1-9]\d*)$/u.test(value)
-  ) {
-    throw new TypeError(`${field} must be canonical integer minor units`);
-  }
-  if (BigInt(value) === 0n) throw new TypeError(`${field} must be positive`);
-  return value;
-}
 
 function validTransactionId(
   network: FundingNetwork,

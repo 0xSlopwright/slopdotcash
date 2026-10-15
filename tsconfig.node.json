@@ -39,6 +39,7 @@
     "src/lib/evm-funding.ts",
     "src/lib/evm-settlement.ts",
     "src/lib/funding.ts",
+    "src/lib/funding-record-validation.ts",
     "src/lib/funding-review-submission.ts",
     "src/lib/signer-capability.ts",
     "src/lib/funding-commitment.ts",
