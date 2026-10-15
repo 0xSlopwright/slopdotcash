@@ -5520,18 +5520,30 @@ export function assertLeaderboardSnapshot(
     ) {
       throw new Error("snapshot.reviewExclusions must contain unique IDs");
     }
-    for (const exclusion of validatedReviewExclusions) {
-      if (
-        validatedLedger.some(
-          (event) =>
-            event.repository === exclusion.repository &&
-            (event.source.id === exclusion.reviewId ||
-              event.source.url === exclusion.url),
-        )
-      ) {
-        throw new Error(
-          "snapshot.reviewExclusions cannot contain a score-bearing review source",
-        );
+    if (validatedReviewExclusions.length > 0) {
+      const scoredSources = new Map<
+        string,
+        { ids: Set<string>; urls: Set<string> }
+      >();
+      for (const event of validatedLedger) {
+        let sources = scoredSources.get(event.repository);
+        if (!sources) {
+          sources = { ids: new Set(), urls: new Set() };
+          scoredSources.set(event.repository, sources);
+        }
+        sources.ids.add(event.source.id);
+        sources.urls.add(event.source.url);
+      }
+      for (const exclusion of validatedReviewExclusions) {
+        const sources = scoredSources.get(exclusion.repository);
+        if (
+          sources?.ids.has(exclusion.reviewId) ||
+          sources?.urls.has(exclusion.url)
+        ) {
+          throw new Error(
+            "snapshot.reviewExclusions cannot contain a score-bearing review source",
+          );
+        }
       }
     }
     for (let index = 1; index < validatedReviewExclusions.length; index += 1) {
