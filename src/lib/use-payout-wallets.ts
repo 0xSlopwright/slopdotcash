@@ -124,6 +124,12 @@ export function usePayoutWallets(): PayoutWallet[] {
     const solanaIds = new Map<Wallet, string>();
     const standard = getWallets();
     function update() {
+      const standardWallets = standard.get();
+      // Reuse display metadata when a provider lacks a supported icon; routing
+      // uses the selected provider object, never a wallet name.
+      const icons = new Map(
+        standardWallets.map((wallet) => [wallet.name, wallet.icon]),
+      );
       const next = [...evm]
         .filter(
           ([uuid]) =>
@@ -156,7 +162,7 @@ export function usePayoutWallets(): PayoutWallet[] {
         });
       }
       const standardNames = new Set<string>();
-      for (const wallet of standard.get()) {
+      for (const wallet of standardWallets) {
         if (
           !wallet.chains.some((chain) => chain.startsWith("solana:")) ||
           !("standard:connect" in wallet.features) ||
@@ -237,7 +243,15 @@ export function usePayoutWallets(): PayoutWallet[] {
           },
         });
       });
-      setChoices(next);
+      setChoices(
+        next.map((wallet) => ({
+          ...wallet,
+          icon: [wallet.icon, icons.get(wallet.name)].find(
+            (icon) =>
+              icon && /^data:image\/(?:png|jpeg|webp|svg\+xml)[;,]/u.test(icon),
+          ),
+        })),
+      );
     }
     function announce(event: Event) {
       const detail = (event as CustomEvent).detail;
