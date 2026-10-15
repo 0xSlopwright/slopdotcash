@@ -23,6 +23,7 @@ import {
 } from "./lib/contributor-standings";
 import type { CycleIndex } from "./lib/cycle-index";
 import { deploymentTier } from "./lib/deployment";
+import { GithubIcon } from "./lib/github-icon";
 import { requestIdentityAssertion } from "./lib/identity-flow";
 import type { ScoreEvent } from "./lib/leaderboard";
 import {
@@ -289,6 +290,7 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
       setBusy(false);
     }
   }
+  if (!me && window.location.pathname === "/login") return null;
   if (!me && session === "loading")
     return (
       <span className="account-control" role="status">
@@ -299,11 +301,11 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
     return (
       <a
         className="account-control account-login"
-        href={
+        href={`${productOrigin() ? "" : browserDeployment.site}${
           window.location.pathname === "/login" || loginReturn === "/"
             ? "/login"
             : `/login?next=${encodeURIComponent(loginReturn)}`
-        }
+        }`}
         onClick={navigate}
       >
         Log in
@@ -587,18 +589,11 @@ export function ProfilePoints({
     </section>
   );
 }
-function JoinPoints({
-  redirectToProfile = false,
-  showHeading = true,
-}: {
-  redirectToProfile?: boolean;
-  showHeading?: boolean;
-}) {
+function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
   const { me, setMe, session } = useContext(Context);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [authorization, setAuthorization] = useState<string | null>(null);
-  const [publish, setPublish] = useState(false);
   const active = useRef<AbortController | null>(null);
   useEffect(() => () => active.current?.abort(), []);
   async function start() {
@@ -655,17 +650,11 @@ function JoinPoints({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           assertion,
-          public: publish,
+          public: false,
         }),
         signal: c.signal,
       });
-      const signedIn = member(joined);
-      setMe(signedIn);
-      if (redirectToProfile)
-        window.location.assign(
-          returnPath() ??
-            `/contributors/${encodeURIComponent(signedIn.actor.login)}`,
-        );
+      setMe(member(joined));
       setMessage("You’re signed in. Your welcome points are recorded.");
     } catch (e) {
       if (!c.signal.aborted)
@@ -695,16 +684,24 @@ function JoinPoints({
       setMessage("Could not sign out. Please retry.");
     }
   }
-  if (!productOrigin())
+  if (!productOrigin()) {
+    const destination = new URL("/login", browserDeployment.site);
+    const next = returnPath();
+    if (next) destination.searchParams.set("next", next);
     return (
       <section className="points-panel">
         {showHeading ? <h2>Sign in to Slop</h2> : null}
-        <p>Use GitHub to manage your profile.</p>
-        <a href={`${browserDeployment.site}/login`}>
-          Continue with GitHub on {new URL(browserDeployment.site).hostname}
+        <a
+          className="button primary-button"
+          href={destination.href}
+          aria-label={`Continue with GitHub on ${new URL(browserDeployment.site).hostname}`}
+        >
+          <GithubIcon aria-hidden="true" />
+          Continue with GitHub
         </a>
       </section>
     );
+  }
   return (
     <section className="points-panel">
       {showHeading ? (
@@ -717,15 +714,21 @@ function JoinPoints({
       ) : null}
       {me ? (
         <>
-          <p>
-            5 welcome points ·{" "}
-            <a href={`/contributors/${encodeURIComponent(me.actor.login)}`}>
+          <div className="account-session-actions">
+            <a
+              className="button secondary-button"
+              href={`/contributors/${encodeURIComponent(me.actor.login)}`}
+            >
               Your profile
             </a>
-          </p>
-          <button type="button" onClick={() => void signout()}>
-            Sign out
-          </button>
+            <button
+              className="button ghost-button"
+              type="button"
+              onClick={() => void signout()}
+            >
+              Sign out
+            </button>
+          </div>
           <label>
             <input
               type="checkbox"
@@ -751,25 +754,15 @@ function JoinPoints({
         </>
       ) : (
         <>
-          <p>Use GitHub to manage your profile.</p>
           <button
             className="button primary-button"
             type="button"
             disabled={busy || session === "loading"}
             onClick={() => void start()}
           >
+            <GithubIcon aria-hidden="true" />
             {busy ? "Waiting for GitHub…" : "Continue with GitHub"}
           </button>
-          <label>
-            <input
-              type="checkbox"
-              checked={publish}
-              disabled={busy}
-              onChange={(e) => setPublish(e.target.checked)}
-            />
-            Optional: show my membership publicly. Accepted contributions are
-            already public.
-          </label>
           {busy ? (
             <button
               type="button"
@@ -794,10 +787,21 @@ function JoinPoints({
   );
 }
 export function LoginPage() {
+  const { me } = useContext(Context);
+  useEffect(() => {
+    if (me)
+      window.location.replace(
+        returnPath() ?? `/contributors/${encodeURIComponent(me.actor.login)}`,
+      );
+  }, [me]);
   return (
-    <main className="shell route-main points-page">
-      <h1>Log in</h1>
-      <JoinPoints redirectToProfile showHeading={false} />
+    <main className="shell route-main login-page">
+      <h1>{me ? "Signed in" : "Log in to slop.cash"}</h1>
+      {me ? (
+        <p role="status">Opening your destination…</p>
+      ) : (
+        <JoinPoints showHeading={false} />
+      )}
     </main>
   );
 }
