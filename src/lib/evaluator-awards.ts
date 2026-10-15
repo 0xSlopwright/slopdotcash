@@ -194,7 +194,10 @@ function review(value: unknown, field: string): EvaluatorAwardReview {
       parsed.pathname,
     ) ||
     parsed.search ||
-    parsed.hash
+    parsed.hash ||
+    parsed.username ||
+    parsed.password ||
+    parsed.port
   ) {
     throw new TypeError(
       `${field}.decisionUrl must be a Slop review pull request`,

@@ -1,4 +1,5 @@
 /** Public signer reports are evidence, not backing or payment authorization. */
+import { isSablierStreamId } from "./sablier-funding";
 import {
   PROJECT_VAULT_INSTRUMENT_PREFIX,
   planCarriesPlatformFee,
@@ -61,7 +62,16 @@ export interface PublicSignerReport {
 }
 
 const INSTRUMENT_ID =
-  /^(?:squads-(?:v4|project)-vault:solana:[1-9A-HJ-NP-Za-km-z]{32,44}:(?:0|[1-9][0-9]*):[1-9A-HJ-NP-Za-km-z]{32,44}|sablier-lockup-v4:base:0x[0-9a-f]{40}:[1-9][0-9]{0,77})$/u;
+  /^(?:squads-(?:v4|project)-vault:solana:[1-9A-HJ-NP-Za-km-z]{32,44}:(?:0|[1-9][0-9]{0,2}):[1-9A-HJ-NP-Za-km-z]{32,44}|sablier-lockup-v4:base:0x[0-9a-f]{40}:[1-9][0-9]{0,77})$/u;
+
+/** A Squads vault index is an unsigned byte; a Sablier stream id is a uint256. */
+function isSignerInstrumentId(value: string): boolean {
+  if (!INSTRUMENT_ID.test(value)) return false;
+  const numeric = value.split(":")[3];
+  return isBaseStreamSignerInstrument(value)
+    ? isSablierStreamId(numeric)
+    : Number(numeric) <= 255;
+}
 
 export function isBaseStreamSignerInstrument(instrumentId: string): boolean {
   return instrumentId.startsWith(BASE_STREAM_INSTRUMENT_PREFIX);
@@ -116,7 +126,7 @@ export function assertPublicSignerReport(value: unknown): PublicSignerReport {
     typeof r.cycleId !== "string" ||
     !/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(r.cycleId) ||
     typeof r.instrumentId !== "string" ||
-    !INSTRUMENT_ID.test(r.instrumentId) ||
+    !isSignerInstrumentId(r.instrumentId) ||
     typeof r.role !== "string" ||
     !(requiredSignerRoles(r.instrumentId) as readonly string[]).includes(
       r.role,

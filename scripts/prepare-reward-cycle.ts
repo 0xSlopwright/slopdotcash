@@ -9,7 +9,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertPublishableLeaderboardSnapshot } from "../src/lib/leaderboard";
-import { createProjectView } from "../src/lib/project-view";
+import { createPaymentProjectView } from "../src/lib/project-view";
 import { findProject, type ProjectId } from "../src/lib/projects.mjs";
 import { createRewardCycleProposal } from "../src/lib/reward-cycle";
 import type { WalletProof } from "../src/lib/rewards";
@@ -238,7 +238,7 @@ export async function prepareRewardCycle(
 
   const wallets = new Map<string, WalletProof>();
   if (project.reward.kind === "monthly-pool") {
-    const projectLeaders = createProjectView(
+    const projectLeaders = createPaymentProjectView(
       snapshot,
       arguments_.projectId,
       arguments_.cycleId,
