@@ -4540,6 +4540,9 @@ small {
   max-width: 30rem;
   padding-block: clamp(2rem, 8vh, 6rem);
 }
+.login-page > h1 {
+  text-align: center;
+}
 .login-page > .points-panel {
   margin: 1.5rem 0;
   padding: 0;

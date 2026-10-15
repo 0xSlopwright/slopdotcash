@@ -796,7 +796,7 @@ export function LoginPage() {
   }, [me]);
   return (
     <main className="shell route-main login-page">
-      <h1>{me ? "Signed in" : "Log in"}</h1>
+      <h1>{me ? "Signed in" : "Log in to slop.cash"}</h1>
       {me ? (
         <p role="status">Opening your destination…</p>
       ) : (
