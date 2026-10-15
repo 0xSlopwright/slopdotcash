@@ -1009,7 +1009,7 @@ label {
   font-size: 14px;
 }
 
-.points-panel > a {
+.points-panel > a:not(.button) {
   display: inline-flex;
   margin-top: 8px;
   font-weight: 700;
