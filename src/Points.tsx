@@ -588,13 +588,7 @@ export function ProfilePoints({
     </section>
   );
 }
-function JoinPoints({
-  redirectToProfile = false,
-  showHeading = true,
-}: {
-  redirectToProfile?: boolean;
-  showHeading?: boolean;
-}) {
+function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
   const { me, setMe, session } = useContext(Context);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -660,13 +654,7 @@ function JoinPoints({
         }),
         signal: c.signal,
       });
-      const signedIn = member(joined);
-      setMe(signedIn);
-      if (redirectToProfile)
-        window.location.assign(
-          returnPath() ??
-            `/contributors/${encodeURIComponent(signedIn.actor.login)}`,
-        );
+      setMe(member(joined));
       setMessage("You’re signed in. Your welcome points are recorded.");
     } catch (e) {
       if (!c.signal.aborted)
@@ -722,15 +710,21 @@ function JoinPoints({
       ) : null}
       {me ? (
         <>
-          <p>
-            5 welcome points ·{" "}
-            <a href={`/contributors/${encodeURIComponent(me.actor.login)}`}>
+          <div className="account-session-actions">
+            <a
+              className="button secondary-button"
+              href={`/contributors/${encodeURIComponent(me.actor.login)}`}
+            >
               Your profile
             </a>
-          </p>
-          <button type="button" onClick={() => void signout()}>
-            Sign out
-          </button>
+            <button
+              className="button ghost-button"
+              type="button"
+              onClick={() => void signout()}
+            >
+              Sign out
+            </button>
+          </div>
           <label>
             <input
               type="checkbox"
@@ -799,10 +793,21 @@ function JoinPoints({
   );
 }
 export function LoginPage() {
+  const { me } = useContext(Context);
+  useEffect(() => {
+    if (me)
+      window.location.replace(
+        returnPath() ?? `/contributors/${encodeURIComponent(me.actor.login)}`,
+      );
+  }, [me]);
   return (
     <main className="shell route-main login-page">
-      <h1>Log in</h1>
-      <JoinPoints redirectToProfile showHeading={false} />
+      <h1>{me ? "Signed in" : "Log in"}</h1>
+      {me ? (
+        <p role="status">Opening your destination…</p>
+      ) : (
+        <JoinPoints showHeading={false} />
+      )}
     </main>
   );
 }

@@ -3289,18 +3289,6 @@ small {
 }
 
 /* Points are a separate participation record, never a currency estimate. */
-.login-page {
-  max-width: 30rem;
-  padding-block: clamp(2rem, 8vh, 6rem);
-}
-.login-page > .points-panel {
-  margin: 1.5rem 0;
-  padding: 0;
-  border: 0;
-}
-.login-page .button {
-  width: 100%;
-}
 .points-panel {
   margin: 2rem 0;
   padding: clamp(1rem, 3vw, 2rem);
@@ -3381,7 +3369,7 @@ small {
   background: var(--paper);
   border-radius: var(--brand-radius-small);
 }
-.points-panel button {
+.points-panel button:not(.button) {
   min-height: 44px;
   padding: 0.6rem 1rem;
   margin: 0.3rem;
@@ -4546,4 +4534,24 @@ small {
     align-items: flex-start;
     padding: 0.75rem 0.5rem;
   }
+}
+
+.login-page {
+  max-width: 30rem;
+  padding-block: clamp(2rem, 8vh, 6rem);
+}
+.login-page > .points-panel {
+  margin: 1.5rem 0;
+  padding: 0;
+  border: 0;
+}
+.login-page .button {
+  width: 100%;
+}
+
+.account-session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
 }

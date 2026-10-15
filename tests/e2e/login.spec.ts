@@ -86,6 +86,7 @@ for (const [next, expected] of [
     ).toISOString();
     const flowId = `flow_${"f".repeat(24)}`;
     let signedIn = false;
+    let starts = 0;
     const member = {
       actor: { id: "U_return_member", login: "return-member" },
       joinedAt: "2026-10-01T00:00:00.000Z",
@@ -95,7 +96,8 @@ for (const [next, expected] of [
     };
     await page.context().route(`${deployment.identity}/**`, async (route) => {
       const path = new URL(route.request().url()).pathname;
-      if (path === "/v1/oauth/start")
+      if (path === "/v1/oauth/start") {
+        starts += 1;
         await route.fulfill({
           json: {
             flowId,
@@ -105,7 +107,7 @@ for (const [next, expected] of [
             authorizationUrl: `${deployment.identity}/v1/oauth/authorize?flow_id=${flowId}&state=${"s".repeat(48)}`,
           },
         });
-      else if (path === "/v1/oauth/authorize")
+      } else if (path === "/v1/oauth/authorize")
         await route.fulfill({
           contentType: "text/html",
           body: "<title>Synthetic OAuth fixture</title>",
@@ -168,6 +170,11 @@ for (const [next, expected] of [
     await action.click();
     await (await popup).close();
     await expect(page).toHaveURL(expected);
+    await page.goto(
+      `${deployment.site}/login?next=${encodeURIComponent(next)}`,
+    );
+    await expect(page).toHaveURL(expected);
+    expect(starts).toBe(1);
     expect(errors).toEqual([]);
     // The destination keeps loading public data after the assertion.
     await page.unrouteAll({ behavior: "ignoreErrors" });
