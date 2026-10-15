@@ -103,7 +103,7 @@ function CurrentWalletRegistration({
               </dd>
             </div>
             <div>
-              <dt>Last changed</dt>
+              <dt>Record observed</dt>
               <dd>
                 <time dateTime={state.claim.observedAt}>
                   {formatDateTime(state.claim.observedAt)}

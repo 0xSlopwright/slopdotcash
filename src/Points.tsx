@@ -826,10 +826,7 @@ export function AccountPage() {
       <div id="connections">
         <SocialConnections />
       </div>
-      <WalletRegistration
-        key={githubActorId ?? "signed-out"}
-        owner={walletOwner}
-      />
+      <WalletRegistration owner={walletOwner} />
       <p>
         <a href="/points#rules">Points and earning rules</a>
       </p>
