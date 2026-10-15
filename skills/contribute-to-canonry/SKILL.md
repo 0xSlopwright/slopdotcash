@@ -24,11 +24,21 @@ Follow the repository rules that most often fail review:
 - **Contracts.** `openapi.ts` is the source of truth; run `pnpm gen` after changing it. Never rename or remove an endpoint path, JSON field or error code. Compare domain values through the enum constants, not raw strings. Put shared pure helpers in `packages/contracts/`.
 - **Data.** New columns need a new migration version; never edit a shipped one. Probe runs stay out of every aggregate read.
 
-Add a failing regression at the affected public boundary before fixing it. Derived numbers assert exact math and the business invariant, including zero, missing and rounding cases, not shape. Run `pnpm check`, the affected test projects (`pnpm exec vitest run --project <name>`) and the affected package typechecks. Run `pnpm build:cli` or `pnpm build:web` when that surface changes. Record commands, results, exact revision and limits.
+Read Canonry's `.agents/skills/test-audit/SKILL.md` before selecting or editing tests. Add regressions at the affected public boundary. Derived numbers assert exact math and the business invariant, including zero, missing and rounding cases, not shape. Defer test execution until changes are final. Then prove that regressions fail on the base and pass on the head for the intended reason.
+
+Complete Canonry's current `CONTRIBUTING.md` checklist before opening a PR, including a draft:
+
+- Run `pnpm check` and `pnpm verify` for outside code contributions. Include full test-suite pass/fail/skip totals, full typechecks, type-aware lint, and generated-file checks. Focused tests and future CI do not replace these results.
+- Build and smoke-check affected API, CLI, MCP, and UI surfaces, including both Simple and Advanced paths. Follow the repository's packaging checks when applicable.
+- Check code style against root and scoped `AGENTS.md`. For UI changes, follow its product/design references and include desktop/mobile, keyboard, and before/after screenshot evidence.
+- Review potential security issues: permissions, project boundaries, secrets, untrusted input, and provider spend. Record risks and mitigations, or `None identified` with the reviewed areas.
+- Record the tested SHA, exact commands, results, and sanitized evidence. Rerun checks whose inputs changed before submission. Never mark failed, skipped, or unrun checks as passed.
+
+Use Canonry's docs/comment-only and configuration exceptions only when applicable; write `N/A — <reason>` for inapplicable checks. Missing tools, time, or credentials are blockers. Do not open a PR with missing required results without an explicit maintainer exception. Keep the work local and report the blocker to the operator.
 
 ## Deliver and authority
 
-Prepare a scoped PR into `main` with a Conventional Commit title, the problem, before/after behavior, evidence, changed files and remaining checks. Bump the package version only when the root `AGENTS.md` versioning rule requires it, and recheck the latest published version right before pushing. Recheck the live branch and duplicate work before submission. Publish only within the operator's authorization. Maintainers decide acceptance; never self-approve or merge by inference.
+Prepare a scoped PR into `main` with a Conventional Commit title. Use Canonry's current `.github/pull_request_template.md`: 1–3 summary bullets, at most 75 words, the completed checklist, and brief evidence. Link longer notes and collapse logs. Omit file inventories, implementation diaries, and repeated before/after sections. Bump versions only under the root `AGENTS.md` rule, and recheck npm before pushing. Recheck the live branch and duplicate work before submission. Publish only within the operator's authorization. Maintainers decide acceptance; never self-approve or merge by inference.
 
 Generate the final attribution footer with one local command and paste it unchanged; it opens with the visible line `Made via @slopdotcash`, which the PR body carries once, outside code fences:
 
