@@ -1,4 +1,7 @@
-import { TARGET_REPOSITORIES } from "./repositories.mjs";
+import {
+  REGISTERED_REPOSITORIES,
+  TARGET_REPOSITORIES,
+} from "./repositories.mjs";
 export interface ProfileRecord {
   id: string;
   login: string;
@@ -53,6 +56,12 @@ export interface ProfileIssueHistory {
   firstObservedAt: string;
   repositories: { repository: string; count: number }[];
   items: ProfileIssue[];
+  /**
+   * Unchanged records of registered repositories outside this census, such as
+   * a paused project's issues. They are not displayed; a reactivated project
+   * resumes their history.
+   */
+  archived?: ProfileIssue[];
 }
 /**
  * `targets` defaults to the current active repositories. A previous census
@@ -138,7 +147,8 @@ function assertProfileIssues(index: ProfileIndex, targets: readonly string[]) {
     !time(history.firstObservedAt) ||
     Date.parse(history.firstObservedAt) > Date.parse(index.generatedAt) ||
     !Array.isArray(history.repositories) ||
-    !Array.isArray(history.items)
+    !Array.isArray(history.items) ||
+    (history.archived !== undefined && !Array.isArray(history.archived))
   )
     throw Error("Invalid issue history coverage");
   if (
@@ -152,13 +162,19 @@ function assertProfileIssues(index: ProfileIndex, targets: readonly string[]) {
   const reason = (value: string | null) =>
     value === null ||
     (typeof value === "string" && /^[A-Z_]{1,64}$/.test(value));
-  for (const issue of history.items) {
+  const registered = new Set(REGISTERED_REPOSITORIES.map((r) => r.id));
+  const records = [...history.items, ...(history.archived ?? [])];
+  for (const [position, issue] of records.entries()) {
+    const archived = position >= history.items.length;
     if (
       !issue ||
       typeof issue.id !== "string" ||
       !issue.id ||
       ids.has(issue.id) ||
-      !targets.includes(issue.repository) ||
+      (archived
+        ? targets.includes(issue.repository) ||
+          !registered.has(issue.repository)
+        : !targets.includes(issue.repository)) ||
       !Number.isSafeInteger(issue.number) ||
       issue.number <= 0 ||
       (issue.authorId !== null && !people.has(issue.authorId)) ||
@@ -184,7 +200,7 @@ function assertProfileIssues(index: ProfileIndex, targets: readonly string[]) {
     )
       throw Error("Invalid issue history record");
     ids.add(issue.id);
-    if (issue.unavailableSince === null)
+    if (!archived && issue.unavailableSince === null)
       counts.set(issue.repository, (counts.get(issue.repository) ?? 0) + 1);
     const events = new Set<string>();
     let previous = Date.parse(issue.createdAt);
