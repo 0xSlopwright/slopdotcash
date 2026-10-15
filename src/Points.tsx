@@ -691,9 +691,13 @@ function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
     return (
       <section className="points-panel">
         {showHeading ? <h2>Sign in to Slop</h2> : null}
-        <a className="button primary-button" href={destination.href}>
+        <a
+          className="button primary-button"
+          href={destination.href}
+          aria-label={`Continue with GitHub on ${new URL(browserDeployment.site).hostname}`}
+        >
           <GithubIcon aria-hidden="true" />
-          Continue with GitHub on {new URL(browserDeployment.site).hostname}
+          Continue with GitHub
         </a>
       </section>
     );
