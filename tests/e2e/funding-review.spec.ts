@@ -178,10 +178,18 @@ test("public funding records and the payout workspace are separate tabs", async 
   await expect(records).toHaveAttribute("aria-selected", "true");
   await page.goto("/projects/eliza/funding#payouts");
   await expect(payouts).toHaveAttribute("aria-selected", "true");
-  // Audit the settled workspace, not its loading transition.
+  // Audit the settled workspace, not its loading transition. The workbench
+  // opens on the newest month, and a published cycle turns read-only when its
+  // 14-day review window closes, so keep this editable-workspace check on the
+  // prepared August month, which stays editable while it has no cycle record.
+  const workbench = page.locator(".funding-workbench");
+  await workbench.getByLabel("Contribution month").selectOption("2026-08");
+  await expect(workbench.getByLabel("Contribution month")).toHaveValue(
+    "2026-08",
+  );
   await expect(page.locator(".recipient-row").first()).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Save draft on this device" }),
+    workbench.getByRole("button", { name: "Save draft on this device" }),
   ).toBeEnabled();
   expect(errors).toEqual([]);
   expect(
