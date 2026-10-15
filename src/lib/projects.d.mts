@@ -237,6 +237,12 @@ export interface ProjectDefinition {
 
 export declare const PROJECTS: readonly ProjectDefinition[];
 export declare const HISTORICAL_PROJECTS: readonly ProjectDefinition[];
+export declare function findHistoricalProject(
+  projectId: string,
+): ProjectDefinition | null;
+export declare function findHistoricalProjectByRepositoryId(
+  repositoryId: string,
+): ProjectDefinition | null;
 
 export declare function findProject(value: string): ProjectDefinition | null;
 

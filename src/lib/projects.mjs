@@ -62,6 +62,34 @@ const PROJECTS_BY_REPOSITORY = new Map(
   ),
 );
 
+const HISTORICAL_PROJECTS_BY_ID = new Map(
+  HISTORICAL_PROJECTS.map((project) => [project.id, project]),
+);
+const HISTORICAL_PROJECTS_BY_REPOSITORY = new Map(
+  HISTORICAL_PROJECTS.flatMap((project) =>
+    project.repositories.flatMap((repository) =>
+      [repository.id, ...(repository.aliases ?? [])].map((repositoryId) => [
+        repositoryId.toLowerCase(),
+        project,
+      ]),
+    ),
+  ),
+);
+
+/** Resolves a project id in immutable history, including retired projects. */
+export function findHistoricalProject(projectId) {
+  if (typeof projectId !== "string") return null;
+  return HISTORICAL_PROJECTS_BY_ID.get(projectId) ?? null;
+}
+
+/** Resolves a repository in immutable history, including retired projects. */
+export function findHistoricalProjectByRepositoryId(repositoryId) {
+  if (typeof repositoryId !== "string") return null;
+  return (
+    HISTORICAL_PROJECTS_BY_REPOSITORY.get(repositoryId.toLowerCase()) ?? null
+  );
+}
+
 /** Returns the canonical project for an id or slug. */
 export function findProject(value) {
   if (typeof value !== "string") return null;
