@@ -15,6 +15,7 @@ import {
 } from "../src/lib/funding-review-data";
 import {
   assertLeaderboardSnapshot,
+  paymentReviewSnapshot,
   type ScoreEvent,
 } from "../src/lib/leaderboard";
 import { findProject } from "../src/lib/projects.mjs";
@@ -79,11 +80,22 @@ export async function prepareSourceCorrection(input: {
     archive: unknown = JSON.parse(input.archiveBytes);
   assertLeaderboardSnapshot(original);
   assertLeaderboardSnapshot(archive);
+  const project = findProject(preparation.projectId);
+  check(project, "Unknown project");
+  // The prepare scripts record the payment review ledger count for
+  // monthly-pool cycles from 2026-10, not the raw snapshot count: the
+  // preparation reconciles against the ledger the payment review used.
+  // Compare the same count here, or every such preparation is refused
+  // even when its snapshot digest matches.
+  const expectedLedgerCount =
+    preparation.cycleId >= "2026-10" && project.reward.kind === "monthly-pool"
+      ? paymentReviewSnapshot(original).ledger.length
+      : original.ledger.length;
   check(
     original.ruleVersion === preparation.provenance.ruleVersion &&
       original.window.from === preparation.provenance.snapshotFrom &&
       original.window.to === preparation.provenance.snapshotTo &&
-      original.ledger.length === preparation.provenance.snapshotLedgerCount &&
+      expectedLedgerCount === preparation.provenance.snapshotLedgerCount &&
       original.source.counts.mergedPullRequests ===
         preparation.provenance.sourceMergedPullRequests,
     "Original collection provenance differs from preparation",
@@ -93,8 +105,6 @@ export async function prepareSourceCorrection(input: {
     preparation,
   );
   await verifyQualityEventIds(evidence, preparation);
-  const project = findProject(preparation.projectId);
-  check(project, "Unknown project");
   const repositories = new Set(project.repositories.map((repo) => repo.id));
   const inCycle = (event: ScoreEvent) =>
     repositories.has(event.repository) &&
