@@ -284,7 +284,7 @@ export function EarningsPage() {
           </h2>
           <button
             type="button"
-            className="wallet-picker-close"
+            className="button ghost-button icon-button wallet-picker-close"
             aria-label="Close wallet picker"
             onClick={() => setPicker(null)}
           >
@@ -304,10 +304,7 @@ export function EarningsPage() {
                 className="wallet-picker-row"
                 onClick={() => picker && void connect(wallet, picker)}
               >
-                {wallet.icon &&
-                /^data:image\/(?:png|jpeg|webp|svg\+xml)[;,]/u.test(
-                  wallet.icon,
-                ) ? (
+                {wallet.icon ? (
                   <img src={wallet.icon} width={32} height={32} alt="" />
                 ) : (
                   <WalletIcon size={24} aria-hidden="true" />
