@@ -78,7 +78,7 @@ export interface ProjectDefinition {
   readonly eyebrow: string;
   readonly headline: string;
   readonly description: string;
-  readonly listingTier: "featured" | "community";
+  readonly listingTier: "featured" | "community" | "retired";
   readonly status: ProjectStatus;
   /** Reviewed participation restrictions; these do not activate a project. */
   readonly participation?:
@@ -236,6 +236,7 @@ export interface ProjectDefinition {
 }
 
 export declare const PROJECTS: readonly ProjectDefinition[];
+export declare const HISTORICAL_PROJECTS: readonly ProjectDefinition[];
 
 export declare function findProject(value: string): ProjectDefinition | null;
 

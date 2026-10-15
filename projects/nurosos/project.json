@@ -5,7 +5,7 @@
   "name": "NurosOS",
   "eyebrow": "Open-source project",
   "headline": "Make developmental experiments reproducible.",
-  "description": "Build a benchmark-quality developmental experiment for NurosOS. Start from one computational genome, develop it in different worlds, measure how trajectories diverge, then prove that each history can be checkpointed, replayed, audited, and compared. Ship a tested PR with deterministic evidence\u2014not claims of consciousness.",
+  "description": "Build a benchmark-quality developmental experiment for NurosOS. Start from one computational genome, develop it in different worlds, measure how trajectories diverge, then prove that each history can be checkpointed, replayed, audited, and compared. Ship a tested PR with deterministic evidence—not claims of consciousness.",
   "listingTier": "community",
   "status": "paused",
   "steward": {

@@ -51,10 +51,12 @@ export async function renderProjectRegistry() {
       );
     }
     assertProjectDefinition(definition);
-    for (const skillPath of [
-      definition.skill?.sourcePath,
-      definition.reviewSkill?.sourcePath,
-    ]) {
+    // A retired project publishes no skill, so its skill tree may be deleted.
+    const skillPaths =
+      definition.listingTier === "retired"
+        ? []
+        : [definition.skill?.sourcePath, definition.reviewSkill?.sourcePath];
+    for (const skillPath of skillPaths) {
       if (typeof skillPath !== "string") continue;
       try {
         await access(resolve(REPOSITORY_ROOT, skillPath, "SKILL.md"));

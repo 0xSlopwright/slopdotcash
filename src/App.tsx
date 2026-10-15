@@ -91,6 +91,7 @@ import {
   formatDate,
   formatMicroUsdc,
   monthlyPoolLabel,
+  monthlyPoolPointsOnly,
   monthlyPoolUnfunded,
   NotFound,
   reviewBudgetLabel,
@@ -577,14 +578,19 @@ function ProjectCard({
         <p className="project-summary">{project.description}</p>
         <p className="project-bounty">
           <strong>{amount}</strong>
-          {project.reward.kind === "monthly-pool" ? (
+          {monthlyPoolPointsOnly(project.reward) ||
+          project.reward.kind === "external-prize-share" ? (
+            <span> + points</span>
+          ) : (
             <span>/mo target</span>
-          ) : null}
+          )}
         </p>
         <small className="project-money-state">
-          {project.reward.kind === "monthly-pool"
-            ? `Vault: ${vaultBalance}`
-            : "External prize"}
+          {monthlyPoolPointsOnly(project.reward)
+            ? "Points only"
+            : project.reward.kind === "monthly-pool"
+              ? `Vault: ${vaultBalance}`
+              : "External prize"}
         </small>
         {project.reward.reviewBudget ? (
           <small className="project-review-budget">
@@ -597,11 +603,11 @@ function ProjectCard({
 }
 
 function ProjectRow({ project }: { project: ProjectDefinition }) {
-  const amount =
-    project.reward.kind === "monthly-pool"
+  const amount = monthlyPoolPointsOnly(project.reward)
+    ? "$0 + points (Points only)"
+    : project.reward.kind === "monthly-pool"
       ? `${monthlyPoolCapLabel(project.reward)}/mo target`
-      : (project.reward.externalOpportunity?.advertisedAmountDisplay ??
-        "External prize");
+      : `${project.reward.externalOpportunity?.advertisedAmountDisplay ?? "External prize"} + points`;
   return (
     <li>
       <Link className="project-row" href={`/projects/${project.slug}`}>
@@ -1605,10 +1611,12 @@ function ProjectFundingPage({
                 : "Advertised prize"}
             </dt>
             <dd>
-              {project.reward.kind === "monthly-pool"
-                ? project.reward.monthlyCapDisplay
-                : (project.reward.externalOpportunity
-                    ?.advertisedAmountDisplay ?? "External")}
+              {monthlyPoolPointsOnly(project.reward)
+                ? "$0 (Points only)"
+                : project.reward.kind === "monthly-pool"
+                  ? project.reward.monthlyCapDisplay
+                  : (project.reward.externalOpportunity
+                      ?.advertisedAmountDisplay ?? "External")}
             </dd>
           </div>
           <div>
@@ -1881,19 +1889,22 @@ function ProjectPage({
                       : undefined
                   }
                 >
-                  {project.reward.kind === "monthly-pool"
-                    ? monthlyPoolUnfunded(project.reward)
-                      ? UNFUNDED_POOL_HEADLINE
-                      : `${monthlyPoolCapLabel(project.reward)} / mo`
-                    : project.reward.externalOpportunity
-                        ?.advertisedAmountDisplay}
+                  {monthlyPoolPointsOnly(project.reward)
+                    ? "$0 + points"
+                    : project.reward.kind === "monthly-pool"
+                      ? monthlyPoolUnfunded(project.reward)
+                        ? UNFUNDED_POOL_HEADLINE
+                        : `${monthlyPoolCapLabel(project.reward)} / mo`
+                      : `${project.reward.externalOpportunity?.advertisedAmountDisplay} + points`}
                 </strong>
                 <p>
-                  {project.reward.kind === "monthly-pool"
-                    ? monthlyPoolUnfunded(project.reward)
-                      ? `Target ${project.reward.monthlyCapDisplay} per month. No payments scheduled.`
-                      : `${formatMicroUsdc(project.reward.committedMinor)} committed against a ${project.reward.monthlyCapDisplay} monthly target. Accessibility is unknown; no payment is enabled.`
-                    : project.terms.externalPrize?.allocationAuthority}
+                  {monthlyPoolPointsOnly(project.reward)
+                    ? "Points only. Accepted work earns Slop points. This project has no money pool."
+                    : project.reward.kind === "monthly-pool"
+                      ? monthlyPoolUnfunded(project.reward)
+                        ? `Target ${project.reward.monthlyCapDisplay} per month. No payments scheduled.`
+                        : `${formatMicroUsdc(project.reward.committedMinor)} committed against a ${project.reward.monthlyCapDisplay} monthly target. Accessibility is unknown; no payment is enabled.`
+                      : project.terms.externalPrize?.allocationAuthority}
                 </p>
                 <div>
                   {project.reward.reviewBudget ? (

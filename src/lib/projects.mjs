@@ -21,7 +21,8 @@ function compareMinorDescending(left, right) {
   return leftMinor === rightMinor ? 0 : leftMinor > rightMinor ? -1 : 1;
 }
 
-const PROJECTS = Object.freeze(
+/** Every manifest, including retired ones kept only to resolve history. */
+const HISTORICAL_PROJECTS = Object.freeze(
   assertProjectRegistry(RAW_PROJECT_DEFINITIONS)
     .sort(
       (left, right) =>
@@ -40,6 +41,11 @@ const PROJECTS = Object.freeze(
         left.id.localeCompare(right.id),
     )
     .map(freezeTree),
+);
+
+/** Listed projects. Retired manifests never reach a page, skill, or list. */
+const PROJECTS = Object.freeze(
+  HISTORICAL_PROJECTS.filter((project) => project.listingTier !== "retired"),
 );
 
 const PROJECTS_BY_ID = new Map(
@@ -94,4 +100,4 @@ export function assertProjectPaymentsEnabled(projectId, cycleId) {
   return project;
 }
 
-export { PROJECTS };
+export { HISTORICAL_PROJECTS, PROJECTS };
