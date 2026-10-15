@@ -1,3 +1,4 @@
+import { isAddress } from "viem";
 import { browserDeployment } from "./browser-deployment";
 import { chainFamily } from "./escrow-policy.mjs";
 /** Browser adapter for the canonical wallet-claim/run-receipt OAuth protocol. */
@@ -183,6 +184,33 @@ async function boundedJson(response: Response) {
   } catch {
     return invalid();
   }
+}
+/**
+ * Reads a typed or pasted address into the one spelling a claim stores.
+ * Wallets copy EVM addresses in EIP-55 checksum case, so mixed case is
+ * accepted only when its checksum is valid, then lowercased; records are
+ * still compared and hashed in canonical lowercase (WAL-01).
+ */
+export function canonicalWalletInput(
+  chain: WalletChain,
+  value: string,
+): { address: string } | { error: string } {
+  const typed = value.trim();
+  if (chainFamily(chain) !== "evm")
+    return isWalletAddress(chain, typed)
+      ? { address: typed }
+      : { error: "Enter a valid Solana public address (32-byte base58)." };
+  const address = typed.toLowerCase();
+  if (!isWalletAddress(chain, address))
+    return {
+      error: "Enter a valid public address (0x and 40 hexadecimal characters).",
+    };
+  if (!isAddress(typed, { strict: true }))
+    return {
+      error:
+        "This address has capital letters that do not match its checksum, so it may contain a typo. Copy it again from your wallet.",
+    };
+  return { address };
 }
 /** No registry write until the returned confirm function is explicitly invoked. */
 export async function prepareWalletRegistration(

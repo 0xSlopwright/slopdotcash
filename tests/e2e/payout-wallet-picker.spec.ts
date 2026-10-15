@@ -5,7 +5,15 @@ import { expect, type Page, test } from "@playwright/test";
 const evmAddress = "0x1111111111111111111111111111111111111111";
 const solanaAddress = "11111111111111111111111111111111";
 
-async function payments(page: Page) {
+type SavedWallet = {
+  chain: "base" | "solana" | "robinhood";
+  claimId: string;
+  address: string;
+  authorized: boolean;
+  activationEligibleAt: null;
+};
+
+async function payments(page: Page, wallets: SavedWallet[] = []) {
   const writes: { path: string; body: Record<string, string> }[] = [];
   let claim = { chain: "base", address: evmAddress };
   await page.route("**/api/v1/payments/**", async (route) => {
@@ -14,7 +22,7 @@ async function payments(page: Page) {
       await route.fulfill({
         json: {
           githubUserId: "123",
-          wallets: [],
+          wallets,
           payments: [],
           balances: [],
           directTransfers: [],
@@ -42,19 +50,49 @@ async function payments(page: Page) {
   return writes;
 }
 
-async function providers(page: Page, reject = false) {
+/**
+ * `connected` is the account a wallet returns before its account picker runs;
+ * `permissions` models wallet_requestPermissions: the picker selects
+ * evmAddress, the wallet lacks the method, or the user rejects it.
+ */
+async function providers(
+  page: Page,
+  reject = false,
+  {
+    connected = evmAddress,
+    permissions = "picker",
+  }: {
+    connected?: string;
+    permissions?: "picker" | "unsupported" | "rejected";
+  } = {},
+) {
   await page.addInitScript(
-    ({ reject, evmAddress, solanaAddress }) => {
+    ({ reject, evmAddress, solanaAddress, connected, permissions }) => {
       const calls: string[] = [];
-      const evm = (name: string) => ({
-        request: async ({ method }: { method: string }) => {
-          calls.push(`${name}:${method}`);
-          if (reject) throw new Error("Wallet request rejected by user.");
-          return method === "eth_requestAccounts"
-            ? [evmAddress]
-            : "0xfixture-signature";
-        },
-      });
+      const evm = (name: string) => {
+        let account = connected;
+        return {
+          request: async ({ method }: { method: string }) => {
+            calls.push(`${name}:${method}`);
+            if (reject) throw new Error("Wallet request rejected by user.");
+            if (method === "wallet_requestPermissions") {
+              if (permissions === "unsupported")
+                throw Object.assign(new Error("Method not supported."), {
+                  code: -32601,
+                });
+              if (permissions === "rejected")
+                throw Object.assign(new Error("User rejected the request."), {
+                  code: 4001,
+                });
+              account = evmAddress;
+              return [{ parentCapability: "eth_accounts" }];
+            }
+            return method === "eth_requestAccounts"
+              ? [account]
+              : "0xfixture-signature";
+          },
+        };
+      };
       const metamask = evm("MetaMask");
       const phantom = evm("Phantom");
       const announce = () => {
@@ -134,7 +172,7 @@ async function providers(page: Page, reject = false) {
           ),
       });
     },
-    { reject, evmAddress, solanaAddress },
+    { reject, evmAddress, solanaAddress, connected, permissions },
   );
 }
 
@@ -584,5 +622,242 @@ for (const scenario of [
       await dialog.getByRole("button", { name: "Close wallet picker" }).click();
       await expect(dialog).not.toBeVisible();
     }
+  });
+}
+
+const savedAddress = "0x2222222222222222222222222222222222222222";
+const savedBase = (authorized: boolean): SavedWallet => ({
+  chain: "base",
+  claimId: "saved-claim",
+  address: savedAddress,
+  authorized,
+  activationEligibleAt: null,
+});
+const walletCalls = (page: Page) =>
+  page.evaluate(
+    () => (window as unknown as { walletCalls: string[] }).walletCalls,
+  );
+
+async function chooseMetaMask(page: Page, action: "Change" | "Connect") {
+  await page
+    .getByRole("button", { name: `${action} Base wallet`, exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Connect a Base wallet" });
+  await dialog
+    .getByRole("button", { name: "MetaMask Detected", exact: true })
+    .click();
+  await expect(dialog).not.toBeVisible();
+}
+
+test("changing a confirmed Base wallet opens the account picker and asks before registering the new account", async ({
+  page,
+}, info) => {
+  const writes = await payments(page, [savedBase(true)]);
+  await providers(page, false, { connected: savedAddress });
+  await page.goto("/earnings");
+  await chooseMetaMask(page, "Change");
+  const confirmation = page.getByRole("region", {
+    name: "Register a different Base address?",
+  });
+  await expect(confirmation).toBeVisible();
+  await expect(
+    confirmation.getByRole("heading", {
+      name: "Register a different Base address?",
+    }),
+  ).toBeFocused();
+  await expect(confirmation).toContainText(`Saved address${savedAddress}`);
+  await expect(confirmation).toContainText(`Wallet account${evmAddress}`);
+  await expect(confirmation).toContainText(
+    "Your GitHub identity and this address become a public, permanent record.",
+  );
+  // The picker ran before the account read, and nothing is registered yet.
+  expect(await walletCalls(page)).toEqual([
+    "MetaMask:wallet_requestPermissions",
+    "MetaMask:eth_requestAccounts",
+  ]);
+  expect(writes).toEqual([]);
+  await expect(
+    page.getByRole("button", { name: "Change Base wallet", exact: true }),
+  ).toBeDisabled();
+  const axe = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+    .analyze();
+  expect(axe.violations).toEqual([]);
+  await page.screenshot({
+    path: info.outputPath("wallet-change-confirmation.png"),
+    fullPage: true,
+  });
+  await confirmation
+    .getByRole("button", { name: "Register wallet account", exact: true })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Base wallet confirmed" }),
+  ).toBeVisible();
+  await expect(confirmation).toHaveCount(0);
+  expect(writes.map((w) => w.path)).toEqual([
+    "wallets/register",
+    "wallets/challenge",
+    "wallets/authorize",
+  ]);
+  expect(writes[0].body).toEqual({ chain: "base", address: evmAddress });
+  expect((await walletCalls(page)).at(-1)).toBe("MetaMask:personal_sign");
+});
+
+test("keeping the saved address registers nothing and returns focus to the wallet button", async ({
+  page,
+}) => {
+  const writes = await payments(page, [savedBase(true)]);
+  await providers(page, false, { connected: savedAddress });
+  await page.goto("/earnings");
+  await chooseMetaMask(page, "Change");
+  await page
+    .getByRole("button", { name: "Keep saved address", exact: true })
+    .click();
+  await expect(
+    page.getByRole("region", { name: "Register a different Base address?" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("status").filter({
+      hasText: "Kept your saved Base address. Nothing was registered.",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Change Base wallet", exact: true }),
+  ).toBeFocused();
+  expect(writes).toEqual([]);
+  expect(await walletCalls(page)).not.toContain("MetaMask:personal_sign");
+});
+
+test("connecting with an unconfirmed saved address asks before registering a different active account", async ({
+  page,
+}) => {
+  const writes = await payments(page, [savedBase(false)]);
+  await providers(page);
+  await page.goto("/earnings");
+  await chooseMetaMask(page, "Connect");
+  await expect(
+    page.getByRole("region", { name: "Register a different Base address?" }),
+  ).toBeVisible();
+  // Not a change of a confirmed wallet, so no account picker is forced.
+  expect(await walletCalls(page)).toEqual(["MetaMask:eth_requestAccounts"]);
+  expect(writes).toEqual([]);
+});
+
+test("connecting the saved address confirms it without an extra step", async ({
+  page,
+}) => {
+  const writes = await payments(page, [savedBase(false)]);
+  await providers(page, false, { connected: savedAddress });
+  await page.goto("/earnings");
+  await chooseMetaMask(page, "Connect");
+  await expect(
+    page.getByRole("status").filter({ hasText: "Base wallet confirmed" }),
+  ).toBeVisible();
+  expect(writes[0]).toEqual({
+    path: "wallets/register",
+    body: { chain: "base", address: savedAddress },
+  });
+});
+
+test("a wallet without an account picker falls back to its connected account", async ({
+  page,
+}) => {
+  const writes = await payments(page, [savedBase(true)]);
+  await providers(page, false, {
+    connected: savedAddress,
+    permissions: "unsupported",
+  });
+  await page.goto("/earnings");
+  await chooseMetaMask(page, "Change");
+  await expect(
+    page.getByRole("status").filter({ hasText: "Base wallet confirmed" }),
+  ).toBeVisible();
+  expect(await walletCalls(page)).toEqual([
+    "MetaMask:wallet_requestPermissions",
+    "MetaMask:eth_requestAccounts",
+    "MetaMask:personal_sign",
+  ]);
+  expect(writes[0].body).toEqual({ chain: "base", address: savedAddress });
+});
+
+test("rejecting the account picker stops the change", async ({ page }) => {
+  const writes = await payments(page, [savedBase(true)]);
+  await providers(page, false, {
+    connected: savedAddress,
+    permissions: "rejected",
+  });
+  await page.goto("/earnings");
+  await chooseMetaMask(page, "Change");
+  await expect(page.getByRole("alert")).toContainText(
+    "User rejected the request.",
+  );
+  expect(await walletCalls(page)).toEqual([
+    "MetaMask:wallet_requestPermissions",
+  ]);
+  expect(writes).toEqual([]);
+});
+
+for (const scenario of [
+  { name: "320px with 200% text", width: 320, textScale: 2 },
+  { name: "320px at 200% browser zoom", width: 160, textScale: 1 },
+]) {
+  test(`wallet change confirmation reflows at ${scenario.name}`, async ({
+    page,
+  }, info) => {
+    test.skip(
+      info.project.name !== "narrow-mobile-chromium",
+      "Sets its own viewport; runs once",
+    );
+    await payments(page, [savedBase(true)]);
+    await providers(page, false, { connected: savedAddress });
+    await page.setViewportSize({ width: scenario.width, height: 800 });
+    await page.goto("/earnings");
+    await chooseMetaMask(page, "Change");
+    const confirmation = page.getByRole("region", {
+      name: "Register a different Base address?",
+    });
+    await expect(confirmation).toBeVisible();
+    if (scenario.textScale === 2)
+      await page.evaluate(() => {
+        const typography = [
+          ...document.querySelectorAll<HTMLElement>("body *"),
+        ].map((element) => ({
+          element,
+          font: getComputedStyle(element).fontSize,
+          line: getComputedStyle(element).lineHeight,
+        }));
+        for (const { element, font, line } of typography) {
+          element.style.fontSize = `${Number.parseFloat(font) * 2}px`;
+          if (line !== "normal")
+            element.style.lineHeight = `${Number.parseFloat(line) * 2}px`;
+        }
+      });
+    // The site lays out at a 320px minimum, so the 160px case checks only
+    // that nothing escapes the confirmation itself.
+    if (scenario.width === 320)
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth - innerWidth,
+        ),
+      ).toBeLessThanOrEqual(1);
+    expect(
+      await confirmation.evaluate((element) => {
+        const box = element.getBoundingClientRect();
+        return [...element.querySelectorAll("*")]
+          .filter((child) => {
+            const rect = child.getBoundingClientRect();
+            return rect.left < box.left - 1 || rect.right > box.right + 1;
+          })
+          .map((child) => child.textContent?.slice(0, 40));
+      }),
+    ).toEqual([]);
+    const axe = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+      .analyze();
+    expect(axe.violations).toEqual([]);
+    await page.screenshot({
+      path: info.outputPath(`wallet-change-${scenario.width}.png`),
+      fullPage: true,
+    });
   });
 }

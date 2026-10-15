@@ -164,6 +164,14 @@ export function EarningsPage() {
   const [signedOut, setSignedOut] = useState(false);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<PaymentChain | null>(null);
+  const [pendingChange, setPendingChange] = useState<{
+    chain: PaymentChain;
+    saved: string;
+    address: string;
+    sign(message: string): Promise<string>;
+  } | null>(null);
+  const changeHeading = useRef<HTMLHeadingElement>(null);
+  const returnFocus = useRef<PaymentChain | null>(null);
   const [revision, setRevision] = useState(0);
   const refresh = () => setRevision((n) => n + 1);
   const mounted = useRef(true);
@@ -203,51 +211,24 @@ export function EarningsPage() {
   }, [revision]);
 
   useEffect(() => {
+    if (pendingChange) changeHeading.current?.focus();
+    else if (returnFocus.current) {
+      document.getElementById(`${heading}-${returnFocus.current}`)?.focus();
+      returnFocus.current = null;
+    }
+  }, [pendingChange, heading]);
+
+  useEffect(() => {
     if (picker) dialog.current?.showModal();
     else dialog.current?.close();
   }, [picker]);
 
-  async function connect(chosen: PayoutWallet, chain: PaymentChain) {
-    setPicker(null);
+  async function walletStep(chain: PaymentChain, step: () => Promise<void>) {
     setBusy(chain);
     setError("");
     setMessage("");
     try {
-      const { address, sign } = await chosen.connect();
-      const claim = (await request("wallets/register", { chain, address })) as {
-        claimId: string;
-      };
-      if (typeof claim.claimId !== "string")
-        throw new Error("Wallet registration could not be verified.");
-      const challenge = (await request("wallets/challenge", {
-        claimId: claim.claimId,
-      })) as {
-        challengeId: string;
-        message: string;
-        address: string;
-        chain: string;
-      };
-      if (
-        challenge.address !== address ||
-        challenge.chain !== chain ||
-        typeof challenge.challengeId !== "string" ||
-        typeof challenge.message !== "string"
-      )
-        throw new Error(
-          "Wallet confirmation does not match your selected address.",
-        );
-      const signature = await sign(challenge.message);
-      await request("wallets/authorize", {
-        claimId: claim.claimId,
-        challengeId: challenge.challengeId,
-        signature,
-      });
-      if (mounted.current) {
-        setMessage(
-          `${networkName[chain]} wallet confirmed. Eligible unpaid awards will be sent automatically. Wallet changes wait at least 24 hours and any earlier payment must be reconciled first.`,
-        );
-        refresh();
-      }
+      await step();
     } catch (e) {
       if (!mounted.current) return;
       if (e instanceof SignedOutError) {
@@ -262,6 +243,83 @@ export function EarningsPage() {
     } finally {
       if (mounted.current) setBusy(null);
     }
+  }
+
+  async function register(
+    chain: PaymentChain,
+    address: string,
+    sign: (message: string) => Promise<string>,
+  ) {
+    const claim = (await request("wallets/register", { chain, address })) as {
+      claimId: string;
+    };
+    if (typeof claim.claimId !== "string")
+      throw new Error("Wallet registration could not be verified.");
+    const challenge = (await request("wallets/challenge", {
+      claimId: claim.claimId,
+    })) as {
+      challengeId: string;
+      message: string;
+      address: string;
+      chain: string;
+    };
+    if (
+      challenge.address !== address ||
+      challenge.chain !== chain ||
+      typeof challenge.challengeId !== "string" ||
+      typeof challenge.message !== "string"
+    )
+      throw new Error(
+        "Wallet confirmation does not match your selected address.",
+      );
+    const signature = await sign(challenge.message);
+    await request("wallets/authorize", {
+      claimId: claim.claimId,
+      challengeId: challenge.challengeId,
+      signature,
+    });
+    if (mounted.current) {
+      setMessage(
+        `${networkName[chain]} wallet confirmed. Eligible unpaid awards will be sent automatically. Wallet changes wait at least 24 hours and any earlier payment must be reconciled first.`,
+      );
+      refresh();
+    }
+  }
+
+  function connect(chosen: PayoutWallet, chain: PaymentChain) {
+    setPicker(null);
+    setPendingChange(null);
+    const saved = data?.wallets.find((w) => w.chain === chain);
+    void walletStep(chain, async () => {
+      const { address, sign } = await chosen.connect({
+        chooseAccount: saved?.authorized === true,
+      });
+      // The wallet decides which account it returns. A different address
+      // from the saved one is a change, so it needs the same public-record
+      // consent as Account Wallets before anything is registered (WAL-02).
+      if (saved && saved.address !== address) {
+        if (mounted.current)
+          setPendingChange({ chain, saved: saved.address, address, sign });
+        return;
+      }
+      await register(chain, address, sign);
+    });
+  }
+
+  function confirmChange() {
+    if (!pendingChange) return;
+    const { chain, address, sign } = pendingChange;
+    setPendingChange(null);
+    void walletStep(chain, () => register(chain, address, sign));
+  }
+
+  function keepSaved() {
+    if (!pendingChange) return;
+    returnFocus.current = pendingChange.chain;
+    setPendingChange(null);
+    setMessage(
+      `Kept your saved ${networkName[pendingChange.chain]} address. Nothing was registered.`,
+    );
   }
 
   return (
@@ -448,15 +506,78 @@ export function EarningsPage() {
                       </p>
                     )}
                   <button
+                    id={`${heading}-${chain}`}
                     className="button secondary-button"
                     type="button"
-                    disabled={busy !== null}
+                    disabled={busy !== null || pendingChange !== null}
                     onClick={() => setPicker(chain)}
                   >
                     {busy === chain
                       ? "Confirm in your wallet…"
                       : `${wallet?.authorized ? "Change" : "Connect"} ${networkName[chain]} wallet`}
                   </button>
+                  {pendingChange?.chain === chain && (
+                    <section
+                      className="wallet-confirmation"
+                      aria-labelledby={`${heading}-${chain}-change`}
+                    >
+                      <h3
+                        id={`${heading}-${chain}-change`}
+                        className="wallet-heading"
+                        ref={changeHeading}
+                        tabIndex={-1}
+                      >
+                        Register a different {networkName[chain]} address?
+                      </h3>
+                      <p>
+                        Your wallet returned a different account from your saved{" "}
+                        {networkName[chain]} address. Nothing has been
+                        registered yet.
+                      </p>
+                      <dl>
+                        <div>
+                          <dt>Saved address</dt>
+                          <dd>
+                            <code className="wallet-address">
+                              {pendingChange.saved}
+                            </code>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Wallet account</dt>
+                          <dd>
+                            <code className="wallet-address">
+                              {pendingChange.address}
+                            </code>
+                          </dd>
+                        </div>
+                      </dl>
+                      <p className="wallet-consequence">
+                        <strong>
+                          Your GitHub identity and this address become a public,
+                          permanent record.
+                        </strong>{" "}
+                        The new address appends a successor record; the earlier
+                        record stays public.
+                      </p>
+                      <div className="wallet-change-actions">
+                        <button
+                          className="button primary-button"
+                          type="button"
+                          onClick={confirmChange}
+                        >
+                          Register wallet account
+                        </button>
+                        <button
+                          className="button secondary-button"
+                          type="button"
+                          onClick={keepSaved}
+                        >
+                          Keep saved address
+                        </button>
+                      </div>
+                    </section>
+                  )}
                 </article>
               );
             })}

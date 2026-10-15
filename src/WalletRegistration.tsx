@@ -1,17 +1,13 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { browserDeployment } from "./lib/browser-deployment";
-import { chainFamily } from "./lib/escrow-policy.mjs";
 import {
+  canonicalWalletInput,
   prepareWalletRegistration,
   type RegisteredWalletClaim,
   type WalletAuthorization,
   type WalletRegistrationSession,
 } from "./lib/wallet-registration";
-import {
-  isWalletAddress,
-  isWalletChain,
-  type WalletChain,
-} from "./lib/wallets";
+import { isWalletChain, type WalletChain } from "./lib/wallets";
 
 const PENDING_WALLET = "slop-wallet-authorization";
 const WALLET_ADDRESS = "slop-wallet-address";
@@ -90,15 +86,12 @@ export function WalletRegistration() {
     [],
   );
   async function start(resume?: WalletAuthorization) {
-    const exactAddress = address.trim();
-    if (!isWalletAddress(chain, exactAddress)) {
-      setMessage(
-        chainFamily(chain) === "evm"
-          ? "Enter a valid lowercase public address (0x and 40 hexadecimal characters)."
-          : "Enter a valid Solana public address (32-byte base58).",
-      );
+    const input = canonicalWalletInput(chain, address);
+    if ("error" in input) {
+      setMessage(input.error);
       return;
     }
+    const exactAddress = input.address;
     release();
     // Reserve the popup during the user gesture; never place bearer credentials
     // in the application URL or communicate credentials via postMessage.
