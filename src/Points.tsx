@@ -23,6 +23,7 @@ import {
 } from "./lib/contributor-standings";
 import type { CycleIndex } from "./lib/cycle-index";
 import { deploymentTier } from "./lib/deployment";
+import { GithubIcon } from "./lib/github-icon";
 import { requestIdentityAssertion } from "./lib/identity-flow";
 import type { ScoreEvent } from "./lib/leaderboard";
 import {
@@ -593,7 +594,6 @@ function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [authorization, setAuthorization] = useState<string | null>(null);
-  const [publish, setPublish] = useState(false);
   const active = useRef<AbortController | null>(null);
   useEffect(() => () => active.current?.abort(), []);
   async function start() {
@@ -650,7 +650,7 @@ function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           assertion,
-          public: publish,
+          public: false,
         }),
         signal: c.signal,
       });
@@ -691,8 +691,8 @@ function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
     return (
       <section className="points-panel">
         {showHeading ? <h2>Sign in to Slop</h2> : null}
-        <p>Use GitHub to manage your profile.</p>
         <a className="button primary-button" href={destination.href}>
+          <GithubIcon aria-hidden="true" />
           Continue with GitHub on {new URL(browserDeployment.site).hostname}
         </a>
       </section>
@@ -750,25 +750,15 @@ function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
         </>
       ) : (
         <>
-          <p>Use GitHub to manage your profile.</p>
           <button
             className="button primary-button"
             type="button"
             disabled={busy || session === "loading"}
             onClick={() => void start()}
           >
+            <GithubIcon aria-hidden="true" />
             {busy ? "Waiting for GitHub…" : "Continue with GitHub"}
           </button>
-          <label>
-            <input
-              type="checkbox"
-              checked={publish}
-              disabled={busy}
-              onChange={(e) => setPublish(e.target.checked)}
-            />
-            Optional: show my membership publicly. Accepted contributions are
-            already public.
-          </label>
           {busy ? (
             <button
               type="button"

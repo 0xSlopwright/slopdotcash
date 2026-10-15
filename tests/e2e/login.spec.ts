@@ -135,6 +135,12 @@ for (const [next, expected] of [
         await route.fulfill({ json: member });
         return;
       }
+      if (url.pathname === "/api/v1/points/visibility") {
+        expect(signedIn).toBe(true);
+        member.public = route.request().postDataJSON().public;
+        await route.fulfill({ json: member });
+        return;
+      }
       if (url.pathname.startsWith("/api/")) {
         await route.fulfill({ status: 404, json: {} });
         return;
@@ -153,23 +159,20 @@ for (const [next, expected] of [
     const main = page.getByRole("main");
     await expect(main.locator("h1, h2")).toHaveCount(1);
     const action = main.getByRole("button", { name: "Continue with GitHub" });
-    const consent = main.getByLabel(/Optional: show my membership publicly/u);
-    // The optional public-membership choice follows the one GitHub action.
-    expect(
-      await action.evaluate(
-        (button, label) =>
-          !!(
-            button.compareDocumentPosition(label as Node) &
-            Node.DOCUMENT_POSITION_FOLLOWING
-          ),
-        await consent.elementHandle(),
-      ),
-    ).toBe(true);
-    await expect(consent).not.toBeChecked();
+    await expect(main.getByRole("checkbox")).toHaveCount(0);
     const popup = page.waitForEvent("popup");
     await action.click();
     await (await popup).close();
     await expect(page).toHaveURL(expected);
+    await page.goto(`${deployment.site}/account#profile`);
+    const visibility = page.getByLabel("Show my membership publicly", {
+      exact: true,
+    });
+    await expect(visibility).not.toBeChecked();
+    await visibility.check();
+    await expect(visibility).toBeChecked();
+    await page.reload();
+    await expect(visibility).toBeChecked();
     await page.goto(
       `${deployment.site}/login?next=${encodeURIComponent(next)}`,
     );
