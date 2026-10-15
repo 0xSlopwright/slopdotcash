@@ -10,6 +10,7 @@
     "types": ["node", "bun-types"]
   },
   "include": [
+    "tests/fixtures.ts",
     "src/lib/payments/**/*.ts",
     "contracts/evm/adapter.ts",
     "contracts/solana/adapter.ts",
