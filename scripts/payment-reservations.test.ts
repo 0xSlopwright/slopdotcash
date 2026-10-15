@@ -8,7 +8,17 @@
  * builder accepts and the reservation gate rejected.
  */
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   BASE_PLATFORM_FEE_RECIPIENT,
   platformFeeRecipientForNetwork,
@@ -18,6 +28,7 @@ import { assertFundingCommitments } from "../src/lib/funding-instruments.mjs";
 import { fundingReviewProposalSha256 } from "../src/lib/funding-review-submission";
 import {
   draftPaymentReservation,
+  parsePaymentReservationLedger,
   paymentRecordBytes,
 } from "../src/lib/payment-reservations";
 import { assertProjectDefinition } from "../src/lib/project-schema.mjs";
@@ -27,6 +38,7 @@ import {
   MAX_TRANSFERS_PER_PLAN,
 } from "../src/lib/settlement-plan";
 import { reviewedReservationPolicy } from "./check-payment-reservations";
+import type { PaymentCheckpointSnapshot } from "./payment-checkpoints";
 
 const ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 function base58(bytes: Uint8Array): string {
@@ -279,5 +291,87 @@ describe("a fresh-cycle policy names its settlement network's fee recipient", ()
       BASE_PLATFORM_FEE_RECIPIENT,
     );
     expect(platformFeeRecipientForNetwork("robinhood")).toBeNull();
+  });
+});
+
+/**
+ * The reservation gate and the checkpoint chain compare payment records with
+ * their exact `paymentRecordBytes`. Biome puts an array that fits on one line
+ * there, so it rewrites the one-intent list of a single-contributor
+ * reservation: `lint:check` would fail the reservation PR that
+ * reward-cycle-actions.yml opens, and the formatted bytes fail the gate. Like
+ * `cycles/`, these generated records stay out of the Biome formatter.
+ */
+describe("pinned payment records stay out of the Biome formatter", () => {
+  const biome = (cwd: string, args: string[], input?: Uint8Array) =>
+    spawnSync(
+      process.execPath,
+      [require.resolve("@biomejs/biome/bin/biome"), ...args],
+      { cwd, input, encoding: "utf8" },
+    );
+
+  it("lint:check accepts a single-contributor reservation and its checkpoint snapshot", async () => {
+    const instrument = projectVaultInstrument();
+    const reservation = await draftPaymentReservation(
+      paymentRecordBytes(approvedAllocation(instrument.instrumentId, 1)),
+      {
+        schemaVersion: "1",
+        kind: "fresh-cycle-payment-policy",
+        projectId: "eliza",
+        cycleId: CYCLE,
+        effectiveAt: "2026-07-31T00:00:00.000Z",
+        planningExpiresAt: "2026-09-01T00:00:00.000Z",
+        instrumentSha256: await fundingReviewProposalSha256(
+          new TextEncoder().encode(JSON.stringify(instrument.instrument)),
+        ),
+        feeRecipient: SOLANA_FEE_RECIPIENT,
+      },
+      "2026-08-20T00:00:00.000Z",
+      instrument.instrument,
+    );
+    expect(reservation.intentIds).toHaveLength(1);
+    const ledger = paymentRecordBytes([reservation]);
+    const snapshot: PaymentCheckpointSnapshot = {
+      schemaVersion: "1",
+      revision: COMMIT,
+      reservations: [reservation],
+      policyHistory: [],
+      obligationsHistory: [],
+      signerHistory: [],
+    };
+
+    // The gate takes only the written bytes, and the Biome formatter rewrites
+    // them wherever it runs.
+    expect(parsePaymentReservationLedger(ledger)).toEqual([reservation]);
+    const formatted = biome(
+      ".",
+      ["format", "--stdin-file-path=payment-record.json"],
+      ledger,
+    ).stdout;
+    expect(formatted).not.toBe(new TextDecoder().decode(ledger));
+    expect(() =>
+      parsePaymentReservationLedger(new TextEncoder().encode(formatted)),
+    ).toThrow(/Noncanonical reservation bytes/);
+
+    const root = mkdtempSync(join(tmpdir(), "slop-pinned-records-"));
+    try {
+      copyFileSync("biome.json", join(root, "biome.json"));
+      mkdirSync(join(root, "funding"));
+      mkdirSync(join(root, "protocol", "payment-checkpoints"), {
+        recursive: true,
+      });
+      writeFileSync(join(root, "funding", "payment-reservations.json"), ledger);
+      writeFileSync(
+        join(root, "protocol", "payment-checkpoints", `${COMMIT}.json`),
+        paymentRecordBytes(snapshot),
+      );
+      const check = biome(root, ["check", "--vcs-enabled=false", "."]);
+      expect(`${check.stdout}${check.stderr}`).not.toMatch(
+        /payment-(reservations|checkpoints)/,
+      );
+      expect(check.status).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
