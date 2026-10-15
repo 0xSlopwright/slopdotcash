@@ -985,7 +985,9 @@ test("requests a window contributor's wallet once while funding reviews load", a
   const walletLink = page.getByRole("link", {
     name: "Current payout wallet · 11111111111111111111111111111111",
   });
-  await expect(walletLink).toBeVisible();
+  // The wallet request starts after the full contribution snapshot loads,
+  // which can take longer than the default assertion timeout on live data.
+  await expect(walletLink).toBeVisible({ timeout: 60_000 });
   const reviewsLoaded = page.waitForResponse((response) =>
     new URL(response.url()).pathname.endsWith("/data/funding-reviews.json"),
   );
