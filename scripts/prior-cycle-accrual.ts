@@ -277,7 +277,16 @@ export async function loadPriorCycleAccrual(input: {
       `Prior cycle ${input.projectId}/${priorId} allocation is not approved`,
     );
   }
-  const proposal = allocation ?? reviewedProposal;
+  // The next cycle may close before this one is finalized. Finalization copies
+  // every reviewed row unchanged (reward-finalization.ts), so an allocation
+  // approved after asOf did not exist yet: replay the reviewed proposal that
+  // the next cycle was built from, as validation does at its generatedAt.
+  const approved =
+    allocation?.approvedAt &&
+    Date.parse(allocation.approvedAt) <= Date.parse(input.asOf)
+      ? allocation
+      : null;
+  const proposal = approved ?? reviewedProposal;
   const actorReadmeProofs = priorReadmeProofs(proposal);
   if (proposal.projectId !== input.projectId || proposal.cycleId !== priorId) {
     throw new TypeError(
@@ -285,9 +294,7 @@ export async function loadPriorCycleAccrual(input: {
     );
   }
   if (
-    Date.parse(proposal.review.lastMaterialChangeAt) > Date.parse(input.asOf) ||
-    (proposal.approvedAt !== null &&
-      Date.parse(proposal.approvedAt) > Date.parse(input.asOf))
+    Date.parse(proposal.review.lastMaterialChangeAt) > Date.parse(input.asOf)
   ) {
     throw new RangeError(
       `Prior cycle ${input.projectId}/${priorId} contains future review state`,
@@ -311,7 +318,7 @@ export async function loadPriorCycleAccrual(input: {
       unsafeDestinationReports,
     };
   }
-  if (!allocation) {
+  if (!approved) {
     // An unfunded score record has no reviewed monetary balance to carry.
     if (
       proposal.fundingBasis &&

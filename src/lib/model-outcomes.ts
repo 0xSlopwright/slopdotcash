@@ -44,7 +44,9 @@ export function modelIdentityKey(
   model: string,
 ): ModelIdentityKey {
   const rawProvider = provider.trim().toLowerCase();
-  const normalizedProvider = PROVIDER_ALIASES[rawProvider] ?? rawProvider;
+  const normalizedProvider = Object.hasOwn(PROVIDER_ALIASES, rawProvider)
+    ? PROVIDER_ALIASES[rawProvider]
+    : rawProvider;
   let normalizedModel = model.trim().toLowerCase();
   const prefixes = [
     normalizedProvider,
