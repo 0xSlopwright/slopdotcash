@@ -1,3 +1,4 @@
+import { isRecord } from "./record-validation";
 /**
  * Defines the public, device-signed project-run receipt embedded in a GitHub
  * contribution footer. The receipt proves stable bytes and device continuity;
@@ -312,10 +313,6 @@ export function assertProjectRunReceipt(value: unknown): ProjectRunReceipt {
       device_signature: value.deviceSignature,
     },
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function exactKeys(

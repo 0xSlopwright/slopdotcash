@@ -1,12 +1,16 @@
-/** Strict record primitives shared by funding, reward and settlement readers. */
+/** Strict record primitives shared by public record readers. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function readRecord(
   value: unknown,
   field: string,
 ): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!isRecord(value)) {
     throw new TypeError(`${field} must be an object`);
   }
-  return value as Record<string, unknown>;
+  return value;
 }
 
 export function exactKeys(
