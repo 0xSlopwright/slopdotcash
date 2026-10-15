@@ -6,20 +6,10 @@
 
 import {
   assertRewardAllocationManifest,
+  exactUtcMilliseconds,
   feeForPrincipal,
   type RewardAllocationManifest,
 } from "./rewards";
-
-function exactUtc(value: string, field: string): number {
-  if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
-  ) {
-    throw new TypeError(`${field} must be an exact UTC timestamp`);
-  }
-  return Date.parse(value);
-}
 
 /** Finalizes reviewed decisions without changing any contributor row. */
 export function finalizeRewardAllocation(
@@ -42,7 +32,7 @@ export function finalizeRewardAllocation(
     );
   }
   if (!Number.isFinite(now)) throw new TypeError("Current time must be finite");
-  const approvalTime = exactUtc(approvedAt, "approvedAt");
+  const approvalTime = exactUtcMilliseconds(approvedAt, "approvedAt");
   if (approvalTime > now + 5 * 60_000) {
     throw new RangeError("Reward allocation approval cannot be in the future");
   }

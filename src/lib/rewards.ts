@@ -32,6 +32,18 @@ export const SHARE_PARTS_TOTAL = 1_000_000;
 export const PLATFORM_FEE_BASIS_POINTS = 100 as const;
 export const MINIMUM_TRANSFER_MINOR = "2000000" as const;
 
+/** Parse the exact UTC form used at reward lifecycle boundaries. */
+export function exactUtcMilliseconds(value: string, field: string): number {
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
+    !Number.isFinite(Date.parse(value)) ||
+    new Date(value).toISOString() !== value
+  ) {
+    throw new TypeError(`${field} must be an exact UTC timestamp`);
+  }
+  return Date.parse(value);
+}
+
 /**
  * The one network a cycle settles on. A proposal freezes the project's
  * `reward.chain`; every wallet, plan, and settlement record of that cycle uses
