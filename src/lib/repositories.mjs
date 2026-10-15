@@ -4,7 +4,7 @@
  * row now carries the project that owns its scoring and reward policy.
  */
 
-import { PROJECTS } from "./projects.mjs";
+import { HISTORICAL_PROJECTS, PROJECTS } from "./projects.mjs";
 
 /**
  * Builds the ingestion target rows for a project list.
@@ -58,7 +58,7 @@ export const TARGET_REPOSITORIES = Object.freeze(
 
 /** Registered identities remain available to validate immutable history after retirement. */
 export const REGISTERED_REPOSITORIES = Object.freeze(
-  flattenRepositories(PROJECTS).map((repository) =>
+  flattenRepositories(HISTORICAL_PROJECTS).map((repository) =>
     Object.freeze({
       ...repository,
       role: repository.id === TARGET_REPOSITORIES[0]?.id ? "primary" : "member",

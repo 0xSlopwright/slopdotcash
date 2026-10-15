@@ -182,6 +182,12 @@ license facts, GitHub stewardship, integration branch, reward policy, and
 failure paths before activating receipts or money states. Stewardship is a
 GitHub identity only.
 
+Maintainers may delete a paused project. The trusted transition gate refuses
+the deletion of an active project. When immutable cycle or points history still
+names a project repository, keep its manifest with `listingTier: "retired"`.
+A retired project stays paused, publishes no skill, and never appears on a page
+or list.
+
 The contributor skill must inspect live GitHub, select bounded unblocked work,
 follow the target repository’s rules, test the result, prepare evidence, and
 emit the required attribution. It must not claim platform authority over an

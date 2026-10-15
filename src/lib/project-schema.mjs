@@ -1092,12 +1092,17 @@ function validateProjectDefinition(
   if (
     !(allowLegacyMissingListingTier && !("listingTier" in project)) &&
     project.listingTier !== "featured" &&
-    project.listingTier !== "community"
+    project.listingTier !== "community" &&
+    project.listingTier !== "retired"
   ) {
     throw new TypeError("project.listingTier is invalid");
   }
   if (project.status !== "active" && project.status !== "paused") {
     throw new TypeError("project.status is invalid");
+  }
+  // A retired manifest only resolves immutable history; it never collects.
+  if (project.listingTier === "retired" && project.status !== "paused") {
+    throw new TypeError("retired projects must stay paused");
   }
   if (project.participation !== undefined) {
     const participation = record(
