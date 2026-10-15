@@ -17,9 +17,9 @@ import {
 import {
   canonicalMinor,
   exactKeys,
-  object,
+  readRecord,
   timestamp,
-} from "./funding-record-validation";
+} from "./record-validation";
 
 export type {
   FundingCommitmentInstrument,
@@ -112,7 +112,7 @@ function assertFinality(
   network: CommitmentNetwork,
   value: unknown,
 ) {
-  const finality = object(value, "commitment record finality");
+  const finality = readRecord(value, "commitment record finality");
   if (finality.kind === "unverified") {
     exactKeys(finality, ["kind"], "commitment record finality");
     if (state !== "self-reported") {
@@ -186,7 +186,7 @@ export function assertProjectCommitmentRecord(
   value: unknown,
   instruments: readonly FundingCommitmentInstrument[],
 ): ProjectCommitmentRecord {
-  const record = object(value, "commitment record");
+  const record = readRecord(value, "commitment record");
   exactKeys(
     record,
     [
@@ -250,7 +250,10 @@ export function assertProjectCommitmentRecord(
   if (!validTransactionId(network, record.transactionId)) {
     throw new TypeError("commitment record transaction id is invalid");
   }
-  const identity = object(record.instrument, "commitment record instrument");
+  const identity = readRecord(
+    record.instrument,
+    "commitment record instrument",
+  );
   const projectVaultIdentity =
     network === "solana" && Object.hasOwn(identity, "slopMember");
   exactKeys(
@@ -338,7 +341,7 @@ export function assertProjectCommitmentRecord(
       );
     }
   } else {
-    const verifier = object(record.verifier, "commitment record verifier");
+    const verifier = readRecord(record.verifier, "commitment record verifier");
     exactKeys(
       verifier,
       ["checkedAt", "evidenceUrl", "reason", "version"],

@@ -1,5 +1,8 @@
-/** Shared strict primitives for direct and committed funding records. */
-export function object(value: unknown, field: string): Record<string, unknown> {
+/** Strict record primitives shared by funding, reward and settlement readers. */
+export function readRecord(
+  value: unknown,
+  field: string,
+): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError(`${field} must be an object`);
   }
