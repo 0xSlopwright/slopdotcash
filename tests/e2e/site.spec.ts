@@ -424,9 +424,6 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
       page.locator(`a.project-card[href="/projects/${project.id}"]`),
     ).toHaveCount(0);
   }
-  await expect(
-    page.getByRole("heading", { exact: true, name: "Delta Star" }),
-  ).toBeVisible();
   const elizaCard = page.locator('a.project-card[href="/projects/eliza"]');
   await expect(
     elizaCard.getByText("Not funded yet", { exact: true }),
@@ -442,30 +439,26 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   await expect(
     elizaCard.getByText(/Build and verify the elizaOS framework/u),
   ).toBeVisible();
-  const deltaCard = page.locator('a.project-card[href="/projects/delta-star"]');
+  // The external prize is a community listing that also earns points.
   await expect(
-    deltaCard.getByText("$1,000,000", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    deltaCard.getByText("External sponsor prize", { exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    deltaCard.getByText(/Advance machine-checked Reed–Solomon/u),
-  ).toBeVisible();
-  const [gridBox, elizaBox, deltaBox] = await Promise.all([
+    community.locator('a.project-row[href="/projects/delta-star"]'),
+  ).toContainText("$1,000,000 + points");
+  const slopCard = page.locator('a.project-card[href="/projects/slopdotcash"]');
+  await expect(slopCard.getByText("/mo target", { exact: true })).toBeVisible();
+  const [gridBox, elizaBox, slopBox] = await Promise.all([
     page
       .locator(
         '.project-tier[aria-labelledby="featured-projects"] .project-grid',
       )
       .boundingBox(),
     elizaCard.boundingBox(),
-    deltaCard.boundingBox(),
+    slopCard.boundingBox(),
   ]);
   expect(gridBox).not.toBeNull();
   expect(elizaBox).not.toBeNull();
-  expect(deltaBox).not.toBeNull();
+  expect(slopBox).not.toBeNull();
   // Featured cards share the grid and never spill past it.
-  for (const box of [elizaBox, deltaBox]) {
+  for (const box of [elizaBox, slopBox]) {
     expect(box?.x ?? 0).toBeGreaterThanOrEqual((gridBox?.x ?? 0) - 1);
     expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
       (gridBox?.x ?? 0) + (gridBox?.width ?? 0) + 1,

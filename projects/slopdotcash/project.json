@@ -6,7 +6,7 @@
   "eyebrow": "Open-source incentive network",
   "headline": "Make money hardening Slop itself.",
   "description": "Find and fix real defects in Slop: security, identity, scoring, verification, vault and settlement correctness. Accepted outcomes share a monthly contributor pool. UI changes are out of scope unless they fix a broken flow.",
-  "listingTier": "community",
+  "listingTier": "featured",
   "status": "active",
   "steward": {
     "displayName": "$SLOP holder governance",
