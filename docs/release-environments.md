@@ -14,6 +14,18 @@ Both branches require the full build, browser, and policy checks. A failed check
 must prevent publication. Never publish a local build or a pull-request build.
 The temporary `develop` branch has no publication authority after migration.
 
+Staging publishes fully checked revisions in Git ancestry order. A newer push
+may queue while an older revision completes; it does not by itself invalidate
+that checked ancestor. The serialized `slop-staging` job checks that the candidate
+remains an ancestor of current `development` and that every recorded staging
+attempt is its ancestor or the same revision. A newer or divergent attempt blocks
+publication, including a failed attempt that may already have changed a Worker
+or database. Missing, unreadable, malformed or oversized history blocks publication
+and requires review. Keep the GitHub deployment history: deleting it removes
+ordering evidence. All staging publishers must use this concurrency lock and
+environment; this gate cannot coordinate an out-of-band manual deployment.
+This changes no production publication or acceptance rule.
+
 Staging uses separate private storage and keys. Its API is on the staging
 website origin. Its identity origin is `https://identity-staging.slop.cash`.
 Production continues to use `https://api.slop.cash` and
