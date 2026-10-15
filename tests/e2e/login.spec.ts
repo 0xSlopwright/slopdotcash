@@ -30,7 +30,7 @@ test(
     ).toHaveCount(0);
     await expect(
       header.getByRole("link", { name: "Log in", exact: true }),
-    ).toHaveAttribute("href", "/login");
+    ).toHaveCount(0);
     await expect(
       page.getByRole("link", {
         name: `Continue with GitHub on ${new URL(deployment.site).hostname}`,
@@ -142,9 +142,12 @@ for (const [next, expected] of [
       });
       await route.fulfill({ response });
     });
-    await page.goto(
-      `${deployment.site}/login?next=${encodeURIComponent(next)}`,
-    );
+    await page.goto(`/login?next=${encodeURIComponent(next)}`);
+    await page
+      .getByRole("link", {
+        name: `Continue with GitHub on ${new URL(deployment.site).hostname}`,
+      })
+      .click();
     const main = page.getByRole("main");
     await expect(main.locator("h1, h2")).toHaveCount(1);
     const action = main.getByRole("button", { name: "Continue with GitHub" });

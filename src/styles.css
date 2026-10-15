@@ -3289,6 +3289,18 @@ small {
 }
 
 /* Points are a separate participation record, never a currency estimate. */
+.login-page {
+  max-width: 30rem;
+  padding-block: clamp(2rem, 8vh, 6rem);
+}
+.login-page > .points-panel {
+  margin: 1.5rem 0;
+  padding: 0;
+  border: 0;
+}
+.login-page .button {
+  width: 100%;
+}
 .points-panel {
   margin: 2rem 0;
   padding: clamp(1rem, 3vw, 2rem);

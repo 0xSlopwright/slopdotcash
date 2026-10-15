@@ -289,6 +289,7 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
       setBusy(false);
     }
   }
+  if (!me && window.location.pathname === "/login") return null;
   if (!me && session === "loading")
     return (
       <span className="account-control" role="status">
@@ -695,16 +696,20 @@ function JoinPoints({
       setMessage("Could not sign out. Please retry.");
     }
   }
-  if (!productOrigin())
+  if (!productOrigin()) {
+    const destination = new URL("/login", browserDeployment.site);
+    const next = returnPath();
+    if (next) destination.searchParams.set("next", next);
     return (
       <section className="points-panel">
         {showHeading ? <h2>Sign in to Slop</h2> : null}
         <p>Use GitHub to manage your profile.</p>
-        <a href={`${browserDeployment.site}/login`}>
+        <a className="button primary-button" href={destination.href}>
           Continue with GitHub on {new URL(browserDeployment.site).hostname}
         </a>
       </section>
     );
+  }
   return (
     <section className="points-panel">
       {showHeading ? (
@@ -795,7 +800,7 @@ function JoinPoints({
 }
 export function LoginPage() {
   return (
-    <main className="shell route-main points-page">
+    <main className="shell route-main login-page">
       <h1>Log in</h1>
       <JoinPoints redirectToProfile showHeading={false} />
     </main>
