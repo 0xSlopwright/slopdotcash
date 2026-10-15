@@ -1,3 +1,4 @@
+import { exactKeys, readRecord } from "../src/lib/record-validation";
 /**
  * Converts public transaction evidence into a paid settlement only after the
  * allocation's network proves exact USDC debits and credits for every approved
@@ -161,30 +162,13 @@ export function parseVerifySettlementArguments(
   };
 }
 
-function record(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  keys: string[],
-  field: string,
-) {
-  if (Object.keys(value).sort().join("\0") !== keys.sort().join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
-}
-
 export function parseSettlementEvidence(
   value: unknown,
   cycleId: string,
   network: SettlementNetwork,
 ): SettlementEvidence {
   const format = EVIDENCE_FORMAT[network];
-  const evidence = record(value, "settlement evidence");
+  const evidence = readRecord(value, "settlement evidence");
   exactKeys(
     evidence,
     ["attempts", "cycleId", "kind", format.platformFee, "schemaVersion"],
@@ -200,7 +184,7 @@ export function parseSettlementEvidence(
   }
   const signatures = new Set<string>();
   const attempts = evidence.attempts.map((value, index) => {
-    const attempt = record(value, `settlement evidence attempts[${index}]`);
+    const attempt = readRecord(value, `settlement evidence attempts[${index}]`);
     exactKeys(
       attempt,
       ["attemptId", "intentIds", format.transaction],

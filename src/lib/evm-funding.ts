@@ -1,3 +1,4 @@
+import { readRecord } from "./record-validation";
 /**
  * Verifies confirmed Base and Ethereum mainnet USDC direct-funding credits by
  * reconciling exact ERC-20 Transfer deltas from a successful receipt against a
@@ -41,13 +42,6 @@ export interface EvmCanonicalBlock {
   number: bigint;
 }
 
-function record(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
 export function isEvmFundingNetwork(
   value: unknown,
 ): value is EvmFundingNetwork {
@@ -81,7 +75,7 @@ export function assertEvmCanonicalBlock(
   value: unknown,
   field: string,
 ): EvmCanonicalBlock {
-  const block = record(value, field);
+  const block = readRecord(value, field);
   return {
     hash: evmHash(block.hash, `${field}.hash`),
     number: evmQuantity(block.number, `${field}.number`),
@@ -127,7 +121,7 @@ export function assertConfirmedUsdcDeltas(
   ) {
     throw new TypeError("finalized block number is invalid");
   }
-  const receipt = record(receiptValue, "EVM transaction receipt");
+  const receipt = readRecord(receiptValue, "EVM transaction receipt");
   if (receipt.status !== "0x1") {
     throw new TypeError("EVM transaction did not execute successfully");
   }
@@ -164,7 +158,7 @@ export function assertConfirmedUsdcDeltas(
   const usdcContract = EVM_FUNDING_USDC_CONTRACTS[network];
   const deltas = new Map<string, bigint>();
   receipt.logs.forEach((entry, index) => {
-    const log = record(entry, `receipt.logs[${index}]`);
+    const log = readRecord(entry, `receipt.logs[${index}]`);
     if (log.removed === true) {
       throw new TypeError("EVM receipt contains a reorged log");
     }

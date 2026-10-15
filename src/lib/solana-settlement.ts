@@ -1,3 +1,4 @@
+import { readRecord } from "./record-validation";
 /**
  * Verifies finalized Solana transactions by reconciling exact raw USDC balance
  * deltas for the declared source and recipients, and reconciles a stored cycle
@@ -80,13 +81,6 @@ function predatesPlan(blockTime: number, planCreatedAt: string): boolean {
   );
 }
 
-function record(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
 function safeInteger(value: unknown, field: string): number {
   if (!Number.isSafeInteger(value) || Number(value) < 0) {
     throw new TypeError(`${field} must be a non-negative safe integer`);
@@ -111,7 +105,7 @@ function tokenBalances(
     { amount: bigint; mint: string; owner: string }
   >();
   value.forEach((entry, index) => {
-    const balance = record(entry, `${field}[${index}]`);
+    const balance = readRecord(entry, `${field}[${index}]`);
     const accountIndex = safeInteger(
       balance.accountIndex,
       `${field}[${index}].accountIndex`,
@@ -126,7 +120,7 @@ function tokenBalances(
     ) {
       throw new TypeError(`${field}[${index}] has invalid token identity`);
     }
-    const ui = record(
+    const ui = readRecord(
       balance.uiTokenAmount,
       `${field}[${index}].uiTokenAmount`,
     );
@@ -177,12 +171,12 @@ export function assertFinalizedUsdcTransfer(
     );
   }
 
-  const transaction = record(transactionValue, "Solana transaction");
-  const meta = record(transaction.meta, "Solana transaction.meta");
+  const transaction = readRecord(transactionValue, "Solana transaction");
+  const meta = readRecord(transaction.meta, "Solana transaction.meta");
   if (meta.err !== null) {
     throw new TypeError("Solana transaction did not execute successfully");
   }
-  const envelope = record(
+  const envelope = readRecord(
     transaction.transaction,
     "Solana transaction.transaction",
   );
@@ -280,12 +274,12 @@ export function assertFinalizedUsdcFundingTransfer(
   ) {
     throw new TypeError("required sender must be a distinct Solana public key");
   }
-  const transaction = record(transactionValue, "Solana transaction");
-  const meta = record(transaction.meta, "Solana transaction.meta");
+  const transaction = readRecord(transactionValue, "Solana transaction");
+  const meta = readRecord(transaction.meta, "Solana transaction.meta");
   if (meta.err !== null) {
     throw new TypeError("Solana transaction did not execute successfully");
   }
-  const envelope = record(
+  const envelope = readRecord(
     transaction.transaction,
     "Solana transaction.transaction",
   );

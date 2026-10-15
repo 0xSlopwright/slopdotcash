@@ -1,3 +1,4 @@
+import { readRecord } from "./record-validation";
 /**
  * Defines the small browser-safe index of immutable reward-cycle artifacts.
  * Detailed allocations and transaction receipts remain separate public JSON
@@ -152,13 +153,6 @@ export interface CycleIndex {
   cycles: CycleIndexEntry[];
 }
 
-function record(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
 function exact(
   value: Record<string, unknown>,
   expected: readonly string[],
@@ -211,7 +205,7 @@ function fileReference(
   field: string,
   expectedUrl: string,
 ): CycleFileReference {
-  const reference = record(value, field);
+  const reference = readRecord(value, field);
   exact(reference, ["sha256", "url"], field);
   const url = text(reference.url, `${field}.url`);
   if (url !== expectedUrl) {
@@ -232,10 +226,10 @@ function nullableFileReference(
 }
 
 function cycleMoneyLines(value: unknown, field: string) {
-  const lines = record(value, field);
+  const lines = readRecord(value, field);
   exact(lines, ["reviewBudget", "sharedPool"], field);
   const parseLine = (value: unknown, lineField: string) => {
-    const line = record(value, lineField);
+    const line = readRecord(value, lineField);
     exact(line, ["approvedMinor", "paidMinor", "suggestedMinor"], lineField);
     const suggestedMinor = minor(
       line.suggestedMinor,
@@ -264,7 +258,7 @@ function contributorWallet(
   login: string,
 ): CycleWalletProof | null {
   if (value === null) return null;
-  const wallet = record(value, field);
+  const wallet = readRecord(value, field);
   const address = text(wallet.address, `${field}.address`);
   // The index is generated from allocations that already bind each wallet to
   // the cycle network, so here the address only has to match its own chain.
@@ -419,7 +413,7 @@ function contributorWallet(
 
 function cycleEntry(value: unknown, index: number): CycleIndexEntry {
   const field = `cycle index.cycles[${index}]`;
-  const entry = record(value, field);
+  const entry = readRecord(value, field);
   exact(
     entry,
     [
@@ -468,7 +462,7 @@ function cycleEntry(value: unknown, index: number): CycleIndexEntry {
   if (!states.includes(entry.state as CycleIndexState)) {
     throw new TypeError(`${field}.state is invalid`);
   }
-  const window = record(
+  const window = readRecord(
     entry.contributionWindow,
     `${field}.contributionWindow`,
   );
@@ -489,7 +483,7 @@ function cycleEntry(value: unknown, index: number): CycleIndexEntry {
   ) {
     throw new TypeError(`${field}.contributionWindow is invalid`);
   }
-  const reward = record(entry.reward, `${field}.reward`);
+  const reward = readRecord(entry.reward, `${field}.reward`);
   const hasRewardLines = "lines" in reward;
   const hasFundingBasis = "fundingBasis" in reward;
   const hasCarry = "carriedMinor" in reward;
@@ -615,7 +609,7 @@ function cycleEntry(value: unknown, index: number): CycleIndexEntry {
   ]);
   const contributors = entry.contributors.map((value, contributorIndex) => {
     const contributorField = `${field}.contributors[${contributorIndex}]`;
-    const contributor = record(value, contributorField);
+    const contributor = readRecord(value, contributorField);
     const hasLines = "lines" in contributor;
     exact(
       contributor,
@@ -633,7 +627,7 @@ function cycleEntry(value: unknown, index: number): CycleIndexEntry {
       ],
       contributorField,
     );
-    const actor = record(contributor.actor, `${contributorField}.actor`);
+    const actor = readRecord(contributor.actor, `${contributorField}.actor`);
     exact(actor, ["id", "login"], `${contributorField}.actor`);
     const actorId = text(actor.id, `${contributorField}.actor.id`);
     const login = text(
@@ -835,7 +829,7 @@ function cycleEntry(value: unknown, index: number): CycleIndexEntry {
     }
   }
   const prefix = `/data/cycles/${projectId}/${cycleId}/`;
-  const files = record(entry.files, `${field}.files`);
+  const files = readRecord(entry.files, `${field}.files`);
   exact(
     files,
     [
@@ -1001,7 +995,7 @@ function cycleEntry(value: unknown, index: number): CycleIndexEntry {
 
 /** Validates cycle index bytes before the browser renders financial state. */
 export function assertCycleIndex(value: unknown): asserts value is CycleIndex {
-  const index = record(value, "cycle index");
+  const index = readRecord(value, "cycle index");
   exact(index, ["cycles", "generatedAt", "schemaVersion"], "cycle index");
   if (index.schemaVersion !== CYCLE_INDEX_SCHEMA_VERSION) {
     throw new TypeError("cycle index schema version is invalid");

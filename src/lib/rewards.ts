@@ -1,3 +1,4 @@
+import { exactKeys, readRecord as record } from "./record-validation";
 /**
  * Validates public reward-allocation, external-share, and settlement manifests.
  * All monetary values remain canonical integer minor units and every approved
@@ -237,23 +238,6 @@ export interface RewardSettlementManifest {
     paidMinor: string;
     feeMinor: string;
   };
-}
-
-function record(value: unknown, path: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  path: string,
-): void {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
-    throw new TypeError(`${path} has unexpected or missing fields`);
-  }
 }
 
 function text(
