@@ -4,7 +4,11 @@ import type {
   LeaderboardSnapshot,
   ScoreEvent,
 } from "./leaderboard";
-import { findProject, findProjectByRepositoryId } from "./projects.mjs";
+import {
+  findHistoricalProject,
+  findHistoricalProjectByRepositoryId,
+  findProjectByRepositoryId,
+} from "./projects.mjs";
 import { sha256Hex } from "./sha256";
 
 export const POINTS_RULE = "slop-points-v1";
@@ -121,7 +125,7 @@ export function assertPointsJournal(
     if (
       !/^[A-Za-z0-9_=-]{4,256}$/.test(a.actor.id) ||
       !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(a.actor.login) ||
-      !findProject(a.projectId) ||
+      !findHistoricalProject(a.projectId) ||
       !categories.has(a.category) ||
       !Number.isSafeInteger(a.amount) ||
       a.amount < 0 ||
@@ -186,7 +190,7 @@ export function assertPointsJournal(
   for (const c of p.coverage) {
     exact(c, ["repository", "from", "to", "digest"]);
     if (
-      !findProjectByRepositoryId(c.repository) ||
+      !findHistoricalProjectByRepositoryId(c.repository) ||
       !iso(c.from) ||
       !iso(c.to) ||
       c.from >= c.to ||
@@ -291,7 +295,7 @@ export function applyPointsSnapshot(
   // deletion from missing pages or a shortened rolling window.
   for (const previous of latestPoints(journal).values()) {
     const a = previous.award;
-    const project = findProject(a.projectId);
+    const project = findHistoricalProject(a.projectId);
     if (
       a.category !== "payout-received" &&
       a.amount &&
