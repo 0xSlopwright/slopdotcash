@@ -1434,6 +1434,14 @@ small {
   margin: 1rem 0 0;
 }
 
+.project-links-line {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+}
+
 .project-policy-warning {
   border-left: 2px solid var(--line);
   color: var(--muted);
