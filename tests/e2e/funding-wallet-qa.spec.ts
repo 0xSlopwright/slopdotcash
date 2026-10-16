@@ -1,5 +1,6 @@
 /** Browser-only synthetic identity responses never register a real wallet. */
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import {
   type BrowserContext,
@@ -9,6 +10,7 @@ import {
   test,
 } from "@playwright/test";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
+import type { WalletAuthorization } from "../../src/lib/wallet-registration";
 
 const deployment = deploymentOrigins(
   deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
@@ -198,9 +200,21 @@ async function routeSyntheticSignIn(
   context: BrowserContext,
   owner: { githubActorId: string; githubLogin: string },
   expiresAt: string,
-): Promise<{ starts: number; token: string }> {
+): Promise<{
+  starts: number;
+  token: string;
+  authorization: WalletAuthorization;
+}> {
+  const flowId = `flow_${"f".repeat(24)}`;
   const signIn = {
     starts: 0,
+    authorization: {
+      flowId,
+      pollCapability: "p".repeat(48),
+      expiresAt,
+      pollAfterSeconds: 1,
+      authorizationUrl: `${deployment.identity}/v1/oauth/authorize?flow_id=${flowId}&state=${"s".repeat(48)}`,
+    },
     token: `fixture.${Buffer.from(
       JSON.stringify({
         githubId: owner.githubActorId,
@@ -213,7 +227,6 @@ async function routeSyntheticSignIn(
     ).toString("base64url")}.fixture`,
   };
   let authorized = false;
-  const flowId = `flow_${"f".repeat(24)}`;
   await context.route(`${deployment.identity}/**`, async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/v1/oauth/authorize") {
@@ -226,13 +239,7 @@ async function routeSyntheticSignIn(
       signIn.starts++;
       authorized = false;
       await route.fulfill({
-        json: {
-          flowId,
-          pollCapability: "p".repeat(48),
-          expiresAt,
-          pollAfterSeconds: 1,
-          authorizationUrl: `${deployment.identity}/v1/oauth/authorize?flow_id=${flowId}&state=${"s".repeat(48)}`,
-        },
+        json: signIn.authorization,
       });
     } else if (path === "/v1/oauth/poll") {
       if (!authorized) {
@@ -254,6 +261,192 @@ async function routeSyntheticSignIn(
   });
   return signIn;
 }
+
+test("membership hydration preserves and refreshes a wallet same-tab recovery", async ({
+  page,
+  context,
+}) => {
+  const evidence = observe(page);
+  const owner = { githubActorId: "123", githubLogin: "qa-fixture" };
+  const expiresAt = new Date(
+    Math.floor(Date.now() / 1000) * 1000 + 240_000,
+  ).toISOString();
+  const signIn = await routeSyntheticSignIn(context, owner, expiresAt);
+  let releaseMembership!: () => void;
+  const membership = new Promise<void>((resolve) => {
+    releaseMembership = resolve;
+  });
+  let exchanging!: () => void;
+  const assertionExchanging = new Promise<void>((resolve) => {
+    exchanging = resolve;
+  });
+  let releaseSession!: () => void;
+  const session = new Promise<void>((resolve) => {
+    releaseSession = resolve;
+  });
+  let confirmationStarted!: () => void;
+  const confirming = new Promise<void>((resolve) => {
+    confirmationStarted = resolve;
+  });
+  let releaseConfirmation!: () => void;
+  const confirmation = new Promise<void>((resolve) => {
+    releaseConfirmation = resolve;
+  });
+  let confirmed = false;
+  const previousAddress = "Vote111111111111111111111111111111111111111";
+  const previousCanonical = {
+    schemaVersion: 1,
+    ...owner,
+    address: previousAddress,
+    source: "d1_registry",
+    issueRepository: null,
+    issueNumber: null,
+    sourceBodySha256: "a".repeat(64),
+    observedAt: "2026-10-13T12:00:00.000Z",
+    supersedesClaimId: null,
+  };
+  const previousClaim = {
+    ...previousCanonical,
+    claimId: "qa_previous_claim",
+    recordDigest: sha(previousCanonical),
+  };
+  const canonical = {
+    schemaVersion: 1,
+    ...owner,
+    address,
+    source: "d1_registry",
+    issueRepository: null,
+    issueNumber: null,
+    sourceBodySha256: sha({
+      schemaVersion: 1,
+      githubActorId: owner.githubActorId,
+      address,
+      supersedesClaimId: previousClaim.claimId,
+    }),
+    observedAt: "2026-10-14T12:00:00.000Z",
+    supersedesClaimId: previousClaim.claimId,
+  };
+  const claim = {
+    ...canonical,
+    claimId: "qa_saved_claim",
+    recordDigest: sha(canonical),
+  };
+  await context.route(`${deployment.site}/**`, (route) =>
+    route.fulfill({
+      path: join(
+        process.cwd(),
+        "dist",
+        route.request().resourceType() === "document"
+          ? "index.html"
+          : new URL(route.request().url()).pathname,
+      ),
+    }),
+  );
+  await context.route(`${deployment.site}/api/v1/points/**`, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/points/me") {
+      await membership;
+      await route.fulfill({
+        json: {
+          actor: {
+            id: Buffer.from(`04:User${owner.githubActorId}`).toString("base64"),
+            login: owner.githubLogin,
+          },
+          joinedAt: "2026-10-01T00:00:00.000Z",
+          public: false,
+          welcome: 5,
+          socialPoints: 0,
+        },
+      });
+    } else if (path === "/api/v1/points/x/me")
+      await route.fulfill({
+        json: { configured: false, account: null, award: null },
+      });
+    else throw new Error(`Unexpected membership request ${path}`);
+  });
+  await context.route(
+    (url) =>
+      url.origin === deployment.api &&
+      (url.pathname === "/api/v1/auth/session" ||
+        url.pathname === "/api/v1/wallet-claims" ||
+        url.pathname.startsWith("/api/v1/wallet-claims/")),
+    async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/v1/auth/session") {
+        exchanging();
+        await session;
+        await route.fulfill({
+          json: { tokenType: "Bearer", token: signIn.token, expiresAt },
+        });
+      } else if (path === "/api/v1/wallet-claims/current") {
+        await route.fulfill({ json: previousClaim });
+      } else if (path === "/api/v1/wallet-claims") {
+        confirmationStarted();
+        await confirmation;
+        confirmed = true;
+        await route.fulfill({ json: claim });
+      } else if (
+        path === `/api/v1/wallet-claims/actors/${owner.githubActorId}/current`
+      )
+        await route.fulfill({ json: confirmed ? claim : previousClaim });
+      else throw new Error(`Unexpected API request ${path}`);
+    },
+  );
+  await context.route("https://avatars.githubusercontent.com/**", (route) =>
+    route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"/>',
+    }),
+  );
+  await page.addInitScript(
+    ({ site, authorization, address }) => {
+      if (window.location.origin !== site) return;
+      sessionStorage.setItem(
+        "slop-wallet-authorization",
+        JSON.stringify(authorization),
+      );
+      sessionStorage.setItem("slop-wallet-address", address);
+    },
+    { site: deployment.site, authorization: signIn.authorization, address },
+  );
+  try {
+    await page.goto(signIn.authorization.authorizationUrl);
+    await page.goto(`${deployment.site}/account#wallets`);
+    // Identity completion has consumed the saved authorization, while the
+    // independent account membership response is still waiting to arrive.
+    await assertionExchanging;
+    releaseSession();
+    await expect(
+      page.getByRole("heading", { name: "Confirm your public registration" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Register address" }).click();
+    await confirming;
+    releaseMembership();
+    await expect(
+      page.getByRole("heading", { name: `@${owner.githubLogin}`, exact: true }),
+    ).toBeVisible();
+    await expect(
+      page
+        .getByRole("region", { name: "Current Solana registration" })
+        .getByText(previousAddress, { exact: true }),
+    ).toBeVisible();
+    releaseConfirmation();
+    await expect(
+      page.getByRole("heading", { name: "Wallet registered" }),
+    ).toBeVisible();
+    await expect(
+      page
+        .getByRole("region", { name: "Current Solana registration" })
+        .getByText(address, { exact: true }),
+    ).toBeVisible();
+    expect(signIn.starts).toBe(0);
+    expect(evidence.errors).toEqual([]);
+  } finally {
+    releaseMembership();
+    releaseSession();
+    releaseConfirmation();
+  }
+});
 
 for (const sameTab of [false, true]) {
   test(`wallet ${sameTab ? "same-tab recovery" : "popup"} requires confirmation and verifies the returned public proof`, async ({

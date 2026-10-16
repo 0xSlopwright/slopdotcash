@@ -2,12 +2,15 @@ import { useEffect, useId, useRef, useState } from "react";
 import { browserDeployment } from "./lib/browser-deployment";
 import {
   canonicalWalletInput,
+  currentWalletRegistration,
   prepareWalletRegistration,
   type RegisteredWalletClaim,
   type WalletAuthorization,
+  type WalletRegistrationIdentity,
   type WalletRegistrationSession,
 } from "./lib/wallet-registration";
 import { isWalletChain, type WalletChain } from "./lib/wallets";
+import { formatDateTime } from "./Presentation";
 
 const PENDING_WALLET = "slop-wallet-authorization";
 const WALLET_ADDRESS = "slop-wallet-address";
@@ -37,8 +40,98 @@ function saveAuthorization(value: WalletAuthorization | null) {
   }
 }
 
+function CurrentWalletRegistration({
+  owner,
+  chain,
+  chainLabel,
+}: {
+  owner: WalletRegistrationIdentity;
+  chain: WalletChain;
+  chainLabel: string;
+}) {
+  const headingId = useId();
+  const [attempt, setAttempt] = useState(0);
+  const [state, setState] = useState<
+    | { status: "loading" }
+    | { status: "error" }
+    | { status: "ready"; claim: RegisteredWalletClaim | null }
+  >({ status: "loading" });
+  const { githubActorId, githubLogin } = owner;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A new attempt explicitly retries this read.
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({ status: "loading" });
+    void currentWalletRegistration(
+      { githubActorId, githubLogin },
+      chain,
+      controller.signal,
+    )
+      .then((claim) => {
+        if (!controller.signal.aborted) setState({ status: "ready", claim });
+      })
+      .catch(() => {
+        // An unavailable or invalid receipt is never an empty registration.
+        if (!controller.signal.aborted) setState({ status: "error" });
+      });
+    return () => controller.abort();
+  }, [githubActorId, githubLogin, chain, attempt]);
+  return (
+    <section aria-labelledby={headingId} className="wallet-confirmation">
+      <h3 id={headingId} className="wallet-heading">
+        Current {chainLabel} registration
+      </h3>
+      {state.status === "loading" ? (
+        <p role="status">Loading current registration…</p>
+      ) : state.status === "error" ? (
+        <div role="alert">
+          <p>Current registration could not be verified. Please retry.</p>
+          <button
+            className="button"
+            type="button"
+            onClick={() => setAttempt((value) => value + 1)}
+          >
+            Retry current registration
+          </button>
+        </div>
+      ) : state.claim ? (
+        <>
+          <dl>
+            <div>
+              <dt>Registered receiving address</dt>
+              <dd>
+                <code className="wallet-address">{state.claim.address}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>Record observed</dt>
+              <dd>
+                <time dateTime={state.claim.observedAt}>
+                  {formatDateTime(state.claim.observedAt)}
+                </time>
+              </dd>
+            </div>
+          </dl>
+          <a
+            href={`${browserDeployment.api}/api/v1/wallet-claims/${state.claim.claimId}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            View public record
+          </a>
+        </>
+      ) : (
+        <p>No {chainLabel} receiving address registered.</p>
+      )}
+    </section>
+  );
+}
+
 /** Account Wallets section; /wallet is a compatibility route to it. */
-export function WalletRegistration() {
+export function WalletRegistration({
+  owner = null,
+}: {
+  owner?: WalletRegistrationIdentity | null;
+}) {
   const addressId = useId();
   const [address, setAddress] = useState(savedAddress);
   const [chain, setChain] = useState<WalletChain>(() => {
@@ -66,6 +159,10 @@ export function WalletRegistration() {
   const [registered, setRegistered] = useState<RegisteredWalletClaim | null>(
     null,
   );
+  const [registrationRevision, setRegistrationRevision] = useState(0);
+  const ownerActorId = owner?.githubActorId;
+  const latestOwnerActorId = useRef(ownerActorId);
+  latestOwnerActorId.current = ownerActorId;
   const active = useRef<{
     controller: AbortController;
     session?: WalletRegistrationSession;
@@ -162,6 +259,8 @@ export function WalletRegistration() {
       setSession(null);
       setRegistered(result);
       setPhase("done");
+      if (result.githubActorId === latestOwnerActorId.current)
+        setRegistrationRevision((value) => value + 1);
     } catch (error) {
       if (active.current !== run) return;
       release();
@@ -264,6 +363,14 @@ export function WalletRegistration() {
           <option value="base">Base</option>
           <option value="robinhood">Robinhood Chain</option>
         </select>
+        {owner && (
+          <CurrentWalletRegistration
+            key={`${owner.githubActorId}:${chain}:${registrationRevision}`}
+            owner={owner}
+            chain={chain}
+            chainLabel={chainLabel}
+          />
+        )}
         <label htmlFor={addressId}>{chainLabel} public address</label>
         <input
           id={addressId}

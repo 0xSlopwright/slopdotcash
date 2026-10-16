@@ -1,5 +1,6 @@
 import { isAddress } from "viem";
 import { browserDeployment } from "./browser-deployment";
+import { fetchWithDeadline, readBoundedJson } from "./browser-json";
 import { chainFamily } from "./escrow-policy.mjs";
 /** Browser adapter for the canonical wallet-claim/run-receipt OAuth protocol. */
 import {
@@ -63,11 +64,18 @@ function record(value: unknown): Record<string, unknown> {
 function timestamp(value: unknown): number {
   if (
     typeof value !== "string" ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value)
   )
     invalid();
-  return Date.parse(value);
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) invalid();
+  const canonical = value.endsWith(".000Z")
+    ? value
+    : value.endsWith("Z") && !value.includes(".")
+      ? `${value.slice(0, -1)}.000Z`
+      : value;
+  if (new Date(milliseconds).toISOString() !== canonical) invalid();
+  return milliseconds;
 }
 function identity(value: Record<string, unknown>): WalletRegistrationIdentity {
   if (
@@ -211,6 +219,28 @@ export function canonicalWalletInput(
         "This address has capital letters that do not match its checksum, so it may contain a typo. Copy it again from your wallet.",
     };
   return { address };
+}
+/** Reads the existing public receipt without obtaining a registration session. */
+export async function currentWalletRegistration(
+  owner: WalletRegistrationIdentity,
+  chain: WalletChain,
+  signal: AbortSignal,
+): Promise<RegisteredWalletClaim | null> {
+  identity({ ...owner });
+  if (!isWalletChain(chain)) invalid();
+  const response = await fetchWithDeadline(
+    `${API}/api/v1/wallet-claims/actors/${owner.githubActorId}/current?chain=${chain}`,
+    {
+      credentials: "omit",
+      redirect: "error",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+      signal,
+    },
+  );
+  if (!response.ok) throw new Error("Current wallet registration unavailable.");
+  const value = await readBoundedJson(response, 65536, "wallet registration");
+  return value === null ? null : claim(value, owner, chain);
 }
 /** No registry write until the returned confirm function is explicitly invoked. */
 export async function prepareWalletRegistration(

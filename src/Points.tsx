@@ -23,6 +23,7 @@ import {
 } from "./lib/contributor-standings";
 import type { CycleIndex } from "./lib/cycle-index";
 import { deploymentTier } from "./lib/deployment";
+import { githubUserIdFromNodeId } from "./lib/github-actor";
 import { GithubIcon } from "./lib/github-icon";
 import { requestIdentityAssertion } from "./lib/identity-flow";
 import type { ScoreEvent } from "./lib/leaderboard";
@@ -807,6 +808,9 @@ export function LoginPage() {
 }
 export function AccountPage() {
   const { me } = useContext(Context);
+  const githubActorId = me ? githubUserIdFromNodeId(me.actor.id) : null;
+  const walletOwner =
+    me && githubActorId ? { githubActorId, githubLogin: me.actor.login } : null;
   return (
     <main className="shell route-main points-page">
       <h1>Account</h1>
@@ -822,7 +826,7 @@ export function AccountPage() {
       <div id="connections">
         <SocialConnections />
       </div>
-      <WalletRegistration />
+      <WalletRegistration owner={walletOwner} />
       <p>
         <a href="/points#rules">Points and earning rules</a>
       </p>
