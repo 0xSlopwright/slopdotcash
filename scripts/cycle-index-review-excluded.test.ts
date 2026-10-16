@@ -39,10 +39,14 @@ let workingCopy = "";
 let published: CycleIndex;
 
 /** Runs the repository's own sync script inside the scratch copy. */
-function sync(args: string[] = []) {
-  return spawnSync(process.execPath, [join(workingCopy, syncScript), ...args], {
-    cwd: workingCopy,
+function sync(args: string[] = [], cwd = workingCopy) {
+  return spawnSync(process.execPath, [join(cwd, syncScript), ...args], {
+    cwd,
     encoding: "utf8",
+    // `bun` needs a writable temporary directory for its own runtime files.
+    // It is set on the child only: mutating the parent environment would leak
+    // into every other test file the runner loads.
+    env: { ...process.env, TMPDIR: join(cwd, ".bun-tmp") },
   });
 }
 /**
@@ -68,8 +72,6 @@ function cloneWorkingCopy(): string {
 
 beforeAll(() => {
   workingCopy = cloneWorkingCopy();
-  // `bun` needs a writable temporary directory for its own runtime files.
-  process.env.TMPDIR = join(workingCopy, ".bun-tmp");
 
   // Publish the artifact the site build consumes, inside the scratch copy.
   const generated = sync();
@@ -209,11 +211,7 @@ function findExcludableRow(): { target: string; login: string } | null {
       ),
       candidate.login,
     );
-    const result = spawnSync(
-      process.execPath,
-      [join(probe, syncScript), "--check"],
-      { cwd: probe, encoding: "utf8" },
-    );
+    const result = sync(["--check"], probe);
     rmSync(probe, { recursive: true, force: true });
     if (result.stderr.includes("does not match its immutable files")) {
       return { target: candidate.target, login: candidate.login };
