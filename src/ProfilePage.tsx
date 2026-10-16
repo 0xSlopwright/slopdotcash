@@ -65,43 +65,54 @@ export function ProfilePage({
         <DataNotice state={state} retry={retry} />
       </main>
     );
-  const matches = state.views.flatMap((view) =>
-    view.leaders
-      .filter(
-        (leader) => leader.actor.login.toLowerCase() === login.toLowerCase(),
-      )
-      .map((leader) => ({ leader, view })),
-  );
-  const history = state.cycleIndex.cycles.flatMap((cycle) =>
-    cycle.contributors
-      .filter(
-        (contributor) =>
-          contributor.actor.login.toLowerCase() === login.toLowerCase(),
-      )
-      .map((contributor) => ({ contributor, cycle })),
-  );
-  const loginOpportunities = state.views.flatMap((view) =>
-    view.opportunities
-      .filter(
-        (opportunity) =>
-          opportunity.actor.login.toLowerCase() === login.toLowerCase(),
-      )
-      .map((opportunity) => ({ opportunity, project: view.project })),
-  );
   const globalLeaders = createGlobalLeaders(
     state.snapshot,
     state.views,
     state.cycleIndex,
   );
-  const globalIndex = globalLeaders.findIndex(
-    (leader) => leader.actor.login.toLowerCase() === login.toLowerCase(),
+  // Resolve the display alias once. A current actor wins over a reused
+  // historical handle; all contribution records then join by immutable ID.
+  const matchesLogin = (actor: { login: string }) =>
+    actor.login.toLowerCase() === login.toLowerCase();
+  const currentActor =
+    state.snapshot.leaders.find((leader) => matchesLogin(leader.actor))
+      ?.actor ??
+    state.views
+      .flatMap((view) => [...view.leaders, ...view.opportunities])
+      .find((record) => matchesLogin(record.actor))?.actor;
+  const recordedActor =
+    currentActor ??
+    globalLeaders.find((leader) => matchesLogin(leader.actor))?.actor ??
+    state.cycleIndex.cycles
+      .flatMap((cycle) => cycle.contributors)
+      .find((contributor) => matchesLogin(contributor.actor))?.actor ??
+    (fundingReviews.status === "ready"
+      ? fundingReviews.index.reviews
+          .flatMap((review) => review.contributors)
+          .find((contributor) => matchesLogin(contributor.actor))?.actor
+      : undefined);
+  const globalLeader = globalLeaders.find(
+    (leader) => leader.actor.id === recordedActor?.id,
   );
-  const globalLeader =
-    globalIndex === -1 ? undefined : globalLeaders[globalIndex];
   const globalRank = globalLeader
     ? globalLeaders.findIndex((leader) => leader.score === globalLeader.score) +
       1
     : null;
+  const matches = state.views.flatMap((view) =>
+    view.leaders
+      .filter((leader) => leader.actor.id === recordedActor?.id)
+      .map((leader) => ({ leader, view })),
+  );
+  const history = state.cycleIndex.cycles.flatMap((cycle) =>
+    cycle.contributors
+      .filter((contributor) => contributor.actor.id === recordedActor?.id)
+      .map((contributor) => ({ contributor, cycle })),
+  );
+  const actorOpportunities = state.views.flatMap((view) =>
+    view.opportunities
+      .filter((opportunity) => opportunity.actor.id === recordedActor?.id)
+      .map((opportunity) => ({ opportunity, project: view.project })),
+  );
   // A frozen month with no cycle directory still records the contributor.
   const preparations =
     fundingReviews.status === "ready"
@@ -117,8 +128,7 @@ export function ProfilePage({
           .flatMap((review) =>
             review.contributors
               .filter(
-                (contributor) =>
-                  contributor.actor.login.toLowerCase() === login.toLowerCase(),
+                (contributor) => contributor.actor.id === recordedActor?.id,
               )
               .map((contributor) => ({ contributor, review })),
           )
@@ -132,7 +142,7 @@ export function ProfilePage({
     matches.length === 0 &&
     history.length === 0 &&
     !globalLeader &&
-    loginOpportunities.length === 0 &&
+    actorOpportunities.length === 0 &&
     preparations.length === 0
   ) {
     if (fundingReviews.status === "loading")
@@ -164,8 +174,9 @@ export function ProfilePage({
   }
   const historicalActor =
     history[0]?.contributor.actor ?? preparations[0]?.contributor.actor;
-  const opportunityActor = loginOpportunities[0]?.opportunity.actor;
-  const actor: GitHubActor = globalLeader?.actor ??
+  const opportunityActor = actorOpportunities[0]?.opportunity.actor;
+  const actor: GitHubActor = currentActor ??
+    globalLeader?.actor ??
     matches[0]?.leader.actor ??
     opportunityActor ?? {
       id: historicalActor?.id ?? `historical:${login.toLowerCase()}`,
@@ -177,8 +188,7 @@ export function ProfilePage({
   const events = state.snapshot.ledger.filter(
     (event) => event.actor.id === actor.id,
   );
-  const opportunities = loginOpportunities
-    .filter(({ opportunity }) => opportunity.actor.id === actor.id)
+  const opportunities = actorOpportunities
     .sort(
       (left, right) =>
         Date.parse(right.opportunity.occurredAt) -
