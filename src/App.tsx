@@ -2275,8 +2275,7 @@ function HowItWorksPage() {
           <p>
             Repositories listed by an active project on Slop. Each project page
             names them and links its skill. Paused projects are listed but not
-            collected yet, and pull requests anywhere else, including the Slop
-            repository itself, are not in any pool.
+            collected yet, and pull requests anywhere else are not in any pool.
           </p>
         </details>
         <details>
@@ -2313,6 +2312,22 @@ function HowItWorksPage() {
             changes that the merged code answered. Reviews by or of bot accounts
             do not score. A maintainer can award a higher review tier for an
             unusually valuable review.
+          </p>
+        </details>
+        <details>
+          <summary>Does work outside code score?</summary>
+          <p>
+            On projects that opt in. The{" "}
+            <Link href="/projects/slopdotcash">Slop project</Link> does: a
+            tutorial, explainer, video, or support answer about Slop can receive
+            a reviewed award of 1 to 8 points.
+          </p>
+          <p>
+            A maintainer opens each award as its own public pull request, with
+            an archived copy of the work and the concrete result it produced.
+            Only your newest three awards on a project count. Likes, views, and
+            follower counts are never a reason for an award. To put your work in
+            front of a maintainer, post the link and tag @SlopCash.
           </p>
         </details>
         <details>
