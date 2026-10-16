@@ -1253,7 +1253,18 @@ function validateProjectDefinition(
   }
   for (const [name, value] of Object.entries(links)) {
     text(name, "project link name", { max: 40, pattern: /^[a-z][a-z0-9-]*$/u });
-    url(value, `project.links.${name}`);
+    url(
+      value,
+      `project.links.${name}`,
+      name === "x" ? "https://x.com" : undefined,
+    );
+    if (
+      name === "x" &&
+      (new URL(value).search ||
+        !/^\/[A-Za-z0-9_]{1,15}$/u.test(new URL(value).pathname))
+    ) {
+      throw new TypeError("project.links.x must be an X profile URL");
+    }
   }
   return project;
 }

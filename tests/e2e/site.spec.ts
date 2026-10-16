@@ -714,6 +714,26 @@ test("starts Eliza with one prompt and no separate payout form", async ({
   await expect(page.getByText("How credit survives review")).toHaveCount(0);
 });
 
+test("links each project's website and X account from its page", async ({
+  page,
+}) => {
+  await page.goto("/projects/thenetwork", { waitUntil: "networkidle" });
+  const network = page.getByRole("navigation", { name: "Project links" });
+  await expect(
+    network.getByRole("link", { name: "ntwrk.party" }),
+  ).toHaveAttribute("href", "https://ntwrk.party");
+  await expect(network.getByRole("link", { name: "GitHub" })).toHaveAttribute(
+    "href",
+    "https://github.com/eliza-research/thenetwork",
+  );
+  await page.goto("/projects/eliza", { waitUntil: "networkidle" });
+  await expect(
+    page
+      .getByRole("navigation", { name: "Project links" })
+      .getByRole("link", { name: "@elizaOS on X" }),
+  ).toHaveAttribute("href", "https://x.com/elizaOS");
+});
+
 test("never presents Delta Star's external prize as platform money", async ({
   page,
 }) => {

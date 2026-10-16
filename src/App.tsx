@@ -53,6 +53,7 @@ import {
   modelIdentityKey,
   summarizeModelOutcomes,
 } from "./lib/model-outcomes";
+import { projectLinks } from "./lib/project-links";
 import {
   findProject,
   PROJECTS,
@@ -967,6 +968,20 @@ function projectInstallCommand(project: ProjectDefinition): string {
   });
 }
 
+function ProjectLinksLine({ project }: { project: ProjectDefinition }) {
+  const links = projectLinks(project);
+  return (
+    <nav aria-label="Project links" className="project-links-line">
+      {links.map((link, index) => (
+        <span key={link.href}>
+          {index > 0 ? " · " : null}
+          <ExternalLinkAnchor href={link.href}>{link.label}</ExternalLinkAnchor>
+        </span>
+      ))}
+    </nav>
+  );
+}
+
 export function ProjectParticipation({
   project,
   cycles,
@@ -1862,6 +1877,7 @@ function ProjectPage({
                   </>
                 ) : null}
               </p>
+              <ProjectLinksLine project={project} />
               {project.terms.externalPrize ? (
                 <p className="project-policy-warning">
                   Organizer rules decide eligibility, amount, and payment.

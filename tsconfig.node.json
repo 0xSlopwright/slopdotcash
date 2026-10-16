@@ -34,6 +34,7 @@
     "src/lib/bitcoin-funding.ts",
     "src/lib/cycle-index.ts",
     "src/lib/site-routes.ts",
+    "src/lib/project-links.ts",
     "src/lib/review-lapse.ts",
     "src/lib/evaluator-awards.ts",
     "src/lib/external-sources.ts",
