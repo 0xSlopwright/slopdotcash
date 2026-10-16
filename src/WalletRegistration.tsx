@@ -160,6 +160,9 @@ export function WalletRegistration({
     null,
   );
   const [registrationRevision, setRegistrationRevision] = useState(0);
+  const ownerActorId = owner?.githubActorId;
+  const latestOwnerActorId = useRef(ownerActorId);
+  latestOwnerActorId.current = ownerActorId;
   const active = useRef<{
     controller: AbortController;
     session?: WalletRegistrationSession;
@@ -256,7 +259,7 @@ export function WalletRegistration({
       setSession(null);
       setRegistered(result);
       setPhase("done");
-      if (result.githubActorId === owner?.githubActorId)
+      if (result.githubActorId === latestOwnerActorId.current)
         setRegistrationRevision((value) => value + 1);
     } catch (error) {
       if (active.current !== run) return;

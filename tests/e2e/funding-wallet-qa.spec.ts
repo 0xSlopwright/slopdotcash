@@ -262,7 +262,7 @@ async function routeSyntheticSignIn(
   return signIn;
 }
 
-test("membership hydration preserves a wallet same-tab recovery already exchanging its assertion", async ({
+test("membership hydration preserves and refreshes a wallet same-tab recovery", async ({
   page,
   context,
 }) => {
@@ -284,6 +284,53 @@ test("membership hydration preserves a wallet same-tab recovery already exchangi
   const session = new Promise<void>((resolve) => {
     releaseSession = resolve;
   });
+  let confirmationStarted!: () => void;
+  const confirming = new Promise<void>((resolve) => {
+    confirmationStarted = resolve;
+  });
+  let releaseConfirmation!: () => void;
+  const confirmation = new Promise<void>((resolve) => {
+    releaseConfirmation = resolve;
+  });
+  let confirmed = false;
+  const previousAddress = "Vote111111111111111111111111111111111111111";
+  const previousCanonical = {
+    schemaVersion: 1,
+    ...owner,
+    address: previousAddress,
+    source: "d1_registry",
+    issueRepository: null,
+    issueNumber: null,
+    sourceBodySha256: "a".repeat(64),
+    observedAt: "2026-10-13T12:00:00.000Z",
+    supersedesClaimId: null,
+  };
+  const previousClaim = {
+    ...previousCanonical,
+    claimId: "qa_previous_claim",
+    recordDigest: sha(previousCanonical),
+  };
+  const canonical = {
+    schemaVersion: 1,
+    ...owner,
+    address,
+    source: "d1_registry",
+    issueRepository: null,
+    issueNumber: null,
+    sourceBodySha256: sha({
+      schemaVersion: 1,
+      githubActorId: owner.githubActorId,
+      address,
+      supersedesClaimId: previousClaim.claimId,
+    }),
+    observedAt: "2026-10-14T12:00:00.000Z",
+    supersedesClaimId: previousClaim.claimId,
+  };
+  const claim = {
+    ...canonical,
+    claimId: "qa_saved_claim",
+    recordDigest: sha(canonical),
+  };
   await context.route(`${deployment.site}/**`, (route) =>
     route.fulfill({
       path: join(
@@ -317,39 +364,34 @@ test("membership hydration preserves a wallet same-tab recovery already exchangi
       });
     else throw new Error(`Unexpected membership request ${path}`);
   });
-  await context.route(`${deployment.api}/**`, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (path === "/api/v1/auth/session") {
-      exchanging();
-      await session;
-      await route.fulfill({
-        json: { tokenType: "Bearer", token: signIn.token, expiresAt },
-      });
-    } else if (path === "/api/v1/wallet-claims/current") {
-      const canonical = {
-        schemaVersion: 1,
-        ...owner,
-        address,
-        source: "d1_registry",
-        issueRepository: null,
-        issueNumber: null,
-        sourceBodySha256: "a".repeat(64),
-        observedAt: "2026-10-14T12:00:00.000Z",
-        supersedesClaimId: null,
-      };
-      await route.fulfill({
-        json: {
-          ...canonical,
-          claimId: "qa_saved_claim",
-          recordDigest: sha(canonical),
-        },
-      });
-    } else if (
-      path === `/api/v1/wallet-claims/actors/${owner.githubActorId}/current`
-    )
-      await route.fulfill({ json: null });
-    else throw new Error(`Unexpected API request ${path}`);
-  });
+  await context.route(
+    (url) =>
+      url.origin === deployment.api &&
+      (url.pathname === "/api/v1/auth/session" ||
+        url.pathname === "/api/v1/wallet-claims" ||
+        url.pathname.startsWith("/api/v1/wallet-claims/")),
+    async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/api/v1/auth/session") {
+        exchanging();
+        await session;
+        await route.fulfill({
+          json: { tokenType: "Bearer", token: signIn.token, expiresAt },
+        });
+      } else if (path === "/api/v1/wallet-claims/current") {
+        await route.fulfill({ json: previousClaim });
+      } else if (path === "/api/v1/wallet-claims") {
+        confirmationStarted();
+        await confirmation;
+        confirmed = true;
+        await route.fulfill({ json: claim });
+      } else if (
+        path === `/api/v1/wallet-claims/actors/${owner.githubActorId}/current`
+      )
+        await route.fulfill({ json: confirmed ? claim : previousClaim });
+      else throw new Error(`Unexpected API request ${path}`);
+    },
+  );
   await context.route("https://avatars.githubusercontent.com/**", (route) =>
     route.fulfill({
       contentType: "image/svg+xml",
@@ -373,19 +415,36 @@ test("membership hydration preserves a wallet same-tab recovery already exchangi
     // Identity completion has consumed the saved authorization, while the
     // independent account membership response is still waiting to arrive.
     await assertionExchanging;
+    releaseSession();
+    await expect(
+      page.getByRole("heading", { name: "Confirm your public registration" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Register address" }).click();
+    await confirming;
     releaseMembership();
     await expect(
       page.getByRole("heading", { name: `@${owner.githubLogin}`, exact: true }),
     ).toBeVisible();
-    releaseSession();
     await expect(
-      page.getByRole("heading", { name: "Confirm your public registration" }),
+      page
+        .getByRole("region", { name: "Current Solana registration" })
+        .getByText(previousAddress, { exact: true }),
+    ).toBeVisible();
+    releaseConfirmation();
+    await expect(
+      page.getByRole("heading", { name: "Wallet registered" }),
+    ).toBeVisible();
+    await expect(
+      page
+        .getByRole("region", { name: "Current Solana registration" })
+        .getByText(address, { exact: true }),
     ).toBeVisible();
     expect(signIn.starts).toBe(0);
     expect(evidence.errors).toEqual([]);
   } finally {
     releaseMembership();
     releaseSession();
+    releaseConfirmation();
   }
 });
 
