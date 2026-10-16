@@ -337,7 +337,10 @@ async function duplicateOf(
         );
   // The stored digest identifies a historical candidate, not its current
   // contents. An edited open original must not make this item a duplicate.
-  if (truncated || reviewedItemText(other, otherPull, diff) !== context.itemText)
+  if (
+    truncated ||
+    reviewedItemText(other, otherPull, diff) !== context.itemText
+  )
     return null;
   return {
     category: "duplicate",
