@@ -900,7 +900,12 @@ function cycleEntry(value: unknown, index: number): CycleIndexEntry {
           contributor.state !== "proposed" &&
           contributor.state !== "unclaimed" &&
           contributor.state !== "held-below-minimum" &&
-          contributor.state !== "held",
+          contributor.state !== "held" &&
+          // A creator may exclude a row during the 14-day public review
+          // (cycles/README.md "Review lapse"). An excluded row carries no
+          // approved amount, so it is a review-window state and must not be
+          // read as evidence that the cycle left review.
+          contributor.state !== "excluded",
       ));
   const paymentReadyStateInvalid =
     state === "payment-ready" &&
