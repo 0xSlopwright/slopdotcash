@@ -21,7 +21,8 @@ function compareMinorDescending(left, right) {
   return leftMinor === rightMinor ? 0 : leftMinor > rightMinor ? -1 : 1;
 }
 
-const PROJECTS = Object.freeze(
+/** Every manifest, including retired ones kept only to resolve history. */
+const HISTORICAL_PROJECTS = Object.freeze(
   assertProjectRegistry(RAW_PROJECT_DEFINITIONS)
     .sort(
       (left, right) =>
@@ -42,6 +43,11 @@ const PROJECTS = Object.freeze(
     .map(freezeTree),
 );
 
+/** Listed projects. Retired manifests never reach a page, skill, or list. */
+const PROJECTS = Object.freeze(
+  HISTORICAL_PROJECTS.filter((project) => project.listingTier !== "retired"),
+);
+
 const PROJECTS_BY_ID = new Map(
   PROJECTS.map((project) => [project.id, project]),
 );
@@ -55,6 +61,34 @@ const PROJECTS_BY_REPOSITORY = new Map(
     ),
   ),
 );
+
+const HISTORICAL_PROJECTS_BY_ID = new Map(
+  HISTORICAL_PROJECTS.map((project) => [project.id, project]),
+);
+const HISTORICAL_PROJECTS_BY_REPOSITORY = new Map(
+  HISTORICAL_PROJECTS.flatMap((project) =>
+    project.repositories.flatMap((repository) =>
+      [repository.id, ...(repository.aliases ?? [])].map((repositoryId) => [
+        repositoryId.toLowerCase(),
+        project,
+      ]),
+    ),
+  ),
+);
+
+/** Resolves a project id in immutable history, including retired projects. */
+export function findHistoricalProject(projectId) {
+  if (typeof projectId !== "string") return null;
+  return HISTORICAL_PROJECTS_BY_ID.get(projectId) ?? null;
+}
+
+/** Resolves a repository in immutable history, including retired projects. */
+export function findHistoricalProjectByRepositoryId(repositoryId) {
+  if (typeof repositoryId !== "string") return null;
+  return (
+    HISTORICAL_PROJECTS_BY_REPOSITORY.get(repositoryId.toLowerCase()) ?? null
+  );
+}
 
 /** Returns the canonical project for an id or slug. */
 export function findProject(value) {
@@ -94,4 +128,4 @@ export function assertProjectPaymentsEnabled(projectId, cycleId) {
   return project;
 }
 
-export { PROJECTS };
+export { HISTORICAL_PROJECTS, PROJECTS };
