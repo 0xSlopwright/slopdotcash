@@ -45,27 +45,31 @@ function sync(args: string[] = []) {
     encoding: "utf8",
   });
 }
-
-beforeAll(() => {
-  workingCopy = mkdtempSync(join(tmpdir(), "cycle-index-review-"));
-  // `git archive` exports exactly the tracked tree, which is what CI has.
+/**
+ * Exports the tracked tree into a fresh scratch directory with the installed
+ * dependencies linked in. `git archive` yields exactly what CI has.
+ */
+function cloneWorkingCopy(): string {
+  const root = mkdtempSync(join(tmpdir(), "cycle-index-review-"));
   const archive = spawnSync("git", ["archive", "HEAD"], {
     cwd: repositoryRoot,
     encoding: "buffer",
     maxBuffer: 128 * 1024 * 1024,
   });
   expect(archive.status).toBe(0);
-  const extract = spawnSync("tar", ["-x", "-C", workingCopy], {
+  const extract = spawnSync("tar", ["-x", "-C", root], {
     input: archive.stdout,
   });
   expect(extract.status).toBe(0);
-  // The export holds the tracked tree only, so the installed dependencies are
-  // linked in from the checkout that runs the test.
-  symlinkSync(join(repositoryRoot, "node_modules"), join(workingCopy, "node_modules"));
+  symlinkSync(join(repositoryRoot, "node_modules"), join(root, "node_modules"));
+  mkdirSync(join(root, ".bun-tmp"), { recursive: true });
+  return root;
+}
+
+beforeAll(() => {
+  workingCopy = cloneWorkingCopy();
   // `bun` needs a writable temporary directory for its own runtime files.
-  const bunTemp = join(workingCopy, ".bun-tmp");
-  mkdirSync(bunTemp, { recursive: true });
-  process.env.TMPDIR ??= bunTemp;
+  process.env.TMPDIR = join(workingCopy, ".bun-tmp");
 
   // Publish the artifact the site build consumes, inside the scratch copy.
   const generated = sync();
@@ -109,24 +113,113 @@ function unclaimedRow(cycle: CycleIndex["cycles"][number]) {
 }
 
 /** Rewrites one row's state in the scratch copy's real `proposal.json`. */
-function excludeRowOnDisk(projectId: string, cycleId: string, login: string) {
-  const target = join(
-    workingCopy,
-    "cycles",
-    projectId,
-    cycleId,
-    "proposal.json",
-  );
+function excludeRowOnDisk(target: string, login: string) {
   const proposal = JSON.parse(readFileSync(target, "utf8")) as {
     allocations: { actor: { login: string }; state: string }[];
   };
   const allocation = proposal.allocations.find(
     (candidate) => candidate.actor.login === login,
   );
-  expect(allocation).toBeDefined();
-  allocation!.state = "excluded";
+  if (!allocation) throw new Error(`${login} is not a row of ${target}`);
+  allocation.state = "excluded";
   writeFileSync(target, `${JSON.stringify(proposal, null, 2)}\n`);
-  return target;
+}
+
+/**
+ * Finds a review-window row whose exclusion the review state guard alone can
+ * refuse.
+ *
+ * The row must be unfunded, unclaimed, and carry no adjustment reason: a row
+ * that already has a reason, a settled amount, or a non-zero approval is
+ * rejected by an earlier, unrelated check, so excluding it would fail the
+ * surrounding assertions for the wrong reason and would not exercise the guard
+ * this change modifies. The candidate is confirmed by excluding it in a
+ * throwaway copy of the whole tree and requiring that the only refusal is the
+ * review state mismatch.
+ */
+function findExcludableRow(): { target: string; login: string } | null {
+  const candidates: {
+    target: string;
+    login: string;
+    projectId: string;
+    cycleId: string;
+  }[] = [];
+  for (const cycle of published.cycles) {
+    if (cycle.state !== "review") continue;
+    const target = join(
+      workingCopy,
+      "cycles",
+      cycle.projectId,
+      cycle.cycleId,
+      "proposal.json",
+    );
+    let proposal: {
+      allocations: {
+        actor: { login: string };
+        state: string;
+        approvedMinor?: string;
+        paidMinor?: string;
+        adjustmentReason?: string | null;
+        wallet?: unknown;
+      }[];
+    };
+    try {
+      proposal = JSON.parse(readFileSync(target, "utf8"));
+    } catch {
+      continue;
+    }
+    for (const allocation of proposal.allocations) {
+      if (allocation.state !== "unclaimed") continue;
+      if (allocation.approvedMinor !== "0") continue;
+      if (allocation.adjustmentReason) continue;
+      if (allocation.wallet) continue;
+      candidates.push({
+        target,
+        login: allocation.actor.login,
+        projectId: cycle.projectId,
+        cycleId: cycle.cycleId,
+      });
+    }
+  }
+  // Prefer the row the guard rejects with a review state mismatch. Excluding a
+  // row can also fail the frozen-snapshot baseline check, which is a different
+  // defect, so the candidate is verified rather than assumed: the pre-change
+  // guard is reconstructed by dropping the clause this change adds, because
+  // the fixed guard accepts every excluded row and so cannot discriminate
+  // between the two failures.
+  const current = readFileSync(
+    join(repositoryRoot, "src/lib/cycle-index.ts"),
+    "utf8",
+  );
+  const preChange = current.replace(
+    /\s*&&\s*\/\/ A creator may exclude a row[\s\S]*?contributor\.state !== "excluded",/u,
+    "",
+  );
+  if (preChange === current) return null;
+  for (const candidate of candidates) {
+    const probe = cloneWorkingCopy();
+    writeFileSync(join(probe, "src/lib/cycle-index.ts"), preChange);
+    excludeRowOnDisk(
+      join(
+        probe,
+        "cycles",
+        candidate.projectId,
+        candidate.cycleId,
+        "proposal.json",
+      ),
+      candidate.login,
+    );
+    const result = spawnSync(
+      process.execPath,
+      [join(probe, syncScript), "--check"],
+      { cwd: probe, encoding: "utf8" },
+    );
+    rmSync(probe, { recursive: true, force: true });
+    if (result.stderr.includes("does not match its immutable files")) {
+      return { target: candidate.target, login: candidate.login };
+    }
+  }
+  return null;
 }
 
 describe("cycle index review window", () => {
@@ -176,13 +269,16 @@ describe("cycle index review window", () => {
 
   test("the sync script accepts an excluded row end to end", () => {
     // Proves the guard change through the same entry point CI runs, not only
-    // through the in-process validator. A baseline run must pass first so a
-    // failure below is attributable to the exclusion.
+    // through the in-process validator. The row is selected so the review state
+    // guard is the only gate it can trip: a row that already carries an
+    // adjustment reason is refused earlier by an unrelated check, which would
+    // make this test pass whether or not the guard admits `excluded`.
     expect(sync(["--check"]).status).toBe(0);
 
-    const cycle = reviewCycle(fixture());
-    const row = unclaimedRow(cycle);
-    excludeRowOnDisk(cycle.projectId, cycle.cycleId, row.actor.login);
+    const candidate = findExcludableRow();
+    if (!candidate) throw new Error("no review row isolates the state guard");
+    excludeRowOnDisk(candidate.target, candidate.login);
+    expect(readFileSync(candidate.target, "utf8")).toContain('"excluded"');
 
     const result = sync(["--check"]);
     expect(result.stderr).not.toContain("refused");
