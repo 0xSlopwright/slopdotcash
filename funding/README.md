@@ -341,7 +341,12 @@ the settlement verifier records the finalized payment beside the windup. See
 
 **The fee never enters a project vault.** On the 2-of-2 instrument the
 execution plan ends with the fee transfer, readiness requires the vault to
-cover principal plus fee, and a batch must include that transfer. On a
+cover principal plus fee, and a batch must include that transfer. When the
+transaction that executes the fee also pays contributors (a single
+VaultTransaction, or the Batch child holding the plan's last transfers), its
+signature is both that attempt's and `platformFeeSignature` in
+`transactions.json`, and settlement reconciles the fee and those intents
+against that one finalized transaction. On a
 project vault the rule is different (RFC #500 section 8): the 1% fee is a
 separate transfer the creator sends from the creator seat wallet
 (`creatorMember`), the vault

@@ -1903,9 +1903,20 @@ export function assertRewardSettlementManifest(
       "outstanding platform fee cannot claim transaction evidence",
     );
   }
+  // A 2-of-2 vault plan ends with its fee transfer, and the Squads
+  // VaultTransaction or Batch child that executes it may also pay
+  // contributors, so the fee can name that finalized attempt's transaction.
+  // A project vault fee is the creator's separate transfer (RFC #500 s.8);
+  // this is PROJECT_VAULT_INSTRUMENT_PREFIX, whose module imports this one.
+  const feeAttempt = attempts.find(
+    (attempt) => feeSignature !== null && attempt.signature === feeSignature,
+  );
   if (
-    feeSignature &&
-    attempts.some((attempt) => attempt.signature === feeSignature)
+    feeAttempt &&
+    (feeAttempt.state !== "finalized" ||
+      allocation.fundingBasis?.instrumentId?.startsWith(
+        "squads-project-vault:solana:",
+      ))
   ) {
     throw new TypeError(
       "platform fee and contributor payout reuse a signature",

@@ -212,15 +212,16 @@ export function parseSettlementEvidence(
       signature,
     };
   });
+  // The fee may name an attempt's transaction: a Squads VaultTransaction or
+  // Batch child on a 2-of-2 vault executes the plan's fee transfer together
+  // with contributor transfers. The settlement manifest decides when that is
+  // allowed, and the on-chain check reconciles both against that transaction.
   const platformFeeSignature = evidence[format.platformFee];
   if (
     platformFeeSignature !== null &&
-    (!format.isTransaction(platformFeeSignature) ||
-      signatures.has(platformFeeSignature))
+    !format.isTransaction(platformFeeSignature)
   ) {
-    throw new TypeError(
-      "Settlement platform fee signature is invalid or reused",
-    );
+    throw new TypeError("Settlement platform fee signature is invalid");
   }
   return {
     cycleId,

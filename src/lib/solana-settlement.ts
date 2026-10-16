@@ -459,6 +459,13 @@ export async function verifyRewardSettlementOnchain(input: {
     );
   }
   const byIntent = contributorTransferByIntent(plan);
+  const feeTransfer = plan.transfers.find(
+    (candidate) => candidate.kind === "platform-fee",
+  );
+  const feeClaimed =
+    settlement.platformFee.state === "paid" ||
+    settlement.platformFee.state === "reported";
+  let feeVerified = false;
   const verified: Array<
     VerifiedSolanaTransaction | VerifiedBaseSettlementTransaction
   > = [];
@@ -473,18 +480,24 @@ export async function verifyRewardSettlementOnchain(input: {
       }
       return transfer;
     });
+    // A Squads transaction that also executed the plan's fee transfer must
+    // reconcile the fee with these intents: the source debit covers both.
+    if (
+      feeTransfer &&
+      feeClaimed &&
+      settlement.platformFee.signature === attempt.signature
+    ) {
+      transfers.push(feeTransfer);
+      feeVerified = true;
+    }
     verified.push(await verifyTransaction(attempt.signature, transfers));
   }
-  if (
-    settlement.platformFee.state === "paid" ||
-    settlement.platformFee.state === "reported"
-  ) {
-    const transfer = plan.transfers.find(
-      (candidate) => candidate.kind === "platform-fee",
-    );
+  if (feeClaimed) {
     const feeSignature = settlement.platformFee.signature;
-    if (transfer && feeSignature) {
-      verified.push(await verifyTransaction(feeSignature, [transfer]));
+    if (feeTransfer && feeSignature) {
+      if (!feeVerified) {
+        verified.push(await verifyTransaction(feeSignature, [feeTransfer]));
+      }
     } else if (
       feeSignature &&
       getTransaction &&
