@@ -127,6 +127,7 @@
   "links": {
     "repository": "https://github.com/elizaOS/eliza",
     "issues": "https://github.com/elizaOS/eliza/issues",
-    "discussions": "https://github.com/elizaOS/eliza/discussions"
+    "discussions": "https://github.com/elizaOS/eliza/discussions",
+    "x": "https://x.com/elizaOS"
   }
 }
