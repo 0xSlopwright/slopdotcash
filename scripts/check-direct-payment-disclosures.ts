@@ -89,6 +89,8 @@ export function verifyDisclosure(
   const preparation = JSON.parse(
     new TextDecoder().decode(preparationBytes),
   ) as {
+    projectId: string;
+    cycleId: string;
     counts: { weight: string };
     contributors: Array<{
       actor: { id: string; login: string };
@@ -96,6 +98,14 @@ export function verifyDisclosure(
       wallet: { address: string } | null;
     }>;
   };
+  if (preparation.projectId !== disclosure.projectId)
+    fail(
+      `projectId ${disclosure.projectId} does not match the preparation's ${preparation.projectId}`,
+    );
+  if (preparation.cycleId !== disclosure.contributionMonth)
+    fail(
+      `contributionMonth ${disclosure.contributionMonth} does not match the preparation's ${preparation.cycleId}`,
+    );
   if (preparation.counts.weight !== disclosure.preparation.totalWeight)
     fail("preparation totalWeight does not match the preparation bytes");
 
@@ -117,6 +127,7 @@ export function verifyDisclosure(
   let observedTotal = 0n;
   let observedRows = 0;
   const signatures = new Set<string>();
+  const covered = new Set<string>();
   const byState = new Map<string, { rows: number; amountMinor: bigint }>();
 
   for (const row of disclosure.rows) {
@@ -125,6 +136,9 @@ export function verifyDisclosure(
       fail(`row ${row.login} is not in the preparation`);
       continue;
     }
+    if (covered.has(row.actorId))
+      fail(`row ${row.login} repeats contributor ${row.actorId}`);
+    covered.add(row.actorId);
     if (source.actor.login !== row.login)
       fail(`row ${row.actorId} login drifted from the preparation`);
     if (source.weight !== row.publishedWeight)
@@ -203,6 +217,9 @@ export function verifyDisclosure(
         : entitlement;
     byState.set(row.state, bucket);
   }
+  for (const [actorId, entry] of published)
+    if (!covered.has(actorId))
+      fail(`preparation contributor ${entry.actor.login} has no row`);
 
   if (allocated !== assertBigint(disclosure.totals.allocatedMinor, "allocated"))
     fail("totals.allocatedMinor does not equal the sum of the rows");
