@@ -572,7 +572,7 @@ async function createWalletPossessionAttestation(
     fail(
       409,
       "possession_challenge_unavailable",
-      "Possession challenge is unknown, already used, or bound elsewhere",
+      "Possession challenge is unknown, expired, already used, or bound elsewhere",
     );
   }
   let attestation: WalletPossessionAttestation;
@@ -590,6 +590,18 @@ async function createWalletPossessionAttestation(
       400,
       "invalid_possession_proof",
       error instanceof Error ? error.message : "Invalid possession proof",
+    );
+  }
+  // The signed message repeats the window, so hold it to the issued one;
+  // otherwise a client could re-date a stale challenge and sign that.
+  if (
+    attestation.challenge.issuedAt !== stored.issuedAt ||
+    attestation.challenge.expiresAt !== stored.expiresAt
+  ) {
+    fail(
+      400,
+      "invalid_possession_proof",
+      "Wallet possession challenge window differs from the issued challenge",
     );
   }
   const record: WalletPossessionAttestationRecord = {
