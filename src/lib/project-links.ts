@@ -17,6 +17,7 @@ function websiteLabel(href: string): string {
 }
 
 function namedLinkLabel(name: string, href: string): string {
+  if (name === "website") return websiteLabel(href);
   if (name === "x") return `@${new URL(href).pathname.slice(1)} on X`;
   const known = NAMED_LINK_LABELS[name];
   if (known) return known;
@@ -30,8 +31,10 @@ function normalized(href: string): string {
 }
 
 /**
- * Lists a project's public links in reading order: its website, its X
- * account, then the manifest's other named links. Repeated URLs appear once.
+ * Lists a project's public links in reading order: its website (the
+ * steward's, then `links.website`), its X account, then the manifest's other
+ * named links. Repeated URLs appear once. `links` sits outside the material
+ * terms, so adding one needs no new terms revision.
  */
 export function projectLinks(project: ProjectDefinition): ProjectLink[] {
   const links: ProjectLink[] = [];
@@ -44,7 +47,8 @@ export function projectLinks(project: ProjectDefinition): ProjectLink[] {
   };
   if (project.steward.website)
     add(project.steward.website, websiteLabel(project.steward.website));
-  const { x, ...named } = project.links;
+  const { website, x, ...named } = project.links;
+  if (website) add(website, namedLinkLabel("website", website));
   if (x) add(x, namedLinkLabel("x", x));
   for (const [name, href] of Object.entries(named))
     add(href, namedLinkLabel(name, href));

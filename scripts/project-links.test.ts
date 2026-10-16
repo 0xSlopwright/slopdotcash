@@ -41,6 +41,14 @@ describe("projectLinks", () => {
     ]);
   });
 
+  test("shows a links.website when the steward has none", () => {
+    const links = projectLinks(manifest("thenetwork"));
+    expect(links[0]).toEqual({
+      href: "https://ntwrk.party",
+      label: "ntwrk.party",
+    });
+  });
+
   test("lists a URL the website already shows once", () => {
     const links = projectLinks(manifest("delta-star"));
     expect(links.map((link) => link.label)).toEqual([
