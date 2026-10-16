@@ -723,8 +723,10 @@ export async function authorizeWalletRotation(
     throw new Error(
       "Wallet rotation is not a successor of the on-chain binding",
     );
+  // A finalized payout settles its award, so an attempt that did not record that
+  // transaction cannot pay again; recovery and reconcile skip it too.
   const pending = await env.PAYMENTS_DB.prepare(
-    `${lineage} SELECT a.id FROM payment_attempts a JOIN lineage l ON l.id=a.claim_id WHERE l.depth>0 AND a.state IN ('prepared','unknown','submitted') LIMIT 1`,
+    `${lineage} SELECT a.id FROM payment_attempts a JOIN lineage l ON l.id=a.claim_id JOIN payment_obligations o ON o.id=a.obligation_id WHERE l.depth>0 AND a.state IN ('prepared','unknown','submitted') AND o.state='reserved' LIMIT 1`,
   )
     .bind(...args)
     .first();
