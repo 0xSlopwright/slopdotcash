@@ -514,3 +514,65 @@ test("a co-author's signed review proposal earns nothing when a later merge owns
     exclusions: [],
   });
 });
+
+for (const [tier, thirds] of [
+  ["xl", 45],
+  ["exceptional", 75],
+] as const) {
+  test(`${tier} merge credit cannot bypass co-ratification with an array tier`, () => {
+    const proposal = comment(
+      "IC_10",
+      reviewer,
+      signedReviewRecord(),
+      "2026-10-05T04:00:00.000Z",
+    );
+    const score = scoreRecord("small", [proposal.id])
+      .replace('"tier":"small"', `"tier":"${tier}"`)
+      .replace('"scoreThirds":3', `"scoreThirds":${thirds}`);
+    const credit = (body: string) =>
+      reviewCredit([
+        proposal,
+        comment("IC_20", maintainer, body, "2026-10-05T05:00:00.000Z"),
+      ]);
+    expect(() => credit(score)).toThrow("require a co-ratifier");
+    const approval = comment(
+      "IC_30",
+      laterMaintainer,
+      [
+        "```slop-score-approval",
+        JSON.stringify({
+          schemaVersion: "1",
+          ruleVersion: "slop-score-v2",
+          projectId: "eliza",
+          pullRequestNodeId: pullRequestId,
+          headSha: head,
+          workUnitId: "wu_eliza_shared_outcome",
+          tier,
+          decision: "approve",
+          reason: "Independent approval of the accepted outcome.",
+        }),
+        "```",
+      ].join("\n"),
+      "2026-10-05T06:00:00.000Z",
+    );
+    const approved = reviewCredit([
+      proposal,
+      approval,
+      comment(
+        "IC_20",
+        maintainer,
+        score.replace(
+          '"coRatifierNodeIds":[]',
+          `"coRatifierNodeIds":["${approval.id}"]`,
+        ),
+        "2026-10-05T05:00:00.000Z",
+      ),
+    ]);
+    expect(
+      approved.merges.reduce((sum, row) => sum + Number(row.split(":")[1]), 0),
+    ).toBe(thirds);
+    expect(() =>
+      credit(score.replace(`"tier":"${tier}"`, `"tier":["${tier}"]`)),
+    ).toThrow("tier and scoreThirds do not match");
+  });
+}
