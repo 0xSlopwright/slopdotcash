@@ -499,7 +499,7 @@ export function commentBody(input: {
 }): string {
   const { verdict, context } = input;
   const rules = verdict.rule_refs
-    .map((r) => `> ${neutralize(r.quote)}\n> ? ${neutralize(r.source)}`)
+    .map((r) => `> ${neutralize(r.quote)}\n> — ${neutralize(r.source)}`)
     .join("\n\n");
   const lines = [
     "<!-- slopbot:review -->",
