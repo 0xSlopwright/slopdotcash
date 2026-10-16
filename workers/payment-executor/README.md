@@ -67,7 +67,9 @@ remains retryable until binding finality; on Solana it waits for the
 contributor's co-signed binding. A successor wallet activates only after 24 hours have passed since both its
 registration and signed authorization. The previous on-chain claim must occur
 in the same actor/chain predecessor lineage, and all older-wallet payment
-attempts must be reconciled. An operator cannot bypass this path.
+attempts for unpaid awards must be reconciled. An award whose finalized payout
+is indexed is settled, even when an older attempt never recorded that
+transaction. An operator cannot bypass this path.
 
 `POST /v1/attempt-status` returns a persisted payment transaction identity or
 null. It checks the original database attempt and journal identity, and does
