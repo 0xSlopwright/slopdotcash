@@ -48,24 +48,26 @@ export async function consumeVerificationAdmission(
     nowEpochSeconds: input.nowEpochSeconds,
     windowSeconds: VERIFICATION_ADMISSION.windowSeconds,
   };
-  const global = await consumeExactRateLimit({
-    ...options,
-    scope: "public-verification-global-v1",
-    principal: "shared",
-    limit: VERIFICATION_ADMISSION.globalLimit,
-  });
-  if (!global.allowed) return global;
+  // The client quota comes first. A rejected client never reaches RPC fanout, so
+  // its excess attempts must not spend the budget that other clients share.
   const hash = await sha256Hex(
     new TextEncoder().encode(`${input.secret}:${input.principal}`),
   );
   const bucket =
     Number.parseInt(hash.slice(0, 8), 16) %
     VERIFICATION_ADMISSION.clientBuckets;
-  return consumeExactRateLimit({
+  const client = await consumeExactRateLimit({
     ...options,
     scope: "public-verification-client-v1",
     principal: String(bucket),
     limit: VERIFICATION_ADMISSION.clientLimit,
+  });
+  if (!client.allowed) return client;
+  return consumeExactRateLimit({
+    ...options,
+    scope: "public-verification-global-v1",
+    principal: "shared",
+    limit: VERIFICATION_ADMISSION.globalLimit,
   });
 }
 export async function applyVerificationAdmission(

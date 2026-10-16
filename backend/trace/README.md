@@ -183,7 +183,9 @@ access control and audit logging.
 
 The two public project/cycle verification routes consume the existing atomic
 D1 `identity_rate_limits` counter before Solana RPC fanout. They share a budget
-of 24 attempts per 60-second window, plus four per secret-hashed client bucket.
+of 24 admitted attempts per 60-second window, plus four per secret-hashed client
+bucket. The client bucket is checked first, so attempts that a client bucket
+rejects never spend the shared budget.
 There are 1,024 fixed client buckets; collisions conservatively share a quota,
 and no IP address is stored. The edge-supplied `CF-Connecting-IP` is required;
 forwarded headers do not replace it. Counters use separate verification scopes
