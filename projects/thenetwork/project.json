@@ -108,6 +108,7 @@
   },
   "links": {
     "repository": "https://github.com/eliza-research/thenetwork",
-    "issues": "https://github.com/eliza-research/thenetwork/issues"
+    "issues": "https://github.com/eliza-research/thenetwork/issues",
+    "website": "https://ntwrk.party"
   }
 }

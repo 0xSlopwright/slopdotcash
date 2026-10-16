@@ -122,6 +122,7 @@
   },
   "links": {
     "repository": "https://github.com/SlopDotCash/slopdotcash",
-    "issues": "https://github.com/SlopDotCash/slopdotcash/issues"
+    "issues": "https://github.com/SlopDotCash/slopdotcash/issues",
+    "x": "https://x.com/SlopCash"
   }
 }
