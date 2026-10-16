@@ -19,7 +19,7 @@ const census: { nodes: { id: string; headRefOid: string }[] } = JSON.parse(
   await readFile(censusPath, "utf8"),
 );
 const heads = new Map(census.nodes.map((row) => [row.id, row.headRefOid]));
-const patches = new Map<string, string[]>();
+const patches = new Map<string, QualityEvidence["events"][]>();
 let complete = 0;
 for (const name of (await readdir(detailsPath))
   .filter((name) => /^pr-\d+\.json$/.test(name))
@@ -34,12 +34,16 @@ for (const name of (await readdir(detailsPath))
     };
     files: DiffFile[];
   } = JSON.parse(await readFile(join(detailsPath, name), "utf8"));
-  const event = evidence.events.find(
-    (event) => event.id === `${detail.pr.node_id}:merged`,
+  const mergedId = `${detail.pr.node_id}:merged`;
+  const events = evidence.events.filter(
+    (event) =>
+      event.kind === "implementation" &&
+      (event.id === mergedId || event.id.startsWith(`${mergedId}:`)),
   );
-  if (!event) continue;
+  if (!events.length) continue;
   if (heads.get(detail.pr.node_id) !== detail.pr.head.sha) {
-    event.flags.push("diff head mismatch: inspection unavailable");
+    for (const event of events)
+      event.flags.push("diff head mismatch: inspection unavailable");
     continue;
   }
   const signal = contributionDiffSignals(
@@ -49,30 +53,33 @@ for (const name of (await readdir(detailsPath))
     detail.pr.deletions,
   );
   if (!signal.complete) {
-    event.flags.push("incomplete diff: no content classification");
+    for (const event of events)
+      event.flags.push("incomplete diff: no content classification");
     continue;
   }
   complete++;
-  if (signal.testsOnly)
-    event.flags.push("test-only change: verify regression value and overlap");
-  if (signal.blankLinesOnly)
-    event.flags.push("blank-line-only diff: review micro outcome or grouping");
+  for (const event of events) {
+    if (signal.testsOnly)
+      event.flags.push("test-only change: verify regression value and overlap");
+    if (signal.blankLinesOnly)
+      event.flags.push(
+        "blank-line-only diff: review micro outcome or grouping",
+      );
+  }
   if (signal.patchSha256)
     patches.set(signal.patchSha256, [
       ...(patches.get(signal.patchSha256) ?? []),
-      event.id,
+      events,
     ]);
 }
 let duplicateGroups = 0;
 for (const [digest, group] of patches)
   if (group.length > 1) {
     duplicateGroups++;
-    for (const id of group)
-      evidence.events
-        .find((event) => event.id === id)
-        ?.flags.push(
-          `matching patch group ${digest.slice(0, 12)}: inspect shared outcome`,
-        );
+    for (const event of group.flat())
+      event.flags.push(
+        `matching patch group ${digest.slice(0, 12)}: inspect shared outcome`,
+      );
   }
 await writeFile(output, `${JSON.stringify(evidence)}\n`, { flag: "wx" });
 console.log(
