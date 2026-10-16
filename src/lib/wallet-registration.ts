@@ -64,11 +64,18 @@ function record(value: unknown): Record<string, unknown> {
 function timestamp(value: unknown): number {
   if (
     typeof value !== "string" ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value)
   )
     invalid();
-  return Date.parse(value);
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) invalid();
+  const canonical = value.endsWith(".000Z")
+    ? value
+    : value.endsWith("Z") && !value.includes(".")
+      ? `${value.slice(0, -1)}.000Z`
+      : value;
+  if (new Date(milliseconds).toISOString() !== canonical) invalid();
+  return milliseconds;
 }
 function identity(value: Record<string, unknown>): WalletRegistrationIdentity {
   if (

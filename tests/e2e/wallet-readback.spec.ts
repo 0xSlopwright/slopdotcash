@@ -28,7 +28,8 @@ function savedClaim(chain: WalletChain, githubActorId = owner.githubActorId) {
     issueRepository: null,
     issueNumber: null,
     sourceBodySha256: "a".repeat(64),
-    observedAt: "2026-10-14T12:00:00.000Z",
+    // Migrated GitHub issue claims use the backend's valid seconds-only form.
+    observedAt: "2026-10-14T12:00:00Z",
     supersedesClaimId: null,
   };
   return {
