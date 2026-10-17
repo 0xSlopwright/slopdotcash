@@ -7,18 +7,31 @@ import {
   createFundingReview,
 } from "../../src/lib/funding-review-data";
 import { assertLeaderboardSnapshot } from "../../src/lib/leaderboard";
+import { assertProfiles } from "../../src/lib/profiles";
+import { TARGET_REPOSITORIES } from "../../src/lib/repositories.mjs";
 import { archivedPaidCycleIndex, snapshotFixture } from "../fixtures";
 
-async function profileRecords(page: Page, reusedHandle = false) {
+async function profileRecords(
+  page: Page,
+  options: {
+    reusedHandle?: boolean;
+    frozenOnly?: boolean;
+    directoryOnly?: boolean;
+    unverified?: boolean;
+  } = {},
+) {
   const snapshot = snapshotFixture();
   const current = snapshot.leaders[0].actor;
-  if (reusedHandle) {
+  current.id = "MDQ6VXNlcjE=";
+  if (options.reusedHandle) {
     current.login = "archive-only";
     current.url = "https://github.com/archive-only";
   }
   const cycles = archivedPaidCycleIndex();
   const archived = cycles.cycles[0].contributors[0].actor;
-  if (!reusedHandle) archived.id = current.id;
+  archived.id = "MDQ6VXNlcjI=";
+  if (!options.reusedHandle && !options.directoryOnly && !options.unverified)
+    archived.id = current.id;
   const reviews = assertFundingReviewIndex({
     schemaVersion: "1",
     generatedAt: "2026-09-02T00:00:00.000Z",
@@ -61,8 +74,41 @@ async function profileRecords(page: Page, reusedHandle = false) {
       }),
     ],
   });
+  if (options.frozenOnly) cycles.cycles = [];
+  const now = new Date().toISOString();
+  const profiles = {
+    schemaVersion: "1",
+    startedAt: now,
+    generatedAt: now,
+    repositories: TARGET_REPOSITORIES.map((repository) => ({
+      repository: repository.id,
+      count: 0,
+      excluded: 0,
+    })),
+    people: [
+      {
+        id: current.id,
+        login: current.login,
+        avatarUrl: current.avatarUrl,
+        repositories: [],
+      },
+      ...(options.directoryOnly
+        ? [
+            {
+              ...archived,
+              avatarUrl: "https://avatars.githubusercontent.com/u/2?v=4",
+              repositories: [],
+            },
+          ]
+        : []),
+    ],
+  };
   assertLeaderboardSnapshot(snapshot);
   assertCycleIndex(cycles);
+  assertProfiles(profiles);
+  await page.route("**/data/profiles.json", (r) =>
+    r.fulfill({ json: profiles }),
+  );
   await page.route("**/data/leaderboard.json?**", (r) =>
     r.fulfill({ json: snapshot }),
   );
@@ -77,10 +123,20 @@ async function profileRecords(page: Page, reusedHandle = false) {
   await page.route("https://avatars.githubusercontent.com/**", async (r) =>
     r.fulfill({ response: await page.request.get("/slop-mark.svg") }),
   );
-  await page.route("**/api/v1/wallet-claims/actors/*/current", (r) =>
-    r.fulfill({ json: null }),
-  );
-  return { snapshot, cycles, reviews, current };
+  const walletRequests: string[] = [];
+  await page.route("**/api/v1/wallet-claims/actors/*/current", (r) => {
+    walletRequests.push(new URL(r.request().url()).pathname);
+    return r.fulfill({ json: null });
+  });
+  return {
+    snapshot,
+    cycles,
+    reviews,
+    profiles,
+    current,
+    archived,
+    walletRequests,
+  };
 }
 
 test("a renamed contributor keeps archived cycles and frozen-month links", async ({
@@ -140,7 +196,7 @@ test("a renamed contributor keeps archived cycles and frozen-month links", async
 test("a different actor reusing an old login does not inherit its history", async ({
   page,
 }) => {
-  const { current } = await profileRecords(page, true);
+  const { current } = await profileRecords(page, { reusedHandle: true });
   await page.goto(`/contributors/${current.login}`, {
     waitUntil: "networkidle",
   });
@@ -158,4 +214,170 @@ test("a different actor reusing an old login does not inherit its history", asyn
   await expect(
     page.getByRole("heading", { name: current.login, exact: true }),
   ).toBeVisible();
+});
+
+for (const frozenOnly of [false, true]) {
+  test(`an inactive new owner does not inherit ${frozenOnly ? "frozen-only" : "archived"} records or wallet lookups`, async ({
+    page,
+  }, info) => {
+    const { current, archived, walletRequests } = await profileRecords(page, {
+      frozenOnly,
+    });
+    // The new owner has no leaderboard, points, census or membership record.
+    await page.goto(`/contributors/${archived.login}`, {
+      waitUntil: "networkidle",
+    });
+    await expect(
+      page.getByRole("heading", { name: "Past cycles" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Frozen months" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: current.login }),
+    ).toHaveCount(0);
+    await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+    await expect(
+      page.getByTitle("Closed cycles and ledger events outside those cycles"),
+    ).toHaveCount(0);
+    expect(walletRequests).toEqual([]);
+    await page.reload({ waitUntil: "networkidle" });
+    expect(walletRequests).toEqual([]);
+    await page.screenshot({ path: info.outputPath("inactive-owner.png") });
+    // The same immutable actor's new URL must retain its own history.
+    await page.goto(`/contributors/${current.login}`, {
+      waitUntil: "networkidle",
+    });
+    await expect(
+      page.getByRole("heading", { name: current.login, exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByTitle("Closed cycles and ledger events outside those cycles"),
+    ).toHaveText(frozenOnly ? "34" : "17");
+    await expect(
+      page.getByRole("heading", { name: "Frozen months" }),
+    ).toBeVisible();
+    expect(walletRequests).toEqual(["/api/v1/wallet-claims/actors/1/current"]);
+  });
+}
+
+test("a directory-verified historical contributor keeps archived and frozen links", async ({
+  page,
+}) => {
+  const { archived } = await profileRecords(page, { directoryOnly: true });
+  await page.goto(`/contributors/${archived.login}`, {
+    waitUntil: "networkidle",
+  });
+  await expect(
+    page.getByRole("heading", { name: "Past cycles", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Frozen months", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByTitle("Closed cycles and ledger events outside those cycles"),
+  ).toHaveText("7");
+});
+
+test("historical names alone do not identify a current contributor or wallet", async ({
+  page,
+}) => {
+  const { archived, walletRequests } = await profileRecords(page, {
+    unverified: true,
+  });
+  await page.goto(`/contributors/${archived.login}`, {
+    waitUntil: "networkidle",
+  });
+  await expect(page.getByRole("heading", { name: "Past cycles" })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("heading", { name: "Frozen months" }),
+  ).toHaveCount(0);
+  await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+  expect(walletRequests).toEqual([]);
+  await expect(page.getByRole("status")).toContainText(
+    "Current contributor identity could not be verified",
+  );
+});
+
+test("a new owner listed without activity uses only its own identity and wallet", async ({
+  page,
+}) => {
+  const { profiles, archived, walletRequests } = await profileRecords(page);
+  profiles.people.push({
+    id: "MDQ6VXNlcjI=",
+    login: archived.login,
+    avatarUrl: "https://avatars.githubusercontent.com/u/2?v=4",
+    repositories: [],
+  });
+  assertProfiles(profiles);
+  await page.goto(`/contributors/${archived.login}`, {
+    waitUntil: "networkidle",
+  });
+  await expect(
+    page.getByRole("heading", { name: archived.login, exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Past cycles" })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("heading", { name: "Frozen months" }),
+  ).toHaveCount(0);
+  await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+  expect(walletRequests).toEqual(["/api/v1/wallet-claims/actors/2/current"]);
+});
+
+test("conflicting current names withhold history and wallet lookups", async ({
+  page,
+}) => {
+  const { profiles, archived, walletRequests } = await profileRecords(page);
+  // The activity snapshot knows the rename but the directory still has the old alias.
+  profiles.people[0].login = archived.login;
+  assertProfiles(profiles);
+  await page.goto(`/contributors/${archived.login}`, {
+    waitUntil: "networkidle",
+  });
+  await expect(page.getByRole("status")).toContainText(
+    "Current contributor identity could not be verified",
+  );
+  await expect(page.getByRole("heading", { name: "Past cycles" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+  expect(walletRequests).toEqual([]);
+});
+
+test("an unavailable identity directory hides historical records until retry succeeds", async ({
+  page,
+}) => {
+  const { profiles, archived, walletRequests } = await profileRecords(page, {
+    directoryOnly: true,
+  });
+  let unavailable = true;
+  await page.route("**/data/profiles.json", (route) =>
+    unavailable
+      ? route.fulfill({ status: 503, body: "Unavailable" })
+      : route.fulfill({ json: profiles }),
+  );
+  await page.goto(`/contributors/${archived.login}`, {
+    waitUntil: "networkidle",
+  });
+  await expect(page.getByRole("status")).toContainText(
+    "Current contributor identity is unavailable",
+  );
+  expect(walletRequests).toEqual([]);
+  unavailable = false;
+  await page
+    .getByRole("button", { name: "Retry profile", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Past cycles", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Frozen months", exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() => walletRequests)
+    .toEqual(["/api/v1/wallet-claims/actors/2/current"]);
 });

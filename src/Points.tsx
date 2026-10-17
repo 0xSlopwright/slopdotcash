@@ -421,6 +421,7 @@ export function ProfilePoints({
   recordsLoading = false,
   showIdentity = false,
   notFoundWhenUnrecorded = false,
+  profileCensus,
 }: {
   login: string;
   work?: readonly ScoreEvent[];
@@ -431,9 +432,11 @@ export function ProfilePoints({
   actorId?: string;
   /** The caller found no score record, so no points record means no contributor. */
   notFoundWhenUnrecorded?: boolean;
+  profileCensus?: ReturnType<typeof useProfiles>;
 }) {
   const { state, me } = useContext(Context);
-  const census = useProfiles();
+  const localCensus = useProfiles(!profileCensus);
+  const census = profileCensus ?? localCensus;
   const censusMatches =
     census.state.status === "ready"
       ? census.state.index.people.filter((p) =>
