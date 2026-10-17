@@ -4,7 +4,7 @@ import {
   ExternalLink,
   RotateCcw,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { DonorFundingProfile, useFundingIndex } from "./FundingRecords";
 import { Link } from "./Link";
 import { browserDeployment } from "./lib/browser-deployment";
@@ -21,7 +21,7 @@ import { findProject, type ProjectDefinition } from "./lib/projects.mjs";
 import { formatThirds } from "./lib/reviewer-leaders";
 import { useFundingReviews } from "./lib/use-funding-reviews";
 import type { DataState } from "./lib/use-snapshot";
-import { ProfilePoints } from "./Points";
+import { ProfilePoints, useProfileMembership } from "./Points";
 import {
   ContributorIdentity,
   cycleLifecycleLabel,
@@ -51,10 +51,8 @@ export function ProfilePage({
   const [funding, retryFunding] = useFundingIndex();
   const [fundingReviews] = useFundingReviews(true);
   const profiles = useProfiles();
-  const actor = useMemo(
-    () => currentProfileActor(state, login, profiles.state),
-    [state, login, profiles.state],
-  );
+  const membership = useProfileMembership(login);
+  const actor = currentProfileActor(state, login, profiles.state, membership);
   const currentWallet = useCurrentWallet(actor, login);
   if (state.status !== "ready")
     return (
@@ -80,7 +78,8 @@ export function ProfilePage({
           }}
         />
         <p className="data-notice" role="status">
-          {profiles.state.status === "loading"
+          {profiles.state.status === "loading" ||
+          membership.joinStatus === "loading"
             ? "Checking current contributor identity…"
             : profiles.state.status === "error"
               ? "Current contributor identity is unavailable. Contribution and wallet records are not shown."
@@ -172,6 +171,7 @@ export function ProfilePage({
           login={login}
           actorId={actor.id}
           profileCensus={profiles}
+          profileMembership={membership}
           cycles={state.cycleIndex}
           showIdentity
           notFoundWhenUnrecorded={fundingReviews.status === "ready"}
@@ -252,6 +252,7 @@ export function ProfilePage({
       <ProfilePoints
         key={login.toLowerCase()}
         profileCensus={profiles}
+        profileMembership={membership}
         actorId={actor.id}
         work={events}
         login={login}
@@ -446,36 +447,56 @@ function currentProfileActor(
   state: DataState,
   login: string,
   profiles: ReturnType<typeof useProfiles>["state"],
+  membership: ReturnType<typeof useProfileMembership>,
 ): GitHubActor | undefined {
-  if (state.status !== "ready" || profiles.status !== "ready") return;
+  if (state.status !== "ready") return;
   const normalizedLogin = login.toLowerCase();
-  const actors = [
+  const matchesLogin = (actor: { login: string }) =>
+    actor.login.toLowerCase() === normalizedLogin;
+  const asActor = (actor: {
+    id: string;
+    login: string;
+    avatarUrl?: string;
+  }): GitHubActor => ({
+    id: actor.id,
+    login: actor.login,
+    avatarUrl:
+      actor.avatarUrl ??
+      `https://avatars.githubusercontent.com/${encodeURIComponent(actor.login)}?size=160`,
+    url: `https://github.com/${encodeURIComponent(actor.login)}`,
+    kind: "User",
+  });
+  // The existing session/member route also identifies members with no scored work.
+  const member = membership.own ?? membership.joined;
+  if (member)
+    return matchesLogin(member.actor) ? asActor(member.actor) : undefined;
+  const actors: Array<{ id: string; login: string; avatarUrl?: string }> = [
+    ...(membership.signedInActor ? [membership.signedInActor] : []),
     ...state.snapshot.leaders.map((leader) => leader.actor),
     ...state.views.flatMap((view) => [
       ...view.leaders.map((leader) => leader.actor),
       ...view.opportunities.map((opportunity) => opportunity.actor),
     ]),
-    ...profiles.index.people,
   ];
-  const actor = actors.find(
-    (candidate) => candidate.login.toLowerCase() === normalizedLogin,
-  );
-  if (
-    !actor ||
-    actors.some((candidate) =>
-      candidate.id === actor.id
-        ? candidate.login.toLowerCase() !== normalizedLogin
-        : candidate.login.toLowerCase() === normalizedLogin,
+  const current = actors.find(matchesLogin);
+  if (current) {
+    if (
+      actors.some((actor) =>
+        actor.id === current.id ? !matchesLogin(actor) : matchesLogin(actor),
+      )
     )
-  )
-    return;
-  return {
-    id: actor.id,
-    login: actor.login,
-    avatarUrl: actor.avatarUrl,
-    url: `https://github.com/${encodeURIComponent(actor.login)}`,
-    kind: "User",
-  };
+      return;
+    return asActor(current);
+  }
+  if (profiles.status !== "ready") return;
+  // The directory can resolve an inactive actor, but cannot override a known rename.
+  const candidates = profiles.index.people.filter(
+    (person) =>
+      matchesLogin(person) &&
+      !actors.some((actor) => actor.id === person.id && !matchesLogin(actor)),
+  );
+  if (candidates.length !== 1) return;
+  return asActor(candidates[0]);
 }
 
 function useCurrentWallet(
