@@ -52,6 +52,12 @@ import { WalletRegistration } from "./WalletRegistration";
 const productOrigin = () =>
   browserDeployment.browserOrigins.has(window.location.origin);
 
+/** Sign-in works only on a product origin, so other origins link there. */
+export const loginHref = (next: string) =>
+  `${productOrigin() ? "" : browserDeployment.site}${
+    next === "/" ? "/login" : `/login?next=${encodeURIComponent(next)}`
+  }`;
+
 interface Membership {
   actor: { id: string; login: string };
   joinedAt: string;
@@ -311,11 +317,9 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
     return (
       <a
         className="account-control account-login"
-        href={`${productOrigin() ? "" : browserDeployment.site}${
-          window.location.pathname === "/login" || loginReturn === "/"
-            ? "/login"
-            : `/login?next=${encodeURIComponent(loginReturn)}`
-        }`}
+        href={loginHref(
+          window.location.pathname === "/login" ? "/" : loginReturn,
+        )}
         onClick={navigate}
       >
         Log in

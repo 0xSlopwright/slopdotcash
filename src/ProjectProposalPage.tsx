@@ -19,7 +19,7 @@ import {
 } from "./lib/project-proposal";
 import type { ProjectDefinition } from "./lib/projects.mjs";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
-import { useSignedInLogin } from "./Points";
+import { loginHref, useSignedInLogin } from "./Points";
 
 const SETTLEMENT_CHAIN_NAMES: Record<string, string> = {
   base: "Base",
@@ -28,7 +28,6 @@ const SETTLEMENT_CHAIN_NAMES: Record<string, string> = {
 };
 const PROJECT_PROPOSAL_ROOT = `${SOURCE_REPOSITORY}/new/development`;
 const PROPOSAL_DRAFT_KEY = "slop:project-proposal:v1";
-const LOGIN_HREF = `/login?next=${encodeURIComponent("/projects/new")}`;
 /** PRJ-03 default, shown as editable text the maintainer can replace. */
 const DEFAULT_CRITERIA =
   "Merged pull requests that fix a reproduced bug or deliver a change the maintainers asked for, with tests or other evidence that the result works.";
@@ -469,7 +468,10 @@ function RepositoryPicker({
   if (!login)
     return (
       <div className="repository-picker-signin">
-        <a className="button secondary-button" href={LOGIN_HREF}>
+        <a
+          className="button secondary-button"
+          href={loginHref("/projects/new")}
+        >
           Sign in with GitHub
         </a>
         <p className="repository-picker-status">
