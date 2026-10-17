@@ -384,58 +384,86 @@ test("an unavailable identity directory hides historical records until retry suc
     .toEqual(["/api/v1/wallet-claims/actors/2/current"]);
 });
 
-test("an anonymous visitor sees a points-only new owner's own identity", async ({
-  page,
-}) => {
-  const { site } = deploymentOrigins(
-    deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
+for (const staleMembership of [false, true]) {
+  test(
+    staleMembership
+      ? "a stale public membership cannot override a known rename"
+      : "an anonymous visitor sees a points-only new owner's own identity",
+    async ({ page }) => {
+      const { site } = deploymentOrigins(
+        deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
+      );
+      await page.route(`${site}/**`, (route) =>
+        route.fulfill({
+          path: join(
+            process.cwd(),
+            "dist",
+            route.request().resourceType() === "document"
+              ? "index.html"
+              : new URL(route.request().url()).pathname,
+          ),
+        }),
+      );
+      const { current, archived, walletRequests } = await profileRecords(page);
+      const member = {
+        actor: {
+          id: staleMembership ? current.id : "MDQ6VXNlcjI=",
+          login: archived.login,
+        },
+        joinedAt: "2026-10-17T00:00:00.000Z",
+        public: true,
+        welcome: 5,
+      };
+      await page.route(`${site}/api/v1/points/**`, (route) =>
+        route.fulfill({
+          json: new URL(route.request().url()).pathname.endsWith("/member")
+            ? member
+            : null,
+        }),
+      );
+      await page.route(
+        "**/api/v1/payments/actors/*/direct-transfers",
+        (route) => route.fulfill({ json: { transfers: [], totalMicro: "0" } }),
+      );
+      await page.goto(`${site}/contributors/${archived.login}`, {
+        waitUntil: "networkidle",
+      });
+      await expect(
+        page.getByRole("heading", { name: archived.login, exact: true }),
+      ).toBeVisible();
+      if (staleMembership) {
+        await expect(
+          page.getByRole("heading", { name: "Past cycles" }),
+        ).toHaveCount(0);
+        await expect(
+          page.getByRole("heading", { name: "Frozen months" }),
+        ).toHaveCount(0);
+        await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+        await expect(page.getByRole("status")).toContainText(
+          "could not be verified",
+        );
+        await expect(
+          page.getByText("Points · recorded history", { exact: true }),
+        ).toHaveCount(0);
+        expect(walletRequests).toEqual([]);
+        return;
+      }
+      await expect(
+        page
+          .getByText("Points · recorded history", { exact: true })
+          .locator("..")
+          .locator("strong"),
+      ).toHaveText("5");
+      await expect(
+        page.getByRole("heading", { name: "Past cycles" }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole("heading", { name: "Frozen months" }),
+      ).toHaveCount(0);
+      await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+      expect(walletRequests).toEqual([
+        "/api/v1/wallet-claims/actors/2/current",
+      ]);
+    },
   );
-  await page.route(`${site}/**`, (route) =>
-    route.fulfill({
-      path: join(
-        process.cwd(),
-        "dist",
-        route.request().resourceType() === "document"
-          ? "index.html"
-          : new URL(route.request().url()).pathname,
-      ),
-    }),
-  );
-  const { archived, walletRequests } = await profileRecords(page);
-  const member = {
-    actor: { id: "MDQ6VXNlcjI=", login: archived.login },
-    joinedAt: "2026-10-17T00:00:00.000Z",
-    public: true,
-    welcome: 5,
-  };
-  await page.route(`${site}/api/v1/points/**`, (route) =>
-    route.fulfill({
-      json: new URL(route.request().url()).pathname.endsWith("/member")
-        ? member
-        : null,
-    }),
-  );
-  await page.route("**/api/v1/payments/actors/*/direct-transfers", (route) =>
-    route.fulfill({ json: { transfers: [], totalMicro: "0" } }),
-  );
-  await page.goto(`${site}/contributors/${archived.login}`, {
-    waitUntil: "networkidle",
-  });
-  await expect(
-    page.getByRole("heading", { name: archived.login, exact: true }),
-  ).toBeVisible();
-  await expect(
-    page
-      .getByText("Points · recorded history", { exact: true })
-      .locator("..")
-      .locator("strong"),
-  ).toHaveText("5");
-  await expect(page.getByRole("heading", { name: "Past cycles" })).toHaveCount(
-    0,
-  );
-  await expect(
-    page.getByRole("heading", { name: "Frozen months" }),
-  ).toHaveCount(0);
-  await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
-  expect(walletRequests).toEqual(["/api/v1/wallet-claims/actors/2/current"]);
-});
+}

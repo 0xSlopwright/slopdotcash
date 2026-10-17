@@ -466,10 +466,6 @@ function currentProfileActor(
     url: `https://github.com/${encodeURIComponent(actor.login)}`,
     kind: "User",
   });
-  // The existing session/member route also identifies members with no scored work.
-  const member = membership.own ?? membership.joined;
-  if (member)
-    return matchesLogin(member.actor) ? asActor(member.actor) : undefined;
   const actors: Array<{ id: string; login: string; avatarUrl?: string }> = [
     ...(membership.signedInActor ? [membership.signedInActor] : []),
     ...state.snapshot.leaders.map((leader) => leader.actor),
@@ -478,14 +474,19 @@ function currentProfileActor(
       ...view.opportunities.map((opportunity) => opportunity.actor),
     ]),
   ];
+  const conflictsWith = (candidate: { id: string }) =>
+    actors.some((actor) =>
+      actor.id === candidate.id ? !matchesLogin(actor) : matchesLogin(actor),
+    );
+  // Membership records can retain an old login too; a known rename vetoes them.
+  const member = membership.own ?? membership.joined;
+  if (member)
+    return matchesLogin(member.actor) && !conflictsWith(member.actor)
+      ? asActor(member.actor)
+      : undefined;
   const current = actors.find(matchesLogin);
   if (current) {
-    if (
-      actors.some((actor) =>
-        actor.id === current.id ? !matchesLogin(actor) : matchesLogin(actor),
-      )
-    )
-      return;
+    if (conflictsWith(current)) return;
     return asActor(current);
   }
   if (profiles.status !== "ready") return;
