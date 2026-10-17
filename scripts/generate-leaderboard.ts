@@ -1995,10 +1995,10 @@ export async function collectSearchReferences(
   const firstPage = parseSearchPage(firstData, (value, path) =>
     parseSearchReference(value, path, expectedKind),
   );
-  if (firstPage.totalCount >= SEARCH_SAFE_RESULT_LIMIT) {
+  async function collectSplitRange() {
     if (to.getTime() - from.getTime() <= MINIMUM_SEARCH_SLICE_MS) {
       throw new Error(
-        `GitHub Search returned ${firstPage.totalCount} results in one minute (${searchRange(from, to)}); refusing a snapshot that could hit the 1,000-result cap`,
+        `GitHub Search cannot reconcile ${firstPage.totalCount} results in a minimum-size range (${searchRange(from, to)}); refusing a snapshot with incomplete or capped results`,
       );
     }
     const split = midpoint(from, to);
@@ -2022,7 +2022,16 @@ export async function collectSearchReferences(
       expectedKind,
       stats,
     );
-    return dedupeByNodeId([...left, ...right]);
+    const combined = dedupeByNodeId([...left, ...right]);
+    if (combined.length !== firstPage.totalCount) {
+      throw new Error(
+        `Split GitHub Search returned ${combined.length} unique references but parent reported ${firstPage.totalCount} for ${searchRange(from, to)}`,
+      );
+    }
+    return combined;
+  }
+  if (firstPage.totalCount >= SEARCH_SAFE_RESULT_LIMIT) {
+    return collectSplitRange();
   }
 
   const references = [...firstPage.nodes];
@@ -2051,9 +2060,11 @@ export async function collectSearchReferences(
 
   const deduped = dedupeByNodeId(references);
   if (deduped.length !== expectedCount) {
-    throw new Error(
-      `GitHub Search returned ${deduped.length} unique references but reported ${expectedCount} for ${searchRange(from, to)}`,
-    );
+    // Discard the incomplete cursor result and query narrower ranges. Each
+    // child and the deduplicated union must reconcile to the parent's count.
+    // The one-minute split floor and client's request/rate budgets still bound
+    // recovery. No missing record can become a successful partial snapshot.
+    return collectSplitRange();
   }
   for (const reference of deduped) {
     await completeOutcomeCommits(client, reference, repository);
