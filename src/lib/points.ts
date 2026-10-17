@@ -400,6 +400,7 @@ export function pointMembers(
   projectId?: string,
 ): PointsMember[] {
   const groups = new Map<string, PointAward>();
+  const firstContributionAt = new Map<string, string>();
   const awards = [...latestPoints(journal).values()].map((r) => r.award);
   // The dedup key is the canonical parsed PR identity, not the raw URL:
   // the journal validator accepts URL variants (owner/repo casing, default
@@ -427,6 +428,12 @@ export function pointMembers(
     )
       continue;
     if (!a.amount || (projectId && a.projectId !== projectId)) continue;
+    // The first contribution date comes from every counted record, not
+    // only the surviving award: one work unit can have records in more than
+    // one month, and the dedup below keeps only one of them.
+    const first = firstContributionAt.get(a.actor.id);
+    if (first === undefined || a.occurredAt < first)
+      firstContributionAt.set(a.actor.id, a.occurredAt);
     const key = JSON.stringify([
       a.projectId,
       a.actor.id,
@@ -439,7 +446,9 @@ export function pointMembers(
     if (
       !prior ||
       a.amount > prior.amount ||
-      (a.amount === prior.amount && a.sourceId < prior.sourceId)
+      (a.amount === prior.amount &&
+        (a.occurredAt < prior.occurredAt ||
+          (a.occurredAt === prior.occurredAt && a.sourceId < prior.sourceId)))
     )
       groups.set(key, a);
   }
@@ -449,7 +458,7 @@ export function pointMembers(
       actor: a.actor,
       total: 0,
       monthly: 0,
-      firstContributionAt: a.occurredAt,
+      firstContributionAt: firstContributionAt.get(a.actor.id) ?? a.occurredAt,
       projects: 0,
       badges: [],
       awards: [],
@@ -458,8 +467,6 @@ export function pointMembers(
     if (a.occurredAt.startsWith(month)) m.monthly += a.amount;
     if (!Number.isSafeInteger(m.total))
       throw new Error("Points total overflow");
-    if (a.occurredAt < m.firstContributionAt)
-      m.firstContributionAt = a.occurredAt;
     m.awards.push(a);
     members.set(a.actor.id, m);
   }
