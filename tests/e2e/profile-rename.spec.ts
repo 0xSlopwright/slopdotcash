@@ -384,26 +384,31 @@ test("an unavailable identity directory hides historical records until retry suc
     .toEqual(["/api/v1/wallet-claims/actors/2/current"]);
 });
 
+async function serveProfileSite(page: Page) {
+  const { site } = deploymentOrigins(
+    deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
+  );
+  await page.route(`${site}/**`, (route) =>
+    route.fulfill({
+      path: join(
+        process.cwd(),
+        "dist",
+        route.request().resourceType() === "document"
+          ? "index.html"
+          : new URL(route.request().url()).pathname,
+      ),
+    }),
+  );
+  return site;
+}
+
 for (const staleMembership of [false, true]) {
   test(
     staleMembership
       ? "a stale public membership cannot override a known rename"
       : "an anonymous visitor sees a points-only new owner's own identity",
     async ({ page }) => {
-      const { site } = deploymentOrigins(
-        deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
-      );
-      await page.route(`${site}/**`, (route) =>
-        route.fulfill({
-          path: join(
-            process.cwd(),
-            "dist",
-            route.request().resourceType() === "document"
-              ? "index.html"
-              : new URL(route.request().url()).pathname,
-          ),
-        }),
-      );
+      const site = await serveProfileSite(page);
       const { current, archived, walletRequests } = await profileRecords(page);
       const member = {
         actor: {
@@ -466,4 +471,131 @@ for (const staleMembership of [false, true]) {
       ]);
     },
   );
+}
+
+for (const scenario of [
+  "renamed actor",
+  "reassigned login",
+  "delayed directory",
+  "current member",
+] as const) {
+  test(`directory-only membership identity: ${scenario}`, async ({ page }) => {
+    const site = await serveProfileSite(page);
+    const { cycles, reviews, profiles, archived, walletRequests } =
+      await profileRecords(page, { directoryOnly: true });
+    archived.login = "alice";
+    const wallet = cycles.cycles[0].contributors[0].wallet;
+    if (wallet && "sourceCommit" in wallet)
+      wallet.sourceUrl = `https://github.com/alice/alice/blob/${wallet.sourceCommit}/README.md`;
+    reviews.reviews[0].contributors[0].actor.login = "alice";
+    profiles.people = profiles.people.filter(
+      (person) => person.id !== archived.id,
+    );
+    if (scenario !== "reassigned login")
+      profiles.people.push({
+        ...archived,
+        login: "alice2",
+        avatarUrl: "https://avatars.githubusercontent.com/u/2?v=4",
+        repositories: [],
+      });
+    if (scenario === "reassigned login" || scenario === "delayed directory")
+      profiles.people.push({
+        ...archived,
+        id: "MDQ6VXNlcjM=",
+        login: "alice",
+        avatarUrl: "https://avatars.githubusercontent.com/u/3?v=4",
+        repositories: [],
+      });
+    assertCycleIndex(cycles);
+    assertFundingReviewIndex(reviews);
+    assertProfiles(profiles);
+    const login = scenario === "current member" ? "alice2" : "alice";
+    await page.route(`${site}/api/v1/points/**`, (route) =>
+      route.fulfill({
+        json: new URL(route.request().url()).pathname.endsWith("/member")
+          ? {
+              actor: { id: archived.id, login },
+              joinedAt: "2026-10-17T00:00:00.000Z",
+              public: true,
+              welcome: 5,
+            }
+          : null,
+      }),
+    );
+    await page.route("**/api/v1/payments/actors/*/direct-transfers", (route) =>
+      route.fulfill({ json: { transfers: [], totalMicro: "0" } }),
+    );
+    let releaseDirectory = () => {};
+    const directoryReady = new Promise<void>((resolve) => {
+      releaseDirectory = resolve;
+    });
+    if (scenario === "delayed directory")
+      await page.route("**/data/profiles.json", async (route) => {
+        await directoryReady;
+        await route.fulfill({ json: profiles });
+      });
+    try {
+      const memberResponse = page.waitForResponse((response) =>
+        new URL(response.url()).pathname.endsWith("/points/member"),
+      );
+      await page.goto(`${site}/contributors/${login}`, {
+        waitUntil: "domcontentloaded",
+      });
+      await (await memberResponse).finished();
+      if (scenario === "delayed directory") {
+        await expect(
+          page.getByText("Checking current contributor identity…", {
+            exact: true,
+          }),
+        ).toBeVisible();
+        expect(walletRequests).toEqual([]);
+        releaseDirectory();
+      }
+      await page.waitForLoadState("networkidle");
+      if (scenario === "current member") {
+        await expect(
+          page.getByRole("heading", { name: "alice2", exact: true }),
+        ).toBeVisible();
+        await expect(
+          page.getByRole("heading", { name: "Past cycles", exact: true }),
+        ).toBeVisible();
+        await expect(
+          page.getByRole("heading", { name: "Frozen months", exact: true }),
+        ).toBeVisible();
+        await expect(
+          page.getByTitle(
+            "Closed cycles and ledger events outside those cycles",
+          ),
+        ).toHaveText("7");
+        await expect(
+          page
+            .getByText("Points · recorded history", { exact: true })
+            .locator("..")
+            .locator("strong"),
+        ).toHaveText("5");
+        expect(walletRequests).toEqual([
+          "/api/v1/wallet-claims/actors/2/current",
+        ]);
+      } else {
+        await expect(
+          page.getByRole("heading", { name: "Past cycles" }),
+        ).toHaveCount(0);
+        await expect(
+          page.getByRole("heading", { name: "Frozen months" }),
+        ).toHaveCount(0);
+        await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+        await expect(
+          page.getByText("Points · recorded history", { exact: true }),
+        ).toHaveCount(0);
+        await expect(
+          page.getByTitle(
+            "Closed cycles and ledger events outside those cycles",
+          ),
+        ).toHaveCount(0);
+        expect(walletRequests).toEqual([]);
+      }
+    } finally {
+      releaseDirectory();
+    }
+  });
 }

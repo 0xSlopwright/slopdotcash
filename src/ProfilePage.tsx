@@ -478,12 +478,21 @@ function currentProfileActor(
     actors.some((actor) =>
       actor.id === candidate.id ? !matchesLogin(actor) : matchesLogin(actor),
     );
-  // Membership records can retain an old login too; a known rename vetoes them.
+  // Membership records can retain an old login; wait for the directory's veto.
   const member = membership.own ?? membership.joined;
-  if (member)
-    return matchesLogin(member.actor) && !conflictsWith(member.actor)
+  if (member) {
+    if (profiles.status !== "ready") return;
+    const directoryConflict = profiles.index.people.some((person) =>
+      person.id === member.actor.id
+        ? !matchesLogin(person)
+        : matchesLogin(person),
+    );
+    return matchesLogin(member.actor) &&
+      !conflictsWith(member.actor) &&
+      !directoryConflict
       ? asActor(member.actor)
       : undefined;
+  }
   const current = actors.find(matchesLogin);
   if (current) {
     if (conflictsWith(current)) return;
