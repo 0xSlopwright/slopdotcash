@@ -350,6 +350,39 @@ test("conflicting current names withhold history and wallet lookups", async ({
   expect(walletRequests).toEqual([]);
 });
 
+test("a stale activity login cannot override a directory rename", async ({
+  page,
+}) => {
+  const { profiles, current, walletRequests } = await profileRecords(page);
+  // The activity snapshot still has actor 1's old login, but the directory
+  // shows that actor 1 renamed and actor 2 now owns that login.
+  profiles.people[0].login = `${current.login}-renamed`;
+  profiles.people.push({
+    id: "MDQ6VXNlcjI=",
+    login: current.login,
+    avatarUrl: "https://avatars.githubusercontent.com/u/2?v=4",
+    repositories: [],
+  });
+  assertProfiles(profiles);
+  await page.goto(`/contributors/${current.login}`, {
+    waitUntil: "networkidle",
+  });
+  await expect(page.getByRole("status")).toContainText(
+    "Current contributor identity could not be verified",
+  );
+  await expect(page.getByRole("heading", { name: "Past cycles" })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole("heading", { name: "Frozen months" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByTitle("Closed cycles and ledger events outside those cycles"),
+  ).toHaveCount(0);
+  await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+  expect(walletRequests).toEqual([]);
+});
+
 test("an unavailable identity directory hides historical records until retry succeeds", async ({
   page,
 }) => {

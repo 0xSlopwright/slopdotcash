@@ -62,7 +62,6 @@ export function ProfileActivity({
   actorId,
   showIdentity = false,
   cycles,
-  recordsLoading = false,
   census,
   summary,
 }: {
@@ -72,8 +71,6 @@ export function ProfileActivity({
   actorId?: string;
   showIdentity?: boolean;
   cycles?: CycleIndex;
-  /** The cycle records are still loading; their absence is not a failure. */
-  recordsLoading?: boolean;
   census: ReturnType<typeof useProfiles>;
   summary?: ReactNode;
 }) {
@@ -164,7 +161,7 @@ export function ProfileActivity({
           <strong>
             {payments
               ? dollars(payments.reduce((n, r) => n + r.amount, 0n))
-              : recordsLoading || (!id && state.status === "loading")
+              : !id && state.status === "loading"
                 ? "Loading…"
                 : "Unavailable"}
           </strong>
