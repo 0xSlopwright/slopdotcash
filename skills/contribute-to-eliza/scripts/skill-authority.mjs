@@ -461,7 +461,14 @@ def remote_skill_bytes(revision):
 
 
 def compare_is_ancestor(old_revision, new_revision):
-    comparison = api_json(f"/repos/{github_repository}/compare/{old_revision}...{new_revision}")
+    # Without paging, GitHub returns up to 250 commits and 300 file patches,
+    # which exceeds max_api_bytes on a long range and refuses a valid update.
+    # A paginated comparison lists files only on page 1, so page 2 of one
+    # commit each still carries every relation field read below.
+    comparison = api_json(
+        f"/repos/{github_repository}/compare/{old_revision}...{new_revision}",
+        (("per_page", "1"), ("page", "2")),
+    )
     if not isinstance(comparison, dict):
         raise ValueError("GitHub compare response must be an object")
     base_commit = comparison.get("base_commit")

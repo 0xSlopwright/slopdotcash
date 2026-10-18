@@ -1856,7 +1856,10 @@ time.sleep(60)
     return { port, kill: () => child.kill("SIGKILL") };
   }
 
-  function timeoutUpdateFixture(root: string) {
+  function timeoutUpdateFixture(
+    root: string,
+    responseOverrides: Record<string, unknown> = {},
+  ) {
     const installRoot = join(root, "install");
     const filesA = baseFiles("revision-a");
     const filesB = baseFiles("revision-b");
@@ -1873,6 +1876,7 @@ time.sleep(60)
         [`${revisionA}...${revisionB}`]: aheadComparison(revisionA, revisionB),
       },
       developHead: revisionB,
+      responseOverrides,
       revisions: {
         [revisionA]: { files: filesA },
         [revisionB]: { files: filesB },
@@ -1929,6 +1933,56 @@ time.sleep(60)
         .split("\n")
         .filter((line) => line.includes("/compare/"));
       expect(compareRequests).toHaveLength(2);
+    } finally {
+      server.kill();
+    }
+  });
+
+  it("updates across a comparison whose unpaged response exceeds the API bound", async () => {
+    // GitHub answers an unpaged comparison with up to 250 commits and 300
+    // file patches; on a long range that body exceeds max_api_bytes (2 MiB).
+    const root = freshRoot("large-comparison");
+    const { artifactB, installRoot, updateAuthority } = timeoutUpdateFixture(
+      root,
+      {
+        [`/repos/SlopDotCash/slopdotcash/compare/${revisionA}...${revisionB}`]:
+          {
+            ...aheadComparison(revisionA, revisionB),
+            files: Array.from({ length: 300 }, (_, index) => ({
+              filename: `src/file-${index}.ts`,
+              patch: `@@ -1 +1 @@\n${"+".repeat(8_000)}`,
+              status: "modified",
+            })),
+          },
+      },
+    );
+    const requestLog = join(root, "requests.log");
+    writeFileSync(requestLog, "");
+    const server = await startStallServer({
+      responsesPath: join(
+        fileURLToPath(updateAuthority.apiOrigin),
+        "responses.json",
+      ),
+      requestLog,
+      stallPattern: "/compare/",
+      stallMs: 0,
+      stallCount: 0,
+    });
+    try {
+      const update = run(
+        loopbackCommand(artifactB, server.port, updateAuthority.rawOrigin),
+        installRoot,
+      );
+      expect(update.status, update.stderr).toBe(0);
+      expect(currentLink(installRoot)).toBe(
+        `.contribute-to-eliza-versions/${revisionB}`,
+      );
+      const compareRequests = readFileSync(requestLog, "utf8")
+        .split("\n")
+        .filter((line) => line.includes("/compare/"));
+      expect(compareRequests).toEqual([
+        `/repos/SlopDotCash/slopdotcash/compare/${revisionA}...${revisionB}?per_page=1&page=2`,
+      ]);
     } finally {
       server.kill();
     }
