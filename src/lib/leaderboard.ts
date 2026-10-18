@@ -2813,6 +2813,28 @@ function createSnapshotWithReviewCutoff(
     }
   }
 
+  const commitOwners = commitCreditOwners(mergedPullRequestOutcomes);
+  const outcomeById = new Map(
+    mergedPullRequestOutcomes.map((pullRequest) => [
+      pullRequest.id,
+      pullRequest,
+    ]),
+  );
+  // SCR-04 credit actors of one merged pull request: everyone it shares the
+  // merge credit with (Score v2) or its author alone (Score v1 history).
+  const mergeCreditActorsOf = (
+    pullRequest: MergedPullRequestOutcome,
+  ): GitHubActor[] => {
+    if (
+      parseIsoTime(pullRequest.mergedAt) >= parseIsoTime(SCORE_V2_EFFECTIVE_AT)
+    ) {
+      return mergeCreditActors(pullRequest, commitOwners);
+    }
+    return pullRequest.author && !isBotActor(pullRequest.author)
+      ? [pullRequest.author]
+      : [];
+  };
+
   const scoreRatifications = new Map<
     string,
     { record: ScoreRatificationRecord; source: GitHubTextSource }
@@ -2859,8 +2881,14 @@ function createSnapshotWithReviewCutoff(
       }
       // Related-party scoring requires a second maintainer regardless of tier:
       // a ratifier must never be the sole authority over their own outcome.
+      // Under SCR-04 a linked commit co-author shares that outcome too.
+      const outcome = outcomeById.get(pullRequest.id);
       if (
-        sameActor(source.author, pullRequest.author) &&
+        (sameActor(source.author, pullRequest.author) ||
+          (outcome !== undefined &&
+            mergeCreditActorsOf(outcome).some((actor) =>
+              sameActor(source.author, actor),
+            ))) &&
         record.coRatifierNodeIds.length === 0
       ) {
         throw new TypeError(
@@ -2938,7 +2966,6 @@ function createSnapshotWithReviewCutoff(
     if (current) scoreRatifications.set(pullRequest.id, current);
   }
 
-  const commitOwners = commitCreditOwners(mergedPullRequestOutcomes);
   // SCR-04 credit actors by pull request. A shared work unit can suppress a
   // pull request's merge events; its credit actors stay self-reviewers.
   const creditActorIds = new Map<string, ReadonlySet<string>>();
@@ -2957,11 +2984,7 @@ function createSnapshotWithReviewCutoff(
         ? pullRequest.author
         : null;
     // Score v1 history credits the pull-request author only.
-    const actors = v2
-      ? mergeCreditActors(pullRequest, commitOwners)
-      : author
-        ? [author]
-        : [];
+    const actors = mergeCreditActorsOf(pullRequest);
     creditActorIds.set(
       pullRequest.id,
       new Set(actors.map((actor) => actor.id)),

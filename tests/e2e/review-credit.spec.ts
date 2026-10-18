@@ -88,6 +88,53 @@ function scoreRecord(
   ].join("\n");
 }
 
+/** A second maintainer's slop-score-approval for the shared pull request. */
+function scoreApproval(id: string, tier: "micro" | "small"): GitHubTextSource {
+  return comment(
+    id,
+    laterMaintainer,
+    [
+      "```slop-score-approval",
+      JSON.stringify({
+        schemaVersion: "1",
+        ruleVersion: "slop-score-v2",
+        projectId: "eliza",
+        pullRequestNodeId: pullRequestId,
+        headSha: head,
+        workUnitId: "wu_eliza_shared_outcome",
+        tier,
+        decision: "approve",
+        reason: "Independent approval of the accepted outcome.",
+      }),
+      "```",
+    ].join("\n"),
+    "2026-10-05T11:00:00.000Z",
+  );
+}
+
+/** A co-author's slop-score, co-ratified by a second maintainer (SCR-04). */
+function coRatifiedScore(
+  id: string,
+  by: GitHubActor,
+  tier: "micro" | "small",
+  proposals: string[],
+  at: string,
+): GitHubTextSource[] {
+  const approval = scoreApproval(`${id}0`, tier);
+  return [
+    approval,
+    comment(
+      id,
+      by,
+      scoreRecord(tier, proposals).replace(
+        '"coRatifierNodeIds":[]',
+        `"coRatifierNodeIds":["${approval.id}"]`,
+      ),
+      at,
+    ),
+  ];
+}
+
 /** A deep slop-review record with a run receipt signed by a new device key. */
 function signedReviewRecord(): string {
   const project = findProject("eliza");
@@ -371,14 +418,7 @@ test("a commit co-author's score ratification earns no review credit", () => {
     commitId: "1".repeat(40),
   };
   const coAuthorRatifies = reviewCredit(
-    [
-      comment(
-        "IC_1",
-        coAuthor,
-        scoreRecord("micro", []),
-        "2026-10-05T12:00:00.000Z",
-      ),
-    ],
+    coRatifiedScore("IC_1", coAuthor, "micro", [], "2026-10-05T12:00:00.000Z"),
     [changesRequested],
   );
   expect(coAuthorRatifies.merges).toEqual(["commit-coauthor:1", "pr-author:1"]);
@@ -471,14 +511,7 @@ test("a co-author's ratification and review earn nothing when a later merge owns
     commitId: "1".repeat(40),
   };
   const coAuthorRatifies = reviewCredit(
-    [
-      comment(
-        "IC_1",
-        coAuthor,
-        scoreRecord("micro", []),
-        "2026-10-05T12:00:00.000Z",
-      ),
-    ],
+    coRatifiedScore("IC_1", coAuthor, "micro", [], "2026-10-05T12:00:00.000Z"),
     [changesRequested],
     laterRatified,
   );
@@ -576,3 +609,45 @@ for (const [tier, thirds] of [
     ).toThrow("tier and scoreThirds do not match");
   });
 }
+
+// SCR-04 makes every linked commit author a credit actor of the merge, so a
+// co-author's slop-score decides their own share exactly like the author's.
+test("a commit co-author's score ratification requires a second maintainer", () => {
+  const proposal = comment(
+    "IC_10",
+    reviewer,
+    signedReviewRecord(),
+    "2026-10-05T04:00:00.000Z",
+  );
+  for (const [tier, proposals] of [
+    ["micro", []],
+    ["small", [proposal.id]],
+  ] as const) {
+    expect(() =>
+      reviewCredit([
+        proposal,
+        comment(
+          "IC_20",
+          coAuthor,
+          scoreRecord(tier, [...proposals]),
+          "2026-10-05T12:00:00.000Z",
+        ),
+      ]),
+    ).toThrow("self slop-score requires a second maintainer co-ratifier");
+    const coRatified = reviewCredit([
+      proposal,
+      ...coRatifiedScore(
+        "IC_20",
+        coAuthor,
+        tier,
+        [...proposals],
+        "2026-10-05T12:00:00.000Z",
+      ),
+    ]);
+    expect(coRatified.merges).toEqual(
+      tier === "micro"
+        ? ["commit-coauthor:1", "pr-author:1"]
+        : ["commit-coauthor:1", "pr-author:2"],
+    );
+  }
+});
