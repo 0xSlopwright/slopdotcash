@@ -416,3 +416,36 @@ describe("project vault windup uses only the current refund record", () => {
     );
   });
 });
+
+describe("project vault windup orders refunds by their first observation", () => {
+  it("records a windup when a verified refund is corrected after the balance observation", async () => {
+    const f = await fixture();
+    const laterAt = "2026-08-22T00:00:00.000Z";
+    const correctedLater = correction(f, {
+      observedAt: laterAt,
+      amountMinor: "900000",
+      verifier: verifier("5".repeat(88), laterAt),
+    });
+    const records = [f.deposit(), f.refund(), correctedLater];
+    assertLedgerLegal(records, f.vault);
+    const windup = await f.derive({
+      fundingRecords: records,
+      vaultBalanceMinor: "100000",
+    });
+    expect(windup.refunds).toEqual([
+      {
+        recordId: "cmt_windup_refund_02",
+        transactionId: "5".repeat(88),
+        amountMinor: "900000",
+        observedAt: laterAt,
+      },
+    ]);
+    const context = { ...f.context, fundingRecords: records };
+    expect(await assertProjectVaultWindup(windup, context)).toEqual(windup);
+    // A balance observed before the refund was first observed is still refused.
+    const early = { ...windup, observedAt: "2026-08-19T00:00:00.000Z" };
+    await expect(assertProjectVaultWindup(early, context)).rejects.toThrow(
+      /observed before a named refund/u,
+    );
+  });
+});

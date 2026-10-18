@@ -152,6 +152,17 @@ function initialTransactionObservations(
   return initial;
 }
 
+/** When the verified funding ledger first observed a named refund transaction. */
+function refundFirstObservedAt(
+  initial: ReadonlyMap<string, number>,
+  refund: ProjectVaultWindupRefund,
+): number {
+  return (
+    initial.get(`solana:${refund.transactionId}`) ??
+    Date.parse(refund.observedAt)
+  );
+}
+
 /**
  * Selects the verified refunds that emptied the vault after approval. A refund
  * observed before the allocation was approved is ordinary funding history that
@@ -198,9 +209,11 @@ export function projectVaultWindupRefunds(
 
 /**
  * The verified funding ledger's own view of the vault balance as of one
- * instant: verified deposits minus verified refunds and releases observed at
- * or before it, for this instrument only. Later records never change it, so a
- * committed windup stays valid when funds return afterwards.
+ * instant: verified deposits minus verified refunds and releases first
+ * observed at or before it, for this instrument only. A transaction first
+ * observed later never enters it, so funds that return afterwards do not
+ * change it. A later correction or dispute of a transaction already observed
+ * applies retroactively: the transaction's current record counts.
  */
 export function projectVaultVerifiedBalanceMinor(
   fundingRecords: readonly ProjectCommitmentRecord[],
@@ -295,7 +308,13 @@ export async function deriveProjectVaultWindup(
     throw new TypeError(
       "The vault still covers the bound proposal; there is no windup to record",
     );
-  if (refunds.some((r) => Date.parse(r.observedAt) > Date.parse(observedAt)))
+  // A refund corrected after the observation keeps its first observation time.
+  const initial = initialTransactionObservations(input.fundingRecords);
+  if (
+    refunds.some(
+      (r) => refundFirstObservedAt(initial, r) > Date.parse(observedAt),
+    )
+  )
     throw new TypeError("Vault balance must be observed after every refund");
   const recordedAt = iso(input.recordedAt, "recordedAt");
   if (Date.parse(recordedAt) < Date.parse(observedAt))
@@ -397,7 +416,12 @@ export async function assertProjectVaultWindup(
     };
   });
   const observedAt = iso(raw.observedAt, "windup.observedAt");
-  if (refunds.some((r) => Date.parse(r.observedAt) > Date.parse(observedAt)))
+  const initial = initialTransactionObservations(context.fundingRecords);
+  if (
+    refunds.some(
+      (r) => refundFirstObservedAt(initial, r) > Date.parse(observedAt),
+    )
+  )
     throw new TypeError("windup balance was observed before a named refund");
   const verified = projectVaultWindupRefunds(
     context.fundingRecords,
