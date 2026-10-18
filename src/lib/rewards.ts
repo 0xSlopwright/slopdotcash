@@ -910,6 +910,11 @@ function assertAllocation(
           `${path} review-lapsed hold requires its original wallet and a public reason`,
         );
       }
+      if (accruedMinor !== undefined && accruedMinor !== suggestedMinor) {
+        throw new TypeError(
+          `${path} review-lapsed carry must equal its frozen suggested amount`,
+        );
+      }
       hold = {
         kind: "review-lapsed",
         lapsedAt: iso(rawHold.lapsedAt, `${path}.hold.lapsedAt`),
@@ -1192,6 +1197,17 @@ export function assertRewardAllocationManifest(
   if (lapsedAt) {
     if (allocations.some((allocation) => allocation.state === "proposed")) {
       throw new TypeError("lapsed allocation retains a proposed payment");
+    }
+    if (
+      manifest.status !== "proposed" ||
+      allocations.some((allocation) => allocation.state === "approved") ||
+      !allocations.some(
+        (allocation) => allocation.hold?.kind === "review-lapsed",
+      )
+    ) {
+      throw new TypeError(
+        "lapsed allocation requires a proposed manifest with lapsed rows and no approved payments",
+      );
     }
   }
   for (const allocation of allocations) {
