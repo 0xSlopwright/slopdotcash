@@ -1,5 +1,7 @@
 /** One display projection for score, contribution points and finalized principal. */
+import { githubUserIdFromNodeId } from "./github-actor";
 import { createGlobalLeaders } from "./global-leaderboard";
+import type { DirectTransfer } from "./payments/contracts";
 import type { PointsMember } from "./points";
 import { findProject } from "./projects.mjs";
 import type { DataState } from "./use-snapshot";
@@ -10,6 +12,7 @@ export function contributorStandings(
   members: readonly PointsMember[] | null,
   month: string | null,
   projectId: string,
+  directTransfers: readonly DirectTransfer[] = [],
 ) {
   const scoreAvailable =
     state.status === "ready" &&
@@ -84,6 +87,30 @@ export function contributorStandings(
             (recipient.money ?? 0n) + BigInt(contributor.paidMinor);
         }
       }
+    }
+  }
+  if (state.status === "ready" && directTransfers.length > 0) {
+    // Direct transfers name numeric GitHub IDs; rows may carry node IDs.
+    const byNumericId = new Map<string, { id: string; login: string }>();
+    for (const actor of [
+      ...currentActors.values(),
+      ...[...rows.values()].map((value) => value.actor),
+    ]) {
+      const numeric = /^[1-9]\d*$/u.test(actor.id)
+        ? actor.id
+        : githubUserIdFromNodeId(actor.id);
+      if (numeric) byNumericId.set(numeric, actor);
+    }
+    for (const transfer of directTransfers) {
+      if (projectId && transfer.projectId !== projectId) continue;
+      if (month && !transfer.blockTime.startsWith(month)) continue;
+      const recipient = row(
+        byNumericId.get(transfer.githubUserId) ?? {
+          id: transfer.githubUserId,
+          login: transfer.login,
+        },
+      );
+      recipient.money = (recipient.money ?? 0n) + BigInt(transfer.amountMicro);
     }
   }
   for (const member of members ?? []) {

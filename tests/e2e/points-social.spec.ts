@@ -51,6 +51,9 @@ test("social membership shows connection points, respects privacy and survives d
       ),
     });
   });
+  await page.route(`${site}/api/v1/payments/**/direct-transfers`, (route) =>
+    route.fulfill({ json: { transfers: [], totalMicro: "0" } }),
+  );
   await page.route(`${site}/api/v1/points/**`, async (route) => {
     const path = new URL(route.request().url()).pathname;
     let value: unknown;
@@ -187,12 +190,8 @@ test("social membership shows connection points, respects privacy and survives d
     .getByRole("link", { name: "social-member", exact: true })
     .click();
   await expect(
-    page
-      .getByText("Points · recorded history", { exact: true })
-      .locator("..")
-      .locator("strong"),
+    page.getByText("points", { exact: true }).locator("..").locator("strong"),
   ).toHaveText("15");
-  await expect(page.getByText(/10 X connection points/)).toBeVisible();
   expect(errors).toEqual([]);
   expect(failures).toEqual([]);
 });

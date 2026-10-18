@@ -1,5 +1,4 @@
 import { type ReactNode, useState } from "react";
-import { browserDeployment } from "./lib/browser-deployment";
 import { fetchWithDeadline, readBoundedJson } from "./lib/browser-json";
 import type { CycleIndex } from "./lib/cycle-index";
 import { githubUserIdFromNodeId } from "./lib/github-actor";
@@ -14,7 +13,6 @@ import {
 } from "./lib/profiles";
 import { findProject, findProjectByRepositoryId } from "./lib/projects.mjs";
 import { TARGET_REPOSITORIES } from "./lib/repositories.mjs";
-import { SOURCE_REPOSITORY } from "./lib/source-repository";
 import { useDirectTransfers } from "./lib/use-direct-transfers";
 import { usePublicResource } from "./lib/use-public-resource";
 import {
@@ -64,6 +62,8 @@ export function ProfileActivity({
   cycles,
   census,
   summary,
+  badges,
+  children,
 }: {
   login: string;
   work?: readonly ScoreEvent[];
@@ -73,6 +73,9 @@ export function ProfileActivity({
   cycles?: CycleIndex;
   census: ReturnType<typeof useProfiles>;
   summary?: ReactNode;
+  badges?: ReactNode;
+  /** Sections shown between the record and the activity timeline. */
+  children?: ReactNode;
 }) {
   const { state, retry } = census;
   const matches =
@@ -136,27 +139,9 @@ export function ProfileActivity({
           }}
         />
       ) : null}
-      <h2>Contribution record</h2>
+      {badges}
       <div className="profile-totals">
         {summary}
-        {state.status === "ready" ? (
-          <>
-            {(
-              [
-                ["Merged", "merged"],
-                ["Open", "open"],
-                ["Closed without merging", "closed"],
-              ] as const
-            ).map(([label, key]) => (
-              <div key={key}>
-                <strong>
-                  {counts ? counts[key].toLocaleString() : "Unknown"}
-                </strong>
-                <span>PRs {label.toLowerCase()}</span>
-              </div>
-            ))}
-          </>
-        ) : null}
         <div>
           <strong>
             {payments
@@ -165,21 +150,17 @@ export function ProfileActivity({
                 ? "Loading…"
                 : "Unavailable"}
           </strong>
-          <span>verified payments received · USDC</span>
+          <span>paid · USDC</span>
         </div>
-        <div>
-          <strong>
-            {directState.status === "ready"
-              ? dollars(direct.reduce((n, r) => n + r.amount, 0n))
-              : (githubUserId && directState.status === "loading") ||
-                  (!id && state.status === "loading")
-                ? "Loading…"
-                : "Unavailable"}
-          </strong>
-          <span>direct payments reported · USDC</span>
-        </div>
+        {direct.length > 0 ? (
+          <div>
+            <strong>
+              {dollars(direct.reduce((n, r) => n + r.amount, 0n))}
+            </strong>
+            <span>paid directly · USDC</span>
+          </div>
+        ) : null}
       </div>
-
       {state.status === "error" ? (
         <p role="status">
           PR counts are unavailable.{" "}
@@ -189,67 +170,166 @@ export function ProfileActivity({
         </p>
       ) : state.status === "loading" ? (
         <p role="status">Loading PR history…</p>
-      ) : (
-        <>
-          <p className="points-meta">
-            Slop repository history · updated{" "}
-            {formatDateTime(state.index.generatedAt)}
-            {Date.now() - Date.parse(state.index.generatedAt) > 8 * 3600000
-              ? " · Stale: refresh pending"
-              : ""}
-          </p>
-          {id ? (
-            <IssueOutcomes key={id} index={state.index} actorId={id} />
-          ) : null}
-          {p ? (
-            <details>
-              <summary>PR counts by repository</summary>
-              <p className="points-meta">
-                Statuses observed between{" "}
-                {formatDateTime(state.index.startedAt)} and{" "}
-                {formatDateTime(state.index.generatedAt)}.
-              </p>
-              <ul>
-                {p.repositories.map((r) => (
-                  <li key={r.repository}>
-                    <a
-                      href={`https://github.com/${r.repository}/pulls?q=${encodeURIComponent(`is:pr author:${p.login}`)}`}
-                    >
-                      {r.repository}
-                    </a>{" "}
-                    · {r.merged} merged · {r.open} open · {r.closed} closed
-                    without merging
-                  </li>
-                ))}
-              </ul>
-            </details>
-          ) : null}
-        </>
-      )}
-      <details>
-        <summary>Penalty history</summary>
-        <p>
-          No penalty policy version is approved or active. No penalties are
-          recorded.
-        </p>
-        <p className="points-meta">
-          <a
-            href={`${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/docs/slop-product-requirements.md#closure-penalties-and-outcome-ratios`}
-          >
-            Penalty policy
-          </a>
-        </p>
-      </details>
-      <p className="points-meta">
-        Direct payments come from published disclosures outside Slop’s verified
-        settlement process.
-      </p>
-      <ProfileTimeline
-        work={work}
-        awards={awards}
-        payments={payments ?? []}
-        direct={direct}
-      />
+      ) : counts ? (
+        <PullRequestBar counts={counts} login={p?.login ?? login} />
+      ) : null}
+      {children}
+      <PayoutList payments={payments ?? []} direct={direct} />
+      <ProfileTimeline work={work} awards={awards} />
+      {state.status === "ready" && id ? (
+        <IssueOutcomes key={id} index={state.index} actorId={id} />
+      ) : null}
+    </section>
+  );
+}
+
+const PR_SEGMENTS = [
+  ["merged", "Merged", "is:merged"],
+  ["open", "Open", "is:open"],
+  ["closed", "Closed without merging", "is:closed is:unmerged"],
+] as const;
+
+function PullRequestBar({
+  counts,
+  login,
+}: {
+  counts: { merged: number; open: number; closed: number };
+  login: string;
+}) {
+  const total = counts.merged + counts.open + counts.closed;
+  const decided = counts.merged + counts.closed;
+  return (
+    <section className="profile-card" aria-label="Pull requests">
+      <div className="profile-card-heading">
+        <h2>Pull requests</h2>
+        <span>
+          {total.toLocaleString()} total
+          {decided > 0
+            ? ` · ${Math.round((counts.merged * 100) / decided)}% merged`
+            : ""}
+        </span>
+      </div>
+      {total > 0 ? (
+        <div className="pr-bar" aria-hidden="true">
+          {PR_SEGMENTS.map(([key]) =>
+            counts[key] > 0 ? (
+              <span
+                className={`pr-bar-${key}`}
+                key={key}
+                style={{ flexGrow: counts[key] }}
+              />
+            ) : null,
+          )}
+        </div>
+      ) : null}
+      <ul className="pr-legend">
+        {PR_SEGMENTS.map(([key, label, query]) => (
+          <li key={key}>
+            <span className={`pr-dot pr-bar-${key}`} aria-hidden="true" />
+            <a
+              href={`https://github.com/pulls?q=${encodeURIComponent(`is:pr author:${login} ${query}`)}`}
+            >
+              <strong>{counts[key].toLocaleString()}</strong> PRs{" "}
+              {label.toLowerCase()}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+const ACTIVITY_DAYS = 35;
+
+/** Daily Slop Score across the rolling window, so the rhythm reads at a glance. */
+function ActivityChart({ work }: { work: readonly ScoreEvent[] }) {
+  const today = new Date();
+  const days = Array.from({ length: ACTIVITY_DAYS }, (_, index) => {
+    const day = new Date(
+      Date.UTC(
+        today.getUTCFullYear(),
+        today.getUTCMonth(),
+        today.getUTCDate() - (ACTIVITY_DAYS - 1 - index),
+      ),
+    )
+      .toISOString()
+      .slice(0, 10);
+    return { day, score: 0 };
+  });
+  const byDay = new Map(days.map((entry) => [entry.day, entry]));
+  for (const event of work) {
+    const entry = byDay.get(event.occurredAt.slice(0, 10));
+    if (entry) entry.score += event.points;
+  }
+  const max = Math.max(...days.map((entry) => entry.score));
+  if (max <= 0) return null;
+  const total = days.reduce((sum, entry) => sum + entry.score, 0);
+  return (
+    <figure className="activity-chart">
+      <figcaption>
+        {formatScore(total)} Slop Score in the last {ACTIVITY_DAYS} days
+      </figcaption>
+      <div className="activity-bars" aria-hidden="true">
+        {days.map((entry) => (
+          <span
+            key={entry.day}
+            style={{ height: `${Math.max(4, (entry.score / max) * 100)}%` }}
+            className={entry.score > 0 ? "" : "activity-bar-empty"}
+            title={`${formatDate(entry.day)} · ${formatScore(entry.score)}`}
+          />
+        ))}
+      </div>
+    </figure>
+  );
+}
+
+type Payout = {
+  date: string | null;
+  amount: bigint;
+  href: string;
+  name: string;
+};
+
+function PayoutList({
+  payments,
+  direct,
+}: {
+  payments: Payout[];
+  direct: Payout[];
+}) {
+  const rows = [
+    ...payments.map((payment) => ({ ...payment, kind: "Verified settlement" })),
+    ...direct.map((payment) => ({ ...payment, kind: "Direct transfer" })),
+  ].sort(
+    (a, b) =>
+      (b.date ?? "").localeCompare(a.date ?? "") ||
+      a.href.localeCompare(b.href),
+  );
+  if (rows.length === 0) return null;
+  return (
+    <section className="profile-card" aria-label="Payouts">
+      <div className="profile-card-heading">
+        <h2>Payouts</h2>
+        <span>
+          {dollars(rows.reduce((total, row) => total + row.amount, 0n))} USDC
+        </span>
+      </div>
+      <ul className="payout-list">
+        {rows.map((row) => (
+          <li key={`${row.kind}:${row.href}`}>
+            <ExternalLinkAnchor href={row.href}>
+              <span>
+                <strong>{row.name}</strong>
+                <small>
+                  {row.date ? formatDate(row.date) : "Date unavailable"} ·{" "}
+                  {row.kind}
+                </small>
+              </span>
+              <strong className="payout-amount">{dollars(row.amount)}</strong>
+            </ExternalLinkAnchor>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
@@ -257,18 +337,9 @@ export function ProfileActivity({
 function ProfileTimeline({
   work = [],
   awards = [],
-  payments,
-  direct,
 }: {
   work?: readonly ScoreEvent[];
   awards?: PointsMember["awards"];
-  payments: Array<{
-    date: string | null;
-    amount: bigint;
-    href: string;
-    name: string;
-  }>;
-  direct: Array<{ date: string; amount: bigint; href: string; name: string }>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const unmatchedAwards = new Map(awards.map((award) => [award.key, award]));
@@ -310,22 +381,6 @@ function ProfileTimeline({
       detail: `${findProject(award.projectId)?.name ?? award.projectId}${award.provisional ? " · Provisional tier" : ""}`,
       amount: `+${award.amount.toLocaleString()} Points`,
     })),
-    ...payments.map((payment) => ({
-      key: `paid:${payment.href}`,
-      date: payment.date,
-      href: payment.href,
-      title: payment.name,
-      detail: "Verified settlement",
-      amount: `${dollars(payment.amount)} USDC paid`,
-    })),
-    ...direct.map((payment) => ({
-      key: `reported:${payment.href}`,
-      date: payment.date,
-      href: payment.href,
-      title: payment.name,
-      detail: "Sent outside Slop settlement · published disclosure",
-      amount: `${dollars(payment.amount)} USDC reported`,
-    })),
   ].sort(
     (a, b) =>
       (b.date ?? "").localeCompare(a.date ?? "") || a.key.localeCompare(b.key),
@@ -341,6 +396,7 @@ function ProfileTimeline({
   return (
     <section className="profile-timeline" aria-label="Contribution activity">
       <h2>Activity</h2>
+      <ActivityChart work={work} />
       {records.length > 10 ? (
         <button
           type="button"
