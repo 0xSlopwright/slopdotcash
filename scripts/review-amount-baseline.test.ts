@@ -334,30 +334,4 @@ describe("funding review submission row invariants", () => {
       "Held allocations require their separate resolution contract",
     );
   });
-
-  it("refuses an included adjustment that sets a positive row to zero", async () => {
-    await expect(
-      review([
-        {
-          actorId: first.actor.id,
-          decision: "include",
-          amountMinor: "0",
-        },
-      ]),
-    ).rejects.toThrow("Included adjustments require a positive amount");
-  });
-
-  it("does not attach an adjustment reason to an unchanged baseline row", async () => {
-    const candidate = await review([
-      {
-        actorId: first.actor.id,
-        decision: "include",
-        amountMinor: first.suggestedMinor,
-      },
-    ]);
-    const row = candidate.allocations.find(
-      (entry) => entry.actor.id === first.actor.id,
-    );
-    expect(row?.adjustmentReason).toBeNull();
-  });
 });

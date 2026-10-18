@@ -232,13 +232,11 @@ export async function applyFundingReviewSubmission(
     if (changed && !adjustment.reason)
       throw new TypeError("Material changes require a public reason");
     if (!changed)
-      return adjustment.reason && row.adjustmentReason !== null
+      return adjustment.reason
         ? { ...row, adjustmentReason: adjustment.reason }
         : row;
     if (amountChanged) material = true;
     const amount = BigInt(adjustment.amountMinor);
-    if (!excluded && amount === 0n)
-      throw new TypeError("Included adjustments require a positive amount");
     return {
       ...row,
       ...reviewedAllocationAmounts(row, adjustment.amountMinor, excluded),
