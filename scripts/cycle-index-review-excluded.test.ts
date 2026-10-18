@@ -61,11 +61,15 @@ function cloneWorkingCopy(): string {
     maxBuffer: 128 * 1024 * 1024,
   });
   expect(archive.status).toBe(0);
-  const extract = spawnSync("tar", ["-x", "-C", root], {
+  const extract = spawnSync("tar", ["-x", "-f", "-", "-C", root], {
     input: archive.stdout,
   });
   expect(extract.status).toBe(0);
-  symlinkSync(join(repositoryRoot, "node_modules"), join(root, "node_modules"));
+  symlinkSync(
+    join(repositoryRoot, "node_modules"),
+    join(root, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
   mkdirSync(join(root, ".bun-tmp"), { recursive: true });
   return root;
 }
@@ -82,7 +86,7 @@ beforeAll(() => {
   ) as CycleIndex;
   // The unmodified export must validate before any case mutates it.
   expect(() => assertCycleIndex(published)).not.toThrow();
-});
+}, 60_000);
 
 afterAll(() => {
   if (workingCopy) rmSync(workingCopy, { recursive: true, force: true });
@@ -282,5 +286,5 @@ describe("cycle index review window", () => {
     expect(result.stderr).not.toContain("refused");
     expect(result.stdout).toContain("validated");
     expect(result.status).toBe(0);
-  });
+  }, 60_000);
 });
