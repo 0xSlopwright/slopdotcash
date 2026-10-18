@@ -152,15 +152,18 @@ function initialTransactionObservations(
   return initial;
 }
 
-/** When the verified funding ledger first observed a named refund transaction. */
-function refundFirstObservedAt(
+/**
+ * When the verified funding ledger first observed a transaction. A transaction
+ * the ledger does not hold falls back to the given time; the caller then
+ * rejects it as unverified.
+ */
+function firstObservedAt(
   initial: ReadonlyMap<string, number>,
-  refund: ProjectVaultWindupRefund,
+  network: string,
+  transactionId: string,
+  fallbackIso: string,
 ): number {
-  return (
-    initial.get(`solana:${refund.transactionId}`) ??
-    Date.parse(refund.observedAt)
-  );
+  return initial.get(`${network}:${transactionId}`) ?? Date.parse(fallbackIso);
 }
 
 /**
@@ -179,9 +182,12 @@ export function projectVaultWindupRefunds(
   // a superseded refund was corrected or disputed and is not evidence.
   return currentProjectCommitmentRecords(fundingRecords)
     .filter((row) => {
-      const firstObserved =
-        initial.get(`${row.network}:${row.transactionId}`) ??
-        Date.parse(row.observedAt);
+      const firstObserved = firstObservedAt(
+        initial,
+        row.network,
+        row.transactionId,
+        row.observedAt,
+      );
       return (
         row.event === "refund" &&
         row.state === "verified-on-chain" &&
@@ -223,9 +229,12 @@ export function projectVaultVerifiedBalanceMinor(
   const initial = initialTransactionObservations(fundingRecords);
   let balance = 0n;
   for (const row of currentProjectCommitmentRecords(fundingRecords)) {
-    const firstObserved =
-      initial.get(`${row.network}:${row.transactionId}`) ??
-      Date.parse(row.observedAt);
+    const firstObserved = firstObservedAt(
+      initial,
+      row.network,
+      row.transactionId,
+      row.observedAt,
+    );
     if (
       firstObserved > Date.parse(asOf) ||
       row.state !== "verified-on-chain" ||
@@ -312,7 +321,9 @@ export async function deriveProjectVaultWindup(
   const initial = initialTransactionObservations(input.fundingRecords);
   if (
     refunds.some(
-      (r) => refundFirstObservedAt(initial, r) > Date.parse(observedAt),
+      (r) =>
+        firstObservedAt(initial, "solana", r.transactionId, r.observedAt) >
+        Date.parse(observedAt),
     )
   )
     throw new TypeError("Vault balance must be observed after every refund");
@@ -419,7 +430,9 @@ export async function assertProjectVaultWindup(
   const initial = initialTransactionObservations(context.fundingRecords);
   if (
     refunds.some(
-      (r) => refundFirstObservedAt(initial, r) > Date.parse(observedAt),
+      (r) =>
+        firstObservedAt(initial, "solana", r.transactionId, r.observedAt) >
+        Date.parse(observedAt),
     )
   )
     throw new TypeError("windup balance was observed before a named refund");
@@ -461,7 +474,9 @@ export async function assertProjectVaultWindup(
     );
   // The observed balance is one quorum reading; the held state also needs
   // the verified ledger's own arithmetic, as of that observation, to fall
-  // short of the plan. Records observed later do not enter this figure.
+  // short of the plan. Transactions first observed later do not enter this
+  // figure; a later correction or dispute of a transaction already observed
+  // applies.
   if (
     projectVaultVerifiedBalanceMinor(
       context.fundingRecords,
