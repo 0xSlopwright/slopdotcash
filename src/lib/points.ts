@@ -291,6 +291,13 @@ export function applyPointsSnapshot(
     .map(awardForScore);
   const keys = new Set(awards.map((a) => a.key));
   const repositoryIds = new Set(snapshot.repositories.map((r) => r.id));
+  // A review is judged with its merged pull request, so the census can rule
+  // on a review submitted before the window. An exclusion is that ruling.
+  const excludedReviews = new Set(
+    (snapshot.reviewExclusions ?? []).map(
+      (x) => `${findProjectByRepositoryId(x.repository)?.id}\0${x.reviewId}`,
+    ),
+  );
   // A complete newer census can correct a formerly accepted source. Never infer
   // deletion from missing pages or a shortened rolling window.
   for (const previous of latestPoints(journal).values()) {
@@ -300,8 +307,10 @@ export function applyPointsSnapshot(
       a.category !== "payout-received" &&
       a.amount &&
       !keys.has(a.key) &&
-      a.occurredAt >= snapshot.window.from &&
-      a.occurredAt < snapshot.window.to &&
+      ((a.occurredAt >= snapshot.window.from &&
+        a.occurredAt < snapshot.window.to) ||
+        (a.category === "substantive-review" &&
+          excludedReviews.has(`${a.projectId}\0${a.sourceId}`))) &&
       project?.repositories.every((r) => repositoryIds.has(r.id))
     )
       awards.push({ ...a, amount: 0 });
