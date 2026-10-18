@@ -324,11 +324,12 @@ export function normalizeSessionReport(payload, repositoryRoot) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     const id = stringField(value, ["sessionId", "session_id", "id"]);
     if (!id) continue;
+    // Codex rows carry no project path: their "directory" is the date
+    // directory of the session file, so it must not scope the session.
     const projectPath = stringField(value, [
       "projectPath",
       "project_path",
       "cwd",
-      "directory",
       "workingDirectory",
       "path",
     ]);
