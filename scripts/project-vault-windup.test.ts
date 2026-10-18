@@ -327,4 +327,92 @@ describe("project vault windup uses only the current refund record", () => {
       /verified funding ledger does not hold/u,
     );
   });
+
+  it("applies disputes and corrections recorded after the windup observation to the verified balance", async () => {
+    const f = await fixture();
+    const laterAt = "2026-08-22T00:00:00.000Z";
+    const disputedLater = correction(f, {
+      observedAt: laterAt,
+      state: "disputed",
+      verifier: verifier(
+        "5".repeat(88),
+        laterAt,
+        "Refund transfer did not leave the project vault.",
+      ),
+    });
+    const disputedRecords = [
+      f.deposit({ amountMinor: "1100000" }),
+      f.refund(),
+      disputedLater,
+    ];
+    assertLedgerLegal(disputedRecords, f.vault);
+    expect(
+      projectVaultVerifiedBalanceMinor(disputedRecords, f.binding, OBSERVED_AT),
+    ).toBe(1100000n);
+
+    const correctedLater = correction(f, {
+      observedAt: laterAt,
+      amountMinor: "900000",
+      verifier: verifier("5".repeat(88), laterAt),
+    });
+    const correctedRecords = [f.deposit(), f.refund(), correctedLater];
+    assertLedgerLegal(correctedRecords, f.vault);
+    expect(
+      projectVaultVerifiedBalanceMinor(
+        correctedRecords,
+        f.binding,
+        OBSERVED_AT,
+      ),
+    ).toBe(100000n);
+  });
+
+  it("requires every verified refund in the observation window in canonical order and ignores later refunds", async () => {
+    const f = await fixture();
+    const secondRefund = f.refund({
+      recordId: "cmt_windup_refund_03",
+      transactionId:
+        "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3BbeqPevr5E1iCbpTjqHuTFLtfxTTD5ekfVuZFzQyEQf8",
+      amountMinor: "400000",
+      observedAt: "2026-08-20T06:00:00.000Z",
+      verifier: verifier(
+        "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3BbeqPevr5E1iCbpTjqHuTFLtfxTTD5ekfVuZFzQyEQf8",
+        "2026-08-20T06:00:00.000Z",
+      ),
+    });
+    const laterRefund = f.refund({
+      recordId: "cmt_windup_refund_04",
+      transactionId: "4".repeat(88),
+      amountMinor: "100000",
+      observedAt: "2026-08-25T00:00:00.000Z",
+      verifier: verifier("4".repeat(88), "2026-08-25T00:00:00.000Z"),
+    });
+    const firstRefund = f.refund({ amountMinor: "500000" });
+    const records = [f.deposit(), firstRefund, secondRefund, laterRefund];
+    assertLedgerLegal(records, f.vault);
+
+    const windup = await f.derive({
+      fundingRecords: records,
+      vaultBalanceMinor: "100000",
+    });
+    expect(windup.refunds.map((row) => row.recordId)).toEqual([
+      "cmt_windup_refund_01",
+      "cmt_windup_refund_03",
+    ]);
+
+    const context = { ...f.context, fundingRecords: records };
+    const omitted = {
+      ...windup,
+      refunds: [windup.refunds[0]],
+    };
+    await expect(assertProjectVaultWindup(omitted, context)).rejects.toThrow(
+      /canonical order/u,
+    );
+    const reordered = {
+      ...windup,
+      refunds: [windup.refunds[1], windup.refunds[0]],
+    };
+    await expect(assertProjectVaultWindup(reordered, context)).rejects.toThrow(
+      /canonical order/u,
+    );
+  });
 });
