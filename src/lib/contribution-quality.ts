@@ -1,4 +1,5 @@
 /** Advisory, source-bound outcome calculations. Never establishes approval. */
+import { isCanonicalExternalSourceUrl } from "./external-sources";
 import { exactRecord, type FundingPreparation } from "./funding-review-data";
 
 export const QUALITY_TIERS = {
@@ -118,9 +119,13 @@ export function assertQualityEvidence(
       !ids.has(event.id) && actors.has(event.actorId),
       "Duplicate event or unknown contributor",
     );
+    // An evaluated contribution can live outside GitHub when its project
+    // opted in (evaluator-awards.ts); it keeps its canonical external URL.
     requireValue(
-      github.test(event.url) &&
-        ["implementation", "review", "evaluation"].includes(String(event.kind)),
+      ["implementation", "review", "evaluation"].includes(String(event.kind)) &&
+        (github.test(event.url) ||
+          (event.kind === "evaluation" &&
+            isCanonicalExternalSourceUrl(event.url))),
       "Invalid quality source",
     );
     requireValue(
@@ -274,11 +279,24 @@ export function calculateQualityReview(
         decision.reason.length <= 1000,
       "Explain the accepted outcome in 12–1000 characters",
     );
+    // The review page links the selected events as evidence, so an external
+    // evaluation may cite its own source URL; any other URL must be GitHub.
+    const ownExternalUrls = new Set(
+      (decision.eventIds as string[]).flatMap((id) => {
+        const event = events.get(id);
+        return event?.kind === "evaluation" &&
+          isCanonicalExternalSourceUrl(event.url)
+          ? [event.url]
+          : [];
+      }),
+    );
     requireValue(
       Array.isArray(decision.evidenceUrls) &&
         decision.evidenceUrls.length > 0 &&
         decision.evidenceUrls.every(
-          (url) => typeof url === "string" && github.test(url),
+          (url) =>
+            typeof url === "string" &&
+            (github.test(url) || ownExternalUrls.has(url)),
         ),
       "Link public acceptance or review evidence",
     );
