@@ -438,6 +438,19 @@ export function loadEvaluatorAwardEvents(
     if (ids.has(manifest.id) || sources.has(sourceKey)) {
       throw new TypeError("evaluator award ids and sources must be unique");
     }
+    if (manifest.source.kind === "review") {
+      const reviewKey = JSON.stringify([
+        manifest.repository,
+        manifest.actor.id,
+        manifest.source.number,
+      ]);
+      if (sources.has(reviewKey)) {
+        throw new TypeError(
+          "evaluator review awards must be unique per actor and pull request",
+        );
+      }
+      sources.add(reviewKey);
+    }
     if (manifest.source.platform && manifest.source.evidence) {
       const workKey = `${manifest.repository}\0${externalWorkKey(
         manifest.source.url,
