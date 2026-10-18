@@ -1105,7 +1105,8 @@ export function assessModelAttribution(
         }
       }
       let verifiedRun = marker.run;
-      if (options.verifyRunReceipt) {
+      // An ordinary v1 marker has no run receipt, so no signature to verify.
+      if (options.verifyRunReceipt && marker.run !== null) {
         try {
           verifiedRun = options.verifyRunReceipt(marker.run);
         } catch (error: unknown) {

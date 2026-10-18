@@ -5,6 +5,7 @@ import {
   type ProjectRunReceipt,
   runReceiptMarker,
 } from "../src/lib/run-receipts";
+import { verifyRunReceiptSignature } from "./run-receipt-crypto";
 
 const ordinaryMarker = {
   provider: "OpenAI",
@@ -69,7 +70,10 @@ Attribution status: self-reported
 <!-- ${tag} ${JSON.stringify(marker)} -->`;
 }
 
-function attribution(sourceBody: string) {
+function attribution(
+  sourceBody: string,
+  verifyRunReceipt?: typeof verifyRunReceiptSignature,
+) {
   return assessModelAttribution(
     [
       {
@@ -89,7 +93,7 @@ function attribution(sourceBody: string) {
         },
       } satisfies GitHubTextSource,
     ],
-    { requireEverySource: true },
+    { requireEverySource: true, verifyRunReceipt },
   );
 }
 
@@ -131,4 +135,35 @@ test("keeps legacy Eliza v2 markers on the signed receipt path", () => {
   );
   expect(result.coverage.status).toBe("complete");
   expect(result.invalidMarkers).toEqual([]);
+});
+
+for (const tag of [
+  "slop-contribution-attribution:v1",
+  "eliza-computer-attribution:v1",
+]) {
+  test(`keeps an ordinary ${tag} marker when run receipts are verified`, () => {
+    const result = attribution(
+      body(ordinaryMarker, tag),
+      verifyRunReceiptSignature,
+    );
+    expect(result.invalidMarkers).toEqual([]);
+    expect(result.coverage.status).toBe("complete");
+    expect(result.declarations).toHaveLength(1);
+    expect(result.declarations[0]).toMatchObject({
+      format: "machine-marker",
+      client: "codex",
+      skillRevision: ordinaryMarker.skill_revision,
+      run: null,
+    });
+  });
+}
+
+test("still verifies a signed Slop run marker", () => {
+  const result = attribution(
+    body(runReceiptMarker(receipt), undefined, receipt.skillRevision),
+    verifyRunReceiptSignature,
+  );
+  expect(result.coverage.status).toBe("partial");
+  expect(result.invalidMarkers).toHaveLength(1);
+  expect(result.invalidMarkers[0]?.reason).toStartWith("run receipt excluded:");
 });
