@@ -203,6 +203,28 @@ export function assertExternalSourceUrl(
 }
 
 /**
+ * Whether `value` is the one canonical public URL of an external platform,
+ * exactly as an evaluated award stores it. Consumers that only see the stored
+ * URL, such as the payment quality evidence, use this to keep an external
+ * award without its platform field.
+ */
+export function isCanonicalExternalSourceUrl(value: unknown): boolean {
+  let parsed: URL;
+  try {
+    parsed = parseSecureUrl(value, "external source URL");
+  } catch {
+    // error-policy:J3 an unparseable or insecure URL is not a canonical source.
+    return false;
+  }
+  return (
+    parsed.toString() === value &&
+    EXTERNAL_SOURCE_PLATFORMS.some(
+      (platform) => resolveWorkKey(parsed, platform) !== null,
+    )
+  );
+}
+
+/**
  * The piece of work an accepted URL points at, independent of how the URL
  * was written. Two awards with the same work key credit the same work and
  * must be rejected together, even though their source ids differ.
