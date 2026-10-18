@@ -179,4 +179,34 @@ describe("review amount changes against the accepted proposal", () => {
       }),
     ).toThrow("allocation review end must be 14 days after change");
   });
+
+  it("refuses a non-amount change that rolls the review back to an earlier window", async () => {
+    const reasonOnlyAfterSecond = await review(
+      secondReview,
+      third(first.suggestedMinor),
+      "2026-09-08T00:00:00Z",
+      "Kept after a third look at the merged work.",
+    );
+    expect(
+      transition(secondReview, {
+        ...reasonOnlyAfterSecond,
+        review: firstReview.review,
+      }),
+    ).toThrow("must preserve the accepted proposal's public review window");
+  });
+
+  it("refuses a non-amount change that restarts the review window", async () => {
+    const reasonOnly = await review(
+      firstReview,
+      reduced,
+      "2026-09-07T00:00:00Z",
+      "Kept after a second look at the merged work.",
+    );
+    expect(
+      transition(firstReview, {
+        ...reasonOnly,
+        review: secondReview.review,
+      }),
+    ).toThrow("must preserve the accepted proposal's public review window");
+  });
 });

@@ -236,13 +236,23 @@ function inspectUnsafeDestinationTransitions(
     // cycles:check sees only the frozen regeneration, so the accepted proposal
     // proves that the window restarted after its last change. The manifest
     // check keeps endsAt 14 days after lastMaterialChangeAt.
+    const amountsChanged = suggestedAmounts(after) !== suggestedAmounts(before);
     if (
-      suggestedAmounts(after) !== suggestedAmounts(before) &&
+      amountsChanged &&
       Date.parse(after.review.lastMaterialChangeAt) <=
         Date.parse(before.review.lastMaterialChangeAt)
     )
       throw new TypeError(
         "A changed cycle amount must restart its public review after the accepted proposal's last change",
+      );
+    if (
+      !amountsChanged &&
+      (after.review.lastMaterialChangeAt !==
+        before.review.lastMaterialChangeAt ||
+        after.review.endsAt !== before.review.endsAt)
+    )
+      throw new TypeError(
+        "An unchanged cycle amount must preserve the accepted proposal's public review window",
       );
     for (const previous of before.allocations) {
       if (!previous.unsafeDestinationReports && !previous.hold) continue;
