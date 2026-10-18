@@ -170,7 +170,17 @@ type Allocation = RewardAllocationManifest["allocations"][number];
 function amounts(allocation: Allocation): string {
   return canonical({
     accruedMinor: allocation.accruedMinor ?? null,
-    lines: allocation.lines ?? null,
+    lines: allocation.lines
+      ? {
+          sharedPool: {
+            suggestedMinor: allocation.lines.sharedPool.suggestedMinor,
+          },
+          reviewBudget: {
+            suggestedMinor: allocation.lines.reviewBudget.suggestedMinor,
+            evidenceEventIds: allocation.lines.reviewBudget.evidenceEventIds,
+          },
+        }
+      : null,
     suggestedMinor: allocation.suggestedMinor,
   });
 }
