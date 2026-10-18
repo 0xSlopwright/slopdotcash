@@ -270,3 +270,94 @@ describe("review amount changes with a review-budget line", () => {
     ).toThrow("differs from its frozen snapshot");
   });
 });
+
+describe("funding review submission row invariants", () => {
+  it("refuses any review submission adjustment targeting a held allocation", async () => {
+    const reportCommit = "c".repeat(40);
+    const sourceClaimId = `claim_${"d".repeat(24)}`;
+    const heldWallet = {
+      address: "11111111111111111111111111111111",
+      chain: "solana" as const,
+      observedAt: "2026-08-01T00:00:00.000Z",
+      sourceActorId: first.actor.id,
+      sourceClaimId,
+      sourceRecordSha256: "e".repeat(64),
+      sourceUrl: `https://api.slop.cash/api/v1/wallet-claims/${sourceClaimId}`,
+    };
+    const heldProposal = edit(frozen, first.actor.id, {
+      state: "held",
+      wallet: heldWallet,
+      adjustmentReason:
+        "Maintainer hold after signed unsafe destination report.",
+      unsafeDestinationReports: [
+        {
+          kind: "unsafe-destination",
+          projectId: frozen.projectId,
+          cycleId: frozen.cycleId,
+          intentId: first.intentId,
+          reportedAt: "2026-08-25T00:00:00.000Z",
+          verifiedAt: "2026-08-25T01:00:00.000Z",
+          sourceRepository: "contributor/contributor",
+          sourceCommit: reportCommit,
+          wallet: heldWallet,
+          suggestedMinor: first.suggestedMinor,
+          carryMinor: first.accruedMinor ?? first.suggestedMinor,
+        },
+      ],
+      hold: {
+        kind: "unsafe-destination",
+        sourceCommit: reportCommit,
+      },
+    });
+    const heldBytes = Buffer.from(JSON.stringify(heldProposal));
+    await expect(
+      applyFundingReviewSubmission(
+        heldBytes,
+        {
+          schemaVersion: "1",
+          kind: "funding-review-submission",
+          projectId: heldProposal.projectId,
+          cycleId: heldProposal.cycleId,
+          sourceProposalSha256: sha256(heldBytes),
+          adjustments: [
+            {
+              actorId: first.actor.id,
+              decision: "include",
+              amountMinor: first.suggestedMinor,
+              reason: "Attempt to overwrite held allocation reason.",
+            },
+          ],
+        },
+        duringReview,
+      ),
+    ).rejects.toThrow(
+      "Held allocations require their separate resolution contract",
+    );
+  });
+
+  it("refuses an included adjustment that sets a positive row to zero", async () => {
+    await expect(
+      review([
+        {
+          actorId: first.actor.id,
+          decision: "include",
+          amountMinor: "0",
+        },
+      ]),
+    ).rejects.toThrow("Included adjustments require a positive amount");
+  });
+
+  it("does not attach an adjustment reason to an unchanged baseline row", async () => {
+    const candidate = await review([
+      {
+        actorId: first.actor.id,
+        decision: "include",
+        amountMinor: first.suggestedMinor,
+      },
+    ]);
+    const row = candidate.allocations.find(
+      (entry) => entry.actor.id === first.actor.id,
+    );
+    expect(row?.adjustmentReason).toBeNull();
+  });
+});
