@@ -40,9 +40,12 @@ type State =
   | { status: "loading" }
   | { status: "error" }
   | { status: "ready"; index: ProfileIndex };
-export function useProfiles(): { state: State; retry: () => void } {
+export function useProfiles(enabled = true): {
+  state: State;
+  retry: () => void;
+} {
   const [state, retry] = usePublicResource(
-    true,
+    enabled,
     loadProfiles,
     "Profiles unavailable",
     15_000,
@@ -59,7 +62,6 @@ export function ProfileActivity({
   actorId,
   showIdentity = false,
   cycles,
-  recordsLoading = false,
   census,
   summary,
 }: {
@@ -69,8 +71,6 @@ export function ProfileActivity({
   actorId?: string;
   showIdentity?: boolean;
   cycles?: CycleIndex;
-  /** The cycle records are still loading; their absence is not a failure. */
-  recordsLoading?: boolean;
   census: ReturnType<typeof useProfiles>;
   summary?: ReactNode;
 }) {
@@ -161,7 +161,7 @@ export function ProfileActivity({
           <strong>
             {payments
               ? dollars(payments.reduce((n, r) => n + r.amount, 0n))
-              : recordsLoading || (!id && state.status === "loading")
+              : !id && state.status === "loading"
                 ? "Loading…"
                 : "Unavailable"}
           </strong>
