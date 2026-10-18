@@ -702,10 +702,12 @@ export function createProjectView(
     reward = {
       kind: "monthly-pool",
       // Escrow chains settle in USDC or USDG (FND-02), never another asset.
-      currency: fundingAssetForNetwork(escrow?.chain ?? "solana") as
+      currency: fundingAssetForNetwork(escrow?.chain ?? project.reward.chain) as
         | "USDC"
         | "USDG",
-      chain: escrow?.chain ?? "solana",
+      chain: (escrow?.chain ?? project.reward.chain) as NonNullable<
+        ProjectDefinition["reward"]["chain"]
+      >,
       capMinor,
       projectedPrincipalMinor: [...projected.values()]
         .reduce(
