@@ -22,7 +22,7 @@ import {
   type GitHubActor,
   type ScoreEvent,
 } from "./leaderboard";
-import { findProject } from "./projects.mjs";
+import { findHistoricalProject } from "./projects.mjs";
 
 export const EVALUATOR_AWARD_SCHEMA_VERSION = "1" as const;
 export const MAX_EVALUATOR_AWARD_FILES = 256;
@@ -225,7 +225,7 @@ export function assertEvaluatorAwardManifest(
     max: 48,
     pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/u,
   });
-  const project = findProject(projectId);
+  const project = findHistoricalProject(projectId);
   if (!project)
     throw new TypeError(`Unknown evaluator-award project: ${projectId}`);
   const repository = text(manifest.repository, "evaluator award.repository", {
