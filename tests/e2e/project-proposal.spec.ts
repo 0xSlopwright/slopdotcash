@@ -434,6 +434,32 @@ test("a signed-in maintainer picks an owned repository and gets suggested text",
       const url = new URL(route.request().url());
       expect(url.searchParams.get("type")).toBe("owner");
       expect(route.request().headers().authorization).toBeUndefined();
+      if (url.searchParams.get("page") === "1") {
+        await route.fulfill({
+          headers: {
+            "access-control-expose-headers": "Link",
+            link: '<https://api.github.com/users/example/repos?type=owner&sort=pushed&per_page=100&page=2>; rel="next"',
+          },
+          json: [
+            {
+              full_name: "example/forked-tool",
+              description: null,
+              private: false,
+              fork: true,
+              archived: false,
+            },
+            {
+              full_name: "example/old-notes",
+              description: null,
+              private: false,
+              fork: false,
+              archived: true,
+            },
+          ],
+        });
+        return;
+      }
+      expect(url.searchParams.get("page")).toBe("2");
       await route.fulfill({
         json: [
           {
@@ -442,20 +468,6 @@ test("a signed-in maintainer picks an owned repository and gets suggested text",
             private: false,
             fork: false,
             archived: false,
-          },
-          {
-            full_name: "example/forked-tool",
-            description: null,
-            private: false,
-            fork: true,
-            archived: false,
-          },
-          {
-            full_name: "example/old-notes",
-            description: null,
-            private: false,
-            fork: false,
-            archived: true,
           },
         ],
       });

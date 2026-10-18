@@ -3,7 +3,12 @@ import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readBoundedJson, readBoundedText } from "../src/lib/browser-json";
 import { loadEvaluatorAwardEvents } from "../src/lib/evaluator-awards";
-import { assertLeaderboardSnapshot } from "../src/lib/leaderboard";
+import {
+  assertLeaderboardSnapshot,
+  ledgerWorkUnitId,
+  SCORE_V2_EFFECTIVE_AT,
+  type ScoreEvent,
+} from "../src/lib/leaderboard";
 import { payoutPointAwards } from "../src/lib/payout-points";
 import {
   appendPointAwards,
@@ -18,6 +23,7 @@ import {
   pointMembers,
   pointRevisionId,
 } from "../src/lib/points";
+import { REGISTERED_REPOSITORIES } from "../src/lib/repositories.mjs";
 import { syncCycleIndex } from "./sync-cycle-index";
 
 function hash(s: string) {
@@ -278,6 +284,33 @@ export function applyRetainedHistoryBatch(
   return result;
 }
 
+/**
+ * Converts retained review and evaluator events to point awards as the
+ * published snapshot ledger records them. The leaderboard gives a v2 event
+ * without a work unit the work unit from ledgerWorkUnitId, and evaluator
+ * award events never carry one. If this batch used a different work unit,
+ * the batch award and the snapshot award of the same event would differ.
+ * Then each run with a new snapshot would append two revisions for each
+ * such award in the rolling window, and the replay would never be idempotent.
+ */
+export function retainedHistoryAwards(events: ScoreEvent[]): PointAward[] {
+  return events.map((event) => {
+    if (Date.parse(event.occurredAt) < Date.parse(SCORE_V2_EFFECTIVE_AT))
+      return awardForScore(event);
+    const projectId = REGISTERED_REPOSITORIES.find(
+      (repository) => repository.id === event.repository,
+    )?.projectId;
+    if (!projectId)
+      throw new Error(
+        `Score event repository is not registered: ${event.repository}`,
+      );
+    return awardForScore({
+      ...event,
+      workUnitId: ledgerWorkUnitId(projectId, event),
+    });
+  });
+}
+
 export async function generatePoints(
   options: { online?: boolean; bootstrap?: boolean } = {},
 ) {
@@ -340,7 +373,7 @@ export async function generatePoints(
   // revision for a changed one; filtering by existing keys here would drop
   // every correction silently and freeze the first recorded amount forever.
   const reviewed = [...reviews.events, ...evaluations];
-  const reviewedAwards = reviewed.map(awardForScore);
+  const reviewedAwards = retainedHistoryAwards(reviewed);
   // Snapshots were applied above, so an identical retained award may
   // already carry snapshot provenance; applyRetainedHistoryBatch persists
   // explicit batch provenance for it and reconciles removals.

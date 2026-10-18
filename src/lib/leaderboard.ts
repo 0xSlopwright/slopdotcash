@@ -1105,7 +1105,8 @@ export function assessModelAttribution(
         }
       }
       let verifiedRun = marker.run;
-      if (options.verifyRunReceipt) {
+      // An ordinary v1 marker has no run receipt, so no signature to verify.
+      if (options.verifyRunReceipt && marker.run !== null) {
         try {
           verifiedRun = options.verifyRunReceipt(marker.run);
         } catch (error: unknown) {
@@ -1564,6 +1565,22 @@ function actorEntry(
   return created;
 }
 
+/**
+ * The work unit that addScore records for a v2 event. An event that arrives
+ * without one is recorded under its source id. Code that converts the same
+ * unscored input outside the scorer (generate-points) uses this function, so
+ * its copy of the event matches the copy in the published ledger.
+ */
+export function ledgerWorkUnitId(
+  projectId: string,
+  event: Pick<ScoreEvent, "workUnitId" | "source">,
+): string {
+  return (
+    event.workUnitId ??
+    `wu_${projectId}_${event.source.id.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_")}`
+  );
+}
+
 function addScore(
   entries: Map<string, MutableLeaderboardEntry>,
   ledger: ScoreEvent[],
@@ -1613,9 +1630,7 @@ function addScore(
     if (!Number.isSafeInteger(scoreThirds) || scoreThirds < 1) {
       throw new TypeError("v2 scoreThirds must be a positive safe integer");
     }
-    const workUnitId =
-      event.workUnitId ??
-      `wu_${projectId}_${event.source.id.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_")}`;
+    const workUnitId = ledgerWorkUnitId(projectId, event);
     const globalWorkUnitKey = `${projectId}\0${event.occurredAt.slice(0, 7)}\0${workUnitId}`;
     if (entry.creditedWorkUnits.has(globalWorkUnitKey)) return false;
     if (
@@ -2813,6 +2828,28 @@ function createSnapshotWithReviewCutoff(
     }
   }
 
+  const commitOwners = commitCreditOwners(mergedPullRequestOutcomes);
+  const outcomeById = new Map(
+    mergedPullRequestOutcomes.map((pullRequest) => [
+      pullRequest.id,
+      pullRequest,
+    ]),
+  );
+  // SCR-04 credit actors of one merged pull request: everyone it shares the
+  // merge credit with (Score v2) or its author alone (Score v1 history).
+  const mergeCreditActorsOf = (
+    pullRequest: MergedPullRequestOutcome,
+  ): GitHubActor[] => {
+    if (
+      parseIsoTime(pullRequest.mergedAt) >= parseIsoTime(SCORE_V2_EFFECTIVE_AT)
+    ) {
+      return mergeCreditActors(pullRequest, commitOwners);
+    }
+    return pullRequest.author && !isBotActor(pullRequest.author)
+      ? [pullRequest.author]
+      : [];
+  };
+
   const scoreRatifications = new Map<
     string,
     { record: ScoreRatificationRecord; source: GitHubTextSource }
@@ -2859,8 +2896,14 @@ function createSnapshotWithReviewCutoff(
       }
       // Related-party scoring requires a second maintainer regardless of tier:
       // a ratifier must never be the sole authority over their own outcome.
+      // Under SCR-04 a linked commit co-author shares that outcome too.
+      const outcome = outcomeById.get(pullRequest.id);
       if (
-        sameActor(source.author, pullRequest.author) &&
+        (sameActor(source.author, pullRequest.author) ||
+          (outcome !== undefined &&
+            mergeCreditActorsOf(outcome).some((actor) =>
+              sameActor(source.author, actor),
+            ))) &&
         record.coRatifierNodeIds.length === 0
       ) {
         throw new TypeError(
@@ -2938,7 +2981,6 @@ function createSnapshotWithReviewCutoff(
     if (current) scoreRatifications.set(pullRequest.id, current);
   }
 
-  const commitOwners = commitCreditOwners(mergedPullRequestOutcomes);
   // SCR-04 credit actors by pull request. A shared work unit can suppress a
   // pull request's merge events; its credit actors stay self-reviewers.
   const creditActorIds = new Map<string, ReadonlySet<string>>();
@@ -2957,11 +2999,7 @@ function createSnapshotWithReviewCutoff(
         ? pullRequest.author
         : null;
     // Score v1 history credits the pull-request author only.
-    const actors = v2
-      ? mergeCreditActors(pullRequest, commitOwners)
-      : author
-        ? [author]
-        : [];
+    const actors = mergeCreditActorsOf(pullRequest);
     creditActorIds.set(
       pullRequest.id,
       new Set(actors.map((actor) => actor.id)),

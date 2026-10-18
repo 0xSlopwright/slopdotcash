@@ -159,7 +159,8 @@ export function createInstallAuthorityFixture(
   for (const [comparison, response] of Object.entries(
     options.comparisons ?? {},
   )) {
-    responses[`/repos/${REPOSITORY}/compare/${comparison}`] = response;
+    responses[`/repos/${REPOSITORY}/compare/${comparison}?per_page=1&page=2`] =
+      response;
   }
   for (const [number, timeline] of Object.entries(options.timelines ?? {})) {
     responses[
