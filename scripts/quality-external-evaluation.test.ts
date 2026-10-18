@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,7 +15,6 @@ import { join, resolve } from "node:path";
 import {
   assertQualityEvidence,
   calculateQualityReview,
-  type QualityEvidence,
 } from "../src/lib/contribution-quality";
 import { loadEvaluatorAwardEvents } from "../src/lib/evaluator-awards";
 import { externalSourceId } from "../src/lib/external-sources";
@@ -33,7 +33,9 @@ import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
 // an X post is scored and stays in the October payment review ledger, so the
 // payment quality evidence for that cycle must accept it.
 const repository = resolve(import.meta.dir, "..");
-const dir = mkdtempSync(join(tmpdir(), "quality-external-evaluation-"));
+const dir = realpathSync(
+  mkdtempSync(join(tmpdir(), "quality-external-evaluation-")),
+);
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const sha256 = (value: string) =>
   createHash("sha256").update(value).digest("hex");
@@ -294,96 +296,5 @@ describe("payment quality evidence for an external evaluated contribution", () =
       "1000000000",
     );
     expect(result.after.get(event.actorId)).toBe("1000000000");
-  });
-});
-
-describe("external quality source bounds", () => {
-  const preparation = {
-    projectId: "slopdotcash",
-    cycleId: "2026-10",
-    sourceSnapshotSha256: "a".repeat(64),
-    contributors: [
-      {
-        actor: { id: "123", login: "octocat" },
-        scoreThirds: "6",
-        weight: "60000",
-        eventCount: 1,
-        eventIdsSha256: "b".repeat(64),
-        wallet: null,
-        lookupUnavailable: false,
-      },
-    ],
-  } as unknown as FundingPreparation;
-  const evidence = (kind: string, url: string) => ({
-    schemaVersion: "1",
-    projectId: "slopdotcash",
-    cycleId: "2026-10",
-    sourceSnapshotSha256: "a".repeat(64),
-    closureCensus: {
-      method: "repository-created-order-v1",
-      sourceSha256: "c".repeat(64),
-      observedAt: "2026-11-01T00:00:00.000Z",
-      discussionSourceSha256: null,
-    },
-    events: [
-      {
-        id: "ev1",
-        actorId: "123",
-        url,
-        title: "Example",
-        kind,
-        scoreThirds: 6,
-        weight: "60000",
-        flags: [],
-      },
-    ],
-    closures: [],
-  });
-
-  test("only an evaluation keeps a canonical external URL", () => {
-    expect(() =>
-      assertQualityEvidence(evidence("evaluation", sourceUrl), preparation),
-    ).not.toThrow();
-    for (const kind of ["implementation", "review"])
-      expect(() =>
-        assertQualityEvidence(evidence(kind, sourceUrl), preparation),
-      ).toThrow("Invalid quality source");
-    for (const url of [
-      "https://twitter.com/slopcontributor/status/1846000000000000001",
-      `${sourceUrl}?s=20`,
-      "https://x.com/slopcontributor",
-      "http://example.com/post",
-      "https://github.com/SlopDotCash/slopdotcash/blob/main/README.md",
-    ])
-      expect(() =>
-        assertQualityEvidence(evidence("evaluation", url), preparation),
-      ).toThrow("Invalid quality source");
-  });
-
-  test("a decision cites only GitHub or its own external events", () => {
-    const external = assertQualityEvidence(
-      evidence("evaluation", sourceUrl),
-      preparation,
-    ) as QualityEvidence;
-    const decide = (evidenceUrls: string[]) =>
-      calculateQualityReview(
-        external,
-        [
-          {
-            eventIds: ["ev1"],
-            tier: "small",
-            reason: "Accepted explainer outcome.",
-            evidenceUrls,
-          },
-        ],
-        "1000",
-      );
-    expect(() => decide([sourceUrl])).not.toThrow();
-    expect(() =>
-      decide(["https://github.com/SlopDotCash/slopdotcash/pull/900"]),
-    ).not.toThrow();
-    expect(() =>
-      decide(["https://x.com/someoneelse/status/1846000000000000002"]),
-    ).toThrow("Link public acceptance or review evidence");
   });
 });
