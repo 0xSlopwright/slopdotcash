@@ -108,3 +108,54 @@ test("lapse at the deadline holds undecided rows without approving or mutating",
   );
   expect(proposal).toEqual(original);
 });
+
+test("manifest validation rejects forged review-lapse states that bypass lapseRewardAllocation", () => {
+  const lapsed = lapseRewardAllocation(
+    proposal,
+    proposal.review.endsAt,
+    reviewEnds,
+  );
+  const lapsedIndex = lapsed.allocations.findIndex(
+    (row) => row.hold?.kind === "review-lapsed",
+  );
+  if (lapsedIndex < 0) throw new Error("Expected a review-lapsed row");
+
+  const withApprovedRow = structuredClone(lapsed);
+  const approvedRow = withApprovedRow.allocations[lapsedIndex];
+  delete approvedRow.hold;
+  approvedRow.state = "approved";
+  approvedRow.approvedMinor = approvedRow.suggestedMinor;
+  withApprovedRow.totals.approvedMinor = approvedRow.approvedMinor;
+  withApprovedRow.totals.feeMinor = (
+    BigInt(approvedRow.approvedMinor) / 100n
+  ).toString();
+  expect(() => assertRewardAllocationManifest(withApprovedRow)).toThrow(
+    "lapsed allocation requires a proposed manifest with lapsed rows and no approved payments",
+  );
+
+  const withoutLapsedRows = structuredClone(lapsed);
+  for (const row of withoutLapsedRows.allocations) {
+    if (row.hold?.kind === "review-lapsed") {
+      delete row.hold;
+      row.state = "excluded";
+    }
+  }
+  expect(() => assertRewardAllocationManifest(withoutLapsedRows)).toThrow(
+    "lapsed allocation requires a proposed manifest with lapsed rows and no approved payments",
+  );
+
+  const withApprovedStatus = {
+    ...structuredClone(lapsed),
+    status: "approved",
+    approvedAt: proposal.review.endsAt,
+  };
+  expect(() => assertRewardAllocationManifest(withApprovedStatus)).toThrow(
+    "lapsed allocation requires a proposed manifest with lapsed rows and no approved payments",
+  );
+
+  const withMismatchedCarry = structuredClone(lapsed);
+  withMismatchedCarry.allocations[lapsedIndex].accruedMinor = "0";
+  expect(() => assertRewardAllocationManifest(withMismatchedCarry)).toThrow(
+    "review-lapsed hold requires its original wallet and a public reason",
+  );
+});
