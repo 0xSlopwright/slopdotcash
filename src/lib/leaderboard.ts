@@ -1564,6 +1564,22 @@ function actorEntry(
   return created;
 }
 
+/**
+ * The work unit that addScore records for a v2 event. An event that arrives
+ * without one is recorded under its source id. Code that converts the same
+ * unscored input outside the scorer (generate-points) uses this function, so
+ * its copy of the event matches the copy in the published ledger.
+ */
+export function ledgerWorkUnitId(
+  projectId: string,
+  event: Pick<ScoreEvent, "workUnitId" | "source">,
+): string {
+  return (
+    event.workUnitId ??
+    `wu_${projectId}_${event.source.id.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_")}`
+  );
+}
+
 function addScore(
   entries: Map<string, MutableLeaderboardEntry>,
   ledger: ScoreEvent[],
@@ -1613,9 +1629,7 @@ function addScore(
     if (!Number.isSafeInteger(scoreThirds) || scoreThirds < 1) {
       throw new TypeError("v2 scoreThirds must be a positive safe integer");
     }
-    const workUnitId =
-      event.workUnitId ??
-      `wu_${projectId}_${event.source.id.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_")}`;
+    const workUnitId = ledgerWorkUnitId(projectId, event);
     const globalWorkUnitKey = `${projectId}\0${event.occurredAt.slice(0, 7)}\0${workUnitId}`;
     if (entry.creditedWorkUnits.has(globalWorkUnitKey)) return false;
     if (
