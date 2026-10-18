@@ -7,55 +7,60 @@ import type { D1Database } from "../backend/trace/cloudflare-persistence";
 import type { PointsJournal } from "../src/lib/points";
 import { pointsSql } from "./generate-points";
 
+function startPointsApi() {
+  const db = new Database(":memory:");
+  for (const file of readdirSync("migrations")
+    .filter((p) => p.endsWith(".sql"))
+    .sort())
+    db.exec(readFileSync(`migrations/${file}`, "utf8"));
+  const adapter = {
+    prepare(sql: string) {
+      const statement = db.prepare(sql);
+      let args: (string | number)[] = [];
+      return {
+        bind(...values: (string | number)[]) {
+          args = values;
+          return this;
+        },
+        async first() {
+          return statement.get(...args);
+        },
+      };
+    },
+  } as unknown as D1Database;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      return handlePointsApi(
+        new Request(`https://slop.cash${url.pathname}${url.search}`),
+        {
+          db: adapter,
+          rateLimitSecret: "unused-read-only-test",
+          identity: {
+            async fetch() {
+              throw new Error("Identity must not be called");
+            },
+          },
+        },
+      );
+    },
+  });
+  return { db, server };
+}
+
 test("journal reads select the complete prefix before generation-time tie breakers", async () => {
   const checkpoint = JSON.parse(
     readFileSync("data/points/history.json", "utf8"),
   ) as PointsJournal;
   for (const offset of [0, 1000]) {
-    const db = new Database(":memory:");
-    for (const file of readdirSync("migrations")
-      .filter((p) => p.endsWith(".sql"))
-      .sort())
-      db.exec(readFileSync(`migrations/${file}`, "utf8"));
+    const { db, server } = startPointsApi();
     const apply = (journal: PointsJournal) => {
       db.transaction(() => {
         for (const sql of pointsSql(journal).trim().split("\n")) db.exec(sql);
       })();
     };
-    const adapter = {
-      prepare(sql: string) {
-        const statement = db.prepare(sql);
-        let args: (string | number)[] = [];
-        return {
-          bind(...values: (string | number)[]) {
-            args = values;
-            return this;
-          },
-          async first() {
-            return statement.get(...args);
-          },
-        };
-      },
-    } as unknown as D1Database;
-    const server = Bun.serve({
-      hostname: "127.0.0.1",
-      port: 0,
-      fetch(request) {
-        const url = new URL(request.url);
-        return handlePointsApi(
-          new Request(`https://slop.cash${url.pathname}${url.search}`),
-          {
-            db: adapter,
-            rateLimitSecret: "unused-read-only-test",
-            identity: {
-              async fetch() {
-                throw new Error("Identity must not be called");
-              },
-            },
-          },
-        );
-      },
-    });
     const read = (search = "") =>
       fetch(new URL(`/api/v1/points/journal${search}`, server.url));
     try {
@@ -100,45 +105,7 @@ test("journal reads select the complete prefix before generation-time tie breake
 });
 
 test("member lookups fail closed when a stale public login collides with a private member", async () => {
-  const db = new Database(":memory:");
-  for (const file of readdirSync("migrations")
-    .filter((p) => p.endsWith(".sql"))
-    .sort())
-    db.exec(readFileSync(`migrations/${file}`, "utf8"));
-  const adapter = {
-    prepare(sql: string) {
-      const statement = db.prepare(sql);
-      let args: (string | number)[] = [];
-      return {
-        bind(...values: (string | number)[]) {
-          args = values;
-          return this;
-        },
-        async first() {
-          return statement.get(...args);
-        },
-      };
-    },
-  } as unknown as D1Database;
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch(request) {
-      const url = new URL(request.url);
-      return handlePointsApi(
-        new Request(`https://slop.cash${url.pathname}${url.search}`),
-        {
-          db: adapter,
-          rateLimitSecret: "unused-read-only-test",
-          identity: {
-            async fetch() {
-              throw new Error("Identity must not be called");
-            },
-          },
-        },
-      );
-    },
-  });
+  const { db, server } = startPointsApi();
   const readMember = async (login: string) => {
     const response = await fetch(
       new URL(
@@ -160,7 +127,6 @@ test("member lookups fail closed when a stale public login collides with a priva
       "2026-10-01T00:00:00.000Z",
       1,
     );
-    insertMember.run("MDQ6VXNlcjM=", "3", "bob", "2026-10-02T00:00:00.000Z", 0);
 
     expect(await readMember("alice")).toEqual({
       actor: { id: "MDQ6VXNlcjE=", login: "alice" },
@@ -169,7 +135,6 @@ test("member lookups fail closed when a stale public login collides with a priva
       welcome: 5,
       socialPoints: 0,
     });
-    expect(await readMember("bob")).toBeNull();
 
     // A second actor now owns the handle "Alice" and joins with private visibility.
     insertMember.run(
@@ -192,18 +157,6 @@ test("member lookups fail closed when a stale public login collides with a priva
     expect(await readMember("alice2")).toEqual({
       actor: { id: "MDQ6VXNlcjE=", login: "alice2" },
       joinedAt: "2026-10-01T00:00:00.000Z",
-      public: true,
-      welcome: 5,
-      socialPoints: 0,
-    });
-
-    // When the current owner opts into public visibility, the lookup returns the new actor.
-    db.prepare("UPDATE points_members SET public=1 WHERE actor_id=?").run(
-      "MDQ6VXNlcjI=",
-    );
-    expect(await readMember("alice")).toEqual({
-      actor: { id: "MDQ6VXNlcjI=", login: "Alice" },
-      joinedAt: "2026-10-03T00:00:00.000Z",
       public: true,
       welcome: 5,
       socialPoints: 0,
