@@ -2,6 +2,9 @@
  * Builds the cumulative cross-project leaderboard from accepted score events
  * and immutable closed-cycle records. A closed cycle replaces overlapping
  * rolling-window events so its complete score is counted exactly once.
+ * Events before a project's reward start are outside every cycle of that
+ * project: the cycle leaderboard and the closed record do not count them, so
+ * this projection does not count them either.
  */
 
 import type { CycleIndex } from "./cycle-index";
@@ -98,6 +101,11 @@ export function createGlobalLeaders(
       throw new TypeError(
         `Accepted event ${event.id} references an unregistered project`,
       );
+    }
+    if (
+      Date.parse(event.occurredAt) < Date.parse(project.reward.rewardStartAt)
+    ) {
+      continue;
     }
     const key = cycleKey(project.id, event.occurredAt.slice(0, 7));
     if (archivedCycleKeys.has(key)) continue;
