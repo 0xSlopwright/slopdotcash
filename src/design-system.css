@@ -474,8 +474,7 @@ label {
   font-weight: 600;
 }
 
-.footer-links > span,
-.footer-records > span {
+.footer-links > span {
   margin-bottom: 4px;
   color: var(--on-accent);
   font-size: 13px;

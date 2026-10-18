@@ -31,13 +31,7 @@ export function DataNotice({
       </div>
     );
   }
-  if (!stale(state.snapshot)) return null;
-  return (
-    <div className="data-notice data-stale" role="status">
-      <span className="status-dot stale-dot" />
-      Data may be outdated · updated {formatDate(state.snapshot.generatedAt)}
-    </div>
-  );
+  return null;
 }
 
 export function stale(

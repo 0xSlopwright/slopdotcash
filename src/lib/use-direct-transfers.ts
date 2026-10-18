@@ -25,6 +25,32 @@ export function isDirectTransfer(t: unknown): t is DirectTransfer {
   );
 }
 
+async function loadDirectTransfers(
+  path: string,
+  signal: AbortSignal,
+): Promise<DirectTransfer[]> {
+  // The payments API answers only the deployed product origins.
+  if (!browserDeployment.browserOrigins.has(window.location.origin))
+    throw new Error("Direct payment records unavailable");
+  const response = await fetchWithDeadline(
+    `/api/v1/payments/${path}/direct-transfers`,
+    { signal, cache: "no-store" },
+  );
+  if (!response.ok) throw new Error("Direct payment records unavailable");
+  const value = (await readBoundedJson(
+    response,
+    1_048_576,
+    "direct payments",
+  )) as { transfers?: unknown; totalMicro?: unknown };
+  if (
+    !Array.isArray(value.transfers) ||
+    !value.transfers.every(isDirectTransfer) ||
+    !money(value.totalMicro)
+  )
+    throw new Error("Direct payment records could not be verified");
+  return value.transfers as DirectTransfer[];
+}
+
 /**
  * Loads transfers sent outside escrow from the payments database, for one
  * project or one numeric GitHub actor. A failed read stays an error; it never
@@ -39,32 +65,38 @@ export function useDirectTransfers(
       ? `projects/${encodeURIComponent(scope.projectId)}`
       : `actors/${encodeURIComponent(scope.githubUserId)}`;
   const load = useCallback(
-    async (signal: AbortSignal) => {
-      // The payments API answers only the deployed product origins.
-      if (!browserDeployment.browserOrigins.has(window.location.origin))
-        throw new Error("Direct payment records unavailable");
-      const response = await fetchWithDeadline(
-        `/api/v1/payments/${path}/direct-transfers`,
-        { signal, cache: "no-store" },
-      );
-      if (!response.ok) throw new Error("Direct payment records unavailable");
-      const value = (await readBoundedJson(
-        response,
-        1_048_576,
-        "direct payments",
-      )) as { transfers?: unknown; totalMicro?: unknown };
-      if (
-        !Array.isArray(value.transfers) ||
-        !value.transfers.every(isDirectTransfer) ||
-        !money(value.totalMicro)
-      )
-        throw new Error("Direct payment records could not be verified");
-      return { transfers: value.transfers as DirectTransfer[] };
-    },
+    async (signal: AbortSignal) => ({
+      transfers: await loadDirectTransfers(path, signal),
+    }),
     [path],
   );
   return usePublicResource(
     Boolean(path),
+    load,
+    "Direct payment records unavailable",
+  );
+}
+
+/** Every registered project's direct transfers; one failed project fails the set. */
+export function useAllDirectTransfers(projectIds: readonly string[]) {
+  const key = projectIds.join(",");
+  const load = useCallback(
+    async (signal: AbortSignal) => ({
+      transfers: (
+        await Promise.all(
+          key
+            .split(",")
+            .filter(Boolean)
+            .map((id) =>
+              loadDirectTransfers(`projects/${encodeURIComponent(id)}`, signal),
+            ),
+        )
+      ).flat(),
+    }),
+    [key],
+  );
+  return usePublicResource(
+    Boolean(key),
     load,
     "Direct payment records unavailable",
   );
