@@ -1050,8 +1050,7 @@ export function FundingReview({
                                           id={`amount-${r.actor.id}`}
                                           inputMode="decimal"
                                           disabled={
-                                            !!published ||
-                                            a?.decision === "exclude"
+                                            !canEdit || decision === "exclude"
                                           }
                                           value={
                                             rawAmounts[r.actor.id] ??

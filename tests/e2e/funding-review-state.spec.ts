@@ -244,6 +244,12 @@ test("failed cycle fetch keeps preparation visible but disables review download 
       exact: true,
     }),
   ).toBeDisabled();
+  await openRecipient(page, august.contributors[0].actor.login);
+  await expect(
+    panel.getByLabel(`USDC for ${august.contributors[0].actor.login}`, {
+      exact: true,
+    }),
+  ).toBeDisabled();
   await expect(panel).not.toContainText("Not locked");
   expect(
     await page.evaluate(() =>
@@ -252,6 +258,93 @@ test("failed cycle fetch keeps preparation visible but disables review download 
       ),
     ),
   ).toEqual([]);
+});
+
+test("published proposal in an open review window allows amount changes and exports a renewed proposal", async ({
+  page,
+  request,
+}) => {
+  const { reviews, cycles, july } = await generatedData(request);
+  const funded = july.contributors.find(
+    (r) => BigInt(r.suggestedMinor) > 1_000_000n,
+  );
+  if (!funded) throw new Error("Expected funded July contributor");
+  const proposalResponse = await request.get(july.files.proposal.url);
+  expect(proposalResponse.ok()).toBe(true);
+  const proposal = (await proposalResponse.json()) as {
+    review: { days: number; lastMaterialChangeAt: string; endsAt: string };
+    allocations: {
+      actor: { id: string };
+      suggestedMinor: string;
+      adjustmentReason: string | null;
+    }[];
+  };
+  const startedAt = new Date(Date.now() - 60_000).toISOString();
+  const endsAt = new Date(
+    Date.parse(startedAt) + 14 * 86_400_000,
+  ).toISOString();
+  const openProposalText = `${JSON.stringify(
+    {
+      ...proposal,
+      review: { days: 14, lastMaterialChangeAt: startedAt, endsAt },
+    },
+    null,
+    2,
+  )}\n`;
+  const openProposalSha = digest(openProposalText);
+  const openCycles: CycleIndex = {
+    ...cycles,
+    cycles: cycles.cycles.map((c) =>
+      c.projectId === july.projectId && c.cycleId === july.cycleId
+        ? {
+            ...c,
+            state: "review",
+            reviewEndsAt: endsAt,
+            files: {
+              ...c.files,
+              proposal: { ...c.files.proposal, sha256: openProposalSha },
+            },
+          }
+        : c,
+    ),
+  };
+  await routeIndexes(page, reviews, openCycles);
+  await page.route(`**${july.files.proposal.url}`, (route) =>
+    route.fulfill({
+      contentType: "application/json",
+      body: openProposalText,
+    }),
+  );
+  await page.goto("/projects/eliza/funding#payouts");
+  const panel = page.locator(".funding-workbench");
+  await showMonth(page, reviews, openCycles, july.cycleId);
+  await openRecipient(page, funded.actor.login);
+  const amount = panel.getByLabel(`USDC for ${funded.actor.login}`, {
+    exact: true,
+  });
+  const reason = panel.getByLabel(`Reason for ${funded.actor.login}`, {
+    exact: true,
+  });
+  await expect(amount).toBeEnabled();
+  await amount.fill("1");
+  await reason.fill("Adjusted after the public review of the merged work.");
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    panel.getByRole("button", { name: "Download review", exact: true }).click(),
+  ]);
+  const path = await download.path();
+  if (!path) throw new Error("Proposal download has no readable file");
+  const candidate = JSON.parse(await readFile(path, "utf8")) as typeof proposal;
+  const updated = candidate.allocations.find(
+    (r) => r.actor.id === funded.actor.id,
+  );
+  expect(updated?.suggestedMinor).toBe("1000000");
+  expect(updated?.adjustmentReason).toBe(
+    "Adjusted after the public review of the merged work.",
+  );
+  expect(Date.parse(candidate.review.lastMaterialChangeAt)).toBeGreaterThan(
+    Date.parse(startedAt),
+  );
 });
 
 test("switching contribution months clears the previous amount, reason and invalid-input state", async ({
