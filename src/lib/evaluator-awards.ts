@@ -16,6 +16,7 @@ import {
   externalSourceId,
   externalWorkKey,
 } from "./external-sources";
+import { githubUserIdFromNodeId } from "./github-actor";
 import {
   canonicalActorAvatarUrl,
   type GitHubActor,
@@ -407,6 +408,7 @@ export function loadEvaluatorAwardEvents(
   }
   const ids = new Set<string>();
   const sources = new Set<string>();
+  const reviewPairs = new Set<string>();
   const externalWork = new Set<string>();
   const externalContent = new Set<string>();
   return paths.map((path) => {
@@ -437,6 +439,21 @@ export function loadEvaluatorAwardEvents(
     const sourceKey = `${manifest.repository}\0${manifest.source.id}`;
     if (ids.has(manifest.id) || sources.has(sourceKey)) {
       throw new TypeError("evaluator award ids and sources must be unique");
+    }
+    if (manifest.source.kind === "review") {
+      const actorKey =
+        githubUserIdFromNodeId(manifest.actor.id) ?? manifest.actor.id;
+      const reviewKey = JSON.stringify([
+        manifest.repository,
+        actorKey,
+        manifest.source.number,
+      ]);
+      if (reviewPairs.has(reviewKey)) {
+        throw new TypeError(
+          "evaluator review awards must be unique per actor and pull request",
+        );
+      }
+      reviewPairs.add(reviewKey);
     }
     if (manifest.source.platform && manifest.source.evidence) {
       const workKey = `${manifest.repository}\0${externalWorkKey(
