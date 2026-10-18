@@ -905,14 +905,14 @@ function assertAllocation(
       exactKeys(rawHold, ["kind", "lapsedAt"], `${path}.hold`);
       // A lapse records an absent decision, so the row keeps the wallet and the
       // suggestion it was frozen with and stays eligible to carry forward.
-      if (
-        state !== "held" ||
-        !wallet ||
-        !adjustmentReason ||
-        (accruedMinor !== undefined && accruedMinor !== suggestedMinor)
-      ) {
+      if (state !== "held" || !wallet || !adjustmentReason) {
         throw new TypeError(
           `${path} review-lapsed hold requires its original wallet and a public reason`,
+        );
+      }
+      if (accruedMinor !== undefined && accruedMinor !== suggestedMinor) {
+        throw new TypeError(
+          `${path} review-lapsed carry must equal its frozen suggested amount`,
         );
       }
       hold = {

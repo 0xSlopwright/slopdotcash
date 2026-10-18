@@ -156,6 +156,6 @@ test("manifest validation rejects forged review-lapse states that bypass lapseRe
   const withMismatchedCarry = structuredClone(lapsed);
   withMismatchedCarry.allocations[lapsedIndex].accruedMinor = "0";
   expect(() => assertRewardAllocationManifest(withMismatchedCarry)).toThrow(
-    "review-lapsed hold requires its original wallet and a public reason",
+    "review-lapsed carry must equal its frozen suggested amount",
   );
 });
