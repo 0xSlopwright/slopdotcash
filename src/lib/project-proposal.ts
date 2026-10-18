@@ -164,6 +164,32 @@ export interface OwnedRepository {
   description: string | null;
 }
 
+const MAX_OWNED_REPOSITORY_PAGES = 20;
+
+function nextOwnedRepositoryPage(
+  response: Response,
+  currentPage: number,
+): number | null {
+  const link = response.headers.get("link");
+  if (link === null) return null;
+  const next = link
+    .split(",")
+    .find((part) => /;\s*rel="next"(?:\s*;|\s*$)/u.test(part));
+  if (next === undefined) return null;
+  const target = /^\s*<([^<>]+)>/u.exec(next)?.[1];
+  if (target === undefined)
+    throw new Error("GitHub returned an invalid repository page link.");
+  const url = new URL(target);
+  const page = Number(url.searchParams.get("page"));
+  if (
+    url.origin !== "https://api.github.com" ||
+    !Number.isSafeInteger(page) ||
+    page !== currentPage + 1
+  )
+    throw new Error("GitHub returned an invalid repository page link.");
+  return page;
+}
+
 /**
  * Lists the public, non-fork, non-archived repositories a GitHub account
  * owns, most recently pushed first. Reads GitHub without credentials, so it
@@ -175,44 +201,54 @@ export async function listOwnedRepositories(
 ): Promise<OwnedRepository[]> {
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u.test(login))
     throw new Error("The signed-in GitHub login is not valid.");
-  const response = await fetchWithDeadline(
-    `https://api.github.com/users/${login}/repos?type=owner&sort=pushed&per_page=100`,
-    {
-      credentials: "omit",
-      headers: { Accept: "application/vnd.github+json" },
-      signal,
-    },
-  );
-  if (response.status === 403 || response.status === 429)
-    throw new Error(
-      "GitHub limited lookups from this network. Enter the repository by name.",
-    );
-  if (!response.ok) throw new Error(`GitHub returned ${response.status}.`);
-  const value = await readBoundedJson(
-    response,
-    2 * 1024 * 1024,
-    "GitHub repositories",
-  );
-  if (!Array.isArray(value))
-    throw new Error("GitHub returned an unexpected response.");
-  return value.flatMap((entry: unknown) => {
-    if (!entry || typeof entry !== "object") return [];
-    const repo = entry as Record<string, unknown>;
-    if (
-      repo.private !== false ||
-      repo.fork !== false ||
-      repo.archived !== false ||
-      typeof repo.full_name !== "string" ||
-      !validRepositoryPath(repo.full_name)
-    )
-      return [];
-    return [
+  const repositories = new Map<string, OwnedRepository>();
+  let page = 1;
+  for (;;) {
+    const response = await fetchWithDeadline(
+      `https://api.github.com/users/${login}/repos?type=owner&sort=pushed&per_page=100&page=${page}`,
       {
-        repository: repo.full_name,
-        description: repositoryDescription(repo.description),
+        credentials: "omit",
+        headers: { Accept: "application/vnd.github+json" },
+        signal,
       },
-    ];
-  });
+    );
+    if (response.status === 403 || response.status === 429)
+      throw new Error(
+        "GitHub limited lookups from this network. Enter the repository by name.",
+      );
+    if (!response.ok) throw new Error(`GitHub returned ${response.status}.`);
+    const value = await readBoundedJson(
+      response,
+      2 * 1024 * 1024,
+      "GitHub repositories",
+    );
+    if (!Array.isArray(value))
+      throw new Error("GitHub returned an unexpected response.");
+    for (const entry of value) {
+      if (!entry || typeof entry !== "object") continue;
+      const repo = entry as Record<string, unknown>;
+      if (
+        repo.private !== false ||
+        repo.fork !== false ||
+        repo.archived !== false ||
+        typeof repo.full_name !== "string" ||
+        !validRepositoryPath(repo.full_name)
+      )
+        continue;
+      if (!repositories.has(repo.full_name))
+        repositories.set(repo.full_name, {
+          repository: repo.full_name,
+          description: repositoryDescription(repo.description),
+        });
+    }
+    const nextPage = nextOwnedRepositoryPage(response, page);
+    if (nextPage === null) return [...repositories.values()];
+    if (page >= MAX_OWNED_REPOSITORY_PAGES)
+      throw new Error(
+        "GitHub returned too many repository pages. Enter the repository by name.",
+      );
+    page = nextPage;
+  }
 }
 
 function unknownLicense(
