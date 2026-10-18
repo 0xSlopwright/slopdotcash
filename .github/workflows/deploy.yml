@@ -268,8 +268,7 @@ jobs:
     env:
       VITE_SLOP_ENVIRONMENT: ${{ (github.ref == 'refs/heads/development' || github.base_ref == 'development') && 'staging' || 'production' }}
       SLOP_E2E_PREBUILT: '1'
-      SLOP_E2E_FORCE_FRESH_SERVER: '1'
-      SLOP_E2E_SERVER: ${{ matrix.server }}
+      SLOP_E2E_LANE: ${{ matrix.server }}
     steps:
       - name: Checkout exact checked source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -293,8 +292,6 @@ jobs:
         with:
           name: slop-source-${{ needs.source.outputs.sha }}
           path: dist
-      - name: Verify exact bundle before browser execution
-        run: node scripts/dist-manifest.mjs verify-local dist
       - name: Install Playwright Chromium
         run: |
           set -euo pipefail
@@ -309,17 +306,11 @@ jobs:
             echo "::warning::Playwright Chromium installation stalled or failed; retrying once."
           done
 
+      # run-e2e.mjs verifies the exact bundle, then runs only the lane's phase.
       - name: Run complete assigned browser coverage
         env:
-          BROWSER_SERVER: ${{ matrix.server }}
           BROWSER_SHARD: ${{ matrix.shard }}
-        run: |
-          set -euo pipefail
-          if [ "$BROWSER_SERVER" = pages ]; then
-            ./node_modules/.bin/playwright test --project=wide-desktop-chromium --grep @pages --workers=1
-          else
-            ./node_modules/.bin/playwright test --grep-invert @pages-only --shard="$BROWSER_SHARD"
-          fi
+        run: node scripts/run-e2e.mjs --shard="$BROWSER_SHARD"
       - name: Upload browser diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
