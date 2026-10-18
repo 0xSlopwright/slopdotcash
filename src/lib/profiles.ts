@@ -307,7 +307,10 @@ export function profileIssueOutcomes(
       new Date(occurredAt).toISOString().slice(0, 7) !== period
     )
       continue;
-    if (issue.unavailableSince !== null) {
+    if (
+      issue.unavailableSince !== null &&
+      Date.parse(issue.unavailableSince) < end
+    ) {
       counts.unavailable++;
       continue;
     }
