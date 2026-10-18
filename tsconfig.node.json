@@ -62,6 +62,7 @@
     "src/lib/install-command.ts",
     "src/lib/project-view.ts",
     "src/lib/global-leaderboard.ts",
+    "src/lib/profile-activity.ts",
     "src/lib/reward-cycle.ts",
     "src/lib/reward-finalization.ts",
     "src/lib/rewards.ts",
