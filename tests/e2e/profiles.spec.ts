@@ -83,17 +83,12 @@ test("profiles preserve legacy coverage and expose recorded issue history", asyn
     }),
   ).toBeVisible();
   const profile = page.getByRole("region", { name: "Contributor profile" });
-  await expect(profile.locator(".profile-totals").first()).toContainText(
-    "3PRs open",
-  );
-  await expect(profile.locator(".profile-totals").first()).toContainText(
-    "2PRs closed without merging",
+  await expect(profile.locator(".pr-legend")).toContainText("3 PRs open");
+  await expect(profile.locator(".pr-legend")).toContainText(
+    "2 PRs closed without merging",
   );
   await expect(
-    page
-      .getByText("Points · recorded history", { exact: true })
-      .locator("..")
-      .locator("strong"),
+    page.getByText("points", { exact: true }).locator("..").locator("strong"),
   ).toHaveText("0");
   await expect(
     profile.getByRole("link", { name: "GitHub · @profile-only-contributor" }),
@@ -103,20 +98,10 @@ test("profiles preserve legacy coverage and expose recorded issue history", asyn
     profile.getByText("Issue history is unavailable in this census."),
   ).toBeVisible();
   await expect(profile.getByLabel("Period (UTC)")).toHaveCount(0);
-  const penalty = profile.locator("summary", { hasText: /^Penalty history$/ });
-  await penalty.focus();
-  await page.keyboard.press("Enter");
   await expect(
-    profile.getByText(
-      "No penalty policy version is approved or active. No penalties are recorded.",
-    ),
-  ).toBeVisible();
-  await expect(
-    profile.getByRole("link", { name: "Penalty policy" }),
-  ).toHaveAttribute(
-    "href",
-    /\/docs\/slop-product-requirements\.md#closure-penalties-and-outcome-ratios$/,
-  );
+    profile.locator("summary", { hasText: /^Penalty history$/ }),
+  ).toHaveCount(0);
+  await profile.locator("summary", { hasText: /^Issue outcomes$/ }).focus();
   await page.keyboard.press("Tab");
   expect(
     await page.evaluate(() => document.activeElement !== document.body),

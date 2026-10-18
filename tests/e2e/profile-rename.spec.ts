@@ -238,7 +238,7 @@ for (const frozenOnly of [false, true]) {
     await expect(
       page.getByRole("heading", { name: current.login }),
     ).toHaveCount(0);
-    await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+    await expect(page.getByText(/Past wallet/)).toHaveCount(0);
     await expect(
       page.getByTitle("Closed cycles and ledger events outside those cycles"),
     ).toHaveCount(0);
@@ -296,7 +296,7 @@ test("historical names alone do not identify a current contributor or wallet", a
   await expect(
     page.getByRole("heading", { name: "Frozen months" }),
   ).toHaveCount(0);
-  await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+  await expect(page.getByText(/Past wallet/)).toHaveCount(0);
   expect(walletRequests).toEqual([]);
   await expect(page.getByRole("status")).toContainText(
     "Current contributor identity could not be verified",
@@ -326,7 +326,7 @@ test("a new owner listed without activity uses only its own identity and wallet"
   await expect(
     page.getByRole("heading", { name: "Frozen months" }),
   ).toHaveCount(0);
-  await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+  await expect(page.getByText(/Past wallet/)).toHaveCount(0);
   expect(walletRequests).toEqual(["/api/v1/wallet-claims/actors/2/current"]);
 });
 
@@ -346,7 +346,7 @@ test("conflicting current names withhold history and wallet lookups", async ({
   await expect(page.getByRole("heading", { name: "Past cycles" })).toHaveCount(
     0,
   );
-  await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+  await expect(page.getByText(/Past wallet/)).toHaveCount(0);
   expect(walletRequests).toEqual([]);
 });
 
@@ -379,7 +379,7 @@ test("a stale activity login cannot override a directory rename", async ({
   await expect(
     page.getByTitle("Closed cycles and ledger events outside those cycles"),
   ).toHaveCount(0);
-  await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+  await expect(page.getByText(/Past wallet/)).toHaveCount(0);
   expect(walletRequests).toEqual([]);
 });
 
@@ -476,19 +476,17 @@ for (const staleMembership of [false, true]) {
         await expect(
           page.getByRole("heading", { name: "Frozen months" }),
         ).toHaveCount(0);
-        await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+        await expect(page.getByText(/Past wallet/)).toHaveCount(0);
         await expect(page.getByRole("status")).toContainText(
           "could not be verified",
         );
-        await expect(
-          page.getByText("Points · recorded history", { exact: true }),
-        ).toHaveCount(0);
+        await expect(page.getByText("points", { exact: true })).toHaveCount(0);
         expect(walletRequests).toEqual([]);
         return;
       }
       await expect(
         page
-          .getByText("Points · recorded history", { exact: true })
+          .getByText("points", { exact: true })
           .locator("..")
           .locator("strong"),
       ).toHaveText("5");
@@ -498,7 +496,7 @@ for (const staleMembership of [false, true]) {
       await expect(
         page.getByRole("heading", { name: "Frozen months" }),
       ).toHaveCount(0);
-      await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
+      await expect(page.getByText(/Past wallet/)).toHaveCount(0);
       expect(walletRequests).toEqual([
         "/api/v1/wallet-claims/actors/2/current",
       ]);
@@ -602,7 +600,7 @@ for (const scenario of [
         ).toHaveText("7");
         await expect(
           page
-            .getByText("Points · recorded history", { exact: true })
+            .getByText("points", { exact: true })
             .locator("..")
             .locator("strong"),
         ).toHaveText("5");
@@ -616,10 +614,8 @@ for (const scenario of [
         await expect(
           page.getByRole("heading", { name: "Frozen months" }),
         ).toHaveCount(0);
-        await expect(page.getByText(/Historical payout wallet/)).toHaveCount(0);
-        await expect(
-          page.getByText("Points · recorded history", { exact: true }),
-        ).toHaveCount(0);
+        await expect(page.getByText(/Past wallet/)).toHaveCount(0);
+        await expect(page.getByText("points", { exact: true })).toHaveCount(0);
         await expect(
           page.getByTitle(
             "Closed cycles and ledger events outside those cycles",

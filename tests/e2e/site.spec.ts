@@ -510,11 +510,10 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
     .getByRole("link")
     .first()
     .innerText();
-  await leaderboard.getByLabel("Find a contributor").fill(firstLogin);
+  await expect(leaderboard.getByLabel("Find a contributor")).toHaveCount(0);
   await expect(
     leaderboard.getByRole("link", { name: firstLogin, exact: true }),
   ).toBeVisible();
-  await leaderboard.getByLabel("Find a contributor").fill("");
   await expect(page.locator(".hero-mobile-action")).toHaveText(
     "SHIPPING OPEN SOURCE.",
   );
@@ -522,10 +521,10 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   await expect(
     page.locator("#projects").getByRole("link", { name: "Add a project" }),
   ).toHaveAttribute("href", "/projects/new");
-  await page
-    .locator(".site-footer")
-    .getByRole("link", { name: "Leaderboard" })
-    .click();
+  await expect(
+    page.locator(".site-footer").getByRole("link", { name: "Leaderboard" }),
+  ).toHaveCount(0);
+  await page.goto("/#leaderboard", { waitUntil: "networkidle" });
   await expect(page).toHaveURL(/\/#leaderboard$/u);
   await expect
     .poll(() =>
@@ -558,11 +557,12 @@ test("starts Eliza with one prompt and no separate payout form", async ({
   const homeLink = page.getByRole("link", { name: "Slop home", exact: true });
   await expect(homeLink).toBeVisible();
   await expect(homeLink).toHaveAttribute("href", "/");
-  const projectLink = page.locator(".site-footer").getByRole("link", {
-    name: "Projects",
-    exact: true,
-  });
-  await expect(projectLink).toHaveAttribute("href", "/#projects");
+  await expect(
+    page.locator(".site-footer").getByRole("link", {
+      name: "Projects",
+      exact: true,
+    }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "Make money building agents." }),
   ).toBeVisible();
@@ -865,63 +865,15 @@ test("renders contributor and cycle records from validated public data", {
   });
   await expect(page.getByRole("heading", { name: actor.login })).toBeVisible();
   await expect(
-    page
-      .locator(".profile-totals")
-      .getByText("verified payments received · USDC", { exact: true }),
+    page.locator(".profile-totals").getByText("paid · USDC", { exact: true }),
   ).toBeVisible();
   await expect(
-    page
-      .locator(".profile-totals")
-      .getByText("recorded score", { exact: true }),
+    page.locator(".profile-totals").getByText("Slop Score", { exact: true }),
   ).toBeVisible();
+  // The profile shows recorded money only; cap-based estimates stay on project pages.
   await expect(
-    page
-      .locator(".profile-totals")
-      .getByText(/^[A-Z][a-z]+ \d{4} (simulated estimate|pool)$/u),
-  ).toBeVisible();
-  // Mirrors monthlyPoolUnfunded in src/Presentation.tsx.
-  const unfundedPools = PROJECTS.every(
-    (project) =>
-      project.reward.kind !== "monthly-pool" ||
-      project.reward.fundingState !== "committed" ||
-      BigInt(project.reward.committedMinor) === 0n,
-  );
-  const simulated = PROJECTS.reduce((total, project) => {
-    if (
-      !projectCycleHasOpened(snapshot, project.id) ||
-      !project.repositories.every((repository) =>
-        snapshot.repositories.some(
-          (collected) => collected.id === repository.id,
-        ),
-      )
-    )
-      return total;
-    const view = createProjectView(snapshot, project.id);
-    const leader = view.leaders.find((entry) => entry.actor.id === actor.id);
-    return total + BigInt(leader?.simulatedMinor ?? "0");
-  }, 0n);
-  const estimate = page.locator(".profile-totals > div").filter({
-    hasText: /simulated estimate|pool$/u,
-  });
-  if (unfundedPools) {
-    await expect(estimate.locator("strong")).toHaveText("Not funded yet");
-    await expect(estimate).toHaveCount(1);
-  } else
-    await expect(estimate.locator("strong")).toHaveText(
-      new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-        minimumFractionDigits: simulated % 1_000_000n === 0n ? 0 : 2,
-        maximumFractionDigits: 2,
-      }).format(Number(simulated) / 1_000_000),
-    );
-  await expect(
-    page.getByText(
-      unfundedPools
-        ? /No monthly pool is funded, so no amount is estimated/u
-        : /14-day review applies to monthly proposals/u,
-    ),
-  ).toBeVisible();
+    page.locator(".profile-totals").getByText(/simulated estimate|pool$/u),
+  ).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Progress" })).toHaveCount(0);
   const acceptedRecords = snapshot.ledger.filter(
     (event) => event.actor.id === actor.id,
@@ -1118,7 +1070,7 @@ test("keeps a frozen-month contributor reachable after the rolling window moves 
   await expect(page.getByText("Contributor not found")).toHaveCount(0);
   await expect(
     page.getByRole("link", {
-      name: "Current payout wallet · 11111111111111111111111111111111",
+      name: "Wallet · 1111…1111",
     }),
   ).toBeVisible();
   expect(walletCalls.map((url) => new URL(url).pathname)).toEqual([
@@ -1171,7 +1123,7 @@ test("requests a window contributor's wallet once while funding reviews load", a
   );
   await page.goto(`/contributors/${encodeURIComponent(leader.login)}`);
   const walletLink = page.getByRole("link", {
-    name: "Current payout wallet · 11111111111111111111111111111111",
+    name: "Wallet · 1111…1111",
   });
   // The wallet request starts after the full contribution snapshot loads,
   // which can take longer than the default assertion timeout on live data.
@@ -1916,12 +1868,15 @@ test("opens the models page directly and through keyboard navigation", async ({
     body: await page.screenshot({ fullPage: true }),
     contentType: "image/png",
   });
-  const addProject = page
-    .locator("footer")
-    .getByRole("link", { name: "Add a project", exact: true });
-  await addProject.focus();
+  const home = page.getByRole("link", { name: "Slop home", exact: true });
+  await home.focus();
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/\/projects\/new$/);
+  await expect(page).toHaveURL(/\/$/);
+  // Let the home records finish loading so going back aborts no request.
+  await expect(page.locator("#leaderboard").getByRole("table")).toBeVisible({
+    timeout: 60_000,
+  });
+  await page.waitForLoadState("networkidle");
   await page.goBack({ waitUntil: "networkidle" });
   await expect(
     page.getByRole("heading", {
@@ -1989,12 +1944,15 @@ test("opens the sponsors page directly and through keyboard navigation", async (
     body: await page.screenshot({ fullPage: true }),
     contentType: "image/png",
   });
-  const addProject = page
-    .locator("footer")
-    .getByRole("link", { name: "Add a project", exact: true });
-  await addProject.focus();
+  const home = page.getByRole("link", { name: "Slop home", exact: true });
+  await home.focus();
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/\/projects\/new$/);
+  await expect(page).toHaveURL(/\/$/);
+  // Let the home records finish loading so going back aborts no request.
+  await expect(page.locator("#leaderboard").getByRole("table")).toBeVisible({
+    timeout: 60_000,
+  });
+  await page.waitForLoadState("networkidle");
   await page.goBack({ waitUntil: "networkidle" });
   await expect(
     page.getByRole("heading", {
@@ -2086,8 +2044,9 @@ test("derives Solana addresses on the settlement verification page", async ({
     name: "Settlement verification",
   });
   await expect(verification).not.toBeVisible();
+  await page.getByText("Technical references", { exact: true }).click();
   await page
-    .getByRole("link", { name: "Verification", exact: true })
+    .getByRole("link", { name: "Settlement verification", exact: true })
     .first()
     .focus();
   await page.keyboard.press("Enter");
