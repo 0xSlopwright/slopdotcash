@@ -6,6 +6,8 @@
  * behavior only Pages supplies instead of replacing it with a generic
  * static-server assertion. Each phase owns its own port and output folder, so
  * the two phases run concurrently and neither can serve the other's bytes.
+ * SLOP_E2E_LANE=preview|pages runs one phase only, so CI can split the phases
+ * (and preview shards passed as --shard=N/M) across separate runners.
  */
 
 import { spawnSync } from "node:child_process";
@@ -47,6 +49,11 @@ function runPhase(label, server, port, args) {
   });
 }
 
+const lane = process.env.SLOP_E2E_LANE;
+if (lane !== undefined && lane !== "preview" && lane !== "pages") {
+  throw new TypeError(`Unsupported SLOP_E2E_LANE: ${lane}`);
+}
+
 // Releases must exercise the online build without regenerating its journal.
 if (process.env.SLOP_E2E_PREBUILT !== "1") runSync("bun", ["run", "build"]);
 runSync("node", ["scripts/dist-manifest.mjs", "verify-local", "dist"]);
@@ -57,18 +64,22 @@ if (!Number.isInteger(basePort) || basePort < 1024 || basePort > 65534) {
   throw new TypeError(`Invalid SLOP_E2E_PORT: ${process.env.SLOP_E2E_PORT}`);
 }
 const extraArgs = process.argv.slice(2);
-const statuses = await Promise.all([
-  runPhase("preview", "preview", String(basePort), [
-    "--grep-invert",
-    "@pages-only",
-    ...extraArgs,
-  ]),
-  runPhase("pages", "pages", String(basePort + 1), [
-    "--project=wide-desktop-chromium",
-    "--grep",
-    "@pages",
-    ...extraArgs,
-  ]),
-]);
+const phases = [
+  {
+    server: "preview",
+    port: String(basePort),
+    args: ["--grep-invert", "@pages-only", ...extraArgs],
+  },
+  {
+    server: "pages",
+    port: String(basePort + 1),
+    args: ["--project=wide-desktop-chromium", "--grep", "@pages", ...extraArgs],
+  },
+];
+const statuses = await Promise.all(
+  phases
+    .filter((phase) => lane === undefined || phase.server === lane)
+    .map(({ server, port, args }) => runPhase(server, server, port, args)),
+);
 const failed = statuses.find((status) => status !== 0);
 if (failed !== undefined) process.exit(failed);

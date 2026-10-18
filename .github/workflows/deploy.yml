@@ -66,8 +66,8 @@ jobs:
             echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
           fi
 
-  quality:
-    name: Skill, data, build, and browser checks
+  prepare:
+    name: Prepare checked browser bundle
     needs: source
     env:
       RELEASE_SHA: ${{ needs.source.outputs.sha }}
@@ -235,6 +235,63 @@ jobs:
           SLOP_POINTS_BOOTSTRAP: ${{ github.event_name != 'schedule' && '1' || '0' }}
         run: bun run build
 
+      - name: Run installer lifecycle end-to-end checks
+        run: bun run test:installer:e2e
+
+      - name: Upload Cloudflare Pages bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: slop-source-${{ needs.source.outputs.sha }}
+          path: dist
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  browsers:
+    name: Browser ${{ matrix.lane }}
+    needs: [source, prepare]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: preview-1
+            server: preview
+            shard: 1/2
+          - lane: preview-2
+            server: preview
+            shard: 2/2
+          - lane: pages
+            server: pages
+            shard: 1/1
+    env:
+      VITE_SLOP_ENVIRONMENT: ${{ (github.ref == 'refs/heads/development' || github.base_ref == 'development') && 'staging' || 'production' }}
+      SLOP_E2E_PREBUILT: '1'
+      SLOP_E2E_LANE: ${{ matrix.server }}
+    steps:
+      - name: Checkout exact checked source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: false
+      - name: Verify browser checkout
+        env:
+          RELEASE_SHA: ${{ needs.source.outputs.sha }}
+        run: test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: slop-source-${{ needs.source.outputs.sha }}
+          path: dist
       - name: Install Playwright Chromium
         run: |
           set -euo pipefail
@@ -249,33 +306,35 @@ jobs:
             echo "::warning::Playwright Chromium installation stalled or failed; retrying once."
           done
 
-      - name: Run installer lifecycle end-to-end checks
-        run: bun run test:installer:e2e
-
-      - name: Run desktop and mobile browser tests
+      # run-e2e.mjs verifies the exact bundle, then runs only the lane's phase.
+      - name: Run complete assigned browser coverage
         env:
-          SLOP_E2E_PREBUILT: "1"
-        run: bun run test:e2e
-
-      - name: Upload Cloudflare Pages bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: slop-source-${{ needs.source.outputs.sha }}
-          path: dist
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
-
+          BROWSER_SHARD: ${{ matrix.shard }}
+        run: node scripts/run-e2e.mjs --shard="$BROWSER_SHARD"
       - name: Upload browser diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: slop-browser-diagnostics-${{ github.run_id }}
+          name: slop-browser-diagnostics-${{ github.run_id }}-${{ matrix.lane }}
           path: |
             playwright-report
             test-results
           if-no-files-found: ignore
           retention-days: 14
+
+  quality:
+    name: Skill, data, build, and browser checks
+    if: always()
+    needs: [prepare, browsers]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require the checked bundle and every browser lane
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          BROWSER_RESULT: ${{ needs.browsers.result }}
+        run: |
+          test "$PREPARE_RESULT" = success
+          test "$BROWSER_RESULT" = success
 
   staging:
     name: Deploy verified development to staging
