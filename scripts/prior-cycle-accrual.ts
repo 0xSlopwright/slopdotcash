@@ -294,7 +294,9 @@ export async function loadPriorCycleAccrual(input: {
     );
   }
   if (
-    Date.parse(proposal.review.lastMaterialChangeAt) > Date.parse(input.asOf)
+    Date.parse(proposal.review.lastMaterialChangeAt) > Date.parse(input.asOf) ||
+    (proposal.review.lapsedAt !== undefined &&
+      Date.parse(proposal.review.lapsedAt) > Date.parse(input.asOf))
   ) {
     throw new RangeError(
       `Prior cycle ${input.projectId}/${priorId} contains future review state`,
