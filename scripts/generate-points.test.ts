@@ -4,8 +4,15 @@
  * generate-points.ts: corrections, removals, replay, and rejection.
  */
 import { describe, expect, it } from "bun:test";
-import type { LeaderboardSnapshot } from "../src/lib/leaderboard";
-import type { ScoreEvent } from "../src/lib/leaderboard-types";
+import { createHash } from "node:crypto";
+import {
+  createLeaderboardSnapshot,
+  type LeaderboardSnapshot,
+} from "../src/lib/leaderboard";
+import type {
+  LeaderboardInput,
+  ScoreEvent,
+} from "../src/lib/leaderboard-types";
 import {
   appendPointAwards,
   applyPointsSnapshot,
@@ -16,8 +23,10 @@ import {
   type PointsJournal,
   pointMembers,
 } from "../src/lib/points";
+import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
 import {
   applyRetainedHistoryBatch,
+  retainedHistoryAwards,
   retainedHistoryCorrections,
 } from "./generate-points";
 
@@ -253,5 +262,135 @@ describe("retained review history corrections", () => {
     ).toThrow();
     expect(journal.revisions.length).toBe(1);
     expect(latestPoints(journal).get(award.key)?.award.amount).toBe(30);
+  });
+});
+
+/** The evaluator award event that loadEvaluatorAwardEvents returns for
+ * evaluations/eliza/award-gg100-review-24433.json. Evaluator events carry no
+ * workUnitId. */
+function evaluatorEvent(): ScoreEvent {
+  return {
+    id: "award_gg100_review_24433",
+    actor: {
+      id: "U_kgDOCzOt4w",
+      login: "GG100-eng",
+      avatarUrl: "https://avatars.githubusercontent.com/u/187936227?v=4",
+      url: "https://github.com/GG100-eng",
+      kind: "User",
+    },
+    category: "evaluated-contribution",
+    points: 4,
+    occurredAt: "2026-08-22T12:55:00.000Z",
+    repository: "elizaOS/eliza",
+    source: {
+      id: "PRR_kwDOMT5cIs8AAAABKglAuA",
+      kind: "review",
+      number: 24433,
+      title:
+        "feat(desktop): cloud-only settings panel with hardened Cloud contracts",
+      url: "https://github.com/elizaOS/eliza/pull/24433#pullrequestreview-5000216760",
+    },
+    reason:
+      "The exact-head review found 24 static translation keys absent from the canonical English catalog and an exact-head Biome failure; the author added the entries and fixed the formatter failure.",
+    evaluation: {
+      decisionUrl: "https://github.com/SlopDotCash/slopdotcash/pull/248",
+      reviewedAt: "2026-08-24T07:35:00.000Z",
+      reviewer: "lalalune",
+      manifestPath: "evaluations/eliza/award-gg100-review-24433.json",
+      manifestSha256: "c".repeat(64),
+    },
+  } as ScoreEvent;
+}
+
+/** A scheduled refresh: the real scorer, with the evaluator event injected
+ * as generate-leaderboard.ts does, and no GitHub activity. */
+function refreshedSnapshot(generatedAt: string): LeaderboardSnapshot {
+  const from = "2026-08-01T00:00:00.000Z";
+  const to = "2026-09-05T00:00:00.000Z";
+  return createLeaderboardSnapshot({
+    generatedAt,
+    windowFrom: from,
+    windowTo: to,
+    sourceUpdatedAt: to,
+    source: {
+      provider: "github-graphql",
+      fetchedAt: generatedAt,
+      cutoffAt: to,
+      repositoryId: "R_fixture",
+      repositories: TARGET_REPOSITORIES.map((repository) => ({
+        id: repository.id,
+        repositoryId:
+          repository.role === "primary"
+            ? "R_fixture"
+            : `R_fixture_${repository.name.replaceAll("-", "_")}`,
+      })),
+      requestCount: 1,
+      searchSliceCount: 1,
+      rateLimit: {
+        cost: 1,
+        limit: 5000,
+        remaining: 4999,
+        resetAt: "2026-09-05T01:00:00.000Z",
+      },
+      counts: {
+        mergedPullRequests: 0,
+        detailedMergedPullRequests: 0,
+        closedIssues: 0,
+        detailedClosedIssues: 0,
+        resolvedIssues: 0,
+        openIssues: 0,
+        openPullRequests: 0,
+      },
+      verificationWindow: { days: 35, from, to },
+      evidenceVerification: {
+        status: "complete",
+        sourceCount: 0,
+        artifactCount: 0,
+        maxSources: 64,
+        maxArtifacts: 64,
+      },
+    },
+    mergedPullRequestOutcomes: [],
+    mergedPullRequests: [],
+    detailEligibleMergedPullRequestIds: [],
+    closedIssueCount: 0,
+    resolvedIssues: [],
+    openIssues: [],
+    openPullRequests: [],
+    verificationWindowFrom: from,
+    verifiedEvidence: [],
+    evaluatedContributions: [evaluatorEvent()],
+  } as unknown as LeaderboardInput);
+}
+
+function digestOf(snapshot: LeaderboardSnapshot): string {
+  return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+}
+
+describe("evaluator awards across snapshot refreshes", () => {
+  it("converts an evaluator event to the same award as its snapshot ledger copy", () => {
+    const ledger = refreshedSnapshot(T0).ledger.filter(
+      (event) => event.category === "evaluated-contribution",
+    );
+    expect(ledger.length).toBe(1);
+    expect(retainedHistoryAwards([evaluatorEvent()])).toEqual(
+      ledger.map(awardForScore),
+    );
+  });
+
+  it("appends no revision when unchanged inputs are replayed with a new snapshot", () => {
+    const awards = retainedHistoryAwards([evaluatorEvent()]);
+    // Production order in generatePoints: each run applies the new snapshot,
+    // then the retained batch. Every scheduled refresh has a new digest.
+    let journal = emptyPointsJournal(T0);
+    const counts: number[] = [];
+    for (const at of [T1, T2, T3]) {
+      const snapshot = refreshedSnapshot(at);
+      journal = applyPointsSnapshot(journal, snapshot, digestOf(snapshot), at);
+      journal = applyRetainedHistoryBatch(journal, awards, DIGEST, at);
+      counts.push(journal.revisions.length);
+    }
+    expect(counts).toEqual([2, 2, 2]);
+    expect(pointMembers(journal)[0]?.total).toBe(120);
   });
 });
