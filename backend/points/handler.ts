@@ -254,7 +254,7 @@ export async function handlePointsApi(
       // Login collisions fail closed; numeric actor identity remains canonical.
       const row = await deps.db
         .prepare(
-          "SELECT CASE WHEN COUNT(*)=1 THEN json_object('actor',json_object('id',actor_id,'login',login),'joinedAt',joined_at,'public',json('true'),'welcome',welcome,'socialPoints',COALESCE((SELECT points FROM points_x_awards a WHERE a.actor_id=points_members.actor_id),0)) ELSE NULL END AS member FROM points_members WHERE lower(login)=lower(?) AND public=1",
+          "SELECT CASE WHEN COUNT(*)=1 AND public=1 THEN json_object('actor',json_object('id',actor_id,'login',login),'joinedAt',joined_at,'public',json('true'),'welcome',welcome,'socialPoints',COALESCE((SELECT points FROM points_x_awards a WHERE a.actor_id=points_members.actor_id),0)) ELSE NULL END AS member FROM points_members WHERE lower(login)=lower(?)",
         )
         .bind(login)
         .first<{ member: string | null }>();
