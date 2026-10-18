@@ -29,15 +29,11 @@ import {
   ContributorIdentity,
   cycleLifecycleLabel,
   DataNotice,
-  EmptyState,
   ExternalLinkAnchor,
-  formatCompact,
   formatCycleMonth,
   formatDate,
   formatMicroUsdc,
   formatScore,
-  monthlyPoolUnfunded,
-  UNFUNDED_POOL_HEADLINE,
 } from "./Presentation";
 import { RewardValue } from "./ProjectLeaderboard";
 
@@ -193,53 +189,28 @@ export function ProfilePage({
         ),
       );
   // Closed cycles replace their overlapping ledger events in this cumulative score.
-  const scoreLabel = globalLeader ? "recorded score" : "score, frozen months";
-  const acceptedOutcomes = matches.reduce(
-    (total, match) => total + match.leader.acceptedOutcomeCount,
-    0,
-  );
-  const simulated = matches.reduce(
-    (total, match) => total + BigInt(match.leader.simulatedMinor ?? "0"),
-    0n,
-  );
-  // Keep the cap-based estimate separate from funding and approved awards.
-  const cycleId = (matches[0]?.view ?? state.views[0])?.cycle.id;
-  const monthlyPools = (
-    matches.length > 0 ? matches.map(({ view }) => view) : state.views
-  ).filter((view) => view.project.reward.kind === "monthly-pool");
-  const simulatedUnfunded =
-    monthlyPools.length > 0 &&
-    monthlyPools.every((view) => monthlyPoolUnfunded(view.project.reward));
-  const simulatedLabel = `${
-    cycleId ? formatCycleMonth(cycleId) : "monthly"
-  } ${simulatedUnfunded ? "pool" : "simulated estimate"}`;
+  const scoreLabel = globalLeader ? "Slop Score" : "Slop Score · frozen months";
   const historicalWallet = history.find(({ contributor }) => contributor.wallet)
     ?.contributor.wallet;
+  const wallet =
+    currentWallet.status === "ready" ? currentWallet : historicalWallet;
   return (
     <main className="shell route-main profile-page">
       <DataNotice state={state} retry={retry} />
-      <p className="breadcrumb">
-        <Link href="/">Back to leaderboard</Link>
-      </p>
       <ContributorIdentity actor={actor}>
-        {currentWallet.status === "ready" ? (
-          <ExternalLinkAnchor href={currentWallet.sourceUrl}>
-            Current payout wallet · {currentWallet.address}{" "}
-            <ExternalLink aria-hidden="true" size={15} />
-          </ExternalLinkAnchor>
-        ) : historicalWallet ? (
-          <ExternalLinkAnchor href={historicalWallet.sourceUrl}>
-            Historical payout wallet · {historicalWallet.address}{" "}
-            <ExternalLink aria-hidden="true" size={15} />
+        {wallet ? (
+          <ExternalLinkAnchor
+            className="profile-wallet"
+            href={wallet.sourceUrl}
+          >
+            {currentWallet.status === "ready" ? "Wallet" : "Past wallet"} ·{" "}
+            {shortAddress(wallet.address)}
           </ExternalLinkAnchor>
         ) : currentWallet.status === "loading" ? (
-          <span>Checking current payout wallet…</span>
-        ) : currentWallet.status === "error" ? (
-          <span>Current payout wallet status unavailable</span>
+          <span>Checking wallet…</span>
         ) : (
-          <span>No current payout wallet registered</span>
+          <Link href="/account#wallets">Add a payout wallet</Link>
         )}
-        <Link href="/account#wallets">Register or update your wallet</Link>
       </ContributorIdentity>
       <ProfilePoints
         key={login.toLowerCase()}
@@ -261,65 +232,49 @@ export function ProfilePage({
               </strong>
               <span>{scoreLabel}</span>
             </div>
-            <div>
-              <strong>{formatCompact(acceptedOutcomes)}</strong>
-              <span>accepted this month</span>
-            </div>
-            {simulatedUnfunded ? (
-              <div>
-                <strong>{UNFUNDED_POOL_HEADLINE}</strong>
-                <span>{simulatedLabel}</span>
-              </div>
-            ) : (
-              <div>
-                <strong>{formatMicroUsdc(simulated.toString())}</strong>
-                <span>{simulatedLabel}</span>
-              </div>
-            )}
           </>
         }
-      />
-      <p>
-        {simulatedUnfunded
-          ? "No monthly pool is funded, so no amount is estimated. Approved payouts appear once a funded cycle is approved."
-          : "This estimate uses project budget targets. It is not an approved payout. The 14-day review applies to monthly proposals, not this estimate."}
-      </p>
-      <section className="section profile-section">
-        <div className="profile-section-heading">
-          <h2>Projects</h2>
-        </div>
-        <div className="profile-projects">
-          {matches.length === 0 ? (
-            <EmptyState text="No accepted project score in the current cycles yet." />
-          ) : (
-            matches.map(({ leader, view }) => {
-              return (
-                <div className="profile-project-block" key={view.project.id}>
-                  <Link href={`/projects/${view.project.slug}`}>
-                    <span className="profile-project-name">
-                      <strong>{view.project.name}</strong>
-                      <small>{view.cycle.id}</small>
-                    </span>
-                    <span className="profile-project-stat">
-                      <strong title={`Exact score ${leader.scoreThirds}/3`}>
-                        {formatThirds(leader.scoreThirds)} score
-                      </strong>
-                      <small>
-                        {leader.acceptedOutcomeCount} accepted outcome
-                        {leader.acceptedOutcomeCount === 1 ? "" : "s"}
-                      </small>
-                    </span>
-                    <span className="profile-project-stat">
-                      <RewardValue leader={leader} view={view} />
-                    </span>
-                    <ChevronRight aria-hidden="true" />
-                  </Link>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </section>
+      >
+        {matches.length > 0 ? (
+          <section className="profile-card" aria-label="Projects">
+            <div className="profile-card-heading">
+              <h2>Projects</h2>
+              <span>{formatCycleMonth(matches[0].view.cycle.id)}</span>
+            </div>
+            <ul className="project-bars">
+              {matches
+                .slice()
+                .sort((left, right) => right.leader.score - left.leader.score)
+                .map(({ leader, view }) => {
+                  const totalWeight = view.leaders.reduce(
+                    (total, entry) => total + entry.adjustedWeight,
+                    0,
+                  );
+                  const share =
+                    totalWeight > 0 ? leader.adjustedWeight / totalWeight : 0;
+                  return (
+                    <li key={view.project.id}>
+                      <Link href={`/projects/${view.project.slug}`}>
+                        <span className="project-bar-label">
+                          <strong>{view.project.name}</strong>
+                          <small title={`Exact score ${leader.scoreThirds}/3`}>
+                            {formatThirds(leader.scoreThirds)} score ·{" "}
+                            <RewardValue leader={leader} view={view} />
+                          </small>
+                        </span>
+                        <span className="project-bar-track" aria-hidden="true">
+                          <span
+                            style={{ width: `${Math.max(2, share * 100)}%` }}
+                          />
+                        </span>
+                      </Link>
+                    </li>
+                  );
+                })}
+            </ul>
+          </section>
+        ) : null}
+      </ProfilePoints>
       {opportunities.length > 0 ? (
         <section className="section profile-section">
           <div className="profile-section-heading">
@@ -344,17 +299,35 @@ export function ProfilePage({
                   <strong>
                     {findProject(cycle.projectId)?.name ?? cycle.projectId}
                   </strong>
-                  <small>
-                    {cycle.cycleId} · {cycleLifecycleLabel(cycle)}
-                  </small>
+                  <small>{formatCycleMonth(cycle.cycleId)}</small>
                 </span>
                 <span>
                   <strong>{contributor.score} score</strong>
-                  <small>{contributor.state.replaceAll("-", " ")}</small>
+                  <small>
+                    <span
+                      className={`payout-state payout-state-${contributor.state}`}
+                    >
+                      {contributor.state === "paid"
+                        ? "Paid"
+                        : cycleLifecycleLabel(cycle)}
+                    </span>
+                  </small>
                 </span>
                 <span>
-                  <strong>{formatMicroUsdc(contributor.paidMinor)}</strong>
-                  <small>paid</small>
+                  <strong>
+                    {formatMicroUsdc(
+                      contributor.state === "paid"
+                        ? contributor.paidMinor
+                        : contributor.approvedMinor !== "0"
+                          ? contributor.approvedMinor
+                          : contributor.suggestedMinor,
+                    )}
+                  </strong>
+                  <small>
+                    {contributor.state === "paid"
+                      ? "paid"
+                      : contributor.state.replaceAll("-", " ")}
+                  </small>
                 </span>
                 <ChevronRight aria-hidden="true" />
               </Link>
@@ -430,6 +403,10 @@ export function ProfilePage({
       ) : null}
     </main>
   );
+}
+
+function shortAddress(address: string): string {
+  return `${address.slice(0, 4)}…${address.slice(-4)}`;
 }
 
 function useCurrentWallet(

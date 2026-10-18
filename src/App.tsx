@@ -387,22 +387,6 @@ function Footer() {
           <SlopMark inverse size={104} />
           <div className="wordmark footer-wordmark">{domain}</div>
         </div>
-        <nav className="footer-links" aria-label="Product">
-          <span>Product</span>
-          <Link href="/#projects">Projects</Link>
-          <Link href="/#leaderboard">Leaderboard</Link>
-          <Link href="/how-it-works">How it works</Link>
-          <Link href="/how-it-works#faq">FAQ</Link>
-          <Link href="/models">Models</Link>
-          <Link href="/sponsors">Sponsors</Link>
-          <Link href="/projects/new">Add a project</Link>
-        </nav>
-        <nav className="footer-links footer-records" aria-label="Records">
-          <span>Records</span>
-          <Link href="/receipts">Run receipts</Link>
-          <Link href="/cycles">Cycle archive</Link>
-          <Link href="/how-it-works#verification">Verification</Link>
-        </nav>
         <nav className="footer-links" aria-label="Community">
           <span>Community</span>
           <ExternalLinkAnchor href={SOURCE_REPOSITORY}>
@@ -1165,18 +1149,27 @@ function ProjectPaymentHistory({
     0n,
   );
   const externalPrize = project.reward.kind === "external-prize-share";
-  const direct = new Map<string, { amount: bigint; count: number }>();
+  const direct = new Map<
+    string,
+    { amount: bigint; count: number; paidOn: string }
+  >();
   for (const payment of directState.status === "ready"
     ? directState.transfers
     : []) {
     const month = direct.get(payment.contributionMonth) ?? {
       amount: 0n,
       count: 0,
+      paidOn: payment.blockTime,
     };
     month.amount += BigInt(payment.amountMicro);
     month.count += 1;
+    if (payment.blockTime > month.paidOn) month.paidOn = payment.blockTime;
     direct.set(payment.contributionMonth, month);
   }
+  const directTotal = [...direct.values()].reduce(
+    (total, month) => total + month.amount,
+    0n,
+  );
   return (
     <section className="section payment-history">
       <div className="simple-heading">
@@ -1192,7 +1185,9 @@ function ProjectPaymentHistory({
       </div>
       {externalPrize ? null : (
         <p className="money-summary">
-          <strong>{formatMicroUsdc(paid.toString())} paid</strong>
+          <strong>
+            {formatMicroUsdc((paid + directTotal).toString())} paid
+          </strong>
           <span>{formatMicroUsdc(approved.toString())} approved</span>
           <span>{formatMicroUsdc(fees.toString())} in 1% payout fees</span>
         </p>
@@ -1205,12 +1200,12 @@ function ProjectPaymentHistory({
           </button>
         </p>
       ) : null}
-      {[...direct].map(([month, { amount, count }]) => (
+      {[...direct].map(([month, { amount, count, paidOn }]) => (
         <p className="money-summary" key={month}>
           <strong>{formatMicroUsdc(amount.toString())} paid directly</strong>
           <span>
-            {formatCycleMonth(month)} · {count} finalized transfers outside Slop
-            settlement ·{" "}
+            Paid {formatDate(paidOn)} for {formatCycleMonth(month)} work ·{" "}
+            {count} transfers ·{" "}
             <ExternalLinkAnchor
               href={`${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/disclosures/${project.id}-${month}-direct-payments.json`}
             >

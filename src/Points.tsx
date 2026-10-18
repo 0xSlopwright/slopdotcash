@@ -35,11 +35,10 @@ import {
 } from "./lib/points";
 import { profileCounts } from "./lib/profiles";
 import { findProject, PROJECTS } from "./lib/projects.mjs";
+import { useAllDirectTransfers } from "./lib/use-direct-transfers";
 import { type DataState, useSnapshot } from "./lib/use-snapshot";
 import {
   DataNotice,
-  formatDate,
-  formatDateTime,
   formatMicroUsdc,
   formatScore,
   NotFound,
@@ -400,14 +399,7 @@ function Notice() {
         </button>
       </div>
     );
-  return (
-    <p className="points-meta">
-      Points updated {formatDateTime(state.journal.generatedAt)}
-      {Date.now() - Date.parse(state.journal.generatedAt) > 8 * 3600000
-        ? " · Stale: the next verified update is pending."
-        : ""}
-    </p>
-  );
+  return null;
 }
 export function ProfilePoints({
   work,
@@ -418,7 +410,9 @@ export function ProfilePoints({
   recordsLoading = false,
   showIdentity = false,
   notFoundWhenUnrecorded = false,
+  children,
 }: {
+  children?: ReactNode;
   login: string;
   work?: readonly ScoreEvent[];
   cycles?: CycleIndex;
@@ -487,7 +481,6 @@ export function ProfilePoints({
           ? named[0]
           : undefined
       : undefined;
-  const [copied, setCopied] = useState("");
   if (
     notFoundWhenUnrecorded &&
     state.status === "ready" &&
@@ -514,6 +507,30 @@ export function ProfilePoints({
         cycles={cycles}
         recordsLoading={recordsLoading}
         showIdentity={showIdentity}
+        badges={
+          <>
+            <Notice />
+            {state.status === "ready" && (m || identity || recorded) ? (
+              <div className="profile-badges">
+                {m?.badges.map((badge) => (
+                  <span key={badge}>{badge}</span>
+                ))}
+                <PublicXLink
+                  actorId={(m?.actor ?? identity?.actor ?? recorded!).id}
+                />
+                {own ? <a href="/account">Manage account</a> : null}
+              </div>
+            ) : state.status === "ready" ? (
+              <p>
+                {joinStatus === "loading"
+                  ? "Looking up membership…"
+                  : joinStatus === "unavailable"
+                    ? "Membership is temporarily unavailable."
+                    : "No recorded points for this account yet. Join to get started."}
+              </p>
+            ) : null}
+          </>
+        }
         summary={
           <>
             {summary}
@@ -529,61 +546,13 @@ export function ProfilePoints({
                     ? "Loading…"
                     : "Unavailable"}
               </strong>
-              <span>Points · recorded history</span>
+              <span>points</span>
             </div>
           </>
         }
-      />
-      <h2>Slop Points</h2>
-      <Notice />
-      {state.status === "ready" && (m || identity || recorded) ? (
-        <>
-          <p>
-            {m?.monthly.toLocaleString() ?? "0"} earned points this month
-            {identity
-              ? ` · 5 welcome points · ${identity.socialPoints ?? 0} X connection points`
-              : ""}
-          </p>
-          {m || identity || recorded ? (
-            <PublicXLink
-              actorId={(m?.actor ?? identity?.actor ?? recorded!).id}
-            />
-          ) : null}
-          <p>{m?.badges.join(" · ") ?? "Welcome to Slop"}</p>
-          <button
-            type="button"
-            onClick={() => {
-              void navigator.clipboard
-                .writeText(
-                  `${window.location.origin}/contributors/${encodeURIComponent(login)}`,
-                )
-                .then(
-                  () => setCopied("Link copied"),
-                  () =>
-                    setCopied("Copy unavailable. Copy this page’s address."),
-                );
-            }}
-          >
-            Copy profile link
-          </button>
-          <span role="status">{copied}</span>
-        </>
-      ) : state.status === "ready" ? (
-        <p>
-          {joinStatus === "loading"
-            ? "Looking up membership…"
-            : joinStatus === "unavailable"
-              ? "Membership is temporarily unavailable."
-              : "No recorded points for this account yet. Join to get started."}
-        </p>
-      ) : null}
-      <p>{POINTS_NOTICE}</p>
-      {own ? (
-        <p>
-          <a href="/account">Manage account and social connections</a>
-        </p>
-      ) : null}
-      <a href="/points#rules">How to earn points</a>
+      >
+        {children}
+      </ProfileActivity>
     </section>
   );
 }
@@ -960,11 +929,15 @@ export function ContributorStandings({
   const metric = (
     m: ReturnType<typeof contributorStandings>["rows"][number],
   ) => (sort === "score" ? m.score : sort === "points" ? m.points : m.money);
+  const [direct, retryDirect] = useAllDirectTransfers(
+    PROJECTS.map((p) => p.id),
+  );
   const projection = contributorStandings(
     scores,
     state.status === "ready" ? members : null,
     period === "month" ? new Date().toISOString().slice(0, 7) : null,
     project,
+    direct.status === "ready" ? direct.transfers : [],
   );
   // Loading and failed sources stay distinct in each column.
   const scoreMissing = scores.status === "loading" ? "Loading…" : "Unavailable";
@@ -1013,16 +986,17 @@ export function ContributorStandings({
         <DataNotice state={scores} retry={retryScore ?? retryLoadedScore} />
       ) : null}
       <Notice />
-      {scores.status === "ready" ? (
+      {sort === "money" && direct.status === "error" ? (
+        <p className="points-meta" role="status">
+          Direct payments are not included: {direct.message}.{" "}
+          <button type="button" onClick={retryDirect}>
+            Retry
+          </button>
+        </p>
+      ) : null}
+      {scores.status === "ready" && !projection.scoreAvailable ? (
         <p className="points-meta">
-          Score records: {formatDate(scores.snapshot.window.from)} to{" "}
-          {formatDate(scores.snapshot.window.to)}, plus closed cycles.
-          {period === "month"
-            ? ` Selected month: ${new Date().toISOString().slice(0, 7)} (UTC).`
-            : " Recorded history; coverage may have gaps."}
-          {!projection.scoreAvailable
-            ? " No score records cover this period. Select Recorded history or retry after the next update."
-            : ""}
+          No score records cover this period. Select Recorded history.
         </p>
       ) : null}
       <div className="points-controls">
@@ -1085,17 +1059,19 @@ export function ContributorStandings({
             </select>
           </label>
         ) : null}
-        <label>
-          Find a contributor
-          <input
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setPage(0);
-            }}
-            type="search"
-          />
-        </label>
+        {!compact ? (
+          <label>
+            Find a contributor
+            <input
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(0);
+              }}
+              type="search"
+            />
+          </label>
+        ) : null}
       </div>
       {(
         sort === "points"
@@ -1189,17 +1165,6 @@ export function ContributorStandings({
             </button>
           </div>
         </>
-      ) : null}
-      <p className="points-meta">
-        Slop Score measures accepted work. Points record recognition. Money
-        received is verified finalized USDC principal. Equal values share a
-        rank.
-      </p>
-      {compact ? (
-        <p>
-          <a href="/points">Full standings and earning rules</a> ·{" "}
-          <a href="/points#people">Find people</a>
-        </p>
       ) : null}
     </section>
   );
