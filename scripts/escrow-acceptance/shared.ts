@@ -7,7 +7,13 @@
  * Nothing here reads, stores or prints a private key.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, readdirSync, renameSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import {
   dispatchPayment,
@@ -17,11 +23,22 @@ import { handlePaymentsApi } from "../../backend/payments/handler";
 import { projectVaultSnapshots } from "../../backend/payments/vault-snapshots";
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import type { VaultTotals } from "../../contracts/vault-totals";
-import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
+import {
+  ESCROW_NETWORKS,
+  type EscrowDeployment,
+  paymentDeploymentRecord,
+} from "../../src/lib/escrow-policy.mjs";
+import { fundingAssetForNetwork } from "../../src/lib/funding-address.mjs";
+import {
+  assertProjectDefinition,
+  CONTRIBUTION_FIELDS,
+  PROJECT_SKILL_TEMPLATES,
+} from "../../src/lib/project-schema.mjs";
 import { sqliteD1 } from "../../tests/sqlite-d1";
 import { sha256Hex } from "../../workers/identity/crypto";
 import type { JournalStore } from "../../workers/payment-executor/core";
 import paymentsWorker, {
+  type PaymentDeployment,
   type PaymentsWorkerEnvironment,
 } from "../../workers/payments/index";
 
@@ -404,6 +421,166 @@ export interface Fetcher {
   fetch(request: Request): Promise<Response>;
 }
 
+/** A SQLite file beside the evidence with every D1 migration, kept across reruns. */
+function migratedDatabase(directory: string, name: string) {
+  mkdirSync(directory, { recursive: true });
+  const file = join(directory, name);
+  const migrations = existsSync(file)
+    ? []
+    : readdirSync(resolve(import.meta.dir, "..", "..", "migrations"))
+        .filter((entry) => entry.endsWith(".sql"))
+        .sort();
+  const { db, sqlite } = sqliteD1(migrations, file);
+  sqlite.exec("PRAGMA foreign_keys=ON");
+  return { db: db as unknown as D1Database, sqlite };
+}
+
+/**
+ * The project registry that the payments Worker reads as REGISTRY_DB: a
+ * separate SQLite file with every migration, as configure.mjs binds the
+ * registry apart from PAYMENTS_DB. Each acceptance vault is one project whose
+ * current manifest records that vault as its escrow deployment, so the
+ * dispatcher finds the vault the same way it finds a production vault.
+ */
+export class AcceptanceRegistry {
+  readonly db: D1Database;
+  readonly sqlite: Database;
+  constructor(directory: string) {
+    const { db, sqlite } = migratedDatabase(directory, "registry.sqlite");
+    this.db = db;
+    this.sqlite = sqlite;
+  }
+  /**
+   * Writes revision 1 of each vault's project, or confirms the stored one
+   * when the run resumes, and returns the worker records that the
+   * dispatcher derives from the same manifests. A stored manifest that
+   * differs stops the run: a recorded escrow deployment never changes.
+   */
+  record(
+    projects: {
+      projectId: string;
+      effectiveCycle: string;
+      deployment: EscrowDeployment;
+    }[],
+  ): PaymentDeployment[] {
+    return projects.map(({ projectId, effectiveCycle, deployment }) => {
+      const manifest = acceptanceManifest(
+        projectId,
+        effectiveCycle,
+        deployment,
+      );
+      const text = JSON.stringify(manifest);
+      const digest = sha256Text(text);
+      const stored = this.sqlite
+        .query<{ manifest_sha256: string }, [string]>(
+          "SELECT manifest_sha256 FROM projects WHERE id=?",
+        )
+        .get(projectId);
+      if (stored && stored.manifest_sha256 !== digest)
+        throw new Error(
+          `Registry project ${projectId} records another escrow deployment`,
+        );
+      if (!stored) {
+        const at = new Date().toISOString();
+        this.sqlite.transaction(() => {
+          this.sqlite
+            .prepare(
+              "INSERT INTO project_revisions(project_id,revision,manifest,manifest_sha256,reason,actor_github_id,actor_github_login,created_at) VALUES(?,1,?,?,?,?,?,?)",
+            )
+            .run(
+              projectId,
+              text,
+              digest,
+              "Record escrow acceptance deployment",
+              "0",
+              "escrow-acceptance",
+              at,
+            );
+          this.sqlite
+            .prepare(
+              "INSERT INTO projects(id,status,revision,manifest,manifest_sha256,created_at,updated_at) VALUES(?,?,1,?,?,?,?)",
+            )
+            .run(projectId, manifest.status, text, digest, at, at);
+        })();
+      }
+      return paymentDeploymentRecord(
+        projectId,
+        deployment,
+      ) as unknown as PaymentDeployment;
+    });
+  }
+}
+
+/**
+ * A paused test project with one escrow deployment, checked by the same
+ * schema as an admin revision. Steward, terms and repository come from the
+ * repository's own Slop fixture and the skills use the generated templates;
+ * the legacy payment path stays disabled, as every escrow project requires.
+ */
+function acceptanceManifest(
+  projectId: string,
+  effectiveCycle: string,
+  deployment: EscrowDeployment,
+) {
+  const fixture = JSON.parse(
+    readFileSync(
+      resolve(
+        import.meta.dir,
+        "..",
+        "..",
+        "tests",
+        "fixtures",
+        "projects",
+        "slopdotcash.json",
+      ),
+      "utf8",
+    ),
+  );
+  const chain = ESCROW_NETWORKS[deployment.network].chain;
+  return assertProjectDefinition({
+    ...fixture,
+    id: projectId,
+    slug: projectId,
+    name: `Escrow acceptance ${projectId}`,
+    status: "paused",
+    skill: {
+      id: `contribute-to-${projectId}`,
+      publishAtRoot: false,
+      sourcePath: PROJECT_SKILL_TEMPLATES.contributor,
+      publicPath: `/projects/${projectId}/skill.md`,
+    },
+    reviewSkill: {
+      id: `review-${projectId}-contributions`,
+      sourcePath: PROJECT_SKILL_TEMPLATES.reviewer,
+    },
+    contribution: Object.fromEntries(
+      CONTRIBUTION_FIELDS.map((field) => [
+        field,
+        field === "approvedScope"
+          ? "None. This project exists only for an escrow acceptance run."
+          : "",
+      ]),
+    ),
+    reward: {
+      ...fixture.reward,
+      chain,
+      currency: fundingAssetForNetwork(chain),
+      feeBasisPoints: 200,
+      paymentMode: "disabled",
+    },
+    funding: { ...fixture.funding, recordsPath: `funding/${projectId}` },
+    escrow: {
+      schemaVersion: "1",
+      effectiveCycle,
+      chain,
+      feeBasisPoints: 200,
+      withdrawalFeeBasisPoints: 500,
+      feeMode: "deduct-from-gross",
+      deployments: [deployment],
+    },
+  });
+}
+
 /**
  * The local backend: one SQLite file with every migration, plus one durable
  * journal per signer role. It persists beside the evidence so a rerun resumes
@@ -414,16 +591,8 @@ export class Projection {
   readonly sqlite: Database;
   private readonly sessions = new Map<string, string>();
   constructor(readonly directory: string) {
-    mkdirSync(directory, { recursive: true });
-    const file = join(directory, "projection.sqlite");
-    const migrations = existsSync(file)
-      ? []
-      : readdirSync(resolve(import.meta.dir, "..", "..", "migrations"))
-          .filter((name) => name.endsWith(".sql"))
-          .sort();
-    const { db, sqlite } = sqliteD1(migrations, file);
-    sqlite.exec("PRAGMA foreign_keys=ON");
-    this.db = db as unknown as D1Database;
+    const { db, sqlite } = migratedDatabase(directory, "projection.sqlite");
+    this.db = db;
     this.sqlite = sqlite;
   }
   journal(role: string): JournalStore {
