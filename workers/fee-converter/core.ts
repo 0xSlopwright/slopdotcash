@@ -73,10 +73,12 @@ export interface PreparedSend {
   minAmountOut: bigint;
 }
 
-/** An ERC-20 approval that must be durable before it is broadcast. */
+/**
+ * An ERC-20 approval that must be durable before it is broadcast. Only its
+ * hash and nonce are kept: `raw_tx` is immutable once set and holds the swap.
+ */
 export interface PreparedApproval {
   txId: string;
-  rawTx: string;
   evmNonce: number;
 }
 
@@ -489,7 +491,6 @@ async function convert(
     prepared = await client.prepare(token, quote, async (approval) => {
       await deps.store.update(row.id, {
         approvalTxId: approval.txId,
-        rawTx: approval.rawTx,
         evmNonce: approval.evmNonce,
         updatedAt: at(),
       });

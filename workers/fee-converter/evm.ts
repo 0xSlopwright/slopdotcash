@@ -357,7 +357,6 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
         );
         await recordApproval({
           txId: approval.hash,
-          rawTx: approval.raw,
           evmNonce: nonce,
         });
         await sendRaw(approval.raw);
