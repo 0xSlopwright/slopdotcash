@@ -18,6 +18,7 @@ import { handleProjectArtifactRequest } from "../backend/projects/skill-publicat
 import { TokenMetadataError } from "../backend/projects/token-metadata";
 import { PROJECT_SKILL_TEMPLATES } from "../src/lib/project-schema.mjs";
 import { sha256Hex } from "../src/lib/project-skill-publication.mjs";
+import type { ProjectDefinition } from "../src/lib/projects.mjs";
 import {
   applicationManifest,
   CONTRIBUTION,
@@ -732,5 +733,106 @@ describe("project enforcement (ADM-06)", () => {
         (record: { action: string }) => record.action,
       ),
     ).toEqual(["quarantine", "ban", "request_reinstatement", "reinstate"]);
+  });
+
+  test("a revision of another project cannot claim a banned repository", async () => {
+    await listProject();
+    // Listed before the ban: the renamed repository, same GitHub id.
+    await listProject(
+      applicationManifest("renamed-registry", "example/renamed-registry"),
+    );
+    // Listed before the ban: a different repository.
+    const base = applicationManifest(
+      "other-registry",
+      "example/other-registry",
+    );
+    await listProject({
+      ...base,
+      authority: {
+        ...(base.authority as Record<string, unknown>),
+        repositoryId: "222222222",
+        repositoryNodeId: "R_other",
+      },
+    });
+    expect((await enforce("admin", "quarantine")).status).toBe(200);
+    expect((await enforce("admin", "ban")).status).toBe(200);
+    async function revise(
+      projectId: string,
+      change: (manifest: ProjectDefinition) => Record<string, unknown>,
+    ) {
+      const project = await persistence.getProject(projectId);
+      if (project === null) throw new Error(`${projectId} is not listed`);
+      const response = await call(
+        "PUT",
+        `admin/projects/${projectId}/manifest`,
+        "admin",
+        {
+          manifest: change(project.manifest),
+          expectedRevision: 1,
+          reason: "List the banned repository again",
+        },
+      );
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toBe("repository_restricted");
+      expect(await persistence.getProject(projectId)).toMatchObject({
+        revision: 1,
+      });
+    }
+    // The banned repository's GitHub id under its new name.
+    await revise("renamed-registry", (manifest) => ({
+      ...manifest,
+      listingTier: "featured",
+    }));
+    // The banned repository's old path appended as an alias.
+    await revise("other-registry", (manifest) => ({
+      ...manifest,
+      repositories: manifest.repositories.map((repository) => ({
+        ...repository,
+        aliases: ["example/open-registry"],
+      })),
+    }));
+  });
+
+  test("a revision fails when a restriction lands after its read", async () => {
+    await listProject();
+    const listed = await persistence.getProject("open-registry");
+    // Retired already, so the quarantine appends no revision of its own and
+    // only the enforcement guard can refuse the stale write.
+    const retired = await call(
+      "PUT",
+      "admin/projects/open-registry/manifest",
+      "admin",
+      {
+        manifest: { ...listed?.manifest, listingTier: "retired" },
+        expectedRevision: 1,
+        reason: "Retire",
+      },
+    );
+    expect(retired.status).toBe(200);
+    const read = persistence.listEnforcements.bind(persistence);
+    // The quarantine lands between the restriction read and the append.
+    persistence.listEnforcements = async () => {
+      const records = await read();
+      persistence.listEnforcements = read;
+      const quarantined = await enforce("admin", "quarantine");
+      expect((await quarantined.json()).record.result).toBe(
+        "no_revision_needed",
+      );
+      return records;
+    };
+    const raced = await call(
+      "PUT",
+      "admin/projects/open-registry/manifest",
+      "admin",
+      {
+        manifest: { ...listed?.manifest, listingTier: "community" },
+        expectedRevision: 2,
+        reason: "List again",
+      },
+    );
+    expect(raced.status).toBe(409);
+    const after = await persistence.getProject("open-registry");
+    expect(after).toMatchObject({ revision: 2, status: "paused" });
+    expect(after?.manifest.listingTier).toBe("retired");
   });
 });

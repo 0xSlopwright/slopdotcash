@@ -443,7 +443,10 @@ async function submitApplication(
     await verifiedRewardAsset(body.manifest, undefined, deps),
   );
   assertApplicationManifest(manifest);
-  await assertRepositoryUnrestricted(deps, manifest);
+  assertRepositoryUnrestricted(
+    manifest,
+    await deps.persistence.listEnforcements(),
+  );
   const actor = {
     githubId: session.githubId,
     githubLogin: session.githubLogin,
@@ -607,7 +610,10 @@ async function decideApplication(
     // Re-check against the live registry: another approval may have claimed
     // the id or repository since this application was submitted.
     canonicalManifest(application.manifest);
-    await assertRepositoryUnrestricted(deps, application.manifest);
+    assertRepositoryUnrestricted(
+      application.manifest,
+      await deps.persistence.listEnforcements(),
+    );
     assertRegistryWith(
       await deps.persistence.listProjects(),
       application.manifest,
@@ -690,10 +696,11 @@ async function replaceProjectManifest(
   if (current.revision !== body.expectedRevision) {
     fail(409, "stale_revision", "The project changed since you loaded it");
   }
-  const restriction = projectRestriction(
-    projectId,
-    await deps.persistence.listEnforcements(),
-  );
+  // Read the generation first: a record that lands after it makes the
+  // guarded append below a conflict, so no write uses stale restrictions.
+  const enforcementGeneration = await deps.persistence.enforcementGeneration();
+  const enforcements = await deps.persistence.listEnforcements();
+  const restriction = projectRestriction(projectId, enforcements);
   const { manifest, text } = canonicalManifest(
     await verifiedRewardAsset(
       body.manifest,
@@ -712,6 +719,12 @@ async function replaceProjectManifest(
       `The project is ${restriction.state}; a revision must keep it paused and retired until reinstatement`,
     );
   }
+  // Nor can a revision move a restricted repository, renamed or not, into
+  // another project. The project's own restriction is checked above.
+  assertRepositoryUnrestricted(
+    manifest,
+    enforcements.filter((record) => record.projectId !== projectId),
+  );
   try {
     assertProjectPolicyTransition(current.manifest, manifest);
   } catch (error) {
@@ -735,16 +748,19 @@ async function replaceProjectManifest(
       "Root skill publication is retired; project skills are served at /projects/<id>/SKILL.md",
     );
   }
-  const result = await deps.persistence.appendProjectRevision({
-    projectId,
-    expectedRevision: current.revision,
-    manifest,
-    manifestText: text,
-    manifestSha256: await sha256Hex(new TextEncoder().encode(text)),
-    reason,
-    actor: { githubId: session.githubId, githubLogin: session.githubLogin },
-    at: deps.now().toISOString(),
-  });
+  const result = await deps.persistence.appendProjectRevision(
+    {
+      projectId,
+      expectedRevision: current.revision,
+      manifest,
+      manifestText: text,
+      manifestSha256: await sha256Hex(new TextEncoder().encode(text)),
+      reason,
+      actor: { githubId: session.githubId, githubLogin: session.githubLogin },
+      at: deps.now().toISOString(),
+    },
+    enforcementGeneration,
+  );
   if (result === "conflict") {
     fail(409, "stale_revision", "The project changed since you loaded it");
   }
@@ -782,15 +798,15 @@ function activePublicRestrictions(
     .map(publicRestriction);
 }
 
-/** Refuses an application or approval for a restricted repository. */
-async function assertRepositoryUnrestricted(
-  deps: ProjectApiDependencies,
+/**
+ * Refuses an application, approval or revision that claims a repository of
+ * a restricted project.
+ */
+function assertRepositoryUnrestricted(
   manifest: ProjectDefinition,
-): Promise<void> {
-  const restriction = restrictionForRepository(
-    manifest,
-    await deps.persistence.listEnforcements(),
-  );
+  enforcements: ProjectEnforcement[],
+): void {
+  const restriction = restrictionForRepository(manifest, enforcements);
   if (restriction !== null)
     fail(
       403,

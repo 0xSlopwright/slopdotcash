@@ -149,8 +149,13 @@ export interface ProjectPersistence {
   rejectApplication(
     input: DecisionInput & { reason: string },
   ): Promise<"rejected" | "conflict">;
+  /**
+   * Appends the revision only while the project is at `expectedRevision`
+   * and the enforcement generation is still `expectedEnforcementGeneration`.
+   */
   appendProjectRevision(
     input: ProjectRevisionInput,
+    expectedEnforcementGeneration: number,
   ): Promise<"updated" | "conflict">;
   /** Every enforcement record, oldest first per project. */
   listEnforcements(): Promise<ProjectEnforcement[]>;

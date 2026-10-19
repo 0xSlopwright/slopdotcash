@@ -446,9 +446,14 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
 
   async appendProjectRevision(
     input: ProjectRevisionInput,
+    expectedEnforcementGeneration: number,
   ): Promise<"updated" | "conflict"> {
     const nextRevision = input.expectedRevision + 1;
-    const current = `EXISTS (SELECT 1 FROM projects WHERE id = ? AND revision = ?)`;
+    // The revision applies only while no enforcement record has landed since
+    // the caller read the restrictions it checked.
+    const unrestricted =
+      "(SELECT COALESCE(MAX(rowid), 0) FROM project_enforcements) = ?";
+    const current = `EXISTS (SELECT 1 FROM projects WHERE id = ? AND revision = ?) AND ${unrestricted}`;
     try {
       const results = await this.db.batch([
         this.db
@@ -469,13 +474,14 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
             input.at,
             input.projectId,
             input.expectedRevision,
+            expectedEnforcementGeneration,
           ),
         this.db
           .prepare(
             `UPDATE projects
                 SET status = ?, revision = ?, manifest = ?, manifest_sha256 = ?,
                     updated_at = ?
-              WHERE id = ? AND revision = ?`,
+              WHERE id = ? AND revision = ? AND ${unrestricted}`,
           )
           .bind(
             input.manifest.status,
@@ -485,6 +491,7 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
             input.at,
             input.projectId,
             input.expectedRevision,
+            expectedEnforcementGeneration,
           ),
         notifyProjectRevision(
           this.db,
