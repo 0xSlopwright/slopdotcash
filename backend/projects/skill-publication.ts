@@ -10,12 +10,13 @@ import {
   buildProjectPublication,
   PUBLIC_SITE_ORIGIN,
 } from "../../src/lib/project-skill-publication.mjs";
-import type { ProjectRecord } from "./contracts";
+import type { ProjectEnforcement, ProjectRecord } from "./contracts";
 import {
   cachedPublicResponse,
   type EdgeCache,
   PUBLIC_PROJECT_CACHE_CONTROL,
 } from "./edge-cache";
+import { projectRestriction } from "./enforcement";
 
 /** The build's /skill-templates/index.json. */
 export type SkillTemplateIndex = {
@@ -43,6 +44,8 @@ export type SkillTemplateSource = {
 export type SkillPublicationDependencies = {
   getProject(id: string): Promise<ProjectRecord | null>;
   listProjects(): Promise<ProjectRecord[]>;
+  listEnforcements(): Promise<ProjectEnforcement[]>;
+  enforcementGeneration(): Promise<number>;
   loadTemplate(): Promise<SkillTemplateSource>;
   cache?: EdgeCache;
   waitUntil?: (promise: Promise<unknown>) => void;
@@ -116,16 +119,29 @@ function jsonResponse(value: unknown): Response {
   );
 }
 
-function listed(project: ProjectRecord | null): project is ProjectRecord {
-  return project !== null && project.manifest.listingTier !== "retired";
+/** A retired or restricted project serves no skill, guide or archive. */
+function listed(
+  project: ProjectRecord | null,
+  records: ProjectEnforcement[],
+): project is ProjectRecord {
+  return (
+    project !== null &&
+    project.manifest.listingTier !== "retired" &&
+    projectRestriction(project.id, records).state === "clear"
+  );
 }
 
 /** The routing index the bootstrap skill matches a repository origin against. */
 async function discovery(
   deps: SkillPublicationDependencies,
 ): Promise<Response> {
-  const projects = (await deps.listProjects()).filter(
-    (project) => listed(project) && publishesGeneratedSkills(project.manifest),
+  const [all, records] = await Promise.all([
+    deps.listProjects(),
+    deps.listEnforcements(),
+  ]);
+  const projects = all.filter(
+    (project) =>
+      listed(project, records) && publishesGeneratedSkills(project.manifest),
   );
   return jsonResponse({
     schemaVersion: "1",
@@ -147,8 +163,17 @@ async function artifact(
   target: { projectId: string; path: string },
   deps: SkillPublicationDependencies,
 ): Promise<Response> {
-  const project = await deps.getProject(target.projectId);
-  if (!listed(project)) return text(404, "Project not found.\n");
+  const [project, records] = await Promise.all([
+    deps.getProject(target.projectId),
+    deps.listEnforcements(),
+  ]);
+  const restriction = projectRestriction(target.projectId, records);
+  if (project !== null && restriction.state !== "clear")
+    return text(
+      410,
+      `This project is ${restriction.state}. Its skills, guides and archives are not available.\n`,
+    );
+  if (!listed(project, records)) return text(404, "Project not found.\n");
   if (target.path === "terms.json") {
     const manifest = project.manifest;
     return jsonResponse({
@@ -194,6 +219,7 @@ export async function handleProjectArtifactRequest(
       request,
       () => (target === "discovery" ? discovery(deps) : artifact(target, deps)),
       deps.waitUntil,
+      await deps.enforcementGeneration(),
     );
   } catch {
     console.error("project artifact failure");

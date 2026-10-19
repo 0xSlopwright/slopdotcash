@@ -151,17 +151,45 @@ export async function fetchProjectRegistry(origin = DEFAULT_API_ORIGIN) {
     fetchJson(new URL("/api/v1/projects", origin)),
     fetchJson(new URL("/api/v1/project-revisions", origin)),
   ]);
+  // An origin that predates enforcement (PRD ADM-06) omits restrictions.
+  const restrictions = registry?.restrictions ?? [];
   if (
     registry?.schemaVersion !== "1" ||
     !Array.isArray(registry.projects) ||
-    Object.keys(registry).length !== 2 ||
+    !Array.isArray(restrictions) ||
+    Object.keys(registry).some(
+      (key) => !["schemaVersion", "projects", "restrictions"].includes(key),
+    ) ||
     history?.schemaVersion !== "1" ||
     !Array.isArray(history.revisions) ||
     Object.keys(history).length !== 2
   ) {
     throw new TypeError("Project registry response has an unexpected shape");
   }
+  assertRestrictionsApplied(registry.projects, restrictions);
   return { projects: registry.projects, revisions: history.revisions };
+}
+
+/**
+ * A quarantined or banned project must already be paused and retired in its
+ * newest revision; otherwise ingestion could still collect it. The admin
+ * appends the pending revision at /admin before a build can continue.
+ */
+function assertRestrictionsApplied(projects, restrictions) {
+  for (const restriction of restrictions) {
+    const project = projects.find(
+      (entry) => entry?.id === restriction?.projectId,
+    );
+    if (
+      project === undefined ||
+      !["quarantined", "banned"].includes(restriction.state)
+    )
+      throw new TypeError("Project restriction has an unexpected shape");
+    if (project.status !== "paused" || project.listingTier !== "retired")
+      throw new TypeError(
+        `Project ${project.id} is ${restriction.state} but its paused, retired revision is pending; append it at /admin`,
+      );
+  }
 }
 
 async function committedDefinitions() {

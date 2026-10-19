@@ -81,6 +81,44 @@ export type DecisionInput = {
   at: string;
 };
 
+export type EnforcementAction =
+  | "quarantine"
+  | "ban"
+  | "request_reinstatement"
+  | "reinstate"
+  | "deny_reinstatement";
+export type RestrictionState = "clear" | "quarantined" | "banned";
+export type AppealState = "none" | "requested" | "granted" | "denied";
+export type EnforcementResult =
+  | "revision_appended"
+  | "revision_pending"
+  | "no_revision_needed";
+
+/** One append-only ADM-06 record with the ADM-05 audit fields. */
+export type ProjectEnforcement = {
+  id: string;
+  projectId: string;
+  sequence: number;
+  action: EnforcementAction;
+  stateAfter: RestrictionState;
+  appealAfter: AppealState;
+  reason: string;
+  evidenceReference: string;
+  /** Immutable GitHub repository id from the manifest authority. */
+  repositoryGithubId: string;
+  /** Lowercase repository paths, including transfer aliases. */
+  repositoryKeys: string[];
+  actor: GithubActor;
+  actorRole: "project-moderator";
+  decisionSource: "admin-panel";
+  beforeRevision: number;
+  beforeManifestSha256: string;
+  afterRevision: number | null;
+  afterManifestSha256: string | null;
+  result: EnforcementResult;
+  createdAt: string;
+};
+
 export interface ProjectPersistence {
   listProjects(): Promise<ProjectRecord[]>;
   getProject(id: string): Promise<ProjectRecord | null>;
@@ -111,7 +149,24 @@ export interface ProjectPersistence {
   rejectApplication(
     input: DecisionInput & { reason: string },
   ): Promise<"rejected" | "conflict">;
+  /**
+   * Appends the revision only while the project is at `expectedRevision`
+   * and the enforcement generation is still `expectedEnforcementGeneration`.
+   */
   appendProjectRevision(
     input: ProjectRevisionInput,
+    expectedEnforcementGeneration: number,
   ): Promise<"updated" | "conflict">;
+  /** Every enforcement record, oldest first per project. */
+  listEnforcements(): Promise<ProjectEnforcement[]>;
+  /** Changes on every enforcement record; it keys the public edge cache. */
+  enforcementGeneration(): Promise<number>;
+  /**
+   * Atomically appends the record and, when given, the matching revision.
+   * Both apply only while the project is still at `beforeRevision`.
+   */
+  appendEnforcement(
+    record: ProjectEnforcement,
+    revision: ProjectRevisionInput | null,
+  ): Promise<"recorded" | "conflict">;
 }

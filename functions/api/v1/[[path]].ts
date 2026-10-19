@@ -49,6 +49,11 @@ type Env = {
   OPERATOR_GITHUB_IDS?: string;
   /** GitHub numeric actor IDs allowed to review project applications. */
   ADMIN_GITHUB_IDS?: string;
+  /**
+   * GitHub numeric actor IDs with the project moderation role: Quarantine,
+   * Ban and reinstatement (PRD ADM-06). Unset keeps those actions closed.
+   */
+  PROJECT_MODERATOR_GITHUB_IDS?: string;
   SLOP_IDENTITY: { fetch(request: Request): Promise<Response> };
   /** Local browser tests only: a loopback GitHub API fixture origin. */
   SLOP_GITHUB_API_ORIGIN?: string;
@@ -287,6 +292,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   const projectResponse = await handleProjectApi(context.request, {
     persistence: new CloudflareProjectPersistence(context.env.SLOP_DB),
     adminGithubIds: githubIdSet(context.env.ADMIN_GITHUB_IDS),
+    moderatorGithubIds: githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),
     now: () => new Date(),
     randomId: () => crypto.randomUUID(),
     sessionActor: (request) =>

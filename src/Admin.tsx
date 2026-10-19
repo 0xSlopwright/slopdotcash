@@ -15,6 +15,7 @@ import {
 } from "react";
 import contributorTemplate from "../skills/project-contributor-template/SKILL.md?raw";
 import reviewerTemplate from "../skills/project-reviewer-template/SKILL.md?raw";
+import { ProjectEnforcementPanel } from "./AdminProjectEnforcement";
 import { CONTRIBUTION_LABELS } from "./lib/contribution-fields";
 import {
   type AdminProject,
@@ -40,7 +41,7 @@ import {
 } from "./lib/reward-asset.mjs";
 import { loginHref } from "./Points";
 
-function errorMessage(error: unknown): string {
+export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";
 }
 
@@ -75,7 +76,7 @@ export function SignInPanel({
   );
 }
 
-function formatTime(value: string | null): string {
+export function formatTime(value: string | null): string {
   if (value === null) return "—";
   return new Date(value).toLocaleString("en-US", {
     dateStyle: "medium",
@@ -901,6 +902,13 @@ function ProjectsSection() {
               </button>
             )}
             <DelistButton
+              onDone={(saved) => {
+                setNote(saved);
+                reload();
+              }}
+              project={project}
+            />
+            <ProjectEnforcementPanel
               onDone={(saved) => {
                 setNote(saved);
                 reload();

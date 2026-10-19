@@ -102,9 +102,13 @@ describe("notification events", () => {
       actor: admin,
       at: R,
     };
-    expect(await persistence.appendProjectRevision(revision)).toBe("updated");
+    expect(await persistence.appendProjectRevision(revision, 0)).toBe(
+      "updated",
+    );
     // The same revision cannot be appended twice.
-    expect(await persistence.appendProjectRevision(revision)).toBe("conflict");
+    expect(await persistence.appendProjectRevision(revision, 0)).toBe(
+      "conflict",
+    );
     expect(rows(APPLICANT)).toEqual([
       {
         event_key: "project-application:application-alpha:approved",
