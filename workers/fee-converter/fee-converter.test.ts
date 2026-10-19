@@ -317,6 +317,34 @@ describe("conversion policy", () => {
 });
 
 describe("idempotent sends", () => {
+  test("an approval is recorded before it can be broadcast", async () => {
+    const h = harness();
+    h.chain.prepare = async (_token, quote, recordApproval) => {
+      await recordApproval({
+        txId: `0x${"a".repeat(64)}`,
+        rawTx: "0xapproval",
+        evmNonce: 7,
+      });
+      expect(h.rows()[0]).toMatchObject({
+        state: "quoted",
+        approval_tx_id: `0x${"a".repeat(64)}`,
+        raw_tx: "0xapproval",
+        evm_nonce: 7,
+      });
+      throw new Error(`approval broadcast failed for ${quote.amountIn}`);
+    };
+
+    await runNetwork(h.network, h.deps);
+
+    expect(h.rows()[0]).toMatchObject({
+      state: "failed",
+      approval_tx_id: `0x${"a".repeat(64)}`,
+      raw_tx: "0xapproval",
+      evm_nonce: 7,
+      reason: "prepare: approval broadcast failed for 20000000",
+    });
+  });
+
   test("an unknown send blocks a new attempt until it is reconciled", async () => {
     const h = harness();
     h.chain.broadcastError = new Error(
