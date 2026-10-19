@@ -1,6 +1,8 @@
 /**
- * Runs D1 statements against an in-memory SQLite database with the real
- * migrations, so registry tests exercise the actual tables and triggers.
+ * Runs D1 statements against a SQLite database with the real migrations, so
+ * registry tests exercise the actual tables and triggers. The database is in
+ * memory unless `file` names one; a caller reopening a file passes no
+ * migrations.
  */
 import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
@@ -11,11 +13,14 @@ type Statement = ReturnType<ProjectD1Database["prepare"]> & {
   runSync(): { success: boolean; meta: { changes: number } };
 };
 
-export function sqliteD1(migrations: string[]): {
+export function sqliteD1(
+  migrations: string[],
+  file = ":memory:",
+): {
   db: ProjectD1Database;
   sqlite: Database;
 } {
-  const sqlite = new Database(":memory:");
+  const sqlite = new Database(file);
   const root = resolve(import.meta.dir, "..", "migrations");
   for (const migration of migrations)
     sqlite.exec(readFileSync(join(root, migration), "utf8"));
