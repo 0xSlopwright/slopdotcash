@@ -10,8 +10,12 @@ export ANCHOR_PROVIDER_URL=http://127.0.0.1:18899
 export ANCHOR_WALLET="$PWD/.local/payer.json"
 validator_pid=""
 trap 'if [[ -n "$validator_pid" ]]; then kill "$validator_pid" 2>/dev/null || true; fi' EXIT
+# The program loads as upgradeable with the local payer as upgrade authority, so
+# ProgramData exists and the payer can sign initialize_config, as on mainnet before
+# the upgrade authority is revoked.
+upgrade_authority=$(solana-keygen pubkey "$ANCHOR_WALLET")
 start_validator() {
-  solana-test-validator --reset --quiet --ledger .local/ledger --rpc-port 18899 --faucet-port 18940 --dynamic-port-range 18901-18930 --bpf-program 4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj target/deploy/slop_escrow.so "$@" >.local/validator.log 2>&1 &
+  solana-test-validator --reset --quiet --ledger .local/ledger --rpc-port 18899 --faucet-port 18940 --dynamic-port-range 18901-18930 --upgradeable-program 4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj target/deploy/slop_escrow.so "$upgrade_authority" "$@" >.local/validator.log 2>&1 &
   validator_pid=$!
   for attempt in $(seq 1 40); do
     if solana --url "$ANCHOR_PROVIDER_URL" cluster-version >/dev/null 2>&1; then break; fi

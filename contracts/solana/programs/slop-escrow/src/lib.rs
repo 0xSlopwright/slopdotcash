@@ -23,9 +23,35 @@ pub const LEGACY_PROJECT_SIZE: usize = 265;
 /// the project. Each veto can only delay the actor by one more binding delay, so this
 /// bounds the owner's delay power.
 const MAX_VETOES_BETWEEN_PAYMENTS: u8 = 3;
+/// Unused-funds withdrawals pay 1/50 (2%) of cumulative withdrawn gross to the fee recipient.
+const WITHDRAWAL_FEE_DIVISOR: u64 = 50;
 #[program]
 pub mod slop_escrow {
     use super::*;
+    // Writes the deployment-wide identity authority and fee recipient once. Only the
+    // program's upgrade authority can sign it, so it must run before the upgrade authority
+    // is revoked. No instruction changes or closes the Config afterwards.
+    pub fn initialize_config(
+        ctx: Context<InitializeConfig>,
+        identity_authority: Pubkey,
+        fee_recipient: Pubkey,
+    ) -> Result<()> {
+        require!(
+            identity_authority != Pubkey::default()
+                && fee_recipient != Pubkey::default()
+                && identity_authority != fee_recipient,
+            EscrowError::InvalidIdentity
+        );
+        let c = &mut ctx.accounts.config;
+        c.identity_authority = identity_authority;
+        c.fee_recipient = fee_recipient;
+        c.bump = ctx.bumps.config;
+        emit!(ConfigInitialized {
+            identity_authority,
+            fee_recipient
+        });
+        Ok(())
+    }
     pub fn initialize(
         ctx: Context<Initialize>,
         project_id: [u8; 32],
@@ -43,6 +69,13 @@ pub mod slop_escrow {
                 && fee_recipient != ctx.accounts.owner.key()
                 && fee_recipient != ctx.accounts.project.key(),
             EscrowError::InvalidIdentity
+        );
+        // L-3: a new project uses only the identity authority and fee recipient that the
+        // upgrade authority pinned in Config.
+        require!(
+            identity_authority == ctx.accounts.config.identity_authority
+                && fee_recipient == ctx.accounts.config.fee_recipient,
+            EscrowError::ConfigMismatch
         );
         require!(
             valid_delay(binding_delay) && valid_rotation_delay(rotation_delay),
@@ -189,6 +222,8 @@ pub mod slop_escrow {
         });
         Ok(())
     }
+    // Anyone can fund a project. The deposit is credited to `deposited` and becomes free
+    // balance; only the owner can commit it or withdraw it.
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         require!(amount > 0, EscrowError::InvalidAmount);
         token::transfer_checked(
@@ -198,13 +233,18 @@ pub mod slop_escrow {
                     from: ctx.accounts.source.to_account_info(),
                     mint: ctx.accounts.mint.to_account_info(),
                     to: ctx.accounts.vault.to_account_info(),
-                    authority: ctx.accounts.owner.to_account_info(),
+                    authority: ctx.accounts.depositor.to_account_info(),
                 },
             ),
             amount,
-            6,
+            ctx.accounts.mint.decimals,
         )?;
         ctx.accounts.project.deposited = add(ctx.accounts.project.deposited, amount)?;
+        emit!(Deposited {
+            project: ctx.accounts.project.key(),
+            depositor: ctx.accounts.depositor.key(),
+            amount
+        });
         Ok(())
     }
     pub fn commit(
@@ -411,9 +451,7 @@ pub mod slop_escrow {
             EscrowError::InsufficientFreeBalance
         );
         let cumulative = add(p.withdrawn_gross, gross)?;
-        let fee = (cumulative / 10)
-            .checked_sub(p.withdrawal_fees)
-            .ok_or(EscrowError::Arithmetic)?;
+        let fee = withdrawal_fee(cumulative, p.withdrawal_fees);
         let returned = gross.checked_sub(fee).ok_or(EscrowError::Arithmetic)?;
         let seeds: &[&[u8]] = &[b"project", p.owner.as_ref(), &p.project_id, &[p.bump]];
         send(
@@ -489,6 +527,14 @@ pub mod slop_escrow {
 pub fn award_id_for(project: &Pubkey, source_digest: &[u8; 32]) -> [u8; 32] {
     hashv(&[b"slop-escrow-award", project.as_ref(), source_digest]).to_bytes()
 }
+/// The withdrawal fee still owed after `cumulative` gross has been withdrawn, of which
+/// `charged` fees were already paid. Charging the cumulative schedule makes split
+/// withdrawals pay the same total as one. A project that paid the earlier 10% schedule
+/// has `charged` above the 2% schedule; it pays zero until the 2% schedule catches up,
+/// and its withdrawals never fail on underflow.
+fn withdrawal_fee(cumulative: u64, charged: u64) -> u64 {
+    (cumulative / WITHDRAWAL_FEE_DIVISOR).saturating_sub(charged)
+}
 fn valid_delay(binding_delay: i64) -> bool {
     (MIN_BINDING_DELAY..=MAX_BINDING_DELAY).contains(&binding_delay)
 }
@@ -543,8 +589,20 @@ fn send<'info>(
             &[seeds],
         ),
         amount,
-        6,
+        mint.decimals,
     )
+}
+#[derive(Accounts)]
+pub struct InitializeConfig<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    #[account(init,payer=authority,space=8+Config::INIT_SPACE,seeds=[b"config"],bump)]
+    pub config: Account<'info, Config>,
+    #[account(constraint=program.programdata_address()?==Some(program_data.key()) @ EscrowError::NotUpgradeAuthority)]
+    pub program: Program<'info, crate::program::SlopEscrow>,
+    #[account(constraint=program_data.upgrade_authority_address==Some(authority.key()) @ EscrowError::NotUpgradeAuthority)]
+    pub program_data: Account<'info, ProgramData>,
+    pub system_program: Program<'info, System>,
 }
 #[derive(Accounts)]
 #[instruction(project_id:[u8;32])]
@@ -553,20 +611,23 @@ pub struct Initialize<'info> {
     pub owner: Signer<'info>,
     #[account(init,payer=owner,space=8+Project::INIT_SPACE,seeds=[b"project",owner.key().as_ref(),&project_id],bump)]
     pub project: Box<Account<'info, Project>>,
-    #[account(constraint=mint.decimals==6 @ EscrowError::WrongMint)]
+    /// Any classic SPL Token mint, with any decimals. `Account<Mint>` requires the classic
+    /// token program as owner, so Token-2022 mints are rejected.
     pub mint: Account<'info, Mint>,
     #[account(init,payer=owner,seeds=[b"vault",project.key().as_ref()],bump,token::mint=mint,token::authority=project)]
     pub vault: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+    #[account(seeds=[b"config"],bump=config.bump)]
+    pub config: Box<Account<'info, Config>>,
 }
 #[derive(Accounts)]
 pub struct Deposit<'info> {
-    pub owner: Signer<'info>,
-    #[account(mut,has_one=owner,has_one=mint)]
+    pub depositor: Signer<'info>,
+    #[account(mut,has_one=mint)]
     pub project: Box<Account<'info, Project>>,
     pub mint: Account<'info, Mint>,
-    #[account(mut,token::mint=mint,token::authority=owner)]
+    #[account(mut,token::mint=mint,token::authority=depositor)]
     pub source: Account<'info, TokenAccount>,
     #[account(mut,seeds=[b"vault",project.key().as_ref()],bump,token::mint=mint,token::authority=project)]
     pub vault: Account<'info, TokenAccount>,
@@ -728,6 +789,15 @@ pub struct Project {
     pub rotation_confirmed: bool,
     pub rotation_delay: i64,
 }
+/// The deployment-wide identity authority and fee recipient, written once by
+/// `initialize_config` and never changed.
+#[account]
+#[derive(InitSpace)]
+pub struct Config {
+    pub identity_authority: Pubkey,
+    pub fee_recipient: Pubkey,
+    pub bump: u8,
+}
 #[account]
 #[derive(InitSpace)]
 pub struct ServiceCharge {
@@ -843,6 +913,17 @@ pub struct UnusedWithdrawn {
     pub fee: u64,
     pub returned: u64,
 }
+#[event]
+pub struct Deposited {
+    pub project: Pubkey,
+    pub depositor: Pubkey,
+    pub amount: u64,
+}
+#[event]
+pub struct ConfigInitialized {
+    pub identity_authority: Pubkey,
+    pub fee_recipient: Pubkey,
+}
 #[error_code]
 pub enum EscrowError {
     #[msg("Invalid actor or destination")]
@@ -859,7 +940,7 @@ pub enum EscrowError {
     StaleBinding,
     #[msg("Network domain does not match project")]
     WrongNetwork,
-    #[msg("Only six decimal classic SPL tokens are supported")]
+    #[msg("Mint is not a classic SPL token mint")]
     WrongMint,
     #[msg("Award ID is not bound to this project and source")]
     InvalidAward,
@@ -891,6 +972,10 @@ pub enum EscrowError {
     RotationNotReady,
     #[msg("Account is not a legacy-size project of this program")]
     NotLegacyProject,
+    #[msg("Identity authority or fee recipient differs from the pinned Config")]
+    ConfigMismatch,
+    #[msg("Only the program upgrade authority can initialize the Config")]
+    NotUpgradeAuthority,
 }
 
 #[account]
@@ -915,5 +1000,20 @@ mod tests {
         assert!(valid_rotation_delay(3600));
         assert!(valid_rotation_delay(90 * 86400));
         assert!(!valid_rotation_delay(90 * 86400 + 1));
+    }
+    #[test]
+    fn withdrawal_fee_is_cumulative_two_percent() {
+        // One withdrawal and the same total split in two pay the same fee.
+        assert_eq!(withdrawal_fee(830_000_000, 0), 16_600_000);
+        let first = withdrawal_fee(1, 0);
+        assert_eq!(first, 0);
+        assert_eq!(first + withdrawal_fee(830_000_000, first), 16_600_000);
+        assert_eq!(withdrawal_fee(49, 0), 0);
+        assert_eq!(withdrawal_fee(50, 0), 1);
+        // A project that paid 10% under the earlier schedule pays zero until 2% catches up.
+        assert_eq!(withdrawal_fee(1_000, 100), 0);
+        assert_eq!(withdrawal_fee(5_000, 100), 0);
+        assert_eq!(withdrawal_fee(5_050, 100), 1);
+        assert_eq!(withdrawal_fee(u64::MAX, 0), u64::MAX / 50);
     }
 }

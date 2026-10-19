@@ -16,8 +16,14 @@ import {
   sendAndConfirmTransaction,
   Transaction,
 } from "@solana/web3.js";
+import { listProjects } from "../scripts/config-plan.mjs";
 import { awardIdFor, ownerPlan } from "../scripts/owner-plan.mjs";
-import { expectedDeployment } from "./deployment.mjs";
+import {
+  configFees,
+  configIdentity,
+  ensureConfig,
+  expectedDeployment,
+} from "./deployment.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actual SPL program", {
@@ -25,8 +31,15 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
 }, async () => {
   const provider = anchor.AnchorProvider.env(),
     owner = provider.wallet.payer;
-  const identity = Keypair.generate(),
-    fees = Keypair.generate(),
+  await ensureConfig(
+    new anchor.Program(
+      JSON.parse(readFileSync("idl/slop_escrow.json")),
+      provider,
+    ),
+  );
+  // The identity authority and fee recipient are the ones pinned in Config.
+  const identity = configIdentity,
+    fees = configFees,
     mint = await createMint(
       provider.connection,
       owner,
@@ -82,7 +95,7 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
     rotationDelaySeconds: "604800",
   };
   const expectedGenesis = await provider.connection.getGenesisHash();
-  async function execute(operation, extra) {
+  async function execute(operation, extra, signer = owner) {
     const block = await provider.connection.getLatestBlockhash("finalized");
     const plan = await ownerPlan(
       { deployment, operation, ...extra },
@@ -103,15 +116,56 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
       transaction.signatures.every((s) => s.signature === null),
       true,
     );
+    assert.equal(plan.requiredSigner, signer.publicKey.toBase58());
     const signature = await sendAndConfirmTransaction(
       provider.connection,
       transaction,
-      [owner],
+      [signer],
     );
     await provider.connection.confirmTransaction(signature, "finalized");
   }
+  // initialize refuses a deployment whose authorities differ from the pinned Config.
+  const pinned = deployment.feeRecipient;
+  deployment.feeRecipient = Keypair.generate().publicKey.toBase58();
+  await assert.rejects(
+    execute("initialize", { projectDigest }),
+    /pinned escrow Config/,
+  );
+  deployment.feeRecipient = pinned;
   await execute("initialize", { projectDigest });
-  await execute("deposit", { grossMicro: "100000000" });
+  await execute("deposit", { grossMicro: "60000000" });
+  // Any depositor can fund the project from its own token account.
+  const donor = Keypair.generate();
+  await sendAndConfirmTransaction(
+    provider.connection,
+    new Transaction().add(
+      anchor.web3.SystemProgram.transfer({
+        fromPubkey: owner.publicKey,
+        toPubkey: donor.publicKey,
+        lamports: 1_000_000_000,
+      }),
+    ),
+    [owner],
+  );
+  const donorSource = await getOrCreateAssociatedTokenAccount(
+    provider.connection,
+    owner,
+    mint,
+    donor.publicKey,
+  );
+  await mintTo(
+    provider.connection,
+    owner,
+    mint,
+    donorSource.address,
+    owner,
+    40_000_000n,
+  );
+  await execute(
+    "deposit",
+    { grossMicro: "40000000", depositor: donor.publicKey.toBase58() },
+    donor,
+  );
   const sourceDigest = hash("owner-plan-source");
   await assert.rejects(
     execute("commit", {
@@ -183,13 +237,14 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
     (await getAccount(provider.connection, vault)).amount,
     25_000_000n,
   );
+  // 2% of 75,000,000 is 1,500,000. The owner started with 100M and deposited 60M.
   assert.equal(
     (await getAccount(provider.connection, source.address)).amount,
-    67_500_000n,
+    113_500_000n,
   );
   assert.equal(
     (await getAccount(provider.connection, feeAccount.address)).amount,
-    7_500_000n,
+    1_500_000n,
   );
 });
 
@@ -202,6 +257,12 @@ test("owner plan migrates a legacy project account, then proposes and cancels a 
   const provider = anchor.AnchorProvider.env(),
     payer = provider.wallet.payer;
   const legacy = JSON.parse(readFileSync(".local/legacy-project.json"));
+  await ensureConfig(
+    new anchor.Program(
+      JSON.parse(readFileSync("idl/slop_escrow.json")),
+      provider,
+    ),
+  );
   const owner = Keypair.fromSecretKey(Uint8Array.from(legacy.owner));
   await sendAndConfirmTransaction(
     provider.connection,
@@ -310,6 +371,17 @@ test("owner plan migrates a legacy project account, then proposes and cancels a 
     anchor.web3.SystemProgram.programId.toBase58(),
   );
   assert.equal(state.rotationConfirmed, false);
+  // The upgrade runbook lists every project; one created before the Config is
+  // not pinned, and the adapter refuses it.
+  const listed = await listProjects(
+    { programId: program.programId.toBase58() },
+    { rpcUrl: provider.connection.rpcEndpoint, expectedGenesis },
+  );
+  assert.equal(listed.config.feeRecipient, configFees.publicKey.toBase58());
+  const legacyRow = listed.projects.find((p) => p.address === legacy.project);
+  assert.equal(legacyRow.pinned, false);
+  assert.equal(legacyRow.feeRecipient, legacy.feeRecipient);
+  assert.ok(listed.projects.some((p) => p.pinned && p.size === 314));
   // A migrated project cannot be migrated again.
   await assert.rejects(plan("migrate"), /Not a legacy project/);
   await assert.rejects(migrate(owner, 604800), /NotLegacyProject/);

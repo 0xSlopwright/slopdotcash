@@ -151,4 +151,197 @@ token, decimals, creation transaction and `codeSha256`.
 
 ## 2. Solana program upgrade and finalization
 
-The Solana section is below.
+Program: `slop-escrow`, ID `4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj`
+(upgradeable, already on mainnet).
+
+A human operator does every step below. An agent never runs these commands,
+never holds the upgrade authority or payer key, and never signs or broadcasts.
+The scripts in `contracts/solana/scripts/` only read chain state and build
+unsigned transactions.
+
+Placeholders:
+
+- `$PROGRAM` = `4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj`
+- `$RPC` = a private mainnet RPC URL (`-u $RPC` below; never commit it)
+- `$UPGRADE_AUTHORITY` = the current upgrade authority signer (keypair path or
+  `usb://ledger?key=N`)
+- `$PAYER` = the fee payer keypair for the buffer
+- `$IDENTITY` = the published Slop identity authority (attester) public key
+- `$FEES` = the published Slop fee recipient public key
+
+### 1. Preconditions
+
+1. The change is merged to `main` through a reviewed PR. CI is green on the
+   exact commit. Record the commit SHA as `$COMMIT`.
+2. The independent review covers this program version (any-mint, permissionless
+   deposit, 2% withdrawal fee, Config pinning).
+3. `$IDENTITY` and `$FEES` are published and approved by the repository owner.
+   They must be distinct. They cannot change after step 6.
+4. The build has no `short-delay-for-tests` feature. Only `test-e2e.sh` sets it.
+
+### 2. Verifiable build with the pinned toolchain
+
+```bash
+git clone https://github.com/SlopDotCash/slopdotcash.git && cd slopdotcash
+git checkout "$COMMIT"
+cd contracts/solana
+# Either verifiable path; both use a pinned Docker image.
+solana-verify build --library-name slop_escrow
+# or: anchor build --verifiable   (Anchor 0.32.1; image solanafoundation/anchor:v0.32.1)
+```
+
+Record the output file (`target/deploy/slop_escrow.so` for `solana-verify`,
+`target/verifiable/slop_escrow.so` for Anchor) as `$SO`.
+
+```bash
+sha256sum "$SO"                          # REVIEWED_SO_SHA256
+solana-verify get-executable-hash "$SO"  # REVIEWED_EXECUTABLE_HASH
+```
+
+A second operator repeats this step on a different machine. Both hashes must
+match. Record them in the release issue.
+
+### 3. Record the current deployed program
+
+```bash
+solana program show "$PROGRAM" -u "$RPC"           # record Authority and Data Length
+solana program dump "$PROGRAM" current.so -u "$RPC"
+sha256sum current.so                               # PREVIOUS_DEPLOYED_SHA256
+solana-verify get-program-hash "$PROGRAM" -u "$RPC"
+```
+
+The previous hash must equal the hash recorded at the last reviewed release.
+If it differs, stop: the program changed outside the runbook.
+
+If the size of `$SO` is larger than the `Data Length`, extend the program first:
+
+```bash
+solana program extend "$PROGRAM" <ADDITIONAL_BYTES> -u "$RPC" --keypair "$PAYER"
+```
+
+### 4. Write and check the buffer
+
+```bash
+solana program write-buffer "$SO" -u "$RPC" --keypair "$PAYER"   # prints BUFFER
+solana program set-buffer-authority "$BUFFER" \
+  --new-buffer-authority <UPGRADE_AUTHORITY_PUBKEY> -u "$RPC" --keypair "$PAYER"
+solana program dump "$BUFFER" buffer.so -u "$RPC"
+```
+
+The prefix of `buffer.so` must equal `$SO` byte for byte, and any trailing
+bytes must be zero:
+
+```bash
+python3 - "$SO" buffer.so <<'PY'
+import sys, hashlib
+local = open(sys.argv[1], 'rb').read(); remote = open(sys.argv[2], 'rb').read()
+assert remote[:len(local)] == local, 'buffer differs'
+assert not any(remote[len(local):]), 'nonzero trailing bytes'
+print('ok', hashlib.sha256(local).hexdigest())
+PY
+```
+
+### 5. Upgrade
+
+```bash
+solana program upgrade "$BUFFER" "$PROGRAM" \
+  --upgrade-authority "$UPGRADE_AUTHORITY" -u "$RPC"
+# equivalent: solana program deploy --program-id "$PROGRAM" --buffer "$BUFFER" \
+#   --upgrade-authority "$UPGRADE_AUTHORITY" -u "$RPC"
+solana program dump "$PROGRAM" upgraded.so -u "$RPC"
+```
+
+Run the same prefix check on `upgraded.so` against `$SO`. Then:
+
+```bash
+sha256sum upgraded.so                                # DEPLOYED_CODE_SHA256
+solana-verify get-program-hash "$PROGRAM" -u "$RPC"  # must equal REVIEWED_EXECUTABLE_HASH
+```
+
+`DEPLOYED_CODE_SHA256` hashes every ProgramData byte after the 45-byte header,
+including zero padding. It is the `codeSha256` value for every project manifest.
+
+Optionally submit the verification to the public registry:
+`solana-verify verify-from-repo -u "$RPC" --program-id "$PROGRAM" --library-name slop_escrow --mount-path contracts/solana --commit-hash "$COMMIT" https://github.com/SlopDotCash/slopdotcash`.
+
+### 6. Create the Config (once, before revoking the upgrade authority)
+
+Write `config-input.json`:
+
+```json
+{
+  "programId": "4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj",
+  "upgradeAuthority": "<UPGRADE_AUTHORITY_PUBKEY>",
+  "codeSha256": "<DEPLOYED_CODE_SHA256>",
+  "identityAuthority": "<IDENTITY>",
+  "feeRecipient": "<FEES>"
+}
+```
+
+Build the unsigned transaction. The script checks the cluster genesis, the
+deployed bytes, the upgrade authority, and that no Config exists:
+
+```bash
+cd contracts/solana && npm ci --ignore-scripts --legacy-peer-deps
+SLOP_SOLANA_RPC_URL="$RPC" \
+SLOP_SOLANA_GENESIS=5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d \
+SLOP_SOLANA_RECENT_BLOCKHASH="$(solana -u "$RPC" block --output json | jq -r .blockhash)" \
+node scripts/config-plan.mjs plan config-input.json > config-plan.json
+```
+
+Check `config-plan.json`: `requiredSigner` is the upgrade authority,
+`identityAuthority` is `$IDENTITY`, `feeRecipient` is `$FEES`. The upgrade
+authority signs `transactionBase64` with its own wallet tooling and sends it,
+within the blockhash lifetime (about 60 seconds; rebuild if it expires). The
+transaction is an ordinary unsigned legacy transaction, the same format as
+`owner-plan.mjs` output.
+
+Confirm the result:
+
+```bash
+node scripts/config-plan.mjs projects config-input.json   # "config" shows $IDENTITY and $FEES
+```
+
+The Config has no update or close instruction. A mistake here requires a new
+program deployment, so check both keys twice before signing.
+
+### 7. List existing Project accounts
+
+```bash
+SLOP_SOLANA_RPC_URL="$RPC" SLOP_SOLANA_GENESIS=5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d \
+node scripts/config-plan.mjs projects config-input.json > projects.json
+```
+
+This is a `getProgramAccounts` query on the Project discriminator
+(`cda8bdcab5f78e13`). Every entry with `"pinned": false` was created before the
+Config, or with another fee recipient. Record each one in the release issue
+with its owner, fee recipient, identity authority and size. The adapter refuses
+every unpinned project, so its manifest cannot activate payments. Tell its owner
+to create a new project under the Config and move unused funds with
+`withdraw` (2% fee).
+
+### 8. Revoke the upgrade authority
+
+```bash
+solana program set-upgrade-authority "$PROGRAM" --final \
+  --upgrade-authority "$UPGRADE_AUTHORITY" -u "$RPC"
+```
+
+After this, no one can change the program or create a Config.
+
+### 9. Final checks
+
+```bash
+solana program show "$PROGRAM" -u "$RPC"   # Authority: none
+solana program dump "$PROGRAM" final.so -u "$RPC"
+sha256sum final.so                         # must equal DEPLOYED_CODE_SHA256
+solana-verify get-program-hash "$PROGRAM" -u "$RPC"   # must equal REVIEWED_EXECUTABLE_HASH
+node scripts/config-plan.mjs projects config-input.json   # Config unchanged
+```
+
+Every project manifest then uses `codeSha256 = DEPLOYED_CODE_SHA256`,
+`upgradeAuthority = null`, `identityAuthority = $IDENTITY` and
+`feeRecipient = $FEES`. The adapter (`verifySolanaDeployment`) refuses any
+other value. Attach the commands, outputs and hashes from every step to the
+release issue. An upgrade is not proof of payment availability: run the funded
+lifecycle on each activated project separately.

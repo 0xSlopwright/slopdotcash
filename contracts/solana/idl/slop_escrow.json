@@ -296,9 +296,8 @@
       "discriminator": [242, 35, 198, 137, 82, 225, 242, 182],
       "accounts": [
         {
-          "name": "owner",
-          "signer": true,
-          "relations": ["project"]
+          "name": "depositor",
+          "signer": true
         },
         {
           "name": "project",
@@ -381,7 +380,11 @@
           }
         },
         {
-          "name": "mint"
+          "name": "mint",
+          "docs": [
+            "Any classic SPL Token mint, with any decimals. `Account<Mint>` requires the classic",
+            "token program as owner, so Token-2022 mints are rejected."
+          ]
         },
         {
           "name": "vault",
@@ -406,6 +409,17 @@
         {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -436,6 +450,50 @@
         {
           "name": "rotation_delay",
           "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_config",
+      "discriminator": [208, 127, 21, 1, 194, 190, 196, 70],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
+        },
+        {
+          "name": "program",
+          "address": "4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj"
+        },
+        {
+          "name": "program_data"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "identity_authority",
+          "type": "pubkey"
+        },
+        {
+          "name": "fee_recipient",
+          "type": "pubkey"
         }
       ]
     },
@@ -731,6 +789,10 @@
       "discriminator": [32, 181, 30, 14, 10, 91, 29, 158]
     },
     {
+      "name": "Config",
+      "discriminator": [155, 12, 170, 224, 30, 250, 204, 130]
+    },
+    {
       "name": "Obligation",
       "discriminator": [168, 206, 141, 106, 88, 76, 172, 167]
     },
@@ -779,6 +841,14 @@
     {
       "name": "BindingVetoed",
       "discriminator": [218, 122, 70, 149, 6, 123, 80, 103]
+    },
+    {
+      "name": "ConfigInitialized",
+      "discriminator": [181, 49, 200, 156, 19, 167, 178, 91]
+    },
+    {
+      "name": "Deposited",
+      "discriminator": [111, 141, 26, 45, 161, 35, 100, 57]
     },
     {
       "name": "ProjectMigrated",
@@ -836,7 +906,7 @@
     {
       "code": 6007,
       "name": "WrongMint",
-      "msg": "Only six decimal classic SPL tokens are supported"
+      "msg": "Mint is not a classic SPL token mint"
     },
     {
       "code": 6008,
@@ -912,6 +982,16 @@
       "code": 6022,
       "name": "NotLegacyProject",
       "msg": "Account is not a legacy-size project of this program"
+    },
+    {
+      "code": 6023,
+      "name": "ConfigMismatch",
+      "msg": "Identity authority or fee recipient differs from the pinned Config"
+    },
+    {
+      "code": 6024,
+      "name": "NotUpgradeAuthority",
+      "msg": "Only the program upgrade authority can initialize the Config"
     }
   ],
   "types": [
@@ -1091,6 +1171,66 @@
           },
           {
             "name": "version",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "docs": [
+        "The deployment-wide identity authority and fee recipient, written once by",
+        "`initialize_config` and never changed."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "identity_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "identity_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "fee_recipient",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Deposited",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "depositor",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
             "type": "u64"
           }
         ]
