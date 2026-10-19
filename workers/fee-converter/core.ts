@@ -1,0 +1,519 @@
+/**
+ * One conversion run: reconcile unresolved sends, then quote, check and (in
+ * live mode) sign one swap per candidate token. The chain and aggregator
+ * details live behind ChainClient so the policy here is chain-neutral.
+ */
+
+import type { Limits, Mode, Network, NetworkConfig } from "./config";
+
+export type ConversionState =
+  | "quoted"
+  | "skipped"
+  | "no_route"
+  | "submitted"
+  | "finalized"
+  | "failed"
+  | "unknown";
+
+export interface ConversionRow {
+  id: string;
+  runId: string;
+  network: Network;
+  mode: "dry_run" | "live";
+  feeWallet: string;
+  token: string;
+  targetToken: string;
+  amountIn: string;
+  route: "kyberswap" | "jupiter" | null;
+  quoteAmountOut: string | null;
+  minAmountOut: string | null;
+  quoteValueMicro: number | null;
+  priceImpactBps: number | null;
+  quote: string | null;
+  approvalTxId: string | null;
+  txId: string | null;
+  rawTx: string | null;
+  evmNonce: number | null;
+  expiresAt: number | null;
+  amountOut: string | null;
+  tokenBalanceBefore: string | null;
+  targetBalanceBefore: string | null;
+  targetBalanceAfter: string | null;
+  state: ConversionState;
+  reason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  submittedAt: string | null;
+  finalizedAt: string | null;
+}
+
+export interface Quote {
+  route: "kyberswap" | "jupiter";
+  amountIn: bigint;
+  amountOut: bigint;
+  minAmountOut: bigint;
+  /** Null when the aggregator cannot price the input; the run fails closed. */
+  priceImpactBps: number | null;
+  /** Estimated network fee in stablecoin micro-units. */
+  gasCostMicro: bigint;
+  /** Bounded, public quote facts for the record. */
+  summary: Record<string, unknown>;
+}
+
+export type QuoteResult = Quote | { noRoute: string };
+
+/** A signed send, recorded before it is broadcast. */
+export interface PreparedSend {
+  txId: string;
+  rawTx: string;
+  evmNonce: number | null;
+  expiresAt: number;
+  approvalTxId: string | null;
+  /** The minimum output the signed transaction enforces. */
+  minAmountOut: bigint;
+}
+
+export type SendStatus =
+  | { kind: "pending" }
+  | { kind: "finalized"; amountOut: bigint }
+  | { kind: "failed"; reason: string }
+  /** Not seen on chain and still valid: send the same bytes again. */
+  | { kind: "rebroadcast" };
+
+export interface ChainClient {
+  balance(token: string): Promise<bigint>;
+  quote(token: string, amount: bigint): Promise<QuoteResult>;
+  /** Approves if needed, builds, simulates and signs. Never broadcasts. */
+  prepare(token: string, quote: Quote): Promise<PreparedSend>;
+  broadcast(rawTx: string): Promise<void>;
+  status(row: ConversionRow): Promise<SendStatus>;
+}
+
+export interface ConversionStore {
+  acquireLock(network: Network, runId: string, now: Date): Promise<boolean>;
+  releaseLock(network: Network, runId: string): Promise<void>;
+  /** Live rows still waiting on chain: submitted, unknown and abandoned quotes. */
+  openRows(network: Network): Promise<ConversionRow[]>;
+  insert(row: ConversionRow): Promise<void>;
+  update(
+    id: string,
+    fields: Partial<Omit<ConversionRow, "id" | "createdAt">>,
+  ): Promise<void>;
+  /** Quoted value of live sends created since `since`, in micro-units. */
+  liveValueSince(network: Network, since: string): Promise<bigint>;
+  latest(network: Network, token: string): Promise<ConversionRow | null>;
+}
+
+export interface RunDependencies {
+  mode: Exclude<Mode, "off">;
+  limits: Limits;
+  store: ConversionStore;
+  now: () => Date;
+  randomId: () => string;
+  /** Candidate tokens named by D1 project manifests for this network. */
+  projectTokens: (config: NetworkConfig) => Promise<string[]>;
+  client: (config: NetworkConfig) => ChainClient;
+  log: (event: Record<string, unknown>) => void;
+}
+
+export interface NetworkRunResult {
+  network: Network;
+  status: "ran" | "locked";
+  reconciled: number;
+  records: Record<ConversionState, number>;
+}
+
+const QUOTE_ABANDON_MS = 60 * 60 * 1000;
+const RESCALE_ATTEMPTS = 3;
+
+/**
+ * Bounded, single-line error text for D1 and logs. RPC URLs can carry a
+ * provider API key, so URLs and echoed request bodies are removed.
+ */
+export function message(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  return (
+    text
+      .split(/Request body:/u)[0]
+      .replace(/[a-z][a-z0-9+.-]*:\/\/\S+/giu, "<url>")
+      .replace(/\s+/gu, " ")
+      .trim()
+      .slice(0, 400) || "unknown error"
+  );
+}
+
+export function impactWithin(quote: Quote, limits: Limits): boolean {
+  return (
+    quote.priceImpactBps !== null &&
+    quote.priceImpactBps <= limits.maxPriceImpactBps
+  );
+}
+
+/** The aggregator minimum must stay within the configured slippage of its quote. */
+export function slippageWithin(quote: Quote, limits: Limits): boolean {
+  const floor =
+    (quote.amountOut * BigInt(10_000 - limits.maxSlippageBps)) / 10_000n;
+  return (
+    quote.amountOut > 0n &&
+    quote.minAmountOut >= floor &&
+    quote.minAmountOut <= quote.amountOut
+  );
+}
+
+async function reconcile(
+  row: ConversionRow,
+  client: ChainClient,
+  deps: RunDependencies,
+): Promise<boolean> {
+  const now = deps.now();
+  if (row.state === "quoted") {
+    // A live quote that never reached a signed send is safe to close: no
+    // transaction bytes exist for it.
+    if (now.getTime() - Date.parse(row.createdAt) > QUOTE_ABANDON_MS) {
+      await deps.store.update(row.id, {
+        state: "failed",
+        reason: "run ended before signing",
+        updatedAt: now.toISOString(),
+      });
+      return true;
+    }
+    return false;
+  }
+  const status = await client.status(row);
+  const at = deps.now().toISOString();
+  switch (status.kind) {
+    case "pending":
+      return false;
+    case "finalized": {
+      const after = await client
+        .balance(row.targetToken)
+        .then((value) => value.toString())
+        .catch(() => null);
+      const below =
+        row.minAmountOut !== null &&
+        status.amountOut < BigInt(row.minAmountOut);
+      await deps.store.update(row.id, {
+        state: "finalized",
+        amountOut: status.amountOut.toString(),
+        targetBalanceAfter: after,
+        finalizedAt: at,
+        updatedAt: at,
+        reason: below ? "finalized below the signed minimum" : null,
+      });
+      deps.log({
+        event: "fee_conversion_finalized",
+        network: row.network,
+        token: row.token,
+        txId: row.txId,
+        amountOut: status.amountOut.toString(),
+      });
+      return true;
+    }
+    case "failed":
+      await deps.store.update(row.id, {
+        state: "failed",
+        reason: status.reason,
+        updatedAt: at,
+      });
+      return true;
+    case "rebroadcast":
+      try {
+        await client.broadcast(row.rawTx as string);
+        await deps.store.update(row.id, {
+          state: "submitted",
+          reason: null,
+          updatedAt: at,
+        });
+      } catch (error) {
+        await deps.store.update(row.id, {
+          state: "unknown",
+          reason: `rebroadcast: ${message(error)}`,
+          updatedAt: at,
+        });
+      }
+      return false;
+  }
+}
+
+function emptyRecords(): Record<ConversionState, number> {
+  return {
+    quoted: 0,
+    skipped: 0,
+    no_route: 0,
+    submitted: 0,
+    finalized: 0,
+    failed: 0,
+    unknown: 0,
+  };
+}
+
+export async function runNetwork(
+  config: NetworkConfig,
+  deps: RunDependencies,
+): Promise<NetworkRunResult> {
+  const runId = deps.randomId();
+  const result: NetworkRunResult = {
+    network: config.network,
+    status: "ran",
+    reconciled: 0,
+    records: emptyRecords(),
+  };
+  if (!(await deps.store.acquireLock(config.network, runId, deps.now()))) {
+    return { ...result, status: "locked" };
+  }
+  try {
+    const client = deps.client(config);
+    const blocked = new Set<string>();
+    // Reconciliation is read-only on chain apart from rebroadcasting the
+    // exact recorded bytes, so it also runs in dry_run after a live period.
+    for (const row of await deps.store.openRows(config.network)) {
+      try {
+        if (await reconcile(row, client, deps)) result.reconciled += 1;
+        else blocked.add(row.token);
+      } catch (error) {
+        blocked.add(row.token);
+        deps.log({
+          event: "fee_conversion_reconcile_error",
+          network: config.network,
+          token: row.token,
+          error: message(error),
+        });
+      }
+    }
+
+    const stablecoin = config.definition.stablecoin;
+    const candidates = [
+      ...new Set([...(await deps.projectTokens(config)), ...config.allowlist]),
+    ].filter((token) => token !== stablecoin);
+
+    const since = new Date(
+      deps.now().getTime() - 24 * 60 * 60 * 1000,
+    ).toISOString();
+    let dayValue = await deps.store.liveValueSince(config.network, since);
+    let runValue = 0n;
+
+    for (const token of candidates) {
+      if (blocked.has(token)) continue;
+      try {
+        const balance = await client.balance(token);
+        if (balance === 0n) continue;
+        const outcome = await convert(token, balance, config, client, deps, {
+          runId,
+          runValue,
+          dayValue,
+        });
+        result.records[outcome.state] += 1;
+        if (outcome.committedMicro > 0n) {
+          runValue += outcome.committedMicro;
+          dayValue += outcome.committedMicro;
+        }
+      } catch (error) {
+        deps.log({
+          event: "fee_conversion_error",
+          network: config.network,
+          token,
+          error: message(error),
+        });
+      }
+    }
+  } finally {
+    await deps.store.releaseLock(config.network, runId);
+  }
+  return result;
+}
+
+interface Budget {
+  runId: string;
+  runValue: bigint;
+  dayValue: bigint;
+}
+
+async function convert(
+  token: string,
+  balance: bigint,
+  config: NetworkConfig,
+  client: ChainClient,
+  deps: RunDependencies,
+  budget: Budget,
+): Promise<{ state: ConversionState; committedMicro: bigint }> {
+  const { limits } = deps;
+  const at = () => deps.now().toISOString();
+  const unbalanced = (): ConversionRow => ({
+    id: deps.randomId(),
+    runId: budget.runId,
+    network: config.network,
+    mode: deps.mode,
+    feeWallet: config.feeWallet,
+    token,
+    targetToken: config.definition.stablecoin,
+    amountIn: balance.toString(),
+    route: null,
+    quoteAmountOut: null,
+    minAmountOut: null,
+    quoteValueMicro: null,
+    priceImpactBps: null,
+    quote: null,
+    approvalTxId: null,
+    txId: null,
+    rawTx: null,
+    evmNonce: null,
+    expiresAt: null,
+    amountOut: null,
+    tokenBalanceBefore: balance.toString(),
+    targetBalanceBefore: null,
+    targetBalanceAfter: null,
+    state: "quoted",
+    reason: null,
+    createdAt: at(),
+    updatedAt: at(),
+    submittedAt: null,
+    finalizedAt: null,
+  });
+
+  const record = async (
+    row: ConversionRow,
+  ): Promise<{ state: ConversionState; committedMicro: bigint }> => {
+    // A token stuck below the minimum would otherwise add the same row every
+    // run; repeat only when the amount or the reason changes.
+    if (row.state === "skipped" || row.state === "no_route") {
+      const last = await deps.store.latest(config.network, token);
+      if (
+        last &&
+        last.state === row.state &&
+        last.reason === row.reason &&
+        last.amountIn === row.amountIn &&
+        last.mode === row.mode
+      )
+        return { state: row.state, committedMicro: 0n };
+    }
+    await deps.store.insert(row);
+    return { state: row.state, committedMicro: 0n };
+  };
+
+  const targetBefore = (
+    await client.balance(config.definition.stablecoin)
+  ).toString();
+  const base = (): ConversionRow => ({
+    ...unbalanced(),
+    targetBalanceBefore: targetBefore,
+  });
+  let quoted = await client.quote(token, balance);
+  if ("noRoute" in quoted)
+    return record({ ...base(), state: "no_route", reason: quoted.noRoute });
+
+  // Fit the order inside the remaining run and day caps by scaling the input
+  // once and quoting again; never exceed either cap.
+  const remaining = (() => {
+    const run = limits.runCapMicro - budget.runValue;
+    const day = limits.dailyCapMicro - budget.dayValue;
+    return run < day ? run : day;
+  })();
+  let amount = balance;
+  // Output is not linear in input for a large order, so rescale toward 98%
+  // of the remaining cap a bounded number of times.
+  for (
+    let attempt = 0;
+    attempt < RESCALE_ATTEMPTS &&
+    quoted.amountOut > remaining &&
+    remaining > 0n;
+    attempt++
+  ) {
+    amount = (amount * remaining * 98n) / (quoted.amountOut * 100n);
+    if (amount > 0n) {
+      const requoted = await client.quote(token, amount);
+      if ("noRoute" in requoted)
+        return record({
+          ...base(),
+          amountIn: amount.toString(),
+          state: "no_route",
+          reason: requoted.noRoute,
+        });
+      quoted = requoted;
+    } else break;
+  }
+  const quote = quoted;
+  const row: ConversionRow = {
+    ...base(),
+    amountIn: amount.toString(),
+    route: quote.route,
+    quoteAmountOut: quote.amountOut.toString(),
+    minAmountOut: quote.minAmountOut.toString(),
+    quoteValueMicro: Number(quote.amountOut),
+    priceImpactBps: quote.priceImpactBps,
+    quote: JSON.stringify(quote.summary).slice(0, 8192),
+  };
+  const skip = (reason: string) => record({ ...row, state: "skipped", reason });
+
+  if (remaining <= 0n || amount === 0n)
+    return skip(
+      limits.runCapMicro - budget.runValue <= 0n
+        ? "per-run value cap reached"
+        : "daily value cap reached",
+    );
+  if (quote.amountOut > remaining)
+    return skip("quote exceeds the remaining value cap");
+  if (quote.amountOut < limits.minValueMicro)
+    return skip("below the minimum conversion value");
+  if (quote.amountOut < quote.gasCostMicro * limits.gasMultiple)
+    return skip("below the gas-cost multiple");
+  if (!impactWithin(quote, limits))
+    return skip(
+      quote.priceImpactBps === null
+        ? "price impact unknown"
+        : "price impact above the cap",
+    );
+  if (!slippageWithin(quote, limits))
+    return skip("minimum output outside the slippage limit");
+
+  if (deps.mode === "dry_run") {
+    // Count dry-run quotes against the run cap so the record shows what a
+    // live run would have sent.
+    await record(row);
+    return { state: "quoted", committedMicro: quote.amountOut };
+  }
+
+  await deps.store.insert(row);
+  let prepared: PreparedSend;
+  try {
+    prepared = await client.prepare(token, quote);
+  } catch (error) {
+    await deps.store.update(row.id, {
+      state: "failed",
+      reason: `prepare: ${message(error)}`,
+      updatedAt: at(),
+    });
+    return { state: "failed", committedMicro: 0n };
+  }
+  // Record the signed bytes before they leave the Worker; the unique open-row
+  // index refuses a second unresolved send for this token.
+  await deps.store.update(row.id, {
+    state: "submitted",
+    txId: prepared.txId,
+    rawTx: prepared.rawTx,
+    evmNonce: prepared.evmNonce,
+    expiresAt: prepared.expiresAt,
+    approvalTxId: prepared.approvalTxId,
+    minAmountOut: prepared.minAmountOut.toString(),
+    submittedAt: at(),
+    updatedAt: at(),
+  });
+  try {
+    await client.broadcast(prepared.rawTx);
+  } catch (error) {
+    await deps.store.update(row.id, {
+      state: "unknown",
+      reason: `broadcast: ${message(error)}`,
+      updatedAt: at(),
+    });
+    return { state: "unknown", committedMicro: quote.amountOut };
+  }
+  deps.log({
+    event: "fee_conversion_submitted",
+    network: config.network,
+    token,
+    txId: prepared.txId,
+    amountIn: amount.toString(),
+    minAmountOut: prepared.minAmountOut.toString(),
+  });
+  return { state: "submitted", committedMicro: quote.amountOut };
+}
