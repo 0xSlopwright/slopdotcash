@@ -2898,12 +2898,12 @@ function createSnapshotWithReviewCutoff(
       // a ratifier must never be the sole authority over their own outcome.
       // Under SCR-04 a linked commit co-author shares that outcome too.
       const outcome = outcomeById.get(pullRequest.id);
+      const sharesOutcome = (who: GitHubActor | null) =>
+        sameActor(who, pullRequest.author) ||
+        (outcome !== undefined &&
+          mergeCreditActorsOf(outcome).some((actor) => sameActor(who, actor)));
       if (
-        (sameActor(source.author, pullRequest.author) ||
-          (outcome !== undefined &&
-            mergeCreditActorsOf(outcome).some((actor) =>
-              sameActor(source.author, actor),
-            ))) &&
+        sharesOutcome(source.author) &&
         record.coRatifierNodeIds.length === 0
       ) {
         throw new TypeError(
@@ -2966,6 +2966,13 @@ function createSnapshotWithReviewCutoff(
         if (sameActor(ratifier.author, source.author)) {
           throw new TypeError(
             "slop-score co-ratifier must be a second maintainer",
+          );
+        }
+        // The second maintainer is the independent approval, so it cannot be
+        // a credit actor of the outcome it approves.
+        if (sharesOutcome(ratifier.author)) {
+          throw new TypeError(
+            "slop-score co-ratifier must not share the scored outcome",
           );
         }
         const approval = parseScoreApprovalBlock(ratifier.body);
