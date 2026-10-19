@@ -122,17 +122,38 @@ test("an empty registry shows the empty state, never stale build data @registry"
   expect(errors).toEqual([]);
 });
 
-test("a signed-out visitor must sign in before submitting @registry", async ({
+test("a signed-out visitor must sign in to look up GitHub and submit @registry", async ({
   page,
 }) => {
-  const errors = observe(page);
-  await draftApplication(page, fixtureProjects().queued);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    // The lookup API answers a signed-out visitor with an expected 401.
+    if (
+      message.type() === "error" &&
+      !/\/api\/v1\/(points|payments|project-github)\//u.test(
+        message.location().url,
+      )
+    )
+      errors.push(message.text());
+  });
+  const project = fixtureProjects().queued;
+  await page.goto("/projects/new", { waitUntil: "networkidle" });
+  await page.getByLabel("Public GitHub repository").fill(project.repository);
+  await page.getByRole("button", { name: "Look up on GitHub" }).click();
+  // Setup lookups run on the site server with the site session, so a
+  // signed-out browser never calls GitHub and nothing is filled in.
+  await expect(page.locator(".lookup-status")).toContainText(
+    "Sign in with GitHub to look up repositories. Nothing was filled in.",
+  );
+  await expect(page.getByLabel("Repository numeric ID")).toHaveValue("");
   await expect(
-    page.getByRole("link", { name: "Sign in with GitHub to submit" }),
+    page.getByRole("link", { name: "Sign in with GitHub", exact: true }),
   ).toHaveAttribute("href", /\/login\?next=%2Fprojects%2Fnew$/u);
-  await expect(
-    page.getByRole("button", { name: /Submit for review/u }),
-  ).toHaveCount(0);
+  const lookup = await page.request.get(
+    `/api/v1/project-github/repositories/${project.repository}`,
+  );
+  expect(lookup.status()).toBe(401);
   const forged = await page.request.post("/api/v1/project-applications", {
     data: {},
     headers: { origin: "https://attacker.example" },
