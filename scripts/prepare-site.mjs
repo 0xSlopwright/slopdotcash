@@ -356,11 +356,6 @@ writeFileSync(
 
 run("bun", [join(repositoryRoot, "scripts", "sync-cycle-index.ts")]);
 run("bun", [join(repositoryRoot, "scripts", "generate-sitemap.ts")]);
-run("bun", [
-  join(repositoryRoot, "scripts", "sync-squads-execution-registry.ts"),
-]);
-run("bun", [join(repositoryRoot, "scripts", "sync-funding-index.ts")]);
-run("bun", [join(repositoryRoot, "scripts", "prepare-funding-review.ts")]);
 run("bun", [join(repositoryRoot, "scripts", "sync-contribution-quality.ts")]);
 
 console.log(

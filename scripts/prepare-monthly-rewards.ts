@@ -5,41 +5,39 @@
  */
 
 import { lstat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PROJECTS, type ProjectDefinition } from "../src/lib/projects.mjs";
 import { prepareEscrowCycle } from "./prepare-escrow-cycle";
-import {
-  type PrepareRewardCycleArguments,
-  parsePrepareRewardCycleArguments,
-  prepareRewardCycle,
-} from "./prepare-reward-cycle";
-import {
-  PriorCycleNotReadyError,
-  type PriorCycleNotReadyReason,
-} from "./prior-cycle-accrual";
 import { syncCycleIndex } from "./sync-cycle-index";
+
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const CYCLES_ROOT = resolve(REPOSITORY_ROOT, "cycles");
+const DEFAULT_SNAPSHOT_PATH = resolve(
+  REPOSITORY_ROOT,
+  "public/data/leaderboard.json",
+);
 
 type ExistingPath = "file" | "missing";
 
 export interface MonthlyRewardResult {
   cycleId: string;
   prepared: string[];
-  refused: Array<{
-    message: string;
-    priorCycleId: string;
-    projectId: string;
-    reason: PriorCycleNotReadyReason;
-  }>;
   skippedExisting: string[];
   skippedPrelaunch: string[];
 }
 
+export interface PrepareMonthlyCycleArguments {
+  cycleId: string;
+  generatedAt: string;
+  githubToken?: string;
+  projectId: string;
+  snapshotPath: string;
+}
+
 interface MonthlyDependencies {
   inspectPath: (path: string) => Promise<ExistingPath>;
-  prepare: (
-    arguments_: PrepareRewardCycleArguments,
-    options: { generatedAt: string; githubToken?: string },
-  ) => Promise<unknown>;
+  prepare: (arguments_: PrepareMonthlyCycleArguments) => Promise<unknown>;
   projects: readonly ProjectDefinition[];
   validateCycles: () => Promise<unknown>;
 }
@@ -82,12 +80,7 @@ async function inspectRegularPath(path: string): Promise<ExistingPath> {
 
 const DEFAULT_DEPENDENCIES: MonthlyDependencies = {
   inspectPath: inspectRegularPath,
-  prepare: (args, options) => {
-    const project = PROJECTS.find((p) => p.id === args.projectId);
-    return project?.escrow && args.cycleId >= project.escrow.effectiveCycle
-      ? prepareEscrowCycle({ ...args, ...options })
-      : prepareRewardCycle(args, options);
-  },
+  prepare: (arguments_) => prepareEscrowCycle(arguments_),
   projects: PROJECTS,
   validateCycles: () => syncCycleIndex(),
 };
@@ -118,43 +111,27 @@ export async function prepareMonthlyRewards(
   const result: MonthlyRewardResult = {
     cycleId,
     prepared: [],
-    refused: [],
     skippedExisting: [],
     skippedPrelaunch: [],
   };
   for (const project of dependencies.projects) {
+    // Escrow is the only funding mode. A project without an escrow policy
+    // effective for this cycle has no payable monthly cycle to prepare.
     if (
       project.status !== "active" ||
       project.authority.state !== "verified" ||
       project.terms.receiptPolicy.state !== "active" ||
-      Date.parse(project.reward.rewardStartAt) >= end
+      Date.parse(project.reward.rewardStartAt) >= end ||
+      !project.escrow ||
+      cycleId < project.escrow.effectiveCycle
     ) {
       result.skippedPrelaunch.push(project.id);
       continue;
     }
-    const arguments_ = parsePrepareRewardCycleArguments([
-      "--project",
-      project.id,
-      "--cycle",
-      cycleId,
-      ...(options.snapshotPath
-        ? ["--snapshot", resolve(options.snapshotPath)]
-        : []),
-    ]);
+    const directory = resolve(CYCLES_ROOT, project.id, cycleId, "escrow-v2");
     const [proposalState, snapshotState] = await Promise.all([
-      dependencies.inspectPath(
-        project.escrow && cycleId >= project.escrow.effectiveCycle
-          ? resolve(arguments_.outputPath, "../escrow-v2/proposal.json")
-          : arguments_.outputPath,
-      ),
-      dependencies.inspectPath(
-        project.escrow && cycleId >= project.escrow.effectiveCycle
-          ? resolve(
-              arguments_.snapshotArchivePath,
-              "../escrow-v2/source-snapshot.json",
-            )
-          : arguments_.snapshotArchivePath,
-      ),
+      dependencies.inspectPath(resolve(directory, "proposal.json")),
+      dependencies.inspectPath(resolve(directory, "source-snapshot.json")),
     ]);
     if (proposalState !== snapshotState) {
       throw new Error(
@@ -165,27 +142,15 @@ export async function prepareMonthlyRewards(
       result.skippedExisting.push(project.id);
       continue;
     }
-    try {
-      await dependencies.prepare(arguments_, {
-        generatedAt,
-        githubToken: options.githubToken,
-      });
-    } catch (error) {
-      if (!(error instanceof PriorCycleNotReadyError)) throw error;
-      if (error.projectId !== project.id) {
-        throw new TypeError(
-          `Prior-cycle refusal project ${error.projectId} does not match ${project.id}`,
-          { cause: error },
-        );
-      }
-      result.refused.push({
-        message: error.message,
-        priorCycleId: error.cycleId,
-        projectId: error.projectId,
-        reason: error.reason,
-      });
-      continue;
-    }
+    await dependencies.prepare({
+      cycleId,
+      generatedAt,
+      githubToken: options.githubToken,
+      projectId: project.id,
+      snapshotPath: options.snapshotPath
+        ? resolve(options.snapshotPath)
+        : DEFAULT_SNAPSHOT_PATH,
+    });
     result.prepared.push(project.id);
   }
   await dependencies.validateCycles();
@@ -227,7 +192,7 @@ if (import.meta.main) {
       githubToken: process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN,
     });
     process.stdout.write(
-      `[Slop] closed ${result.cycleId}: prepared ${result.prepared.join(", ") || "none"}; already present ${result.skippedExisting.join(", ") || "none"}; refused ${result.refused.map((entry) => `${entry.projectId} (${entry.reason}: ${entry.message})`).join(", ") || "none"}\n`,
+      `[Slop] closed ${result.cycleId}: prepared ${result.prepared.join(", ") || "none"}; already present ${result.skippedExisting.join(", ") || "none"}\n`,
     );
   } catch (error) {
     // error-policy:J1 command boundary exposes a non-zero, actionable failure.

@@ -1,7 +1,6 @@
-// Manifest rules for Robinhood Chain: escrow only, USDG only, no fresh-cycle instrument.
+// Manifest rules for Robinhood Chain: escrow only, USDG only, no direct address.
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { BASE_PLATFORM_FEE_RECIPIENT } from "./fresh-cycle-policy.mjs";
 import { assertProjectDefinition } from "./project-schema.mjs";
 
 const eliza = JSON.parse(
@@ -64,27 +63,6 @@ describe("Robinhood Chain manifests", () => {
         reward: { ...m.reward, currency: "USDC" },
       }),
     ).toThrow(/monthly pool policy is inconsistent/);
-  });
-  test("a fresh-cycle instrument is refused on Robinhood Chain", () => {
-    const m = manifest();
-    expect(() =>
-      assertProjectDefinition({
-        ...m,
-        funding: {
-          ...m.funding,
-          freshCyclePaymentPolicy: {
-            schemaVersion: "1",
-            kind: "fresh-cycle-payment-policy",
-            projectId: m.id,
-            cycleId: "2026-11",
-            effectiveAt: "2026-11-01T00:00:00.000Z",
-            planningExpiresAt: "2026-11-30T00:00:00.000Z",
-            instrumentSha256: "ab".repeat(32),
-            feeRecipient: BASE_PLATFORM_FEE_RECIPIENT,
-          },
-        },
-      }),
-    ).toThrow(/fresh-cycle instrument is not supported/);
   });
   test("a direct funding address on Robinhood Chain is refused", () => {
     const m = manifest();

@@ -138,7 +138,7 @@ files. Never commit a value. Use test or staging credentials only.
 | Variable | Used by | When you need it |
 | --- | --- | --- |
 | `GITHUB_TOKEN` or `GH_TOKEN` | ingestion, leaderboard, live GitHub checks | Required for `leaderboard:generate` and live checks. Read-only public scope is sufficient. |
-| `SOLANA_RPC_URL` | `rewards:verify-settlement`, funding verification | Optional. Defaults to public mainnet RPC; set a private RPC for heavy use. |
+| `SOLANA_RPC_URL` | `fee-converter:dry-run` | Optional. Defaults to public mainnet RPC; set a private RPC for heavy use. |
 | `OPENAI_API_KEY` | slopbot fallback model (`.dev.vars`) | Required to test the slopbot model route. |
 | `SURPLUS_API_KEY`, `SURPLUS_BASE_URL` | slopbot primary model (`.dev.vars`) | Required to test the primary slopbot model route. |
 | `SLOPBOT_WEBHOOK_SECRET`, `SLOPBOT_APP_ID`, `SLOPBOT_APP_USER_ID`, `SLOPBOT_APP_PRIVATE_KEY` | slopbot GitHub App (`.dev.vars`) | Only with your own test GitHub App. See `workers/slopbot/README.md`. |

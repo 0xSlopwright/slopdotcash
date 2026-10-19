@@ -10,7 +10,6 @@ import { type APIRequestContext, test as base, expect } from "@playwright/test";
 import { preparePullRequestLedger } from "../../scripts/prepare-pr-ledger";
 import { assertCycleIndex, type CycleIndex } from "../../src/lib/cycle-index";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
-import { githubUserIdFromNodeId } from "../../src/lib/github-actor";
 import { createGlobalLeaders } from "../../src/lib/global-leaderboard";
 import { communityProjects } from "../../src/lib/home-projects";
 import {
@@ -260,96 +259,6 @@ test("equal contributors share cycle and profile ranks", async ({
   }
 });
 
-test("shows signer loss and expired capability without payout availability", async ({
-  page,
-}, testInfo) => {
-  const project = PROJECTS.find(
-    (candidate) => candidate.reward.kind === "monthly-pool",
-  );
-  if (!project) throw new Error("Monthly project fixture is unavailable");
-  const reportedAt = new Date(Date.now() - 3600000).toISOString();
-  const expiresAt = new Date(Date.now() - 1800000).toISOString();
-  const report = {
-    projectId: project.id,
-    cycleId: reportedAt.slice(0, 7),
-    instrumentId:
-      "squads-v4-vault:solana:11111111111111111111111111111111:0:Vote111111111111111111111111111111111111111",
-    role: "funder",
-    member: "11111111111111111111111111111111",
-    capability: "lost-access",
-    reportedAt,
-    expiresAt: null,
-    reason: "Synthetic browser fixture: signing capability was lost.",
-    sourceRepository: "example/evidence",
-    sourceCommit: "a".repeat(40),
-  };
-  await page.route("**/data/funding.json", (route) =>
-    route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({
-        schemaVersion: "1",
-        generatedAt: reportedAt,
-        records: [],
-        commitments: [],
-        signerReports: [
-          report,
-          {
-            ...report,
-            role: "steward",
-            capability: "can-sign",
-            expiresAt,
-            sourceCommit: "b".repeat(40),
-          },
-        ],
-      }),
-    }),
-  );
-  await page.goto(`/projects/${project.slug}/funding`, {
-    waitUntil: "networkidle",
-  });
-  const section = page.getByRole("region", {
-    name: "Signer capability reports",
-  });
-  await expect(
-    section.getByRole("heading", { name: /Inaccessible/u }),
-  ).toBeVisible();
-  await expect(section.getByText(/capability report expired/u)).toBeVisible();
-  await expect(section.getByText(/Payments remain disabled/u)).toBeVisible();
-  const source = section.getByRole("link", { name: "Signed report" }).first();
-  await expect(source).toHaveAttribute(
-    "href",
-    `https://github.com/example/evidence/commit/${"a".repeat(40)}`,
-  );
-  await source.focus();
-  await expect(source).toBeFocused();
-  expect(
-    (
-      await new AxeBuilder({ page })
-        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
-        .analyze()
-    ).violations,
-  ).toEqual([]);
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth,
-    ),
-  ).toBe(true);
-  if (testInfo.project.name === "wide-desktop-chromium") {
-    await page.evaluate(() => {
-      document.documentElement.style.fontSize = "200%";
-    });
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= window.innerWidth,
-      ),
-    ).toBe(true);
-  }
-  await page.screenshot({
-    path: testInfo.outputPath("signer-loss.png"),
-    fullPage: true,
-  });
-});
-
 test("discovers projects and one score-ranked homepage leaderboard", async ({
   page,
 }) => {
@@ -520,7 +429,7 @@ test("never presents Delta Star's external prize as platform money", async ({
   const history = page.locator(".payment-history");
   await expect(history).not.toContainText("$");
   await expect(
-    history.getByRole("link", { name: "Manage payouts" }),
+    history.getByRole("link", { name: "Manage funding" }),
   ).toHaveCount(0);
   await history
     .getByRole("link", { name: /^\d{4}-\d{2}$/u })
@@ -746,129 +655,6 @@ test("renders contributor and cycle records from validated public data", {
       }),
     ).toBeVisible();
   }
-});
-
-test("keeps a frozen-month contributor reachable after the rolling window moves on", async ({
-  page,
-  request,
-}) => {
-  const snapshot = await loadSnapshot(request);
-  const cycles = await loadCycles(request);
-  const response = await request.get("/data/funding-reviews.json");
-  expect(response.ok()).toBe(true);
-  const reviews = (await response.json()) as {
-    reviews: Array<{
-      projectId: string;
-      cycleId: string;
-      contributors: Array<{ actor: { id: string; login: string } }>;
-    }>;
-  };
-  const known = new Set(
-    [
-      ...snapshot.leaders.map((leader) => leader.actor.login),
-      ...snapshot.opportunities.map((opportunity) => opportunity.actor.login),
-      ...cycles.cycles.flatMap((cycle) =>
-        cycle.contributors.map((entry) => entry.actor.login),
-      ),
-    ].map((login) => login.toLowerCase()),
-  );
-  const frozenOnly = reviews.reviews
-    .filter(
-      (review) =>
-        !cycles.cycles.some(
-          (cycle) =>
-            cycle.projectId === review.projectId &&
-            cycle.cycleId === review.cycleId,
-        ),
-    )
-    .flatMap((review) => review.contributors)
-    .find((entry) => !known.has(entry.actor.login.toLowerCase()));
-  test.skip(!frozenOnly, "every frozen-month contributor is still in window");
-  if (!frozenOnly) return;
-
-  // A frozen-only actor's record keeps only the GitHub node id, which
-  // encodes the numeric id that wallet claims are keyed by.
-  const githubActorId = githubUserIdFromNodeId(frozenOnly.actor.id);
-  expect(githubActorId).toMatch(/^[1-9]\d*$/u);
-  const walletCalls: string[] = [];
-  await routeWalletClaims(page, walletCalls, String(githubActorId));
-  await page.goto(
-    `/contributors/${encodeURIComponent(frozenOnly.actor.login)}`,
-    { waitUntil: "networkidle" },
-  );
-  await expect(
-    page.getByRole("heading", { name: frozenOnly.actor.login }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", {
-      name: "Wallet · 1111…1111",
-    }),
-  ).toBeVisible();
-  expect(walletCalls.map((url) => new URL(url).pathname)).toEqual([
-    `/api/v1/wallet-claims/actors/${githubActorId}/current`,
-  ]);
-});
-
-test("requests a window contributor's wallet once while funding reviews load", async ({
-  page,
-  request,
-}) => {
-  const snapshot = await loadSnapshot(request);
-  const leader = snapshot.leaders
-    .map((entry) => ({
-      login: entry.actor.login,
-      githubId:
-        /^https:\/\/avatars\.githubusercontent\.com\/u\/(\d+)(?:\?|$)/u.exec(
-          entry.actor.avatarUrl ?? "",
-        )?.[1],
-    }))
-    .find((actor) => actor.githubId);
-  test.skip(!leader?.githubId, "no window contributor with a GitHub id");
-  if (!leader?.githubId) return;
-
-  // Hold the funding reviews until the wallet is shown. A window actor does
-  // not need them, so their arrival must not start a second wallet request.
-  let releaseReviews = () => {};
-  const reviewsHeld = new Promise<void>((resolve) => {
-    releaseReviews = resolve;
-  });
-  await page.route("**/data/funding-reviews.json*", async (route) => {
-    await reviewsHeld;
-    await route.continue();
-  });
-  const walletCalls: string[] = [];
-  await page.route(
-    `${deployment.api}/api/v1/wallet-claims/actors/*/current*`,
-    async (route) => {
-      walletCalls.push(route.request().url());
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          claimId: "e2e-solana-wallet-claim",
-          githubActorId: leader.githubId,
-          address: "11111111111111111111111111111111",
-        }),
-      });
-    },
-  );
-  await page.goto(`/contributors/${encodeURIComponent(leader.login)}`);
-  const walletLink = page.getByRole("link", {
-    name: "Wallet · 1111…1111",
-  });
-  // The wallet request starts after the full contribution snapshot loads,
-  // which can take longer than the default assertion timeout on live data.
-  await expect(walletLink).toBeVisible({ timeout: 60_000 });
-  const reviewsLoaded = page.waitForResponse((response) =>
-    new URL(response.url()).pathname.endsWith("/data/funding-reviews.json"),
-  );
-  releaseReviews();
-  await reviewsLoaded;
-  await page.waitForTimeout(500);
-  await expect(walletLink).toBeVisible();
-  expect(walletCalls.map((url) => new URL(url).pathname)).toEqual([
-    `/api/v1/wallet-claims/actors/${leader.githubId}/current`,
-  ]);
 });
 
 test("makes the public project draft boundary unmistakable", async ({
@@ -1117,7 +903,6 @@ for (const scenario of [
       ...PROJECTS.map((project) => `/projects/${project.id}`),
       "/projects/new",
       "/projects/eliza/funding",
-      "/projects/eliza/funding#payouts",
     ]) {
       test(`reflows ${path} with ${scenario.name}`, async ({ page }) => {
         await page.setViewportSize({ width: scenario.width, height: 1000 });
@@ -1246,14 +1031,12 @@ for (const route of [
   "/models",
   "/receipts",
   "/sponsors",
-  "/verification",
   "/how-it-works",
   "/account",
   "/",
   ...PROJECTS.map((project) => `/projects/${project.id}`),
   "/projects/eliza/funding",
   "/projects/eliza/funding/",
-  "/projects/eliza/funding#payouts",
   "/projects/eliza/manage",
   "/projects/new",
 ]) {
@@ -1268,8 +1051,6 @@ for (const route of [
       path = `/cycles/${cycle.projectId}/${cycle.cycleId}`;
     }
     await page.goto(path, { waitUntil: "networkidle" });
-    if (path.endsWith("/funding#payouts"))
-      await expect(page.locator(".funding-workbench")).toBeVisible();
     const project = PROJECTS.find(
       (candidate) => path === `/projects/${candidate.id}`,
     );
@@ -1386,7 +1167,7 @@ test("opens the sponsors page directly and through keyboard navigation", async (
 }, testInfo) => {
   await page.goto("/sponsors", { waitUntil: "networkidle" });
   await page.reload({ waitUntil: "networkidle" });
-  await expect(page.getByText("$5,050", { exact: true })).toBeVisible();
+  await expect(page.getByText("$4,900", { exact: true })).toBeVisible();
   const audience = page
     .locator("summary")
     .filter({ hasText: "Audience report ·" });
@@ -1443,117 +1224,11 @@ test("lands direct hash links on their section", async ({ page }) => {
   }
 });
 
-test("legacy verification links open the How it works payment section", async ({
-  page,
-}) => {
+test("refuses prototype paths", async ({ page }) => {
   for (const path of ["/constructor", "/__proto__"]) {
     await page.goto(path);
     await expect(
       page.getByRole("heading", { name: "Page not found", exact: true }),
     ).toBeVisible();
   }
-  for (const path of ["/verification", "/verification/"]) {
-    await page.goto(path, { waitUntil: "networkidle" });
-    await expect(page).toHaveURL(/\/how-it-works#verification$/u);
-    await expect(
-      page.getByRole("heading", {
-        exact: true,
-        name: "Settlement verification",
-      }),
-    ).toBeInViewport();
-    await expect(
-      page.getByRole("button", { name: "Derive addresses" }),
-    ).toBeHidden();
-  }
 });
-
-test("derives Solana addresses on the settlement verification page", async ({
-  page,
-}, testInfo) => {
-  await page.goto("/how-it-works", { waitUntil: "networkidle" });
-  const verification = page.getByRole("heading", {
-    exact: true,
-    name: "Settlement verification",
-  });
-  await expect(verification).not.toBeVisible();
-  await page.getByText("Technical references", { exact: true }).click();
-  await page
-    .getByRole("link", { name: "Settlement verification", exact: true })
-    .first()
-    .focus();
-  await page.keyboard.press("Enter");
-  await expect(verification).toBeVisible();
-  await page.goto("/how-it-works#verification", { waitUntil: "networkidle" });
-  await expect(
-    page.getByRole("heading", { exact: true, name: "Settlement verification" }),
-  ).toBeVisible();
-
-  await page.getByText("Advanced verification", { exact: true }).click();
-  // A real August 2026 recipient. Its canonical USDC associated token account
-  // is fixed by the Solana address derivation, so the value below is checkable
-  // against any explorer and pins the in-repo derivation to mainnet reality.
-  await page
-    .getByLabel("Solana address", { exact: true })
-    .fill("8UeRuQdqVCVwxERmajGkLon92Y8Ax3oJbDZQPGENzJkf");
-  await page.getByRole("button", { name: "Derive addresses" }).click();
-  await expect(
-    page.getByText("FqfuZQ5KKqRA6V2MQcRwgwVtSR8Jsfe2cU8UuPbsr3d", {
-      exact: true,
-    }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("4wxQ2tM9SWqDnds9LvZ7yL32TSPP41iwkedKZZdQJBbH", {
-      exact: true,
-    }),
-  ).toBeVisible();
-
-  // A known Squads v4 multisig and vault pair, so the browser derivation is
-  // checked against a fixed vector.
-  await page
-    .getByLabel("Squads v4 multisig", { exact: true })
-    .fill("xmWqhNJwNL4z4BcDo1Yh7BbStLU7omVafZNmg91y2Vg");
-  await page.getByRole("button", { name: "Derive vault accounts" }).click();
-  await expect(
-    page.getByText("FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv", {
-      exact: true,
-    }),
-  ).toBeVisible();
-
-  await page.getByLabel("Solana address", { exact: true }).fill("not-a-key");
-  await page.getByRole("button", { name: "Derive addresses" }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
-
-  expect(
-    (
-      await new AxeBuilder({ page })
-        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
-        .analyze()
-    ).violations,
-  ).toEqual([]);
-  await testInfo.attach("settlement-verification", {
-    body: await page.screenshot({ fullPage: true }),
-    contentType: "image/png",
-  });
-});
-
-async function routeWalletClaims(
-  page: import("@playwright/test").Page,
-  calls: string[],
-  githubActorId: string,
-) {
-  await page.route(
-    `${deployment.api}/api/v1/wallet-claims/actors/*/current*`,
-    async (route) => {
-      calls.push(route.request().url());
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          claimId: "e2e-solana-wallet-claim",
-          githubActorId,
-          address: "11111111111111111111111111111111",
-        }),
-      });
-    },
-  );
-}

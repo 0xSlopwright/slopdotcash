@@ -200,10 +200,9 @@ function assertApplicationManifest(manifest: ProjectDefinition): void {
       "Applications may only pledge a monthly pool with payments disabled",
     ],
     [
-      (manifest.funding.commitments ?? []).length === 0 &&
-        (manifest.funding.addresses ?? []).length === 0 &&
+      (manifest.funding.addresses ?? []).length === 0 &&
         (manifest.escrow?.deployments ?? []).length === 0,
-      "Funding addresses and commitments need admin verification",
+      "Funding addresses and escrow deployments need admin verification",
     ],
   ];
   for (const [valid, message] of rules) {

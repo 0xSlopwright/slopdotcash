@@ -2,7 +2,6 @@ import type { EscrowPolicy } from "./escrow-policy.mjs";
 import type { ContributionField } from "./project-schema.mjs";
 /** Types for the public project and reward-policy registry. */
 
-import type { FundingCommitmentInstrument } from "./funding-instruments.mjs";
 import type { RewardAsset } from "./reward-asset.mjs";
 
 export type ProjectId = string;
@@ -10,8 +9,6 @@ export type ProjectStatus = "active" | "paused";
 export type RewardKind = "monthly-pool" | "external-prize-share";
 
 export interface ProjectFundingPolicy {
-  /** Exact-cycle opt-in; release additionally requires protected reservation and live readiness. */
-  readonly freshCyclePaymentPolicy?: import("./funding-readiness").FreshCyclePaymentPolicy;
   readonly mode: "direct-noncustodial";
   readonly disclosure: "Funds go directly to the project wallet. Slop does not hold or recover funds.";
   readonly recordsPath: string;
@@ -22,7 +19,6 @@ export interface ProjectFundingPolicy {
     readonly effectiveAt: string;
     readonly replacedAt: string | null;
   }[];
-  readonly commitments?: readonly FundingCommitmentInstrument[];
 }
 
 export interface ProjectExternalEvaluationsPolicy {
@@ -269,8 +265,3 @@ export declare function findProject(value: string): ProjectDefinition | null;
 export declare function findProjectByRepositoryId(
   repositoryId: string,
 ): ProjectDefinition | null;
-
-export declare function assertProjectPaymentsEnabled(
-  projectId: ProjectId,
-  cycleId?: string,
-): ProjectDefinition;

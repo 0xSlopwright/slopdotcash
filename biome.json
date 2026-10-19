@@ -16,8 +16,6 @@
       "!**/public",
       "!assets",
       "!cycles",
-      "!funding/payment-reservations.json",
-      "!protocol/payment-checkpoints",
       "!data/who-builds",
       "!data/points/history.json",
       "!data/profiles/seed.json",

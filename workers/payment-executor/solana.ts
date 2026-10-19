@@ -19,7 +19,7 @@ import {
   solanaUint,
   verifySolanaDeployment,
 } from "../../contracts/solana/adapter";
-import { decodeBase58Bytes } from "../../src/lib/squads-funding";
+import { decodeBase58Bytes } from "../../src/lib/base58";
 import {
   authorizeRegistry,
   authorizeWalletRotation,

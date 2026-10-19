@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
-import { BASE_PLATFORM_FEE_RECIPIENT } from "../../src/lib/fresh-cycle-policy.mjs";
+import { BASE_PLATFORM_FEE_RECIPIENT } from "../../src/lib/platform-fee-recipients.mjs";
 
 const read = (file: string) =>
   readFileSync(`contracts/evm/script/${file}`, "utf8");

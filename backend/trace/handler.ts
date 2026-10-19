@@ -34,8 +34,6 @@ import {
   type WalletClaim,
   type WalletPossessionAttestationRecord,
 } from "./contracts";
-import { readExecutionVerification } from "./execution-verification";
-import { readFundingVerification } from "./funding-verification";
 import {
   isExactClientIdentifier,
   isExactClientVersion,
@@ -53,7 +51,6 @@ import {
   validRepository,
   validSha256,
 } from "./validation";
-import { applyVerificationAdmission } from "./verification-admission";
 
 export type TraceApiDependencies = {
   tier?: DeploymentTier;
@@ -1340,15 +1337,10 @@ function browserRouteHeaders(
 ): readonly string[] | null {
   if (
     method === "GET" &&
-    ((parts[0] === "wallet-claims" &&
-      (parts.length === 2 ||
-        (parts.length === 3 && parts[2] === "possession") ||
-        (parts.length === 4 &&
-          parts[1] === "actors" &&
-          parts[3] === "current"))) ||
-      (parts.length === 4 &&
-        parts[0] === "projects" &&
-        (parts[2] === "funding" || parts[2] === "executions")))
+    parts[0] === "wallet-claims" &&
+    (parts.length === 2 ||
+      (parts.length === 3 && parts[2] === "possession") ||
+      (parts.length === 4 && parts[1] === "actors" && parts[3] === "current"))
   )
     return ["authorization"];
   if (
@@ -1438,30 +1430,7 @@ async function handleTraceApiInternal(
     return json(404, { error: "not_found" });
   }
   const publicWalletRead = isPublicWalletRead(request, parts);
-  const publicFundingRead =
-    request.method === "GET" &&
-    parts.length === 4 &&
-    parts[0] === "projects" &&
-    parts[2] === "funding";
   try {
-    if (
-      request.method === "GET" &&
-      parts.length === 4 &&
-      parts[0] === "projects" &&
-      parts[2] === "executions"
-    )
-      return await readExecutionVerification(request, parts[1], parts[3], () =>
-        applyVerificationAdmission(request, deps),
-      );
-    if (publicFundingRead) {
-      return publicBrowserResponse(
-        deps,
-        request,
-        await readFundingVerification(request, parts[1], parts[3], () =>
-          applyVerificationAdmission(request, deps),
-        ),
-      );
-    }
     if (
       request.method === "GET" &&
       parts.length === 1 &&
@@ -1560,7 +1529,7 @@ async function handleTraceApiInternal(
           ? "Internal error"
           : error.message,
     });
-    return publicWalletRead || publicFundingRead
+    return publicWalletRead
       ? publicBrowserResponse(deps, request, response)
       : response;
   }

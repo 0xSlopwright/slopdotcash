@@ -356,7 +356,6 @@ export async function generatePoints(
   }
   const cycles = await syncCycleIndex({
     checkOnly: true,
-    online: options.online,
     generatedAt: now,
   });
   journal = appendPointAwards(

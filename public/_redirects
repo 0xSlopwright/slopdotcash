@@ -11,8 +11,8 @@
 /cycles/ / 200
 /sponsors / 200
 /sponsors/ / 200
-/verification / 200
-/verification/ / 200
+/verification /how-it-works 301
+/verification/ /how-it-works 301
 /login / 200
 /login/ / 200
 /admin / 200

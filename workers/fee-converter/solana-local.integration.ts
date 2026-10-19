@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { solanaBase58 } from "../../contracts/solana/adapter";
-import { decodeBase58Bytes } from "../../src/lib/squads-funding";
+import { decodeBase58Bytes } from "../../src/lib/base58";
 import { runOnce } from "./index";
 import { associatedTokenAccount, parseTransaction } from "./solana";
 import { sqliteD1 } from "./sqlite-d1";

@@ -182,7 +182,6 @@ pre {
 /* Plain buttons inside panels and forms share the secondary treatment. */
 .points-panel button:not(.button),
 .data-panel button:not(.button),
-.funding-review button:not(.button),
 .funding-workbench button:not(.button),
 .wallet-registration button:not(.button),
 .earnings-page button:not(.button),
@@ -201,7 +200,6 @@ pre {
 }
 
 .points-panel button:not(.button):hover:not(:disabled),
-.funding-review button:not(.button):hover:not(:disabled),
 .funding-workbench button:not(.button):hover:not(:disabled),
 .wallet-registration button:not(.button):hover:not(:disabled),
 .earnings-page button:not(.button):hover:not(:disabled),
@@ -212,7 +210,6 @@ pre {
 }
 
 .points-panel button:not(.button):disabled,
-.funding-review button:not(.button):disabled,
 .funding-workbench button:not(.button):disabled,
 .wallet-registration button:not(.button):disabled,
 .earnings-page button:not(.button):disabled,
@@ -1104,11 +1101,4 @@ main h2 {
   font-weight: 800;
   letter-spacing: -0.03em;
   text-transform: uppercase;
-}
-
-.funding-workbench .payout-steps button[aria-current="step"],
-.funding-workbench .payout-steps button[aria-current="step"]:hover {
-  border-color: var(--orange);
-  background: var(--orange);
-  color: var(--on-accent);
 }

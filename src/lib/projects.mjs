@@ -179,27 +179,6 @@ export function findProjectByRepositoryId(repositoryId) {
   return PROJECTS_BY_REPOSITORY.get(repositoryId.toLowerCase()) ?? null;
 }
 
-/** Refuses every money-state transition until a reviewed project enables it. */
-export function assertProjectPaymentsEnabled(projectId, cycleId) {
-  const project = findProject(projectId);
-  if (
-    project?.reward.kind !== "monthly-pool" ||
-    project.reward.paymentMode !== "enabled" ||
-    project.reward.fundingState !== "committed" ||
-    BigInt(project.reward.committedMinor) <= 0n
-  ) {
-    throw new TypeError(`Payments are disabled for project ${projectId}`);
-  }
-  if (
-    !project.funding.freshCyclePaymentPolicy ||
-    project.funding.freshCyclePaymentPolicy.cycleId !== cycleId
-  )
-    throw new TypeError(
-      `Payments require the exact reviewed fresh cycle for project ${projectId}`,
-    );
-  return project;
-}
-
 export {
   HISTORICAL_PROJECTS,
   INGESTED_HISTORICAL_PROJECTS,

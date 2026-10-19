@@ -9,7 +9,7 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { solanaBase58 } from "../../contracts/solana/adapter";
-import { decodeBase58Bytes } from "../../src/lib/squads-funding";
+import { decodeBase58Bytes } from "../../src/lib/base58";
 import type { Limits, NetworkConfig } from "./config";
 import type {
   ChainClient,

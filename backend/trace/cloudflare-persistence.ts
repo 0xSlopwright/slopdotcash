@@ -14,10 +14,6 @@ import type {
   WalletPossessionChallengeRecord,
 } from "./contracts";
 import { sha256Hex } from "./validation";
-import {
-  consumeVerificationAdmission,
-  type VerificationAdmissionInput,
-} from "./verification-admission";
 
 type D1Result = { success: boolean; meta?: { changes?: number } };
 type D1Statement = {
@@ -286,10 +282,6 @@ export class CloudflareTracePersistence implements TracePersistence {
     private readonly db: D1Database,
     private readonly bucket: R2Bucket,
   ) {}
-
-  async consumeVerificationAdmission(input: VerificationAdmissionInput) {
-    return consumeVerificationAdmission(this.db, input);
-  }
 
   async createRun(input: CreateRunInput): Promise<PersistenceResult<TraceRun>> {
     const existing = await this.db

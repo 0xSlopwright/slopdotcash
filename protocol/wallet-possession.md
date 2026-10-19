@@ -46,7 +46,7 @@ Possession is evidence, never a gate.
 - `proven`: an attestation exists for the claim.
 - `unproven`: no attestation exists and the address could produce one.
 - `not-provable-by-signature`: the address is off the Ed25519 curve, the shape a
-  program derived address or a Squads vault takes. This is a valid destination
+  program derived address or a multisig vault takes. This is a valid destination
   that cannot produce a detached signature. It is reported as unprovable rather
   than rejected, so a contributor paid to a multisig is not pushed toward a
   worse destination to satisfy a check.
@@ -75,9 +75,8 @@ future or past its expiry, and refuses a challenge whose window is not exactly
 `WALLET_POSSESSION_LIFETIME_MS`, so a caller cannot widen its own replay window.
 
 Signatures are canonical padded base64 and exactly 64 bytes. Verification uses
-lockfile-pinned Noble Curves strict verification (`zip215: false`), matching
-`protocol/signer-access-attestations.md`, not permissive consensus verification
-that accepts identity-point forgeries.
+lockfile-pinned Noble Curves strict verification (`zip215: false`), not
+permissive consensus verification that accepts identity-point forgeries.
 
 The module has no Node filesystem, Buffer, signing, or broadcast dependency. It
 uses Web Crypto primitives and the repository's existing Noble curve

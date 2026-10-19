@@ -3,11 +3,9 @@ import {
   ArrowRight,
   Check,
   ChevronRight,
-  CircleAlert,
   Clipboard,
   ExternalLink,
   Plus,
-  RotateCcw,
 } from "lucide-react";
 import {
   lazy,
@@ -20,12 +18,6 @@ import {
 import { CycleArchivePage, CyclePage } from "./CyclePages";
 import { EarningsPage } from "./Earnings";
 import { EscrowFunding } from "./EscrowFunding";
-import {
-  formatFundingAmount,
-  formatFundingMinor,
-  fundingTransactionExplorer,
-  useFundingIndex,
-} from "./FundingRecords";
 import { Link, useInitialHashScroll } from "./Link";
 import { SlopMark, Wordmark } from "./Logo";
 import {
@@ -35,7 +27,6 @@ import {
 import { browserDeployment } from "./lib/browser-deployment";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
-import { currentProjectFundingRecords } from "./lib/funding";
 import { communityProjects, homeProjects } from "./lib/home-projects";
 import {
   type ModelOutcomeSummary,
@@ -49,10 +40,6 @@ import {
   type ProjectDefinition,
 } from "./lib/projects.mjs";
 import { REWARD_ASSET_NETWORKS } from "./lib/reward-asset.mjs";
-import {
-  type PublicSignerReport,
-  publicSignerStatus,
-} from "./lib/signer-capability";
 import { pageTitle, SITE_ORIGIN, STATIC_PAGE_TITLES } from "./lib/site-routes";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
 import { useCycleIndex } from "./lib/use-cycle-index";
@@ -90,9 +77,6 @@ import {
 } from "./Presentation";
 import { ProfilePage } from "./ProfilePage";
 import { ProjectLeaderboard } from "./ProjectLeaderboard";
-import { SettlementVerification } from "./SettlementVerification";
-
-export { DonorFundingProfile } from "./FundingRecords";
 
 export { safeProposalHttpsUrl } from "./lib/project-proposal";
 export {
@@ -114,12 +98,6 @@ const AdminPage = lazy(() => import("./Admin"));
 const ProjectUpdatePage = lazy(() =>
   import("./ProjectProposalPage").then((module) => ({
     default: module.ProjectUpdatePage,
-  })),
-);
-
-const FundingReview = lazy(() =>
-  import("./FundingReview").then((module) => ({
-    default: module.FundingReview,
   })),
 );
 
@@ -244,10 +222,7 @@ function internalRoute(pathname: string): Route {
 }
 
 /** Legacy pages now live as sections of their canonical routes. */
-const LEGACY_SECTIONS = new Map([
-  ["wallet", "/account#wallets"],
-  ["verification", "/how-it-works#verification"],
-]);
+const LEGACY_SECTIONS = new Map([["wallet", "/account#wallets"]]);
 
 function canonicalPath(): string {
   const legacy = LEGACY_SECTIONS.get(
@@ -972,9 +947,7 @@ function ProjectPaymentHistory({
       <div className="simple-heading">
         <h2>{externalPrize ? "Cycle history" : "Payment history"}</h2>
         {externalPrize ? null : (
-          <Link href={`/projects/${project.slug}/funding#payouts`}>
-            Manage payouts
-          </Link>
+          <Link href={`/projects/${project.slug}/funding`}>Manage funding</Link>
         )}
         <Link href={`/projects/${project.slug}/manage`}>
           Draft a project update
@@ -1047,243 +1020,8 @@ function ProjectPaymentHistory({
   );
 }
 
-function fundingExplorer(
-  network: ProjectDefinition["funding"]["addresses"][number]["network"],
-  address: string,
-): string {
-  const encoded = encodeURIComponent(address);
-  if (network === "solana") return `https://solscan.io/account/${encoded}`;
-  if (network === "base") return `https://basescan.org/address/${encoded}`;
-  if (network === "ethereum") return `https://etherscan.io/address/${encoded}`;
-  return `https://mempool.space/address/${encoded}`;
-}
-
-function FundingQr({
-  address,
-  asset,
-  network,
-}: {
-  address: string;
-  asset: string;
-  network: string;
-}) {
-  const [source, setSource] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    let active = true;
-    setSource(null);
-    setFailed(false);
-    void import("qrcode")
-      .then(({ default: QRCode }) =>
-        QRCode.toString(address, {
-          errorCorrectionLevel: "M",
-          margin: 1,
-          type: "svg",
-          width: 176,
-        }),
-      )
-      .then((value) => {
-        if (active)
-          setSource(`data:image/svg+xml,${encodeURIComponent(value)}`);
-      })
-      .catch(() => {
-        // error-policy:J1 Keep the copyable address usable when QR generation fails.
-        if (active) setFailed(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [address]);
-  if (failed)
-    return (
-      <p role="status">
-        QR code unavailable. Copy the receiving address instead.
-      </p>
-    );
-  return source ? (
-    <img
-      alt={`${network} ${asset} receiving address QR code`}
-      className="funding-qr"
-      height="176"
-      src={source}
-      width="176"
-    />
-  ) : null;
-}
-
 export function ProjectFunding({ project }: { project: ProjectDefinition }) {
-  const [copy, setCopy] = useState<{
-    key: string;
-    status: "copied" | "error";
-  } | null>(null);
-  if (project.escrow) return <EscrowFunding project={project} />;
-  const now = Date.now();
-  const activeRoutes = project.funding.addresses.filter(
-    (route) =>
-      Date.parse(route.effectiveAt) <= now &&
-      (route.replacedAt === null || now < Date.parse(route.replacedAt)),
-  );
-  if (activeRoutes.length === 0) return null;
-  return (
-    <section className="section project-funding">
-      <details>
-        <summary>Fund this project</summary>
-        <p>
-          Funding: {project.reward.fundingState} · Committed:{" "}
-          {formatMicroUsdc(project.reward.committedMinor)} · Payments:{" "}
-          {project.reward.paymentMode}
-        </p>
-        <p>{project.funding.disclosure}</p>
-        <p>
-          Check the network, asset, and full address in your wallet before
-          sending. Transfers are irreversible. GitHub identity does not prove
-          wallet ownership.
-        </p>
-        <div className="funding-routes">
-          {activeRoutes.map((route) => {
-            const key = `${route.network}:${route.asset}:${route.address}:${route.effectiveAt}`;
-            return (
-              <div className="funding-route" key={key}>
-                <strong>
-                  {route.asset} · {route.network}
-                </strong>
-                <code>{route.address}</code>
-                <FundingQr
-                  address={route.address}
-                  asset={route.asset}
-                  network={route.network}
-                />
-                <div>
-                  <button
-                    className="text-button"
-                    onClick={() => {
-                      void copyText(route.address).then(
-                        () => setCopy({ key, status: "copied" }),
-                        () => setCopy({ key, status: "error" }),
-                      );
-                    }}
-                    type="button"
-                  >
-                    {copy?.key === key && copy.status === "copied"
-                      ? "Address copied"
-                      : copy?.key === key && copy.status === "error"
-                        ? "Copy unavailable; select address"
-                        : "Copy address"}
-                  </button>
-                  <ExternalLinkAnchor
-                    href={fundingExplorer(route.network, route.address)}
-                  >
-                    View address <ExternalLink aria-hidden="true" size={14} />
-                  </ExternalLinkAnchor>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <Link href={`/projects/${project.slug}/funding`}>
-          View transactions
-        </Link>
-      </details>
-    </section>
-  );
-}
-
-export function SignerReports({
-  reports,
-}: {
-  reports: readonly PublicSignerReport[];
-}) {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const refresh = () => setNow(Date.now());
-    const timer = window.setInterval(refresh, 1000);
-    window.addEventListener("focus", refresh);
-    return () => {
-      window.clearInterval(timer);
-      window.removeEventListener("focus", refresh);
-    };
-  }, []);
-  const groups = new Map<string, PublicSignerReport[]>();
-  for (const report of reports) {
-    const key = `${report.cycleId}:${report.instrumentId}`;
-    const group = groups.get(key) ?? [];
-    group.push(report);
-    groups.set(key, group);
-  }
-  return (
-    <section aria-label="Signer capability reports">
-      <h2>Signer capability</h2>
-      <p>
-        These reports do not prove available balance or authorize payment.
-        Payments remain disabled.
-      </p>
-      {[...groups.entries()].map(([key, group]) => {
-        const state = publicSignerStatus(group, now);
-        return (
-          <article key={key}>
-            <h3>
-              <span aria-live="polite">
-                {group[0].cycleId} ·{" "}
-                {state === "inaccessible"
-                  ? "Inaccessible"
-                  : state === "both-signers-current"
-                    ? "Both signers reported capability"
-                    : state === "creator-and-independent-current"
-                      ? "Creator and independent signer reported capability"
-                      : state === "recipient-current"
-                        ? "Stream recipient reported capability"
-                        : "Current capability unknown"}
-              </span>
-            </h3>
-            <p>Instrument: {group[0].instrumentId}</p>
-            <ul>
-              {group.map((report) => (
-                <li key={`${report.sourceRepository}:${report.sourceCommit}`}>
-                  {report.role}:{" "}
-                  {report.capability === "lost-access"
-                    ? "reported lost access"
-                    : report.expiresAt !== null &&
-                        Date.parse(report.expiresAt) <= now
-                      ? "capability report expired"
-                      : "reported signing capability"}
-                  . {report.reason}{" "}
-                  <ExternalLinkAnchor
-                    href={`https://github.com/${report.sourceRepository}/commit/${report.sourceCommit}`}
-                  >
-                    Signed report
-                  </ExternalLinkAnchor>
-                  {report.expiresAt && (
-                    <>
-                      {" "}
-                      · Expires{" "}
-                      <time dateTime={report.expiresAt}>
-                        {report.expiresAt}
-                      </time>
-                    </>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </article>
-        );
-      })}
-    </section>
-  );
-}
-
-type FundingView = "records" | "payouts";
-const FUNDING_VIEWS: { id: FundingView; label: string }[] = [
-  { id: "records", label: "Funding records" },
-  { id: "payouts", label: "Manage payouts" },
-];
-const FUNDING_RECORD_GROUPS = [
-  { state: "verified-on-chain", title: "Verified on-chain" },
-  { state: "self-reported", title: "Self-reported" },
-  { state: "disputed", title: "Disputed" },
-] as const;
-
-function fundingViewFromHash(): FundingView {
-  return window.location.hash === "#payouts" ? "payouts" : "records";
+  return project.escrow ? <EscrowFunding project={project} /> : null;
 }
 
 function fundingStateLabel(project: ProjectDefinition): string {
@@ -1294,63 +1032,7 @@ function fundingStateLabel(project: ProjectDefinition): string {
     : "Pledged, not committed";
 }
 
-function ProjectFundingPage({
-  project,
-  state,
-}: {
-  project: ProjectDefinition;
-  state: DataState;
-}) {
-  const [funding, retryFunding] = useFundingIndex();
-  const [view, setView] = useState<FundingView>(fundingViewFromHash);
-  const [payoutsOpened, setPayoutsOpened] = useState(() => view === "payouts");
-  useEffect(() => {
-    const sync = () => {
-      const next = fundingViewFromHash();
-      setView(next);
-      if (next === "payouts") setPayoutsOpened(true);
-    };
-    window.addEventListener("hashchange", sync);
-    window.addEventListener("popstate", sync);
-    return () => {
-      window.removeEventListener("hashchange", sync);
-      window.removeEventListener("popstate", sync);
-    };
-  }, []);
-  const select = (next: FundingView) => {
-    setView(next);
-    if (next === "payouts") setPayoutsOpened(true);
-    window.history.replaceState(
-      window.history.state,
-      "",
-      `${window.location.pathname}${window.location.search}${next === "payouts" ? "#payouts" : ""}`,
-    );
-  };
-  const records =
-    funding.status === "ready"
-      ? currentProjectFundingRecords(
-          funding.index.records.filter(
-            (record) => record.projectId === project.id,
-          ),
-        )
-      : [];
-  const now = Date.now();
-  const activeAddresses = project.funding.addresses.filter(
-    (route) =>
-      Date.parse(route.effectiveAt) <= now &&
-      (route.replacedAt === null || now < Date.parse(route.replacedAt)),
-  );
-  const projectVaults = (project.funding.commitments ?? []).filter(
-    (instrument) =>
-      instrument.kind === "squads-project-vault" &&
-      instrument.replacedAt === null,
-  );
-  const signerReports =
-    funding.status === "ready"
-      ? (funding.index.signerReports ?? []).filter(
-          (report) => report.projectId === project.id,
-        )
-      : [];
+function ProjectFundingPage({ project }: { project: ProjectDefinition }) {
   return (
     <main className="shell route-main funding-page">
       <p className="breadcrumb">
@@ -1358,43 +1040,7 @@ function ProjectFundingPage({
         <span>/</span>Funding
       </p>
       <h1>{project.name} funding</h1>
-      <div aria-label="Funding views" className="funding-tabs" role="tablist">
-        {FUNDING_VIEWS.map((option, index) => (
-          <button
-            aria-controls={`funding-panel-${option.id}`}
-            aria-selected={view === option.id}
-            id={`funding-tab-${option.id}`}
-            key={option.id}
-            onClick={() => select(option.id)}
-            onKeyDown={(event) => {
-              const next =
-                event.key === "ArrowRight" || event.key === "ArrowLeft"
-                  ? FUNDING_VIEWS[(index + 1) % FUNDING_VIEWS.length]
-                  : event.key === "Home"
-                    ? FUNDING_VIEWS[0]
-                    : event.key === "End"
-                      ? FUNDING_VIEWS[FUNDING_VIEWS.length - 1]
-                      : null;
-              if (!next) return;
-              event.preventDefault();
-              select(next.id);
-              document.getElementById(`funding-tab-${next.id}`)?.focus();
-            }}
-            role="tab"
-            tabIndex={view === option.id ? 0 : -1}
-            type="button"
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
-      <section
-        hidden={view !== "records"}
-        aria-labelledby="funding-tab-records"
-        className="funding-records"
-        id="funding-panel-records"
-        role="tabpanel"
-      >
+      <section className="funding-records">
         <dl className="funding-status-grid">
           <div>
             <dt>
@@ -1430,145 +1076,21 @@ function ProjectFundingPage({
           <div>
             <dt>Project vault</dt>
             <dd>
-              {project.escrow?.deployments.length || projectVaults.length
+              {project.escrow?.deployments.length
                 ? "Reviewed deployment published"
                 : "Not deployed"}
             </dd>
           </div>
-          <div>
-            <dt>Direct addresses</dt>
-            <dd>
-              {activeAddresses.length === 0
-                ? "None published"
-                : `${activeAddresses.length} published`}
-            </dd>
-          </div>
         </dl>
-        {activeAddresses.length > 0 ? (
-          <p>{project.funding.disclosure}</p>
-        ) : null}
-        {funding.status === "loading" ? (
-          <div className="data-notice" role="status">
-            <span className="pulse" /> Reading funding records…
-          </div>
-        ) : funding.status === "error" ? (
-          <div className="data-notice data-error" role="alert">
-            <CircleAlert aria-hidden="true" size={18} />
-            <span>Funding records unavailable: {funding.message}</span>
-            <button onClick={retryFunding} type="button">
-              <RotateCcw aria-hidden="true" size={15} /> Retry
-            </button>
-          </div>
-        ) : records.length === 0 ? (
-          <EmptyState text="No reviewed public funding transactions have been published yet." />
+        {project.escrow ? (
+          <EscrowFunding project={project} />
         ) : (
-          FUNDING_RECORD_GROUPS.map((group) => {
-            const groupRecords = records.filter(
-              (record) => record.state === group.state,
-            );
-            if (groupRecords.length === 0 && group.state === "disputed")
-              return null;
-            const assets = [
-              ...new Set(groupRecords.map((record) => record.asset)),
-            ];
-            return (
-              <section
-                aria-labelledby={`funding-${group.state}`}
-                className="funding-record-group"
-                key={group.state}
-              >
-                <h2 id={`funding-${group.state}`}>{group.title}</h2>
-                {groupRecords.length === 0 ? (
-                  <p>No records.</p>
-                ) : (
-                  <>
-                    <p className="money-summary">
-                      {assets.map((asset) => (
-                        <strong key={asset}>
-                          {formatFundingAmount(
-                            asset,
-                            groupRecords
-                              .filter((record) => record.asset === asset)
-                              .reduce(
-                                (sum, record) =>
-                                  sum + BigInt(record.amountMinor),
-                                0n,
-                              )
-                              .toString(),
-                          )}
-                        </strong>
-                      ))}
-                    </p>
-                    <div className="plain-table-wrap">
-                      <table className="plain-table">
-                        <caption className="visually-hidden">
-                          {project.name} {group.title.toLowerCase()} funding
-                          transactions
-                        </caption>
-                        <thead>
-                          <tr>
-                            <th scope="col">Transaction</th>
-                            <th scope="col">Amount</th>
-                            <th scope="col">Attribution</th>
-                            <th scope="col">Network</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {groupRecords.map((record) => (
-                            <tr key={record.recordId}>
-                              <th scope="row">
-                                <ExternalLinkAnchor
-                                  href={fundingTransactionExplorer(record)}
-                                >
-                                  {record.transactionId.slice(0, 12)}…
-                                </ExternalLinkAnchor>
-                              </th>
-                              <td>{formatFundingMinor(record)}</td>
-                              <td>
-                                {record.donor.attribution === "github"
-                                  ? `@${record.donor.login}`
-                                  : "Anonymous"}
-                              </td>
-                              <td>{record.network}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </>
-                )}
-              </section>
-            );
-          })
+          <EmptyState text="Funding unavailable. This project has no reviewed escrow deployment." />
         )}
-        {signerReports.length > 0 ? (
-          <SignerReports reports={signerReports} />
-        ) : null}
         <p className="funding-records-note">
-          A GitHub login or a submitted transaction ID does not prove wallet
-          ownership or payment. A balance does not prove signer capability.
-          Monthly payout states are in the{" "}
-          <Link href="/cycles">cycle archive</Link>.
+          A GitHub login does not prove wallet ownership or payment. Monthly
+          cycle states are in the <Link href="/cycles">cycle archive</Link>.
         </p>
-      </section>
-      <section
-        hidden={view !== "payouts"}
-        aria-labelledby="funding-tab-payouts"
-        id="funding-panel-payouts"
-        role="tabpanel"
-      >
-        {payoutsOpened ? (
-          <Suspense fallback={<p role="status">Loading funding review…</p>}>
-            <FundingReview
-              key={project.id}
-              project={project}
-              sourceRepositoryUrl={SOURCE_REPOSITORY}
-              cycleIndex={state.status === "ready" ? state.cycleIndex : null}
-              cycleIndexLoading={state.status === "loading"}
-              funding={funding.status === "ready" ? funding.index : null}
-            />
-          </Suspense>
-        ) : null}
       </section>
     </main>
   );
@@ -1830,7 +1352,7 @@ function HowItWorksPage() {
             <li>
               <strong>2. Fund the pool</strong>
               <p>
-                A cap is a target. Only a verified commitment funds awards.{" "}
+                A cap is a target. Only funds in the project escrow pay awards.{" "}
                 <Link href="/sponsors">Funding options</Link>
               </p>
             </li>
@@ -1844,8 +1366,8 @@ function HowItWorksPage() {
             <li>
               <strong>4. Send payment</strong>
               <p>
-                Follow the approved signing policy. Approval alone does not
-                prove payment.
+                Commit approved awards to the project escrow. Approval alone
+                does not prove payment.
               </p>
             </li>
           </ol>
@@ -2033,12 +1555,12 @@ function HowItWorksPage() {
         <details>
           <summary>Funding and cycle rules</summary>
           <p>
-            A cap is a target, not a balance. A pool is unfunded until a
-            verified on-chain commitment backs it, allocation never exceeds the
-            committed amount, and unused funds roll over without raising the
-            cap. A project may add an optional review budget as a second cash
-            line that pays on top of the unchanged shared pool, and only after
-            its own funding is committed.
+            A cap is a target, not a balance. A pool is unfunded until its
+            project escrow holds funds, awards never exceed the free escrow
+            balance, and unused funds roll over without raising the cap. A
+            project may add an optional review budget as a second cash line that
+            pays on top of the unchanged shared pool, and only after its own
+            funding is committed.
           </p>
           <p>
             For monthly v1 cycles, the first-of-month workflow freezes a
@@ -2207,13 +1729,6 @@ function HowItWorksPage() {
             </ExternalLinkAnchor>
           </li>
           <li>
-            <ExternalLinkAnchor
-              href={`${protocolRoot}/funding-record-pr-verification.md`}
-            >
-              Funding record verification
-            </ExternalLinkAnchor>
-          </li>
-          <li>
             <Link href="/receipts">Public receipts</Link>
           </li>
           <li>
@@ -2226,11 +1741,6 @@ function HowItWorksPage() {
             <Link href="/#leaderboard">Live leaderboard</Link>
           </li>
           <li>
-            <Link href="/how-it-works#verification">
-              Settlement verification
-            </Link>
-          </li>
-          <li>
             <Link href="/sponsors">Sponsors</Link>
           </li>
           <li>
@@ -2238,26 +1748,8 @@ function HowItWorksPage() {
           </li>
         </ul>
       </details>
-      <details
-        className="how-details"
-        open={window.location.hash === "#verification"}
-      >
-        <summary>Verify a payment</summary>
-        <SettlementVerification />
-      </details>
     </main>
   );
-}
-
-function activeFundingAddressCount(
-  addresses: ProjectDefinition["funding"]["addresses"],
-  now: number,
-): number {
-  return addresses.filter(
-    (route) =>
-      Date.parse(route.effectiveAt) <= now &&
-      (route.replacedAt === null || now < Date.parse(route.replacedAt)),
-  ).length;
 }
 
 function sponsorPoolLabel(reward: ProjectDefinition["reward"]): string {
@@ -2486,7 +1978,6 @@ function SponsorsPage({
   retry: () => void;
 }) {
   const protocolRoot = `${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/protocol`;
-  const now = Date.now();
   const hasReviewBudget = PROJECTS.some(
     (project) => project.reward.reviewBudget,
   );
@@ -2519,15 +2010,11 @@ function SponsorsPage({
                 <th scope="col">Pool</th>
                 <th scope="col">Payments</th>
                 {hasReviewBudget ? <th scope="col">Review line</th> : null}
-                <th scope="col">Receiving addresses</th>
+                <th scope="col">Escrow vault</th>
               </tr>
             </thead>
             <tbody>
               {PROJECTS.map((project) => {
-                const activeAddresses = activeFundingAddressCount(
-                  project.funding.addresses,
-                  now,
-                );
                 return (
                   <tr key={project.id}>
                     <th scope="row">
@@ -2545,9 +2032,9 @@ function SponsorsPage({
                       </td>
                     ) : null}
                     <td>
-                      {activeAddresses === 0
-                        ? "none published"
-                        : `${activeAddresses} active`}
+                      {project.escrow?.deployments.length
+                        ? "reviewed deployment"
+                        : "not deployed"}
                     </td>
                   </tr>
                 );
@@ -2560,12 +2047,10 @@ function SponsorsPage({
         <div>
           <h2>Awards, fee and total.</h2>
           <p>
-            Legacy monthly pools add a separate 1% fee to approved awards.
-            Contributors receive the full approved amount. New escrow payouts
-            deduct 2% from the gross award: 100 USDC becomes 98 USDC for the
-            contributor and 2 USDC in fees. Each cycle keeps its recorded
-            policy. Paid requires finalized evidence for both the awards and
-            fee.
+            Escrow payouts deduct 2% from the gross award: 100 USDC becomes 98
+            USDC for the contributor and 2 USDC in fees. Each cycle keeps its
+            recorded policy. Paid requires finalized evidence for both the award
+            and the fee.
           </p>
           <p>
             External prize shares use the terms published for that project. The
@@ -2574,19 +2059,19 @@ function SponsorsPage({
         </div>
         <dl
           className="equation-card"
-          aria-label="Legacy example: $5,000 in approved awards"
+          aria-label="Example: $5,000 in gross escrow awards"
         >
           <div>
-            <dt>Legacy example approved awards</dt>
+            <dt>Example gross awards</dt>
             <dd>$5,000</dd>
           </div>
           <div>
-            <dt>Slop fee, sent separately</dt>
-            <dd>$50</dd>
+            <dt>Slop fee, deducted</dt>
+            <dd>$100</dd>
           </div>
           <div>
-            <dt>Total to send</dt>
-            <dd>$5,050</dd>
+            <dt>Contributors receive</dt>
+            <dd>$4,900</dd>
           </div>
         </dl>
       </section>
@@ -2595,8 +2080,8 @@ function SponsorsPage({
           <h2>Start with an application.</h2>
           <p>
             Sign in with GitHub and add a project. A Slop admin reviews it, and
-            new projects start paused. Receiving addresses and funding
-            instruments change only through a reviewed admin revision.
+            new projects start paused. Escrow deployments change only through a
+            reviewed admin revision.
           </p>
         </div>
         <ul>
@@ -2632,11 +2117,10 @@ function SponsorsPage({
             <strong>01 · Publish the cap</strong>
             <p>
               A reviewed admin revision sets the monthly cap and the reward
-              start. Until a verified on-chain commitment backs it, the pool
-              shows as unfunded with a target, never as a balance. Contributors
-              then use any agent to contribute. Accepted merges, eligible
-              reviews, and separately reviewed awards follow the published
-              scoring policy.
+              start. Until the project escrow holds funds, the pool shows as
+              unfunded with a target, never as a balance. Contributors then use
+              any agent to contribute. Accepted merges, eligible reviews, and
+              separately reviewed awards follow the published scoring policy.
             </p>
           </li>
           <li>
@@ -2653,10 +2137,10 @@ function SponsorsPage({
             <strong>03 · You decide and sign</strong>
             <p>
               Maintainers review proposed awards within the cap and record
-              changes with a public reason. Authorized signers execute the
-              reviewed transfer plan outside Slop. Slop marks the cycle paid
-              only when finalized on-chain evidence reconciles every approved
-              intent and the fee.
+              changes with a public reason. The project owner commits approved
+              awards to the project escrow, which pays them from reserved funds.
+              Slop marks an award paid only when finalized on-chain evidence
+              reconciles the award and the fee.
             </p>
           </li>
         </ol>
@@ -2673,7 +2157,8 @@ function SponsorsPage({
                 Whether to add a named review budget as a second cash line.
               </li>
               <li>
-                Authorized signers approve transfers under the instrument rules.
+                The project owner authorizes each award and each withdrawal of
+                unused funds.
               </li>
             </ul>
           </div>
@@ -2690,8 +2175,8 @@ function SponsorsPage({
                 rewritten.
               </li>
               <li>
-                Route money through Slop. There is no platform wallet, treasury,
-                or escrow to send to.
+                Route money through Slop. Funds stay in the project&apos;s own
+                escrow contract; Slop holds no balance and cannot move them.
               </li>
               <li>
                 Pay a related party without a separate approval on the public
@@ -2713,8 +2198,8 @@ function SponsorsPage({
             <div>
               <dt>Committed</dt>
               <dd>
-                A positive amount backed by an active reviewed instrument and
-                deterministic verifier evidence. Allocation never exceeds it.
+                Funds deposited in the project escrow contract. Awards never
+                exceed its free balance.
               </dd>
             </div>
             <div>
@@ -2730,7 +2215,10 @@ function SponsorsPage({
             </div>
             <div>
               <dt>Scheduled</dt>
-              <dd>An unsigned transfer plan exists. No money has moved.</dd>
+              <dd>
+                The owner reserved an approved award in the escrow. No money has
+                moved yet.
+              </dd>
             </div>
             <div>
               <dt>Paid</dt>
@@ -2754,28 +2242,23 @@ function SponsorsPage({
           </p>
         </section>
         <section className="custody-proof">
-          <h2>Commit through an instrument you control.</h2>
+          <h2>Fund the project escrow.</h2>
           <ul>
             <li>
-              A Squads v4 multisig vault on Solana, or a Sablier Lockup v4
-              stream on Base or Ethereum. Both are reviewed, immutable,
-              third-party programs. Slop holds no admin or fee position in
-              either, and no key in a 2-of-2 vault or a stream. An opt-in 2-of-3
-              project vault gives Slop one vote-only key that cannot propose,
-              execute, redirect, or block a transfer.
+              Each project has one escrow vault on its settlement network. The
+              contract enforces reserved awards, fees and exact-once payment.
             </li>
             <li>
-              Direct gifts go straight from your wallet to the project&apos;s
-              published address and are recorded append-only under funding
-              records, self-reported until a verifier confirms them on-chain.
+              Slop holds no balance and cannot move funds. Its identity attester
+              key only co-signs a binding that the contributor&apos;s own wallet
+              also signs.
             </li>
             <li>
-              Neither is escrow and nothing is guaranteed. A commitment is a
-              balance claim; whether its signers can act is not something this
-              protocol can attest to yet, so public surfaces say so.
+              The owner can withdraw free funds under the disclosed fee.
+              Reserved awards cannot be withdrawn. Nothing is guaranteed.
             </li>
             <li>
-              GitHub identity never proves wallet control. A receiving address
+              GitHub identity never proves wallet control. An escrow deployment
               appears on this site only through a reviewed admin revision.
             </li>
           </ul>
@@ -2824,21 +2307,7 @@ function SponsorsPage({
             <ExternalLinkAnchor
               href={`${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/funding/README.md`}
             >
-              Funding records
-            </ExternalLinkAnchor>
-          </li>
-          <li>
-            <ExternalLinkAnchor
-              href={`${protocolRoot}/funding-record-pr-verification.md`}
-            >
-              Funding record verification
-            </ExternalLinkAnchor>
-          </li>
-          <li>
-            <ExternalLinkAnchor
-              href={`${protocolRoot}/squads-execution-tracking.md`}
-            >
-              Squads execution tracking
+              Escrow funding
             </ExternalLinkAnchor>
           </li>
         </ul>
@@ -3375,7 +2844,7 @@ function AppContent({ route }: { route: Route }) {
   } else if (route.kind === "funding-project") {
     const project = findProject(route.projectId ?? "");
     content = project ? (
-      <ProjectFundingPage project={project} state={state} />
+      <ProjectFundingPage project={project} />
     ) : (
       <NotFound title="Project not found" />
     );

@@ -73,17 +73,12 @@ export function CyclePage({
     record?.state ?? (view?.cycle.status === "live" ? "live" : "closed");
   const reminder = cycleSettlementReminder({
     closesAt: to,
-    fundingState:
-      project.reward.reviewBudget?.fundingState === "committed"
-        ? "committed"
-        : project.reward.fundingState,
     kind:
       record?.kind ??
       (view?.reward.kind === "external-prize-share"
         ? "external-prize-share"
         : "monthly-pool"),
     now: new Date().toISOString(),
-    paymentMode: project.reward.paymentMode,
     settledAt: record?.settledAt ?? null,
     state: record?.state ?? (view?.cycle.status === "live" ? "live" : "review"),
   });

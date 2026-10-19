@@ -1,7 +1,8 @@
 /**
- * Validates the complete Git-backed reward lifecycle, binds each proposal to a
- * frozen source snapshot, and publishes only reconciled cycle artifacts for
- * the static UI. Optional online mode re-verifies every paid Solana signature.
+ * Validates the Git-backed reward cycles and publishes the static cycle index.
+ * Escrow cycles are validated in place. Historical monthly-pool cycles keep
+ * their proposal and approved allocation, each bound to a frozen source
+ * snapshot; the retired settlement rail adds no files and reads no chain.
  */
 
 import { createHash } from "node:crypto";
@@ -24,16 +25,10 @@ import {
   type CycleIndex,
   type CycleIndexEntry,
 } from "../src/lib/cycle-index";
-import { reviewedAllocationAmounts } from "../src/lib/funding-review-submission";
 import {
   assertLeaderboardSnapshot,
   type LeaderboardSnapshot,
 } from "../src/lib/leaderboard";
-import {
-  assertProjectVaultWindup,
-  PROJECT_VAULT_WINDUP_FILE,
-  type ProjectVaultWindupRecord,
-} from "../src/lib/project-vault-windup";
 import { createProjectView } from "../src/lib/project-view";
 import { findHistoricalProject, type ProjectId } from "../src/lib/projects.mjs";
 import { createRewardCycleProposal } from "../src/lib/reward-cycle";
@@ -41,32 +36,17 @@ import { finalizeRewardAllocation } from "../src/lib/reward-finalization";
 import {
   assertExternalContributionShareManifest,
   assertRewardAllocationManifest,
-  assertRewardSettlementManifest,
   type ProfileReadmeWalletProof,
+  type RewardAllocation,
   type RewardAllocationManifest,
-  type RewardSettlementManifest,
 } from "../src/lib/rewards";
-import {
-  assertNetworkSettlementExecutionPlan,
-  type NetworkSettlementExecutionPlan,
-} from "../src/lib/settlement-plan";
-import {
-  assertDistinctSettlementTransactions,
-  verifyRewardSettlementOnchain,
-} from "../src/lib/solana-settlement";
 import { assertEscrowDecisions } from "./escrow-review";
-import { loadProjectCommitmentRecords } from "./funding-commitment-records";
 import { validateEscrowCycle } from "./prepare-escrow-cycle";
 import { loadPriorCycleAccrual } from "./prior-cycle-accrual";
 import {
   isReadmeProof,
   unboundReadmeProofReason,
 } from "./readme-proof-binding";
-import {
-  DEFAULT_SOLANA_RPC_URL,
-  fetchFinalizedSolanaTransaction,
-} from "./solana-rpc";
-import { verifyBaseSettlementTransaction } from "./verify-settlement-evm";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const CYCLES_ROOT = resolve(REPOSITORY_ROOT, "cycles");
@@ -76,17 +56,9 @@ export const PUBLIC_CYCLES_ROOT = resolve(
 );
 const ALLOWED_FILES = new Set([
   "allocation.json",
-  "execution-plan.json",
   "proposal.json",
-  "settlement.json",
   "source-snapshot.json",
-  "transactions.json",
-  PROJECT_VAULT_WINDUP_FILE,
 ]);
-const EXECUTION_LEDGER = resolve(
-  REPOSITORY_ROOT,
-  "funding/executions/ledger.json",
-);
 const REQUIRED_FILES = ["proposal.json", "source-snapshot.json"] as const;
 const MAX_CYCLES = 240;
 const MAX_JSON_BYTES = 8 * 1024 * 1024;
@@ -102,9 +74,6 @@ interface CycleBuild {
   entry: CycleIndexEntry;
   files: Map<string, Buffer>;
   allocation: RewardAllocationManifest | null;
-  plan: NetworkSettlementExecutionPlan | null;
-  settlement: RewardSettlementManifest | null;
-  windup: ProjectVaultWindupRecord | null;
 }
 
 function canonical(value: unknown): string {
@@ -165,6 +134,44 @@ async function jsonFile(
 }
 
 type Allocation = RewardAllocationManifest["allocations"][number];
+
+/**
+ * The amount fields of a row whose reviewed total is `amountMinor`. A retained
+ * review-budget line keeps its amount unless the row is excluded, and the
+ * shared-pool line takes the rest.
+ */
+function reviewedAllocationAmounts(
+  row: Pick<RewardAllocation, "accruedMinor" | "lines">,
+  amountMinor: string,
+  excluded: boolean,
+): Pick<RewardAllocation, "accruedMinor" | "lines" | "suggestedMinor"> {
+  const amount = BigInt(amountMinor);
+  const reviewMinor = excluded
+    ? 0n
+    : BigInt(row.lines?.reviewBudget.suggestedMinor ?? "0");
+  if (amount < reviewMinor)
+    throw new RangeError(
+      "Included amount cannot reduce the separate review-budget line",
+    );
+  return {
+    suggestedMinor: amountMinor,
+    ...(row.accruedMinor === undefined ? {} : { accruedMinor: amountMinor }),
+    ...(row.lines
+      ? {
+          lines: {
+            sharedPool: {
+              ...row.lines.sharedPool,
+              suggestedMinor: (amount - reviewMinor).toString(),
+            },
+            reviewBudget: {
+              ...row.lines.reviewBudget,
+              suggestedMinor: reviewMinor.toString(),
+            },
+          },
+        }
+      : {}),
+  };
+}
 
 /** The fields of a row that a funding review may change. */
 function amounts(allocation: Allocation): string {
@@ -339,9 +346,6 @@ export async function verifyProposalAgainstSnapshot(
     cycleId: proposal.cycleId,
     cyclesRoot: CYCLES_ROOT,
     projectId: proposal.projectId as ProjectId,
-    freshPolicy:
-      findHistoricalProject(proposal.projectId)?.funding.freshCyclePaymentPolicy
-        ?.cycleId === proposal.cycleId,
   });
   const baseline = createRewardCycleProposal({
     archivedProject: findHistoricalProject(proposal.projectId) ?? undefined,
@@ -388,7 +392,6 @@ async function buildCycle(
   projectId: string,
   cycleId: string,
   directory: string,
-  options: { allowPendingTransactionEvidence?: boolean } = {},
 ): Promise<CycleBuild> {
   const entries = await readdir(directory, { withFileTypes: true });
   const names = entries.map((entry) => entry.name).sort();
@@ -437,9 +440,7 @@ async function buildCycle(
   );
   const rawProposal = proposalFile.value as { kind?: unknown };
   const files = new Map(
-    [...loaded.entries()]
-      .filter(([name]) => name !== "transactions.json")
-      .map(([name, file]) => [name, file.bytes]),
+    [...loaded.entries()].map(([name, file]) => [name, file.bytes]),
   );
 
   if (rawProposal.kind === "external-contribution-share") {
@@ -528,9 +529,6 @@ async function buildCycle(
       },
       files,
       allocation: null,
-      plan: null,
-      settlement: null,
-      windup: null,
     };
   }
 
@@ -565,105 +563,15 @@ async function buildCycle(
     }
   }
 
-  const planFile = loaded.get("execution-plan.json") ?? null;
-  let plan: NetworkSettlementExecutionPlan | null = null;
-  if (planFile) {
-    if (!allocation || !allocationFile) {
-      throw new TypeError("Settlement plan has no approved allocation");
-    }
-    plan = assertNetworkSettlementExecutionPlan(planFile.value, allocation);
-    if (plan.allocationSha256 !== allocationFile.digest) {
-      throw new TypeError("Settlement plan does not bind to allocation bytes");
-    }
-  }
-
-  const settlementFile = loaded.get("settlement.json") ?? null;
-  let settlement: RewardSettlementManifest | null = null;
-  if (settlementFile) {
-    if (!allocation || !allocationFile || !plan) {
-      throw new TypeError("Settlement has no approved allocation and plan");
-    }
-    if (!loaded.has("transactions.json")) {
-      throw new TypeError(
-        "Settlement is missing its submitted transaction evidence",
-      );
-    }
-    settlement = assertRewardSettlementManifest(
-      settlementFile.value,
-      allocation,
-    );
-    if (settlement.allocationSha256 !== allocationFile.digest) {
-      throw new TypeError("Settlement does not bind to allocation bytes");
-    }
-  } else if (
-    loaded.has("transactions.json") &&
-    !options.allowPendingTransactionEvidence
-  ) {
-    throw new TypeError(
-      "Unverified transaction evidence cannot be published alone",
-    );
-  }
-
-  // RFC #500 section 10: a project vault creator returned the vault after
-  // binding the proposal. The record is validated against the frozen
-  // allocation, plan, execution binding, and the project's verified funding
-  // ledger, which is always supplied here so a submitted file cannot name a
-  // refund the ledger does not hold or hold rows on a self-reported balance.
-  // A windup holds every approved row; it does not cancel the bound proposal,
-  // so later finalized payment evidence may sit beside it (PRD PAY-01, PAY-07).
-  const windupFile = loaded.get(PROJECT_VAULT_WINDUP_FILE) ?? null;
-  let windup: ProjectVaultWindupRecord | null = null;
-  if (windupFile) {
-    if (!allocation || !allocationFile || !plan || !planFile) {
-      throw new TypeError("Windup has no approved allocation and plan");
-    }
-    const ledger = await jsonFile(EXECUTION_LEDGER);
-    windup = await assertProjectVaultWindup(windupFile.value, {
-      allocation: allocationFile.value,
-      allocationSha256: allocationFile.digest,
-      planBytes: planFile.bytes,
-      ledger: ledger.value,
-      fundingRecords: await loadProjectCommitmentRecords(projectId),
-    });
-    if (windup.projectId !== projectId || windup.cycleId !== cycleId) {
-      throw new TypeError("Windup does not match its cycle path");
-    }
-  }
-
   const state =
     proposal.allocations.length === 0
       ? "closed-no-awards"
-      : settlement
-        ? settlement.status === "paid"
-          ? "paid"
-          : "settlement-planned"
-        : windup
-          ? "wound-up"
-          : plan
-            ? "settlement-planned"
-            : allocation
-              ? "payment-ready"
-              : "review";
+      : allocation
+        ? "payment-ready"
+        : "review";
   const allocationByIntent = new Map(
     allocation?.allocations.map((entry) => [entry.intentId, entry]) ?? [],
   );
-  const settlementByIntent = new Map(
-    settlement?.recipients.map((entry) => [entry.intentId, entry]) ?? [],
-  );
-  const paidSharedPoolMinor = (
-    settlement?.recipients.reduce(
-      (total, entry) =>
-        total + BigInt(entry.rewardLines?.sharedPool.paidMinor ?? "0"),
-      0n,
-    ) ?? 0n
-  ).toString();
-  const paidReviewBudgetMinor = (
-    settlement?.recipients.reduce(
-      (total, entry) =>
-        total + BigInt(entry.rewardLines?.reviewBudget.paidMinor ?? "0"),
-      0n,
-    ) ?? 0n
-  ).toString();
   return {
     entry: {
       projectId,
@@ -674,7 +582,7 @@ async function buildCycle(
       contributionWindow: proposal.contributionWindow,
       reviewEndsAt: proposal.review.endsAt,
       approvedAt: allocation?.approvedAt ?? null,
-      settledAt: settlement?.settledAt ?? null,
+      settledAt: null,
       reward: {
         currency: "USDC",
         carriedMinor: proposal.carriedMinor ?? "0",
@@ -684,7 +592,7 @@ async function buildCycle(
         capMinor: proposal.capMinor,
         suggestedMinor: proposal.totals.suggestedMinor,
         approvedMinor: allocation?.totals.approvedMinor ?? "0",
-        paidMinor: settlement?.totals.paidMinor ?? "0",
+        paidMinor: "0",
         feeMinor: allocation?.totals.feeMinor ?? "0",
         sharePartsPerMillion: null,
         ...(proposal.rewardLines
@@ -701,14 +609,14 @@ async function buildCycle(
                     proposal.rewardLines.sharedPool.suggestedMinor,
                   approvedMinor:
                     allocation?.rewardLines?.sharedPool.approvedMinor ?? "0",
-                  paidMinor: paidSharedPoolMinor,
+                  paidMinor: "0",
                 },
                 reviewBudget: {
                   suggestedMinor:
                     proposal.rewardLines.reviewBudget.suggestedMinor,
                   approvedMinor:
                     allocation?.rewardLines?.reviewBudget.approvedMinor ?? "0",
-                  paidMinor: paidReviewBudgetMinor,
+                  paidMinor: "0",
                 },
               },
             }
@@ -716,20 +624,14 @@ async function buildCycle(
       },
       contributors: proposal.allocations.map((entry) => {
         const approved = allocationByIntent.get(entry.intentId);
-        const paid = settlementByIntent.get(entry.intentId);
         return {
           actor: entry.actor,
           score: Math.floor((exactScores.get(entry.actor.id) ?? 0) / 3),
           scoreThirds: exactScores.get(entry.actor.id) ?? 0,
-          state:
-            paid?.state === "paid"
-              ? "paid"
-              : windup && approved?.state === "approved"
-                ? "held"
-                : (approved?.state ?? entry.state),
+          state: approved?.state ?? entry.state,
           suggestedMinor: entry.suggestedMinor,
           approvedMinor: approved?.approvedMinor ?? "0",
-          paidMinor: paid?.paidMinor ?? "0",
+          paidMinor: "0",
           sharePartsPerMillion: null,
           wallet: approved?.wallet ?? entry.wallet,
           ...(entry.lines
@@ -739,13 +641,13 @@ async function buildCycle(
                     suggestedMinor: entry.lines.sharedPool.suggestedMinor,
                     approvedMinor:
                       approved?.lines?.sharedPool.approvedMinor ?? "0",
-                    paidMinor: paid?.rewardLines?.sharedPool.paidMinor ?? "0",
+                    paidMinor: "0",
                   },
                   reviewBudget: {
                     suggestedMinor: entry.lines.reviewBudget.suggestedMinor,
                     approvedMinor:
                       approved?.lines?.reviewBudget.approvedMinor ?? "0",
-                    paidMinor: paid?.rewardLines?.reviewBudget.paidMinor ?? "0",
+                    paidMinor: "0",
                   },
                 },
               }
@@ -763,57 +665,17 @@ async function buildCycle(
         allocation: allocationFile
           ? reference(projectId, cycleId, "allocation.json", allocationFile)
           : null,
-        executionPlan: planFile
-          ? reference(projectId, cycleId, "execution-plan.json", planFile)
-          : null,
-        settlement: settlementFile
-          ? reference(projectId, cycleId, "settlement.json", settlementFile)
-          : null,
-        windup: windupFile
-          ? reference(projectId, cycleId, PROJECT_VAULT_WINDUP_FILE, windupFile)
-          : null,
+        executionPlan: null,
+        settlement: null,
+        windup: null,
       },
     },
     files,
     allocation,
-    plan,
-    settlement,
-    windup,
   };
 }
 
-/**
- * Validates one canonical cycle immediately before a money-state transition.
- * Pending transaction signatures are allowed only for the settlement verifier
- * that will fetch and reconcile them before writing its terminal record.
- */
-export async function validateCycleTransition(
-  projectId: string,
-  cycleId: string,
-  options: { allowPendingTransactionEvidence?: boolean } = {},
-): Promise<CycleIndexEntry> {
-  if (!findHistoricalProject(projectId)) {
-    throw new TypeError(`Unknown project: ${projectId}`);
-  }
-  if (!/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(cycleId)) {
-    throw new TypeError("Cycle id must be YYYY-MM");
-  }
-  const directory = join(CYCLES_ROOT, projectId, cycleId);
-  const stats = await lstat(directory);
-  if (!stats.isDirectory() || stats.isSymbolicLink()) {
-    throw new TypeError("Cycle transition path must be a real directory");
-  }
-  return (
-    await buildCycle(projectId, cycleId, directory, {
-      allowPendingTransactionEvidence:
-        options.allowPendingTransactionEvidence ?? false,
-    })
-  ).entry;
-}
-
-async function collectCycles(
-  pendingSettlement?: RewardSettlementManifest,
-): Promise<CycleBuild[]> {
+async function collectCycles(): Promise<CycleBuild[]> {
   const rootStats = await lstat(CYCLES_ROOT).catch(
     (error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return null;
@@ -923,21 +785,12 @@ async function collectCycles(
           projectEntry.name,
           cycleEntry.name,
           join(projectDirectory, cycleEntry.name),
-          {
-            allowPendingTransactionEvidence:
-              pendingSettlement?.projectId === projectEntry.name &&
-              pendingSettlement.cycleId === cycleEntry.name,
-          },
         ),
       );
       if (builds.length > MAX_CYCLES)
         throw new RangeError("cycle limit exceeded");
     }
   }
-  assertDistinctSettlementTransactions([
-    ...builds.flatMap((build) => (build.settlement ? [build.settlement] : [])),
-    ...(pendingSettlement ? [pendingSettlement] : []),
-  ]);
   return builds.sort(
     (left, right) =>
       right.entry.cycleId.localeCompare(left.entry.cycleId) ||
@@ -945,53 +798,19 @@ async function collectCycles(
   );
 }
 
-/** Checks the candidate against every already recorded cycle before writing. */
-export async function assertSettlementTransactionsAvailable(
-  settlement: RewardSettlementManifest,
-): Promise<void> {
-  await collectCycles(settlement);
-}
-
 export async function syncCycleIndex(
-  options: {
-    checkOnly?: boolean;
-    generatedAt?: string;
-    online?: boolean;
-    rpcUrl?: string;
-  } = {},
+  options: { checkOnly?: boolean; generatedAt?: string } = {},
 ): Promise<CycleIndex> {
   const builds = await collectCycles();
-  if (options.online) {
-    const rpc = new URL(options.rpcUrl?.trim() || DEFAULT_SOLANA_RPC_URL);
-    if (rpc.protocol !== "https:" || rpc.username || rpc.password || rpc.hash) {
-      throw new TypeError("Solana RPC URL must be credential-free HTTPS");
-    }
-    for (const build of builds) {
-      if (build.allocation && build.plan && build.settlement) {
-        const allocationReference = build.entry.files.allocation;
-        if (!allocationReference)
-          throw new Error("allocation reference vanished");
-        await verifyRewardSettlementOnchain({
-          allocation: build.allocation,
-          expectedAllocationSha256: allocationReference.sha256,
-          getTransaction: (signature) =>
-            fetchFinalizedSolanaTransaction(rpc.toString(), signature),
-          plan: build.plan,
-          settlement: build.settlement,
-          verifyBaseTransaction: verifyBaseSettlementTransaction,
-        });
-      }
-    }
-  }
   const index: CycleIndex = {
     schemaVersion: CYCLE_INDEX_SCHEMA_VERSION,
     generatedAt: options.generatedAt ?? new Date().toISOString(),
     cycles: builds.map((build) => build.entry),
   };
   assertCycleIndex(index);
-  // Only committed funding history belongs in the application bundle. Exclude
-  // refresh timestamps, snapshots, and settlement records so data-only refreshes
-  // do not change JavaScript assets.
+  // Only committed cycle history belongs in the application bundle. Exclude
+  // refresh timestamps and snapshots so data-only refreshes do not change
+  // JavaScript assets.
   const promotionPath = join(
     REPOSITORY_ROOT,
     "src/lib/project-promotion.generated.json",
@@ -1047,38 +866,20 @@ export async function syncCycleIndex(
   return index;
 }
 
-function parseArguments(values: string[]): {
-  checkOnly: boolean;
-  online: boolean;
-  rpcUrl?: string;
-} {
+function parseArguments(values: string[]): { checkOnly: boolean } {
   let checkOnly = false;
-  let online = false;
-  let rpcUrl: string | undefined;
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index];
+  for (const value of values) {
     if (value === "--check") checkOnly = true;
-    else if (value === "--online") online = true;
-    else if (value === "--rpc-url") {
-      rpcUrl = values[index + 1];
-      if (!rpcUrl || rpcUrl.startsWith("--")) {
-        throw new TypeError("--rpc-url requires a value");
-      }
-      index += 1;
-    } else throw new TypeError(`Unknown cycle-index argument: ${value}`);
+    else throw new TypeError(`Unknown cycle-index argument: ${value}`);
   }
-  return { checkOnly, online, rpcUrl };
+  return { checkOnly };
 }
 
 if (import.meta.main) {
   try {
-    const arguments_ = parseArguments(process.argv.slice(2));
-    const index = await syncCycleIndex({
-      ...arguments_,
-      rpcUrl: arguments_.rpcUrl ?? process.env.SOLANA_RPC_URL,
-    });
+    const index = await syncCycleIndex(parseArguments(process.argv.slice(2)));
     process.stdout.write(
-      `[Slop] validated ${index.cycles.length} reward cycle${index.cycles.length === 1 ? "" : "s"}${arguments_.online ? " with finalized Solana evidence" : ""}\n`,
+      `[Slop] validated ${index.cycles.length} reward cycle${index.cycles.length === 1 ? "" : "s"}\n`,
     );
   } catch (error) {
     // error-policy:J1 command boundary exposes a non-zero, actionable failure.
