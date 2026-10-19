@@ -93,6 +93,8 @@ const wrangler = join(
   "wrangler.js",
 );
 const E2E_ADMIN_GITHUB_ID = "900000001";
+// A second admin with the moderator role decides appeals independently.
+const E2E_MODERATOR_GITHUB_ID = "900000004";
 
 function sessionToken() {
   return randomBytes(32).toString("base64url");
@@ -113,6 +115,7 @@ function prepareRegistryDatabase() {
   const sessions = {
     admin: { token: sessionToken(), githubId: E2E_ADMIN_GITHUB_ID },
     applicant: { token: sessionToken(), githubId: "900000002" },
+    moderator: { token: sessionToken(), githubId: E2E_MODERATOR_GITHUB_ID },
     owner: { token: sessionToken(), githubId: E2E_OWNER.githubId },
   };
   const expires = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
@@ -136,9 +139,11 @@ function prepareRegistryDatabase() {
     persistTo,
     env: {
       SLOP_E2E_PERSIST_TO: persistTo,
-      SLOP_E2E_ADMIN_GITHUB_IDS: E2E_ADMIN_GITHUB_ID,
+      SLOP_E2E_ADMIN_GITHUB_IDS: `${E2E_ADMIN_GITHUB_ID},${E2E_MODERATOR_GITHUB_ID}`,
+      SLOP_E2E_MODERATOR_GITHUB_IDS: `${E2E_ADMIN_GITHUB_ID},${E2E_MODERATOR_GITHUB_ID}`,
       SLOP_E2E_ADMIN_TOKEN: sessions.admin.token,
       SLOP_E2E_APPLICANT_TOKEN: sessions.applicant.token,
+      SLOP_E2E_MODERATOR_TOKEN: sessions.moderator.token,
       SLOP_E2E_OWNER_TOKEN: sessions.owner.token,
     },
   };

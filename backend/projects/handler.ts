@@ -15,11 +15,13 @@ import {
 import { readJsonObject, sha256Hex } from "../trace/validation";
 import {
   type ApplicationStatus,
+  type EnforcementAction,
   type GithubActor,
   MAX_DAILY_SUBMISSIONS_PER_APPLICANT,
   MAX_PENDING_APPLICATIONS_PER_APPLICANT,
   PROJECT_API_CONTRACT_VERSION,
   type ProjectApplication,
+  type ProjectEnforcement,
   type ProjectPersistence,
   type ProjectRecord,
   type RepositoryControl,
@@ -31,6 +33,16 @@ import {
   PUBLIC_PROJECT_CACHE_CONTROL,
   purgeProjectCache,
 } from "./edge-cache";
+import {
+  ENFORCEMENT_ACTIONS,
+  enforcedManifest,
+  enforcementRevisionReason,
+  type ProjectRestriction,
+  planEnforcement,
+  projectRestriction,
+  repositoryIdentity,
+  restrictionForRepository,
+} from "./enforcement";
 import {
   type GithubFetch,
   GithubLookupError,
@@ -54,6 +66,8 @@ export type AdminApplicationNotice = {
 export type ProjectApiDependencies = {
   persistence: ProjectPersistence;
   adminGithubIds: ReadonlySet<string>;
+  /** GitHub actor IDs with the project moderation role (PRD ADM-05, ADM-06). */
+  moderatorGithubIds: ReadonlySet<string>;
   now: () => Date;
   randomId: () => string;
   /** Resolves the GitHub account behind the site sign-in session cookie. */
@@ -429,6 +443,7 @@ async function submitApplication(
     await verifiedRewardAsset(body.manifest, undefined, deps),
   );
   assertApplicationManifest(manifest);
+  await assertRepositoryUnrestricted(deps, manifest);
   const actor = {
     githubId: session.githubId,
     githubLogin: session.githubLogin,
@@ -592,6 +607,7 @@ async function decideApplication(
     // Re-check against the live registry: another approval may have claimed
     // the id or repository since this application was submitted.
     canonicalManifest(application.manifest);
+    await assertRepositoryUnrestricted(deps, application.manifest);
     assertRegistryWith(
       await deps.persistence.listProjects(),
       application.manifest,
@@ -614,6 +630,7 @@ async function decideApplication(
       new URL(request.url).origin,
       application.projectId,
       skillNames(application.manifest),
+      await deps.persistence.enforcementGeneration(),
     );
   }
   const updated = await deps.persistence.getApplication(applicationId);
@@ -627,9 +644,27 @@ async function listAdminProjects(
   request: Request,
   deps: ProjectApiDependencies,
 ): Promise<Response> {
-  await requireAdmin(request, deps);
-  const projects = await deps.persistence.listProjects();
-  return json(200, { projects: projects.map(adminProject) });
+  const session = await requireAdmin(request, deps);
+  const [projects, records] = await Promise.all([
+    deps.persistence.listProjects(),
+    deps.persistence.listEnforcements(),
+  ]);
+  const moderation =
+    deps.moderatorGithubIds.size === 0
+      ? "unconfigured"
+      : deps.moderatorGithubIds.has(session.githubId)
+        ? "moderator"
+        : "not-moderator";
+  return json(200, {
+    projects: projects.map((project) => ({
+      ...adminProject(project),
+      enforcement: adminEnforcement(
+        project,
+        projectRestriction(project.id, records),
+        moderation,
+      ),
+    })),
+  });
 }
 
 async function replaceProjectManifest(
@@ -655,6 +690,10 @@ async function replaceProjectManifest(
   if (current.revision !== body.expectedRevision) {
     fail(409, "stale_revision", "The project changed since you loaded it");
   }
+  const restriction = projectRestriction(
+    projectId,
+    await deps.persistence.listEnforcements(),
+  );
   const { manifest, text } = canonicalManifest(
     await verifiedRewardAsset(
       body.manifest,
@@ -664,6 +703,14 @@ async function replaceProjectManifest(
   );
   if (manifest.id !== projectId) {
     fail(422, "invalid_manifest", "Project id cannot change");
+  }
+  // A new revision cannot lift a Quarantine or a Ban (PRD ADM-06).
+  if (restriction.state !== "clear" && !enforcedManifest(manifest)) {
+    fail(
+      409,
+      "project_restricted",
+      `The project is ${restriction.state}; a revision must keep it paused and retired until reinstatement`,
+    );
   }
   try {
     assertProjectPolicyTransition(current.manifest, manifest);
@@ -701,14 +748,253 @@ async function replaceProjectManifest(
   if (result === "conflict") {
     fail(409, "stale_revision", "The project changed since you loaded it");
   }
-  await purgeProjectCache(deps.cache, new URL(request.url).origin, projectId, [
-    ...new Set([...skillNames(current.manifest), ...skillNames(manifest)]),
-  ]);
+  await purgeProjectCache(
+    deps.cache,
+    new URL(request.url).origin,
+    projectId,
+    [...new Set([...skillNames(current.manifest), ...skillNames(manifest)])],
+    await deps.persistence.enforcementGeneration(),
+  );
   const updated = await deps.persistence.getProject(projectId);
   if (updated === null) fail(500, "internal_error", "Project vanished");
   return json(200, {
     project: adminProject(updated),
   });
+}
+
+function publicRestriction(
+  restriction: ProjectRestriction,
+): Record<string, unknown> {
+  return {
+    projectId: restriction.projectId,
+    state: restriction.state,
+    appeal: restriction.appeal,
+    since: restriction.since,
+  };
+}
+
+function activePublicRestrictions(
+  records: ProjectEnforcement[],
+): Record<string, unknown>[] {
+  return [...new Set(records.map((record) => record.projectId))]
+    .map((projectId) => projectRestriction(projectId, records))
+    .filter((restriction) => restriction.state !== "clear")
+    .map(publicRestriction);
+}
+
+/** Refuses an application or approval for a restricted repository. */
+async function assertRepositoryUnrestricted(
+  deps: ProjectApiDependencies,
+  manifest: ProjectDefinition,
+): Promise<void> {
+  const restriction = restrictionForRepository(
+    manifest,
+    await deps.persistence.listEnforcements(),
+  );
+  if (restriction !== null)
+    fail(
+      403,
+      "repository_restricted",
+      `This repository belongs to a ${restriction.state} project; only reinstatement can list it again`,
+    );
+}
+
+function adminEnforcement(
+  project: ProjectRecord,
+  restriction: ProjectRestriction,
+  moderation: "unconfigured" | "moderator" | "not-moderator",
+): Record<string, unknown> {
+  return {
+    state: restriction.state,
+    appeal: restriction.appeal,
+    since: restriction.since,
+    restrictedBy: restriction.restrictedBy,
+    nextSequence: restriction.nextSequence,
+    // The matching revision has not landed while a restricted manifest is
+    // still listed or active; public routes stay closed meanwhile.
+    revisionPending:
+      restriction.state !== "clear" && !enforcedManifest(project.manifest),
+    moderation,
+    records: restriction.records,
+  };
+}
+
+async function requireModerator(
+  request: Request,
+  deps: ProjectApiDependencies,
+): Promise<WebSession> {
+  const session = await requireAdmin(request, deps);
+  if (deps.moderatorGithubIds.size === 0)
+    fail(
+      403,
+      "moderation_unavailable",
+      "No project moderator is configured. Set PROJECT_MODERATOR_GITHUB_IDS to enable Quarantine, Ban and reinstatement.",
+    );
+  if (!deps.moderatorGithubIds.has(session.githubId))
+    fail(403, "forbidden", "The project moderator role is required");
+  return session;
+}
+
+function positiveInteger(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
+    fail(400, "invalid_request", `Invalid ${name}`);
+  return value;
+}
+
+/**
+ * Previews or applies one ADM-06 action. The preview and the write run the
+ * same plan against the same expected revision and record sequence, so the
+ * confirmed write is exactly what the moderator saw, or it fails with 409.
+ */
+async function enforceProject(
+  request: Request,
+  deps: ProjectApiDependencies,
+  projectId: string,
+  mode: "preview" | "apply",
+): Promise<Response> {
+  const session = await requireModerator(request, deps);
+  if (!PROJECT_ID.test(projectId)) fail(404, "not_found", "Project not found");
+  const body = await readJsonObject(request);
+  exactKeys(body, [
+    "action",
+    "reason",
+    "evidenceReference",
+    "expectedRevision",
+    "expectedSequence",
+  ]);
+  if (!ENFORCEMENT_ACTIONS.includes(body.action as EnforcementAction))
+    fail(400, "invalid_request", "Invalid enforcement action");
+  const action = body.action as EnforcementAction;
+  const reason = boundedText(body.reason, "reason", 1, 1000);
+  const evidenceReference = boundedText(
+    body.evidenceReference,
+    "evidenceReference",
+    1,
+    500,
+  );
+  const expectedRevision = positiveInteger(
+    body.expectedRevision,
+    "expectedRevision",
+  );
+  const expectedSequence = positiveInteger(
+    body.expectedSequence,
+    "expectedSequence",
+  );
+  const project = await deps.persistence.getProject(projectId);
+  if (project === null) fail(404, "not_found", "Project not found");
+  const restriction = projectRestriction(
+    projectId,
+    await deps.persistence.listEnforcements(),
+  );
+  if (
+    project.revision !== expectedRevision ||
+    restriction.nextSequence !== expectedSequence
+  )
+    fail(409, "stale_enforcement", "The project changed since you loaded it");
+  let listedBefore = false;
+  if (action === "reinstate" && restriction.openedAtRevision !== null) {
+    const opened = await deps.persistence.getRevisionText(
+      projectId,
+      restriction.openedAtRevision,
+    );
+    if (opened === null)
+      fail(500, "internal_error", "The restricted revision is missing");
+    listedBefore =
+      (JSON.parse(opened.manifestText) as ProjectDefinition).listingTier !==
+      "retired";
+  }
+  const actor = {
+    githubId: session.githubId,
+    githubLogin: session.githubLogin,
+  };
+  const plan = planEnforcement({
+    action,
+    actor,
+    project,
+    restriction,
+    listedBefore,
+  });
+  const recordId = `enf_${deps.randomId().replaceAll("-", "")}`;
+  const at = deps.now().toISOString();
+  const revisionText =
+    plan.manifest === null ? null : JSON.stringify(plan.manifest);
+  const revisionSha256 =
+    revisionText === null
+      ? null
+      : await sha256Hex(new TextEncoder().encode(revisionText));
+  // A restriction keeps the repository identity it found, so a later rename
+  // or application for the same repository stays restricted.
+  const identity = repositoryIdentity(project.manifest);
+  const record: ProjectEnforcement = {
+    id: recordId,
+    projectId,
+    sequence: restriction.nextSequence,
+    action,
+    stateAfter: plan.stateAfter,
+    appealAfter: plan.appealAfter,
+    reason,
+    evidenceReference,
+    repositoryGithubId: restriction.repositoryGithubId ?? identity.githubId,
+    repositoryKeys: [
+      ...new Set([...restriction.repositoryKeys, ...identity.keys]),
+    ],
+    actor,
+    actorRole: "project-moderator",
+    decisionSource: "admin-panel",
+    beforeRevision: project.revision,
+    beforeManifestSha256: project.manifestSha256,
+    afterRevision: revisionText === null ? null : project.revision + 1,
+    afterManifestSha256: revisionSha256,
+    result:
+      revisionText !== null
+        ? "revision_appended"
+        : plan.pendingReason !== null
+          ? "revision_pending"
+          : "no_revision_needed",
+    createdAt: at,
+  };
+  const preview = {
+    projectId,
+    projectName: project.manifest.name,
+    action,
+    sequence: record.sequence,
+    stateBefore: restriction.state,
+    stateAfter: record.stateAfter,
+    appealBefore: restriction.appeal,
+    appealAfter: record.appealAfter,
+    result: record.result,
+    pendingReason: plan.pendingReason,
+    revision: {
+      before: project.revision,
+      after: record.afterRevision,
+      statusBefore: project.manifest.status,
+      statusAfter: plan.manifest?.status ?? project.manifest.status,
+      listingTierBefore: project.manifest.listingTier,
+      listingTierAfter:
+        plan.manifest?.listingTier ?? project.manifest.listingTier,
+    },
+  };
+  if (mode === "preview") return json(200, { preview });
+  const outcome = await deps.persistence.appendEnforcement(
+    record,
+    plan.manifest === null || revisionText === null || revisionSha256 === null
+      ? null
+      : {
+          projectId,
+          expectedRevision: project.revision,
+          manifest: plan.manifest,
+          manifestText: revisionText,
+          manifestSha256: revisionSha256,
+          reason: enforcementRevisionReason(action, recordId),
+          actor,
+          at,
+        },
+  );
+  if (outcome === "conflict")
+    fail(409, "stale_enforcement", "The project changed since you loaded it");
+  // The new record changes the enforcement generation, so every public
+  // cache key in every colo is replaced on its next request.
+  return json(200, { preview, record });
 }
 
 function publicJson(body: Record<string, unknown>): Response {
@@ -720,10 +1006,16 @@ function publicJson(body: Record<string, unknown>): Response {
 async function listPublicProjects(
   deps: ProjectApiDependencies,
 ): Promise<Response> {
-  const projects = await deps.persistence.listProjects();
+  const [projects, records] = await Promise.all([
+    deps.persistence.listProjects(),
+    deps.persistence.listEnforcements(),
+  ]);
   return publicJson({
     schemaVersion: "1",
     projects: projects.map((project) => project.manifest),
+    // Restricted projects stay in the list for history; every reader must
+    // treat them as paused and retired, even before the revision lands.
+    restrictions: activePublicRestrictions(records),
   });
 }
 
@@ -733,7 +1025,18 @@ async function readPublicProject(
 ): Promise<Response> {
   if (!PROJECT_ID.test(projectId)) fail(404, "not_found", "Project not found");
   const project = await deps.persistence.getProject(projectId);
-  if (project === null || project.manifest.listingTier === "retired")
+  if (project === null) fail(404, "not_found", "Project not found");
+  const restriction = projectRestriction(
+    projectId,
+    await deps.persistence.listEnforcements(),
+  );
+  if (restriction.state !== "clear")
+    return json(410, {
+      error: "project_restricted",
+      message: `This project is ${restriction.state}. Its history stays public; its skills and participation are closed.`,
+      restriction: publicRestriction(restriction),
+    });
+  if (project.manifest.listingTier === "retired")
     fail(404, "not_found", "Project not found");
   return publicJson({
     schemaVersion: "1",
@@ -909,6 +1212,7 @@ export async function handleProjectApi(
           request,
           () => listPublicProjects(deps),
           deps.waitUntil,
+          await deps.persistence.enforcementGeneration(),
         );
       case "GET project-revisions":
         return await cachedPublicResponse(
@@ -916,6 +1220,7 @@ export async function handleProjectApi(
           request,
           () => listPublicRevisions(deps),
           deps.waitUntil,
+          await deps.persistence.enforcementGeneration(),
         );
       case "GET projects/:id":
         return await cachedPublicResponse(
@@ -923,6 +1228,7 @@ export async function handleProjectApi(
           request,
           () => readPublicProject(deps, parts[1]),
           deps.waitUntil,
+          await deps.persistence.enforcementGeneration(),
         );
       case "GET project-github/owned-repositories":
       case "GET project-github/repositories/:name/:name":
@@ -948,6 +1254,10 @@ export async function handleProjectApi(
         return await listAdminProjects(request, deps);
       case "PUT admin/projects/:id/manifest":
         return await replaceProjectManifest(request, deps, parts[2]);
+      case "POST admin/projects/:id/enforcement-preview":
+        return await enforceProject(request, deps, parts[2], "preview");
+      case "POST admin/projects/:id/enforcement":
+        return await enforceProject(request, deps, parts[2], "apply");
     }
     if (isProjectRoute(parts)) return json(404, { error: "not_found" });
     return null;

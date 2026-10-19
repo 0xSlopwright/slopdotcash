@@ -58,6 +58,8 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     const artifact = await handleProjectArtifactRequest(context.request, {
       getProject: (id) => persistence.getProject(id),
       listProjects: () => persistence.listProjects(),
+      listEnforcements: () => persistence.listEnforcements(),
+      enforcementGeneration: () => persistence.enforcementGeneration(),
       loadTemplate: templateSource(context),
       cache: edgeCache(),
       waitUntil: context.waitUntil?.bind(context),

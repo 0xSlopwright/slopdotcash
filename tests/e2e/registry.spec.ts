@@ -1,6 +1,6 @@
 /**
  * Runs the D1 project registry end to end on the shipped build: the real
- * Pages Functions, a fresh local D1 with every migration, and three seeded
+ * Pages Functions, a fresh local D1 with every migration, and four seeded
  * site sessions. scripts/run-e2e.mjs creates the sessions and serves the
  * loopback GitHub API fixture, which both the ownership check and the
  * same-origin setup lookups read, so the run never depends on GitHub's rate
@@ -13,6 +13,7 @@ import { expect, type Page, test } from "@playwright/test";
 const APPLICANT_TOKEN = process.env.SLOP_E2E_APPLICANT_TOKEN ?? "";
 const ADMIN_TOKEN = process.env.SLOP_E2E_ADMIN_TOKEN ?? "";
 const OWNER_TOKEN = process.env.SLOP_E2E_OWNER_TOKEN ?? "";
+const MODERATOR_TOKEN = process.env.SLOP_E2E_MODERATOR_TOKEN ?? "";
 
 test.describe.configure({ mode: "serial" });
 
@@ -530,6 +531,179 @@ test("the applicant's inbox lists each decision and revision once and keeps the 
   expect(forged.status()).toBe(403);
   expect(errors).toEqual([]);
   await context.close();
+});
+
+test("a moderator quarantines and bans a project, and another moderator reinstates it @registry", async ({
+  browser,
+  request,
+}) => {
+  const project = fixtureProjects().queued;
+  const evidence = `https://github.com/${project.repository}/security/advisories/GHSA-e2e`;
+  const adminContext = await browser.newContext();
+  const admin = await adminContext.newPage();
+  const adminErrors = observe(admin);
+  await signIn(admin, ADMIN_TOKEN);
+  await admin.goto("/admin", { waitUntil: "networkidle" });
+  const card = () =>
+    admin.locator(".admin-card", {
+      has: admin.getByText(project.id, { exact: true }),
+    });
+  const panel = () =>
+    card().getByRole("region", { name: "Enforcement", exact: true });
+  await expect(panel()).toContainText("No restriction");
+
+  // Each action needs a reason, an evidence reference, the server preview
+  // and a confirmation.
+  async function act(action: string, reason: string) {
+    await panel().getByLabel("Action").selectOption({ label: action });
+    await panel().getByLabel("Reason (private audit record)").fill(reason);
+    await panel()
+      .getByLabel("Evidence reference (link or case id)")
+      .fill(evidence);
+    await panel().getByRole("button", { name: "Preview action" }).click();
+    const preview = panel().getByRole("group", {
+      name: "Preview: check it, then confirm",
+    });
+    await expect(preview).toContainText(project.id);
+    return preview;
+  }
+
+  const quarantine = await act(
+    "Quarantine",
+    "Confirmed malware in the release script",
+  );
+  await expect(quarantine).toContainText("2 → 3");
+  await expect(quarantine).toContainText("active, community → paused, retired");
+  await expect(quarantine).toContainText("Appends the matching revision");
+  await expectAccessible(admin);
+  await quarantine.getByRole("button", { name: "Confirm: Quarantine" }).click();
+  await expect(admin.getByRole("status").first()).toContainText(
+    "Quarantine recorded",
+  );
+  await expect(panel()).toContainText("Quarantined");
+  await expect(card()).toContainText("3 · updated");
+
+  // Every public route closes at once: the cached list, the direct project
+  // read, the skill, the archive and the discovery index.
+  const registry = await (await request.get("/api/v1/projects")).json();
+  expect(registry.restrictions).toContainEqual(
+    expect.objectContaining({ projectId: project.id, state: "quarantined" }),
+  );
+  expect(
+    registry.projects.find((entry: { id: string }) => entry.id === project.id),
+  ).toMatchObject({ status: "paused", listingTier: "retired" });
+  expect((await request.get(`/api/v1/projects/${project.id}`)).status()).toBe(
+    410,
+  );
+  expect((await request.get(`/projects/${project.id}/SKILL.md`)).status()).toBe(
+    410,
+  );
+  expect(
+    (
+      await request.get(
+        `/projects/${project.id}/downloads/contribute-to-${project.id}.skill`,
+      )
+    ).status(),
+  ).toBe(410);
+  const discovery = await (
+    await request.get("/.well-known/slop/projects.json")
+  ).json();
+  expect(
+    discovery.projects.some(
+      (entry: { project_id: string }) => entry.project_id === project.id,
+    ),
+  ).toBe(false);
+
+  const ban = await act("Ban project", "Repeated malware after notice");
+  await expect(ban).toContainText("Stays at 3");
+  await expect(ban).toContainText("No revision needed");
+  await ban.getByRole("button", { name: "Confirm: Ban project" }).click();
+  await expect(panel()).toContainText("Banned");
+  const appeal = await act(
+    "Request reinstatement",
+    "Maintainer removed the script and asked for review",
+  );
+  await appeal
+    .getByRole("button", { name: "Confirm: Request reinstatement" })
+    .click();
+  await expect(panel()).toContainText("Reinstatement requested");
+
+  // The moderator who placed the restriction cannot decide the appeal. The
+  // request API keeps the expected 403 out of the page console.
+  const current = await (
+    await admin.request.get("/api/v1/admin/projects", {
+      headers: { cookie: `__Host-slop_points=${ADMIN_TOKEN}` },
+    })
+  ).json();
+  const restricted = current.projects.find(
+    (entry: { id: string }) => entry.id === project.id,
+  );
+  const self = await admin.request.post(
+    `/api/v1/admin/projects/${project.id}/enforcement-preview`,
+    {
+      headers: {
+        origin: new URL(admin.url()).origin,
+        cookie: `__Host-slop_points=${ADMIN_TOKEN}`,
+      },
+      data: {
+        action: "reinstate",
+        reason: "Self review",
+        evidenceReference: evidence,
+        expectedRevision: restricted.revision,
+        expectedSequence: restricted.enforcement.nextSequence,
+      },
+    },
+  );
+  expect(self.status()).toBe(403);
+  expect((await self.json()).error).toBe("independent_review_required");
+  expect(adminErrors).toEqual([]);
+  await adminContext.close();
+
+  const moderatorContext = await browser.newContext();
+  const moderator = await moderatorContext.newPage();
+  const moderatorErrors = observe(moderator);
+  await signIn(moderator, MODERATOR_TOKEN);
+  await moderator.goto("/admin", { waitUntil: "networkidle" });
+  const moderatorPanel = moderator
+    .locator(".admin-card", {
+      has: moderator.getByText(project.id, { exact: true }),
+    })
+    .getByRole("region", { name: "Enforcement", exact: true });
+  await expect(moderatorPanel).toContainText("@e2e-admin");
+  await moderatorPanel
+    .getByLabel("Action")
+    .selectOption({ label: "Reinstate after review" });
+  await moderatorPanel
+    .getByLabel("Reason (private audit record)")
+    .fill("A fresh complete scan found no malware");
+  await moderatorPanel
+    .getByLabel("Evidence reference (link or case id)")
+    .fill(evidence);
+  await moderatorPanel.getByRole("button", { name: "Preview action" }).click();
+  const reinstate = moderatorPanel.getByRole("group", {
+    name: "Preview: check it, then confirm",
+  });
+  // Reinstatement lists the project again in the community tier, paused.
+  await expect(reinstate).toContainText("3 → 4");
+  await expect(reinstate).toContainText("paused, retired → paused, community");
+  await expectAccessible(moderator);
+  await reinstate
+    .getByRole("button", { name: "Confirm: Reinstate after review" })
+    .click();
+  await expect(moderatorPanel).toContainText("No restriction");
+  await moderatorPanel.getByText(/Enforcement history/u).click();
+  await expect(moderatorPanel.locator("li")).toHaveCount(4);
+  expect(
+    await (await request.get(`/api/v1/projects/${project.id}`)).json(),
+  ).toMatchObject({
+    revision: 4,
+    project: { status: "paused", listingTier: "community" },
+  });
+  expect((await request.get(`/projects/${project.id}/SKILL.md`)).status()).toBe(
+    200,
+  );
+  expect(moderatorErrors).toEqual([]);
+  await moderatorContext.close();
 });
 
 test("an unavailable registry shows an error, never an empty list @registry", async ({

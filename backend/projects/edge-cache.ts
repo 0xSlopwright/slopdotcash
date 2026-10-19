@@ -1,7 +1,9 @@
 /**
  * Short-lived edge caching for public project reads. Page views read D1 at
  * most once per key and colo per TTL; admin writes delete the keys in the
- * writing colo, and other colos expire within the TTL.
+ * writing colo, and other colos expire within the TTL. Project reads also
+ * key on the enforcement generation, so a Quarantine or a Ban replaces every
+ * cached list and skill in every colo on the next request (PRD ADM-06).
  */
 
 /** The subset of the Workers Cache API the project routes use. */
@@ -24,8 +26,11 @@ export const PUBLIC_PROJECT_CACHE_CONTROL = `public, max-age=0, s-maxage=${PUBLI
 
 const KEY_PREFIX = "/__slop-cache/projects-v1";
 
-function cacheKey(origin: string, path: string): Request {
-  return new Request(`${origin}${KEY_PREFIX}${path}`, { method: "GET" });
+function cacheKey(origin: string, path: string, generation?: number): Request {
+  const scope = generation === undefined ? "" : `/g${generation}`;
+  return new Request(`${origin}${KEY_PREFIX}${scope}${path}`, {
+    method: "GET",
+  });
 }
 
 /**
@@ -37,6 +42,7 @@ export async function cachedPublicResponse(
   request: Request,
   build: () => Promise<Response>,
   waitUntil?: (promise: Promise<unknown>) => void,
+  generation?: number,
 ): Promise<Response> {
   const url = new URL(request.url);
   if (
@@ -44,7 +50,7 @@ export async function cachedPublicResponse(
     (request.method !== "GET" && request.method !== "HEAD")
   )
     return build();
-  const key = cacheKey(url.origin, `${url.pathname}${url.search}`);
+  const key = cacheKey(url.origin, `${url.pathname}${url.search}`, generation);
   let cached: Response | undefined;
   try {
     cached = await cache.match(key);
@@ -116,11 +122,12 @@ export async function purgeProjectCache(
   origin: string,
   projectId: string,
   skillNames: string[],
+  generation?: number,
 ): Promise<void> {
   if (cache === undefined) return;
   await Promise.all(
     projectCachePaths(projectId, skillNames).map((path) =>
-      cache.delete(cacheKey(origin, path)).catch(() => false),
+      cache.delete(cacheKey(origin, path, generation)).catch(() => false),
     ),
   );
 }

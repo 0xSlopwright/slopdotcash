@@ -4479,9 +4479,64 @@ small {
   color: var(--green);
 }
 
-.admin-badge-rejected {
+.admin-badge-rejected,
+.admin-badge-quarantined,
+.admin-badge-banned {
   background: rgba(173, 53, 12, 0.12);
   color: var(--orange-dark);
+}
+
+.admin-enforcement,
+.admin-enforcement-preview {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.admin-enforcement-preview {
+  min-width: 0;
+  margin: 0;
+  padding-right: 0;
+  padding-bottom: 0;
+  padding-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+}
+
+.admin-enforcement-preview legend {
+  padding: 0 6px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.admin-enforcement > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.admin-enforcement-history {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.admin-actions input,
+.admin-actions select {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 400;
 }
 
 .admin-facts {
