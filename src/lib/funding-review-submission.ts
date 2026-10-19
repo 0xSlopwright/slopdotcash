@@ -218,6 +218,10 @@ export async function applyFundingReviewSubmission(
   const allocations = proposal.allocations.map((row) => {
     const adjustment = byActor.get(row.actor.id);
     if (!adjustment) return row;
+    if (row.state === "held" || row.hold)
+      throw new TypeError(
+        "Held allocations require their separate resolution contract",
+      );
     const excluded = adjustment.decision === "exclude";
     // Only an amount change moves the review clock (AGENTS.md: "only such
     // amount changes reset review"). A state-only flip, such as excluding a
@@ -231,10 +235,6 @@ export async function applyFundingReviewSubmission(
       return adjustment.reason
         ? { ...row, adjustmentReason: adjustment.reason }
         : row;
-    if (row.state === "held" || row.hold)
-      throw new TypeError(
-        "Held allocations require their separate resolution contract",
-      );
     if (amountChanged) material = true;
     const amount = BigInt(adjustment.amountMinor);
     return {
