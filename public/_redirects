@@ -26,6 +26,8 @@
 /earnings/ / 200
 /inbox / 200
 /inbox/ / 200
+/security / 200
+/security/ / 200
 /wallet / 200
 /wallet/ / 200
 /projects /#projects 301
@@ -35,6 +37,8 @@
 /projects/:project/funding/ / 200
 /projects/:project/funding / 200
 /projects/:project/manage / 200
+/projects/:project/security / 200
+/projects/:project/security/ / 200
 /projects/:project/manage/ / 200
 /projects/:project / 200
 /projects/:project/ / 200

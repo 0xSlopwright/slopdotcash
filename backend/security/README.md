@@ -1,0 +1,86 @@
+# Private security bounty cases
+
+PRD SEC-01 to SEC-18 and MVP-13. Program terms are public; cases are not.
+
+## Program terms
+
+A project opts in with the optional `securityBounty` section of its D1
+manifest (`src/lib/security-bounty.mjs`). An application may include it only
+as `pending-approval` with `pledged` funding. Admins open, pause or close the
+program by appending a manifest revision on `/admin`. A program cannot be
+removed, because its approvers govern restricted case access after closure.
+
+- `amount.grossMinor` is integer minor units. It must be divisible by four, so
+  the 75/25 researcher/Slop split is exact. Shares are derived, never stored.
+- `rewardMode: "bounty-only"` requires a `$0` monthly pool with payments
+  disabled. `separate` keeps the project's ordinary rewards.
+- `status: "open"` requires `funding.state: "verified-available"` with an
+  evidence reference. A pledge never opens paid capacity.
+- `approvers.dispute` must not include a technical or financial approver.
+- `intake.repository` must be one of the project repositories.
+
+`/projects/:id/terms.json` and `/projects/:id/security` publish these terms.
+
+## Routes
+
+| Route | Access | Purpose |
+|---|---|---|
+| `GET /api/v1/security-programs/:id/intake` | public, edge cached 30 s | GitHub private vulnerability reporting readiness: `ready`, `disabled`, `forbidden` or `unavailable`. Only `ready` returns the GitHub handoff URL |
+| `GET /api/v1/security-cases` | session | Cases the caller can see now, shaped per role |
+| `POST /api/v1/security-cases` | session | `claim`: a reporter links a GitHub advisory ID. `record`: a technical approver records a verified advisory with GitHub's receipt time |
+| `GET /api/v1/security-cases/:id` | session and role | One case; logs the read |
+| `POST /api/v1/security-cases/:id/actions` | session and role | One human decision with `expectedRevision` and `idempotencyKey` |
+
+A caller without a role gets the same 404 as for a missing case. Writes need
+this site's `Origin` and a JSON content type. Responses are `private,
+no-store` and `noindex`. Errors never log case data.
+
+## Roles
+
+Roles are computed on every request from the session and the current project
+revision, so a revision or a revoked session removes access at once.
+
+- Reporter: their own cases, never another report, root cause or triager.
+- Technical approver (security maintainer): every case of the project.
+- Triager: only assigned cases; triage, next action and remediation.
+- Financial approver: only cases with a reserved, exhausted or approved
+  award, and only award and payment fields.
+- Dispute reviewer: only cases with an appeal.
+- Platform admins, sponsors and the public: nothing.
+
+A reporter never acts on their own case. The financial approver cannot be the
+technical decider, and the technical decider cannot decide the appeal.
+
+## States
+
+Migration `0026_private_security_cases.sql` keeps independent receipt,
+remediation, award, payment and disclosure states. A claim is not a receipt
+until a technical approver verifies it; verification freezes the receipt
+time, the project revision in force then, and its gross amount and split.
+Slop does not fetch the advisory, so the receipt time is the time the
+approver reads on GitHub and enters by hand: a human-attested time.
+
+A rejected link stays as history. The reporter can link the advisory again,
+or a technical approver can record it, and that new case is verified
+normally. A `record` that finds an open claim from the same reporter returns
+`409 claim_pending`: verify or reject that claim instead. A `record` replays
+only the exact request that created the verified case.
+
+Triager assignment and revocation commit only together with their audit
+event at the next case revision. A stale request changes no membership.
+Triggers keep the frozen receipt, events, reservations, membership history
+and the access log append-only.
+
+A confirmed critical finding with verified potential or actual loss on an
+in-scope asset reserves its gross amount once per root cause within the
+current capacity. Without capacity the award is `capacity-exhausted`; the
+finding stays confirmed. A reserved or approved award cannot be redecided.
+
+## Not available
+
+- Payment: no private settlement rail is approved. An approved award has
+  `paymentState: "rail-unavailable"` and nothing can mark it paid.
+- Email: no bounty notification sender exists. Case changes appear only in the
+  signed-in `/security` inbox.
+- GitHub advisory content is never fetched. Maintainers verify claims by
+  hand on GitHub.

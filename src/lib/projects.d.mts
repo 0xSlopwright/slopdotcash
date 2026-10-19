@@ -3,6 +3,7 @@ import type { ContributionField } from "./project-schema.mjs";
 /** Types for the public project and reward-policy registry. */
 
 import type { RewardAsset } from "./reward-asset.mjs";
+import type { SecurityBountyTerms } from "./security-bounty.mjs";
 
 export type ProjectId = string;
 export type ProjectStatus = "active" | "paused";
@@ -211,6 +212,8 @@ export interface ProjectDefinition {
   };
   /** Maintainer-authored fields that generate the project skills (SKL-03). */
   readonly contribution?: Readonly<Record<ContributionField, string>>;
+  /** Public terms of an opt-in private security bounty (SEC-01, SEC-05). */
+  readonly securityBounty?: SecurityBountyTerms;
   readonly repositories: readonly {
     readonly id: string;
     readonly aliases?: readonly string[];

@@ -183,6 +183,8 @@ async function artifact(
       steward: manifest.steward,
       authority: manifest.authority,
       terms: manifest.terms,
+      // Public program terms only; cases never leave the restricted tables.
+      securityBounty: manifest.securityBounty ?? null,
     });
   }
   if (!publishesGeneratedSkills(project.manifest))
