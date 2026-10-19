@@ -5,6 +5,7 @@ import { githubUserIdFromNodeId } from "./lib/github-actor";
 import type { ScoreEvent } from "./lib/leaderboard";
 import { transactionUrl } from "./lib/payments/contracts";
 import { type PointsMember, pointKey } from "./lib/points";
+import { dailySlopScore } from "./lib/profile-activity";
 import {
   assertProfiles,
   type ProfileIndex,
@@ -238,24 +239,7 @@ const ACTIVITY_DAYS = 35;
 
 /** Daily Slop Score across the rolling window, so the rhythm reads at a glance. */
 function ActivityChart({ work }: { work: readonly ScoreEvent[] }) {
-  const today = new Date();
-  const days = Array.from({ length: ACTIVITY_DAYS }, (_, index) => {
-    const day = new Date(
-      Date.UTC(
-        today.getUTCFullYear(),
-        today.getUTCMonth(),
-        today.getUTCDate() - (ACTIVITY_DAYS - 1 - index),
-      ),
-    )
-      .toISOString()
-      .slice(0, 10);
-    return { day, score: 0 };
-  });
-  const byDay = new Map(days.map((entry) => [entry.day, entry]));
-  for (const event of work) {
-    const entry = byDay.get(event.occurredAt.slice(0, 10));
-    if (entry) entry.score += event.points;
-  }
+  const days = dailySlopScore(work, new Date(), ACTIVITY_DAYS);
   const max = Math.max(...days.map((entry) => entry.score));
   if (max <= 0) return null;
   const total = days.reduce((sum, entry) => sum + entry.score, 0);
