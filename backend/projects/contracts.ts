@@ -87,6 +87,10 @@ export type EnforcementAction =
   | "request_reinstatement"
   | "reinstate"
   | "deny_reinstatement";
+export type EnforcementActorRole =
+  | "project-moderator"
+  | "project-steward"
+  | "project-applicant";
 export type RestrictionState = "clear" | "quarantined" | "banned";
 export type AppealState = "none" | "requested" | "granted" | "denied";
 export type EnforcementResult =
@@ -109,8 +113,9 @@ export type ProjectEnforcement = {
   /** Lowercase repository paths, including transfer aliases. */
   repositoryKeys: string[];
   actor: GithubActor;
-  actorRole: "project-moderator";
-  decisionSource: "admin-panel";
+  /** A steward or applicant may only file a reinstatement request (ELG-02). */
+  actorRole: EnforcementActorRole;
+  decisionSource: "admin-panel" | "owner-request";
   beforeRevision: number;
   beforeManifestSha256: string;
   afterRevision: number | null;

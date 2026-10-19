@@ -166,16 +166,27 @@ export async function fetchProjectRegistry(origin = DEFAULT_API_ORIGIN) {
   ) {
     throw new TypeError("Project registry response has an unexpected shape");
   }
-  assertRestrictionsApplied(registry.projects, restrictions);
-  return { projects: registry.projects, revisions: history.revisions };
+  const withheld = restrictionsPending(registry.projects, restrictions);
+  return {
+    projects: registry.projects.filter(
+      (project) => !withheld.includes(project.id),
+    ),
+    revisions: history.revisions.filter(
+      (revision) => !withheld.includes(revision?.projectId),
+    ),
+    withheld,
+  };
 }
 
 /**
  * A quarantined or banned project must already be paused and retired in its
- * newest revision; otherwise ingestion could still collect it. The admin
- * appends the pending revision at /admin before a build can continue.
+ * newest revision; otherwise ingestion could still collect it. A project whose
+ * paused, retired revision is still pending is withheld from the snapshot with
+ * its revisions, so every other project still syncs. The admin appends the
+ * pending revision at /admin, and the next sync includes the project again.
  */
-function assertRestrictionsApplied(projects, restrictions) {
+function restrictionsPending(projects, restrictions) {
+  const withheld = [];
   for (const restriction of restrictions) {
     const project = projects.find(
       (entry) => entry?.id === restriction?.projectId,
@@ -186,10 +197,9 @@ function assertRestrictionsApplied(projects, restrictions) {
     )
       throw new TypeError("Project restriction has an unexpected shape");
     if (project.status !== "paused" || project.listingTier !== "retired")
-      throw new TypeError(
-        `Project ${project.id} is ${restriction.state} but its paused, retired revision is pending; append it at /admin`,
-      );
+      withheld.push(project.id);
   }
+  return withheld;
 }
 
 async function committedDefinitions() {
@@ -229,7 +239,11 @@ export async function syncProjectRegistry(checkOnly = false) {
     );
     return false;
   }
-  const { projects, revisions } = registry;
+  const { projects, revisions, withheld } = registry;
+  for (const projectId of withheld)
+    process.stdout.write(
+      `::warning::Project ${projectId} is restricted but its paused, retired revision is pending; it is withheld from the snapshot until an admin appends that revision at /admin\n`,
+    );
   const rendered = await renderProjectRegistry(projects);
   const renderedRevisions = renderProjectRevisions(
     revisions,

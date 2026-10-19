@@ -619,14 +619,38 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
   await expect(ban).toContainText("No revision needed");
   await ban.getByRole("button", { name: "Confirm: Ban project" }).click();
   await expect(panel()).toContainText("Banned");
-  const appeal = await act(
-    "Request reinstatement",
-    "Maintainer removed the script and asked for review",
-  );
-  await appeal
-    .getByRole("button", { name: "Confirm: Request reinstatement" })
-    .click();
+  // ELG-02: the applicant who listed the project files the appeal. The
+  // request client sends no Secure cookie over local http.
+  const appeal = {
+    projectId: project.id,
+    reason: "Maintainer removed the script and asked for review",
+    evidenceReference: evidence,
+  };
+  const appealHeaders = (token: string) => ({
+    origin: new URL(admin.url()).origin,
+    cookie: `__Host-slop_points=${token}`,
+  });
+  const stranger = await admin.request.post("/api/v1/project-appeals", {
+    headers: appealHeaders(OWNER_TOKEN),
+    data: appeal,
+  });
+  expect(stranger.status()).toBe(403);
+  const appealed = await admin.request.post("/api/v1/project-appeals", {
+    headers: appealHeaders(APPLICANT_TOKEN),
+    data: appeal,
+  });
+  expect(appealed.status()).toBe(200);
+  expect((await appealed.json()).record).toMatchObject({
+    actorRole: "project-applicant",
+    decisionSource: "owner-request",
+    appealAfter: "requested",
+  });
+  await admin.reload({ waitUntil: "networkidle" });
   await expect(panel()).toContainText("Reinstatement requested");
+  await panel()
+    .getByText(/Enforcement history/u)
+    .click();
+  await expect(panel()).toContainText("project-applicant, owner-request");
 
   // The moderator who placed the restriction cannot decide the appeal. The
   // request API keeps the expected 403 out of the page console.

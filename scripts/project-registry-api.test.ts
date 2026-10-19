@@ -10,6 +10,11 @@ import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-per
 import type { RepositoryControl } from "../backend/projects/contracts";
 import type { EdgeCache } from "../backend/projects/edge-cache";
 import {
+  EnforcementRefusal,
+  planEnforcement,
+  projectRestriction,
+} from "../backend/projects/enforcement";
+import {
   handleProjectApi,
   type ProjectApiDependencies,
 } from "../backend/projects/handler";
@@ -59,6 +64,7 @@ beforeEach(() => {
     "0020_project_application_github_check.sql",
     "0023_project_enforcements.sql",
     "0024_notifications.sql",
+    "0027_project_enforcement_owner_appeals.sql",
   ]);
   sqlite = database.sqlite;
   persistence = new CloudflareProjectPersistence(database.db);
@@ -684,7 +690,35 @@ describe("project enforcement (ADM-06)", () => {
     const early = await enforce("moderator", "reinstate");
     expect(early.status).toBe(409);
     expect((await early.json()).error).toBe("no_open_appeal");
-    expect((await enforce("admin", "request_reinstatement")).status).toBe(200);
+    // ELG-02: the applicant who listed the project files the appeal. Another
+    // account that is neither steward nor applicant cannot.
+    const appeal = {
+      projectId: "open-registry",
+      reason: "The release script was removed",
+      evidenceReference: EVIDENCE,
+    };
+    const stranger = await call("POST", "project-appeals", "moderator", appeal);
+    expect(stranger.status).toBe(403);
+    const appealed = await call("POST", "project-appeals", "applicant", appeal);
+    expect(appealed.status).toBe(200);
+    expect((await appealed.json()).record).toMatchObject({
+      action: "request_reinstatement",
+      actor: APPLICANT,
+      actorRole: "project-applicant",
+      decisionSource: "owner-request",
+      stateAfter: "banned",
+      appealAfter: "requested",
+      afterRevision: null,
+    });
+    const again = await call("POST", "project-appeals", "applicant", appeal);
+    expect(again.status).toBe(409);
+    expect((await again.json()).error).toBe("appeal_open");
+    // An owner record can only be an appeal.
+    expect(() =>
+      sqlite.exec(
+        `INSERT INTO project_enforcements SELECT 'enf_owner_forged', project_id, 4, 'reinstate', 'clear', 'granted', reason, evidence_reference, repository_github_id, repository_keys, actor_github_id, actor_github_login, actor_role, decision_source, before_revision, before_manifest_sha256, NULL, NULL, 'no_revision_needed', created_at FROM project_enforcements WHERE sequence = 3`,
+      ),
+    ).toThrow("CHECK constraint failed");
     // The moderator who banned cannot decide the appeal.
     const self = await enforce("admin", "reinstate");
     expect(self.status).toBe(403);
@@ -791,6 +825,45 @@ describe("project enforcement (ADM-06)", () => {
         aliases: ["example/open-registry"],
       })),
     }));
+  });
+
+  test("reinstatement is refused while the restriction revision is pending", async () => {
+    await listProject();
+    const listed = await persistence.getProject("open-registry");
+    if (listed === null) throw new Error("project missing");
+    // The quarantine found an active, featured manifest whose paused,
+    // retired revision could not be appended, and the appeal is open.
+    const project = {
+      ...listed,
+      manifest: {
+        ...listed.manifest,
+        status: "active",
+        listingTier: "featured",
+      } as ProjectDefinition,
+    };
+    const restriction = {
+      ...projectRestriction("open-registry", []),
+      state: "quarantined" as const,
+      appeal: "requested" as const,
+      restrictedBy: [ADMIN],
+      openedAtRevision: 1,
+    };
+    let refusal: unknown = null;
+    try {
+      planEnforcement({
+        action: "reinstate",
+        actor: MODERATOR,
+        project,
+        restriction,
+        listedBefore: true,
+      });
+    } catch (error) {
+      refusal = error;
+    }
+    // Clearing it would restore the featured, active manifest unreviewed.
+    expect(refusal).toBeInstanceOf(EnforcementRefusal);
+    expect((refusal as EnforcementRefusal).code).toBe("revision_pending");
+    expect((refusal as EnforcementRefusal).status).toBe(409);
   });
 
   test("a revision fails when a restriction lands after its read", async () => {
