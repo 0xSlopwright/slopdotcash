@@ -265,6 +265,91 @@ describe("retained review history corrections", () => {
   });
 });
 
+/** A newer rolling snapshot whose window starts after the review was
+ * submitted. It still evaluates the review with its in-window merge and,
+ * when `excluded`, publishes the review in reviewExclusions. */
+function newerSnapshot(
+  event: ScoreEvent,
+  excluded: boolean,
+): LeaderboardSnapshot {
+  const pullRequestId = event.id.split(":")[0];
+  return {
+    ledger: [],
+    reviewExclusions: excluded
+      ? [
+          {
+            id: `${pullRequestId}:review-exclusion:${event.source.id}`,
+            reviewId: event.source.id,
+            pullRequestId,
+            pullRequestNumber: event.source.number,
+            repository: "elizaOS/eliza",
+            url: event.source.url,
+            reason: "self-review",
+          },
+        ]
+      : [],
+    repositories: [{ id: "elizaOS/eliza" }],
+    ruleVersion: "slop-score-v2",
+    window: {
+      from: "2026-09-11T23:36:56.000Z",
+      to: "2026-10-16T23:36:56.000Z",
+    },
+  } as unknown as LeaderboardSnapshot;
+}
+
+describe("snapshot review exclusions", () => {
+  it("zeroes a snapshot-sourced review that a newer snapshot excludes, even when the review predates its window", () => {
+    const event = reviewEvent(3);
+    const award = awardForScore(event);
+    let journal = applyPointsSnapshot(
+      emptyPointsJournal(T0),
+      snapshotListing(event),
+      SNAPSHOT_DIGEST,
+      T0,
+    );
+    expect(pointMembers(journal)[0]?.total).toBe(30);
+    expect(award.occurredAt < newerSnapshot(event, true).window.from).toBe(
+      true,
+    );
+    journal = applyPointsSnapshot(
+      journal,
+      newerSnapshot(event, true),
+      "d".repeat(64),
+      T1,
+    );
+    expect(journal.revisions.length).toBe(2);
+    expect(journal.revisions[1]?.previous).toBe(journal.revisions[0]?.id);
+    expect(latestPoints(journal).get(award.key)?.award.amount).toBe(0);
+    expect(pointMembers(journal)).toEqual([]);
+    // A later snapshot with the same exclusion appends nothing.
+    journal = applyPointsSnapshot(
+      journal,
+      newerSnapshot(event, true),
+      "e".repeat(64),
+      T2,
+    );
+    expect(journal.revisions.length).toBe(2);
+  });
+
+  it("keeps a pre-window review that a newer snapshot merely omits", () => {
+    const event = reviewEvent(3);
+    const award = awardForScore(event);
+    const journal = applyPointsSnapshot(
+      applyPointsSnapshot(
+        emptyPointsJournal(T0),
+        snapshotListing(event),
+        SNAPSHOT_DIGEST,
+        T0,
+      ),
+      newerSnapshot(event, false),
+      "d".repeat(64),
+      T1,
+    );
+    expect(journal.revisions.length).toBe(1);
+    expect(latestPoints(journal).get(award.key)?.award.amount).toBe(30);
+  });
+});
+
 /** The evaluator award event that loadEvaluatorAwardEvents returns for
  * evaluations/eliza/award-gg100-review-24433.json. Evaluator events carry no
  * workUnitId. */
