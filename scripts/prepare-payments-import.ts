@@ -34,9 +34,12 @@ export function directPaymentsSql(root: string, importedAt: string): string {
   const failures = checkDirectPaymentDisclosures(root);
   if (failures.length) throw new Error(failures.join("\n"));
   const statements: string[] = [];
-  for (const name of readdirSync(join(root, "disclosures"))
+  const names = readdirSync(join(root, "disclosures"))
     .filter((n) => n.endsWith(".json"))
-    .sort()) {
+    .sort();
+  // Earlier deploys imported the removed disclosures; D1 keeps those rows.
+  if (!names.length) return "";
+  for (const name of names) {
     const path = `disclosures/${name}`;
     const d = JSON.parse(
       readFileSync(join(root, path), "utf8"),
@@ -176,6 +179,7 @@ export function walletObservationsSql(
       ),
   ].sort();
   const rows: { observedAt: string; values: string[] }[] = [];
+  let sources = 0;
   for (const path of files) {
     let record: {
       contributors?: {
@@ -193,6 +197,7 @@ export function walletObservationsSql(
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw error;
     }
+    sources += 1;
     let frozen: FrozenCycleBindings | undefined;
     for (const { actor, wallet } of [
       ...(record.contributors ?? []),
@@ -252,6 +257,8 @@ export function walletObservationsSql(
       });
     }
   }
+  // Earlier deploys imported the removed frozen records; D1 keeps those rows.
+  if (!sources) return "";
   if (!rows.length) throw new Error("no README wallet observations");
   // The earliest observation of each README commit is kept.
   return `${rows
