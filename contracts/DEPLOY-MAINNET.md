@@ -355,8 +355,9 @@ these steps; they may prepare commands and read reports.
 The code does not enable a mainnet. Every value in
 `workers/payment-executor/mainnet-execution.mjs` is `false`, and the
 executor and the attester refuse a mainnet deployment before they read a
-signer secret. `workers/payment-executor/configure.mjs` generates test stacks
-only. A production payment stack needs a separate reviewed stack definition.
+signer secret. `workers/payment-executor/configure.mjs --stack production`
+generates the production stack for one mainnet. It is disabled by default:
+the dispatcher has no cron until the network's reviewed value is `true`.
 
 ### 3.1 Preconditions
 
@@ -371,21 +372,28 @@ only. A production payment stack needs a separate reviewed stack definition.
 
 ### 3.2 Configure the stack
 
-1. Put the attester key and the relayer key in the managed secret store of
-   their own Workers only. One key per role and network. Never reuse the
-   registrar, owner or fee-wallet key.
-2. Pin the signer deployments from the registry snapshot:
+1. Pin the signer deployments from the registry snapshot:
    `bun run projects:sync`, then
-   `bun run payments:deployments mainnet <network>`.
-3. Set the dispatcher variable `PAYMENT_NETWORKS` to a JSON array with only
-   this network, for example `["base-mainnet"]`. Bind `REGISTRY_DB` on the
-   dispatcher to the registry database (`SLOP_DB` in `wrangler.toml`). The
-   dispatcher reads the vaults from it; do not copy a deployment list into
-   it.
+   `bun run payments:deployments mainnet <network> > pinned.json`.
+2. Generate the stack:
+   `node workers/payment-executor/configure.mjs --stack production --network <network> --deployments pinned.json --output workers/payment-executor/.generated`.
+   The dispatcher gets `PAYMENT_NETWORKS` with only this network and reads
+   the vaults from `REGISTRY_DB` (the registry database, `SLOP_DB` in
+   `wrangler.toml`); do not copy a deployment list into it. The signers get
+   `SIGNER_STACK=production`. Review the configurations and
+   `apply-production-stack.sh`.
+3. Put the attester key and the relayer key in the managed secret store of
+   their own Workers only, as `SIGNER_PRIVATE_KEY` (EVM) or
+   `SOLANA_SIGNER_SEED` (Solana, 64 hex digits). One key per role and
+   network. Never reuse the registrar, owner, fee-wallet or a test key.
 4. Set `PAYMENT_RPC_URLS` on each Worker to a private endpoint for this
    network that serves the finalized tag (EVM) or finalized commitment
    (Solana). On Solana also set `PAYMENT_SOLANA_GENESIS` to the cluster
    genesis hash in `src/lib/escrow-policy.mjs`.
+5. To let contributors sign the destination binding on the site, add this
+   network to the Pages variable `PAYMENT_NETWORKS` in `wrangler.toml`
+   through a reviewed pull request. Until then `/wallets/bind-challenge`
+   refuses this network.
 
 ### 3.3 Readiness report
 
@@ -419,6 +427,8 @@ the report to the release issue.
    Workers from that reviewed commit only.
 3. Run the readiness report again. It must print `READY` for this network,
    and the command must exit with code 0.
+4. Generate the stack again from that commit and deploy the dispatcher. Its
+   cron starts only now.
 
 ### 3.5 First payout and reconciliation
 

@@ -48,8 +48,18 @@ Chain, Solana) is accepted only when its value in `mainnet-execution.mjs` is
 `true`. Every value is `false`. Only a reviewed pull request that records that
 network's production activation can change one. The local integration
 override exists only in the core APIs and is not forwarded by the hosted
-wrapper. `configure.mjs` and `assert-fresh-test-stack.mjs` accept only registry
-test networks.
+wrapper. `assert-fresh-test-stack.mjs` accepts only registry test networks.
+
+Each signer belongs to one stack (`SIGNER_STACK`, see `signer-stacks.mjs`). A
+`test` stack (also when the variable is absent, as in stacks generated before
+it existed) signs for registry test networks only and reads
+`TEST_SIGNER_PRIVATE_KEY` or `TEST_SOLANA_SIGNER_SEED`, with the journal
+`dedicated-test-signer-v1`. A `production` stack signs for registry mainnets
+only and reads `SIGNER_PRIVATE_KEY` or `SOLANA_SIGNER_SEED`, with the journal
+`production-signer-v1`. The wrapper checks the stack and the network, then
+the preflight, before it reads a secret, so a test key never signs for a
+mainnet and a production key never signs while `MAINNET_EXECUTION` is off.
+Any other `SIGNER_STACK` value stops the signer.
 
 ## Durability and retries
 
@@ -147,6 +157,34 @@ installing its RPC secrets. The last deploy enables the cron. Failed or partial 
 must be reconciled explicitly: rerunning will fail closed once a Worker exists.
 This is a fresh-stack installer, not an updater or journal reset tool. Coordinate a
 single release operator to prevent concurrent provisioning races.
+
+### Production stack definition
+
+`--stack production` generates the stack for one registry mainnet. It is for
+`contracts/DEPLOY-MAINNET.md` section 3.2 and is run by an operator only:
+
+```sh
+bun run projects:sync
+bun run payments:deployments mainnet "$NETWORK" > "$PINNED_DEPLOYMENTS_FILE"
+node workers/payment-executor/configure.mjs --stack production \
+  --network "$NETWORK" \
+  --deployments "$PINNED_DEPLOYMENTS_FILE" \
+  --output workers/payment-executor/.generated
+```
+
+The command does not create resources, read keys or deploy. It refuses a test
+network and any `--database-id` or `--database-name`. The Worker names are
+`slop-payments-NETWORK-attester`, `-relayer` and `-dispatcher`. `PAYMENTS_DB`
+and `REGISTRY_DB` are both the registry database (`SLOP_DB` in
+`wrangler.toml`), because the account API stores wallet claims and binding
+authorizations there; the Pages release migrates it, so this configuration
+has no migrations directory. The signers have `SIGNER_STACK=production` and
+take the production secret names above. The stack is disabled by default: the
+dispatcher has no cron while the network's `MAINNET_EXECUTION` value is
+`false`, and the signers refuse the network. Regenerate and redeploy the
+dispatcher after the reviewed switch change to start its cron. The generated
+`apply-production-stack.sh` lists the dry runs, signer deploys, secret prompts
+and the dispatcher deploy for the operator to review and run.
 
 The generated `pages-bindings.json` is an integration fragment for an isolated test
 Pages environment, not permission to change an existing staging deployment. Bind its

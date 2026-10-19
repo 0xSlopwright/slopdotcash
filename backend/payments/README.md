@@ -91,6 +91,15 @@ database (`slop-private` in `wrangler.toml`) and only reads it. Its payment
 tables stay in `PAYMENTS_DB`. An isolated payment database has an empty
 `projects` table, so it can never stand in for the registry.
 
+The account API (`functions/api/v1/[[path]].ts`) finds binding vaults the same
+way. For `/wallets/bind-challenge` and `/wallets/bind-authorize` it reads the
+registry deployments of the networks in its own Pages variable
+`PAYMENT_NETWORKS` from `SLOP_DB`. Unset or invalid `PAYMENT_NETWORKS`, or a
+failed registry read, returns `503 payment_deployments_unavailable`. A vault of
+a network that is not served returns `400 unknown_deployment`. Add a network
+to the Pages variable through a reviewed change only when its payment stack is
+configured.
+
 Resolve private RPC URLs through `PAYMENT_RPC_URLS`, keyed by network; do not
 publish them in manifest output. Each endpoint must serve the finalized tag
 (EVM) or the finalized commitment (Solana): the vault counters, the event

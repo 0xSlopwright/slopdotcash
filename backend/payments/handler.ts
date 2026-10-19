@@ -33,8 +33,14 @@ export interface PaymentsDependencies {
   allowedOrigins?: readonly string[];
   /** Trusted numeric GitHub operator allowlist; never request-supplied. */
   operatorIds?: readonly string[];
-  /** Reviewed escrow deployments (PAYMENT_DEPLOYMENTS); never request-supplied. */
-  paymentDeployments?: readonly PaymentDeploymentIdentity[];
+  /**
+   * Reviewed escrow deployments; never request-supplied. A function is called
+   * only for a binding request: Pages reads the D1 project registry for its
+   * served networks. A failed read refuses the binding.
+   */
+  paymentDeployments?:
+    | readonly PaymentDeploymentIdentity[]
+    | (() => Promise<readonly PaymentDeploymentIdentity[]>);
   /** Service binding to the Solana identity attester role; never request-supplied. */
   solanaAttester?: { fetch(request: Request): Promise<Response> };
   /** Edge cache for public vault snapshot reads (caches.default on Pages). */
@@ -439,8 +445,16 @@ export async function handlePaymentsApi(
             !/^0x[0-9a-fA-F]{130}$/.test(body.signature)))
       )
         return json(400, { error: "invalid_request" });
-      if (!deps.paymentDeployments)
+      let available: readonly PaymentDeploymentIdentity[];
+      try {
+        if (!deps.paymentDeployments) throw new Error("No deployments");
+        available =
+          typeof deps.paymentDeployments === "function"
+            ? await deps.paymentDeployments()
+            : deps.paymentDeployments;
+      } catch {
         return json(503, { error: "payment_deployments_unavailable" });
+      }
       const vault = body.vault.toLowerCase();
       // A registry network fixes the deployment's chain and chain id, so a
       // Base claim never yields Robinhood Chain consent or the reverse, even
@@ -456,7 +470,7 @@ export async function handlePaymentsApi(
               policy.chainId === d.chainId
           : d.chainId === "31337";
       };
-      const deployments = deps.paymentDeployments.filter(
+      const deployments = available.filter(
         (d) =>
           (EVM_CHAINS as readonly string[]).includes(d.chain) &&
           d.network === body.network &&
