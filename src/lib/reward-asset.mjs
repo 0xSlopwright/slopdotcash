@@ -6,55 +6,47 @@
  * asset is submitted or changed; page views never read chain.
  */
 
+import { ESCROW_NETWORKS } from "./escrow-policy.mjs";
 import { isFundingAddress } from "./funding-address.mjs";
 
-/** Reviewed mainnet identities; the stablecoin rows match ESCROW_NETWORKS. */
-export const REWARD_ASSET_NETWORKS = Object.freeze({
-  base: Object.freeze({
-    name: "Base",
-    family: "evm",
-    chainId: "8453",
-    cluster: null,
-    stablecoin: Object.freeze({
-      address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-      symbol: "USDC",
-      decimals: 6,
-    }),
-  }),
-  ethereum: Object.freeze({
-    name: "Ethereum",
-    family: "evm",
-    chainId: "1",
-    cluster: null,
-    stablecoin: Object.freeze({
-      address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-      symbol: "USDC",
-      decimals: 6,
-    }),
-  }),
-  robinhood: Object.freeze({
-    name: "Robinhood Chain",
-    family: "evm",
-    chainId: "4663",
-    cluster: null,
-    stablecoin: Object.freeze({
-      address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
-      symbol: "USDG",
-      decimals: 6,
-    }),
-  }),
-  solana: Object.freeze({
-    name: "Solana",
-    family: "solana",
-    chainId: null,
-    cluster: "mainnet-beta",
-    stablecoin: Object.freeze({
-      address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-      symbol: "USDC",
-      decimals: 6,
-    }),
-  }),
+/** Display names of the four reward networks. */
+const NETWORK_NAMES = Object.freeze({
+  base: "Base",
+  ethereum: "Ethereum",
+  robinhood: "Robinhood Chain",
+  solana: "Solana",
 });
+
+/**
+ * Each reward network's mainnet identity and default stablecoin, read from
+ * the reviewed escrow network definitions (src/lib/escrow-policy.mjs), so the
+ * picker and the vaults name the same chain and asset.
+ */
+function rewardNetwork(chain) {
+  const definition = Object.values(ESCROW_NETWORKS).find(
+    (candidate) => candidate.chain === chain && !candidate.testnet,
+  );
+  const stablecoin = definition?.assets[0];
+  if (!definition || !stablecoin)
+    throw new TypeError(`No reviewed mainnet stablecoin for ${chain}`);
+  return Object.freeze({
+    name: NETWORK_NAMES[chain],
+    family: definition.family,
+    chainId: definition.chainId ?? null,
+    cluster: definition.family === "solana" ? "mainnet-beta" : null,
+    stablecoin: Object.freeze({
+      address: stablecoin.address,
+      symbol: stablecoin.symbol,
+      decimals: stablecoin.decimals,
+    }),
+  });
+}
+
+export const REWARD_ASSET_NETWORKS = Object.freeze(
+  Object.fromEntries(
+    Object.keys(NETWORK_NAMES).map((chain) => [chain, rewardNetwork(chain)]),
+  ),
+);
 
 export const REWARD_ASSET_NETWORK_IDS = Object.freeze(
   Object.keys(REWARD_ASSET_NETWORKS),

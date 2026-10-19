@@ -10,8 +10,8 @@ export interface RewardAssetNetworkDefinition {
   readonly cluster: "mainnet-beta" | null;
   readonly stablecoin: {
     readonly address: string;
-    readonly symbol: "USDC" | "USDG";
-    readonly decimals: 6;
+    readonly symbol: string;
+    readonly decimals: number;
   };
 }
 
