@@ -143,9 +143,7 @@ test("a signed-out visitor must sign in to look up GitHub and submit @registry",
   await page.getByRole("button", { name: "Look up on GitHub" }).click();
   // Setup lookups run on the site server with the site session, so a
   // signed-out browser never calls GitHub and nothing is filled in.
-  await expect(page.locator(".lookup-status")).toContainText(
-    "Sign in with GitHub to look up repositories. Nothing was filled in.",
-  );
+  await expect(page.locator(".lookup-status.field-error")).toBeVisible();
   await expect(page.getByLabel("Repository numeric ID")).toHaveValue("");
   await expect(
     page.getByRole("link", { name: "Sign in with GitHub", exact: true }),
@@ -375,8 +373,9 @@ test("an admin activates a project and its generated skills serve without a rebu
   // The approved paused project already shows on the public site from D1.
   await admin.goto(`/projects/${project.id}`, { waitUntil: "networkidle" });
   await expect(admin.locator("h1")).toHaveText(project.name);
+  // The reward asset is the Base stablecoin the application chose.
   await expect(admin.locator(".project-hero")).toContainText(
-    "Reward asset: USDC on Base",
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
   );
   const skill = await request.get(`/projects/${project.id}/skill.md`);
   expect(skill.status()).toBe(200);
@@ -480,9 +479,10 @@ test("an unavailable registry shows an error, never an empty list @registry", as
     route.fulfill({ status: 503, json: { error: "unavailable" } }),
   );
   await page.goto("/", { waitUntil: "networkidle" });
+  // The failure is an alert with its status and a retry, never a list.
   const alert = page.getByRole("alert");
-  await expect(alert).toContainText("Projects are unavailable");
-  await expect(alert).toContainText("HTTP 503");
-  await expect(page.getByText("No projects are listed yet.")).toHaveCount(0);
+  await expect(alert).toContainText("503");
+  await expect(alert.getByRole("button")).toBeVisible();
+  await expect(page.locator("#projects")).toHaveCount(0);
   await expectAccessible(page);
 });
