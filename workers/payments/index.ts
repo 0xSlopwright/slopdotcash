@@ -7,8 +7,19 @@ import {
   indexPaymentEvent,
   type PaymentChainAdapter,
 } from "../../backend/payments/ledger";
+import {
+  refreshVaultSnapshots,
+  type VaultTotals,
+} from "../../backend/payments/vault-snapshots";
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
-import { solanaPaymentAdapter } from "../../contracts/solana/adapter";
+import {
+  readVaultTotals as readEvmVaultTotals,
+  verifyEvmDeployment,
+} from "../../contracts/evm/adapter";
+import {
+  readVaultTotals as readSolanaVaultTotals,
+  solanaPaymentAdapter,
+} from "../../contracts/solana/adapter";
 import { chainFamily, type EscrowChain } from "../../src/lib/escrow-policy.mjs";
 import { reconcileFailedAttempts } from "./reconcile";
 import { scanEvmPayments, scanSolanaPayments } from "./scanner";
@@ -286,6 +297,49 @@ export async function ingestPaymentEvent(
   } else throw new Error("Reviewed chain deployment incomplete");
   await indexPaymentEvent(env.PAYMENTS_DB, adapter, message, now.toISOString());
 }
+/**
+ * Reads the vault counters at the finalized block through the chain adapter
+ * (EVM `finalized` tag, Solana `finalized` commitment). Pages never read the
+ * chain; they read the vault_snapshots row that the cron writes from this.
+ */
+export async function readDeploymentVaultTotals(
+  deployment: PaymentDeployment,
+  rpcUrl: string,
+): Promise<VaultTotals> {
+  if (chainFamily(deployment.chain) === "evm") {
+    if (
+      !deployment.chainId ||
+      !deployment.factory ||
+      !deployment.factoryCodeSha256 ||
+      !deployment.registrar
+    )
+      throw new Error("Reviewed chain deployment incomplete");
+    const chainId = BigInt(deployment.chainId);
+    // The counters mean what the reviewed code says only for that code.
+    await verifyEvmDeployment({
+      ...deployment,
+      rpcUrl,
+      chainId,
+      factory: deployment.factory,
+      factoryCodeSha256: deployment.factoryCodeSha256,
+      registrar: deployment.registrar,
+    });
+    return readEvmVaultTotals({
+      rpcUrl,
+      network: deployment.network,
+      vault: deployment.vault,
+      chainId,
+    });
+  }
+  if (!deployment.programId || !deployment.projectPda)
+    throw new Error("Solana project deployment missing");
+  return readSolanaVaultTotals({
+    rpcUrl,
+    network: deployment.network,
+    programId: deployment.programId,
+    projectPda: deployment.projectPda,
+  });
+}
 export default {
   async scheduled(_controller: unknown, env: PaymentsWorkerEnvironment) {
     const deployments = JSON.parse(
@@ -294,6 +348,18 @@ export default {
     const rpcUrls = JSON.parse(env.PAYMENT_RPC_URLS) as Record<string, string>;
     // One failing deployment or step must not stop scanning or payouts elsewhere.
     const failures: unknown[] = [];
+    // The ledger takes each award's asset and decimals from this snapshot,
+    // so it runs before the event scan.
+    try {
+      await refreshVaultSnapshots(
+        env.PAYMENTS_DB,
+        deployments,
+        rpcUrls,
+        readDeploymentVaultTotals,
+      );
+    } catch (error) {
+      failures.push(error);
+    }
     for (const deployment of deployments) {
       try {
         if (chainFamily(deployment.chain) === "evm")

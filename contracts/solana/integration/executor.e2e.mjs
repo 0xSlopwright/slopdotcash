@@ -21,6 +21,7 @@ import {
 } from "@solana/web3.js";
 import {
   escrowInvocations,
+  readVaultTotals,
   solanaAwardId,
   solanaPaymentAdapter,
 } from "../.local/adapter.mjs";
@@ -33,6 +34,7 @@ import {
 import { handlePaymentsApi } from "../.local/handler.mjs";
 import { indexPaymentEvent } from "../.local/ledger.mjs";
 import { scanSolanaPayments } from "../.local/scanner.mjs";
+import { storeVaultSnapshot } from "../.local/vault-snapshots.mjs";
 import {
   configAddress,
   configFees,
@@ -246,7 +248,7 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
   ).toString("base64");
   sql
     .prepare(
-      "INSERT INTO payment_obligations VALUES(?,?,?,?,?,?,?,?,?,'reserved',?,NULL)",
+      "INSERT INTO payment_obligations(id,project_id,github_user_id,network,chain,vault,asset_address,asset_decimals,gross_base,fee_base,source_digest,state,created_at,paid_transaction) VALUES(?,?,?,?,?,?,?,?,?,?,?,'reserved',?,NULL)",
     )
     .run(
       input.obligationId,
@@ -255,6 +257,8 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
       input.network,
       "solana",
       input.vault,
+      mint.toBase58(),
+      6,
       "100000000",
       "2000000",
       origin.toString("hex"),
@@ -783,6 +787,21 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
     project,
     { limit: 1 },
     "finalized",
+  );
+  // The payments cron's first step: the finalized vault read is stored, and
+  // the ledger takes each award's asset and decimals from it.
+  const totals = await readVaultTotals({
+    rpcUrl: provider.connection.rpcEndpoint,
+    network: config.network,
+    projectPda: config.projectPda,
+    programId: config.programId,
+  });
+  assert.equal(totals.vault, config.projectPda);
+  assert.equal(totals.asset, config.asset);
+  assert.equal(totals.decimals, 6);
+  assert.equal(
+    await storeVaultSnapshot(db, config, totals, new Date().toISOString()),
+    "stored",
   );
   const index = (event) =>
     indexPaymentEvent(db, adapter, event, new Date().toISOString());

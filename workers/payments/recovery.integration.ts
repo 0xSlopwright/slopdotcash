@@ -107,7 +107,7 @@ try {
       );
     sql
       .query(
-        "INSERT INTO payment_obligations(id,project_id,github_user_id,network,chain,vault,gross_micro,fee_micro,source_digest,state,created_at) VALUES(?,?,?,?,?,?,?,?,?,'reserved',?)",
+        "INSERT INTO payment_obligations(id,project_id,github_user_id,network,chain,vault,asset_address,asset_decimals,gross_base,fee_base,source_digest,state,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'reserved',?)",
       )
       .run(
         `obligation-${chain}`,
@@ -116,6 +116,10 @@ try {
         `${chain}-local`,
         chain,
         `vault-${chain}`,
+        chain === "solana"
+          ? "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+          : "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        6,
         "100000000",
         "2000000",
         `${sequence + 4}`.repeat(64),

@@ -133,8 +133,8 @@ try {
     await fetch("http://127.0.0.1:18548/api/v1/payments/me")
   ).json();
   if (
-    paid.payments[0].netMicro !== "98000000" ||
-    paid.payments[0].feeMicro !== "2000000" ||
+    paid.payments[0].netBase !== "98000000" ||
+    paid.payments[0].feeBase !== "2000000" ||
     paid.payments[0].state !== "paid"
   )
     throw new Error("Wrong payment result");

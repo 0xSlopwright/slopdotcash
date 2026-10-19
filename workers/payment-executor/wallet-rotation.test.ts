@@ -33,6 +33,10 @@ function open() {
     .filter((f) => f.endsWith(".sql"))
     .sort())
     sql.exec(readFileSync(`migrations/${file}`, "utf8"));
+  // The ledger takes the award asset from the finalized vault snapshot.
+  sql.exec(
+    `INSERT INTO vault_snapshots(project_id,network,chain,vault,asset_address,asset_decimals,total_deposited,total_paid,total_payout_fees,total_gross_withdrawn,total_withdrawal_fees,total_service_fees,block_number,block_time,observed_at) VALUES('project-1','base-sepolia','base','${vault}','0x036cbd53842c5426634e7929541ec2318f3dcf7e',6,'0','0','0','0','0','0','1','${registered}','${registered}')`,
+  );
   function statement(
     query: string,
     args: unknown[] = [],

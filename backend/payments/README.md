@@ -7,7 +7,11 @@ if that actor has never signed in.
 
 `GET /api/v1/payments/me` returns gross awards, deducted fees, net amounts,
 finalized payment transactions, current wallet claims, and unpaid net balances.
-No failed query returns a fabricated zero balance.
+No failed query returns a fabricated zero balance. Every amount is base-unit
+integer text (`grossBase`, `feeBase`, `netBase`) of the award's vault asset,
+named by `assetAddress` and scaled by `assetDecimals`. One balance row exists
+per network and asset. Amounts of different assets are never summed and are
+never labelled as dollars.
 
 `POST /wallets/register` takes `chain` and `address` using the existing GitHub
 session. It writes the same canonical claim and atomic audit as the legacy
@@ -102,11 +106,37 @@ attempt is uncertain; successor binding rotation waits 24 hours after the later 
 and requires a proved ancestor claim with no unresolved old-wallet attempts.
 
 `GET /api/v1/payments/projects/<id>/totals` publishes net contributor payments,
-payout fees, and unpaid award reserves from verified events, plus cursor coverage
-and sync time. These fields are not a vault balance, deposit total, or refund
-ledger. Missing index coverage is explicit. Account `deliveryState` distinguishes
+payout fees, and unpaid award reserves from verified events, one `assets` row
+per network and asset, plus cursor coverage and sync time. These fields are not
+a vault balance, deposit total, or refund ledger. Missing index coverage is explicit. Account `deliveryState` distinguishes
 needs-wallet, awaiting-binding, submitted, held, and paid; only `state=paid`
 represents finalized chain payment.
+
+Migration `0021` changes `payment_obligations` to `asset_address`,
+`asset_decimals`, `gross_base` and `fee_base`. It copies each earlier row as
+the reviewed asset of its network (all 6 decimals). A row on a network with
+no reviewed asset fails the migration; no asset is guessed. It adds `ethereum`
+to the chain constraint of `wallet_claims`, `payment_obligations` and
+`payment_wallet_proposals`, and adds `vault_snapshots`.
+
+The scheduled worker first reads each reviewed vault's counters at the
+finalized block (EVM `finalized` tag, after `verifyEvmDeployment`; Solana
+`finalized` commitment) through the adapters' `readVaultTotals`, and upserts
+one `vault_snapshots` row per project vault: asset, decimals, every counter as
+integer text, the block or slot, its block time and `observed_at`. A counter
+that a vault type does not have is NULL. A read that names another vault or
+asset, changes the decimals, or lowers a cumulative counter fails and the
+stored row stays. An older block never replaces a newer one. The ledger then
+takes each award's asset and decimals from that row, so an award is indexed
+only after its vault was read.
+
+`GET /api/v1/payments/projects/<id>/vault` serves these rows with
+`staleAfterMs` (30 minutes). A page view reads D1 or the edge cache
+(`caches.default`, 60 seconds), never a chain RPC. The project page shows
+deposited, paid out, payout fees, withdrawn, withdrawal fees, free and
+reserved amounts in the vault asset, with the block time ("as of") and a stale
+warning past `staleAfterMs`. It shows "not reported" for a NULL counter and no
+totals before the first read, never zero.
 
 Migration `0014` adds `payment_direct_transfers`: transfers that a project
 creator sent outside escrow, imported from the reviewed `disclosures/*.json`
