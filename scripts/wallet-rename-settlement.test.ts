@@ -32,7 +32,10 @@ import {
 import { assertAllocationsMatchBaseline } from "./sync-cycle-index";
 
 // A frozen monthly-pool cycle is the base; one carried accrual is added.
-const CYCLE_DIR = join(import.meta.dir, "../cycles/eliza/2026-09");
+const CYCLE_DIR = join(
+  import.meta.dir,
+  "../tests/fixtures/history/cycles/eliza/2026-09",
+);
 const SNAPSHOT_BYTES = readFileSync(join(CYCLE_DIR, "source-snapshot.json"));
 const FROZEN = JSON.parse(
   readFileSync(join(CYCLE_DIR, "proposal.json"), "utf8"),
@@ -856,7 +859,7 @@ describe("a fresh-policy cycle keeps the frozen prior README proofs", () => {
     const prior = await loadPriorCycleAccrual({
       asOf: "2026-11-01T00:00:00.000Z",
       cycleId: "2026-10",
-      cyclesRoot: join(import.meta.dir, "../cycles"),
+      cyclesRoot: join(import.meta.dir, "../tests/fixtures/history/cycles"),
       projectId: "eliza",
       freshPolicy: true,
     });

@@ -167,22 +167,20 @@ failed. Do not claim a client was tested when it was not.
 
 ## Add a project
 
-Start with the public proposal builder at
-[`slop.cash/projects/new`](https://slop.cash/projects/new). It prepares the
-manifest and an agent brief, then links to GitHub’s new-file flow. The website
-does not activate a project or create private platform state.
+Add a project on the website, not by pull request. Sign in with GitHub and
+submit the form at [`slop.cash/projects/new`](https://slop.cash/projects/new).
+A Slop admin reviews the application. Approval lists the project as paused.
 
-A project pull request must add all three canonical surfaces:
+Before an admin can make the project active, a reviewed pull request into
+`development` must add both skills:
 
 ```text
-projects/<project-id>/project.json
 skills/contribute-to-<project-id>/
 skills/review-<project-id>-contributions/
 ```
 
-Use an existing project only as a structural reference. Rewrite its mission,
-work selection, repository rules, evidence requirements, and review policy for
-the proposed project.
+Write the mission, work selection, repository rules, evidence requirements,
+and review policy for the proposed project.
 
 The manifest must use immutable GitHub repository and actor IDs, a reviewed
 license URL/commit/digest, a concrete integration branch, a verified steward,
@@ -220,7 +218,7 @@ bun run test:e2e
 
 Preserve these boundaries:
 
-- `projects/*/project.json` is the sole project and repository inventory.
+- The D1 project registry is the sole project and repository inventory.
 - Score accepted outcomes, not activity or token volume.
 - Keep projected, under-review, approved, scheduled, and paid states distinct.
 - Never infer ownership, legal capacity, wallet control, or payment authority.

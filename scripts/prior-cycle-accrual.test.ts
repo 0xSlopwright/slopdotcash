@@ -20,7 +20,10 @@ const PRIOR_APPROVED_AT = "2026-11-03T00:00:00.000Z";
 function reviewedPriorProposal() {
   const raw = JSON.parse(
     readFileSync(
-      join(import.meta.dir, "../cycles/asi/2026-09/proposal.json"),
+      join(
+        import.meta.dir,
+        "../tests/fixtures/history/cycles/asi/2026-09/proposal.json",
+      ),
       "utf8",
     ),
   );

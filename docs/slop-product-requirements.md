@@ -192,13 +192,13 @@ The setup wizard has five resumable steps:
 
 A draft can be saved before all fields are known. Unknown legal ownership stays unknown. Repository identity, public policy integrity, and money authority must meet their respective activation gates. A project can be listed as unfunded without advertising paid work.
 
-**PRJ-02 — Permissionless community listing.** Anyone with verified repository authority may submit a compliant community project without editorial featuring approval. Permissionless means equal published admission rules, not anonymous authority claims or bypassed repository protections. The MVP retains canonical manifests as the only active inventory. The backend prepares a manifest/skill change and tracks the GitHub review. The project becomes active only after the authorized transition and mandatory security vetting in section 15 complete. Backend drafts are not active projects.
+**PRJ-02 — Permissionless community listing.** Anyone with verified repository authority may submit a compliant community project without editorial featuring approval. Permissionless means equal published admission rules, not anonymous authority claims or bypassed repository protections. The D1 project registry is the only active inventory. The applicant signs in with GitHub and submits an application on slop.cash; the API stores it and emails the admins. An admin approval lists the project as paused revision 1. Every later change is an append-only admin revision that must pass the policy transition check. The project becomes active only after its reviewed skills are on `development`, the authorized transition, and the mandatory security vetting in section 15 complete. Applications are not active projects.
 
 A fully automatic listing transition would require a separately approved, narrow standing-review policy consistent with branch protection. Do not quietly give Slopbot merge or policy powers to remove this final gate. Measure proposal-to-listing time and disclose the review dependency.
 
 **PRJ-03 — Defaults.** Recommend bounded approved work, evidence of a useful result, reuse of existing code, real workflow tests, exact-head review, disclosure of agent identity, no token-volume rewards, private security reporting, and conflict-of-interest rules. For UI work, use the repository's required walkthrough and evidence videos. Show the resulting guide as editable policy text before publication; templates do not invent feature approval.
 
-**PRJ-04 — Project updates.** A maintainer edits the dashboard draft and sees a field-level diff, affected skills, effective date, and affected cycles. Submit the change to GitHub for the required approval. Publish only the approved manifest revision. Retry failed synchronization without creating duplicate projects. Preserve old skill and policy versions for open work.
+**PRJ-04 — Project updates.** A maintainer edits the dashboard draft and sees a field-level diff, affected skills, effective date, and affected cycles. An admin saves the reviewed change as the next registry revision; a stale revision fails instead of overwriting. Publish only the saved manifest revision. Retry failed synchronization without creating duplicate projects. Preserve old skill and policy versions for open work.
 
 Economic changes take effect at a future UTC month boundary. Do not lower an already funded award, retroactively exclude accepted work, or change the fee on existing obligations. Security pauses may stop new intake immediately, with a visible reason and a process for existing submissions. Repository transfers require renewed authority verification and immutable-ID continuity. Removing the App stops new bot work; it does not erase earned awards or receipts.
 
@@ -302,7 +302,7 @@ Squads separates proposal, vote, and execution permissions; that is useful gover
 
 **PAY-09 — One settlement network per project.** On 8 October 2026 the repository owner (GitHub `lalalune`) approved [RFC #472](https://github.com/SlopDotCash/slopdotcash/issues/472). This rule applies to the current 1% monthly-pool settlement path, not to the protected vaults above.
 
-1. `reward.chain` in `projects/<id>/project.json` is the project's settlement network. The value is `solana` (default) or `base`. A pull request changes it. The trusted transition gate requires a new proposal to use the network of the reviewed base commit, so a change takes effect between cycles.
+1. `reward.chain` in the project registry manifest is the project's settlement network. The value is `solana` (default) or `base`. An admin registry revision changes it. A new proposal uses the network of the newest revision when it is frozen, so a change takes effect between cycles.
 2. A proposal freezes the network for its cycle. Its allocation, plan and settlement keep that network after a later project change. History is not rewritten.
 3. A contributor has one wallet claim per network. Only a claim on the cycle network is payable. A row without one stays `unclaimed`, as a missing wallet does today.
 4. A Base plan is an unsigned list of Base mainnet USDC transfers with EIP-681 requests. The source is the recipient of the frozen Base Sablier stream. The 1% fee stays a separate transfer that the creator sends. A Squads basis can only produce a Solana plan; a Base Sablier basis can only produce a Base plan.
@@ -539,7 +539,7 @@ This inventory covers the routes in inspected upstream `src/App.tsx` and related
 | `/#leaderboard` | Embedded global standings | Keep preview; link to full filtered leaderboard |
 | `/projects/:id` | Mission, terms, funding, skill links, cycle leaderboard | Overview, Work, Guidelines, Contributors, Funding, History tabs with one project state |
 | `/projects/:id/funding` | Funding routes and reported/verified records | Donation flow, vault breakdown, policy before signature, transaction progress |
-| `/projects/new` | Large manifest form and GitHub handoff | Five-step authenticated wizard, draft persistence, authority checks, publication progress |
+| `/projects/new` | Manifest form, GitHub sign-in, and application submission | Five-step authenticated wizard, draft persistence, authority checks, publication progress |
 | Proposed private security surfaces | Not established in the source baseline | Program terms and verified private-report handoff; restricted case status/appeals and maintainer/finance views under SEC-07–13; no public case route |
 | `/projects/:id/manage` | Draft updates and cycle actions | Policy, optional bot setup/health, eligibility/ignore/closure settings, funding, distinct payout exclusions, approvals and outcome ratios |
 | `/contributors/:login` | Public work, points, X and payment history | Stable actor profile with Slop Score, Points, money received, PR/issue ratios and penalty/reversal history; private settings separate |
@@ -1000,7 +1000,7 @@ Primary source map, all paths at the baseline above:
 - Identity/accounts: `workers/identity/`, `backend/points/`, `backend/trace/README.md`, migrations `0003`, `0008`, `0009`, `0010`.
 - Points/scoring: `protocol/points-v1.md`, `protocol/scoring-v2.md`, `protocol/review-budget-v1.md`, `src/lib/points.ts`, `src/lib/global-leaderboard.ts`, `src/lib/rewards.ts`.
 - Skills/bot: `skills/slop/SKILL.md`, `skills/contribute-to-*/`, `skills/review-*-contributions/`, `protocol/slopbot-v1.md`.
-- Projects/funds: `projects/*/project.json`, `src/lib/project-schema.mjs`, `funding/README.md`, `cycles/README.md`, `src/lib/settlement-plan.ts`, `src/lib/evm-settlement.ts`.
+- Projects/funds: the D1 project registry (`backend/projects/`), `src/lib/project-schema.mjs`, `funding/README.md`, `cycles/README.md`, `src/lib/settlement-plan.ts`, `src/lib/evm-settlement.ts`.
 - Prior local proposal: Base and Solana payouts architecture review, dated 6 October 2026. It is background context, not an additional canonical requirement source; this PRD and the MVP plan define the adopted scope.
 - Robinhood Chain design record: [Robinhood Chain USDG escrow payouts](robinhood-chain-escrow-design.md), 12 October 2026. It records the design for the third escrow settlement network under FND-02, whose scope the repository owner approved on 14 October 2026, and the facts verified for it; implementation pull requests cite it and merge only after this amendment.
 

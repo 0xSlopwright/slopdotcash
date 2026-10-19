@@ -257,6 +257,8 @@ describe("payment quality evidence for an external evaluated contribution", () =
     const result = spawnSync(
       process.execPath,
       [
+        "--preload",
+        "./tests/registry-preload.ts",
         "scripts/prepare-contribution-quality.ts",
         path("preparation.json"),
         path("snapshot.json"),

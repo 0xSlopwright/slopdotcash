@@ -130,15 +130,19 @@ jobs:
             --require-hashes \
             --requirement "$RUNNER_TEMP/slop-python-requirements.txt"
 
-      - name: Validate project registry and every skill
+      - name: Snapshot the D1 project registry
+        # Projects are applied for and approved on slop.cash; D1 is the only
+        # registry and its API enforces every policy transition. Trusted runs
+        # rebuild from it once the operator sets the repository variable after
+        # the registry API is first deployed.
+        if: github.event_name != 'pull_request' && vars.SLOP_PROJECT_REGISTRY_SOURCE == 'd1'
         env:
-          PROJECT_POLICY_BASE_SHA: ${{ github.event.before }}
-          PROJECT_POLICY_HEAD_SHA: ${{ github.sha }}
+          SLOP_API_ORIGIN: ${{ env.VITE_SLOP_ENVIRONMENT == 'staging' && 'https://staging.slop.cash' || 'https://slop.cash' }}
+        run: bun run projects:sync
+
+      - name: Validate project registry and every skill
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "push" ]; then
-            node scripts/check-project-transitions.mjs "$PROJECT_POLICY_BASE_SHA" "$PROJECT_POLICY_HEAD_SHA"
-          fi
           bun run verify:contracts
 
       - name: Authenticate signer history before trusted publication
@@ -265,6 +269,10 @@ jobs:
           - lane: pages
             server: pages
             shard: 1/1
+          # The shipped bundle with Pages Functions and a fresh local D1.
+          - lane: registry
+            server: registry
+            shard: 1/1
     env:
       VITE_SLOP_ENVIRONMENT: ${{ (github.ref == 'refs/heads/development' || github.base_ref == 'development') && 'staging' || 'production' }}
       SLOP_E2E_PREBUILT: '1'
@@ -307,6 +315,7 @@ jobs:
           done
 
       # run-e2e.mjs verifies the exact bundle, then runs only the lane's phase.
+      # Preview and Pages lanes run in the frozen-registry fixture workspace.
       - name: Run complete assigned browser coverage
         env:
           BROWSER_SHARD: ${{ matrix.shard }}
@@ -731,18 +740,24 @@ jobs:
             --remote \
             --json \
             --config workers/identity/wrangler.toml \
-            --command "SELECT type, name FROM sqlite_schema WHERE name IN ('identity_assertions','identity_oauth_flows','identity_rate_limits','private_audit_events','run_progress_events','trace_attachment_commit_validate','trace_attachment_commits','trace_attachment_commits_no_delete','trace_attachment_commits_no_update','trace_objects','trace_read_grants','trace_runs','trace_upload_intents','trace_uploads','wallet_claims','wallet_claims_no_delete','wallet_claims_no_update','wallet_claims_one_root_per_actor','wallet_claims_one_successor') ORDER BY type, name" \
+            --command "SELECT type, name FROM sqlite_schema WHERE name IN ('identity_assertions','identity_oauth_flows','identity_rate_limits','private_audit_events','project_applications','project_applications_one_pending_project','project_applications_one_pending_repository','project_repositories','project_revisions','project_revisions_no_delete','project_revisions_no_update','projects','projects_match_revision_insert','projects_match_revision_update','projects_no_delete','run_progress_events','trace_attachment_commit_validate','trace_attachment_commits','trace_attachment_commits_no_delete','trace_attachment_commits_no_update','trace_objects','trace_read_grants','trace_runs','trace_upload_intents','trace_uploads','wallet_claims','wallet_claims_no_delete','wallet_claims_no_update','wallet_claims_one_root_per_actor','wallet_claims_one_successor') ORDER BY type, name" \
             > "$schema_response"
           node - "$schema_response" <<'NODE'
           const { readFileSync } = require("node:fs");
           const value = JSON.parse(readFileSync(process.argv[2], "utf8"));
           const expected = [
+            "index:project_applications_one_pending_project",
+            "index:project_applications_one_pending_repository",
             "index:wallet_claims_one_root_per_actor",
             "index:wallet_claims_one_successor",
             "table:identity_assertions",
             "table:identity_oauth_flows",
             "table:identity_rate_limits",
             "table:private_audit_events",
+            "table:project_applications",
+            "table:project_repositories",
+            "table:project_revisions",
+            "table:projects",
             "table:run_progress_events",
             "table:trace_attachment_commits",
             "table:trace_objects",
@@ -751,6 +766,11 @@ jobs:
             "table:trace_upload_intents",
             "table:trace_uploads",
             "table:wallet_claims",
+            "trigger:project_revisions_no_delete",
+            "trigger:project_revisions_no_update",
+            "trigger:projects_match_revision_insert",
+            "trigger:projects_match_revision_update",
+            "trigger:projects_no_delete",
             "trigger:trace_attachment_commit_validate",
             "trigger:trace_attachment_commits_no_delete",
             "trigger:trace_attachment_commits_no_update",

@@ -4,6 +4,7 @@
  * fields change only through review in this registry.
  */
 
+import LEGACY_PROJECTS from "./legacy-projects.json" with { type: "json" };
 import { RAW_PROJECT_DEFINITIONS } from "./project-registry.generated.mjs";
 import { assertProjectRegistry } from "./project-schema.mjs";
 
@@ -88,6 +89,54 @@ export function findHistoricalProjectByRepositoryId(repositoryId) {
   return (
     HISTORICAL_PROJECTS_BY_REPOSITORY.get(repositoryId.toLowerCase()) ?? null
   );
+}
+
+/**
+ * Projects listed before the D1 registry were removed with their manifests.
+ * Contributor points and profiles keep their ids and repositories as history
+ * labels only; they are never listed, collected, scored, or paid.
+ */
+const LEGACY_PROJECT_IDS = new Set(
+  LEGACY_PROJECTS.map((project) => project.id),
+);
+const HISTORY_REPOSITORIES = new Map(
+  [
+    ...LEGACY_PROJECTS.map((project) => ({
+      id: project.id,
+      repositories: project.repositories,
+    })),
+    ...HISTORICAL_PROJECTS,
+  ].flatMap((project) =>
+    project.repositories.flatMap((repository) =>
+      [repository.id, ...(repository.aliases ?? [])].map((repositoryId) => [
+        repositoryId.toLowerCase(),
+        { projectId: project.id, repositoryId: repository.id },
+      ]),
+    ),
+  ),
+);
+
+/** True for a registry project or a removed pre-registry project id. */
+export function isHistoricalProjectId(projectId) {
+  return (
+    typeof projectId === "string" &&
+    (HISTORICAL_PROJECTS_BY_ID.has(projectId) ||
+      LEGACY_PROJECT_IDS.has(projectId))
+  );
+}
+
+/**
+ * Resolves a registry or removed pre-registry repository id or alias to its
+ * owning project id and canonical repository id.
+ */
+export function findHistoricalRepository(repositoryId) {
+  if (typeof repositoryId !== "string") return null;
+  return HISTORY_REPOSITORIES.get(repositoryId.toLowerCase()) ?? null;
+}
+
+/** True for a registry repository or a removed pre-registry repository. */
+export function isHistoricalRepositoryId(repositoryId) {
+  return findHistoricalRepository(repositoryId) !== null;
 }
 
 /** Returns the canonical project for an id or slug. */

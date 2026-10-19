@@ -104,10 +104,7 @@ import { SettlementVerification } from "./SettlementVerification";
 
 export { DonorFundingProfile } from "./FundingRecords";
 
-export {
-  rootPublishedTemplateProject,
-  safeProposalHttpsUrl,
-} from "./lib/project-proposal";
+export { safeProposalHttpsUrl } from "./lib/project-proposal";
 export {
   monthlyPoolLabel,
   monthlyPoolUnfunded,
@@ -123,6 +120,7 @@ export {
 export { readBoundedJson } from "./lib/browser-json";
 
 const ProjectProposalPage = lazy(() => import("./ProjectProposalPage"));
+const AdminPage = lazy(() => import("./Admin"));
 const ProjectUpdatePage = lazy(() =>
   import("./ProjectProposalPage").then((module) => ({
     default: module.ProjectUpdatePage,
@@ -157,6 +155,7 @@ export function publicFooterDomain(
 
 interface Route {
   kind:
+    | "admin"
     | "cycle"
     | "funding-project"
     | "home"
@@ -191,6 +190,13 @@ function internalRoute(pathname: string): Route {
     return { kind: "earnings" };
   if (segments.length === 1 && segments[0] === "login")
     return { kind: "login" };
+  // The admin email deep-links one application at /admin/applications/<id>.
+  if (
+    segments[0] === "admin" &&
+    (segments.length === 1 ||
+      (segments.length === 3 && segments[1] === "applications"))
+  )
+    return { kind: "admin" };
   if (segments.length === 1 && segments[0] === "account")
     return { kind: "account" };
   if (segments.length === 1 && segments[0] === "points")
@@ -279,6 +285,7 @@ function useRoute(): Route {
 }
 
 const PRIVATE_PAGE_TITLES = new Map<Route["kind"], string>([
+  ["admin", "Admin"],
   ["account", "Account"],
   ["login", "Log in"],
   ["earnings", "Your payouts"],
@@ -628,8 +635,8 @@ function CommunityProjects({ projects }: { projects: ProjectDefinition[] }) {
     >
       <h3 id="community-projects">Community</h3>
       <p className="project-tier-note">
-        Community-listed through a reviewed manifest, not featured by Slop.
-        Paused projects are listed but not collected yet.
+        Community-listed after admin review, not featured by Slop. Paused
+        projects are listed but not collected yet.
       </p>
       <ul className="project-rows">
         {visible.map((project) => (
@@ -701,19 +708,33 @@ function HomePage() {
             <Plus aria-hidden="true" /> Add a project
           </Link>
         </div>
-        <section className="project-tier" aria-labelledby="featured-projects">
-          <h3 id="featured-projects">Featured</h3>
-          <div className="project-grid">
-            {featuredProjects.map((project) => (
-              <ProjectCard
-                key={project.id}
-                project={project}
-                funding={funding}
-              />
-            ))}
-          </div>
-        </section>
-        <CommunityProjects projects={communityProjects()} />
+        {homeProjects().length === 0 ? (
+          <p className="project-tier-note">
+            No projects are listed yet. Maintainers add one with GitHub sign-in,
+            and a Slop admin reviews each application.
+          </p>
+        ) : (
+          <>
+            {featuredProjects.length > 0 ? (
+              <section
+                className="project-tier"
+                aria-labelledby="featured-projects"
+              >
+                <h3 id="featured-projects">Featured</h3>
+                <div className="project-grid">
+                  {featuredProjects.map((project) => (
+                    <ProjectCard
+                      key={project.id}
+                      project={project}
+                      funding={funding}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+            <CommunityProjects projects={communityProjects()} />
+          </>
+        )}
       </section>
       <section className="how-section" id="how-it-works">
         <div className="shell">
@@ -756,8 +777,8 @@ function HomePage() {
                 <li>
                   <FolderGit2 aria-hidden="true" />
                   <span>
-                    <strong>Add your repo.</strong> Draft the manifest and the
-                    agent brief, then open the PR on GitHub.
+                    <strong>Add your repo.</strong> Sign in with GitHub and
+                    submit it. A Slop admin reviews the application.
                   </span>
                 </li>
                 <li>
@@ -1009,7 +1030,7 @@ export function ProjectParticipation({
     return (
       <section className="section" id="start">
         <h2>Project paused</h2>
-        <p>Activation requires a reviewed manifest change on GitHub.</p>
+        <p>A Slop admin opens the project after review.</p>
       </section>
     );
   }
@@ -2802,11 +2823,11 @@ function SponsorsPage({
       </section>
       <section className="worked-example sponsor-start">
         <div>
-          <h2>Start with a pull request.</h2>
+          <h2>Start with an application.</h2>
           <p>
-            Add a project to prepare a GitHub proposal. New projects start
-            paused. Existing maintainers update receiving addresses and funding
-            instruments through a reviewed manifest change.
+            Sign in with GitHub and add a project. A Slop admin reviews it, and
+            new projects start paused. Receiving addresses and funding
+            instruments change only through a reviewed admin revision.
           </p>
         </div>
         <ul>
@@ -2841,7 +2862,7 @@ function SponsorsPage({
           <li>
             <strong>01 · Publish the cap</strong>
             <p>
-              A reviewed manifest change sets the monthly cap and the reward
+              A reviewed admin revision sets the monthly cap and the reward
               start. Until a verified on-chain commitment backs it, the pool
               shows as unfunded with a target, never as a balance. Contributors
               then use any agent to contribute. Accepted merges, eligible
@@ -2986,7 +3007,7 @@ function SponsorsPage({
             </li>
             <li>
               GitHub identity never proves wallet control. A receiving address
-              appears on this site only through a reviewed manifest change.
+              appears on this site only through a reviewed admin revision.
             </li>
           </ul>
         </section>
@@ -3536,6 +3557,7 @@ function AppContent({ route }: { route: Route }) {
   useInitialHashScroll();
   useDocumentHead(route);
   const snapshotFree: Route["kind"][] = [
+    "admin",
     "home",
     "points",
     "account",
@@ -3555,6 +3577,7 @@ function AppContent({ route }: { route: Route }) {
   else if (route.kind === "points") content = <PointsPage />;
   else if (route.kind === "account") content = <AccountPage />;
   else if (route.kind === "login") content = <LoginPage />;
+  else if (route.kind === "admin") content = <AdminPage />;
   else if (route.kind === "earnings") content = <EarningsPage />;
   else if (route.kind === "how-it-works") content = <HowItWorksPage />;
   else if (route.kind === "sponsors")

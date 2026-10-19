@@ -26,7 +26,9 @@ import { checkUnsafeDestinationTransitions } from "./check-unsafe-destination-tr
 // 2026-08-25 (review until 2026-09-08) and a second one on 2026-09-07, which
 // must move the review to 2026-09-21.
 const PATH = "cycles/eliza/2026-07/proposal.json";
-const source = readFileSync(resolve(import.meta.dir, "..", PATH));
+const source = readFileSync(
+  resolve(import.meta.dir, "../tests/fixtures/history", PATH),
+);
 const frozen = assertRewardAllocationManifest(
   JSON.parse(source.toString("utf8")),
 );

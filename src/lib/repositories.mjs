@@ -66,7 +66,8 @@ export const REGISTERED_REPOSITORIES = Object.freeze(
   ),
 );
 
-export const PRIMARY_REPOSITORY = TARGET_REPOSITORIES[0];
+/** Null while no project is active; the registry may legitimately be empty. */
+export const PRIMARY_REPOSITORY = TARGET_REPOSITORIES[0] ?? null;
 
 /** Historical lookup never authorizes collection of a paused repository. */
 export function findRegisteredRepositoryById(id) {

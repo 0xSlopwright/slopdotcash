@@ -287,7 +287,6 @@ export function checkDirectPaymentDisclosures(
     for (const failure of verifyDisclosure(disclosure, preparationBytes))
       failures.push(`${name}: ${failure}`);
   }
-  if (names.length === 0) failures.push("no disclosures found");
   return failures;
 }
 

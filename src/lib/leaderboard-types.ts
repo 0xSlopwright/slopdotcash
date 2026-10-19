@@ -487,7 +487,8 @@ export interface LeaderboardSourceMetadata {
   provider: "github-graphql";
   fetchedAt: string;
   cutoffAt: string;
-  repositoryId: string;
+  /** The primary repository's GraphQL node ID; null for an empty registry. */
+  repositoryId: string | null;
   repositories: Array<{ id: RepositoryId; repositoryId: string }>;
   requestCount: number;
   searchSliceCount: number;

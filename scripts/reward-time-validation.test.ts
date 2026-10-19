@@ -9,10 +9,18 @@ import { finalizeRewardAllocation } from "../src/lib/reward-finalization";
 import { assertRewardAllocationManifest } from "../src/lib/rewards";
 
 const proposal = assertRewardAllocationManifest(
-  JSON.parse(readFileSync("cycles/eliza/2026-07/proposal.json", "utf8")),
+  JSON.parse(
+    readFileSync(
+      "tests/fixtures/history/cycles/eliza/2026-07/proposal.json",
+      "utf8",
+    ),
+  ),
 );
 const snapshot = JSON.parse(
-  readFileSync("cycles/eliza/2026-07/source-snapshot.json", "utf8"),
+  readFileSync(
+    "tests/fixtures/history/cycles/eliza/2026-07/source-snapshot.json",
+    "utf8",
+  ),
 );
 assertLeaderboardSnapshot(snapshot);
 const view = createPaymentProjectView(snapshot, "eliza", "2026-07");

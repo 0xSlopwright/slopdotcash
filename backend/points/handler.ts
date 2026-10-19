@@ -40,6 +40,27 @@ function cookie(request: Request) {
     .find((x) => x.startsWith(`${cookieName}=`))
     ?.slice(cookieName.length + 1);
 }
+/**
+ * Resolves the signed-in GitHub account from the site session cookie. Other
+ * same-origin APIs reuse this sign-in instead of minting their own sessions.
+ */
+export async function sessionGithubActor(
+  request: Request,
+  db: D1Database,
+  now: string,
+): Promise<{ githubId: string; githubLogin: string } | null> {
+  const token = cookie(request);
+  if (!token || !/^[A-Za-z0-9_-]{40,128}$/.test(token)) return null;
+  const member = await db
+    .prepare(
+      "SELECT m.github_id,m.login FROM points_members m JOIN points_sessions s ON s.actor_id=m.actor_id WHERE s.token_hash=? AND s.expires_at>?",
+    )
+    .bind(await sha256Hex(token), now)
+    .first<{ github_id: string; login: string }>();
+  return member
+    ? { githubId: member.github_id, githubLogin: member.login }
+    : null;
+}
 function sessionCookie(token: string, seconds: number) {
   return `${cookieName}=${token}; Path=/; Max-Age=${seconds}; Secure; HttpOnly; SameSite=Strict`;
 }

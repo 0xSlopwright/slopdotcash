@@ -11,6 +11,7 @@
   },
   "include": [
     "tests/fixtures.ts",
+    "tests/fixture-checkout.ts",
     "scripts/reward-time-validation.test.ts",
     "src/lib/payments/**/*.ts",
     "contracts/evm/adapter.ts",

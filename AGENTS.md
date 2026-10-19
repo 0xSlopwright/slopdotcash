@@ -133,10 +133,20 @@ their own issue text. Branding is not permission for agents to create issues.
 
 ## Source of truth
 
-`projects/*/project.json` is the only project and repository inventory. Never
-hardcode a project, repository, reward, steward, status, or funding route
-elsewhere. Generated registries and public pages must stay synchronized from
-those manifests.
+The D1 project registry (`projects`, `project_revisions`, and
+`project_applications` in `slop-private`) is the only project and repository
+inventory. Never hardcode a project, repository, reward, steward, status, or
+funding route elsewhere. Every manifest change appends an immutable revision.
+`bun run projects:sync` snapshots the registry from `GET /api/v1/projects` and
+`GET /api/v1/project-revisions` into `src/lib/project-registry.generated.mjs`
+and `src/lib/project-revisions.generated.json`; generated registries and
+public pages derive from that snapshot. Never edit the snapshot by hand.
+
+Projects listed before the registry were removed with their manifests and
+history records. `src/lib/legacy-projects.json` keeps only their ids and
+repository ids so contributor points and profiles still validate. It is never
+listed, collected, scored, or paid. Unit tests use the frozen fixture registry
+under `tests/fixtures/`, loaded by `bunfig.toml`.
 
 Each `project.skill.sourcePath` is the one canonical contributor-skill source.
 Do not maintain a second skill copy. `scripts/prepare-site.mjs` validates the
@@ -154,14 +164,13 @@ current.
 ## Repository map
 
 ```text
-projects/       reviewed manifests and project policy
 skills/         canonical contributor and CI reviewer skills
 evaluations/    reviewed awards for otherwise-unscored useful work
 cycles/         append-only reward lifecycle records
 funding/        append-only direct-funding evidence
 disclosures/    payouts sent outside the verified settlement flow
 protocol/       public attribution and privacy contracts
-backend/        private trace storage boundary
+backend/        project registry API and private trace storage boundary
 workers/        narrowly scoped Cloudflare services
 src/            React product and strict browser/domain contracts
 scripts/        ingestion, packaging, rewards, settlement, and evidence
@@ -170,32 +179,34 @@ tests/e2e/      real-browser end-to-end, accessibility, and Pages coverage
 
 ## Add a project
 
-The public `/projects/new` route is the preferred starting point. It drafts a
-manifest and agent brief, then hands the proposal to GitHub. The website does
-not activate a project or create a private admin state.
+Projects are added on the website, never by pull request. An applicant signs
+in with GitHub through `/login` and submits a manifest at `/projects/new`. The
+API stores the application in D1 and emails the admins through the
+`slop-notify` Worker (`workers/notify/`). Admins, listed by GitHub actor ID in
+`ADMIN_GITHUB_IDS`, approve or reject it at `/admin`. See
+`backend/projects/README.md`.
 
-A complete proposal adds:
+An application must be a paused, unverified, unfunded community project with
+payments disabled. Approval lists it as revision 1, still paused. Admins record
+verified authority, terms, funding, and activation as manifest revisions on
+`/admin`; each revision must pass `assertProjectPolicyTransition`. A project
+can become active only after both reviewed skills are on `development`:
 
 ```text
-projects/<project-id>/project.json
 skills/contribute-to-<project-id>/
 skills/review-<project-id>-contributions/
 ```
 
-New projects begin paused. A paused project is registered and listed, but none
-of its repositories is collected, so nothing on them reaches the ledger or the
-leaderboard. Public contribution access may open independently
-when missing authority and terms remain explicit, receipts stay pending, and
-payments stay disabled. Verify immutable repository and actor IDs, repository
-license facts, GitHub stewardship, integration branch, reward policy, and
-failure paths before activating receipts or money states. Stewardship is a
-GitHub identity only.
+A paused project is registered and listed, but none of its repositories is
+collected, so nothing on them reaches the ledger or the leaderboard. It
+publishes no skill until both folders exist. Verify immutable repository and
+actor IDs, repository license facts, GitHub stewardship, integration branch,
+reward policy, and failure paths before activating receipts or money states.
+Stewardship is a GitHub identity only.
 
-Maintainers may delete a paused project. The trusted transition gate refuses
-the deletion of an active project. When immutable cycle or points history still
-names a project repository, keep its manifest with `listingTier: "retired"`.
-A retired project stays paused, publishes no skill, and never appears on a page
-or list.
+Registry rows cannot be deleted. Pause a project, or append a revision with
+`listingTier: "retired"` to hide it from every page and list while its history
+still resolves.
 
 The contributor skill must inspect live GitHub, select bounded unblocked work,
 follow the target repository’s rules, test the result, prepare evidence, and

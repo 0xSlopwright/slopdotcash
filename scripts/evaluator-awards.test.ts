@@ -6,7 +6,7 @@ import { assertEvaluatorAwardManifest } from "../src/lib/evaluator-awards";
 const baseline = JSON.parse(
   readFileSync(
     new URL(
-      "../evaluations/delta-star/award-region-middle-counterexample-23.json",
+      "../tests/fixtures/history/evaluations/delta-star/award-region-middle-counterexample-23.json",
       import.meta.url,
     ),
     "utf8",

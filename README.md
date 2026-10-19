@@ -54,21 +54,21 @@ flowchart LR
 
 ## Add your open-source project
 
-The fastest path starts at
-[`slop.cash/projects/new`](https://slop.cash/projects/new). The form drafts a
-validated project manifest and a self-contained agent brief, then hands the
-proposal to GitHub. Nothing becomes active from the form alone: a pull request
-to this repository is the public review and approval boundary.
+Sign in with GitHub and submit your project at
+[`slop.cash/projects/new`](https://slop.cash/projects/new). The form builds a
+validated project manifest and stores the application. A Slop admin reviews it
+at `/admin`; approval lists the project as paused. Nothing becomes active from
+the form alone.
 
-A complete project proposal adds:
+Before an admin makes the project active, a reviewed pull request into
+`development` adds its two skills:
 
 ```text
-projects/<project-id>/project.json
 skills/contribute-to-<project-id>/
 skills/review-<project-id>-contributions/
 ```
 
-The pull request must establish:
+The application and its admin revisions must establish:
 
 - a public GitHub repository and immutable repository identity;
 - a verified GitHub steward, without implying legal ownership or capacity;
@@ -123,19 +123,19 @@ A 1% platform fee applies only when an approved payout is paid.
 
 ## Repository architecture
 
-`projects/*/project.json` is the only project and repository inventory. Never
-hardcode a second list. Generated registries, pages, raw Markdown endpoints,
-and downloadable skills are derived from those reviewed manifests.
+The D1 project registry is the only project and repository inventory. Never
+hardcode a second list. `bun run projects:sync` snapshots it; generated
+registries, pages, raw Markdown endpoints, and downloadable skills derive from
+that snapshot.
 
 ```text
-projects/       reviewed project manifests and reward policy
 skills/         canonical contributor and CI reviewer skills
 evaluations/    reviewed awards for useful otherwise-unscored work
 cycles/         append-only monthly reward and settlement records
 funding/        append-only direct-funding evidence
 disclosures/    payouts sent outside the verified settlement flow
 protocol/       public privacy and attribution contracts
-backend/        private trace metadata and storage boundary
+backend/        project registry API and private trace storage boundary
 workers/        narrowly scoped Cloudflare services
 src/            React product and strict browser/domain contracts
 scripts/        ingestion, packaging, rewards, settlement, and evidence

@@ -106,7 +106,7 @@ flowchart TD
 
 ### Shared model and chain adapters
 
-Keep project choices in `projects/<id>/project.json`. A separate network registry may define technical constants, but must not duplicate project inventory, fee recipients, or funding routes. Derive each deployment's project binding from its reviewed manifest.
+Keep project choices in the project registry manifest. A separate network registry may define technical constants, but must not duplicate project inventory, fee recipients, or funding routes. Derive each deployment's project binding from its reviewed manifest.
 
 Use an explicit network identity rather than an ambiguous `chain: evm`: Base mainnet and Base Sepolia have different IDs; Solana clusters require explicit genesis/network binding. Bind environment, network, token, vault/program, protocol version, project, cycle and obligation ID into every signed message and receipt.
 

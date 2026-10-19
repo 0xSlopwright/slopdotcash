@@ -15,7 +15,7 @@ type RunReceiptUsage = {
 
 // The shared skill script has no declaration file; type only what this test uses.
 const source = new URL(
-  "../skills/contribute-to-eliza/scripts/run-receipt.mjs",
+  "../tests/fixtures/skills/contribute-to-eliza/scripts/run-receipt.mjs",
   import.meta.url,
 ).href;
 const { normalizeSessionReport, usageDelta }: RunReceiptUsage = await import(

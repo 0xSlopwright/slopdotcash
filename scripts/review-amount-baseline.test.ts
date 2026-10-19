@@ -23,7 +23,7 @@ import {
 // its frozen snapshot. The July Eliza cycle is the published cycle with funded
 // rows, so its review is replayed here at a time inside its review window.
 const root = resolve(import.meta.dir, "..");
-const directory = resolve(root, "cycles/eliza/2026-07");
+const directory = resolve(root, "tests/fixtures/history/cycles/eliza/2026-07");
 const source = readFileSync(resolve(directory, "proposal.json"));
 const snapshotBytes = readFileSync(resolve(directory, "source-snapshot.json"));
 const snapshot = JSON.parse(

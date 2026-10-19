@@ -1,7 +1,5 @@
-import {
-  REGISTERED_REPOSITORIES,
-  TARGET_REPOSITORIES,
-} from "./repositories.mjs";
+import { isHistoricalRepositoryId } from "./projects.mjs";
+import { TARGET_REPOSITORIES } from "./repositories.mjs";
 export interface ProfileRecord {
   id: string;
   login: string;
@@ -162,7 +160,6 @@ function assertProfileIssues(index: ProfileIndex, targets: readonly string[]) {
   const reason = (value: string | null) =>
     value === null ||
     (typeof value === "string" && /^[A-Z_]{1,64}$/.test(value));
-  const registered = new Set(REGISTERED_REPOSITORIES.map((r) => r.id));
   const records = [...history.items, ...(history.archived ?? [])];
   for (const [position, issue] of records.entries()) {
     const archived = position >= history.items.length;
@@ -173,7 +170,7 @@ function assertProfileIssues(index: ProfileIndex, targets: readonly string[]) {
       ids.has(issue.id) ||
       (archived
         ? targets.includes(issue.repository) ||
-          !registered.has(issue.repository)
+          !isHistoricalRepositoryId(issue.repository)
         : !targets.includes(issue.repository)) ||
       !Number.isSafeInteger(issue.number) ||
       issue.number <= 0 ||

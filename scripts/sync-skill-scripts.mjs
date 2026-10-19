@@ -1,13 +1,11 @@
 /** Keep standalone skill archives self-contained, with one authoring source. */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PROJECTS } from "../src/lib/projects.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const sourceProject = PROJECTS.filter((project) => project.skill.publishAtRoot);
-if (sourceProject.length !== 1)
-  throw new Error("Expected one root-published skill");
+const sourceRoot = join(root, "scripts", "skill-kit");
 const names = [
   "live-report.mjs",
   "run-receipt.mjs",
@@ -17,18 +15,25 @@ const names = [
   "wallet-claim.mjs",
 ];
 const check = process.argv.includes("--check");
+// Registry skills, plus the frozen fixture skills that tests and the browser
+// fixture build install, so both always exercise the current shared scripts.
+const fixtureSkills = join("tests", "fixtures", "skills");
+const skillPaths = [
+  ...PROJECTS.map((project) => project.skill.sourcePath),
+  ...readdirSync(join(root, fixtureSkills))
+    .filter((name) => name.startsWith("contribute-to-"))
+    .map((name) => join(fixtureSkills, name)),
+];
 for (const name of names) {
-  const source = join(root, sourceProject[0].skill.sourcePath, "scripts", name);
+  const source = join(sourceRoot, name);
   const contents = readFileSync(source);
-  for (const project of PROJECTS) {
-    const target = join(root, project.skill.sourcePath, "scripts", name);
+  for (const skillPath of skillPaths) {
+    const target = join(root, skillPath, "scripts", name);
     // Some project contracts deliberately omit wallet support.
     if (!existsSync(target)) {
       if (
         !name.startsWith("skill-authority.") ||
-        !existsSync(
-          join(root, project.skill.sourcePath, "scripts", "run-receipt.mjs"),
-        )
+        !existsSync(join(root, skillPath, "scripts", "run-receipt.mjs"))
       )
         continue;
       if (check)

@@ -1,13 +1,14 @@
 /// <reference types="bun-types" />
 import { beforeAll, describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type { CycleIndex, CycleIndexEntry } from "../src/lib/cycle-index";
 import { createGlobalLeaders } from "../src/lib/global-leaderboard";
 import type { LeaderboardSnapshot, ScoreEvent } from "../src/lib/leaderboard";
 import { createProjectView } from "../src/lib/project-view";
 import { findProject } from "../src/lib/projects.mjs";
-import { syncCycleIndex } from "./sync-cycle-index";
+import { fixtureCheckout } from "../tests/fixture-checkout";
 
 // A project cycle starts at the later of the UTC month start and the
 // project's reward.rewardStartAt (createProjectView and the contribution
@@ -19,7 +20,10 @@ import { syncCycleIndex } from "./sync-cycle-index";
 const root = resolve(import.meta.dir, "..");
 const snapshot = JSON.parse(
   readFileSync(
-    resolve(root, "cycles/eliza/2026-07/source-snapshot.json"),
+    resolve(
+      root,
+      "tests/fixtures/history/cycles/eliza/2026-07/source-snapshot.json",
+    ),
     "utf8",
   ),
 ) as LeaderboardSnapshot;
@@ -31,10 +35,17 @@ const rewardStartAt = eliza.reward.rewardStartAt;
 let index: CycleIndex;
 let julyCycle: CycleIndexEntry;
 beforeAll(async () => {
-  index = await syncCycleIndex({
-    checkOnly: true,
-    generatedAt: "2026-10-19T00:00:00.000Z",
+  // The cycle index reads fixed repository paths, so it is built inside a
+  // checkout that restores the frozen pre-registry history.
+  const checkout = fixtureCheckout("global-leaderboard-");
+  const built = spawnSync(process.execPath, ["scripts/sync-cycle-index.ts"], {
+    cwd: checkout,
+    encoding: "utf8",
   });
+  if (built.status !== 0) throw new Error(built.stderr);
+  index = JSON.parse(
+    readFileSync(join(checkout, "public/data/cycles/index.json"), "utf8"),
+  ) as CycleIndex;
   const entry = index.cycles.find(
     (cycle) => cycle.projectId === "eliza" && cycle.cycleId === "2026-07",
   );

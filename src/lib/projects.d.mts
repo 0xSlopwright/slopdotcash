@@ -237,6 +237,16 @@ export interface ProjectDefinition {
 
 export declare const PROJECTS: readonly ProjectDefinition[];
 export declare const HISTORICAL_PROJECTS: readonly ProjectDefinition[];
+/** True for a registry project or a removed pre-registry project id. */
+export declare function isHistoricalProjectId(projectId: unknown): boolean;
+/** Resolves a registry or removed repository id or alias to its owner. */
+export declare function findHistoricalRepository(
+  repositoryId: unknown,
+): { projectId: string; repositoryId: string } | null;
+/** True for a registry repository or a removed pre-registry repository. */
+export declare function isHistoricalRepositoryId(
+  repositoryId: unknown,
+): boolean;
 export declare function findHistoricalProject(
   projectId: string,
 ): ProjectDefinition | null;

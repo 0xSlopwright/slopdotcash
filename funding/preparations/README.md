@@ -43,9 +43,8 @@ parser. `generatedAt` is the latest input observation timestamp so builds are
 reproducible. Preparation status always sets paymentAuthorized/proposalPublished
 false, including when current verified funding is zero. It never writes cycles.
 
-August 2026: 138 project rows, 113 distinct actors, 57 registered destinations and
-56 missing registrations. Eliza 108; ASI 26; Heir Elements SDK 3; Delta Star 1.
-All counts were reconciled at import, rather than copied from a UI slice.
+The August 2026 preparations were removed on 18 October 2026 with the projects
+listed before the D1 registry. They remain in Git history.
 
 ## Preparing any registered project
 
