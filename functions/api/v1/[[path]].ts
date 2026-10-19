@@ -1,3 +1,7 @@
+import {
+  type FeeConversionsDependencies,
+  handleFeeConversionsApi,
+} from "../../../backend/fee-conversions/handler";
 import { handlePaymentsApi } from "../../../backend/payments/handler";
 import {
   handlePointsApi,
@@ -22,7 +26,7 @@ import { deploymentTier } from "../../../src/lib/deployment";
 
 type Env = {
   SLOP_ENVIRONMENT?: "production" | "staging";
-  SLOP_DB: D1Database & ProjectD1Database;
+  SLOP_DB: D1Database & ProjectD1Database & FeeConversionsDependencies["db"];
   PAYMENTS_ALLOWED_ORIGIN?: string;
   PRIVATE_TRACES: R2Bucket;
   TRACE_AUTH_SECRET: string;
@@ -204,6 +208,20 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     skillPublished,
   });
   if (projectResponse !== null) return projectResponse;
+  const feeConversionsResponse = await handleFeeConversionsApi(
+    context.request,
+    {
+      db: context.env.SLOP_DB,
+      adminGithubIds: githubIdSet(context.env.ADMIN_GITHUB_IDS),
+      sessionActor: (request) =>
+        sessionGithubActor(
+          request,
+          context.env.SLOP_DB,
+          new Date().toISOString(),
+        ),
+    },
+  );
+  if (feeConversionsResponse !== null) return feeConversionsResponse;
   if (new URL(context.request.url).pathname.startsWith("/api/v1/payments/"))
     return handlePaymentsApi(context.request, {
       db: context.env.SLOP_DB,
