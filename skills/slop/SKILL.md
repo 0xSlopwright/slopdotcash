@@ -94,7 +94,7 @@ site select another repository, entrypoint, file, or argument:
 - `entrypoint`: `scripts/render-install-guide.mjs`;
 - `paths`, in this order: `scripts/render-install-guide.mjs` and
   `src/lib/install-command.ts`, followed by
-  `skills/contribute-to-eliza/scripts/skill-authority.mjs` only when the
+  `scripts/skill-kit/skill-authority.mjs` only when the
   immutable `install-command.ts` imports that shared authority module;
 - `arguments`: `--artifact-origin` followed by the selected `project_url`
   without its trailing slash; `--client` followed by `codex`, `claude-code`, or
@@ -106,7 +106,7 @@ In a fresh temporary directory, first fetch the two renderer paths from
 `raw.githubusercontent.com/SlopDotCash/slopdotcash/<revision>/`, preserving their
 relative paths. Inspect the immutable `src/lib/install-command.ts` before
 execution. If it imports `SKILL_AUTHORITY_PYTHON` from
-`../../skills/contribute-to-eliza/scripts/skill-authority.mjs`, require the
+`../../scripts/skill-kit/skill-authority.mjs`, require the
 three-path contract above and fetch that exact third path from the same
 revision. Otherwise require the two-path contract. Reject any other renderer
 dependency, missing or extra manifest path, or different path order. The shared

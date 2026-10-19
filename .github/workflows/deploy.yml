@@ -292,10 +292,24 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
+      # The fixture workspace rebuilds the site, and its build packages skills.
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Install pinned skill validator dependency
+        run: |
+          printf '%s\n' \
+            'PyYAML==6.0.3 --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6' \
+            > "$RUNNER_TEMP/slop-python-requirements.txt"
+          python -m pip install \
+            --disable-pip-version-check \
+            --require-hashes \
+            --requirement "$RUNNER_TEMP/slop-python-requirements.txt"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: slop-source-${{ needs.source.outputs.sha }}
