@@ -972,7 +972,7 @@ export function ContributorStandings({
   const metric = (
     m: ReturnType<typeof contributorStandings>["rows"][number],
   ) => (sort === "score" ? m.score : sort === "points" ? m.points : m.money);
-  const [direct, retryDirect] = useAllDirectTransfers(
+  const [direct] = useAllDirectTransfers(
     PROJECTS.map((p) => p.id),
   );
   const projection = contributorStandings(
@@ -1023,14 +1023,6 @@ export function ContributorStandings({
         <DataNotice state={scores} retry={retryScore ?? retryLoadedScore} />
       ) : null}
       <Notice />
-      {sort === "money" && direct.status === "error" ? (
-        <p className="points-meta" role="status">
-          Direct payments are not included: {direct.message}.{" "}
-          <button type="button" onClick={retryDirect}>
-            Retry
-          </button>
-        </p>
-      ) : null}
       {scores.status === "ready" && !projection.scoreAvailable ? (
         <p className="points-meta">
           {compact
