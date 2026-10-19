@@ -387,6 +387,9 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
           >
             View profile
           </a>
+          <a href="/inbox" onClick={navigate}>
+            Inbox
+          </a>
           <a href="/earnings" onClick={navigate}>
             Payouts and wallets
           </a>
@@ -829,6 +832,7 @@ export function AccountPage() {
         {me ? <a href="#connections">Connections</a> : null}
         <a href="#wallets">Wallets</a>
         <a href="/earnings">Payouts</a>
+        <a href="/inbox">Inbox</a>
       </nav>
       <div id="profile">
         <JoinPoints />

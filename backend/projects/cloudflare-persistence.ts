@@ -1,4 +1,8 @@
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
+import {
+  notifyApplicationDecision,
+  notifyProjectRevision,
+} from "../notifications/events";
 import type {
   AdminNotification,
   ApplicationStatus,
@@ -350,9 +354,13 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           application.id,
         ),
     ];
+    const decision = statements.length - 1;
+    statements.push(
+      notifyApplicationDecision(this.db, application.id, input.at),
+    );
     try {
       const results = await this.db.batch(statements);
-      return results.at(-1)?.meta?.changes === 1 ? "approved" : "conflict";
+      return results[decision]?.meta?.changes === 1 ? "approved" : "conflict";
     } catch (error) {
       if (isConstraintConflict(error)) return "conflict";
       throw error;
@@ -362,22 +370,24 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
   async rejectApplication(
     input: DecisionInput & { reason: string },
   ): Promise<"rejected" | "conflict"> {
-    const result = await this.db
-      .prepare(
-        `UPDATE project_applications
-            SET status = 'rejected', decided_at = ?, decided_by_github_id = ?,
-                decided_by_github_login = ?, decision_reason = ?
-          WHERE id = ? AND status = 'pending'`,
-      )
-      .bind(
-        input.at,
-        input.actor.githubId,
-        input.actor.githubLogin,
-        input.reason,
-        input.applicationId,
-      )
-      .run();
-    return result.meta?.changes === 1 ? "rejected" : "conflict";
+    const [result] = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE project_applications
+              SET status = 'rejected', decided_at = ?, decided_by_github_id = ?,
+                  decided_by_github_login = ?, decision_reason = ?
+            WHERE id = ? AND status = 'pending'`,
+        )
+        .bind(
+          input.at,
+          input.actor.githubId,
+          input.actor.githubLogin,
+          input.reason,
+          input.applicationId,
+        ),
+      notifyApplicationDecision(this.db, input.applicationId, input.at),
+    ]);
+    return result?.meta?.changes === 1 ? "rejected" : "conflict";
   }
 
   async appendProjectRevision(
@@ -422,6 +432,13 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
             input.projectId,
             input.expectedRevision,
           ),
+        notifyProjectRevision(
+          this.db,
+          input.projectId,
+          nextRevision,
+          input.manifestSha256,
+          input.at,
+        ),
       ]);
       return results[1]?.meta?.changes === 1 ? "updated" : "conflict";
     } catch (error) {

@@ -472,6 +472,66 @@ test("an admin activates a project and its generated skills serve without a rebu
   await adminContext.close();
 });
 
+test("the applicant's inbox lists each decision and revision once and keeps the read state @registry", async ({
+  browser,
+}) => {
+  const project = fixtureProjects().queued;
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const errors = observe(page);
+  await signIn(page, APPLICANT_TOKEN);
+  await page.goto("/inbox", { waitUntil: "networkidle" });
+  await expect(page.locator("h1")).toHaveText("Inbox");
+  const approved = page.locator(".inbox-item", {
+    hasText: `Your application for ${project.id} was approved.`,
+  });
+  const revised = page.locator(".inbox-item", {
+    hasText: `The ${project.id} project manifest changed.`,
+  });
+  await expect(approved).toHaveCount(1);
+  await expect(revised).toHaveCount(1);
+  await expect(approved.locator(".inbox-state")).toHaveText("Unread");
+  await expect(
+    approved.getByRole("link", { name: "Open project" }),
+  ).toHaveAttribute("href", `/projects/${project.id}`);
+  await expect(revised).toContainText("Activate with generated skills");
+  await expectAccessible(page);
+
+  await revised.getByRole("button", { name: /^Mark as read/u }).click();
+  await expect(page.getByRole("status")).toHaveText("Marked as read.");
+  await expect(revised.locator(".inbox-state")).toHaveText("Read");
+  await expect(revised.getByRole("button")).toHaveCount(0);
+  // The read state is stored, not kept only in the page.
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(revised.locator(".inbox-state")).toHaveText("Read");
+  await expect(approved.locator(".inbox-state")).toHaveText("Unread");
+
+  // The request client sends no Secure cookie over local http.
+  const cookie = `__Host-slop_points=${APPLICANT_TOKEN}`;
+  const inbox = await (
+    await page.request.get("/api/v1/notifications", { headers: { cookie } })
+  ).json();
+  // One row per event: the decision and the revision, never a duplicate.
+  const mine = inbox.notifications.filter(
+    (entry: { subject: string }) => entry.subject === project.id,
+  );
+  expect(mine.map((entry: { kind: string }) => entry.kind).sort()).toEqual([
+    "application_approved",
+    "project_revision",
+  ]);
+  const keys = inbox.notifications.map(
+    (entry: { eventKey: string }) => entry.eventKey,
+  );
+  expect(new Set(keys).size).toBe(keys.length);
+  const forged = await page.request.post("/api/v1/notifications/read", {
+    headers: { cookie, origin: "https://attacker.example" },
+    data: { eventKeys: [`project-revision:${project.id}:2`] },
+  });
+  expect(forged.status()).toBe(403);
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
 test("an unavailable registry shows an error, never an empty list @registry", async ({
   page,
 }) => {
