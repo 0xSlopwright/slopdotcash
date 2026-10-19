@@ -479,3 +479,56 @@ describe("evaluator awards across snapshot refreshes", () => {
     expect(pointMembers(journal)[0]?.total).toBe(120);
   });
 });
+
+describe("snapshots never rewrite batch-owned retained awards", () => {
+  /** The same refresh, but its ledger omits the evaluator award (for
+   * example, a repeat work unit that the v2 ledger path drops). */
+  function omittingSnapshot(generatedAt: string): LeaderboardSnapshot {
+    const snapshot = refreshedSnapshot(generatedAt);
+    return {
+      ...snapshot,
+      ledger: snapshot.ledger.filter(
+        (event) => event.category !== "evaluated-contribution",
+      ),
+    };
+  }
+
+  it("appends no revision when a snapshot omits a batch-owned award inside its window", () => {
+    const awards = retainedHistoryAwards([evaluatorEvent()]);
+    let journal = applyRetainedHistoryBatch(
+      emptyPointsJournal(T0),
+      awards,
+      DIGEST,
+      T0,
+    );
+    const settled = journal.revisions.length;
+    const counts: number[] = [];
+    for (const at of [T1, T2, T3]) {
+      const snapshot = omittingSnapshot(at);
+      journal = applyPointsSnapshot(journal, snapshot, digestOf(snapshot), at);
+      journal = applyRetainedHistoryBatch(journal, awards, DIGEST, at);
+      counts.push(journal.revisions.length);
+    }
+    expect(counts).toEqual([settled, settled, settled]);
+    expect(pointMembers(journal)[0]?.total).toBe(120);
+  });
+
+  it("lets a snapshot take over an award after the retained batch zeroes it", () => {
+    const awards = retainedHistoryAwards([evaluatorEvent()]);
+    let journal = applyRetainedHistoryBatch(
+      emptyPointsJournal(T0),
+      awards,
+      DIGEST,
+      T0,
+    );
+    journal = applyRetainedHistoryBatch(journal, [], DIGEST, T1);
+    const award = awards[0] as PointAward;
+    expect(latestPoints(journal).get(award.key)?.award.amount).toBe(0);
+    const snapshot = refreshedSnapshot(T2);
+    const digest = digestOf(snapshot);
+    journal = applyPointsSnapshot(journal, snapshot, digest, T2);
+    const latest = latestPoints(journal).get(award.key);
+    expect(latest?.award.amount).toBe(120);
+    expect(latest?.sourceDigest).toBe(digest);
+  });
+});
