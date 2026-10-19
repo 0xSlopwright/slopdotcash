@@ -87,18 +87,27 @@ async function postVettingResult(
 }
 
 /** Queues a scan of the current revision from the admin vetting panel. */
-async function queueScan(admin: Page, projectId: string, reason: string) {
+async function queueScan(
+  admin: Page,
+  projectId: string,
+  reason: string,
+  revision = 1,
+) {
   await admin.goto("/admin", { waitUntil: "networkidle" });
   const card = admin.getByRole("article", {
     name: `Security vetting for ${projectId}`,
   });
   await card.getByLabel("Reason for the scan").fill(reason);
-  await card.getByRole("button", { name: "Queue scan of revision 1" }).click();
+  await card
+    .getByRole("button", { name: `Queue scan of revision ${revision}` })
+    .click();
   await expect(
     admin.getByRole("region", { name: "Security vetting" }).getByRole("status"),
-  ).toContainText(`Queued a scan of ${projectId} revision 1.`);
+  ).toContainText(`Queued a scan of ${projectId} revision ${revision}.`);
   // A queued rescan keeps the last finished decision until its result lands.
-  await expect(card.getByText(/Revision 1 · Queued/u)).toBeVisible();
+  await expect(
+    card.getByText(new RegExp(`Revision ${revision} · Queued`, "u")),
+  ).toBeVisible();
   return card;
 }
 
@@ -841,11 +850,25 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
     revision: 4,
     project: { status: "paused", listingTier: "community" },
   });
+  expect(moderatorErrors).toEqual([]);
+  await moderatorContext.close();
+
+  // The reinstated revision is new content. Its skill stays closed until a
+  // fresh clean scan of that revision lands (VET-07).
+  expect((await request.get(`/projects/${project.id}/SKILL.md`)).status()).toBe(
+    404,
+  );
+  const rescanContext = await browser.newContext();
+  const rescan = await rescanContext.newPage();
+  const rescanErrors = observe(rescan);
+  await signIn(rescan, ADMIN_TOKEN);
+  await queueScan(rescan, project.id, "Scan after reinstatement", 4);
+  await postVettingResult(request, project.id, project.repository, "clean");
   expect((await request.get(`/projects/${project.id}/SKILL.md`)).status()).toBe(
     200,
   );
-  expect(moderatorErrors).toEqual([]);
-  await moderatorContext.close();
+  expect(rescanErrors).toEqual([]);
+  await rescanContext.close();
 });
 
 test("an unavailable registry shows an error, never an empty list @registry", async ({
