@@ -398,16 +398,19 @@ async function ownerControl(
 
 /**
  * The steward is the account GitHub reports as the repository owner: the same
- * numeric id, node id and login (GitHub logins are case-insensitive). Pages
+ * numeric id, node id, account type and login (case-insensitive). Pages
  * show the steward by login and attribute the project to its node id.
  */
 function stewardIsOwner(
-  owner: { id?: unknown; node_id?: unknown; login?: unknown } | undefined,
+  owner:
+    | { id?: unknown; node_id?: unknown; login?: unknown; type?: unknown }
+    | undefined,
   steward: ProjectDefinition["steward"]["github"],
 ): boolean {
   return (
     String(owner?.id) === steward.actorId &&
     owner?.node_id === steward.nodeId &&
+    owner?.type === steward.type &&
     String(owner?.login).toLowerCase() === steward.login.toLowerCase()
   );
 }
