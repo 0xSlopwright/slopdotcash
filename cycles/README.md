@@ -144,8 +144,14 @@ record names the refund transactions, holds every approved row at its approved
 amount with one deterministic public reason, and is validated against those
 files by the cycle index, which always supplies the project's verified funding
 ledger: every named refund must be a verified record there, and the ledger's
-own verified balance as of the observation must fall short of the plan. How
-the file was produced grants nothing. Its cycle state is `wound-up`.
+own verified balance as of the observation must fall short of the plan. The
+record must name exactly the verified refunds that the ledger first observed
+between approval and the balance observation, in canonical order. Refunds first
+observed after the balance observation are ignored. A refund that is corrected
+later keeps the time when the ledger first observed it, and a later correction
+or dispute of a named refund applies to the ledger balance as of the
+observation. How the file was produced grants nothing. Its cycle state is
+`wound-up`.
 
 A windup is not a cancellation. An approved Squads proposal stays approved on
 chain, and the program checks approval and the time lock at execution, not the

@@ -139,6 +139,33 @@ export function projectVaultWindupReason(
   return `The creator returned vault funds to the creator's wallet after binding this cycle's proposal (finalized transaction${refunds.length === 1 ? "" : "s"} ${signatures}). The vault holds ${vaultBalanceMinor} of the ${requiredMinor} USDC minor units the bound proposal needs, so it cannot execute while the balance stays short. Every approved row is held with no funded backing. This is a windup by the creator, not a decision against any contributor and not a cancellation of the bound proposal: nothing is carried or reissued, and a held row is recorded as paid only if the vault is refunded and the exact bound proposal executes with finalized on-chain evidence.`;
 }
 
+function initialTransactionObservations(
+  fundingRecords: readonly ProjectCommitmentRecord[],
+): Map<string, number> {
+  const initial = new Map<string, number>();
+  for (const row of fundingRecords) {
+    const key = `${row.network}:${row.transactionId}`;
+    const observed = Date.parse(row.observedAt);
+    const prior = initial.get(key);
+    if (prior === undefined || observed < prior) initial.set(key, observed);
+  }
+  return initial;
+}
+
+/**
+ * When the verified funding ledger first observed a transaction. A transaction
+ * the ledger does not hold falls back to the given time; the caller then
+ * rejects it as unverified.
+ */
+function firstObservedAt(
+  initial: ReadonlyMap<string, number>,
+  network: string,
+  transactionId: string,
+  fallbackIso: string,
+): number {
+  return initial.get(`${network}:${transactionId}`) ?? Date.parse(fallbackIso);
+}
+
 /**
  * Selects the verified refunds that emptied the vault after approval. A refund
  * observed before the allocation was approved is ordinary funding history that
@@ -148,12 +175,20 @@ export function projectVaultWindupRefunds(
   fundingRecords: readonly ProjectCommitmentRecord[],
   instrument: { multisig: string; vault: string; vaultIndex: number },
   approvedAt: string,
+  observedAt?: string,
 ): ProjectVaultWindupRefund[] {
+  const initial = initialTransactionObservations(fundingRecords);
   // Only the latest record per transaction counts, as in the balance below:
   // a superseded refund was corrected or disputed and is not evidence.
   return currentProjectCommitmentRecords(fundingRecords)
-    .filter(
-      (row) =>
+    .filter((row) => {
+      const firstObserved = firstObservedAt(
+        initial,
+        row.network,
+        row.transactionId,
+        row.observedAt,
+      );
+      return (
         row.event === "refund" &&
         row.state === "verified-on-chain" &&
         row.network === "solana" &&
@@ -161,8 +196,10 @@ export function projectVaultWindupRefunds(
         row.instrument.multisig === instrument.multisig &&
         row.instrument.vault === instrument.vault &&
         row.instrument.vaultIndex === instrument.vaultIndex &&
-        Date.parse(row.observedAt) >= Date.parse(approvedAt),
-    )
+        firstObserved >= Date.parse(approvedAt) &&
+        (observedAt === undefined || firstObserved <= Date.parse(observedAt))
+      );
+    })
     .sort(
       (a, b) =>
         a.observedAt.localeCompare(b.observedAt) ||
@@ -178,22 +215,28 @@ export function projectVaultWindupRefunds(
 
 /**
  * The verified funding ledger's own view of the vault balance as of one
- * instant: verified deposits minus verified refunds and releases observed at
- * or before it, for this instrument only. Later records never change it, so a
- * committed windup stays valid when funds return afterwards.
+ * instant: verified deposits minus verified refunds and releases first
+ * observed at or before it, for this instrument only. A transaction first
+ * observed later never enters it, so funds that return afterwards do not
+ * change it. A later correction or dispute of a transaction already observed
+ * applies retroactively: the transaction's current record counts.
  */
 export function projectVaultVerifiedBalanceMinor(
   fundingRecords: readonly ProjectCommitmentRecord[],
   instrument: { multisig: string; vault: string; vaultIndex: number },
   asOf: string,
 ): bigint {
+  const initial = initialTransactionObservations(fundingRecords);
   let balance = 0n;
-  for (const row of currentProjectCommitmentRecords(
-    fundingRecords.filter(
-      (row) => Date.parse(row.observedAt) <= Date.parse(asOf),
-    ),
-  )) {
+  for (const row of currentProjectCommitmentRecords(fundingRecords)) {
+    const firstObserved = firstObservedAt(
+      initial,
+      row.network,
+      row.transactionId,
+      row.observedAt,
+    );
     if (
+      firstObserved > Date.parse(asOf) ||
       row.state !== "verified-on-chain" ||
       row.network !== "solana" ||
       !("multisig" in row.instrument) ||
@@ -257,10 +300,12 @@ export async function deriveProjectVaultWindup(
   },
 ): Promise<ProjectVaultWindupRecord> {
   const bound = await boundContext(input);
+  const observedAt = iso(input.observedAt, "observedAt");
   const refunds = projectVaultWindupRefunds(
     input.fundingRecords,
     bound.binding,
     bound.approvedAt,
+    observedAt,
   );
   if (refunds.length === 0)
     throw new TypeError(
@@ -272,8 +317,15 @@ export async function deriveProjectVaultWindup(
     throw new TypeError(
       "The vault still covers the bound proposal; there is no windup to record",
     );
-  const observedAt = iso(input.observedAt, "observedAt");
-  if (refunds.some((r) => Date.parse(r.observedAt) > Date.parse(observedAt)))
+  // A refund corrected after the observation keeps its first observation time.
+  const initial = initialTransactionObservations(input.fundingRecords);
+  if (
+    refunds.some(
+      (r) =>
+        firstObservedAt(initial, "solana", r.transactionId, r.observedAt) >
+        Date.parse(observedAt),
+    )
+  )
     throw new TypeError("Vault balance must be observed after every refund");
   const recordedAt = iso(input.recordedAt, "recordedAt");
   if (Date.parse(recordedAt) < Date.parse(observedAt))
@@ -374,10 +426,21 @@ export async function assertProjectVaultWindup(
       observedAt,
     };
   });
+  const observedAt = iso(raw.observedAt, "windup.observedAt");
+  const initial = initialTransactionObservations(context.fundingRecords);
+  if (
+    refunds.some(
+      (r) =>
+        firstObservedAt(initial, "solana", r.transactionId, r.observedAt) >
+        Date.parse(observedAt),
+    )
+  )
+    throw new TypeError("windup balance was observed before a named refund");
   const verified = projectVaultWindupRefunds(
     context.fundingRecords,
     bound.binding,
     bound.approvedAt,
+    observedAt,
   );
   for (const refund of refunds) {
     if (!verified.some((row) => JSON.stringify(row) === JSON.stringify(refund)))
@@ -385,9 +448,16 @@ export async function assertProjectVaultWindup(
         "windup names a refund that the verified funding ledger does not hold",
       );
   }
-  const observedAt = iso(raw.observedAt, "windup.observedAt");
-  if (refunds.some((r) => Date.parse(r.observedAt) > Date.parse(observedAt)))
-    throw new TypeError("windup balance was observed before a named refund");
+  if (
+    refunds.length !== verified.length ||
+    refunds.some(
+      (refund, index) =>
+        JSON.stringify(refund) !== JSON.stringify(verified[index]),
+    )
+  )
+    throw new TypeError(
+      "windup does not name every verified refund in canonical order",
+    );
   const recordedAt = iso(raw.recordedAt, "windup.recordedAt");
   if (Date.parse(recordedAt) < Date.parse(observedAt))
     throw new TypeError("windup was recorded before its observation");
@@ -404,7 +474,9 @@ export async function assertProjectVaultWindup(
     );
   // The observed balance is one quorum reading; the held state also needs
   // the verified ledger's own arithmetic, as of that observation, to fall
-  // short of the plan. Records observed later do not enter this figure.
+  // short of the plan. Transactions first observed later do not enter this
+  // figure; a later correction or dispute of a transaction already observed
+  // applies.
   if (
     projectVaultVerifiedBalanceMinor(
       context.fundingRecords,
