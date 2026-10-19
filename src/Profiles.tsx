@@ -22,6 +22,7 @@ import {
   formatCycleMonth,
   formatDate,
   formatDateTime,
+  formatMicroUsdc,
   formatScore,
 } from "./Presentation";
 
@@ -52,7 +53,7 @@ export function useProfiles(enabled = true): {
   return { state, retry };
 }
 function dollars(n: bigint) {
-  return `$${(n / 1000000n).toLocaleString("en-US")}.${(n % 1000000n).toString().padStart(6, "0").replace(/0+$/, "").padEnd(2, "0")}`;
+  return formatMicroUsdc(n.toString());
 }
 export function ProfileActivity({
   work,
@@ -146,21 +147,15 @@ export function ProfileActivity({
         <div>
           <strong>
             {payments
-              ? dollars(payments.reduce((n, r) => n + r.amount, 0n))
+              ? dollars(
+                  [...payments, ...direct].reduce((n, r) => n + r.amount, 0n),
+                )
               : !id && state.status === "loading"
                 ? "Loading…"
                 : "Unavailable"}
           </strong>
           <span>paid · USDC</span>
         </div>
-        {direct.length > 0 ? (
-          <div>
-            <strong>
-              {dollars(direct.reduce((n, r) => n + r.amount, 0n))}
-            </strong>
-            <span>paid directly · USDC</span>
-          </div>
-        ) : null}
       </div>
       {state.status === "error" ? (
         <p role="status">
