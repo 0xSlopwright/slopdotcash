@@ -41,5 +41,5 @@ legacy_project=$(node integration/legacy-project.mjs)
 start_validator --account "$legacy_project" .local/legacy-project-account.json
 bun build adapter.ts --target=node --outfile=.local/adapter.mjs
 bun build ../../workers/payment-executor/solana.ts --target=node --outfile=.local/executor.mjs
-bun build ../../workers/payments/scanner.ts ../../backend/payments/ledger.ts ../../backend/payments/handler.ts --target=node --outdir=.local --entry-naming='[name].mjs'
+bun build ../../workers/payments/scanner.ts ../../backend/payments/ledger.ts ../../backend/payments/handler.ts ../../backend/payments/vault-snapshots.ts --target=node --outdir=.local --entry-naming='[name].mjs'
 node --test --test-force-exit --test-isolation=none --test-concurrency=1 integration/escrow.e2e.mjs integration/executor.e2e.mjs integration/owner-plan.e2e.mjs
