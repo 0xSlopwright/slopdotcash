@@ -89,10 +89,14 @@ function scoreRecord(
 }
 
 /** A second maintainer's slop-score-approval for the shared pull request. */
-function scoreApproval(id: string, tier: "micro" | "small"): GitHubTextSource {
+function scoreApproval(
+  id: string,
+  tier: "micro" | "small" | "exceptional",
+  by: GitHubActor = laterMaintainer,
+): GitHubTextSource {
   return comment(
     id,
-    laterMaintainer,
+    by,
     [
       "```slop-score-approval",
       JSON.stringify({
@@ -119,8 +123,9 @@ function coRatifiedScore(
   tier: "micro" | "small",
   proposals: string[],
   at: string,
+  approver: GitHubActor = laterMaintainer,
 ): GitHubTextSource[] {
-  const approval = scoreApproval(`${id}0`, tier);
+  const approval = scoreApproval(`${id}0`, tier, approver);
   return [
     approval,
     comment(
@@ -650,4 +655,63 @@ test("a commit co-author's score ratification requires a second maintainer", () 
         : ["commit-coauthor:1", "pr-author:2"],
     );
   }
+});
+
+// The second maintainer stands outside the outcome. Under SCR-04 the author and
+// every linked commit author share it, so none of them can approve another's
+// slop-score or the tier of their own merge.
+test("a slop-score co-ratifier must not share the scored outcome", () => {
+  const proposal = comment(
+    "IC_10",
+    reviewer,
+    signedReviewRecord(),
+    "2026-10-05T04:00:00.000Z",
+  );
+  for (const [ratifier, approver] of [
+    [coAuthor, author],
+    [author, coAuthor],
+  ]) {
+    expect(() =>
+      reviewCredit([
+        proposal,
+        ...coRatifiedScore(
+          "IC_20",
+          ratifier,
+          "small",
+          [proposal.id],
+          "2026-10-05T12:00:00.000Z",
+          approver,
+        ),
+      ]),
+    ).toThrow("slop-score co-ratifier must not share the scored outcome");
+  }
+
+  const exceptional = (approver: GitHubActor) => {
+    const approval = scoreApproval("IC_30", "exceptional", approver);
+    return reviewCredit([
+      proposal,
+      approval,
+      comment(
+        "IC_20",
+        maintainer,
+        scoreRecord("small", [proposal.id])
+          .replace('"tier":"small"', '"tier":"exceptional"')
+          .replace('"scoreThirds":3', '"scoreThirds":75')
+          .replace(
+            '"coRatifierNodeIds":[]',
+            `"coRatifierNodeIds":["${approval.id}"]`,
+          ),
+        "2026-10-05T12:00:00.000Z",
+      ),
+    ]);
+  };
+  for (const approver of [author, coAuthor]) {
+    expect(() => exceptional(approver)).toThrow(
+      "slop-score co-ratifier must not share the scored outcome",
+    );
+  }
+  expect(exceptional(laterMaintainer).merges).toEqual([
+    "commit-coauthor:37",
+    "pr-author:38",
+  ]);
 });
