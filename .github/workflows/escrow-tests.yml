@@ -21,6 +21,7 @@ on:
       - 'scripts/check-payout-test-funding.mjs'
       - 'scripts/*escrow*'
       - 'scripts/prepare-payment-deployments.ts'
+      - 'scripts/check-payout-readiness.ts'
       - 'scripts/test-payout-browser.mjs'
       - 'migrations/**'
       - 'package.json'

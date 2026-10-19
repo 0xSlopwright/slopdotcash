@@ -345,3 +345,94 @@ Every project manifest then uses `codeSha256 = DEPLOYED_CODE_SHA256`,
 other value. Attach the commands, outputs and hashes from every step to the
 release issue. An upgrade is not proof of payment availability: run the funded
 lifecycle on each activated project separately.
+
+## 3. Payout activation, one network at a time
+
+Do this section for one network. Finish it, reconcile the first payout, and
+record the evidence before you start the next network. Agents must not run
+these steps; they may prepare commands and read reports.
+
+The code does not enable a mainnet. Every value in
+`workers/payment-executor/mainnet-execution.mjs` is `false`, and the
+executor and the attester refuse a mainnet deployment before they read a
+signer secret. `workers/payment-executor/configure.mjs` generates test stacks
+only. A production payment stack needs a separate reviewed stack definition.
+
+### 3.1 Preconditions
+
+1. Sections 0 to 2 are complete for this network, and the independent review
+   and the testnet acceptance runs are recorded.
+2. An admin revision on `/admin` records the vault deployment in the project
+   manifest (`escrow.deployments`), with the factory, factory code digest,
+   registrar and identity authority from section 1.7 or section 2.9.
+3. The identity authority address in each factory (EVM) or Config (Solana) is
+   the address of the attester key that the attester Worker will use. Read it
+   back from the chain at the finalized block and record it.
+
+### 3.2 Configure the stack
+
+1. Put the attester key and the relayer key in the managed secret store of
+   their own Workers only. One key per role and network. Never reuse the
+   registrar, owner or fee-wallet key.
+2. Pin the signer deployments from the registry snapshot:
+   `bun run projects:sync`, then
+   `bun run payments:deployments mainnet <network>`.
+3. Set the dispatcher variable `PAYMENT_NETWORKS` to a JSON array with only
+   this network, for example `["base-mainnet"]`. Bind `REGISTRY_DB` on the
+   dispatcher to the registry database (`SLOP_DB` in `wrangler.toml`). The
+   dispatcher reads the vaults from it; do not copy a deployment list into
+   it.
+4. Set `PAYMENT_RPC_URLS` on each Worker to a private endpoint for this
+   network that serves the finalized tag (EVM) or finalized commitment
+   (Solana). On Solana also set `PAYMENT_SOLANA_GENESIS` to the cluster
+   genesis hash in `src/lib/escrow-policy.mjs`.
+
+### 3.3 Readiness report
+
+Run the report with the stack configurations and the private RPC map in your
+local shell. The report never prints an RPC URL.
+
+```sh
+PAYMENT_RPC_URLS="$PRIVATE_RPC_JSON" \
+PAYMENT_SOLANA_GENESIS="$GENESIS_JSON" \
+bun run payments:readiness \
+  --registry-origin https://slop.cash \
+  --config "$ATTESTER_CONFIG" --config "$RELAYER_CONFIG" \
+  --config "$DISPATCHER_CONFIG" \
+  --probe --require "$NETWORK"
+```
+
+For each network the report states `factory`, `attester`, `rpc` and
+`executor`. `executor` is `missing` when the dispatcher's `REGISTRY_DB` is not
+the registry database. `--require` needs `--probe`. `--probe` reads the chain id or genesis hash and the finalized
+head; `rpc=finalized` is the only passing probe result. Before step 3.4 the
+only expected failure for this network is `executor=off-by-review`. Attach
+the report to the release issue.
+
+### 3.4 Enable the executor for this network
+
+1. Open a pull request that changes only this network's value in
+   `mainnet-execution.mjs` to `true` and updates
+   `mainnet-execution.test.ts` to match. Link the audit, the testnet evidence
+   and the readiness report from step 3.3.
+2. The repository owner reviews and merges it (PAY-05). Deploy the signer
+   Workers from that reviewed commit only.
+3. Run the readiness report again. It must print `READY` for this network,
+   and the command must exit with code 0.
+
+### 3.5 First payout and reconciliation
+
+1. Approve one small award on one project of this network through the normal
+   review flow. Wait for the contributor's wallet binding and its delay.
+2. Let the dispatcher pay it. Do not send a manual transfer with a signer key.
+3. Confirm the finalized `Paid` event, the obligation `state=paid`, the
+   contributor net amount and the fee in the explorer, and the new
+   `vault_snapshots` row (block, `total_paid`, `total_payout_fees`).
+4. Confirm that the funding page shows the same totals and the observed time.
+5. Record the transaction, the snapshot row and the page screenshot on the
+   release issue. Then start the next network at step 3.1.
+
+To stop payouts on a network, change its `mainnet-execution.mjs` value back
+to `false` through a reviewed pull request and redeploy the signer Workers.
+Vault snapshots and the event scan continue, so the public totals stay
+current.

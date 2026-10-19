@@ -1,44 +1,30 @@
-/** Derive public escrow deployment bindings from the sole reviewed project inventory. */
-import { readdir, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { ESCROW_NETWORKS } from "../src/lib/escrow-policy.mjs";
-import { assertProjectDefinition } from "../src/lib/project-schema.mjs";
+/**
+ * Derive the signer roles' escrow deployment bindings from the D1 project
+ * registry snapshot (`bun run projects:sync`). The snapshot is the reviewed
+ * copy of the registry; this script keeps no second project inventory.
+ */
+import {
+  ESCROW_NETWORKS,
+  paymentDeploymentRecord,
+} from "../src/lib/escrow-policy.mjs";
+import { assertProjectRegistry } from "../src/lib/project-schema.mjs";
+import { HISTORICAL_PROJECTS } from "../src/lib/projects.mjs";
 
-export async function paymentDeployments(
-  root: string,
+export function paymentDeployments(
+  definitions: unknown,
   environment: "testnet" | "mainnet",
   selectedNetwork?: string,
 ) {
   const result = [];
-  for (const directory of (
-    await readdir(resolve(root, "projects"), { withFileTypes: true })
-  )
-    .filter((entry) => entry.isDirectory())
-    .sort((a, b) => a.name.localeCompare(b.name))) {
-    const project = assertProjectDefinition(
-      JSON.parse(
-        await readFile(
-          resolve(root, "projects", directory.name, "project.json"),
-          "utf8",
-        ),
-      ),
-    );
-    if (project.id !== directory.name)
-      throw new Error("Project directory identity mismatch");
+  for (const project of assertProjectRegistry(definitions)) {
     for (const deployment of project.escrow?.deployments ?? []) {
       if (selectedNetwork && deployment.network !== selectedNetwork) continue;
-      const network = ESCROW_NETWORKS[deployment.network];
-      if (network.testnet !== (environment === "testnet")) continue;
-      result.push({
-        projectId: project.id,
-        ...deployment,
-        chain: network.chain,
-        ...(network.chainId ? { chainId: network.chainId } : {}),
-        ...(network.gasCeiling ? { gasCeiling: network.gasCeiling } : {}),
-        ...(network.scanPageBlocks
-          ? { scanPageBlocks: network.scanPageBlocks }
-          : {}),
-      });
+      if (
+        ESCROW_NETWORKS[deployment.network].testnet !==
+        (environment === "testnet")
+      )
+        continue;
+      result.push(paymentDeploymentRecord(project.id, deployment));
     }
   }
   if (new Set(result.map((entry) => entry.projectId)).size !== result.length)
@@ -52,8 +38,8 @@ if (import.meta.main) {
   const environment = process.argv[2];
   if (environment !== "testnet" && environment !== "mainnet")
     throw new Error("Select testnet or mainnet explicitly");
-  const deployments = await paymentDeployments(
-    process.cwd(),
+  const deployments = paymentDeployments(
+    HISTORICAL_PROJECTS,
     environment,
     process.argv[3],
   );

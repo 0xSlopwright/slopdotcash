@@ -127,7 +127,7 @@ This command does not create resources or deploy. Generated configuration has
 `workers_dev: false`, `preview_urls: false`, no routes, and the SQLite Durable
 Object migration. It emits an attester, relayer, and five-minute scheduled dispatcher
 for exactly one network. Every deployment must byte-for-structure match its canonical
-project manifest; empty, invented, mixed-network, and duplicate-project entries fail.
+project manifest in the D1 registry snapshot; empty, invented, mixed-network, and duplicate-project entries fail.
 Use database names `slop-payments-NETWORK` with an optional lowercase suffix, at most
 43 characters. Worker/service names include the complete database name, so separate
 Solana clusters and repeated isolated stacks cannot share keys or journals.
@@ -163,8 +163,13 @@ Set secret bindings only through the approved isolated test release process:
 - Solana Worker: `TEST_SOLANA_SIGNER_SEED`, dedicated test seed as 64 hex digits.
 
 Supply only the one signer secret for the Worker's chain and role. The
-`PAYMENT_DEPLOYMENTS` public configuration is generated from reviewed project
-manifests; it is not a second editable project inventory. Both roles use
+`PAYMENT_DEPLOYMENTS` public configuration of the two signer roles is
+generated from the D1 project registry snapshot (`bun run projects:sync`); it
+is not a second editable project inventory. The dispatcher has no deployment
+list: it reads the vaults of its `PAYMENT_NETWORKS` on every run from
+`REGISTRY_DB`, which `configure.mjs` binds to the `SLOP_DB` registry database
+in `wrangler.toml` without a migrations directory. The generator refuses an
+isolated payment database that is the registry database. Both roles use
 `PAYMENTS_DB`; the executor code reads authorization data and does not create
 wallet authorizations or approve awards. Journal storage contains sensitive
 operational material and has no read route other than transaction-ID lookup.
