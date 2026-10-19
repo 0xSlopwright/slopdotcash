@@ -301,6 +301,10 @@ export async function prepareRewardCycle(
     if (chain === null) {
       throw new TypeError("Monthly pool has no settlement network");
     }
+    if (chain === "ethereum")
+      throw new TypeError(
+        "Ethereum reward assets have no reviewed payout path",
+      );
     if (requests.length > MAX_WALLET_LOOKUPS) {
       throw new RangeError(
         "Reward cycle exceeds the bounded wallet lookup limit",

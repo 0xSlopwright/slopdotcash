@@ -48,6 +48,7 @@ import {
   PROJECTS,
   type ProjectDefinition,
 } from "./lib/projects.mjs";
+import { REWARD_ASSET_NETWORKS } from "./lib/reward-asset.mjs";
 import {
   type PublicSignerReport,
   publicSignerStatus,
@@ -1654,6 +1655,14 @@ function ProjectPage({
                 ) : null}
               </p>
               <ProjectLinksLine project={project} />
+              {project.rewardAsset ? (
+                <p className="project-terms-line">
+                  Reward asset: {project.rewardAsset.symbol} on{" "}
+                  {REWARD_ASSET_NETWORKS[project.rewardAsset.network].name} ·{" "}
+                  <code>{project.rewardAsset.address}</code> ·{" "}
+                  {project.rewardAsset.decimals} decimals
+                </p>
+              ) : null}
               {project.terms.externalPrize ? (
                 <p className="project-policy-warning">
                   Organizer rules decide eligibility, amount, and payment.

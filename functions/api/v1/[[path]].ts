@@ -11,10 +11,13 @@ import {
   CloudflareProjectPersistence,
   type ProjectD1Database,
 } from "../../../backend/projects/cloudflare-persistence";
+import type { RepositoryControl } from "../../../backend/projects/contracts";
+import { edgeCache } from "../../../backend/projects/edge-cache";
 import {
   type AdminApplicationNotice,
   handleProjectApi,
 } from "../../../backend/projects/handler";
+import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata";
 import { handleSlopbotApi } from "../../../backend/slopbot/summary";
 import {
   CloudflareTracePersistence,
@@ -23,6 +26,7 @@ import {
 } from "../../../backend/trace/cloudflare-persistence";
 import { handleTraceApi } from "../../../backend/trace/handler";
 import { deploymentTier } from "../../../src/lib/deployment";
+import type { ProjectDefinition } from "../../../src/lib/projects.mjs";
 
 type Env = {
   SLOP_ENVIRONMENT?: "production" | "staging";
@@ -36,14 +40,24 @@ type Env = {
   /** GitHub numeric actor IDs allowed to review project applications. */
   ADMIN_GITHUB_IDS?: string;
   SLOP_IDENTITY: { fetch(request: Request): Promise<Response> };
+  /** Local browser tests only: a loopback GitHub API fixture origin. */
+  SLOP_GITHUB_API_ORIGIN?: string;
+  /** Optional read-only GitHub token for repository ownership checks. */
+  SLOP_GITHUB_READ_TOKEN?: string;
   /** Admin email Worker; absent where no notifier is deployed. */
   SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
   ASSETS?: { fetch(request: Request): Promise<Response> };
+  /** Optional RPC overrides for reward token decimals verification. */
+  REWARD_RPC_BASE?: string;
+  REWARD_RPC_ETHEREUM?: string;
+  REWARD_RPC_ROBINHOOD?: string;
+  REWARD_RPC_SOLANA?: string;
 };
 
 type PagesContext = {
   request: Request;
   env: Env;
+  waitUntil?: (promise: Promise<unknown>) => void;
 };
 
 export const MAX_IDENTITY_RESPONSE_BYTES = 16 * 1024;
@@ -149,9 +163,6 @@ async function verifyIdentityAssertion(
   return { githubId: id, githubLogin: login };
 }
 
-/** Reviewed skill code lives only on this repository's development branch. */
-const SKILL_SOURCE_REPOSITORY = "SlopDotCash/slopdotcash";
-
 function githubIdSet(value: string | undefined): Set<string> {
   return new Set(
     (value ?? "")
@@ -176,20 +187,90 @@ async function notifyAdmins(
   return response.status === 202;
 }
 
-async function skillPublished(sourcePath: string): Promise<boolean> {
-  if (!/^skills\/[a-z0-9-]{1,80}$/u.test(sourcePath)) return false;
-  const response = await fetch(
-    `https://api.github.com/repos/${SKILL_SOURCE_REPOSITORY}/contents/${sourcePath}/SKILL.md?ref=development`,
-    {
-      headers: {
-        accept: "application/vnd.github+json",
-        "user-agent": "slop.cash-project-registry",
-      },
-    },
+function githubHeaders(token: string | undefined): Record<string, string> {
+  return {
+    accept: "application/vnd.github+json",
+    "user-agent": "slop.cash-project-registry",
+    "x-github-api-version": "2022-11-28",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+/**
+ * Proves control from public GitHub facts only: the applicant owns a user
+ * repository, or is a public member of the owning organization. The manifest's
+ * repository and steward identities must match GitHub exactly.
+ */
+function githubApiOrigin(env: Env): string {
+  const origin = env.SLOP_GITHUB_API_ORIGIN;
+  return origin && /^http:\/\/127\.0\.0\.1:[1-9][0-9]{3,4}$/u.test(origin)
+    ? origin
+    : "https://api.github.com";
+}
+
+async function repositoryControl(
+  manifest: ProjectDefinition,
+  actor: { githubId: string; githubLogin: string },
+  env: Env,
+): Promise<RepositoryControl> {
+  const api = githubApiOrigin(env);
+  const token = env.SLOP_GITHUB_READ_TOKEN;
+  const repository = manifest.repositories[0];
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository.id))
+    return { state: "mismatch", reason: "Repository must be owner/name" };
+  const response = await fetch(`${api}/repos/${repository.id}`, {
+    headers: githubHeaders(token),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status === 404)
+    return {
+      state: "mismatch",
+      reason: "GitHub has no public repository with that name",
+    };
+  if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
+  const facts = (await readBoundedJson(response, 512 * 1024)) as {
+    id?: unknown;
+    node_id?: unknown;
+    full_name?: unknown;
+    private?: unknown;
+    owner?: { id?: unknown; login?: unknown; type?: unknown };
+  };
+  if (
+    String(facts.id) !== manifest.authority.repositoryId ||
+    facts.node_id !== manifest.authority.repositoryNodeId ||
+    String(facts.full_name).toLowerCase() !== repository.id.toLowerCase() ||
+    facts.private !== false ||
+    String(facts.owner?.id) !== manifest.steward.github.actorId
+  )
+    return {
+      state: "mismatch",
+      reason: "Repository or steward facts do not match GitHub",
+    };
+  if (facts.owner?.type === "User")
+    return String(facts.owner.id) === actor.githubId
+      ? {
+          state: "proven",
+          reason: `@${actor.githubLogin} owns ${repository.id}`,
+        }
+      : {
+          state: "unproven",
+          reason: `@${actor.githubLogin} does not own ${repository.id}`,
+        };
+  const membership = await fetch(
+    `${api}/orgs/${encodeURIComponent(String(facts.owner?.login))}/public_members/${encodeURIComponent(actor.githubLogin)}`,
+    { headers: githubHeaders(token), signal: AbortSignal.timeout(10_000) },
   );
-  if (response.status === 404) return false;
-  if (!response.ok) throw new Error("GitHub skill lookup failed");
-  return true;
+  if (membership.status === 204)
+    return {
+      state: "proven",
+      reason: `@${actor.githubLogin} is a public member of ${String(facts.owner?.login)}`,
+    };
+  if (membership.status === 404)
+    return {
+      state: "unproven",
+      reason: `@${actor.githubLogin} is not a public member of ${String(facts.owner?.login)}`,
+    };
+  throw new Error(`GitHub returned ${membership.status}`);
 }
 
 export async function onRequest(context: PagesContext): Promise<Response> {
@@ -205,7 +286,21 @@ export async function onRequest(context: PagesContext): Promise<Response> {
         new Date().toISOString(),
       ),
     notifyAdmins: (notice) => notifyAdmins(context.env.SLOP_NOTIFY, notice),
-    skillPublished,
+    repositoryControl: (manifest, actor) =>
+      repositoryControl(manifest, actor, context.env),
+    readTokenMetadata: rpcTokenMetadataReader(fetch, {
+      base: context.env.REWARD_RPC_BASE,
+      ethereum: context.env.REWARD_RPC_ETHEREUM,
+      robinhood: context.env.REWARD_RPC_ROBINHOOD,
+      solana: context.env.REWARD_RPC_SOLANA,
+    }),
+    github: {
+      fetch: (url, init) => fetch(url, init),
+      token: context.env.SLOP_GITHUB_READ_TOKEN,
+      apiOrigin: githubApiOrigin(context.env),
+    },
+    cache: edgeCache(),
+    waitUntil: context.waitUntil?.bind(context),
   });
   if (projectResponse !== null) return projectResponse;
   const feeConversionsResponse = await handleFeeConversionsApi(

@@ -6,6 +6,7 @@
 
 import LEGACY_PROJECTS from "./legacy-projects.json" with { type: "json" };
 import { RAW_PROJECT_DEFINITIONS } from "./project-registry.generated.mjs";
+import { RAW_PROJECT_DEFINITIONS as INGESTED_PROJECT_DEFINITIONS } from "./project-registry.ingested.mjs";
 import { assertProjectRegistry } from "./project-schema.mjs";
 
 function freezeTree(value) {
@@ -22,32 +23,54 @@ function compareMinorDescending(left, right) {
   return leftMinor === rightMinor ? 0 : leftMinor > rightMinor ? -1 : 1;
 }
 
-/** Every manifest, including retired ones kept only to resolve history. */
-const HISTORICAL_PROJECTS = Object.freeze(
-  assertProjectRegistry(RAW_PROJECT_DEFINITIONS)
-    .sort(
-      (left, right) =>
-        compareMinorDescending(
-          left.reward.committedMinor,
-          right.reward.committedMinor,
-        ) ||
-        compareMinorDescending(
-          left.reward.monthlyCapMinor,
-          right.reward.monthlyCapMinor,
-        ) ||
-        // Equal pools keep the root publisher first, so a cap change alone
-        // cannot move the primary leaderboard repository.
-        Number(right.skill.publishAtRoot === true) -
-          Number(left.skill.publishAtRoot === true) ||
-        left.id.localeCompare(right.id),
-    )
-    .map(freezeTree),
-);
+/** Sorts and freezes one registry; retired manifests only resolve history. */
+function buildRegistry(rawDefinitions) {
+  const historical = Object.freeze(
+    assertProjectRegistry(rawDefinitions)
+      .sort(
+        (left, right) =>
+          compareMinorDescending(
+            left.reward.committedMinor,
+            right.reward.committedMinor,
+          ) ||
+          compareMinorDescending(
+            left.reward.monthlyCapMinor,
+            right.reward.monthlyCapMinor,
+          ) ||
+          // Equal pools keep the root publisher first, so a cap change alone
+          // cannot move the primary leaderboard repository.
+          Number(right.skill.publishAtRoot === true) -
+            Number(left.skill.publishAtRoot === true) ||
+          left.id.localeCompare(right.id),
+      )
+      .map(freezeTree),
+  );
+  return {
+    historical,
+    listed: Object.freeze(
+      historical.filter((project) => project.listingTier !== "retired"),
+    ),
+  };
+}
 
+/**
+ * The registry as it is now. In the browser it is the D1 registry the page
+ * loaded at startup; in Node it is the committed snapshot.
+ */
+const CURRENT = buildRegistry(RAW_PROJECT_DEFINITIONS);
+/** Every manifest, including retired ones kept only to resolve history. */
+const HISTORICAL_PROJECTS = CURRENT.historical;
 /** Listed projects. Retired manifests never reach a page, skill, or list. */
-const PROJECTS = Object.freeze(
-  HISTORICAL_PROJECTS.filter((project) => project.listingTier !== "retired"),
-);
+const PROJECTS = CURRENT.listed;
+
+/**
+ * The registry snapshot the published ledger was collected from. The browser
+ * validates the ledger against it, so a project approved or activated after
+ * the last ingestion is listed at once without invalidating the ledger.
+ */
+const INGESTED = buildRegistry(INGESTED_PROJECT_DEFINITIONS);
+const INGESTED_HISTORICAL_PROJECTS = INGESTED.historical;
+const INGESTED_PROJECTS = INGESTED.listed;
 
 const PROJECTS_BY_ID = new Map(
   PROJECTS.map((project) => [project.id, project]),
@@ -177,4 +200,9 @@ export function assertProjectPaymentsEnabled(projectId, cycleId) {
   return project;
 }
 
-export { HISTORICAL_PROJECTS, PROJECTS };
+export {
+  HISTORICAL_PROJECTS,
+  INGESTED_HISTORICAL_PROJECTS,
+  INGESTED_PROJECTS,
+  PROJECTS,
+};

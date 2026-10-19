@@ -80,7 +80,7 @@ export type ProjectRewardProjection =
   | {
       kind: "monthly-pool";
       currency: "USDC" | "USDG";
-      chain: "solana" | "base" | "robinhood";
+      chain: "solana" | "base" | "robinhood" | "ethereum";
       capMinor: string;
       projectedPrincipalMinor: string;
       platformFeeMinor: string;

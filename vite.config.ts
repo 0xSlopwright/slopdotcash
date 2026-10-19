@@ -3,12 +3,30 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [
     react(),
+    {
+      // The browser lists projects from the D1 registry at runtime. Only
+      // projects.mjs swaps the committed snapshot for the runtime registry;
+      // ingestion validation keeps the snapshot the ledger was built from.
+      name: "runtime-project-registry",
+      enforce: "pre",
+      resolveId(source, importer) {
+        if (
+          source === "./project-registry.generated.mjs" &&
+          importer?.replaceAll("\\", "/").endsWith("/src/lib/projects.mjs")
+        )
+          return fileURLToPath(
+            new URL("./src/lib/project-registry.runtime.mjs", import.meta.url),
+          );
+        return null;
+      },
+    },
     {
       name: "staging-security-headers",
       closeBundle() {

@@ -1,7 +1,9 @@
 import type { EscrowPolicy } from "./escrow-policy.mjs";
+import type { ContributionField } from "./project-schema.mjs";
 /** Types for the public project and reward-policy registry. */
 
 import type { FundingCommitmentInstrument } from "./funding-instruments.mjs";
+import type { RewardAsset } from "./reward-asset.mjs";
 
 export type ProjectId = string;
 export type ProjectStatus = "active" | "paused";
@@ -44,8 +46,9 @@ export interface ProjectRewardPolicy {
     readonly monthlyCapMinor: string;
   }[];
   readonly kind: RewardKind;
-  readonly currency: "USDC" | "USDG" | null;
-  readonly chain: "solana" | "base" | "robinhood" | null;
+  /** The paid symbol: the network stablecoin, or `rewardAsset.symbol`. */
+  readonly currency: string | null;
+  readonly chain: "solana" | "base" | "robinhood" | "ethereum" | null;
   readonly rewardStartAt: string;
   readonly cycle: "calendar-month-utc";
   readonly monthlyCapMinor: string;
@@ -71,6 +74,8 @@ export interface ProjectRewardPolicy {
 
 export interface ProjectDefinition {
   readonly escrow?: EscrowPolicy;
+  /** The one reward asset, with server-verified decimals. */
+  readonly rewardAsset?: RewardAsset;
   readonly schemaVersion: "1";
   readonly id: ProjectId;
   readonly slug: ProjectId;
@@ -208,6 +213,8 @@ export interface ProjectDefinition {
       readonly ipTerms: string;
     } | null;
   };
+  /** Maintainer-authored fields that generate the project skills (SKL-03). */
+  readonly contribution?: Readonly<Record<ContributionField, string>>;
   readonly repositories: readonly {
     readonly id: string;
     readonly aliases?: readonly string[];
@@ -237,6 +244,9 @@ export interface ProjectDefinition {
 
 export declare const PROJECTS: readonly ProjectDefinition[];
 export declare const HISTORICAL_PROJECTS: readonly ProjectDefinition[];
+/** The committed snapshot build-time ingestion collected from. */
+export declare const INGESTED_PROJECTS: readonly ProjectDefinition[];
+export declare const INGESTED_HISTORICAL_PROJECTS: readonly ProjectDefinition[];
 /** True for a registry project or a removed pre-registry project id. */
 export declare function isHistoricalProjectId(projectId: unknown): boolean;
 /** Resolves a registry or removed repository id or alias to its owner. */

@@ -3,7 +3,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "./Link";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
-import { fundingAssetForNetwork } from "./lib/funding-address.mjs";
+import { isEscrowChain } from "./lib/escrow-policy.mjs";
 import {
   type ProjectApplication,
   submitProjectApplication,
@@ -21,15 +21,22 @@ import {
   slugify,
   validRepositoryPath,
 } from "./lib/project-proposal";
+import { PROJECT_SKILL_TEMPLATES } from "./lib/project-schema.mjs";
 import type { ProjectDefinition } from "./lib/projects.mjs";
+import {
+  REWARD_ASSET_NETWORKS,
+  type RewardAssetNetwork,
+  rewardAssetChoice,
+} from "./lib/reward-asset.mjs";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
 import { loginHref, useSignedInLogin } from "./Points";
 
-const SETTLEMENT_CHAIN_NAMES: Record<string, string> = {
-  base: "Base",
-  solana: "Solana",
-  robinhood: "Robinhood Chain",
-};
+const SETTLEMENT_CHAIN_NAMES: Record<string, string> = Object.fromEntries(
+  Object.entries(REWARD_ASSET_NETWORKS).map(([id, network]) => [
+    id,
+    network.name,
+  ]),
+);
 const PROPOSAL_DRAFT_KEY = "slop:project-proposal:v1";
 /** PRJ-03 default, shown as editable text the maintainer can replace. */
 const DEFAULT_CRITERIA =
@@ -57,8 +64,18 @@ const EMPTY_PROPOSAL = {
   headline: "",
   goal: "",
   criteria: "",
+  contributionGuide: "",
+  supportedTasks: "",
+  requiredTests: "",
+  reviewExpectations: "",
+  securityContact: "",
+  closurePolicy: "",
+  maintainerNotes: "",
   monthlyPool: "0",
   settlementChain: "base",
+  rewardKind: "stablecoin",
+  rewardAssetAddress: "",
+  rewardAssetSymbol: "",
   reviewBudgetEnabled: "no",
   monthlyReviewBudget: "",
   copyrightModel: "unknown",
@@ -79,6 +96,51 @@ const EMPTY_PROPOSAL = {
   assignmentSignedAt: "",
 };
 type Proposal = typeof EMPTY_PROPOSAL;
+/** Maintainer-authored rules that, with the scope, generate the skills. */
+const SKILL_RULE_FIELDS = [
+  "contributionGuide",
+  "supportedTasks",
+  "requiredTests",
+  "reviewExpectations",
+  "securityContact",
+  "closurePolicy",
+  "maintainerNotes",
+] as const;
+const SKILL_RULE_LABELS: Record<
+  (typeof SKILL_RULE_FIELDS)[number],
+  { label: string; placeholder: string }
+> = {
+  contributionGuide: {
+    label: "Contribution guide",
+    placeholder:
+      "How should a contributor set up, branch and submit? Leave empty to follow the repository's CONTRIBUTING.md.",
+  },
+  supportedTasks: {
+    label: "Supported tasks",
+    placeholder:
+      "Which kinds of work do you want, for example bug fixes or benchmark runs?",
+  },
+  requiredTests: {
+    label: "Required tests",
+    placeholder: "Which commands or workflows must pass before a pull request?",
+  },
+  reviewExpectations: {
+    label: "Review expectations",
+    placeholder: "What evidence must a pull request show for review?",
+  },
+  securityContact: {
+    label: "Security contact",
+    placeholder: "Where should security reports go privately?",
+  },
+  closurePolicy: {
+    label: "Closure policy",
+    placeholder: "When do maintainers close or decline a pull request?",
+  },
+  maintainerNotes: {
+    label: "Maintainer notes",
+    placeholder: "Anything else contributors should know.",
+  },
+};
 type ProposalField = keyof Proposal;
 type FieldErrors = Partial<Record<ProposalField, string>>;
 
@@ -98,6 +160,13 @@ const FIELD_STEP: Partial<Record<ProposalField, number>> = {
   headline: 1,
   goal: 1,
   criteria: 1,
+  contributionGuide: 1,
+  supportedTasks: 1,
+  requiredTests: 1,
+  reviewExpectations: 1,
+  securityContact: 1,
+  closurePolicy: 1,
+  maintainerNotes: 1,
   copyrightModel: 1,
   legalHolder: 1,
   inboundTermsUrl: 1,
@@ -112,8 +181,17 @@ const FIELD_STEP: Partial<Record<ProposalField, number>> = {
   assignmentSignedAt: 1,
   monthlyPool: 2,
   monthlyReviewBudget: 2,
+  rewardAssetAddress: 2,
+  rewardAssetSymbol: 2,
 };
 const FIELD_LABELS: Partial<Record<ProposalField, string>> = {
+  contributionGuide: "Contribution guide",
+  supportedTasks: "Supported tasks",
+  requiredTests: "Required tests",
+  reviewExpectations: "Review expectations",
+  securityContact: "Security contact",
+  closurePolicy: "Closure policy",
+  maintainerNotes: "Maintainer notes",
   repository: "Public GitHub repository",
   repositoryNumericId: "Repository numeric ID",
   repositoryNodeId: "Repository node ID",
@@ -143,6 +221,8 @@ const FIELD_LABELS: Partial<Record<ProposalField, string>> = {
   assignmentSignedAt: "Signed at",
   monthlyPool: "Monthly pool target",
   monthlyReviewBudget: "Monthly review budget",
+  rewardAssetAddress: "Token address",
+  rewardAssetSymbol: "Token symbol",
 };
 
 const TERMS_FIELDS = new Set<string>([
@@ -221,6 +301,14 @@ function proposalErrors(p: Proposal): FieldErrors {
   if (goal) errors.goal = goal;
   const criteria = lengthError(p.criteria, 6, 1_000);
   if (criteria) errors.criteria = criteria;
+  // The remaining skill fields are optional; empty defers to the repository.
+  for (const field of SKILL_RULE_FIELDS) {
+    const value = p[field];
+    if (value.trim() !== "") {
+      const error = lengthError(value, 1, 2_000);
+      if (error) errors[field] = error;
+    }
+  }
   if (p.copyrightModel === "sponsor-owned") {
     const holder = lengthError(p.legalHolder, 2, 240);
     if (holder) errors.legalHolder = holder;
@@ -258,6 +346,21 @@ function proposalErrors(p: Proposal): FieldErrors {
     if (version) errors.assignmentVersion = version;
     if (p.assignmentSignedAt.length === 0)
       errors.assignmentSignedAt = "Enter the signing date and time.";
+  }
+  if (p.rewardKind === "token") {
+    try {
+      rewardAssetChoice(
+        p.settlementChain,
+        "token",
+        p.rewardAssetAddress,
+        p.rewardAssetSymbol,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? `${error.message}.` : "Check the token.";
+      if (/symbol/iu.test(message)) errors.rewardAssetSymbol = message;
+      else errors.rewardAssetAddress = message;
+    }
   }
   if (!monthlyPoolValue(p.monthlyPool).valid)
     errors.monthlyPool =
@@ -444,7 +547,7 @@ function RepositoryPicker({
     if (!login) return;
     const controller = new AbortController();
     setList({ status: "loading" });
-    void listOwnedRepositories(login, controller.signal).then(
+    void listOwnedRepositories(controller.signal).then(
       (repositories) => {
         if (!controller.signal.aborted)
           setList({ status: "ready", repositories });
@@ -685,6 +788,32 @@ export default function ProjectProposalPage() {
   const pool = monthlyPoolValue(p.monthlyPool);
   const includesReviewBudget = p.reviewBudgetEnabled === "yes";
   const reviewBudget = monthlyPoolValue(p.monthlyReviewBudget);
+  const network =
+    REWARD_ASSET_NETWORKS[p.settlementChain as RewardAssetNetwork];
+  const escrow = isEscrowChain(p.settlementChain);
+  const asset = useMemo(
+    () =>
+      p.rewardKind === "token"
+        ? {
+            network: p.settlementChain,
+            kind: "token",
+            address: p.rewardAssetAddress.trim(),
+            symbol: p.rewardAssetSymbol.trim(),
+          }
+        : {
+            network: p.settlementChain,
+            kind: "stablecoin",
+            address: network.stablecoin.address,
+            symbol: network.stablecoin.symbol,
+          },
+    [
+      p.rewardKind,
+      p.settlementChain,
+      p.rewardAssetAddress,
+      p.rewardAssetSymbol,
+      network,
+    ],
+  );
   const manifest = useMemo(() => {
     const now = new Date();
     const repository = p.repository || "owner/repository";
@@ -783,28 +912,46 @@ export default function ProjectProposalPage() {
           integrationBranch: p.integrationBranch,
         },
       ],
+      // Slop generates both skills from the canonical templates and these
+      // rules (PRD SKL-03), so no pull request adds a project skill.
       skill: {
         id: `contribute-to-${slug}`,
         publishAtRoot: false,
-        sourcePath: `skills/contribute-to-${slug}`,
+        sourcePath: PROJECT_SKILL_TEMPLATES.contributor,
         publicPath: `/projects/${slug}/skill.md`,
       },
       reviewSkill: {
         id: `review-${slug}-contributions`,
-        sourcePath: `skills/review-${slug}-contributions`,
+        sourcePath: PROJECT_SKILL_TEMPLATES.reviewer,
       },
-      escrow: {
-        schemaVersion: "1",
-        effectiveCycle: now.toISOString().slice(0, 7),
-        chain: p.settlementChain,
-        feeBasisPoints: 200,
-        withdrawalFeeBasisPoints: 500,
-        feeMode: "deduct-from-gross",
-        deployments: [],
+      contribution: {
+        approvedScope:
+          p.criteria.trim() ||
+          "Define exact accepted outcomes with the maintainer.",
+        ...Object.fromEntries(
+          SKILL_RULE_FIELDS.map((field) => [field, p[field].trim()]),
+        ),
       },
+      // Networks without a reviewed escrow program keep the asset as
+      // display metadata with payments disabled.
+      ...(escrow
+        ? {
+            escrow: {
+              schemaVersion: "1",
+              effectiveCycle: now.toISOString().slice(0, 7),
+              chain: p.settlementChain,
+              feeBasisPoints: 200,
+              withdrawalFeeBasisPoints: 500,
+              feeMode: "deduct-from-gross",
+              deployments: [],
+            },
+          }
+        : {}),
+      // The server verifies the asset and stores its decimals.
+      rewardAsset: asset,
       reward: {
         kind: "monthly-pool",
-        currency: fundingAssetForNetwork(p.settlementChain),
+        currency: asset.symbol,
         chain: p.settlementChain,
         rewardStartAt: now.toISOString(),
         cycle: "calendar-month-utc",
@@ -812,7 +959,7 @@ export default function ProjectProposalPage() {
         monthlyCapDisplay: pool.display,
         committedMinor: "0",
         paymentMode: "disabled",
-        feeBasisPoints: 200,
+        feeBasisPoints: escrow ? 200 : 100,
         unusedFunds: "rollover-without-cap-increase",
         fundingState: "pledged",
         ...(includesReviewBudget
@@ -847,7 +994,16 @@ export default function ProjectProposalPage() {
         issues: `https://github.com/${repository}/issues`,
       },
     };
-  }, [p, slug, pool.display, pool.minor, includesReviewBudget, reviewBudget]);
+  }, [
+    p,
+    slug,
+    pool.display,
+    pool.minor,
+    includesReviewBudget,
+    reviewBudget,
+    escrow,
+    asset,
+  ]);
   const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
   const [submission, setSubmission] = useState<
     | { status: "idle" | "submitting" }
@@ -856,10 +1012,7 @@ export default function ProjectProposalPage() {
   >({ status: "idle" });
   function submit() {
     setSubmission({ status: "submitting" });
-    submitProjectApplication(
-      manifest as unknown as ProjectDefinition,
-      p.criteria.trim(),
-    ).then(
+    submitProjectApplication(manifest as unknown as ProjectDefinition).then(
       ({ application }) => setSubmission({ status: "submitted", application }),
       (error: unknown) =>
         setSubmission({
@@ -1263,6 +1416,26 @@ export default function ProjectProposalPage() {
               placeholder="What accepted GitHub outcomes qualify?"
               value={p.criteria}
             />
+            <fieldset className="proposal-skill-rules">
+              <legend>Project skill rules (optional)</legend>
+              <p className="field-hint">
+                Slop generates this project's contributor and reviewer skills
+                from these rules and its standard template. They can narrow what
+                contributors do, but cannot weaken Slop's safety rules.
+              </p>
+              {SKILL_RULE_FIELDS.map((field) => (
+                <TextField
+                  error={shown(field)}
+                  key={field}
+                  label={SKILL_RULE_LABELS[field].label}
+                  multiline
+                  name={field}
+                  onChange={set(field)}
+                  placeholder={SKILL_RULE_LABELS[field].placeholder}
+                  value={p[field]}
+                />
+              ))}
+            </fieldset>
             <details
               className="proposal-advanced"
               onToggle={(event) => setTermsOpen(event.currentTarget.open)}
@@ -1398,13 +1571,54 @@ export default function ProjectProposalPage() {
               label="Payout network"
               name="settlementChain"
               onChange={set("settlementChain")}
-              options={[
-                ["base", "Base"],
-                ["solana", "Solana"],
-                ["robinhood", "Robinhood Chain"],
-              ]}
+              options={Object.entries(SETTLEMENT_CHAIN_NAMES)}
               value={p.settlementChain}
             />
+            <SelectField
+              label="Reward asset"
+              name="rewardKind"
+              onChange={set("rewardKind")}
+              options={[
+                [
+                  "stablecoin",
+                  `${network.stablecoin.symbol} (network stablecoin)`,
+                ],
+                ["token", "Another token"],
+              ]}
+              value={p.rewardKind}
+            />
+            {p.rewardKind === "token" ? (
+              <>
+                <TextField
+                  error={shown("rewardAssetAddress")}
+                  hint={
+                    network.family === "evm"
+                      ? `The ERC-20 contract address on ${network.name}.`
+                      : "The classic SPL mint address on Solana."
+                  }
+                  label="Token address"
+                  name="rewardAssetAddress"
+                  onChange={set("rewardAssetAddress")}
+                  placeholder={
+                    network.family === "evm" ? "0x…" : "Mint address"
+                  }
+                  value={p.rewardAssetAddress}
+                />
+                <TextField
+                  error={shown("rewardAssetSymbol")}
+                  hint="Shown on the project page. Slop reads the decimals from chain when you submit."
+                  label="Token symbol"
+                  name="rewardAssetSymbol"
+                  onChange={set("rewardAssetSymbol")}
+                  value={p.rewardAssetSymbol}
+                />
+              </>
+            ) : (
+              <p className="field-hint">
+                {network.stablecoin.symbol} on {network.name}:{" "}
+                <code>{network.stablecoin.address}</code>
+              </p>
+            )}
             <TextField
               error={shown("monthlyPool")}
               hint="A target, not committed money. It stays a pledge until funding is verified."
@@ -1452,9 +1666,10 @@ export default function ProjectProposalPage() {
             </p>
             <ul className="activation-gates">
               <li>
-                <strong>Project vault:</strong> not deployed. A reviewed{" "}
-                {SETTLEMENT_CHAIN_NAMES[p.settlementChain] ?? "Base"} deployment
-                is required first.
+                <strong>Project vault:</strong>{" "}
+                {escrow
+                  ? `not deployed. A reviewed ${network.name} deployment is required first.`
+                  : `no reviewed escrow exists on ${network.name}. The reward asset is shown, and payments stay disabled.`}
               </li>
               <li>
                 <strong>Funding and refund authority:</strong> not verified.
@@ -1510,6 +1725,15 @@ export default function ProjectProposalPage() {
                   </dd>
                 </div>
                 <div>
+                  <dt>Reward asset</dt>
+                  <dd>
+                    {asset.symbol || "Not set"} ·{" "}
+                    {p.rewardKind === "token"
+                      ? "token, decimals read from chain on submit"
+                      : "network stablecoin"}
+                  </dd>
+                </div>
+                <div>
                   <dt>Steward</dt>
                   <dd>
                     {p.stewardName || "Not set"}
@@ -1534,10 +1758,13 @@ export default function ProjectProposalPage() {
                 <h2>Application submitted</h2>
                 <p>
                   {submission.application.manifest.name} is waiting for admin
-                  review. After approval it is listed as a paused project.
-                  Repository authority, terms, skills and money are added by an
-                  admin before the project opens.
+                  review. After approval it is listed as a paused project, and
+                  Slop generates its contributor and reviewer skills from your
+                  rules. An admin activates the project after reviewing them.
                 </p>
+                {submission.application.githubCheck ? (
+                  <p>GitHub check: {submission.application.githubCheck}</p>
+                ) : null}
                 <p>
                   Application {submission.application.id} · submitted by @
                   {submission.application.applicant.githubLogin}

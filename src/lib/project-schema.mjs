@@ -18,6 +18,31 @@ import {
   assertMonthlyCommitmentPolicy,
   hasActiveFundingCommitment,
 } from "./funding-instruments.mjs";
+import {
+  assertRewardAsset,
+  REWARD_ASSET_NETWORK_IDS,
+} from "./reward-asset.mjs";
+
+/**
+ * The canonical generic templates every generated project skill renders from
+ * (PRD SKL-03). A project names one as its skill source path.
+ */
+export const PROJECT_SKILL_TEMPLATES = Object.freeze({
+  contributor: "skills/project-contributor-template",
+  reviewer: "skills/project-reviewer-template",
+});
+
+/** Maintainer-authored fields, in render order, that generate project skills. */
+export const CONTRIBUTION_FIELDS = Object.freeze([
+  "approvedScope",
+  "contributionGuide",
+  "supportedTasks",
+  "requiredTests",
+  "reviewExpectations",
+  "securityContact",
+  "closurePolicy",
+  "maintainerNotes",
+]);
 
 const PROJECT_KEYS = [
   "authority",
@@ -39,6 +64,16 @@ const PROJECT_KEYS = [
   "status",
   "steward",
   "terms",
+];
+/**
+ * Optional manifest sections. `rewardAsset` and `contribution` arrive with
+ * the D1 registry; older revisions omit them.
+ */
+const OPTIONAL_PROJECT_KEYS = [
+  "escrow",
+  "participation",
+  "rewardAsset",
+  "contribution",
 ];
 export const MAX_MONTHLY_CAP_MINOR = 1_000_000_000_000_000n;
 
@@ -761,9 +796,15 @@ function validateSkill(
   if (publicPath && !hasPublishAtRoot && !allowLegacyMissingPublishAtRoot) {
     throw new TypeError(`${field}.publishAtRoot is required`);
   }
+  // A generated skill names its canonical template; a historical project
+  // names its own committed skill folder.
+  const template = publicPath
+    ? PROJECT_SKILL_TEMPLATES.contributor
+    : PROJECT_SKILL_TEMPLATES.reviewer;
   if (
     skill.id !== expectedId ||
-    skill.sourcePath !== `skills/${expectedId}` ||
+    (skill.sourcePath !== `skills/${expectedId}` &&
+      skill.sourcePath !== template) ||
     (publicPath &&
       (skill.publicPath !== publicPath ||
         (hasPublishAtRoot && typeof skill.publishAtRoot !== "boolean")))
@@ -771,6 +812,27 @@ function validateSkill(
     throw new TypeError(`${field} does not match its project identity`);
   }
   return skill;
+}
+
+/**
+ * Maintainer-authored text that generated skills carry as data. Strings must
+ * be well-formed Unicode so every renderer serializes the same bytes.
+ */
+function validateContribution(value) {
+  const contribution = record(value, "project.contribution");
+  exactKeys(contribution, [...CONTRIBUTION_FIELDS], "project.contribution");
+  for (const field of CONTRIBUTION_FIELDS) {
+    const entry = contribution[field];
+    if (
+      typeof entry !== "string" ||
+      !entry.isWellFormed() ||
+      entry.length < (field === "approvedScope" ? 6 : 0) ||
+      entry.length > 2000
+    ) {
+      throw new TypeError(`project.contribution.${field} is invalid`);
+    }
+  }
+  return contribution;
 }
 
 function validateExternalEvaluations(value, field) {
@@ -831,7 +893,11 @@ function validateReviewBudget(value, field, poolPaymentMode) {
 function validateReward(
   value,
   field,
-  { allowLegacyExternalPrizeFee = false, escrow = undefined } = {},
+  {
+    allowLegacyExternalPrizeFee = false,
+    escrow = undefined,
+    rewardAsset = undefined,
+  } = {},
 ) {
   const reward = record(value, field);
   const hasExternal = Object.hasOwn(reward, "externalOpportunity");
@@ -894,16 +960,27 @@ function validateReward(
   }
   if (reward.kind === "monthly-pool") {
     const paymentsDisabled = reward.paymentMode === "disabled";
+    // A chosen reward asset fixes the network and the paid symbol. Without
+    // one, each settlement network has one approved stablecoin (FND-02).
+    const legacyRail =
+      !escrow &&
+      (reward.chain === "solana" || reward.chain === "base") &&
+      (rewardAsset === undefined || rewardAsset.kind === "stablecoin");
     if (
       hasExternal ||
-      // Each settlement network has one approved stablecoin (FND-02).
-      reward.currency !== fundingAssetForNetwork(reward.chain) ||
+      (rewardAsset !== undefined && rewardAsset.network !== reward.chain) ||
+      reward.currency !==
+        (rewardAsset?.symbol ?? fundingAssetForNetwork(reward.chain)) ||
       // `reward.chain` is the project's one settlement network (RFC #472).
       // An escrow project settles on its escrow chain; the legacy rail is
-      // Base and Solana only (PAY-09).
+      // Base and Solana USDC only (PAY-09). Any other declared asset stays
+      // display metadata until a reviewed payout path enables it.
       (escrow
         ? reward.chain !== escrow.chain
-        : reward.chain !== "solana" && reward.chain !== "base") ||
+        : !legacyRail &&
+          (rewardAsset === undefined ||
+            !REWARD_ASSET_NETWORK_IDS.includes(reward.chain) ||
+            reward.paymentMode !== "disabled")) ||
       reward.unusedFunds !== "rollover-without-cap-increase" ||
       (paymentsDisabled
         ? !(
@@ -1077,13 +1154,11 @@ function validateProjectDefinition(
     allowLegacyMissingListingTier && !("listingTier" in project)
       ? [
           ...PROJECT_KEYS.filter((key) => key !== "listingTier"),
-          ...(Object.hasOwn(project, "escrow") ? ["escrow"] : []),
-          ...(Object.hasOwn(project, "participation") ? ["participation"] : []),
+          ...OPTIONAL_PROJECT_KEYS.filter((key) => Object.hasOwn(project, key)),
         ]
       : [
           ...PROJECT_KEYS,
-          ...(Object.hasOwn(project, "escrow") ? ["escrow"] : []),
-          ...(Object.hasOwn(project, "participation") ? ["participation"] : []),
+          ...OPTIONAL_PROJECT_KEYS.filter((key) => Object.hasOwn(project, key)),
         ],
     "project",
   );
@@ -1110,6 +1185,8 @@ function validateProjectDefinition(
   text(project.eyebrow, "project.eyebrow", { max: 80, min: 3 });
   text(project.headline, "project.headline", { max: 120, min: 8 });
   text(project.description, "project.description", { max: 600, min: 24 });
+  if (project.contribution !== undefined)
+    validateContribution(project.contribution);
   if (
     !(allowLegacyMissingListingTier && !("listingTier" in project)) &&
     project.listingTier !== "featured" &&
@@ -1182,9 +1259,27 @@ function validateProjectDefinition(
     "project.reviewSkill",
     `review-${id}-contributions`,
   );
+  if (project.rewardAsset !== undefined) {
+    assertRewardAsset(project.rewardAsset);
+    if (project.reward?.kind !== "monthly-pool")
+      throw new TypeError("project.rewardAsset requires a monthly pool");
+  }
+  // Generated skills render from both templates and the maintainer fields.
+  const generated =
+    project.skill.sourcePath === PROJECT_SKILL_TEMPLATES.contributor;
+  if (
+    generated !==
+      (project.reviewSkill.sourcePath === PROJECT_SKILL_TEMPLATES.reviewer) ||
+    (generated && project.contribution === undefined)
+  ) {
+    throw new TypeError(
+      "generated project skills need both templates and project.contribution",
+    );
+  }
   validateReward(project.reward, "project.reward", {
     allowLegacyExternalPrizeFee,
     escrow: project.escrow,
+    rewardAsset: project.rewardAsset,
   });
   validateFunding(project.funding, id, project.reward.chain);
   if (

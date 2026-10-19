@@ -13,6 +13,9 @@ import {
   useRef,
   useState,
 } from "react";
+import contributorTemplate from "../skills/project-contributor-template/SKILL.md?raw";
+import reviewerTemplate from "../skills/project-reviewer-template/SKILL.md?raw";
+import { CONTRIBUTION_LABELS } from "./lib/contribution-fields";
 import {
   type AdminProject,
   type ProjectApplication,
@@ -20,6 +23,21 @@ import {
   projectApiRequest,
   useProjectSession,
 } from "./lib/project-api";
+import {
+  CONTRIBUTION_FIELDS,
+  type ContributionField,
+  PROJECT_SKILL_TEMPLATES,
+} from "./lib/project-schema.mjs";
+import {
+  renderProjectSkill,
+  usesGeneratedSkills,
+} from "./lib/project-skill.mjs";
+import type { ProjectDefinition } from "./lib/projects.mjs";
+import {
+  REWARD_ASSET_NETWORKS,
+  type RewardAssetNetwork,
+  rewardAssetChoice,
+} from "./lib/reward-asset.mjs";
 import { loginHref } from "./Points";
 
 function errorMessage(error: unknown): string {
@@ -134,6 +152,78 @@ const selectApplications = (body: { applications: ProjectApplication[] }) =>
   body.applications;
 const selectProjects = (body: { projects: AdminProject[] }) => body.projects;
 
+const decoder = new TextDecoder();
+
+/**
+ * Shows the exact generated SKILL.md and project.json an admin approves
+ * (PRD PRJ-02). The shared scripts come unchanged from the template.
+ */
+function GeneratedSkillPreview({
+  manifest,
+  registry,
+}: {
+  manifest: ProjectDefinition;
+  registry: { revision: number; manifestSha256: string };
+}) {
+  if (!usesGeneratedSkills(manifest))
+    return (
+      <p className="admin-status">
+        This project uses committed skills at {manifest.skill.sourcePath}.
+      </p>
+    );
+  let previews: { role: string; files: Record<string, Uint8Array> }[];
+  try {
+    previews = [
+      {
+        role: "Contributor skill",
+        files: renderProjectSkill({
+          role: "contributor",
+          templateFiles: { "SKILL.md": contributorTemplate },
+          manifest,
+          registry,
+        }),
+      },
+      {
+        role: "Reviewer skill",
+        files: renderProjectSkill({
+          role: "reviewer",
+          templateFiles: { "SKILL.md": reviewerTemplate },
+          manifest,
+          registry,
+        }),
+      },
+    ];
+  } catch (caught) {
+    return (
+      <p className="form-error" role="alert">
+        <CircleAlert aria-hidden="true" /> {errorMessage(caught)}
+      </p>
+    );
+  }
+  return (
+    <>
+      {previews.map(({ role, files }) => (
+        <details key={role}>
+          <summary>Preview generated {role.toLowerCase()}</summary>
+          {Object.entries(files).map(([path, contents]) => (
+            <div key={path}>
+              <h4>{path}</h4>
+              {/* A read-only text area keeps long code keyboard-scrollable. */}
+              <textarea
+                aria-label={`${role} ${path}`}
+                className="admin-code"
+                readOnly
+                spellCheck={false}
+                value={decoder.decode(contents)}
+              />
+            </div>
+          ))}
+        </details>
+      ))}
+    </>
+  );
+}
+
 function ApplicationCard({
   application,
   onDecided,
@@ -211,6 +301,10 @@ function ApplicationCard({
           <dd>{formatTime(application.submittedAt)} UTC</dd>
         </div>
         <div>
+          <dt>GitHub check</dt>
+          <dd>{application.githubCheck ?? "Not recorded"}</dd>
+        </div>
+        <div>
           <dt>Admin email</dt>
           <dd>
             {application.adminNotification === "sent"
@@ -237,8 +331,19 @@ function ApplicationCard({
       <p className="admin-criteria">{application.acceptanceCriteria}</p>
       <details>
         <summary>Submitted manifest</summary>
-        <pre>{JSON.stringify(manifest, null, 2)}</pre>
+        <textarea
+          aria-label="Submitted manifest"
+          className="admin-code"
+          readOnly
+          spellCheck={false}
+          value={JSON.stringify(manifest, null, 2)}
+        />
       </details>
+      {/* Approval appends this manifest as revision 1. */}
+      <GeneratedSkillPreview
+        manifest={manifest}
+        registry={{ revision: 1, manifestSha256: application.manifestSha256 }}
+      />
       {application.status === "pending" ? (
         <div className="admin-actions">
           <label>
@@ -333,41 +438,276 @@ function ApplicationsSection({ onDecided }: { onDecided: () => void }) {
   );
 }
 
+type AssetDraft = {
+  network: RewardAssetNetwork;
+  kind: "stablecoin" | "token";
+  address: string;
+  symbol: string;
+};
+
+function initialAsset(project: AdminProject): AssetDraft {
+  const asset = project.manifest.rewardAsset;
+  if (asset) return { ...asset };
+  const chain = project.manifest.reward.chain;
+  const network: RewardAssetNetwork =
+    chain && chain in REWARD_ASSET_NETWORKS ? chain : "base";
+  return {
+    network,
+    kind: "stablecoin",
+    address: REWARD_ASSET_NETWORKS[network].stablecoin.address,
+    symbol: REWARD_ASSET_NETWORKS[network].stablecoin.symbol,
+  };
+}
+
+/**
+ * Edits one project revision. The structured skill, reward asset and status
+ * fields replace the matching manifest keys when the revision is saved; the
+ * API validates the whole manifest and verifies a new token on chain.
+ */
 function ProjectEditor({
   project,
   onSaved,
 }: {
   project: AdminProject;
-  onSaved: () => void;
+  onSaved: (note: string) => void;
 }) {
   const [text, setText] = useState(() =>
     JSON.stringify(project.manifest, null, 2),
   );
+  const [skill, setSkill] = useState<Record<ContributionField, string>>(
+    () =>
+      Object.fromEntries(
+        CONTRIBUTION_FIELDS.map((field) => [
+          field,
+          project.manifest.contribution?.[field] ?? "",
+        ]),
+      ) as Record<ContributionField, string>,
+  );
+  const [asset, setAsset] = useState<AssetDraft>(() => initialAsset(project));
+  const [status, setStatus] = useState(project.status);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const skillStarted = CONTRIBUTION_FIELDS.some(
+    (field) => skill[field].trim() !== "",
+  );
+  const skillErrors = Object.fromEntries(
+    CONTRIBUTION_FIELDS.map((field) => {
+      const value = skill[field].trim();
+      const minimum = field === "approvedScope" ? 6 : 0;
+      return [
+        field,
+        skillStarted && (value.length < minimum || value.length > 2000)
+          ? `${CONTRIBUTION_LABELS[field].label} must be ${minimum} to 2000 characters.`
+          : null,
+      ];
+    }),
+  ) as Record<ContributionField, string | null>;
+  const network = REWARD_ASSET_NETWORKS[asset.network];
   const save = (event: FormEvent) => {
     event.preventDefault();
-    let manifest: unknown;
+    let manifest: Record<string, unknown>;
     try {
-      manifest = JSON.parse(text);
+      manifest = JSON.parse(text) as Record<string, unknown>;
     } catch {
       setError("The manifest is not valid JSON.");
       return;
     }
+    if (Object.values(skillErrors).some((value) => value !== null)) {
+      setError(
+        "Complete the approved scope, or clear every contribution field.",
+      );
+      return;
+    }
+    let choice: ReturnType<typeof rewardAssetChoice>;
+    try {
+      choice = rewardAssetChoice(
+        asset.network,
+        asset.kind,
+        asset.address,
+        asset.symbol,
+      );
+    } catch (caught) {
+      setError(errorMessage(caught));
+      return;
+    }
+    const { contribution: _skill, rewardAsset: _asset, ...rest } = manifest;
+    const next = {
+      ...rest,
+      status,
+      // Contribution fields and the canonical templates go together: Slop
+      // generates both skills from them (PRD SKL-03).
+      ...(skillStarted
+        ? {
+            contribution: Object.fromEntries(
+              CONTRIBUTION_FIELDS.map((field) => [
+                field,
+                skill[field].replaceAll("\r\n", "\n").trim(),
+              ]),
+            ),
+            skill: {
+              ...(rest.skill as Record<string, unknown>),
+              sourcePath: PROJECT_SKILL_TEMPLATES.contributor,
+            },
+            reviewSkill: {
+              ...(rest.reviewSkill as Record<string, unknown>),
+              sourcePath: PROJECT_SKILL_TEMPLATES.reviewer,
+            },
+          }
+        : {}),
+      ...((rest.reward as { kind?: unknown } | undefined)?.kind ===
+      "monthly-pool"
+        ? { rewardAsset: choice }
+        : {}),
+    };
     setBusy(true);
     setError(null);
     projectApiRequest(
       "PUT",
       `admin/projects/${encodeURIComponent(project.id)}/manifest`,
-      { manifest, expectedRevision: project.revision, reason },
-    ).then(onSaved, (caught: unknown) => {
-      setBusy(false);
-      setError(errorMessage(caught));
-    });
+      { manifest: next, expectedRevision: project.revision, reason },
+    ).then(
+      () => onSaved(SAVED_NOTE),
+      (caught: unknown) => {
+        setBusy(false);
+        setError(errorMessage(caught));
+      },
+    );
   };
   return (
     <form className="admin-editor" onSubmit={save}>
+      <fieldset className="admin-fieldset">
+        <legend>Status</legend>
+        <label>
+          Project status
+          <select
+            onChange={(event) =>
+              setStatus(event.target.value as AdminProject["status"])
+            }
+            value={status}
+          >
+            <option value="paused">Paused</option>
+            <option value="active">Active</option>
+          </select>
+        </label>
+        <p className="admin-status">
+          A project can become active only with its contribution fields.
+        </p>
+      </fieldset>
+      <fieldset className="admin-fieldset">
+        <legend>Generated skill contribution fields</legend>
+        <p className="admin-status">
+          The generated skills carry these fields as data in project.json; they
+          never become skill instructions.
+        </p>
+        {CONTRIBUTION_FIELDS.map((field) => (
+          <label key={field}>
+            {CONTRIBUTION_LABELS[field].label}
+            <textarea
+              aria-invalid={skillErrors[field] ? true : undefined}
+              onChange={(event) =>
+                setSkill((current) => ({
+                  ...current,
+                  [field]: event.target.value,
+                }))
+              }
+              rows={field === "securityContact" ? 1 : 4}
+              value={skill[field]}
+            />
+            {skillErrors[field] ? (
+              <small className="field-error">{skillErrors[field]}</small>
+            ) : (
+              <small className="field-hint">
+                {CONTRIBUTION_LABELS[field].hint}
+              </small>
+            )}
+          </label>
+        ))}
+      </fieldset>
+      <fieldset className="admin-fieldset">
+        <legend>Reward asset</legend>
+        <label>
+          Network
+          <select
+            onChange={(event) => {
+              const id = event.target.value as RewardAssetNetwork;
+              setAsset((current) => ({
+                ...current,
+                network: id,
+                ...(current.kind === "stablecoin"
+                  ? {
+                      address: REWARD_ASSET_NETWORKS[id].stablecoin.address,
+                      symbol: REWARD_ASSET_NETWORKS[id].stablecoin.symbol,
+                    }
+                  : {}),
+              }));
+            }}
+            value={asset.network}
+          >
+            {Object.entries(REWARD_ASSET_NETWORKS).map(([id, definition]) => (
+              <option key={id} value={id}>
+                {definition.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Asset
+          <select
+            onChange={(event) => {
+              const kind = event.target.value as AssetDraft["kind"];
+              setAsset((current) => ({
+                ...current,
+                kind,
+                address:
+                  kind === "stablecoin" ? network.stablecoin.address : "",
+                symbol: kind === "stablecoin" ? network.stablecoin.symbol : "",
+              }));
+            }}
+            value={asset.kind}
+          >
+            <option value="stablecoin">
+              {network.stablecoin.symbol} (network stablecoin)
+            </option>
+            <option value="token">Another token</option>
+          </select>
+        </label>
+        {asset.kind === "token" ? (
+          <>
+            <label>
+              Token address
+              <input
+                onChange={(event) =>
+                  setAsset((current) => ({
+                    ...current,
+                    address: event.target.value,
+                  }))
+                }
+                spellCheck={false}
+                value={asset.address}
+              />
+            </label>
+            <label>
+              Token symbol
+              <input
+                onChange={(event) =>
+                  setAsset((current) => ({
+                    ...current,
+                    symbol: event.target.value,
+                  }))
+                }
+                value={asset.symbol}
+              />
+            </label>
+          </>
+        ) : null}
+        <p className="admin-status">
+          {project.manifest.rewardAsset
+            ? `Stored: ${project.manifest.rewardAsset.symbol}, ${project.manifest.rewardAsset.decimals} decimals, verified ${formatTime(project.manifest.rewardAsset.verifiedAt)} UTC.`
+            : "No reward asset is stored yet."}{" "}
+          A changed token is read from chain once when you save.
+        </p>
+      </fieldset>
       <label>
         Manifest (revision {project.revision})
         <textarea
@@ -401,19 +741,106 @@ function ProjectEditor({
   );
 }
 
+/** Public reads are edge cached for 30 seconds and purged on each write. */
+const SAVED_NOTE = "Saved. The public site shows the change within a minute.";
+
+/** Delisting keeps history: the project becomes paused and retired. */
+function DelistButton({
+  project,
+  onDone,
+}: {
+  project: AdminProject;
+  onDone: (note: string) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (project.manifest.listingTier === "retired")
+    return <p className="admin-status">Delisted.</p>;
+  const delist = () => {
+    setBusy(true);
+    setError(null);
+    projectApiRequest(
+      "PUT",
+      `admin/projects/${encodeURIComponent(project.id)}/manifest`,
+      {
+        manifest: {
+          ...project.manifest,
+          status: "paused",
+          listingTier: "retired",
+        },
+        expectedRevision: project.revision,
+        reason: "Delisted by an admin",
+      },
+    ).then(
+      () => onDone(SAVED_NOTE),
+      (caught: unknown) => {
+        setBusy(false);
+        setError(errorMessage(caught));
+      },
+    );
+  };
+  return (
+    <div className="admin-actions">
+      {error ? (
+        <p className="form-error" role="alert">
+          <CircleAlert aria-hidden="true" /> {error}
+        </p>
+      ) : null}
+      {confirming ? (
+        <div>
+          <span>Hide this project from every page and list?</span>
+          <button
+            className="button danger-button"
+            disabled={busy}
+            onClick={delist}
+            type="button"
+          >
+            {busy ? "Delisting…" : "Delist project"}
+          </button>
+          <button
+            className="button ghost-button"
+            onClick={() => setConfirming(false)}
+            type="button"
+          >
+            Keep listed
+          </button>
+        </div>
+      ) : (
+        <div>
+          <button
+            className="button ghost-button"
+            onClick={() => setConfirming(true)}
+            type="button"
+          >
+            Delist
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProjectsSection() {
   const [state, reload] = useAdminData("admin/projects", selectProjects);
   const [editing, setEditing] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   return (
     <section aria-labelledby="admin-projects" className="admin-section">
       <div className="admin-section-heading">
         <h2 id="admin-projects">Projects</h2>
       </div>
       <p className="admin-status">
-        Approved projects start paused. The public site lists registry changes
-        after the next build. A project can open only after its reviewed
-        contributor and reviewer skills are on the development branch.
+        Approved projects start paused and collect nothing until an admin makes
+        them active. Slop generates each project's skills from its approved
+        revision; preview them before activation. The public site shows each
+        saved revision within a minute, without a rebuild.
       </p>
+      {note ? (
+        <p className="admin-status" role="status">
+          {note}
+        </p>
+      ) : null}
       {state.status !== "ready" ? (
         <LoadNotice label="projects" retry={reload} state={state} />
       ) : state.value.length === 0 ? (
@@ -442,15 +869,24 @@ function ProjectsSection() {
               <div>
                 <dt>Skills</dt>
                 <dd>
-                  {project.manifest.skill.sourcePath} ·{" "}
-                  {project.manifest.reviewSkill.sourcePath}
+                  {usesGeneratedSkills(project.manifest)
+                    ? `Generated from revision ${project.revision}`
+                    : `${project.manifest.skill.sourcePath} · ${project.manifest.reviewSkill.sourcePath}`}
                 </dd>
               </div>
             </dl>
+            <GeneratedSkillPreview
+              manifest={project.manifest}
+              registry={{
+                revision: project.revision,
+                manifestSha256: project.manifestSha256,
+              }}
+            />
             {editing === project.id ? (
               <ProjectEditor
-                onSaved={() => {
+                onSaved={(saved) => {
                   setEditing(null);
+                  setNote(saved);
                   reload();
                 }}
                 project={project}
@@ -464,6 +900,13 @@ function ProjectsSection() {
                 Edit manifest
               </button>
             )}
+            <DelistButton
+              onDone={(saved) => {
+                setNote(saved);
+                reload();
+              }}
+              project={project}
+            />
           </article>
         ))
       )}

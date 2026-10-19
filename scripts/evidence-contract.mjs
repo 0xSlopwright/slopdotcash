@@ -6,7 +6,6 @@
 
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
-import { PROJECTS } from "../src/lib/projects.mjs";
 import {
   PRIMARY_REPOSITORY,
   TARGET_REPOSITORIES,
@@ -16,39 +15,15 @@ export const PRODUCTION_ORIGIN = "https://slop.cash";
 export const PRODUCTION_HOSTNAME = "slop.cash";
 export const LIVE_LEDGER_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 const FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1000;
-const rootPublishedProjects = PROJECTS.filter(
-  (project) => project.skill.publishAtRoot === true,
-);
-if (rootPublishedProjects.length > 1) {
-  throw new TypeError(
-    "evidence contract allows at most one root-published project skill",
-  );
-}
-const rootPublishedProject = rootPublishedProjects[0];
-// The root installer exists only while a project publishes at the root.
-const rootArchiveName = rootPublishedProject
-  ? `${rootPublishedProject.skill.id}.skill`
-  : null;
+// Project skills, the project discovery index and terms are Pages Function
+// responses rendered from D1, so they are not static release artifacts.
 export const REMOTE_ARTIFACT_PATHS = [
   "index.html",
   "SKILL.md",
   ".well-known/agent-skills/index.json",
   ".well-known/agent-skills/slop/SKILL.md",
-  ".well-known/slop/projects.json",
   "llms.txt",
-  ...(rootPublishedProject
-    ? [
-        `projects/${rootPublishedProject.id}/skill.md`,
-        "mission.md",
-        "codex.md",
-        "claude.md",
-        "claude-code.md",
-      ]
-    : []),
   "skill-manifest.json",
-  ...(rootArchiveName
-    ? [`downloads/${rootArchiveName}`, `downloads/${rootArchiveName}.sha256`]
-    : []),
   "data/leaderboard.json",
 ];
 

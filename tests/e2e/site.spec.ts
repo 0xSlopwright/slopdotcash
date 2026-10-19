@@ -915,7 +915,7 @@ test("makes the public project draft boundary unmistakable", async ({
   ).toEqual([]);
 });
 
-test("serves byte-consistent install and read-only artifacts for every project", {
+test("serves byte-consistent bootstrap and read-only site artifacts", {
   tag: ["@pages", "@pages-only"],
 }, async ({ baseURL, request }) => {
   const documentResponse = await request.get("/");
@@ -981,7 +981,6 @@ test("serves byte-consistent install and read-only artifacts for every project",
     discoverySkillResponse,
     identityResponse,
     privateTraceContractResponse,
-    projectDiscoveryResponse,
     llmsResponse,
   ] = await Promise.all([
     request.get("/SKILL.md"),
@@ -989,7 +988,6 @@ test("serves byte-consistent install and read-only artifacts for every project",
     request.get("/.well-known/agent-skills/slop/SKILL.md"),
     request.get("/protocol/identity-v1.json"),
     request.get("/protocol/private-trace-v1.md"),
-    request.get("/.well-known/slop/projects.json"),
     request.get("/llms.txt"),
   ]);
   for (const response of [
@@ -998,19 +996,15 @@ test("serves byte-consistent install and read-only artifacts for every project",
     discoverySkillResponse,
     identityResponse,
     privateTraceContractResponse,
-    projectDiscoveryResponse,
     llmsResponse,
   ]) {
     expect(response.status()).toBe(200);
   }
-  const [missingDiscovery, missingProjectArtifact] = await Promise.all([
-    request.get("/.well-known/slop/missing.json"),
-    request.get("/projects/not-a-project/skill-manifest.json"),
-  ]);
-  for (const response of [missingDiscovery, missingProjectArtifact]) {
-    expect(response.status()).toBe(404);
-    expect(await response.text()).not.toContain('<div id="root"></div>');
-  }
+  // Project skills, terms and the project discovery index are rendered from
+  // D1 by a Pages Function; the registry lane covers them.
+  const missingDiscovery = await request.get("/.well-known/slop/missing.json");
+  expect(missingDiscovery.status()).toBe(404);
+  expect(await missingDiscovery.text()).not.toContain('<div id="root"></div>');
   expect(bootstrapResponse.headers()["content-type"]).toContain(
     "text/markdown",
   );
@@ -1034,9 +1028,6 @@ test("serves byte-consistent install and read-only artifacts for every project",
     identityVersion: "slop-identity-v1",
     paymentMode: "disabled",
   });
-  expect(projectDiscoveryResponse.headers()["content-type"]).toContain(
-    "application/json",
-  );
   expect(llmsResponse.headers()["content-type"]).toContain("text/plain");
   const bootstrap = await bootstrapResponse.body();
   const bootstrapDigest = createHash("sha256").update(bootstrap).digest("hex");
@@ -1062,122 +1053,9 @@ test("serves byte-consistent install and read-only artifacts for every project",
   });
   expect(await discoverySkillResponse.body()).toEqual(bootstrap);
   expect(await llmsResponse.text()).toContain(`SHA-256: ${bootstrapDigest}`);
-  const projectDiscovery = await projectDiscoveryResponse.json();
-  expect(projectDiscovery).toEqual({
-    schemaVersion: "1",
-    projects: PROJECTS.flatMap((project) =>
-      project.repositories.map((repository) => ({
-        project_id: project.id,
-        project_url: `https://slop.cash/projects/${project.id}/`,
-        repository: repository.aliases?.at(-1) ?? repository.id,
-        review_skill: project.reviewSkill.id,
-        review_skill_manifest: `https://slop.cash/projects/${project.id}/review-skill-manifest.json`,
-        skill: project.skill.id,
-        skill_source: project.skill.sourcePath,
-      })),
-    ),
-  });
-
-  expect(
-    projectDiscovery.projects.find(
-      (project: { project_id: string }) => project.project_id === "asi",
-    )?.repository,
-  ).toBe("SlopDotCash/asi");
-
-  for (const project of PROJECTS) {
-    const root = `/projects/${project.id}`;
-    const [
-      skillResponse,
-      manifestResponse,
-      missionResponse,
-      codexResponse,
-      claudeResponse,
-      claudeCodeResponse,
-      termsResponse,
-    ] = await Promise.all([
-      request.get(`${root}/skill.md`),
-      request.get(`${root}/skill-manifest.json`),
-      request.get(`${root}/mission.md`),
-      request.get(`${root}/codex.md`),
-      request.get(`${root}/claude.md`),
-      request.get(`${root}/claude-code.md`),
-      request.get(`${root}/terms.json`),
-    ]);
-    for (const response of [
-      skillResponse,
-      manifestResponse,
-      missionResponse,
-      codexResponse,
-      claudeResponse,
-      claudeCodeResponse,
-      termsResponse,
-    ]) {
-      expect(response.status()).toBe(200);
-    }
-    for (const response of [
-      skillResponse,
-      missionResponse,
-      codexResponse,
-      claudeResponse,
-      claudeCodeResponse,
-    ]) {
-      expect(response.headers()["content-type"]).toContain("text/markdown");
-      expect(response.headers()["access-control-allow-origin"]).toBe("*");
-      expect(response.headers()["cache-control"]).toContain("max-age=300");
-    }
-    expect(manifestResponse.headers()["content-type"]).toContain(
-      "application/json",
-    );
-    expect(manifestResponse.headers()["access-control-allow-origin"]).toBe("*");
-    expect(manifestResponse.headers()["cache-control"]).toContain(
-      "max-age=300",
-    );
-    expect(termsResponse.headers()["content-type"]).toContain(
-      "application/json",
-    );
-    expect(await termsResponse.json()).toEqual({
-      schemaVersion: "1",
-      projectId: project.id,
-      status: project.status,
-      steward: project.steward,
-      authority: project.authority,
-      terms: project.terms,
-    });
-    const skillBytes = await skillResponse.body();
-    const manifest = (await manifestResponse.json()) as {
-      archive: { sha256: string; url: string; checksumUrl: string };
-      name: string;
-      source: { sha256: string };
-    };
-    expect(manifest.name).toBe(project.skill.id);
-    expect(manifest.source.sha256).toBe(
-      createHash("sha256").update(skillBytes).digest("hex"),
-    );
-
-    const [archiveResponse, checksumResponse] = await Promise.all([
-      request.get(new URL(manifest.archive.url).pathname),
-      request.get(new URL(manifest.archive.checksumUrl).pathname),
-    ]);
-    expect(archiveResponse.status()).toBe(200);
-    expect(checksumResponse.status()).toBe(200);
-    expect(archiveResponse.headers()["content-type"]).toContain(
-      "application/octet-stream",
-    );
-    expect(archiveResponse.headers()["content-disposition"]).toBe("attachment");
-    expect(archiveResponse.headers()["access-control-allow-origin"]).toBe("*");
-    const archive = await archiveResponse.body();
-    expect(createHash("sha256").update(archive).digest("hex")).toBe(
-      manifest.archive.sha256,
-    );
-    expect(await checksumResponse.text()).toContain(manifest.archive.sha256);
-    expect(await missionResponse.text()).toContain(`name: ${project.skill.id}`);
-    expect(await codexResponse.text()).toContain(
-      `SKILLS_ROOT="\${HOME}/.agents/skills"`,
-    );
-    const claudeGuide = await claudeResponse.text();
-    expect(claudeGuide).toContain("CLAUDE_CONFIG_DIR");
-    expect(await claudeCodeResponse.text()).toBe(claudeGuide);
-  }
+  expect(bootstrap.toString()).toContain(
+    "optional permanent minimized trace upload",
+  );
 });
 
 test("shows an explicit error for invalid data and retries", async ({

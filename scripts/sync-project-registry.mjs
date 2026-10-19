@@ -3,11 +3,12 @@
  * its append-only revision history. The live registry is served by
  * GET /api/v1/projects and GET /api/v1/project-revisions; sync mode downloads
  * both and check mode proves the committed snapshot is canonical, matches the
- * newest revision of every project, and names only skills in this tree.
+ * newest revision of every project, and that every active project carries
+ * the content its generated skills need.
  */
 
 import { createHash } from "node:crypto";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -28,23 +29,16 @@ const DEFAULT_API_ORIGIN = "https://slop.cash";
 const MAX_REGISTRY_BYTES = 4 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 30_000;
 
-/** An active project must name skills that exist in this reviewed tree. */
-async function assertPublishedSkillsExist(definitions) {
+/**
+ * Project skills are generated from the manifest and the reviewed template,
+ * so an active project must carry complete skill content.
+ */
+function assertActiveSkillContent(definitions) {
   for (const definition of definitions) {
-    if (definition.status !== "active") continue;
-    for (const skillPath of [
-      definition.skill.sourcePath,
-      definition.reviewSkill.sourcePath,
-    ]) {
-      try {
-        await access(resolve(REPOSITORY_ROOT, skillPath, "SKILL.md"));
-      } catch (error) {
-        throw new TypeError(
-          `Project ${definition.id} references a missing skill: ${skillPath}`,
-          { cause: error },
-        );
-      }
-    }
+    if (definition.status === "active" && definition.contribution === undefined)
+      throw new TypeError(
+        `Active project ${definition.id} has no generated-skill content`,
+      );
   }
 }
 
@@ -52,7 +46,7 @@ export async function renderProjectRegistry(values) {
   const definitions = [...assertProjectRegistry(values)].sort((left, right) =>
     left.id.localeCompare(right.id),
   );
-  await assertPublishedSkillsExist(definitions);
+  assertActiveSkillContent(definitions);
   const encodedDefinitions = JSON.stringify(definitions)
     .replaceAll("\\", "\\\\")
     .replaceAll("'", "\\'")
@@ -118,6 +112,9 @@ export function renderProjectRevisions(revisions, definitions) {
   return `${JSON.stringify(rows, null, 2)}\n`;
 }
 
+/** The target origin predates the registry API; its first deploy adds it. */
+export class RegistryNotDeployedError extends Error {}
+
 async function fetchJson(url) {
   const parsed = new URL(url);
   if (
@@ -131,6 +128,14 @@ async function fetchJson(url) {
     redirect: "error",
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
+  // Every registry API response carries its contract header. A 404 without
+  // it means the environment does not run the registry API yet.
+  if (
+    response.status === 404 &&
+    !response.headers.has("x-slop-project-api-contract")
+  ) {
+    throw new RegistryNotDeployedError(parsed.origin);
+  }
   if (!response.ok) {
     throw new Error(`${parsed.pathname} returned HTTP ${response.status}`);
   }
@@ -182,9 +187,21 @@ export async function syncProjectRegistry(checkOnly = false) {
     }
     return false;
   }
-  const { projects, revisions } = await fetchProjectRegistry(
-    process.env.SLOP_API_ORIGIN || DEFAULT_API_ORIGIN,
-  );
+  const origin = process.env.SLOP_API_ORIGIN || DEFAULT_API_ORIGIN;
+  let registry;
+  try {
+    registry = await fetchProjectRegistry(origin);
+  } catch (error) {
+    // Only the first rollout reaches this: the build that deploys the API
+    // cannot read it yet, so it publishes the committed snapshot. Once the
+    // API answers, every failure fails the build.
+    if (!(error instanceof RegistryNotDeployedError)) throw error;
+    process.stdout.write(
+      `::notice::${origin} does not serve the project registry API yet; publishing the committed snapshot\n`,
+    );
+    return false;
+  }
+  const { projects, revisions } = registry;
   const rendered = await renderProjectRegistry(projects);
   const renderedRevisions = renderProjectRevisions(
     revisions,
@@ -202,11 +219,13 @@ if (import.meta.main) {
       throw new TypeError("Usage: sync-project-registry.mjs [--check]");
     }
     const checkOnly = values[0] === "--check";
-    await syncProjectRegistry(checkOnly);
+    const synchronized = await syncProjectRegistry(checkOnly);
     process.stdout.write(
       checkOnly
         ? "[Slop] project registry snapshot is valid\n"
-        : "[Slop] synchronized project registry from D1\n",
+        : synchronized
+          ? "[Slop] synchronized project registry from D1\n"
+          : "[Slop] kept the committed project registry snapshot\n",
     );
   } catch (error) {
     // error-policy:J1 generator process boundary.
