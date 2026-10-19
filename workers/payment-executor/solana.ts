@@ -20,6 +20,7 @@ import {
   verifySolanaDeployment,
 } from "../../contracts/solana/adapter";
 import { decodeBase58Bytes } from "../../src/lib/base58";
+import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
 import {
   authorizeRegistry,
   authorizeWalletRotation,
@@ -186,8 +187,6 @@ function createAta(payer: string, mint: string, owner: string): Instruction {
   };
 }
 
-/** Solana mainnet genesis hash; used only when its reviewed MAINNET_EXECUTION value is on. */
-const SOLANA_MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 /** Rejects mainnet unless reviewed, and a wrong RPC genesis, before the hosted wrapper reads a signer seed. */
 export async function preflightSolanaDeployment(
   env: Preflight,
@@ -204,17 +203,18 @@ export async function preflightSolanaDeployment(
       d.chain === "solana",
   );
   if (matches.length !== 1) throw new Error("Ambiguous Solana deployment");
+  // A registry test cluster, or the mainnet only when its reviewed
+  // MAINNET_EXECUTION value is on; the genesis hash comes from the registry.
+  const cluster = Object.hasOwn(ESCROW_NETWORKS, input.network)
+    ? ESCROW_NETWORKS[input.network as keyof typeof ESCROW_NETWORKS]
+    : undefined;
   const expected =
-    input.network === "solana-devnet"
-      ? "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
-      : input.network === "solana-testnet"
-        ? "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
-        : input.network === "solana-mainnet" &&
-            mainnetExecutionEnabled(input.network)
-          ? SOLANA_MAINNET_GENESIS
-          : env.ALLOW_LOCAL_TEST_CHAIN && input.network === "solana-localnet"
-            ? env.LOCAL_SOLANA_GENESIS
-            : undefined;
+    cluster?.family === "solana" &&
+    (cluster.testnet || mainnetExecutionEnabled(input.network))
+      ? cluster.genesisHash
+      : env.ALLOW_LOCAL_TEST_CHAIN && input.network === "solana-localnet"
+        ? env.LOCAL_SOLANA_GENESIS
+        : undefined;
   if (!expected)
     throw new Error("Only approved Solana test clusters are supported");
   const rpcUrl = (JSON.parse(env.PAYMENT_RPC_URLS) as Record<string, string>)[

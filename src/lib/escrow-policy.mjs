@@ -6,7 +6,8 @@ import { isFundingAddress, isSolanaTransactionId } from "./funding-address.mjs";
  * implementation; `chain` is the wallet-claim and consent identity. EVM
  * networks also carry the executor gas ceiling (gas units) and the scanner
  * window (blocks per eth_getLogs page, inclusive), which the generated
- * deployment record copies so hosted workers never assume a value.
+ * deployment record copies so hosted workers never assume a value. Solana
+ * clusters carry their genesis hash, the RPC identity every check compares.
  *
  * Escrow v2 vaults accept any standard ERC-20 or classic SPL mint with any
  * decimals; a deployment's asset is not limited to the list here. `assets`
@@ -66,7 +67,12 @@ export const ESCROW_NETWORKS = Object.freeze({
     ],
   ),
   "solana-devnet": network(
-    { chain: "solana", family: "solana", testnet: true },
+    {
+      chain: "solana",
+      family: "solana",
+      testnet: true,
+      genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+    },
     [
       asset(
         "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
@@ -77,11 +83,21 @@ export const ESCROW_NETWORKS = Object.freeze({
     ],
   ),
   "solana-testnet": network(
-    { chain: "solana", family: "solana", testnet: true },
+    {
+      chain: "solana",
+      family: "solana",
+      testnet: true,
+      genesisHash: "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
+    },
     [],
   ),
   "solana-mainnet": network(
-    { chain: "solana", family: "solana", testnet: false },
+    {
+      chain: "solana",
+      family: "solana",
+      testnet: false,
+      genesisHash: "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+    },
     [
       asset(
         "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
@@ -169,6 +185,31 @@ export const ESCROW_NETWORKS = Object.freeze({
     ],
   ),
 });
+/**
+ * The worker record for one reviewed escrow deployment: the manifest fields
+ * plus the registry's chain, chain id, executor gas ceiling and scanner page
+ * size. Every payment worker and generator derives its records here, so no
+ * worker assumes a network value.
+ */
+export function paymentDeploymentRecord(projectId, deployment) {
+  const network = Object.hasOwn(ESCROW_NETWORKS, deployment?.network)
+    ? ESCROW_NETWORKS[deployment.network]
+    : undefined;
+  if (!network)
+    throw new TypeError(
+      `Unknown escrow network: ${String(deployment?.network)}`,
+    );
+  return {
+    projectId,
+    ...deployment,
+    chain: network.chain,
+    ...(network.chainId ? { chainId: network.chainId } : {}),
+    ...(network.gasCeiling ? { gasCeiling: network.gasCeiling } : {}),
+    ...(network.scanPageBlocks
+      ? { scanPageBlocks: network.scanPageBlocks }
+      : {}),
+  };
+}
 /** Chains a policy may name, in registry order; each maps to exactly one family. */
 export const ESCROW_CHAINS = Object.freeze([
   ...new Set(Object.values(ESCROW_NETWORKS).map((network) => network.chain)),

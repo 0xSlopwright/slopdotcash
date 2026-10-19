@@ -2,8 +2,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
-import { assertProjectDefinition } from "../../src/lib/project-schema.mjs";
+import {
+  ESCROW_NETWORKS,
+  paymentDeploymentRecord,
+} from "../../src/lib/escrow-policy.mjs";
+import { assertProjectRegistry } from "../../src/lib/project-schema.mjs";
+import { HISTORICAL_PROJECTS } from "../../src/lib/projects.mjs";
 
 // Local generation only: no resource creation, signing, secret reads, or deployment.
 const args = {};
@@ -49,6 +53,8 @@ const repository = resolve(root, "../..");
 const deployments = JSON.parse(await readFile(args.deployments, "utf8"));
 if (!Array.isArray(deployments) || !deployments.length)
   throw new Error("Expected reviewed deployment array");
+// The D1 project registry snapshot (`bun run projects:sync`) is the reviewed source.
+const registry = assertProjectRegistry(HISTORICAL_PROJECTS);
 const seen = new Set();
 for (const deployment of deployments) {
   if (
@@ -60,26 +66,11 @@ for (const deployment of deployments) {
       "Exactly one network and one deployment per project required",
     );
   seen.add(deployment.projectId);
-  const project = assertProjectDefinition(
-    JSON.parse(
-      await readFile(
-        resolve(repository, "projects", deployment.projectId, "project.json"),
-        "utf8",
-      ),
-    ),
-  );
-  const reviewed = project.escrow?.deployments.find(
+  const project = registry.find((item) => item.id === deployment.projectId);
+  const reviewed = project?.escrow?.deployments.find(
     (item) => item.network === network,
   );
-  const policy = ESCROW_NETWORKS[network];
-  const expected = reviewed && {
-    projectId: project.id,
-    ...reviewed,
-    chain: policy.chain,
-    ...(policy.chainId ? { chainId: policy.chainId } : {}),
-    ...(policy.gasCeiling ? { gasCeiling: policy.gasCeiling } : {}),
-    ...(policy.scanPageBlocks ? { scanPageBlocks: policy.scanPageBlocks } : {}),
-  };
+  const expected = reviewed && paymentDeploymentRecord(project.id, reviewed);
   if (!expected || !isDeepStrictEqual(expected, deployment))
     throw new Error(
       "Deployment differs from canonical project manifest; publish real chain evidence first",
@@ -115,12 +106,15 @@ for (const role of ["attester", "relayer", "dispatcher"]) {
     ...common,
     name: names[role],
     main: resolve(root, signer ? "index.ts" : "../payments/index.ts"),
-    vars: {
-      PAYMENT_DEPLOYMENTS: JSON.stringify(deployments),
-      ...(signer
-        ? { SIGNER_ROLE: role, CHAIN_FAMILY: ESCROW_NETWORKS[network].family }
-        : {}),
-    },
+    // Signers sign only for the deployments pinned here at review time. The
+    // dispatcher reads its vaults from the D1 registry of the same database.
+    vars: signer
+      ? {
+          PAYMENT_DEPLOYMENTS: JSON.stringify(deployments),
+          SIGNER_ROLE: role,
+          CHAIN_FAMILY: ESCROW_NETWORKS[network].family,
+        }
+      : { PAYMENT_NETWORKS: JSON.stringify([network]) },
     ...(signer
       ? {
           durable_objects: {

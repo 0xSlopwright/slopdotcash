@@ -67,6 +67,8 @@ export interface EscrowNetwork {
   gasCeiling?: string;
   /** EVM only: blocks per eth_getLogs page, inclusive, decimal string. */
   scanPageBlocks?: string;
+  /** Solana only: the cluster genesis hash that identifies its RPC. */
+  genesisHash?: string;
 }
 export declare const ESCROW_NETWORKS: Readonly<
   Record<EscrowDeployment["network"], EscrowNetwork>
@@ -80,3 +82,15 @@ export declare function assertEscrowTransition(
   previous: EscrowPolicy | undefined,
   next: EscrowPolicy | undefined,
 ): void;
+/** One reviewed deployment with the network registry's values, as the payment workers read it. */
+export type PaymentDeploymentRecord = EscrowDeployment & {
+  projectId: string;
+  chain: EscrowChain;
+  chainId?: string;
+  gasCeiling?: string;
+  scanPageBlocks?: string;
+};
+export declare function paymentDeploymentRecord(
+  projectId: string,
+  deployment: EscrowDeployment,
+): PaymentDeploymentRecord;
