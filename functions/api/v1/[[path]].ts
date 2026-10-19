@@ -3,6 +3,10 @@ import {
   handleFeeConversionsApi,
 } from "../../../backend/fee-conversions/handler";
 import {
+  handleNotificationsApi,
+  type NotificationsDependencies,
+} from "../../../backend/notifications/handler";
+import {
   handlePaymentsApi,
   type PaymentsDependencies,
 } from "../../../backend/payments/handler";
@@ -33,7 +37,10 @@ import type { ProjectDefinition } from "../../../src/lib/projects.mjs";
 
 type Env = {
   SLOP_ENVIRONMENT?: "production" | "staging";
-  SLOP_DB: D1Database & ProjectD1Database & FeeConversionsDependencies["db"];
+  SLOP_DB: D1Database &
+    ProjectD1Database &
+    FeeConversionsDependencies["db"] &
+    NotificationsDependencies["db"];
   PAYMENTS_ALLOWED_ORIGIN?: string;
   PRIVATE_TRACES: R2Bucket;
   TRACE_AUTH_SECRET: string;
@@ -320,6 +327,17 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     },
   );
   if (feeConversionsResponse !== null) return feeConversionsResponse;
+  const notificationsResponse = await handleNotificationsApi(context.request, {
+    db: context.env.SLOP_DB,
+    sessionActor: (request) =>
+      sessionGithubActor(
+        request,
+        context.env.SLOP_DB,
+        new Date().toISOString(),
+      ),
+    now: () => new Date(),
+  });
+  if (notificationsResponse !== null) return notificationsResponse;
   if (new URL(context.request.url).pathname.startsWith("/api/v1/payments/"))
     return handlePaymentsApi(context.request, {
       db: context.env.SLOP_DB,

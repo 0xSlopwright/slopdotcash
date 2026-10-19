@@ -1,3 +1,4 @@
+import { notifyPayoutHeld } from "../notifications/events";
 import type { D1Database } from "../trace/cloudflare-persistence";
 
 export interface DispatchPayment {
@@ -46,12 +47,14 @@ export async function dispatchPayment(
     .bind(obligationId)
     .first<DispatchPayment>();
   if (!payment) {
-    await db
-      .prepare(
-        "UPDATE payment_outbox SET state='held',lease_token=NULL,lease_until=NULL,updated_at=? WHERE obligation_id=? AND lease_token=?",
-      )
-      .bind(timestamp, obligationId, lease)
-      .run();
+    await db.batch([
+      db
+        .prepare(
+          "UPDATE payment_outbox SET state='held',lease_token=NULL,lease_until=NULL,updated_at=? WHERE obligation_id=? AND lease_token=?",
+        )
+        .bind(timestamp, obligationId, lease),
+      notifyPayoutHeld(db, obligationId, timestamp),
+    ]);
     return "unavailable";
   }
   const previous = await db
@@ -62,12 +65,14 @@ export async function dispatchPayment(
     .first<{ id: string; claim_id: string }>();
   // A changed destination never starts a competing transfer while the old attempt is uncertain.
   if (previous && previous.claim_id !== payment.claimId) {
-    await db
-      .prepare(
-        "UPDATE payment_outbox SET state='held',lease_token=NULL,lease_until=NULL,updated_at=? WHERE obligation_id=? AND lease_token=?",
-      )
-      .bind(timestamp, obligationId, lease)
-      .run();
+    await db.batch([
+      db
+        .prepare(
+          "UPDATE payment_outbox SET state='held',lease_token=NULL,lease_until=NULL,updated_at=? WHERE obligation_id=? AND lease_token=?",
+        )
+        .bind(timestamp, obligationId, lease),
+      notifyPayoutHeld(db, obligationId, timestamp),
+    ]);
     return "unavailable";
   }
   const id = previous?.id ?? crypto.randomUUID();

@@ -4,6 +4,10 @@ import {
   type PaymentChain,
   payoutFee,
 } from "../../src/lib/payments/contracts";
+import {
+  notifyAwardReserved,
+  notifyPaymentPaid,
+} from "../notifications/events";
 import type { D1Database } from "../trace/cloudflare-persistence";
 
 export interface FinalizedPaymentEvent {
@@ -206,6 +210,7 @@ export async function indexPaymentEvent(
         )
         .bind(now, event.obligationId),
     );
+    statements.push(notifyAwardReserved(db, event.obligationId, now));
   } else {
     statements.push(
       db
@@ -227,6 +232,9 @@ export async function indexPaymentEvent(
           "UPDATE payment_attempts SET state='finalized' WHERE obligation_id=? AND transaction_id=?",
         )
         .bind(event.obligationId, event.transactionId),
+    );
+    statements.push(
+      notifyPaymentPaid(db, event.obligationId, event.transactionId, now),
     );
   }
   const result = await db.batch(statements);

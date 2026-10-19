@@ -54,6 +54,7 @@ beforeEach(() => {
     sqliteD1([
       "0019_project_registry.sql",
       "0020_project_application_github_check.sql",
+      "0024_notifications.sql",
     ]).db,
   );
   cache = new MemoryCache();

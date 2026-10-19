@@ -25,6 +25,7 @@
     "src/lib/funding-review-data.ts",
     "src/lib/contribution-quality.ts",
     "src/lib/browser-json.ts",
+    "src/lib/notifications.ts",
     "src/lib/github-actor.ts",
     "vite.config.ts",
     "playwright.config.ts",
