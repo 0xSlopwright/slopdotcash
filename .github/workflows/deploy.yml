@@ -734,33 +734,42 @@ jobs:
             --remote \
             --config workers/identity/wrangler.toml
           bun scripts/prepare-points-import.ts dist "$RUNNER_TEMP/points-import.sql"
-          points_log="$RUNNER_TEMP/points-import.log"
-          if ! ./node_modules/.bin/wrangler d1 execute slop-private \
-            --remote --config workers/identity/wrangler.toml \
-            --file "$RUNNER_TEMP/points-import.sql" 2>&1 | tee "$points_log"; then
-            # D1's import API can apply every statement and then answer the
-            # final status poll with "Not currently importing anything". The
-            # import is idempotent and keyed by its batch digest, so accept
-            # only that exact error and only when the batch is recorded.
-            grep -q "Not currently importing anything" "$points_log" || exit 1
-            points_digest="$(sed -n "s/^INSERT INTO points_batches(digest,[^)]*) VALUES('\([0-9a-f]\{64\}\)'.*/\1/p" "$RUNNER_TEMP/points-import.sql")"
-            points_revisions="$(grep -c '^INSERT INTO points_staging(' "$RUNNER_TEMP/points-import.sql")"
-            [ "${#points_digest}" -eq 64 ] || exit 1
-            points_check="$RUNNER_TEMP/points-batch.json"
+          # D1's import API can time out on upload (504) or apply every
+          # statement and then answer the final poll with "Not currently
+          # importing anything". A failed import rolls back, and every
+          # statement is idempotent and keyed by the batch digest, so retry
+          # and accept a failed attempt only when the batch is recorded.
+          points_digest="$(sed -n "s/^INSERT INTO points_batches(digest,[^)]*) VALUES('\([0-9a-f]\{64\}\)'.*/\1/p" "$RUNNER_TEMP/points-import.sql")"
+          points_revisions="$(grep -c '^INSERT INTO points_staging(' "$RUNNER_TEMP/points-import.sql")"
+          [ "${#points_digest}" -eq 64 ] || exit 1
+          points_recorded() {
             ./node_modules/.bin/wrangler d1 execute slop-private \
               --remote --json --config workers/identity/wrangler.toml \
               --command "SELECT revision_count, (SELECT COUNT(*) FROM points_staging WHERE batch_id='$points_digest') AS staged FROM points_batches WHERE digest='$points_digest'" \
-              > "$points_check"
-            POINTS_CHECK="$points_check" POINTS_REVISIONS="$points_revisions" node <<'NODE'
+              > "$RUNNER_TEMP/points-batch.json" || return 1
+            POINTS_CHECK="$RUNNER_TEMP/points-batch.json" POINTS_REVISIONS="$points_revisions" node <<'NODE'
           const fs = require("node:fs");
           const rows = JSON.parse(fs.readFileSync(process.env.POINTS_CHECK, "utf8"))[0]?.results ?? [];
           const expected = Number(process.env.POINTS_REVISIONS);
-          if (rows.length !== 1 || rows[0].revision_count !== expected || rows[0].staged !== 0) {
-            throw new Error("points import did not record its batch");
-          }
-          console.log(`points batch recorded with ${expected} revisions after an import status error`);
+          if (rows.length !== 1 || rows[0].revision_count !== expected || rows[0].staged !== 0) process.exit(1);
           NODE
-          fi
+          }
+          points_imported=false
+          for points_attempt in 1 2 3; do
+            if ./node_modules/.bin/wrangler d1 execute slop-private \
+              --remote --config workers/identity/wrangler.toml \
+              --file "$RUNNER_TEMP/points-import.sql"; then
+              points_imported=true
+              break
+            fi
+            if points_recorded; then
+              echo "points batch recorded with $points_revisions revisions after import attempt $points_attempt reported an error"
+              points_imported=true
+              break
+            fi
+            sleep $((points_attempt * 30))
+          done
+          [ "$points_imported" = true ] || { echo "::error::Points import failed after 3 attempts."; exit 1; }
           bun scripts/prepare-payments-import.ts "$RUNNER_TEMP/payments-import.sql"
           if [ -s "$RUNNER_TEMP/payments-import.sql" ]; then
             ./node_modules/.bin/wrangler d1 execute slop-private \
