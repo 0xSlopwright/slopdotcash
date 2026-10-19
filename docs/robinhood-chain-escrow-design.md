@@ -2,6 +2,14 @@
 
 Date: 12 October 2026, proposed by Drew Pierson. Status: scope approved by the repository owner on 14 October 2026 (PRD FND-02 and the section 22 decision row). Nothing in it activates a project, lifts the mainnet executor rejection, or changes the fee policy.
 
+**Amendment, 18 October 2026 (product owner decisions, PRD section 22).** These decisions change parts of this record. Where the text below disagrees, this amendment wins:
+
+- The project vault is the only funding mode (FND-01). The legacy monthly-pool rail (PAY-09), Squads and Sablier are removed, so the "legacy rail stays Base and Solana" statements below are historical.
+- A project is added and activated only through admin-approved revisions in the D1 registry (PRJ-02). No pull request activates a project, and deployment bindings live in the D1 revision.
+- The withdrawal fee is 2%, `floor(gross / 50)`, enforced in the contract (PRD section 18). The 10% figure below is superseded.
+- Any standard ERC-20 with any decimals may be a Robinhood Chain reward asset (TOK-01, TOK-03); USDG stays the network stablecoin. Generalization of `ProjectEscrow.sol` and the adapter beyond six decimals is MVP-06/MVP-07b work.
+- Fee-wallet conversion to USDG on Robinhood Chain is MVP-07c work under TOK-07.
+
 This document is the decision record for adding Robinhood Chain as a third escrow settlement network beside Base and Solana. It extends [the payouts addendum](payouts-mvp.md) and [the Base and Solana architecture plan](base-solana-payout-plan.md), which states the rule this work follows: "Add a network definition and a chain adapter, then pass the same accounting and workflow conformance suite." PRD requirements: FND-01, FND-02, PAY-06, PAY-07, PAY-08. MVP packages: MVP-02, MVP-06, MVP-07.
 
 ## Why
@@ -60,12 +68,12 @@ The escrow contract reads `block.timestamp` and `block.chainid` only. It never r
 
 ## Non-goals
 
-- Activating any project on Robinhood Chain. Each activation is its own manifest PR with a reviewed deployment record.
+- Activating any project on Robinhood Chain. Each activation is its own admin-approved D1 project revision with a reviewed deployment record.
 - Lifting the hosted executor's rejection of mainnet deployments. That is the repository owner's decision under PAY-05 and the production readiness gate.
 - Choosing the Robinhood Chain fee recipient or identity authority addresses. These are policy inputs recorded at deployment.
-- The legacy 1% monthly-pool settlement rail (PAY-09, RFC #472). It stays Base and Solana only.
+- The legacy 1% monthly-pool settlement rail (PAY-09, RFC #472). It stayed Base and Solana only and was removed on 18 October 2026.
 - Bridging, on-ramp or faucet guidance for sponsors and contributors beyond the runbook's test-gas steps.
-- Any change to the 2% fee, the 10% withdrawal fee, or the fee incidence.
+- Any change to the 2% fee or the fee incidence. (The withdrawal fee changed from 10% to 2% on 18 October 2026 by a separate product-owner decision; see the amendment above.)
 
 ## Design
 
@@ -93,7 +101,7 @@ The one-chain-per-project rule holds through `assertEscrowPolicy` (`reward.chain
 
 ### 2. Contracts and deployment
 
-No Solidity change. `ProjectEscrow.sol` accepts any token whose `decimals()` is 6 and whose transfers move exact amounts; it derives award ids from `block.chainid` and the vault address; it uses `block.timestamp` for the binding delay, the commit window, binding expiry and authority rotation. All of this is correct on Arbitrum Nitro.
+No Solidity change for Robinhood Chain itself. `ProjectEscrow.sol` currently accepts any token whose `decimals()` is 6 and whose transfers move exact amounts (the any-decimals generalization is separate MVP-06 work); it derives award ids from `block.chainid` and the vault address; it uses `block.timestamp` for the binding delay, the commit window, binding expiry and authority rotation. All of this is correct on Arbitrum Nitro.
 
 New Foundry scripts under `contracts/evm/script/`:
 
@@ -104,7 +112,7 @@ USDG is an upgradeable proxy with a pause switch and a per-address freeze, the s
 
 `foundry.toml` targets the Cancun EVM. Arbitrum Nitro supports Cancun opcodes from ArbOS 30; support on this chain is an acceptance gate, not yet evidence: the first testnet deployment (PR C runbook) must record the ArbOS version read from the `ArbSys` precompile and the deployment receipt. If deployment fails on an opcode, the fallback is a per-script `evm_version` of Shanghai, recorded as a deviation.
 
-Fee recipient: the Base fee address is a plain account with no history on either chain, so the same key could receive on Robinhood Chain. Whether to reuse it, and which address is the identity authority, are decisions for the repository owner, recorded in the deployment evidence and the project manifest. This design does not assume them.
+Fee recipient: the Base fee address is a plain account with no history on either chain, so the same key could receive on Robinhood Chain. Whether to reuse it, and which address is the identity authority, are decisions for the repository owner, recorded in the deployment evidence and the D1 project revision. This design does not assume them.
 
 ### 3. Data model
 
