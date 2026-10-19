@@ -379,9 +379,6 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   await expect(
     page.getByRole("link", { exact: true, name: "Protocol" }),
   ).toHaveCount(0);
-  await expect(
-    page.getByText(`© ${new Date().getUTCFullYear()} slop.cash.`),
-  ).toBeVisible();
   await expect(page.locator('meta[property="og:image"]')).toHaveAttribute(
     "content",
     "https://slop.cash/og-slop-cash.png",

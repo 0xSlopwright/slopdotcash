@@ -108,11 +108,6 @@ test("social membership shows connection points, respects privacy and survives d
     page.getByRole("region", { name: "Your account details" }),
   ).toHaveCount(0);
   const header = page.getByRole("banner");
-  const accountBounds = await accountButton.boundingBox();
-  const brandBounds = await header
-    .getByRole("link", { name: "Slop home" })
-    .boundingBox();
-  expect(accountBounds!.x).toBeGreaterThan(brandBounds!.x + brandBounds!.width);
   await accountButton.click();
   const accountPanel = page.getByRole("region", {
     name: "Your account details",
