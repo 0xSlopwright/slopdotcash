@@ -38,8 +38,8 @@ import { browserDeployment } from "./lib/browser-deployment";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
 import { currentProjectFundingRecords } from "./lib/funding";
-import { createGeneratedSkillInstallCommand } from "./lib/generated-skill-install";
 import { communityProjects, homeProjects } from "./lib/home-projects";
+import { createInstallCommand } from "./lib/install-command";
 import {
   type ModelOutcomeSummary,
   modelIdentityKey,
@@ -848,7 +848,10 @@ function AgentPromptBox({
 
 function projectInstallCommand(project: ProjectDefinition): string {
   const origin = `${window.location.origin.replace(/\/$/u, "")}/projects/${project.slug}`;
-  return createGeneratedSkillInstallCommand(origin, project.skill.id);
+  return createInstallCommand(origin, `\${HOME}/.agents/skills`, {
+    skillName: project.skill.id,
+    skillRepositoryPath: project.skill.sourcePath,
+  });
 }
 
 function ProjectLinksLine({ project }: { project: ProjectDefinition }) {
@@ -999,19 +1002,19 @@ function InstallPanel({ project }: { project: ProjectDefinition }) {
           </button>
         </div>
         <a
-          href={`${origin}/projects/${project.slug}/SKILL.md`}
+          href={`${origin}/projects/${project.slug}/mission.md`}
           rel="noreferrer"
           target="_blank"
         >
-          Preview the generated contributor skill
+          Preview the complete workflow
           <ExternalLink aria-hidden="true" />
         </a>
         <a
-          href={`${origin}/projects/${project.slug}/review/SKILL.md`}
+          href={`${origin}/projects/${project.slug}/review-codex.md`}
           rel="noreferrer"
           target="_blank"
         >
-          Read the independent reviewer skill
+          Install the independent reviewer skill
           <ExternalLink aria-hidden="true" />
         </a>
       </details>

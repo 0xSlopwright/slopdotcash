@@ -43,7 +43,7 @@ export class GithubLookupError extends Error {
   }
 }
 
-const GITHUB_API = "https://api.github.com";
+export const GITHUB_API = "https://api.github.com";
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
 const REPOSITORY_PATH = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const MAX_OWNED_REPOSITORY_PAGES = 20;
@@ -81,8 +81,9 @@ async function githubJson(
   fetcher: GithubFetch,
   token: string | undefined,
   path: string,
+  apiOrigin: string,
 ): Promise<Record<string, unknown> | null> {
-  const response = await fetcher(`${GITHUB_API}${path}`, requestInit(token));
+  const response = await fetcher(`${apiOrigin}${path}`, requestInit(token));
   if (response.status === 404) return null;
   if (limited(response))
     throw new GithubLookupError(
@@ -115,6 +116,7 @@ function repositoryDescription(value: unknown): string | null {
 function nextOwnedRepositoryPage(
   response: Response,
   currentPage: number,
+  apiOrigin: string,
 ): number | null {
   const link = response.headers.get("link");
   if (link === null) return null;
@@ -132,7 +134,7 @@ function nextOwnedRepositoryPage(
   const url = new URL(target);
   const page = Number(url.searchParams.get("page"));
   if (
-    url.origin !== GITHUB_API ||
+    url.origin !== apiOrigin ||
     !Number.isSafeInteger(page) ||
     page !== currentPage + 1
   )
@@ -152,6 +154,7 @@ export async function listOwnedRepositories(
   fetcher: GithubFetch,
   token: string | undefined,
   login: string,
+  apiOrigin = GITHUB_API,
 ): Promise<OwnedRepository[]> {
   if (!LOGIN.test(login))
     throw new GithubLookupError(
@@ -163,7 +166,7 @@ export async function listOwnedRepositories(
   let page = 1;
   for (;;) {
     const response = await fetcher(
-      `${GITHUB_API}/users/${login}/repos?type=owner&sort=pushed&per_page=100&page=${page}`,
+      `${apiOrigin}/users/${login}/repos?type=owner&sort=pushed&per_page=100&page=${page}`,
       requestInit(token),
     );
     if (limited(response))
@@ -206,7 +209,7 @@ export async function listOwnedRepositories(
           description: repositoryDescription(repo.description),
         });
     }
-    const nextPage = nextOwnedRepositoryPage(response, page);
+    const nextPage = nextOwnedRepositoryPage(response, page, apiOrigin);
     if (nextPage === null) return [...repositories.values()];
     if (page >= MAX_OWNED_REPOSITORY_PAGES)
       throw new GithubLookupError(
@@ -232,6 +235,7 @@ export async function lookupGitHubRepository(
   fetcher: GithubFetch,
   token: string | undefined,
   repository: string,
+  apiOrigin = GITHUB_API,
 ): Promise<RepositoryLookup> {
   if (!validRepositoryPath(repository))
     throw new GithubLookupError(
@@ -239,7 +243,12 @@ export async function lookupGitHubRepository(
       "invalid_request",
       "Enter the repository as owner/name.",
     );
-  const repo = await githubJson(fetcher, token, `/repos/${repository}`);
+  const repo = await githubJson(
+    fetcher,
+    token,
+    `/repos/${repository}`,
+    apiOrigin,
+  );
   if (!repo)
     throw new GithubLookupError(
       404,
@@ -284,6 +293,7 @@ export async function lookupGitHubRepository(
       fetcher,
       token,
       `/repos/${repo.full_name}/branches/${encodeURIComponent(repo.default_branch)}`,
+      apiOrigin,
     );
     const commitSha = (branch?.commit as Record<string, unknown> | undefined)
       ?.sha;
@@ -293,6 +303,7 @@ export async function lookupGitHubRepository(
       fetcher,
       token,
       `/repos/${repo.full_name}/license?ref=${commitSha}`,
+      apiOrigin,
     );
     if (!license) return unknownLicense(facts, "GitHub found no license file.");
     if (license.path !== "LICENSE")

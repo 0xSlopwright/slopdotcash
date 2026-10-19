@@ -484,11 +484,11 @@ test("starts Eliza with one prompt and no separate payout form", async ({
   const command = page.getByRole("textbox", {
     name: "Manual install command",
   });
-  // The generated skill installs from its digest-checked archive.
-  await expect(command).toHaveValue(/NAME='contribute-to-eliza'/u);
-  await expect(command).toHaveValue(/\/projects\/eliza'/u);
-  await expect(command).toHaveValue(/DEST="\$\{HOME\}\/\.agents\/skills"/u);
-  await expect(command).toHaveValue(/archive SHA-256 does not match/u);
+  await expect(command).toHaveValue(/skills\/contribute-to-eliza/u);
+  await expect(command).toHaveValue(/\/projects\/eliza/u);
+  await expect(command).toHaveValue(
+    /SKILLS_ROOT="\$\{HOME\}\/\.agents\/skills"/u,
+  );
   await expect(command).not.toHaveValue(/CODEX_HOME/u);
   await page
     .getByRole("button", { name: "Copy manual install command" })
@@ -497,7 +497,7 @@ test("starts Eliza with one prompt and no separate payout form", async ({
     page.getByRole("button", { name: "Copied manual install command" }),
   ).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(
-    "contribute-to-eliza",
+    "skills/contribute-to-eliza",
   );
   await expect(
     page.getByRole("link", { name: /Preview the complete workflow/u }),

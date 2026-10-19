@@ -1,8 +1,8 @@
 import type { EscrowPolicy } from "./escrow-policy.mjs";
+import type { ContributionField } from "./project-schema.mjs";
 /** Types for the public project and reward-policy registry. */
 
 import type { FundingCommitmentInstrument } from "./funding-instruments.mjs";
-import type { ProjectSkillContent } from "./project-skill-content.mjs";
 import type { RewardAsset } from "./reward-asset.mjs";
 
 export type ProjectId = string;
@@ -76,8 +76,6 @@ export interface ProjectDefinition {
   readonly escrow?: EscrowPolicy;
   /** The one reward asset, with server-verified decimals. */
   readonly rewardAsset?: RewardAsset;
-  /** Maintainer-authored sections of the generated project skills. */
-  readonly skillContent?: ProjectSkillContent;
   readonly schemaVersion: "1";
   readonly id: ProjectId;
   readonly slug: ProjectId;
@@ -215,6 +213,8 @@ export interface ProjectDefinition {
       readonly ipTerms: string;
     } | null;
   };
+  /** Maintainer-authored fields that generate the project skills (SKL-03). */
+  readonly contribution?: Readonly<Record<ContributionField, string>>;
   readonly repositories: readonly {
     readonly id: string;
     readonly aliases?: readonly string[];

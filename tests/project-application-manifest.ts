@@ -4,8 +4,8 @@
  * maintainer does.
  */
 
-export const SKILL_CONTENT = {
-  scope:
+export const CONTRIBUTION = {
+  approvedScope:
     "Bug fixes and documented features in the reproducible-research toolkit. Release tooling is out of scope.",
   contributionGuide:
     "Run `bun install`, branch from `main`, keep one change per pull request, and follow `CONTRIBUTING.md`.",
@@ -17,7 +17,7 @@ export const SKILL_CONTENT = {
   securityContact: "security@example.org",
   closurePolicy:
     "Maintainers close pull requests that duplicate open work or have no test.",
-  notes: "",
+  maintainerNotes: "",
 };
 
 export function applicationManifest(
@@ -104,12 +104,12 @@ export function applicationManifest(
     skill: {
       id: `contribute-to-${id}`,
       publishAtRoot: false,
-      sourcePath: `skills/contribute-to-${id}`,
+      sourcePath: "skills/project-contributor-template",
       publicPath: `/projects/${id}/skill.md`,
     },
     reviewSkill: {
       id: `review-${id}-contributions`,
-      sourcePath: `skills/review-${id}-contributions`,
+      sourcePath: "skills/project-reviewer-template",
     },
     rewardAsset: {
       network: "ethereum",
@@ -117,7 +117,7 @@ export function applicationManifest(
       address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
       symbol: "USDC",
     },
-    skillContent: SKILL_CONTENT,
+    contribution: CONTRIBUTION,
     reward: {
       kind: "monthly-pool",
       currency: "USDC",

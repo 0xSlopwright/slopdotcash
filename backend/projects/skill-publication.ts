@@ -1,24 +1,39 @@
 /**
- * Serves each project's generated skills, reviewer skill, references,
- * archive, routing manifests, terms, and the project discovery index from
- * the current D1 revision and the one reviewed template pair. Nothing here
- * reads GitHub or a chain; responses are edge cached and purged on writes.
+ * Serves each project's generated skills, guides, routing manifests,
+ * archives, terms, and the project discovery index from the current D1
+ * revision and the canonical templates. Nothing here reads GitHub or a
+ * chain; responses are edge cached and purged on admin writes.
  */
 
+import { publishesGeneratedSkills } from "../../src/lib/project-skill.mjs";
 import {
-  CONTRIBUTOR_TEMPLATE_PATH,
-  projectPublishesSkills,
-  type RenderedSkill,
-  renderProjectSkills,
-  type SkillTemplateIndex,
-  skillManifest,
-} from "../../src/lib/project-skill-render.mjs";
+  buildProjectPublication,
+  PUBLIC_SITE_ORIGIN,
+} from "../../src/lib/project-skill-publication.mjs";
 import type { ProjectRecord } from "./contracts";
 import {
   cachedPublicResponse,
   type EdgeCache,
   PUBLIC_PROJECT_CACHE_CONTROL,
 } from "./edge-cache";
+
+/** The build's /skill-templates/index.json. */
+export type SkillTemplateIndex = {
+  schemaVersion: "1";
+  repository: string;
+  commit: string;
+  revisionStatus: "committed" | "working-tree";
+  contributor: {
+    sourcePath: string;
+    files: { path: string; sha256: string }[];
+  };
+  reviewer: {
+    sourcePath: string;
+    files: { path: string; sha256: string }[];
+  };
+  renderer: { paths: string[]; revisionStatus: "committed" | "working-tree" };
+  acceptedRevisions: string[];
+};
 
 export type SkillTemplateSource = {
   index: SkillTemplateIndex;
@@ -29,70 +44,42 @@ export type SkillPublicationDependencies = {
   getProject(id: string): Promise<ProjectRecord | null>;
   listProjects(): Promise<ProjectRecord[]>;
   loadTemplate(): Promise<SkillTemplateSource>;
-  /** The origin written into generated skills and manifests. */
-  publicOrigin: string;
   cache?: EdgeCache;
   waitUntil?: (promise: Promise<unknown>) => void;
 };
 
 const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
-
-type Artifact =
-  | "terms"
-  | "skill"
-  | "reference"
-  | "review-skill"
-  | "skill-manifest"
-  | "review-skill-manifest"
-  | "archive"
-  | "checksum";
+/** Paths the generated publication defines, plus readable aliases. */
+const ARTIFACT =
+  /^(?:(?:review-)?(?:skill|mission|codex|claude|claude-code|manual)\.md|(?:review-)?skill-manifest\.json|downloads\/[a-z0-9-]{1,96}\.skill(?:\.sha256)?|terms\.json|SKILL\.md|review\/SKILL\.md)$/u;
+const ALIASES: Record<string, string> = {
+  "SKILL.md": "skill.md",
+  "review/SKILL.md": "review-skill.md",
+};
 
 function route(
   pathname: string,
-):
-  | { projectId: string; artifact: Artifact; file?: string }
-  | "discovery"
-  | null {
+): { projectId: string; path: string } | "discovery" | null {
   if (pathname === "/.well-known/slop/projects.json") return "discovery";
-  const parts = pathname.split("/");
-  if (
-    parts[0] !== "" ||
-    parts[1] !== "projects" ||
-    !PROJECT_ID.test(parts[2] ?? "")
-  )
+  const match = /^\/projects\/([^/]+)\/(.+)$/u.exec(pathname);
+  if (!match || !PROJECT_ID.test(match[1]) || !ARTIFACT.test(match[2]))
     return null;
-  const projectId = parts[2];
-  const rest = parts.slice(3).join("/");
-  const artifacts: Record<string, Artifact> = {
-    "terms.json": "terms",
-    "SKILL.md": "skill",
-    "skill.md": "skill",
-    "references/project.md": "reference",
-    "review/SKILL.md": "review-skill",
-    "review-skill.md": "review-skill",
-    "skill-manifest.json": "skill-manifest",
-    "review-skill-manifest.json": "review-skill-manifest",
-  };
-  if (Object.hasOwn(artifacts, rest))
-    return { projectId, artifact: artifacts[rest] };
-  const download = /^downloads\/([a-z0-9-]{1,96})\.skill(\.sha256)?$/u.exec(
-    rest,
-  );
-  if (download)
-    return {
-      projectId,
-      artifact: download[2] ? "checksum" : "archive",
-      file: download[1],
-    };
-  return null;
+  return { projectId: match[1], path: ALIASES[match[2]] ?? match[2] };
 }
 
-function headers(contentType: string, extra: Record<string, string> = {}) {
+function contentType(path: string): string {
+  if (path.endsWith(".md")) return "text/markdown; charset=utf-8";
+  if (path.endsWith(".json")) return "application/json; charset=utf-8";
+  if (path.endsWith(".sha256")) return "text/plain; charset=utf-8";
+  return "application/octet-stream";
+}
+
+function headers(type: string, extra: Record<string, string> = {}) {
   return {
     "access-control-allow-origin": "*",
     "cache-control": PUBLIC_PROJECT_CACHE_CONTROL,
     "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
-    "content-type": contentType,
+    "content-type": type,
     "referrer-policy": "no-referrer",
     "strict-transport-security": "max-age=31536000; includeSubDomains",
     "x-content-type-options": "nosniff",
@@ -110,138 +97,87 @@ function text(status: number, body: string): Response {
   });
 }
 
-function jsonBody(value: unknown): Response {
-  return new Response(`${JSON.stringify(value, null, 2)}\n`, {
+function bytesResponse(path: string, bytes: Uint8Array): Response {
+  return new Response(bytes as Uint8Array<ArrayBuffer>, {
     status: 200,
-    headers: headers("application/json; charset=utf-8"),
+    headers: headers(
+      contentType(path),
+      path.startsWith("downloads/") && path.endsWith(".skill")
+        ? { "content-disposition": "attachment" }
+        : {},
+    ),
   });
 }
 
-function body(bytes: Uint8Array): BodyInit {
-  return bytes as Uint8Array<ArrayBuffer>;
-}
-
-function markdown(bytes: Uint8Array): Response {
-  return new Response(body(bytes), {
-    status: 200,
-    headers: headers("text/markdown; charset=utf-8"),
-  });
+function jsonResponse(value: unknown): Response {
+  return bytesResponse(
+    "value.json",
+    new TextEncoder().encode(`${JSON.stringify(value, null, 2)}\n`),
+  );
 }
 
 function listed(project: ProjectRecord | null): project is ProjectRecord {
   return project !== null && project.manifest.listingTier !== "retired";
 }
 
-async function render(
-  project: ProjectRecord,
-  deps: SkillPublicationDependencies,
-): Promise<{ contributor: RenderedSkill; reviewer: RenderedSkill }> {
-  const template = await deps.loadTemplate();
-  return renderProjectSkills({
-    template: template.index,
-    readFile: template.readFile,
-    manifest: project.manifest,
-    revision: project.revision,
-    manifestSha256: project.manifestSha256,
-    publicOrigin: deps.publicOrigin,
-  });
-}
-
+/** The routing index the bootstrap skill matches a repository origin against. */
 async function discovery(
   deps: SkillPublicationDependencies,
 ): Promise<Response> {
   const projects = (await deps.listProjects()).filter(
-    (project) => listed(project) && projectPublishesSkills(project.manifest),
+    (project) => listed(project) && publishesGeneratedSkills(project.manifest),
   );
-  return jsonBody({
-    schemaVersion: "2",
-    skillTemplate: CONTRIBUTOR_TEMPLATE_PATH,
+  return jsonResponse({
+    schemaVersion: "1",
     projects: projects.flatMap((project) =>
-      project.manifest.repositories.map((repository) => {
-        const base = `${deps.publicOrigin}/projects/${project.id}`;
-        return {
-          project_id: project.id,
-          project_url: `${base}/`,
-          project_revision: project.revision,
-          manifest_sha256: project.manifestSha256,
-          repository: repository.aliases?.at(-1) ?? repository.id,
-          skill: project.manifest.skill.id,
-          skill_url: `${base}/SKILL.md`,
-          skill_manifest: `${base}/skill-manifest.json`,
-          review_skill: project.manifest.reviewSkill.id,
-          review_skill_manifest: `${base}/review-skill-manifest.json`,
-        };
-      }),
+      project.manifest.repositories.map((repository) => ({
+        project_id: project.id,
+        project_url: `${PUBLIC_SITE_ORIGIN}/projects/${project.id}/`,
+        repository: repository.aliases?.at(-1) ?? repository.id,
+        review_skill: project.manifest.reviewSkill.id,
+        review_skill_manifest: `${PUBLIC_SITE_ORIGIN}/projects/${project.id}/review-skill-manifest.json`,
+        skill: project.manifest.skill.id,
+        skill_source: project.manifest.skill.sourcePath,
+      })),
     ),
   });
 }
 
 async function artifact(
-  target: { projectId: string; artifact: Artifact; file?: string },
+  target: { projectId: string; path: string },
   deps: SkillPublicationDependencies,
 ): Promise<Response> {
   const project = await deps.getProject(target.projectId);
   if (!listed(project)) return text(404, "Project not found.\n");
-  if (target.artifact === "terms") {
+  if (target.path === "terms.json") {
     const manifest = project.manifest;
-    return jsonBody({
+    return jsonResponse({
       schemaVersion: "1",
       projectId: manifest.id,
-      projectRevision: project.revision,
-      manifestSha256: project.manifestSha256,
       status: manifest.status,
       steward: manifest.steward,
       authority: manifest.authority,
       terms: manifest.terms,
     });
   }
-  if (!projectPublishesSkills(project.manifest))
+  if (!publishesGeneratedSkills(project.manifest))
     return text(
       404,
-      "This project has not published its skills yet. Its maintainers must complete the skill content first.\n",
+      "This project has not published its skills yet. Its maintainers must complete the contribution fields first.\n",
     );
-  const rendered = await render(project, deps);
-  switch (target.artifact) {
-    case "skill":
-      return markdown(rendered.contributor.skillMarkdown);
-    case "reference": {
-      const file = rendered.contributor.files.find(
-        (entry) => entry.path === "references/project.md",
-      );
-      return file ? markdown(file.bytes) : text(404, "Reference not found.\n");
-    }
-    case "review-skill":
-      return markdown(rendered.reviewer.skillMarkdown);
-    case "skill-manifest":
-    case "review-skill-manifest": {
-      const review = target.artifact === "review-skill-manifest";
-      return jsonBody(
-        skillManifest(review ? rendered.reviewer : rendered.contributor, {
-          publicOrigin: deps.publicOrigin,
-          projectId: project.id,
-          review,
-        }),
-      );
-    }
-    case "archive":
-    case "checksum": {
-      const skill = [rendered.contributor, rendered.reviewer].find(
-        (candidate) => candidate.name === target.file,
-      );
-      if (!skill) return text(404, "Archive not found.\n");
-      if (target.artifact === "checksum")
-        return new Response(`${skill.archiveSha256}  ${skill.name}.skill\n`, {
-          status: 200,
-          headers: headers("text/plain; charset=utf-8"),
-        });
-      return new Response(body(skill.archive), {
-        status: 200,
-        headers: headers("application/octet-stream", {
-          "content-disposition": `attachment; filename="${skill.name}.skill"`,
-        }),
-      });
-    }
-  }
+  const template = await deps.loadTemplate();
+  const files = await buildProjectPublication({
+    template: template.index,
+    readFile: template.readFile,
+    project: project.manifest,
+    revision: project.revision,
+    manifestSha256: project.manifestSha256,
+    generatedAt: project.updatedAt,
+  });
+  const bytes = files?.[target.path];
+  return bytes === undefined
+    ? text(404, "Artifact not found.\n")
+    : bytesResponse(target.path, bytes);
 }
 
 /** Returns null when the path is not a project artifact, so the SPA serves it. */

@@ -13,6 +13,9 @@ import {
   useRef,
   useState,
 } from "react";
+import contributorTemplate from "../skills/project-contributor-template/SKILL.md?raw";
+import reviewerTemplate from "../skills/project-reviewer-template/SKILL.md?raw";
+import { CONTRIBUTION_LABELS } from "./lib/contribution-fields";
 import {
   type AdminProject,
   type ProjectApplication,
@@ -21,10 +24,15 @@ import {
   useProjectSession,
 } from "./lib/project-api";
 import {
-  SKILL_CONTENT_FIELDS,
-  type SkillContentKey,
-  skillContentFieldError,
-} from "./lib/project-skill-content.mjs";
+  CONTRIBUTION_FIELDS,
+  type ContributionField,
+  PROJECT_SKILL_TEMPLATES,
+} from "./lib/project-schema.mjs";
+import {
+  renderProjectSkill,
+  usesGeneratedSkills,
+} from "./lib/project-skill.mjs";
+import type { ProjectDefinition } from "./lib/projects.mjs";
 import {
   REWARD_ASSET_NETWORKS,
   type RewardAssetNetwork,
@@ -144,6 +152,78 @@ const selectApplications = (body: { applications: ProjectApplication[] }) =>
   body.applications;
 const selectProjects = (body: { projects: AdminProject[] }) => body.projects;
 
+const decoder = new TextDecoder();
+
+/**
+ * Shows the exact generated SKILL.md and project.json an admin approves
+ * (PRD PRJ-02). The shared scripts come unchanged from the template.
+ */
+function GeneratedSkillPreview({
+  manifest,
+  registry,
+}: {
+  manifest: ProjectDefinition;
+  registry: { revision: number; manifestSha256: string };
+}) {
+  if (!usesGeneratedSkills(manifest))
+    return (
+      <p className="admin-status">
+        This project uses committed skills at {manifest.skill.sourcePath}.
+      </p>
+    );
+  let previews: { role: string; files: Record<string, Uint8Array> }[];
+  try {
+    previews = [
+      {
+        role: "Contributor skill",
+        files: renderProjectSkill({
+          role: "contributor",
+          templateFiles: { "SKILL.md": contributorTemplate },
+          manifest,
+          registry,
+        }),
+      },
+      {
+        role: "Reviewer skill",
+        files: renderProjectSkill({
+          role: "reviewer",
+          templateFiles: { "SKILL.md": reviewerTemplate },
+          manifest,
+          registry,
+        }),
+      },
+    ];
+  } catch (caught) {
+    return (
+      <p className="form-error" role="alert">
+        <CircleAlert aria-hidden="true" /> {errorMessage(caught)}
+      </p>
+    );
+  }
+  return (
+    <>
+      {previews.map(({ role, files }) => (
+        <details key={role}>
+          <summary>Preview generated {role.toLowerCase()}</summary>
+          {Object.entries(files).map(([path, contents]) => (
+            <div key={path}>
+              <h4>{path}</h4>
+              {/* A read-only text area keeps long code keyboard-scrollable. */}
+              <textarea
+                aria-label={`${role} ${path}`}
+                className="admin-code"
+                readOnly
+                spellCheck={false}
+                value={decoder.decode(contents)}
+              />
+            </div>
+          ))}
+        </details>
+      ))}
+    </>
+  );
+}
+
 function ApplicationCard({
   application,
   onDecided,
@@ -221,6 +301,10 @@ function ApplicationCard({
           <dd>{formatTime(application.submittedAt)} UTC</dd>
         </div>
         <div>
+          <dt>GitHub check</dt>
+          <dd>{application.githubCheck ?? "Not recorded"}</dd>
+        </div>
+        <div>
           <dt>Admin email</dt>
           <dd>
             {application.adminNotification === "sent"
@@ -247,8 +331,19 @@ function ApplicationCard({
       <p className="admin-criteria">{application.acceptanceCriteria}</p>
       <details>
         <summary>Submitted manifest</summary>
-        <pre>{JSON.stringify(manifest, null, 2)}</pre>
+        <textarea
+          aria-label="Submitted manifest"
+          className="admin-code"
+          readOnly
+          spellCheck={false}
+          value={JSON.stringify(manifest, null, 2)}
+        />
       </details>
+      {/* Approval appends this manifest as revision 1. */}
+      <GeneratedSkillPreview
+        manifest={manifest}
+        registry={{ revision: 1, manifestSha256: application.manifestSha256 }}
+      />
       {application.status === "pending" ? (
         <div className="admin-actions">
           <label>
@@ -374,36 +469,40 @@ function ProjectEditor({
   onSaved,
 }: {
   project: AdminProject;
-  onSaved: () => void;
+  onSaved: (note: string) => void;
 }) {
   const [text, setText] = useState(() =>
     JSON.stringify(project.manifest, null, 2),
   );
-  const [skill, setSkill] = useState<Record<SkillContentKey, string>>(
+  const [skill, setSkill] = useState<Record<ContributionField, string>>(
     () =>
       Object.fromEntries(
-        SKILL_CONTENT_FIELDS.map((field) => [
-          field.key,
-          project.manifest.skillContent?.[field.key] ?? "",
+        CONTRIBUTION_FIELDS.map((field) => [
+          field,
+          project.manifest.contribution?.[field] ?? "",
         ]),
-      ) as Record<SkillContentKey, string>,
+      ) as Record<ContributionField, string>,
   );
   const [asset, setAsset] = useState<AssetDraft>(() => initialAsset(project));
   const [status, setStatus] = useState(project.status);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const skillStarted = SKILL_CONTENT_FIELDS.some(
-    (field) => skill[field.key].trim() !== "",
+  const skillStarted = CONTRIBUTION_FIELDS.some(
+    (field) => skill[field].trim() !== "",
   );
   const skillErrors = Object.fromEntries(
-    SKILL_CONTENT_FIELDS.map((field) => [
-      field.key,
-      skillStarted
-        ? skillContentFieldError(field, skill[field.key].trim())
-        : null,
-    ]),
-  ) as Record<SkillContentKey, string | null>;
+    CONTRIBUTION_FIELDS.map((field) => {
+      const value = skill[field].trim();
+      const minimum = field === "approvedScope" ? 6 : 0;
+      return [
+        field,
+        skillStarted && (value.length < minimum || value.length > 2000)
+          ? `${CONTRIBUTION_LABELS[field].label} must be ${minimum} to 2000 characters.`
+          : null,
+      ];
+    }),
+  ) as Record<ContributionField, string | null>;
   const network = REWARD_ASSET_NETWORKS[asset.network];
   const save = (event: FormEvent) => {
     event.preventDefault();
@@ -415,7 +514,9 @@ function ProjectEditor({
       return;
     }
     if (Object.values(skillErrors).some((value) => value !== null)) {
-      setError("Complete every required skill section, or clear them all.");
+      setError(
+        "Complete the approved scope, or clear every contribution field.",
+      );
       return;
     }
     let choice: ReturnType<typeof rewardAssetChoice>;
@@ -430,18 +531,28 @@ function ProjectEditor({
       setError(errorMessage(caught));
       return;
     }
-    const { skillContent: _skill, rewardAsset: _asset, ...rest } = manifest;
+    const { contribution: _skill, rewardAsset: _asset, ...rest } = manifest;
     const next = {
       ...rest,
       status,
+      // Contribution fields and the canonical templates go together: Slop
+      // generates both skills from them (PRD SKL-03).
       ...(skillStarted
         ? {
-            skillContent: Object.fromEntries(
-              SKILL_CONTENT_FIELDS.map((field) => [
-                field.key,
-                skill[field.key].replaceAll("\r\n", "\n").trim(),
+            contribution: Object.fromEntries(
+              CONTRIBUTION_FIELDS.map((field) => [
+                field,
+                skill[field].replaceAll("\r\n", "\n").trim(),
               ]),
             ),
+            skill: {
+              ...(rest.skill as Record<string, unknown>),
+              sourcePath: PROJECT_SKILL_TEMPLATES.contributor,
+            },
+            reviewSkill: {
+              ...(rest.reviewSkill as Record<string, unknown>),
+              sourcePath: PROJECT_SKILL_TEMPLATES.reviewer,
+            },
           }
         : {}),
       ...((rest.reward as { kind?: unknown } | undefined)?.kind ===
@@ -455,10 +566,13 @@ function ProjectEditor({
       "PUT",
       `admin/projects/${encodeURIComponent(project.id)}/manifest`,
       { manifest: next, expectedRevision: project.revision, reason },
-    ).then(onSaved, (caught: unknown) => {
-      setBusy(false);
-      setError(errorMessage(caught));
-    });
+    ).then(
+      () => onSaved(SAVED_NOTE),
+      (caught: unknown) => {
+        setBusy(false);
+        setError(errorMessage(caught));
+      },
+    );
   };
   return (
     <form className="admin-editor" onSubmit={save}>
@@ -477,29 +591,35 @@ function ProjectEditor({
           </select>
         </label>
         <p className="admin-status">
-          A project can become active only with complete skill content.
+          A project can become active only with its contribution fields.
         </p>
       </fieldset>
       <fieldset className="admin-fieldset">
-        <legend>Generated skill content</legend>
-        {SKILL_CONTENT_FIELDS.map((field) => (
-          <label key={field.key}>
-            {field.min === 0 ? `${field.label} (optional)` : field.label}
+        <legend>Generated skill contribution fields</legend>
+        <p className="admin-status">
+          The generated skills carry these fields as data in project.json; they
+          never become skill instructions.
+        </p>
+        {CONTRIBUTION_FIELDS.map((field) => (
+          <label key={field}>
+            {CONTRIBUTION_LABELS[field].label}
             <textarea
-              aria-invalid={skillErrors[field.key] ? true : undefined}
+              aria-invalid={skillErrors[field] ? true : undefined}
               onChange={(event) =>
                 setSkill((current) => ({
                   ...current,
-                  [field.key]: event.target.value,
+                  [field]: event.target.value,
                 }))
               }
-              rows={field.key === "securityContact" ? 1 : 4}
-              value={skill[field.key]}
+              rows={field === "securityContact" ? 1 : 4}
+              value={skill[field]}
             />
-            {skillErrors[field.key] ? (
-              <small className="field-error">{skillErrors[field.key]}</small>
+            {skillErrors[field] ? (
+              <small className="field-error">{skillErrors[field]}</small>
             ) : (
-              <small className="field-hint">{field.hint}</small>
+              <small className="field-hint">
+                {CONTRIBUTION_LABELS[field].hint}
+              </small>
             )}
           </label>
         ))}
@@ -621,20 +741,106 @@ function ProjectEditor({
   );
 }
 
+/** Public reads are edge cached for 30 seconds and purged on each write. */
+const SAVED_NOTE = "Saved. The public site shows the change within a minute.";
+
+/** Delisting keeps history: the project becomes paused and retired. */
+function DelistButton({
+  project,
+  onDone,
+}: {
+  project: AdminProject;
+  onDone: (note: string) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (project.manifest.listingTier === "retired")
+    return <p className="admin-status">Delisted.</p>;
+  const delist = () => {
+    setBusy(true);
+    setError(null);
+    projectApiRequest(
+      "PUT",
+      `admin/projects/${encodeURIComponent(project.id)}/manifest`,
+      {
+        manifest: {
+          ...project.manifest,
+          status: "paused",
+          listingTier: "retired",
+        },
+        expectedRevision: project.revision,
+        reason: "Delisted by an admin",
+      },
+    ).then(
+      () => onDone(SAVED_NOTE),
+      (caught: unknown) => {
+        setBusy(false);
+        setError(errorMessage(caught));
+      },
+    );
+  };
+  return (
+    <div className="admin-actions">
+      {error ? (
+        <p className="form-error" role="alert">
+          <CircleAlert aria-hidden="true" /> {error}
+        </p>
+      ) : null}
+      {confirming ? (
+        <div>
+          <span>Hide this project from every page and list?</span>
+          <button
+            className="button danger-button"
+            disabled={busy}
+            onClick={delist}
+            type="button"
+          >
+            {busy ? "Delisting…" : "Delist project"}
+          </button>
+          <button
+            className="button ghost-button"
+            onClick={() => setConfirming(false)}
+            type="button"
+          >
+            Keep listed
+          </button>
+        </div>
+      ) : (
+        <div>
+          <button
+            className="button ghost-button"
+            onClick={() => setConfirming(true)}
+            type="button"
+          >
+            Delist
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ProjectsSection() {
   const [state, reload] = useAdminData("admin/projects", selectProjects);
   const [editing, setEditing] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   return (
     <section aria-labelledby="admin-projects" className="admin-section">
       <div className="admin-section-heading">
         <h2 id="admin-projects">Projects</h2>
       </div>
       <p className="admin-status">
-        Approved projects start paused. The public site shows each saved
-        revision within a minute, without a rebuild. A project can become active
-        only after its skill content is complete; Slop then generates its
-        contributor and reviewer skills from that content.
+        Approved projects start paused and collect nothing until an admin makes
+        them active. Slop generates each project's skills from its approved
+        revision; preview them before activation. The public site shows each
+        saved revision within a minute, without a rebuild.
       </p>
+      {note ? (
+        <p className="admin-status" role="status">
+          {note}
+        </p>
+      ) : null}
       {state.status !== "ready" ? (
         <LoadNotice label="projects" retry={reload} state={state} />
       ) : state.value.length === 0 ? (
@@ -663,26 +869,24 @@ function ProjectsSection() {
               <div>
                 <dt>Skills</dt>
                 <dd>
-                  {project.manifest.skillContent ? (
-                    <>
-                      <a href={`/projects/${project.id}/SKILL.md`}>
-                        {project.manifest.skill.id}
-                      </a>{" "}
-                      ·{" "}
-                      <a href={`/projects/${project.id}/review/SKILL.md`}>
-                        {project.manifest.reviewSkill.id}
-                      </a>
-                    </>
-                  ) : (
-                    "Not published: skill content is incomplete"
-                  )}
+                  {usesGeneratedSkills(project.manifest)
+                    ? `Generated from revision ${project.revision}`
+                    : `${project.manifest.skill.sourcePath} · ${project.manifest.reviewSkill.sourcePath}`}
                 </dd>
               </div>
             </dl>
+            <GeneratedSkillPreview
+              manifest={project.manifest}
+              registry={{
+                revision: project.revision,
+                manifestSha256: project.manifestSha256,
+              }}
+            />
             {editing === project.id ? (
               <ProjectEditor
-                onSaved={() => {
+                onSaved={(saved) => {
                   setEditing(null);
+                  setNote(saved);
                   reload();
                 }}
                 project={project}
@@ -696,6 +900,13 @@ function ProjectsSection() {
                 Edit manifest
               </button>
             )}
+            <DelistButton
+              onDone={(saved) => {
+                setNote(saved);
+                reload();
+              }}
+              project={project}
+            />
           </article>
         ))
       )}

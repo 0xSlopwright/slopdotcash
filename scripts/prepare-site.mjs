@@ -18,12 +18,12 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GENERATED_SKILL_TEMPLATES } from "../src/lib/install-command.ts";
+import { PROJECT_SKILL_TEMPLATES } from "../src/lib/project-schema.mjs";
 import {
-  CONTRIBUTOR_TEMPLATE_PATH,
-  REVIEWER_TEMPLATE_PATH,
-  SKILL_KIT_FILES,
-  SKILL_KIT_PATH,
-} from "../src/lib/project-skill-render.mjs";
+  ACCEPTED_SKILL_REVISIONS,
+  GUIDE_RENDERER_PATHS,
+} from "../src/lib/project-skill-publication.mjs";
 import { readIdentityRecord } from "./protocol-identity.mjs";
 import { pythonCommand } from "./skill-python.mjs";
 import { skillSourceMatchesCommit } from "./skill-source-matches-commit.mjs";
@@ -250,29 +250,56 @@ writeFileSync(
   )}\n`,
 );
 
+// install-command.ts inlines the template paths for the bootstrap renderer
+// contract; the build refuses to publish if the two copies ever differ.
+if (
+  JSON.stringify(GENERATED_SKILL_TEMPLATES) !==
+  JSON.stringify(PROJECT_SKILL_TEMPLATES)
+)
+  throw new TypeError("[Slop] generated skill template paths have drifted");
+
+/** True when the published guide renderer is the committed source. */
+const rendererMatchesCommit = GUIDE_RENDERER_PATHS.every((path) => {
+  try {
+    return readFileSync(join(repositoryRoot, path)).equals(
+      execFileSync("git", ["show", `HEAD:${path}`], {
+        cwd: repositoryRoot,
+        encoding: null,
+        maxBuffer: 16 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "ignore"],
+      }),
+    );
+  } catch {
+    // error-policy:J3 an absent immutable renderer is an explicit working-tree state.
+    return false;
+  }
+});
+
 /**
- * Publishes the generic template pair and the shared skill kit with their
- * digests and source commit. The skill Function reads only these bytes and
- * refuses any file whose digest differs.
+ * Publishes the canonical template trees with their digests and source
+ * commit. The skill Function renders each project from these bytes and the
+ * project's D1 revision, and refuses any file whose digest differs.
  */
-function templateGroup(sourcePath, files) {
+function templateGroup(sourcePath) {
   const tracked = execFileSync("git", ["ls-files", "-z", "--", sourcePath], {
     cwd: repositoryRoot,
     encoding: "utf8",
   })
     .split("\0")
     .filter(Boolean)
-    .map((path) => relative(sourcePath, path).replaceAll("\\", "/"));
-  const paths = (
-    files ?? listRegularSkillFiles(join(repositoryRoot, sourcePath))
-  ).sort();
+    .map((path) => relative(sourcePath, path).replaceAll("\\", "/"))
+    .sort();
+  const paths = listRegularSkillFiles(join(repositoryRoot, sourcePath)).sort();
   if (
     paths.length === 0 ||
     paths.length > 32 ||
-    paths.some((path) => !tracked.includes(path))
+    paths.includes("PROVENANCE.json") ||
+    paths.includes("project.json") ||
+    paths.length !== tracked.length ||
+    paths.some((path, index) => path !== tracked[index])
   )
     throw new TypeError(
-      `[Slop] skill template ${sourcePath} must be a bounded, tracked file tree`,
+      `[Slop] skill template ${sourcePath} must be a bounded, tracked, exact file tree`,
     );
   const target = join(publicRoot, "skill-templates", sourcePath);
   for (const path of paths) {
@@ -285,7 +312,7 @@ function templateGroup(sourcePath, files) {
       repositoryRoot,
       commit,
       sourcePath,
-      files ? tracked.sort() : paths,
+      paths,
     ),
     files: paths.map((path) => ({
       path,
@@ -295,9 +322,8 @@ function templateGroup(sourcePath, files) {
 }
 rmSync(join(publicRoot, "skill-templates"), { force: true, recursive: true });
 const templateGroups = {
-  contributor: templateGroup(CONTRIBUTOR_TEMPLATE_PATH),
-  reviewer: templateGroup(REVIEWER_TEMPLATE_PATH),
-  scripts: templateGroup(SKILL_KIT_PATH, [...SKILL_KIT_FILES]),
+  contributor: templateGroup(PROJECT_SKILL_TEMPLATES.contributor),
+  reviewer: templateGroup(PROJECT_SKILL_TEMPLATES.reviewer),
 };
 writeFileSync(
   join(publicRoot, "skill-templates", "index.json"),
@@ -317,6 +343,11 @@ writeFileSync(
           { sourcePath, files },
         ]),
       ),
+      renderer: {
+        paths: GUIDE_RENDERER_PATHS,
+        revisionStatus: rendererMatchesCommit ? "committed" : "working-tree",
+      },
+      acceptedRevisions: ACCEPTED_SKILL_REVISIONS,
     },
     null,
     2,

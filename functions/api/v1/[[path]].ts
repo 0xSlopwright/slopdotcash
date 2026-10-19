@@ -11,6 +11,7 @@ import {
   CloudflareProjectPersistence,
   type ProjectD1Database,
 } from "../../../backend/projects/cloudflare-persistence";
+import type { RepositoryControl } from "../../../backend/projects/contracts";
 import { edgeCache } from "../../../backend/projects/edge-cache";
 import {
   type AdminApplicationNotice,
@@ -25,6 +26,7 @@ import {
 } from "../../../backend/trace/cloudflare-persistence";
 import { handleTraceApi } from "../../../backend/trace/handler";
 import { deploymentTier } from "../../../src/lib/deployment";
+import type { ProjectDefinition } from "../../../src/lib/projects.mjs";
 
 type Env = {
   SLOP_ENVIRONMENT?: "production" | "staging";
@@ -38,11 +40,13 @@ type Env = {
   /** GitHub numeric actor IDs allowed to review project applications. */
   ADMIN_GITHUB_IDS?: string;
   SLOP_IDENTITY: { fetch(request: Request): Promise<Response> };
+  /** Local browser tests only: a loopback GitHub API fixture origin. */
+  SLOP_GITHUB_API_ORIGIN?: string;
+  /** Optional read-only GitHub token for repository ownership checks. */
+  SLOP_GITHUB_READ_TOKEN?: string;
   /** Admin email Worker; absent where no notifier is deployed. */
   SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
   ASSETS?: { fetch(request: Request): Promise<Response> };
-  /** Optional read-only GitHub token for setup-form lookups; never sent to browsers. */
-  GITHUB_LOOKUP_TOKEN?: string;
   /** Optional RPC overrides for reward token decimals verification. */
   REWARD_RPC_BASE?: string;
   REWARD_RPC_ETHEREUM?: string;
@@ -183,6 +187,92 @@ async function notifyAdmins(
   return response.status === 202;
 }
 
+function githubHeaders(token: string | undefined): Record<string, string> {
+  return {
+    accept: "application/vnd.github+json",
+    "user-agent": "slop.cash-project-registry",
+    "x-github-api-version": "2022-11-28",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+/**
+ * Proves control from public GitHub facts only: the applicant owns a user
+ * repository, or is a public member of the owning organization. The manifest's
+ * repository and steward identities must match GitHub exactly.
+ */
+function githubApiOrigin(env: Env): string {
+  const origin = env.SLOP_GITHUB_API_ORIGIN;
+  return origin && /^http:\/\/127\.0\.0\.1:[1-9][0-9]{3,4}$/u.test(origin)
+    ? origin
+    : "https://api.github.com";
+}
+
+async function repositoryControl(
+  manifest: ProjectDefinition,
+  actor: { githubId: string; githubLogin: string },
+  env: Env,
+): Promise<RepositoryControl> {
+  const api = githubApiOrigin(env);
+  const token = env.SLOP_GITHUB_READ_TOKEN;
+  const repository = manifest.repositories[0];
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository.id))
+    return { state: "mismatch", reason: "Repository must be owner/name" };
+  const response = await fetch(`${api}/repos/${repository.id}`, {
+    headers: githubHeaders(token),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status === 404)
+    return {
+      state: "mismatch",
+      reason: "GitHub has no public repository with that name",
+    };
+  if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
+  const facts = (await readBoundedJson(response, 512 * 1024)) as {
+    id?: unknown;
+    node_id?: unknown;
+    full_name?: unknown;
+    private?: unknown;
+    owner?: { id?: unknown; login?: unknown; type?: unknown };
+  };
+  if (
+    String(facts.id) !== manifest.authority.repositoryId ||
+    facts.node_id !== manifest.authority.repositoryNodeId ||
+    String(facts.full_name).toLowerCase() !== repository.id.toLowerCase() ||
+    facts.private !== false ||
+    String(facts.owner?.id) !== manifest.steward.github.actorId
+  )
+    return {
+      state: "mismatch",
+      reason: "Repository or steward facts do not match GitHub",
+    };
+  if (facts.owner?.type === "User")
+    return String(facts.owner.id) === actor.githubId
+      ? {
+          state: "proven",
+          reason: `@${actor.githubLogin} owns ${repository.id}`,
+        }
+      : {
+          state: "unproven",
+          reason: `@${actor.githubLogin} does not own ${repository.id}`,
+        };
+  const membership = await fetch(
+    `${api}/orgs/${encodeURIComponent(String(facts.owner?.login))}/public_members/${encodeURIComponent(actor.githubLogin)}`,
+    { headers: githubHeaders(token), signal: AbortSignal.timeout(10_000) },
+  );
+  if (membership.status === 204)
+    return {
+      state: "proven",
+      reason: `@${actor.githubLogin} is a public member of ${String(facts.owner?.login)}`,
+    };
+  if (membership.status === 404)
+    return {
+      state: "unproven",
+      reason: `@${actor.githubLogin} is not a public member of ${String(facts.owner?.login)}`,
+    };
+  throw new Error(`GitHub returned ${membership.status}`);
+}
+
 export async function onRequest(context: PagesContext): Promise<Response> {
   const projectResponse = await handleProjectApi(context.request, {
     persistence: new CloudflareProjectPersistence(context.env.SLOP_DB),
@@ -196,6 +286,8 @@ export async function onRequest(context: PagesContext): Promise<Response> {
         new Date().toISOString(),
       ),
     notifyAdmins: (notice) => notifyAdmins(context.env.SLOP_NOTIFY, notice),
+    repositoryControl: (manifest, actor) =>
+      repositoryControl(manifest, actor, context.env),
     readTokenMetadata: rpcTokenMetadataReader(fetch, {
       base: context.env.REWARD_RPC_BASE,
       ethereum: context.env.REWARD_RPC_ETHEREUM,
@@ -204,7 +296,8 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     }),
     github: {
       fetch: (url, init) => fetch(url, init),
-      token: context.env.GITHUB_LOOKUP_TOKEN,
+      token: context.env.SLOP_GITHUB_READ_TOKEN,
+      apiOrigin: githubApiOrigin(context.env),
     },
     cache: edgeCache(),
     waitUntil: context.waitUntil?.bind(context),

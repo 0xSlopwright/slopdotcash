@@ -1,28 +1,25 @@
-// The D1 project registry API on the real migration: cached public reads,
-// purge on admin writes, server-verified reward assets, the generated-skill
+// The D1 project registry API on the real migrations: cached public reads,
+// purge on admin writes, server-verified reward assets, the GitHub ownership
+// check, submission limits, exact revision bytes, the generated-skill
 // activation gate, and same-origin GitHub lookups.
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
+import type { RepositoryControl } from "../backend/projects/contracts";
 import type { EdgeCache } from "../backend/projects/edge-cache";
 import {
   handleProjectApi,
   type ProjectApiDependencies,
 } from "../backend/projects/handler";
+import type { SkillTemplateIndex } from "../backend/projects/skill-publication";
 import { handleProjectArtifactRequest } from "../backend/projects/skill-publication";
 import { TokenMetadataError } from "../backend/projects/token-metadata";
-import {
-  CONTRIBUTOR_TEMPLATE_PATH,
-  REVIEWER_TEMPLATE_PATH,
-  SKILL_KIT_FILES,
-  SKILL_KIT_PATH,
-  type SkillTemplateIndex,
-  sha256Hex,
-} from "../src/lib/project-skill-render.mjs";
+import { PROJECT_SKILL_TEMPLATES } from "../src/lib/project-schema.mjs";
+import { sha256Hex } from "../src/lib/project-skill-publication.mjs";
 import {
   applicationManifest,
-  SKILL_CONTENT,
+  CONTRIBUTION,
 } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 
@@ -49,14 +46,23 @@ let cache: MemoryCache;
 let tokenReads: string[];
 let githubReads: string[];
 let deps: ProjectApiDependencies;
+/** GitHub's answer for the ownership check, by repository. */
+let control: (repository: string) => RepositoryControl;
 
 beforeEach(() => {
   persistence = new CloudflareProjectPersistence(
-    sqliteD1(["0019_project_registry.sql"]).db,
+    sqliteD1([
+      "0019_project_registry.sql",
+      "0020_project_application_github_check.sql",
+    ]).db,
   );
   cache = new MemoryCache();
   tokenReads = [];
   githubReads = [];
+  control = () => ({
+    state: "unproven",
+    reason: "@e2e-applicant is not a public member of example",
+  });
   let id = 0;
   deps = {
     persistence,
@@ -70,6 +76,7 @@ beforeEach(() => {
           ? APPLICANT
           : null,
     notifyAdmins: async () => true,
+    repositoryControl: async (manifest) => control(manifest.repositories[0].id),
     readTokenMetadata: async (network, address) => {
       tokenReads.push(`${network}:${address}`);
       if (address === TOKEN) return { decimals: 18, symbol: "OPEN" };
@@ -126,7 +133,6 @@ async function listProject(
 ) {
   const submitted = await call("POST", "project-applications", "applicant", {
     manifest,
-    acceptanceCriteria: "Merged pull requests with tests.",
   });
   expect(submitted.status).toBe(201);
   const { application } = await submitted.json();
@@ -236,7 +242,6 @@ describe("project registry API", () => {
             symbol: "BAD",
           },
         },
-        acceptanceCriteria: "Merged pull requests with tests.",
       });
       expect(response.status).toBe(422);
       expect((await response.json()).error).toBe(error);
@@ -244,33 +249,102 @@ describe("project registry API", () => {
     expect(await persistence.listApplications("pending")).toEqual([]);
   });
 
-  test("activates only a project with complete skill content", async () => {
-    const { skillContent: _content, ...withoutSkill } = applicationManifest(
-      "open-registry",
-      "example/open-registry",
-    );
-    await listProject(withoutSkill);
+  test("activates only a project whose generated skills have their fields", async () => {
+    await listProject();
     const current = await persistence.getProject("open-registry");
-    const activate = (manifest: unknown, expectedRevision: number) =>
+    const activate = (manifest: unknown) =>
       call("PUT", "admin/projects/open-registry/manifest", "admin", {
         manifest,
-        expectedRevision,
+        expectedRevision: 1,
         reason: "Activate",
       });
-    const refused = await activate(
-      { ...current?.manifest, status: "active" },
-      1,
-    );
+    // Without the contribution fields the project has no generated skill.
+    if (current === null) throw new Error("project was not listed");
+    const { contribution: _fields, ...withoutFields } =
+      current.manifest as unknown as Record<string, unknown>;
+    const refused = await activate({ ...withoutFields, status: "active" });
     expect(refused.status).toBe(422);
-    expect((await refused.json()).error).toBe("skill_content_incomplete");
-    const accepted = await activate(
-      { ...current?.manifest, status: "active", skillContent: SKILL_CONTENT },
-      1,
+    expect((await persistence.getProject("open-registry"))?.status).toBe(
+      "paused",
     );
+    const accepted = await activate({
+      ...current?.manifest,
+      status: "active",
+      contribution: CONTRIBUTION,
+    });
     expect(accepted.status).toBe(200);
     expect((await persistence.getProject("open-registry"))?.status).toBe(
       "active",
     );
+  });
+
+  test("records the GitHub ownership check and refuses contradicted facts", async () => {
+    control = () => ({
+      state: "mismatch",
+      reason: "Repository or steward facts do not match GitHub",
+    });
+    const refused = await call("POST", "project-applications", "applicant", {
+      manifest: applicationManifest("open-registry", "example/open-registry"),
+    });
+    expect(refused.status).toBe(422);
+    expect(await refused.json()).toMatchObject({
+      error: "invalid_manifest",
+      message: "Repository or steward facts do not match GitHub",
+    });
+    expect(await persistence.listApplications("pending")).toEqual([]);
+
+    control = () => ({
+      state: "proven",
+      reason: "@e2e-applicant owns example/open-registry",
+    });
+    const accepted = await call("POST", "project-applications", "applicant", {
+      manifest: applicationManifest("open-registry", "example/open-registry"),
+    });
+    expect(accepted.status).toBe(201);
+    expect((await accepted.json()).application).toMatchObject({
+      githubCheck: "Proven: @e2e-applicant owns example/open-registry",
+      status: "pending",
+    });
+  });
+
+  test("limits one account to five submissions a day", async () => {
+    for (let index = 0; index < 5; index += 1) {
+      const response = await call("POST", "project-applications", "applicant", {
+        manifest: applicationManifest(
+          `daily-${index}`,
+          `example/daily-${index}`,
+        ),
+      });
+      expect(response.status).toBe(201);
+      // Rejections keep the pending queue small; the daily count stays.
+      const { application } = await response.json();
+      await call(
+        "POST",
+        `admin/project-applications/${application.id}/reject`,
+        "admin",
+        { reason: "Test rejection" },
+      );
+    }
+    const sixth = await call("POST", "project-applications", "applicant", {
+      manifest: applicationManifest("daily-5", "example/daily-5"),
+    });
+    expect(sixth.status).toBe(429);
+    expect((await sixth.json()).error).toBe("too_many_submissions");
+  });
+
+  test("serves the exact approved bytes of a revision", async () => {
+    await listProject();
+    const response = await call("GET", "project-revisions/open-registry/1");
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(await sha256Hex(body.manifestText)).toBe(body.manifestSha256);
+    expect(JSON.parse(body.manifestText)).toMatchObject({
+      id: "open-registry",
+      contribution: CONTRIBUTION,
+    });
+    expect(
+      (await call("GET", "project-revisions/open-registry/2")).status,
+    ).toBe(404);
   });
 
   test("looks up GitHub only for a signed-in visitor and caches the facts", async () => {
@@ -334,14 +408,18 @@ describe("generated skill publication", () => {
       commit: "d".repeat(40),
       revisionStatus: "committed",
       contributor: await group(
-        CONTRIBUTOR_TEMPLATE_PATH,
-        files(CONTRIBUTOR_TEMPLATE_PATH),
+        PROJECT_SKILL_TEMPLATES.contributor,
+        files(PROJECT_SKILL_TEMPLATES.contributor),
       ),
       reviewer: await group(
-        REVIEWER_TEMPLATE_PATH,
-        files(REVIEWER_TEMPLATE_PATH),
+        PROJECT_SKILL_TEMPLATES.reviewer,
+        files(PROJECT_SKILL_TEMPLATES.reviewer),
       ),
-      scripts: await group(SKILL_KIT_PATH, [...SKILL_KIT_FILES]),
+      renderer: {
+        paths: ["scripts/render-install-guide.mjs"],
+        revisionStatus: "committed",
+      },
+      acceptedRevisions: ["current main head"],
     };
     const publication = {
       getProject: (id: string) => persistence.getProject(id),
@@ -351,7 +429,6 @@ describe("generated skill publication", () => {
         readFile: async (path: string) =>
           new Uint8Array(readFileSync(join(root, path))),
       }),
-      publicOrigin: ORIGIN,
       cache,
     };
     const get = (path: string) =>
@@ -365,38 +442,51 @@ describe("generated skill publication", () => {
         publication,
       ),
     ).toBeNull();
-    expect((await get("/projects/open-registry/SKILL.md")).status).toBe(404);
+    expect((await get("/projects/open-registry/skill.md")).status).toBe(404);
 
     await listProject();
-    const skill = await get("/projects/open-registry/SKILL.md");
+    const skill = await get("/projects/open-registry/skill.md");
     expect(skill.status).toBe(200);
     expect(skill.headers.get("content-type")).toBe(
       "text/markdown; charset=utf-8",
     );
     const text = await skill.text();
     expect(text).toContain("name: contribute-to-open-registry");
-    expect(text).toContain('project-revision: "1"');
+    // Maintainer text stays data in project.json, never in SKILL.md.
+    expect(text).not.toContain(CONTRIBUTION.approvedScope);
+    expect(await (await get("/projects/open-registry/SKILL.md")).text()).toBe(
+      text,
+    );
     const manifest = await (
       await get("/projects/open-registry/skill-manifest.json")
     ).json();
-    const archive = await get(new URL(manifest.archive.url).pathname);
-    expect(archive.headers.get("content-disposition")).toBe(
-      'attachment; filename="contribute-to-open-registry.skill"',
+    expect(manifest.authority.registry).toMatchObject({
+      projectId: "open-registry",
+      revision: 1,
+      url: "https://slop.cash/api/v1/project-revisions/open-registry/1",
+    });
+    expect(manifest.guides.codex.renderer.arguments).toContain(
+      "skills/project-contributor-template",
     );
+    const archive = await get(new URL(manifest.archive.url).pathname);
+    expect(archive.headers.get("content-disposition")).toBe("attachment");
     expect(await sha256Hex(new Uint8Array(await archive.arrayBuffer()))).toBe(
       manifest.archive.sha256,
     );
     const discovery = await (
       await get("/.well-known/slop/projects.json")
     ).json();
-    expect(discovery.projects).toMatchObject([
-      {
-        project_id: "open-registry",
-        repository: "example/open-registry",
-        skill_url: `${ORIGIN}/projects/open-registry/SKILL.md`,
-        project_revision: 1,
-      },
-    ]);
+    expect(discovery).toMatchObject({
+      schemaVersion: "1",
+      projects: [
+        {
+          project_id: "open-registry",
+          repository: "example/open-registry",
+          skill: "contribute-to-open-registry",
+          skill_source: "skills/project-contributor-template",
+        },
+      ],
+    });
 
     // An admin revision purges the cached skill, so the next read names it.
     const current = await persistence.getProject("open-registry");
@@ -415,8 +505,9 @@ describe("generated skill publication", () => {
     );
     expect(revised.status).toBe(200);
     expect(
-      await (await get("/projects/open-registry/SKILL.md")).text(),
-    ).toContain('project-revision: "2"');
+      (await (await get("/projects/open-registry/skill-manifest.json")).json())
+        .authority.registry.revision,
+    ).toBe(2);
     const review = await get("/projects/open-registry/review/SKILL.md");
     expect(await review.text()).toContain(
       "name: review-open-registry-contributions",

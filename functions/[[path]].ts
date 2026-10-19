@@ -5,15 +5,14 @@ import {
 import { edgeCache } from "../backend/projects/edge-cache";
 import {
   handleProjectArtifactRequest,
+  type SkillTemplateIndex,
   type SkillTemplateSource,
 } from "../backend/projects/skill-publication";
-import type { SkillTemplateIndex } from "../src/lib/project-skill-render.mjs";
 import { onRequest as socialMetadata } from "./index";
 
 type Env = {
   SLOP_DB?: ProjectD1Database;
   ASSETS?: { fetch(request: Request): Promise<Response> };
-  PUBLIC_SITE_URL?: string;
 };
 
 type PagesContext = {
@@ -24,26 +23,6 @@ type PagesContext = {
 };
 
 const MAX_TEMPLATE_FILE_BYTES = 1024 * 1024;
-
-/**
- * Generated skills name the canonical site. Local, preview and staging hosts
- * name themselves, so their skills route back to the deployment that served
- * them.
- */
-export function skillPublicOrigin(
-  requestUrl: string,
-  configured?: string,
-): string {
-  const url = new URL(requestUrl);
-  if (
-    url.hostname === "127.0.0.1" ||
-    url.hostname === "localhost" ||
-    url.hostname === "staging.slop.cash" ||
-    url.hostname.endsWith(".pages.dev")
-  )
-    return url.origin;
-  return configured === "https://slop.cash" ? configured : "https://slop.cash";
-}
 
 /** Reads the build's published template bytes through the static assets. */
 function templateSource(
@@ -80,10 +59,6 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       getProject: (id) => persistence.getProject(id),
       listProjects: () => persistence.listProjects(),
       loadTemplate: templateSource(context),
-      publicOrigin: skillPublicOrigin(
-        context.request.url,
-        context.env.PUBLIC_SITE_URL,
-      ),
       cache: edgeCache(),
       waitUntil: context.waitUntil?.bind(context),
     });

@@ -83,22 +83,29 @@ export function projectCachePaths(
   projectId: string,
   skillNames: string[],
 ): string[] {
+  const base = `/projects/${projectId}`;
   return [
     "/api/v1/projects",
     `/api/v1/projects/${projectId}`,
     "/api/v1/project-revisions",
     "/.well-known/slop/projects.json",
-    `/projects/${projectId}/terms.json`,
-    `/projects/${projectId}/SKILL.md`,
-    `/projects/${projectId}/skill.md`,
-    `/projects/${projectId}/references/project.md`,
-    `/projects/${projectId}/review/SKILL.md`,
-    `/projects/${projectId}/review-skill.md`,
-    `/projects/${projectId}/skill-manifest.json`,
-    `/projects/${projectId}/review-skill-manifest.json`,
+    `${base}/terms.json`,
+    `${base}/SKILL.md`,
+    `${base}/review/SKILL.md`,
+    ...["", "review-"].flatMap((prefix) =>
+      [
+        "skill.md",
+        "mission.md",
+        "codex.md",
+        "claude.md",
+        "claude-code.md",
+        "manual.md",
+        "skill-manifest.json",
+      ].map((file) => `${base}/${prefix}${file}`),
+    ),
     ...skillNames.flatMap((name) => [
-      `/projects/${projectId}/downloads/${name}.skill`,
-      `/projects/${projectId}/downloads/${name}.skill.sha256`,
+      `${base}/downloads/${name}.skill`,
+      `${base}/downloads/${name}.skill.sha256`,
     ]),
   ];
 }

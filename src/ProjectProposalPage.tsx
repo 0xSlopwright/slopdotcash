@@ -21,11 +21,7 @@ import {
   slugify,
   validRepositoryPath,
 } from "./lib/project-proposal";
-import {
-  SKILL_CONTENT_FIELDS,
-  type SkillContentKey,
-  skillContentFieldError,
-} from "./lib/project-skill-content.mjs";
+import { PROJECT_SKILL_TEMPLATES } from "./lib/project-schema.mjs";
 import type { ProjectDefinition } from "./lib/projects.mjs";
 import {
   REWARD_ASSET_NETWORKS,
@@ -41,15 +37,6 @@ const SETTLEMENT_CHAIN_NAMES: Record<string, string> = Object.fromEntries(
     network.name,
   ]),
 );
-
-/** The proposal field that holds one skill content section. */
-function skillField(key: SkillContentKey) {
-  return `skill${key[0].toUpperCase()}${key.slice(1)}` as `skill${Capitalize<SkillContentKey>}`;
-}
-const SKILL_FIELDS = SKILL_CONTENT_FIELDS.map((field) => ({
-  ...field,
-  proposalField: skillField(field.key),
-}));
 const PROPOSAL_DRAFT_KEY = "slop:project-proposal:v1";
 /** PRJ-03 default, shown as editable text the maintainer can replace. */
 const DEFAULT_CRITERIA =
@@ -77,19 +64,18 @@ const EMPTY_PROPOSAL = {
   headline: "",
   goal: "",
   criteria: "",
+  contributionGuide: "",
+  supportedTasks: "",
+  requiredTests: "",
+  reviewExpectations: "",
+  securityContact: "",
+  closurePolicy: "",
+  maintainerNotes: "",
   monthlyPool: "0",
   settlementChain: "base",
   rewardKind: "stablecoin",
   rewardAssetAddress: "",
   rewardAssetSymbol: "",
-  skillScope: "",
-  skillContributionGuide: "",
-  skillSupportedTasks: "",
-  skillRequiredTests: "",
-  skillReviewExpectations: "",
-  skillSecurityContact: "",
-  skillClosurePolicy: "",
-  skillNotes: "",
   reviewBudgetEnabled: "no",
   monthlyReviewBudget: "",
   copyrightModel: "unknown",
@@ -110,6 +96,51 @@ const EMPTY_PROPOSAL = {
   assignmentSignedAt: "",
 };
 type Proposal = typeof EMPTY_PROPOSAL;
+/** Maintainer-authored rules that, with the scope, generate the skills. */
+const SKILL_RULE_FIELDS = [
+  "contributionGuide",
+  "supportedTasks",
+  "requiredTests",
+  "reviewExpectations",
+  "securityContact",
+  "closurePolicy",
+  "maintainerNotes",
+] as const;
+const SKILL_RULE_LABELS: Record<
+  (typeof SKILL_RULE_FIELDS)[number],
+  { label: string; placeholder: string }
+> = {
+  contributionGuide: {
+    label: "Contribution guide",
+    placeholder:
+      "How should a contributor set up, branch and submit? Leave empty to follow the repository's CONTRIBUTING.md.",
+  },
+  supportedTasks: {
+    label: "Supported tasks",
+    placeholder:
+      "Which kinds of work do you want, for example bug fixes or benchmark runs?",
+  },
+  requiredTests: {
+    label: "Required tests",
+    placeholder: "Which commands or workflows must pass before a pull request?",
+  },
+  reviewExpectations: {
+    label: "Review expectations",
+    placeholder: "What evidence must a pull request show for review?",
+  },
+  securityContact: {
+    label: "Security contact",
+    placeholder: "Where should security reports go privately?",
+  },
+  closurePolicy: {
+    label: "Closure policy",
+    placeholder: "When do maintainers close or decline a pull request?",
+  },
+  maintainerNotes: {
+    label: "Maintainer notes",
+    placeholder: "Anything else contributors should know.",
+  },
+};
 type ProposalField = keyof Proposal;
 type FieldErrors = Partial<Record<ProposalField, string>>;
 
@@ -129,6 +160,13 @@ const FIELD_STEP: Partial<Record<ProposalField, number>> = {
   headline: 1,
   goal: 1,
   criteria: 1,
+  contributionGuide: 1,
+  supportedTasks: 1,
+  requiredTests: 1,
+  reviewExpectations: 1,
+  securityContact: 1,
+  closurePolicy: 1,
+  maintainerNotes: 1,
   copyrightModel: 1,
   legalHolder: 1,
   inboundTermsUrl: 1,
@@ -145,9 +183,15 @@ const FIELD_STEP: Partial<Record<ProposalField, number>> = {
   monthlyReviewBudget: 2,
   rewardAssetAddress: 2,
   rewardAssetSymbol: 2,
-  ...Object.fromEntries(SKILL_FIELDS.map((field) => [field.proposalField, 1])),
 };
 const FIELD_LABELS: Partial<Record<ProposalField, string>> = {
+  contributionGuide: "Contribution guide",
+  supportedTasks: "Supported tasks",
+  requiredTests: "Required tests",
+  reviewExpectations: "Review expectations",
+  securityContact: "Security contact",
+  closurePolicy: "Closure policy",
+  maintainerNotes: "Maintainer notes",
   repository: "Public GitHub repository",
   repositoryNumericId: "Repository numeric ID",
   repositoryNodeId: "Repository node ID",
@@ -179,9 +223,6 @@ const FIELD_LABELS: Partial<Record<ProposalField, string>> = {
   monthlyReviewBudget: "Monthly review budget",
   rewardAssetAddress: "Token address",
   rewardAssetSymbol: "Token symbol",
-  ...Object.fromEntries(
-    SKILL_FIELDS.map((field) => [field.proposalField, field.label]),
-  ),
 };
 
 const TERMS_FIELDS = new Set<string>([
@@ -213,10 +254,6 @@ function lengthError(
   return boundedText(value, minimum, maximum)
     ? undefined
     : `Enter ${minimum} to ${maximum} characters.`;
-}
-
-function skillContentStarted(p: Proposal): boolean {
-  return SKILL_FIELDS.some((field) => p[field.proposalField].trim() !== "");
 }
 
 /** One validation source for the setup wizard, its summary and its handoff. */
@@ -264,6 +301,14 @@ function proposalErrors(p: Proposal): FieldErrors {
   if (goal) errors.goal = goal;
   const criteria = lengthError(p.criteria, 6, 1_000);
   if (criteria) errors.criteria = criteria;
+  // The remaining skill fields are optional; empty defers to the repository.
+  for (const field of SKILL_RULE_FIELDS) {
+    const value = p[field];
+    if (value.trim() !== "") {
+      const error = lengthError(value, 1, 2_000);
+      if (error) errors[field] = error;
+    }
+  }
   if (p.copyrightModel === "sponsor-owned") {
     const holder = lengthError(p.legalHolder, 2, 240);
     if (holder) errors.legalHolder = holder;
@@ -302,16 +347,6 @@ function proposalErrors(p: Proposal): FieldErrors {
     if (p.assignmentSignedAt.length === 0)
       errors.assignmentSignedAt = "Enter the signing date and time.";
   }
-  // Skill content is optional at submission and complete or absent: the
-  // project cannot be activated until it is complete.
-  if (skillContentStarted(p))
-    for (const field of SKILL_FIELDS) {
-      const error = skillContentFieldError(
-        field,
-        p[field.proposalField].trim(),
-      );
-      if (error) errors[field.proposalField] = `${error}.`;
-    }
   if (p.rewardKind === "token") {
     try {
       rewardAssetChoice(
@@ -349,7 +384,7 @@ function readDraft(): Proposal | null {
     const draft = { ...EMPTY_PROPOSAL };
     for (const key of Object.keys(EMPTY_PROPOSAL) as ProposalField[]) {
       const entry = (value as Record<string, unknown>)[key];
-      if (typeof entry === "string" && entry.length <= 8_000)
+      if (typeof entry === "string" && entry.length <= 4_000)
         draft[key] = entry;
     }
     return draft;
@@ -877,15 +912,25 @@ export default function ProjectProposalPage() {
           integrationBranch: p.integrationBranch,
         },
       ],
+      // Slop generates both skills from the canonical templates and these
+      // rules (PRD SKL-03), so no pull request adds a project skill.
       skill: {
         id: `contribute-to-${slug}`,
         publishAtRoot: false,
-        sourcePath: `skills/contribute-to-${slug}`,
+        sourcePath: PROJECT_SKILL_TEMPLATES.contributor,
         publicPath: `/projects/${slug}/skill.md`,
       },
       reviewSkill: {
         id: `review-${slug}-contributions`,
-        sourcePath: `skills/review-${slug}-contributions`,
+        sourcePath: PROJECT_SKILL_TEMPLATES.reviewer,
+      },
+      contribution: {
+        approvedScope:
+          p.criteria.trim() ||
+          "Define exact accepted outcomes with the maintainer.",
+        ...Object.fromEntries(
+          SKILL_RULE_FIELDS.map((field) => [field, p[field].trim()]),
+        ),
       },
       // Networks without a reviewed escrow program keep the asset as
       // display metadata with payments disabled.
@@ -904,16 +949,6 @@ export default function ProjectProposalPage() {
         : {}),
       // The server verifies the asset and stores its decimals.
       rewardAsset: asset,
-      ...(skillContentStarted(p)
-        ? {
-            skillContent: Object.fromEntries(
-              SKILL_FIELDS.map((field) => [
-                field.key,
-                p[field.proposalField].replaceAll("\r\n", "\n").trim(),
-              ]),
-            ),
-          }
-        : {}),
       reward: {
         kind: "monthly-pool",
         currency: asset.symbol,
@@ -977,10 +1012,7 @@ export default function ProjectProposalPage() {
   >({ status: "idle" });
   function submit() {
     setSubmission({ status: "submitting" });
-    submitProjectApplication(
-      manifest as unknown as ProjectDefinition,
-      p.criteria.trim(),
-    ).then(
+    submitProjectApplication(manifest as unknown as ProjectDefinition).then(
       ({ application }) => setSubmission({ status: "submitted", application }),
       (error: unknown) =>
         setSubmission({
@@ -1384,26 +1416,23 @@ export default function ProjectProposalPage() {
               placeholder="What accepted GitHub outcomes qualify?"
               value={p.criteria}
             />
-            <fieldset className="proposal-skill-content">
-              <legend>Contributor and reviewer skill</legend>
+            <fieldset className="proposal-skill-rules">
+              <legend>Project skill rules (optional)</legend>
               <p className="field-hint">
-                Slop generates this project&apos;s contributor and reviewer
-                skills from these sections and its reviewed template. Write
-                Markdown. You can leave all of them empty now; the project
-                cannot be activated until every required section is complete.
+                Slop generates this project's contributor and reviewer skills
+                from these rules and its standard template. They can narrow what
+                contributors do, but cannot weaken Slop's safety rules.
               </p>
-              {SKILL_FIELDS.map((field) => (
+              {SKILL_RULE_FIELDS.map((field) => (
                 <TextField
-                  error={shown(field.proposalField)}
-                  hint={field.hint}
-                  key={field.key}
-                  label={
-                    field.min === 0 ? `${field.label} (optional)` : field.label
-                  }
-                  multiline={field.key !== "securityContact"}
-                  name={field.proposalField}
-                  onChange={set(field.proposalField)}
-                  value={p[field.proposalField]}
+                  error={shown(field)}
+                  key={field}
+                  label={SKILL_RULE_LABELS[field].label}
+                  multiline
+                  name={field}
+                  onChange={set(field)}
+                  placeholder={SKILL_RULE_LABELS[field].placeholder}
+                  value={p[field]}
                 />
               ))}
             </fieldset>
@@ -1705,14 +1734,6 @@ export default function ProjectProposalPage() {
                   </dd>
                 </div>
                 <div>
-                  <dt>Skills</dt>
-                  <dd>
-                    {skillContentStarted(p)
-                      ? `Generated at /projects/${slug}/SKILL.md after approval`
-                      : "Not written yet · required before activation"}
-                  </dd>
-                </div>
-                <div>
                   <dt>Steward</dt>
                   <dd>
                     {p.stewardName || "Not set"}
@@ -1737,10 +1758,13 @@ export default function ProjectProposalPage() {
                 <h2>Application submitted</h2>
                 <p>
                   {submission.application.manifest.name} is waiting for admin
-                  review. After approval it is listed as a paused project.
-                  Repository authority, terms, skills and money are added by an
-                  admin before the project opens.
+                  review. After approval it is listed as a paused project, and
+                  Slop generates its contributor and reviewer skills from your
+                  rules. An admin activates the project after reviewing them.
                 </p>
+                {submission.application.githubCheck ? (
+                  <p>GitHub check: {submission.application.githubCheck}</p>
+                ) : null}
                 <p>
                   Application {submission.application.id} · submitted by @
                   {submission.application.applicant.githubLogin}

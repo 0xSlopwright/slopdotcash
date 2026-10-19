@@ -18,11 +18,31 @@ import {
   assertMonthlyCommitmentPolicy,
   hasActiveFundingCommitment,
 } from "./funding-instruments.mjs";
-import { assertSkillContent } from "./project-skill-content.mjs";
 import {
   assertRewardAsset,
   REWARD_ASSET_NETWORK_IDS,
 } from "./reward-asset.mjs";
+
+/**
+ * The canonical generic templates every generated project skill renders from
+ * (PRD SKL-03). A project names one as its skill source path.
+ */
+export const PROJECT_SKILL_TEMPLATES = Object.freeze({
+  contributor: "skills/project-contributor-template",
+  reviewer: "skills/project-reviewer-template",
+});
+
+/** Maintainer-authored fields, in render order, that generate project skills. */
+export const CONTRIBUTION_FIELDS = Object.freeze([
+  "approvedScope",
+  "contributionGuide",
+  "supportedTasks",
+  "requiredTests",
+  "reviewExpectations",
+  "securityContact",
+  "closurePolicy",
+  "maintainerNotes",
+]);
 
 const PROJECT_KEYS = [
   "authority",
@@ -46,14 +66,14 @@ const PROJECT_KEYS = [
   "terms",
 ];
 /**
- * Optional manifest sections. `rewardAsset` and `skillContent` arrive with
+ * Optional manifest sections. `rewardAsset` and `contribution` arrive with
  * the D1 registry; older revisions omit them.
  */
 const OPTIONAL_PROJECT_KEYS = [
   "escrow",
   "participation",
   "rewardAsset",
-  "skillContent",
+  "contribution",
 ];
 export const MAX_MONTHLY_CAP_MINOR = 1_000_000_000_000_000n;
 
@@ -776,9 +796,15 @@ function validateSkill(
   if (publicPath && !hasPublishAtRoot && !allowLegacyMissingPublishAtRoot) {
     throw new TypeError(`${field}.publishAtRoot is required`);
   }
+  // A generated skill names its canonical template; a historical project
+  // names its own committed skill folder.
+  const template = publicPath
+    ? PROJECT_SKILL_TEMPLATES.contributor
+    : PROJECT_SKILL_TEMPLATES.reviewer;
   if (
     skill.id !== expectedId ||
-    skill.sourcePath !== `skills/${expectedId}` ||
+    (skill.sourcePath !== `skills/${expectedId}` &&
+      skill.sourcePath !== template) ||
     (publicPath &&
       (skill.publicPath !== publicPath ||
         (hasPublishAtRoot && typeof skill.publishAtRoot !== "boolean")))
@@ -786,6 +812,27 @@ function validateSkill(
     throw new TypeError(`${field} does not match its project identity`);
   }
   return skill;
+}
+
+/**
+ * Maintainer-authored text that generated skills carry as data. Strings must
+ * be well-formed Unicode so every renderer serializes the same bytes.
+ */
+function validateContribution(value) {
+  const contribution = record(value, "project.contribution");
+  exactKeys(contribution, [...CONTRIBUTION_FIELDS], "project.contribution");
+  for (const field of CONTRIBUTION_FIELDS) {
+    const entry = contribution[field];
+    if (
+      typeof entry !== "string" ||
+      !entry.isWellFormed() ||
+      entry.length < (field === "approvedScope" ? 6 : 0) ||
+      entry.length > 2000
+    ) {
+      throw new TypeError(`project.contribution.${field} is invalid`);
+    }
+  }
+  return contribution;
 }
 
 function validateExternalEvaluations(value, field) {
@@ -1138,6 +1185,8 @@ function validateProjectDefinition(
   text(project.eyebrow, "project.eyebrow", { max: 80, min: 3 });
   text(project.headline, "project.headline", { max: 120, min: 8 });
   text(project.description, "project.description", { max: 600, min: 24 });
+  if (project.contribution !== undefined)
+    validateContribution(project.contribution);
   if (
     !(allowLegacyMissingListingTier && !("listingTier" in project)) &&
     project.listingTier !== "featured" &&
@@ -1215,8 +1264,18 @@ function validateProjectDefinition(
     if (project.reward?.kind !== "monthly-pool")
       throw new TypeError("project.rewardAsset requires a monthly pool");
   }
-  if (project.skillContent !== undefined)
-    assertSkillContent(project.skillContent);
+  // Generated skills render from both templates and the maintainer fields.
+  const generated =
+    project.skill.sourcePath === PROJECT_SKILL_TEMPLATES.contributor;
+  if (
+    generated !==
+      (project.reviewSkill.sourcePath === PROJECT_SKILL_TEMPLATES.reviewer) ||
+    (generated && project.contribution === undefined)
+  ) {
+    throw new TypeError(
+      "generated project skills need both templates and project.contribution",
+    );
+  }
   validateReward(project.reward, "project.reward", {
     allowLegacyExternalPrizeFee,
     escrow: project.escrow,
