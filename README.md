@@ -113,7 +113,7 @@ key that can move vault funds or payments. Slop holds two narrow kinds of key:
 the identity attester key, which only co-signs a wallet binding that the
 contributor's wallet also signs, and one fee-wallet key per network, which only
 converts fees already in Slop's fee wallet. A 2% fee is deducted from each
-gross award, and the same 2% applies to a withdrawal of unused funds. Legacy
+gross award, and a 5% fee applies to a withdrawal of unused funds. Legacy
 Squads and Sablier funding and its 1% fee are removed; their records stay in
 git history.
 
@@ -240,7 +240,7 @@ acceptance requirements.
 The project vault protocol is being qualified on Base, Solana, Robinhood Chain
 and Ethereum test networks. Projects select one chain and one asset. A gross
 100-USDC award pays 98 to the contributor and 2 in fees. Unused vault
-withdrawals also incur 2% and go only to the owner's refund destination, while
+withdrawals incur 5% and go only to the owner's refund destination, while
 funded unpaid awards remain reserved until their recipients register a wallet. GitHub remains the
 only login. See [the approved MVP](docs/payouts-mvp.md) for the authority model,
 acceptance tests and deployment gates. Existing project payment history and
