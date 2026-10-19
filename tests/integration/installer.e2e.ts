@@ -2514,9 +2514,13 @@ describe("generated project skill installation", () => {
       installRoot,
     );
     expect(updated.status, updated.stderr).toBe(0);
-    expect(readlinkSync(join(installRoot, "codex", "skills", skillName))).toBe(
-      `.${skillName}-versions/${revisionA}-r4`,
-    );
+    // Windows reports the symlink target with backslashes.
+    expect(
+      readlinkSync(join(installRoot, "codex", "skills", skillName)).replaceAll(
+        "\\",
+        "/",
+      ),
+    ).toBe(`.${skillName}-versions/${revisionA}-r4`);
     const downgrade = run(
       generatedCommand(artifact, authority, root),
       installRoot,
