@@ -74,13 +74,13 @@ contract OpusFindingsTest is OpusBase {
     /// delay cannot make the cancel unreachable and an oversized delay cannot overflow every binding.
     function test_F4_delayIsBounded() public {
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, 0);
+        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, 0);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, 1 hours - 1);
+        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, 1 hours - 1);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, 30 days + 1);
+        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, 30 days + 1);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, type(uint64).max - 1_000);
+        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, type(uint64).max - 1_000);
         deployWithDelay(1 hours);
         check(escrow.bindingDelay() == 1 hours, "floor accepted");
         deployWithDelay(30 days);
@@ -104,15 +104,17 @@ contract OpusFindingsTest is OpusBase {
         check(logs.length == 1, "one BindingCancelled event for one binding");
     }
 
-    /// Info: a one-unit withdrawal can carry a 100% fee (net zero transfer, event net 0).
-    function test_withdrawFeeCanEqualGross() public {
+    /// Info: the 5% withdrawal fee rounds down once per withdrawal, so a withdrawal under 20 base units pays
+    /// no fee and a split saves under one base unit per transaction.
+    function test_withdrawFeeRoundsDownPerWithdrawal() public {
         vm.startPrank(OWNER);
-        escrow.withdrawUnused(9);
         uint256 before = usdc.balanceOf(OWNER);
-        escrow.withdrawUnused(1);
+        escrow.withdrawUnused(19);
+        check(usdc.balanceOf(OWNER) - before == 19 && escrow.totalWithdrawalFees() == 0, "19 pays no fee");
+        escrow.withdrawUnused(20);
         vm.stopPrank();
-        check(usdc.balanceOf(OWNER) == before, "net zero");
-        check(escrow.totalWithdrawalFees() == 1, "fee 1 on gross 1");
+        check(usdc.balanceOf(OWNER) - before == 19 + 19, "20 refunds 19");
+        check(escrow.totalWithdrawalFees() == 1, "fee 1 on gross 20");
     }
 
     /// Sound: a cancelled binding never pays, even far in the future, and a rotation after it pays only
@@ -148,7 +150,7 @@ contract OpusFindingsTest is OpusBase {
     /// Sound: award IDs are vault-bound; another vault cannot commit this vault's ID.
     function test_sound_awardIdIsVaultBound() public {
         vm.prank(REGISTRAR);
-        ProjectEscrow other = ProjectEscrow(factory.create(keccak256("project-2"), OWNER, OWNER));
+        ProjectEscrow other = ProjectEscrow(factory.create(keccak256("project-2"), IERC20(address(usdc)), OWNER, OWNER));
         bytes32 src = keccak256("same-source");
         bytes32 idHere = escrow.awardId(src);
         check(other.awardId(src) != idHere, "distinct");
@@ -161,7 +163,7 @@ contract OpusFindingsTest is OpusBase {
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
         other.commitAward(idHere, ALICE, 1e6, src);
         vm.prank(REGISTRAR);
-        vm.expectRevert(ProjectEscrow.DuplicateAward.selector);
-        factory.create(keccak256("project"), OWNER, OWNER);
+        vm.expectRevert(EscrowFactory.DuplicateVault.selector);
+        factory.create(keccak256("project"), IERC20(address(usdc)), OWNER, OWNER);
     }
 }

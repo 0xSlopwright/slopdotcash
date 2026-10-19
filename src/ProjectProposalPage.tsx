@@ -798,7 +798,7 @@ export default function ProjectProposalPage() {
         effectiveCycle: now.toISOString().slice(0, 7),
         chain: p.settlementChain,
         feeBasisPoints: 200,
-        withdrawalFeeBasisPoints: 1000,
+        withdrawalFeeBasisPoints: 500,
         feeMode: "deduct-from-gross",
         deployments: [],
       },

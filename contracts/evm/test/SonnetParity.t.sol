@@ -22,13 +22,14 @@ contract SonnetParity {
     uint256 constant KEY2 = 0xD2;
     address dest1 = vm.addr(KEY1);
     address dest2 = vm.addr(KEY2);
+    uint128 ghostWithdrawalFees;
     uint64 constant D = 1 hours;
 
     function setUp() public {
         t = new TestDollar();
         // This contract is the registrar; vaults are created only by the factory.
-        EscrowFactory f = new EscrowFactory(IERC20(address(t)), feeR, auth, D);
-        e = ProjectEscrow(f.create(bytes32(uint256(1)), owner, owner));
+        EscrowFactory f = new EscrowFactory(address(this), feeR, auth, D);
+        e = ProjectEscrow(f.create(bytes32(uint256(1)), IERC20(address(t)), owner, owner));
         t.mint(owner, 1e15);
         vm.prank(owner);
         t.approve(address(e), type(uint256).max);
@@ -43,14 +44,15 @@ contract SonnetParity {
         e.bindDestination(actor, dest, expected, claim, expiresAt, abi.encodePacked(r, s, v));
     }
 
-    function _dep(uint64 a) internal {
+    function _dep(uint128 a) internal {
         vm.prank(owner);
         e.deposit(a);
     }
 
-    function _wd(uint64 g) internal {
+    function _wd(uint128 g) internal {
         vm.prank(owner);
         e.withdrawUnused(g);
+        ghostWithdrawalFees += g / 20;
     }
 
     function _inv() internal view {
@@ -65,14 +67,14 @@ contract SonnetParity {
                 == uint256(e.freeBalance()) + e.reservedPrincipal() + e.reservedFees() + e.accruedFees(),
             "id2"
         );
-        require(e.totalWithdrawalFees() == e.totalGrossWithdrawn() / 10, "wfee");
+        require(e.totalWithdrawalFees() == ghostWithdrawalFees, "wfee");
     }
 
     // payout fee table
     function test_payoutFeeTable() public view {
         uint64[9] memory g = [uint64(1), 49, 50, 51, 99, 100, 149, 150, 1e6];
         for (uint256 i; i < g.length; i++) {
-            uint64 f = e.payoutFee(g[i]);
+            uint128 f = e.payoutFee(g[i]);
             require(f <= g[i] && g[i] - f >= 1, "bad");
         }
     }
@@ -80,30 +82,30 @@ contract SonnetParity {
     // withdrawal: record fee for each piece; fuzz splitting
     function testFuzz_splitTotalEqual(uint8[12] memory parts) public {
         _dep(1e12);
-        uint64 total;
-        uint64 feeSum;
+        uint128 total;
+        uint128 feeSum;
         for (uint256 i; i < 12; i++) {
-            uint64 g = uint64(parts[i]) + 1;
-            uint64 beforeAcc = e.accruedFees();
+            uint128 g = uint128(parts[i]) + 1;
+            uint128 beforeAcc = e.accruedFees();
             _wd(g);
-            uint64 fee = e.accruedFees() - beforeAcc;
+            uint128 fee = e.accruedFees() - beforeAcc;
             require(fee <= g, "fee>gross");
             feeSum += fee;
             total += g;
             _inv();
         }
-        require(feeSum == total / 10, "path dependent");
+        require(feeSum == ghostWithdrawalFees && feeSum <= total / 20, "fee per withdrawal");
     }
 
     function test_unitWithdrawals() public {
         _dep(1000);
-        uint64 feeSum;
+        uint128 feeSum;
         for (uint256 i; i < 30; i++) {
-            uint64 b = e.accruedFees();
-            _wd(1);
+            uint128 b = e.accruedFees();
+            _wd(20);
             feeSum += e.accruedFees() - b;
         }
-        require(feeSum == 3, "3");
+        require(feeSum == 30, "1 per 20-unit withdrawal");
         _inv();
     }
 
@@ -132,8 +134,10 @@ contract SonnetParity {
         _inv();
         _wd(5);
         _inv();
+        _wd(35);
+        _inv();
         require(t.balanceOf(dest1) == 147 && t.balanceOf(dest2) == 98, "net");
-        require(e.accruedFees() == 2 + 1 + 1, "fees"); // 2 + 1 payout, +1 withdraw (cum 15 -> 1)
+        require(e.accruedFees() == 2 + 1 + 1, "fees"); // 2 + 1 payout, +1 withdraw (35 -> 1)
         e.claimFees();
         _inv();
         require(t.balanceOf(feeR) == 4, "claimed");
@@ -144,15 +148,16 @@ contract SonnetParity {
         vm.prank(owner);
         e.chargeService(100, bytes32(uint256(5)));
         _inv();
-        _wd(100); // fee 10 on 100, service not counted in cumulative
+        _wd(100); // fee 5 on 100
         _inv();
-        require(e.totalGrossWithdrawn() == 100 && e.totalWithdrawalFees() == 10, "svc");
+        require(e.totalGrossWithdrawn() == 100 && e.totalWithdrawalFees() == 5, "svc");
         // service charge reduces free; withdrawal cannot exceed free
+        vm.prank(owner);
         vm.expectRevert();
-        _wd(801);
+        e.withdrawUnused(801);
         e.claimFees();
         _inv();
-        require(t.balanceOf(feeR) == 110, "110");
+        require(t.balanceOf(feeR) == 105, "105");
     }
 
     // direct transfer doesn't break accounting identities (2) other than vault >= sum
@@ -161,7 +166,7 @@ contract SonnetParity {
         t.mint(address(e), 777);
         require(t.balanceOf(address(e)) == 1777, "x");
         _wd(1000);
-        require(t.balanceOf(address(e)) == 777 + 100, "stuck");
+        require(t.balanceOf(address(e)) == 777 + 50, "stuck");
         require(e.freeBalance() == 0, "free");
     }
 

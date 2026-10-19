@@ -1,53 +1,45 @@
-// A deploy script's token constant must equal the registry asset for its
-// network, so a wrong address cannot be deployed from a stale script.
+// Each deploy script must target the chain id of its registry network, and no
+// script may fix a token or a new role address: the factory serves any ERC-20,
+// and the registrar, fee recipient and identity authority come from the
+// environment (Base alone defaults to the published Base fee recipient).
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
+import { BASE_PLATFORM_FEE_RECIPIENT } from "../../src/lib/fresh-cycle-policy.mjs";
 
-function constant(file: string, name: string): string {
-  const source = readFileSync(`contracts/evm/script/${file}`, "utf8");
-  const match = source.match(
-    new RegExp(`address public constant ${name} = (0x[0-9a-fA-F]{40});`),
-  );
-  if (!match) throw new Error(`${file} has no ${name} constant`);
-  return match[1].toLowerCase();
-}
+const read = (file: string) =>
+  readFileSync(`contracts/evm/script/${file}`, "utf8");
+const SCRIPTS = {
+  "DeployBase.s.sol": ["base-mainnet", "true"],
+  "DeployBaseSepolia.s.sol": ["base-sepolia", "false"],
+  "DeployRobinhood.s.sol": ["robinhood-mainnet", "false"],
+  "DeployRobinhoodTestnet.s.sol": ["robinhood-testnet", "false"],
+  "DeployEthereum.s.sol": ["ethereum", "false"],
+  "DeployEthereumSepolia.s.sol": ["ethereum-sepolia", "false"],
+} as const;
 
-describe("deploy script constants match the registry", () => {
-  test("Base mainnet USDC", () => {
-    expect(constant("DeployBase.s.sol", "USDC")).toBe(
-      ESCROW_NETWORKS["base-mainnet"].asset,
-    );
-  });
-  test("Base Sepolia test USDC", () => {
-    expect(constant("DeployBaseSepolia.s.sol", "TEST_USDC")).toBe(
-      ESCROW_NETWORKS["base-sepolia"].asset,
-    );
-  });
-  test("Robinhood Chain USDG", () => {
-    expect(constant("DeployRobinhood.s.sol", "USDG")).toBe(
-      ESCROW_NETWORKS["robinhood-mainnet"].asset,
-    );
-  });
-  test("Robinhood Chain Testnet USDG", () => {
-    expect(constant("DeployRobinhoodTestnet.s.sol", "TEST_USDG")).toBe(
-      ESCROW_NETWORKS["robinhood-testnet"].asset,
-    );
-  });
-  test("chain id guards name the registry chain ids", () => {
-    const mainnet = readFileSync(
-      "contracts/evm/script/DeployRobinhood.s.sol",
-      "utf8",
-    );
-    const testnet = readFileSync(
-      "contracts/evm/script/DeployRobinhoodTestnet.s.sol",
-      "utf8",
-    );
-    expect(mainnet).toContain(
-      `block.chainid == ${ESCROW_NETWORKS["robinhood-mainnet"].chainId},`,
-    );
-    expect(testnet).toContain(
-      `block.chainid == ${ESCROW_NETWORKS["robinhood-testnet"].chainId},`,
-    );
+describe("deploy scripts match the registry", () => {
+  for (const [file, [network, baseDefault]] of Object.entries(SCRIPTS)) {
+    test(`${file} deploys only to ${network}`, () => {
+      const source = read(file);
+      expect(source).toContain(
+        `return deploy(${ESCROW_NETWORKS[network].chainId}, ${baseDefault});`,
+      );
+      expect(source).not.toMatch(/0x[0-9a-fA-F]{40}/);
+    });
+  }
+  test("roles come from the environment; only Base has a default fee recipient", () => {
+    const shared = read("DeployEscrowFactory.sol");
+    for (const key of [
+      'envAddress("ESCROW_REGISTRAR")',
+      'envAddress("ESCROW_IDENTITY_AUTHORITY")',
+      'envAddress("ESCROW_FEE_RECIPIENT")',
+      'envOr("ESCROW_FEE_RECIPIENT", BASE_PUBLISHED_FEE_RECIPIENT)',
+    ])
+      expect(shared).toContain(key);
+    const addresses = shared.match(/0x[0-9a-fA-F]{40}/g) ?? [];
+    expect(addresses.map((value) => value.toLowerCase())).toEqual([
+      BASE_PLATFORM_FEE_RECIPIENT,
+    ]);
   });
 });

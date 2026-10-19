@@ -183,7 +183,7 @@ contract BindingLifecycleTest is OpusBase {
         uint64[4] memory bad = [uint64(0), 1 hours - 1, 30 days + 1, type(uint64).max];
         for (uint256 i = 0; i < bad.length; i++) {
             vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-            new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, bad[i]);
+            new EscrowFactory(REGISTRAR, FEE, AUTHORITY, bad[i]);
         }
         vm.expectRevert();
         new ProjectEscrow(keccak256("p"), IERC20(address(usdc)), OWNER, OWNER, FEE, 1 hours);

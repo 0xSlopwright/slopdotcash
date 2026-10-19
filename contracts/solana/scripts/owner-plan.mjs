@@ -52,34 +52,12 @@ export function awardIdFor(project, source) {
       .digest(),
   ];
 }
-export async function ownerPlan(input, runtime) {
-  const d = input.deployment,
-    connection = new Connection(runtime.rpcUrl, "finalized");
-  if (
-    typeof runtime.expectedGenesis !== "string" ||
-    (await connection.getGenesisHash()) !== runtime.expectedGenesis
-  )
-    throw new Error("Wrong cluster genesis");
-  const idl = JSON.parse(
-    readFileSync(
-      fileURLToPath(new URL("../idl/slop_escrow.json", import.meta.url)),
-    ),
-  );
-  if (idl.address !== d.programId)
-    throw new Error("IDL program identity mismatch");
-  const program = new Program(idl, { connection }),
-    owner = new PublicKey(d.owner),
-    project = new PublicKey(d.projectPda),
-    mint = new PublicKey(d.asset),
-    vault = new PublicKey(d.vault);
-  const pda = (...seeds) =>
-    PublicKey.findProgramAddressSync(seeds, program.programId)[0];
-  if (!pda(Buffer.from("vault"), project.toBuffer()).equals(vault))
-    throw new Error("Wrong vault PDA");
-  const deployed = await connection.getAccountInfo(
-    program.programId,
-    "finalized",
-  );
+/**
+ * Checks the finalized program against the reviewed loader, upgrade authority
+ * (`null` for an immutable program) and code digest.
+ */
+export async function verifyProgram(connection, programId, d) {
+  const deployed = await connection.getAccountInfo(programId, "finalized");
   if (!deployed?.executable) throw new Error("Program is not executable");
   let executable = deployed.data;
   if (
@@ -114,8 +92,51 @@ export async function ownerPlan(input, runtime) {
     throw new Error("Unsupported loader");
   if (createHash("sha256").update(executable).digest("hex") !== d.codeSha256)
     throw new Error("Reviewed program digest mismatch");
+}
+export async function ownerPlan(input, runtime) {
+  const d = input.deployment,
+    connection = new Connection(runtime.rpcUrl, "finalized");
+  if (
+    typeof runtime.expectedGenesis !== "string" ||
+    (await connection.getGenesisHash()) !== runtime.expectedGenesis
+  )
+    throw new Error("Wrong cluster genesis");
+  const idl = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../idl/slop_escrow.json", import.meta.url)),
+    ),
+  );
+  if (idl.address !== d.programId)
+    throw new Error("IDL program identity mismatch");
+  const program = new Program(idl, { connection }),
+    owner = new PublicKey(d.owner),
+    project = new PublicKey(d.projectPda),
+    mint = new PublicKey(d.asset),
+    vault = new PublicKey(d.vault);
+  const pda = (...seeds) =>
+    PublicKey.findProgramAddressSync(seeds, program.programId)[0];
+  if (!pda(Buffer.from("vault"), project.toBuffer()).equals(vault))
+    throw new Error("Wrong vault PDA");
+  await verifyProgram(connection, program.programId, d);
   const instructions = [];
+  // The transaction fee payer and only signer: the owner, or the depositor of a deposit.
+  let signer = owner;
   if (input.operation === "initialize") {
+    // L-3: the program accepts only the identity authority and fee recipient pinned in
+    // its Config; refuse early, before the owner signs.
+    const configAddress = pda(Buffer.from("config"));
+    const config = await program.account.config.fetchNullable(
+      configAddress,
+      "finalized",
+    );
+    if (!config) throw new Error("Escrow Config missing");
+    if (
+      !config.identityAuthority.equals(new PublicKey(d.identityAuthority)) ||
+      !config.feeRecipient.equals(new PublicKey(d.feeRecipient))
+    )
+      throw new Error(
+        "Reviewed authorities differ from the pinned escrow Config",
+      );
     if (
       !pda(
         Buffer.from("project"),
@@ -141,6 +162,7 @@ export async function ownerPlan(input, runtime) {
           vault,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
+          config: configAddress,
         })
         .instruction(),
     );
@@ -199,21 +221,25 @@ export async function ownerPlan(input, runtime) {
           .accountsStrict({ owner, project })
           .instruction(),
       );
-    else if (input.operation === "deposit")
+    else if (input.operation === "deposit") {
+      // Deposits are permissionless: any depositor funds the project from its own
+      // associated token account. Only the owner can later commit or withdraw them.
+      signer =
+        input.depositor === undefined ? owner : new PublicKey(input.depositor);
       instructions.push(
         await program.methods
           .deposit(amount(input.grossMicro))
           .accountsStrict({
-            owner,
+            depositor: signer,
             project,
             mint,
             vault,
-            source: getAssociatedTokenAddressSync(mint, owner),
+            source: getAssociatedTokenAddressSync(mint, signer, true),
             tokenProgram: TOKEN_PROGRAM_ID,
           })
           .instruction(),
       );
-    else if (input.operation === "withdraw") {
+    } else if (input.operation === "withdraw") {
       // The fee recipient's account may not exist yet; creating it is idempotent.
       const feeRecipient = new PublicKey(d.feeRecipient);
       instructions.push(
@@ -325,7 +351,7 @@ export async function ownerPlan(input, runtime) {
   }
   const blockhash = new PublicKey(runtime.recentBlockhash).toBase58();
   const transaction = new Transaction({
-    feePayer: owner,
+    feePayer: signer,
     recentBlockhash: blockhash,
   }).add(...instructions);
   const serialized = transaction.serialize({
@@ -339,7 +365,7 @@ export async function ownerPlan(input, runtime) {
     programId: d.programId,
     projectPda: d.projectPda,
     operation: input.operation,
-    requiredSigner: owner.toBase58(),
+    requiredSigner: signer.toBase58(),
     recentBlockhash: blockhash,
     transactionBase64: serialized.toString("base64"),
   };

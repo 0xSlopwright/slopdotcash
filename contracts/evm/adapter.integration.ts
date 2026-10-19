@@ -13,9 +13,11 @@ import {
   buildDepositCalldata,
   buildPayCalldata,
   buildWithdrawCalldata,
+  EVM_ESCROW_EVENT_TOPICS,
   evmAwardId,
   evmBindingDigest,
   readEvmAuthorityRotation,
+  readVaultTotals,
   verifyBinding,
   verifyEvmDeployment,
   verifyPayment,
@@ -39,6 +41,8 @@ const recipientKey = Uint8Array.from(
 );
 const fee = "0x0000000000000000000000000000000000000fee";
 const nextAttester = "0x90F79bf6EB2c4f870365E785982E1f101E93b906";
+// Public Anvil account 4: a third party that deposits without any project role.
+const donor = "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65";
 const projectId = `0x${"1".padStart(64, "0")}`;
 const source = `0x${"2".padStart(64, "0")}`;
 const delay = "3600";
@@ -104,23 +108,30 @@ try {
   assert(ready, "Anvil startup");
   const token = deploy("integration/TestDollar.sol:TestDollar");
   // Vaults are created only by the factory, which holds the identity authority.
+  // The registrar is an explicit constructor parameter (the owner account here).
   const factory = deploy("src/ProjectEscrow.sol:EscrowFactory", [
-    token,
+    owner,
     fee,
     attester,
     delay,
   ]);
-  await send(factory, "create(bytes32,address,address)", [
+  const vaultOf = async (asset: string) =>
+    `0x${(
+      (await rpc("eth_call", [
+        {
+          to: factory,
+          data: `0x4627e7c0${projectId.slice(2)}${asset.slice(2).toLowerCase().padStart(64, "0")}`,
+        },
+        "latest",
+      ])) as string
+    ).slice(-40)}`;
+  await send(factory, "create(bytes32,address,address,address)", [
     projectId,
+    token,
     owner,
     owner,
   ]);
-  const vault = `0x${(
-    (await rpc("eth_call", [
-      { to: factory, data: `0xcca23bf2${projectId.slice(2)}` },
-      "latest",
-    ])) as string
-  ).slice(-40)}`;
+  const vault = await vaultOf(token);
   const id = evmAwardId(31337n, vault, source);
   assert.notEqual(
     evmAwardId(46630n, vault, source),
@@ -139,17 +150,41 @@ try {
     );
     return `0x${Array.from(signed.slice(1), (b) => b.toString(16).padStart(2, "0")).join("")}${(signed[0] + 27).toString(16)}`;
   };
-  await send(token, "mint(address,uint256)", [owner, "115000000"]);
-  await send(token, "approve(address,uint256)", [vault, "115000000"]);
+  await send(token, "mint(address,uint256)", [owner, "100000000"]);
+  await send(token, "approve(address,uint256)", [vault, "100000000"]);
   await rpc("eth_sendTransaction", [
     {
       from: owner,
       to: vault,
       gas: "0x7a1200",
-      data: buildDepositCalldata("115000000"),
+      data: buildDepositCalldata("100000000"),
     },
   ]);
   await rpc("anvil_mine", ["0x1"]);
+  // Deposits are permissionless: a third party funds the same free balance.
+  await send(token, "mint(address,uint256)", [donor, "15000000"]);
+  await send(token, "approve(address,uint256)", [vault, "15000000"], donor);
+  const donorDeposit = (await rpc("eth_sendTransaction", [
+    {
+      from: donor,
+      to: vault,
+      gas: "0x7a1200",
+      data: buildDepositCalldata(15000000n),
+    },
+  ])) as string;
+  await rpc("anvil_mine", ["0x1"]);
+  const donorLog = (
+    (await rpc("eth_getTransactionReceipt", [donorDeposit])) as {
+      logs: { topics: string[]; data: string; address: string }[];
+    }
+  ).logs.find((log) => log.address.toLowerCase() === vault.toLowerCase());
+  assert.equal(donorLog?.topics[0], EVM_ESCROW_EVENT_TOPICS.Deposited);
+  assert.equal(
+    donorLog?.topics[1],
+    `0x${donor.slice(2).toLowerCase().padStart(64, "0")}`,
+    "Deposited names the depositor",
+  );
+  assert.equal(BigInt(donorLog?.data ?? "0x0"), 15000000n);
   const reserveTx = (await rpc("eth_sendTransaction", [
     {
       from: owner,
@@ -203,7 +238,7 @@ try {
   // factory with the same constructor arguments has identical code but did
   // not create this vault.
   const otherFactory = deploy("src/ProjectEscrow.sol:EscrowFactory", [
-    token,
+    owner,
     fee,
     attester,
     delay,
@@ -369,7 +404,7 @@ try {
         to: vault,
         data: execFileSync(
           "cast",
-          ["calldata", "chargeService(uint64,bytes32)", amount, digest],
+          ["calldata", "chargeService(uint128,bytes32)", amount, digest],
           { encoding: "utf8" },
         ).trim(),
       },
@@ -389,7 +424,7 @@ try {
     charge("1", invoice, recipient),
     new RegExp(selector("Unauthorized()")),
   );
-  await send(vault, "chargeService(uint64,bytes32)", ["5000000", invoice]);
+  await send(vault, "chargeService(uint128,bytes32)", ["5000000", invoice]);
   await assert.rejects(charge("1"), new RegExp(selector("DuplicateInvoice()")));
   await rpc("eth_sendTransaction", [
     {
@@ -405,7 +440,8 @@ try {
     ["call", token, "balanceOf(address)(uint256)", owner, "--rpc-url", rpcUrl],
     { encoding: "utf8" },
   ).trim();
-  assert.equal(refunded.split(" ")[0], "9000000");
+  // 5% unused-fund withdrawal fee, floor(gross / 20): 10 gross returns 9.5.
+  assert.equal(refunded.split(" ")[0], "9500000");
   const payment = await verifyPayment(config, paymentTx, 0, id);
   assert.equal(payment.destination, recipient.toLowerCase());
   assert.equal(payment.bindingVersion, "2");
@@ -440,8 +476,119 @@ try {
     ["call", token, "balanceOf(address)(uint256)", fee, "--rpc-url", rpcUrl],
     { encoding: "utf8" },
   ).trim();
-  // 2 payout fee, 1 withdrawal fee and the 5 service charge.
-  assert.equal(feeBalance.split(" ")[0], "8000000");
+  // 2 payout fee, 0.5 withdrawal fee and the 5 service charge.
+  assert.equal(feeBalance.split(" ")[0], "7500000");
+  await rpc("anvil_mine", ["0x40"]);
+  const totals = await readVaultTotals({
+    rpcUrl,
+    network: "anvil",
+    vault,
+    chainId: 31337n,
+  });
+  const { blockNumber, blockTime, ...counters } = totals;
+  assert.ok(BigInt(blockNumber) > 0n && !Number.isNaN(Date.parse(blockTime)));
+  assert.deepEqual(
+    counters,
+    {
+      network: "anvil",
+      vault: vault.toLowerCase(),
+      asset: token.toLowerCase(),
+      decimals: 6,
+      totalDeposited: "115000000",
+      totalPaid: "98000000",
+      totalPayoutFees: "2000000",
+      totalGrossWithdrawn: "10000000",
+      totalWithdrawalFees: "500000",
+      totalServiceFees: "5000000",
+      freeBalance: "0",
+      reservedPrincipal: "0",
+      reservedFees: "0",
+      accruedFees: "0",
+      reserved: null,
+    },
+    "readVaultTotals returns every counter at the finalized block",
+  );
+  await assert.rejects(
+    readVaultTotals({ rpcUrl, network: "anvil", vault, chainId: 8453n }),
+    /Wrong chain/,
+  );
+  // The same factory creates a second vault for the project in an 18-decimal
+  // token, with amounts beyond uint64.
+  const wide = deploy("test/WideToken.sol:WideToken", ["18"]);
+  await send(factory, "create(bytes32,address,address,address)", [
+    projectId,
+    wide,
+    owner,
+    owner,
+  ]);
+  const wideVault = await vaultOf(wide);
+  assert.notEqual(wideVault, vault);
+  const wideGross = 20_000_000n * 10n ** 18n;
+  assert.ok(wideGross > 1n << 64n, "beyond uint64");
+  await send(wide, "mint(address,uint256)", [donor, `${wideGross * 2n}`]);
+  await send(
+    wide,
+    "approve(address,uint256)",
+    [wideVault, `${wideGross * 2n}`],
+    donor,
+  );
+  await rpc("eth_sendTransaction", [
+    {
+      from: donor,
+      to: wideVault,
+      gas: "0x7a1200",
+      data: buildDepositCalldata(wideGross * 2n),
+    },
+  ]);
+  const wideId = evmAwardId(31337n, wideVault, source);
+  const wideReserve = (await rpc("eth_sendTransaction", [
+    {
+      from: owner,
+      to: wideVault,
+      gas: "0x7a1200",
+      data: buildCommitAwardCalldata({
+        obligationId: wideId,
+        githubUserId: "101",
+        grossMicro: wideGross,
+        sourceDigest: source,
+      }),
+    },
+  ])) as string;
+  await rpc("anvil_mine", ["0x40"]);
+  const wideConfig = {
+    ...config,
+    vault: wideVault,
+    asset: wide,
+    codeSha256: await codeSha256(wideVault),
+  };
+  const wideReservation = await verifyReserve(
+    wideConfig,
+    wideReserve,
+    0,
+    wideId,
+  );
+  assert.equal(wideReservation.grossMicro, wideGross.toString());
+  assert.equal(wideReservation.feeMicro, (wideGross / 50n).toString());
+  await assert.rejects(
+    verifyEvmDeployment({ ...wideConfig, asset: token }, "latest"),
+    /asset, factory or registrar/,
+    "a vault verifies only against its own asset",
+  );
+  await rpc("anvil_mine", ["0x40"]);
+  const wideTotals = await readVaultTotals({
+    rpcUrl,
+    network: "anvil",
+    vault: wideVault,
+    chainId: 31337n,
+  });
+  assert.equal(wideTotals.decimals, 18);
+  assert.equal(wideTotals.totalDeposited, (wideGross * 2n).toString());
+  assert.equal(wideTotals.freeBalance, wideGross.toString());
+  assert.equal(wideTotals.reservedFees, (wideGross / 50n).toString());
+  assert.equal(
+    wideTotals.reservedPrincipal,
+    (wideGross - wideGross / 50n).toString(),
+  );
   await assert.rejects(
     verifyReserve(config, paymentTx, 0, id),
     /Wrong event topics/,
@@ -489,7 +636,7 @@ try {
     "a payment made before the rotation still verifies after it",
   );
   console.log(
-    "Base adapter integration passed: real factory deployment, vault-bound award, wallet-accepted delayed and cancellable binding, payment, fee claim, exactly-once service charge, finalized gating, wrong chain/vault/award/index/delay rejection, timelocked authority rotation.",
+    "EVM adapter integration passed: real factory deployment, permissionless deposit, 18-decimal vault beyond uint64, readVaultTotals, 5% withdrawal fee, vault-bound award, wallet-accepted delayed and cancellable binding, payment, fee claim, exactly-once service charge, finalized gating, wrong chain/vault/award/index/delay rejection, timelocked authority rotation.",
   );
 } finally {
   anvil.kill("SIGTERM");

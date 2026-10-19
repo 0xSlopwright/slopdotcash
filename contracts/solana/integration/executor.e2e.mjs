@@ -33,7 +33,13 @@ import {
 import { handlePaymentsApi } from "../.local/handler.mjs";
 import { indexPaymentEvent } from "../.local/ledger.mjs";
 import { scanSolanaPayments } from "../.local/scanner.mjs";
-import { expectedDeployment } from "./deployment.mjs";
+import {
+  configAddress,
+  configFees,
+  configIdentity,
+  ensureConfig,
+  expectedDeployment,
+} from "./deployment.mjs";
 
 const { AnchorProvider, Program, BN } = anchor;
 const provider = AnchorProvider.env(),
@@ -90,10 +96,12 @@ async function parsedTransaction(signature) {
 test("durable executor verifies SQLite consent, binds, creates ATAs, pays and retries exact signature", {
   timeout: 480000,
 }, async () => {
-  const identity = Keypair.generate(),
+  await ensureConfig(program);
+  // The identity authority and fee recipient are the ones pinned in Config.
+  const identity = configIdentity,
     gas = Keypair.generate(),
     recipient = Keypair.generate(),
-    fee = Keypair.generate();
+    fee = configFees;
   const funded = await sendAndConfirmTransaction(
     provider.connection,
     new Transaction().add(
@@ -155,12 +163,13 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
       vault,
       tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
+      config: configAddress(program.programId),
     })
     .rpc();
   await program.methods
     .deposit(bn(100_000_000))
     .accountsStrict({
-      owner: payer.publicKey,
+      depositor: payer.publicKey,
       project,
       mint,
       source,
@@ -701,13 +710,14 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
       vault: foreignVault,
       tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
+      config: configAddress(program.programId),
     })
     .rpc();
   await mintTo(provider.connection, payer, mint, source, payer, 1_000_000n);
   await program.methods
     .deposit(bn(1_000_000))
     .accountsStrict({
-      owner: payer.publicKey,
+      depositor: payer.publicKey,
       project: foreign,
       mint,
       source,

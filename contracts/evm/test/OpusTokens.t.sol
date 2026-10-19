@@ -84,9 +84,9 @@ contract OpusTokensTest is OpusBase {
         odd = new OpusOddToken();
         walletKeys[ALICE_WALLET] = OpusWallets.ALICE_KEY;
         vm.prank(REGISTRAR);
-        factory = new EscrowFactory(IERC20(address(odd)), FEE, AUTHORITY, DELAY);
+        factory = new EscrowFactory(REGISTRAR, FEE, AUTHORITY, DELAY);
         vm.prank(REGISTRAR);
-        escrow = ProjectEscrow(factory.create(keccak256("p"), OWNER, OWNER));
+        escrow = ProjectEscrow(factory.create(keccak256("p"), IERC20(address(odd)), OWNER, OWNER));
         odd.mint(OWNER, 1_000e6);
         vm.prank(OWNER);
         odd.approve(address(escrow), type(uint256).max);

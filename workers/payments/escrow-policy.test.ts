@@ -61,18 +61,24 @@ const policy = (chain: string, deployment: object) => ({
   effectiveCycle: "2026-11",
   chain,
   feeBasisPoints: 200,
-  withdrawalFeeBasisPoints: 1000,
+  withdrawalFeeBasisPoints: 500,
   feeMode: "deduct-from-gross",
   deployments: [deployment],
 });
 
 describe("escrow chain families", () => {
   test("each chain maps to exactly one family", () => {
-    expect([...ESCROW_CHAINS]).toEqual(["base", "solana", "robinhood"]);
+    expect([...ESCROW_CHAINS]).toEqual([
+      "base",
+      "solana",
+      "robinhood",
+      "ethereum",
+    ]);
     expect(chainFamily("base")).toBe("evm");
     expect(chainFamily("solana")).toBe("solana");
     expect(chainFamily("robinhood")).toBe("evm");
-    expect([...EVM_CHAINS]).toEqual(["base", "robinhood"]);
+    expect(chainFamily("ethereum")).toBe("evm");
+    expect([...EVM_CHAINS]).toEqual(["base", "robinhood", "ethereum"]);
   });
   test("an unknown chain is rejected, never defaulted to a family", () => {
     expect(isEscrowChain("evm")).toBe(false);
@@ -115,6 +121,15 @@ describe("escrow chain families", () => {
       chainId: "46630",
       asset: "0x7e955252e15c84f5768b83c41a71f9eba181802f",
       assetSymbol: "USDG",
+      assetDecimals: 6,
+      assets: [
+        {
+          address: "0x7e955252e15c84f5768b83c41a71f9eba181802f",
+          symbol: "USDG",
+          decimals: 6,
+          source: expect.stringMatching(/^https:\/\//),
+        },
+      ],
       gasCeiling: "2000000",
       scanPageBlocks: "9000",
     });
@@ -125,6 +140,15 @@ describe("escrow chain families", () => {
       chainId: "4663",
       asset: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
       assetSymbol: "USDG",
+      assetDecimals: 6,
+      assets: [
+        {
+          address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+          symbol: "USDG",
+          decimals: 6,
+          source: expect.stringMatching(/^https:\/\//),
+        },
+      ],
       gasCeiling: "2000000",
       scanPageBlocks: "9000",
     });
@@ -171,7 +195,9 @@ describe("assertEscrowPolicy after the family refactor", () => {
       assertEscrowPolicy(policy("robinhood", robinhoodDeployment)),
     ).not.toThrow();
   });
-  test("a mainnet Robinhood Chain deployment must name USDG", () => {
+  test("a Robinhood Chain deployment may name any token (escrow v2)", () => {
+    // The default reference asset is not an allowlist: the vault reads its
+    // token's decimals from chain.
     expect(() =>
       assertEscrowPolicy(
         policy("robinhood", {
@@ -180,7 +206,7 @@ describe("assertEscrowPolicy after the family refactor", () => {
           bindingDelaySeconds: "172800",
         }),
       ),
-    ).toThrow(/does not match the network/);
+    ).not.toThrow();
     expect(() =>
       assertEscrowPolicy(
         policy("robinhood", {
@@ -196,5 +222,52 @@ describe("assertEscrowPolicy after the family refactor", () => {
     expect(() =>
       assertEscrowPolicy(policy("robinhood", evmDeployment)),
     ).toThrow(/one chain and one escrow per network/);
+  });
+});
+describe("escrow v2 network registry", () => {
+  test("Ethereum mainnet and Sepolia carry Circle USDC with its source", () => {
+    expect(ESCROW_NETWORKS.ethereum).toMatchObject({
+      chain: "ethereum",
+      family: "evm",
+      testnet: false,
+      chainId: "1",
+      asset: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      assetSymbol: "USDC",
+      assetDecimals: 6,
+    });
+    expect(ESCROW_NETWORKS["ethereum-sepolia"]).toMatchObject({
+      chain: "ethereum",
+      testnet: true,
+      chainId: "11155111",
+      asset: "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
+    });
+    for (const name of ["ethereum", "ethereum-sepolia"] as const)
+      expect(ESCROW_NETWORKS[name].assets[0].source).toBe(
+        "https://developers.circle.com/stablecoins/usdc-contract-addresses",
+      );
+  });
+  test("every reference asset has whole decimals and the default repeats the first", () => {
+    for (const network of Object.values(ESCROW_NETWORKS)) {
+      for (const asset of network.assets)
+        expect(Number.isInteger(asset.decimals) && asset.decimals >= 0).toBe(
+          true,
+        );
+      expect(network.asset).toBe(network.assets[0]?.address ?? null);
+      expect(network.assetDecimals).toBe(network.assets[0]?.decimals ?? null);
+    }
+  });
+  test("the withdrawal fee is 5% and nothing else", () => {
+    expect(() =>
+      assertEscrowPolicy({
+        ...policy("base", evmDeployment),
+        withdrawalFeeBasisPoints: 1000,
+      }),
+    ).toThrow(/fee policy/);
+    expect(() =>
+      assertEscrowPolicy({
+        ...policy("base", evmDeployment),
+        withdrawalFeeBasisPoints: 200,
+      }),
+    ).toThrow(/fee policy/);
   });
 });

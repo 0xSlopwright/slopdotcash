@@ -31,7 +31,11 @@ describe("funding address primitives", () => {
       false,
     );
   });
-  test("wallet chains and escrow chains are the same set", () => {
-    expect(new Set(WALLET_CHAINS)).toEqual(new Set(ESCROW_CHAINS));
+  test("every wallet chain is an escrow chain", () => {
+    // Ethereum escrow networks exist for factory deployment; Ethereum wallet
+    // claims are not enabled yet, so no Ethereum payout can be bound.
+    expect(new Set(WALLET_CHAINS)).toEqual(
+      new Set(ESCROW_CHAINS.filter((chain) => chain !== "ethereum")),
+    );
   });
 });

@@ -213,6 +213,22 @@ async function rpc(method: string, params: unknown[], url = rpcUrl) {
   return body.result;
 }
 const deploymentTransactions = new Map<string, string>();
+/** The factory's vaults(projectId, token) lookup. */
+async function factoryVault(factory: string, token: string, url = rpcUrl) {
+  return `0x${(
+    (await rpc(
+      "eth_call",
+      [
+        {
+          to: factory,
+          data: `0x4627e7c0${projectKey.slice(2)}${token.slice(2).toLowerCase().padStart(64, "0")}`,
+        },
+        "latest",
+      ],
+      url,
+    )) as string
+  ).slice(-40)}`;
+}
 function deploy(contract: string, args: string[] = [], url = rpcUrl) {
   const created = JSON.parse(
     execFileSync(
@@ -293,31 +309,27 @@ try {
     sql.exec(readFileSync(`${root}migrations/${file}`, "utf8"));
   const asset = deploy("integration/TestDollar.sol:TestDollar");
   // Vaults are created only by the factory, which holds the identity authority.
+  // The registrar is an explicit constructor parameter (the owner account here).
   const factory = deploy("src/ProjectEscrow.sol:EscrowFactory", [
-    asset,
+    owner,
     fee,
     attester,
     delay,
   ]);
-  const createTx = await send(factory, "create(bytes32,address,address)", [
-    projectKey,
-    owner,
-    owner,
-  ]);
-  const vault = `0x${(
-    (await rpc("eth_call", [
-      { to: factory, data: `0xcca23bf2${projectKey.slice(2)}` },
-      "latest",
-    ])) as string
-  ).slice(-40)}`;
+  const createTx = await send(
+    factory,
+    "create(bytes32,address,address,address)",
+    [projectKey, asset, owner, owner],
+  );
+  const vault = await factoryVault(factory, asset);
   deploymentTransactions.set(vault, createTx);
   award = evmAwardId(31337n, vault, source);
   await send(asset, "mint(address,uint256)", [owner, "200000000"]);
   await send(asset, "approve(address,uint256)", [vault, "200000000"]);
-  await send(vault, "deposit(uint64)", ["200000000"]);
+  await send(vault, "deposit(uint128)", ["200000000"]);
   const reserveTx = await send(
     vault,
-    "commitAward(bytes32,uint64,uint64,bytes32)",
+    "commitAward(bytes32,uint64,uint128,bytes32)",
     [award, "123", "100000000", source],
   );
   const runtimeCode = (await rpc("eth_getCode", [vault, "latest"])) as string;
@@ -396,10 +408,10 @@ try {
     0,
   );
   await assert.rejects(
-    send(vault, "withdrawUnused(uint64)", ["100000001"]),
+    send(vault, "withdrawUnused(uint128)", ["100000001"]),
     /Transaction failed/,
   );
-  await send(vault, "withdrawUnused(uint64)", ["100000000"]);
+  await send(vault, "withdrawUnused(uint128)", ["100000000"]);
   // Free funds are refunded while the walletless contributor's full gross reserve survives.
   sql
     .prepare(
@@ -980,19 +992,20 @@ try {
     ["call", asset, "balanceOf(address)(uint256)", fee, "--rpc-url", rpcUrl],
     { encoding: "utf8" },
   ).trim();
-  assert.equal(feeBalance.split(" ")[0], "12000000");
+  // 2 payout fee and the 5% fee on the 100 withdrawn.
+  assert.equal(feeBalance.split(" ")[0], "7000000");
   const refundBalance = execFileSync(
     "cast",
     ["call", asset, "balanceOf(address)(uint256)", owner, "--rpc-url", rpcUrl],
     { encoding: "utf8" },
   ).trim();
-  assert.equal(refundBalance.split(" ")[0], "90000000");
+  assert.equal(refundBalance.split(" ")[0], "95000000");
   // A later award follows an authenticated successor only after the 24-hour delay.
   const rotationAward = evmAwardId(31337n, vault, `0x${"a".padStart(64, "0")}`);
   await send(asset, "mint(address,uint256)", [owner, "100000000"]);
   await send(asset, "approve(address,uint256)", [vault, "100000000"]);
-  await send(vault, "deposit(uint64)", ["100000000"]);
-  await send(vault, "commitAward(bytes32,uint64,uint64,bytes32)", [
+  await send(vault, "deposit(uint128)", ["100000000"]);
+  await send(vault, "commitAward(bytes32,uint64,uint128,bytes32)", [
     rotationAward,
     "123",
     "100000000",
@@ -1217,22 +1230,16 @@ try {
   const rcAsset = deploy("integration/TestDollar.sol:TestDollar", [], rcRpcUrl);
   const rcFactory = deploy(
     "src/ProjectEscrow.sol:EscrowFactory",
-    [rcAsset, fee, attester, delay],
+    [owner, fee, attester, delay],
     rcRpcUrl,
   );
   const rcCreateTx = await send(
     rcFactory,
-    "create(bytes32,address,address)",
-    [projectKey, owner, owner],
+    "create(bytes32,address,address,address)",
+    [projectKey, rcAsset, owner, owner],
     rcRpcUrl,
   );
-  const rcVault = `0x${(
-    (await rpc(
-      "eth_call",
-      [{ to: rcFactory, data: `0xcca23bf2${projectKey.slice(2)}` }, "latest"],
-      rcRpcUrl,
-    )) as string
-  ).slice(-40)}`;
+  const rcVault = await factoryVault(rcFactory, rcAsset, rcRpcUrl);
   const rcSource = `0x${"7".padStart(64, "0")}`;
   const rcAward = evmAwardId(46630n, rcVault, rcSource);
   assert.notEqual(
@@ -1497,10 +1504,10 @@ try {
     [rcVault, "100000000"],
     rcRpcUrl,
   );
-  await send(rcVault, "deposit(uint64)", ["100000000"], rcRpcUrl);
+  await send(rcVault, "deposit(uint128)", ["100000000"], rcRpcUrl);
   await send(
     rcVault,
-    "commitAward(bytes32,uint64,uint64,bytes32)",
+    "commitAward(bytes32,uint64,uint128,bytes32)",
     [rcAward, "123", "100000000", rcSource],
     rcRpcUrl,
   );
@@ -1652,10 +1659,10 @@ try {
     );
     await send(asset, "mint(address,uint256)", [owner, "100000000"]);
     await send(asset, "approve(address,uint256)", [vault, "100000000"]);
-    await send(vault, "deposit(uint64)", ["100000000"]);
+    await send(vault, "deposit(uint128)", ["100000000"]);
     const browserReserve = await send(
       vault,
-      "commitAward(bytes32,uint64,uint64,bytes32)",
+      "commitAward(bytes32,uint64,uint128,bytes32)",
       [browserAward, "456", "100000000", `0x${"5".padStart(64, "0")}`],
     );
     await rpc("anvil_mine", ["0x40"]);

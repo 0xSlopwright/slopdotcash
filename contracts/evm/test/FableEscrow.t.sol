@@ -42,15 +42,15 @@ contract FableBase {
         vm.warp(1_800_000_000);
         usdc = new TestDollar();
         vm.prank(REGISTRAR);
-        factory = new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, DELAY);
+        factory = new EscrowFactory(REGISTRAR, FEE, AUTHORITY, DELAY);
         vm.prank(REGISTRAR);
-        vault = ProjectEscrow(factory.create(PROJECT, OWNER, OWNER));
+        vault = ProjectEscrow(factory.create(PROJECT, IERC20(address(usdc)), OWNER, OWNER));
         usdc.mint(OWNER, 1_000_000_000e6);
         vm.prank(OWNER);
         usdc.approve(address(vault), type(uint256).max);
     }
 
-    function depositAs(uint64 amount) internal {
+    function depositAs(uint128 amount) internal {
         vm.prank(OWNER);
         vault.deposit(amount);
     }
@@ -163,10 +163,10 @@ contract FableEscrowTest is FableBase {
     function test_F3_delayIsBoundedAndCancelIsAFlag() public {
         vm.prank(REGISTRAR);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, type(uint64).max);
+        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, type(uint64).max);
         vm.prank(REGISTRAR);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, type(uint64).max - uint64(block.timestamp));
+        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, type(uint64).max - uint64(block.timestamp));
         bind(1, CONTRIBUTOR, 0);
         (,,, uint64 activatesAt, bool cancelled) = vault.bindings(1);
         require(activatesAt == uint64(block.timestamp) + DELAY && !cancelled, "pending, not cancelled");
@@ -275,34 +275,35 @@ contract FableEscrowTest is FableBase {
         require(conservationHolds(), "conservation");
     }
 
-    function test_sound_withdrawalFeeSplitInvariant(uint8 parts, uint64 total) public {
+    function test_sound_withdrawalFeeSplitInvariant(uint8 parts, uint128 total) public {
         vm.assume(parts > 0 && parts < 50);
         vm.assume(total > 0 && total <= 1_000_000e6);
         depositAs(total);
-        uint64 remaining = total;
+        uint128 remaining = total;
+        uint128 fees;
         for (uint8 i = 0; i < parts && remaining > 0; i++) {
-            uint64 g = i == parts - 1 ? remaining : remaining / (parts - i);
+            uint128 g = i == parts - 1 ? remaining : remaining / (parts - i);
             if (g == 0) g = remaining;
             vm.prank(OWNER);
             vault.withdrawUnused(g);
+            fees += g / 20;
             remaining -= g;
         }
         require(vault.totalGrossWithdrawn() == total, "all out");
-        require(vault.totalWithdrawalFees() == total / 10, "fee == floor(total/10) regardless of split");
-        require(vault.accruedFees() == total / 10, "accrued");
-        require(usdc.balanceOf(OWNER) == 1_000_000_000e6 - total + (total - total / 10), "owner net");
+        require(vault.totalWithdrawalFees() == fees, "fee == sum of floor(piece/20)");
+        require(fees <= total / 20 && total / 20 - fees < parts, "a split saves under one unit per piece");
+        require(vault.accruedFees() == fees, "accrued");
+        require(usdc.balanceOf(OWNER) == 1_000_000_000e6 - total + (total - fees), "owner net");
         require(conservationHolds(), "conservation");
     }
 
-    function test_sound_oneUnitWithdrawalCanBeAllFee() public {
-        depositAs(100);
-        vm.prank(OWNER);
-        vault.withdrawUnused(9); // cumulative 9, fee 0
+    function test_sound_withdrawalFeeIsFivePercentRoundedDown() public {
+        depositAs(1_000);
         uint256 before = usdc.balanceOf(OWNER);
         vm.prank(OWNER);
-        vault.withdrawUnused(1); // cumulative 10, fee 1, net 0: sendExact(0) returns early, no revert
-        require(usdc.balanceOf(OWNER) == before, "net zero");
-        require(vault.totalWithdrawalFees() == 1 && vault.accruedFees() == 1, "fee 1");
+        vault.withdrawUnused(850); // floor(850 / 20) = 42
+        require(usdc.balanceOf(OWNER) - before == 808, "net 808");
+        require(vault.totalWithdrawalFees() == 42 && vault.accruedFees() == 42, "fee 42");
         require(conservationHolds(), "conservation");
     }
 
@@ -327,16 +328,16 @@ contract FableEscrowTest is FableBase {
 
     function test_sound_factoryDuplicateAndCreate2() public {
         vm.prank(REGISTRAR);
-        vm.expectRevert(ProjectEscrow.DuplicateAward.selector);
-        factory.create(PROJECT, ATTACKER, ATTACKER);
+        vm.expectRevert(EscrowFactory.DuplicateVault.selector);
+        factory.create(PROJECT, IERC20(address(usdc)), ATTACKER, ATTACKER);
         vm.prank(ATTACKER);
         vm.expectRevert(ProjectEscrow.Unauthorized.selector);
-        factory.create(keccak256("other"), ATTACKER, ATTACKER);
+        factory.create(keccak256("other"), IERC20(address(usdc)), ATTACKER, ATTACKER);
         // Second factory, same project id, different vault address, different award ids.
         vm.prank(REGISTRAR);
-        EscrowFactory f2 = new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, DELAY);
+        EscrowFactory f2 = new EscrowFactory(REGISTRAR, FEE, AUTHORITY, DELAY);
         vm.prank(REGISTRAR);
-        ProjectEscrow v2 = ProjectEscrow(f2.create(PROJECT, OWNER, OWNER));
+        ProjectEscrow v2 = ProjectEscrow(f2.create(PROJECT, IERC20(address(usdc)), OWNER, OWNER));
         require(address(v2) != address(vault), "distinct");
         require(v2.awardId(keccak256("x")) != vault.awardId(keccak256("x")), "ids differ");
     }
@@ -344,13 +345,13 @@ contract FableEscrowTest is FableBase {
     function test_sound_constructorGuards() public {
         vm.prank(REGISTRAR);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        factory.create(keccak256("g1"), OWNER, ATTACKER); // refund != owner
+        factory.create(keccak256("g1"), IERC20(address(usdc)), OWNER, ATTACKER); // refund != owner
         vm.prank(REGISTRAR);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        factory.create(keccak256("g2"), AUTHORITY, AUTHORITY); // owner == authority
+        factory.create(keccak256("g2"), IERC20(address(usdc)), AUTHORITY, AUTHORITY); // owner == authority
         vm.prank(REGISTRAR);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        factory.create(bytes32(0), OWNER, OWNER);
+        factory.create(bytes32(0), IERC20(address(usdc)), OWNER, OWNER);
     }
 
     function test_sound_bindRejectsVaultAndExpired() public {
@@ -438,9 +439,9 @@ contract FableOddTokenTest is FableBase {
         vm.warp(1_800_000_000);
         odd = new OddToken();
         vm.prank(REGISTRAR);
-        EscrowFactory f = new EscrowFactory(IERC20(address(odd)), FEE, AUTHORITY, DELAY);
+        EscrowFactory f = new EscrowFactory(REGISTRAR, FEE, AUTHORITY, DELAY);
         vm.prank(REGISTRAR);
-        oddVault = ProjectEscrow(f.create(PROJECT, OWNER, OWNER));
+        oddVault = ProjectEscrow(f.create(PROJECT, IERC20(address(odd)), OWNER, OWNER));
         odd.mint(OWNER, 1_000e6);
     }
 

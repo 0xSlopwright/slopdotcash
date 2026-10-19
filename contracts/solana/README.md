@@ -1,13 +1,23 @@
 # Solana protected payout escrow
 
-This Anchor program holds classic six-decimal SPL tokens in a separate PDA vault
-for each owner/project digest. Deployment policy must pin the approved USDC mint
-and network domain. The program deliberately cannot determine GitHub authority or
-whether an arbitrary mint is Circle USDC. A reviewed project manifest must bind
-its program ID, project PDA, network, mint, owner and identity authority.
+This Anchor program holds classic SPL Token mints in a separate PDA vault for
+each owner/project digest. Any classic SPL mint is accepted, with any number of
+decimals. Every transfer passes the mint's own decimals to `transfer_checked`.
+Token-2022 mints are rejected: `Account<Mint>` and `Program<Token>` require the
+classic token program. Classic SPL has no transfer fee and no rebasing, so the
+vault always receives the exact amount sent. Deployment policy must pin the
+approved mint and network domain. The program cannot determine GitHub authority
+or whether a mint is the asset the project intends. A reviewed project manifest
+must bind its program ID, project PDA, network, mint, owner and identity
+authority.
 
-The owner deposits and approves immutable awards. The only mutable authority is
-the identity authority, replaced by a public two-party timelock. Award approval reserves principal
+All counters are u64 token base units. A high-decimal mint limits the total a
+project can hold: at 18 decimals, u64 holds about 18.4 whole tokens in the
+cumulative `deposited` counter. Use a mint whose decimals fit the expected
+project budget.
+
+Anyone can deposit. The owner approves immutable awards. The only mutable
+authority is the identity authority, replaced by a public two-party timelock. Award approval reserves principal
 and its included 2% fee before a wallet exists. The `award` PDA and separate `origin` PDA are
 permanent: no close, cancellation, rescue or reserve withdrawal instruction exists.
 The same source digest cannot be committed again under a different award ID.
@@ -65,6 +75,38 @@ case. `initialize` rejects a fee recipient equal to the owner
 or the project. Production deployments use a delay of at least 48 hours, and
 the adapter checks the project's delay against the reviewed manifest.
 
+### Deployment Config (review finding L-3)
+
+The program has one `Config` PDA (seeds `["config"]`) with the deployment-wide
+`identity_authority` and `fee_recipient`. `initialize_config(identity_authority,
+fee_recipient)` creates it once. Only the program's upgrade authority can sign
+it: the instruction requires the program's ProgramData account and checks that
+its `upgrade_authority_address` is the signer. The two keys must be distinct
+and non-default. No instruction changes or closes the Config. After the upgrade
+authority is revoked, nobody can create it, so the human runbook creates it
+before `solana program set-upgrade-authority --final`.
+
+`initialize` takes the Config as its last account. It rejects an identity
+authority or fee recipient that differs from the Config (`ConfigMismatch`), and
+keeps the earlier separation checks. Each project still rotates its own
+identity authority (below). The owner proposes, the pinned fee recipient
+confirms, and the timelock applies. Thus every identity authority a new project
+ever has is either the pinned one or one that the pinned Slop fee recipient
+confirmed. A new project always starts with the Config identity authority, even
+after other projects rotate away from it. If that key is ever compromised, each
+new project must rotate at once after `initialize`.
+
+Why on chain: an adapter-only check would need the attester key published in
+source, and the owner has not published it. On-chain pinning matches the EVM
+factory. The human upgrade authority writes it before the program becomes
+immutable.
+
+Residual risk: Project accounts created before the Config existed are not
+pinned. The upgrade runbook lists them with `scripts/config-plan.mjs projects`
+(a `getProgramAccounts` query on the Project discriminator) before `--final`.
+The adapter refuses a project whose fee recipient differs from the Config fee
+recipient, and refuses a deployment that has no Config account.
+
 ### Identity authority rotation
 
 Each project rotates its own identity authority through a public two-party
@@ -113,26 +155,39 @@ last binding activates, and only the latest binding pays. A project whose
 rotation delay is longer than four binding delays must choose a longer binding
 delay.
 
-Owner key lost: deposits, awards, withdrawals and rotation proposals for that
-project stop; reserved awards still pay to active bindings. Fee recipient key
+Owner key lost: awards, withdrawals and rotation proposals for that project
+stop (other parties can still deposit, but nobody can commit or withdraw the
+deposits); reserved awards still pay to active bindings. Fee recipient key
 lost: fee transfers to its token accounts still work, but no rotation can be
 confirmed, so the identity key of that project becomes fixed. There is no
 owner or fee recipient change in this version.
 
 The owner can commit an award to any GitHub actor, including an account the
-owner controls, and so move unused funds out at the 2% payout fee instead of the
-10% withdrawal fee. This is an accepted, documented risk: maintainer review of
-related-party awards enforces the policy, not the program.
+owner controls. That moves unused funds out at the 2% award fee instead of the
+5% withdrawal fee. Maintainer review of related-party awards enforces the
+policy, not the program.
 
 The 2% fee is deducted from each gross award: 100 pays 98 to the contributor
 and 2 to the fee recipient, reserving 100. Integer arithmetic floors gross/50 once
-per immutable award; unused withdrawal charges the difference
-between floor(cumulative gross/10) and fees already charged. Amounts are SPL u64
-micro-units. Tiny awards can incur zero fee. Withdrawals consume only free vault
-balance, return funds only to the declared owner, and retain fees after any earlier
-payout. Direct unsolicited token deposits do not confer refund rights and are not
-counted in `deposited`; such transfers remain unavailable to awards and refunds. Both credited free balance
-and the actual vault token balance must cover every new reserve or withdrawal.
+per immutable award. An unused-funds withdrawal pays 5%: `floor(gross / 20)`,
+rounded down once per withdrawal (PRD section 18). Withdrawing 850 USDC pays
+42.5 USDC and returns 807.5 USDC. A withdrawal under 20 base units pays no fee,
+so a split saves under one base unit per transaction. The fee depends only on
+the current withdrawal, so a test project that paid the earlier 10% schedule
+is not affected.
+Amounts are token base units. Tiny awards and withdrawals can incur zero fee.
+Withdrawals consume only free vault balance, return funds only to the declared
+owner, and retain fees after any earlier payout.
+
+`deposit(amount)` is permissionless. The `depositor` signs and transfers from
+its own token account of the project mint. The program adds the amount to
+`deposited` and emits `Deposited { project, depositor, amount }`. The deposit
+becomes free balance. The depositor gets no refund right: only the owner can
+commit or withdraw free balance, and a withdrawal goes only to the owner.
+Direct unsolicited token transfers to the vault are not counted in `deposited`;
+such transfers remain unavailable to awards and refunds. Both credited free
+balance and the actual vault token balance must cover every new reserve or
+withdrawal.
 
 `charge_service(amount, invoice_digest)` (PAY-10) lets only the owner pay one
 Slopbot invoice from free funds to the fee recipient's token account. A
@@ -142,8 +197,9 @@ happen once. The `service_fees` counter joins the conservation identity:
 The binding lifecycle does not change this identity. A zero-amount transfer leg
 (a zero fee, or a withdrawal whose return rounds to zero) is skipped, so a
 frozen fee account cannot stall a zero-fee payout.
-It cannot spend reserved principal or fees. Only the owner deposits, so every
-credited balance is sponsor-class; this version holds no donor-class funds.
+It cannot spend reserved principal or fees. Every credited balance is
+owner-controlled free balance, whoever deposited it; this version keeps no
+separate donor-class funds.
 
 All transfer instructions validate the classic token program, mint, token account
 owners, vault PDA, project account and signer. Failed token transfers roll back the
@@ -156,6 +212,18 @@ records remain permanently allocated to prevent account recreation replay.
 Run `npm run build` here to build the actual SBF binary and its IDL.
 Run `npm run test:e2e` to load that binary into an isolated local validator and
 execute the SPL payment, durable executor, and unsigned owner-plan workflows.
+The validator loads the program with `--upgradeable-program`, with the local
+payer as upgrade authority, so ProgramData exists. The first suite proves that
+`initialize_config` rejects a signer that is not the upgrade authority, creates
+the Config through the unsigned `config-plan.mjs` transaction, and proves that
+a second call fails. Every later suite creates or checks the Config first
+(`integration/deployment.mjs`) and uses its fixture identity authority and fee
+recipient. The suites also cover a permissionless deposit by a third party
+that the owner then withdraws, 18-decimal and 0-decimal mints through deposit,
+commit, pay and withdraw, the 5% withdrawal fee rounded down per withdrawal,
+`initialize` rejected when the identity authority or fee recipient differs from
+the Config, a Token-2022 mint rejected at `initialize`, and `readVaultTotals`
+against the on-chain counters.
 These use real token accounts, transactions, finalized receipts and balance
 checks. They cover the canonical lifecycle, delayed wallet registration, wallet
 rotation that freezes payment to the earlier wallet, project-scoped bindings,
@@ -199,6 +267,14 @@ contract review. The owner and fee recipient keys are fixed in each project;
 the identity authority changes only through the public two-party timelock
 above, never through a hidden administrative bypass.
 
+## Mainnet upgrade
+
+The program is upgradeable on mainnet until the human runbook in
+`contracts/DEPLOY-MAINNET.md` ("Solana program upgrade") revokes the upgrade
+authority. That runbook builds verifiably, upgrades through a checked buffer,
+creates the Config with `config-plan.mjs`, lists unpinned projects, and then
+runs `solana program set-upgrade-authority --final`. Agents never run it.
+
 ## Deployment identity and automatic execution
 
 `adapter.ts` is Worker-compatible and verifies finalized transactions per
@@ -216,7 +292,14 @@ at most 100 transactions per run, and atomically checkpoints each verified chunk
 Backward discovery pages persist across runs, so a large backlog does not reset
 discovery to the newest signature. Each reviewed configuration includes owner,
 identity authority at activation, rotation delay, fee recipient, token mint,
-network domain, program loader and code digest. The adapter checks every field
+network domain, program loader and code digest. The adapter also reads the Config PDA. It refuses the deployment when the
+Config is missing, or unless the project fee recipient, the Config fee
+recipient and the reviewed `feeRecipient` are equal and the reviewed
+`identityAuthority` is the Config identity authority. For `pay` it reads the
+mint at finalized commitment (classic SPL layout, decimals at byte 44, owned by
+the Token program) and requires each transfer's decimals to equal the mint's.
+The result fields `grossMicro`, `netMicro` and `feeMicro` keep their names; they
+carry token base units of the project mint as decimal strings. The adapter checks every field
 against finalized state except the identity authority: after activation it
 changes only through the timelocked rotation that the verified program code
 enforces, so the immutable manifest keeps verifying through a rotation and
@@ -258,9 +341,29 @@ and finalized obligations/bindings are reconciled. Replacement uses an atomic
 comparison with the exact expired attempt, so concurrent workers cannot replace a
 still-valid transaction. Retired unsigned attempts are rejected before signing.
 
+`readVaultTotals({ rpcUrl, network, projectPda, programId })` returns the
+shared `VaultTotals` shape from `contracts/vault-totals.ts`. It reads the
+Project and mint accounts with one finalized `getMultipleAccounts` call, so
+both come from one slot. `blockNumber` is that slot and `blockTime` is its
+finalized block time. `vault` is the project PDA, `asset` the mint, and
+`decimals` comes from the mint account. Counters are decimal text in token base
+units. `freeBalance` is `deposited - paid - payout_fees - withdrawn_gross -
+service_fees - reserved`; the function throws when it is negative. Solana keeps
+one combined `reserved`, so `reservedPrincipal`, `reservedFees` and
+`accruedFees` are null.
+
 `owner-plan.mjs` creates unsigned initialize/deposit/commit/veto/withdraw,
 migrate, propose-rotation and cancel-rotation transactions; a veto may name an
-unpaid award (`obligationId`) to use its commit-delay window.
+unpaid award (`obligationId`) to use its commit-delay window. `initialize`
+refuses reviewed authorities that differ from the Config, and passes the Config
+account. `deposit` takes an optional `depositor`; the depositor then pays the
+fee, signs, and funds the deposit from its associated token account.
+
+`config-plan.mjs plan` creates the unsigned `initialize_config` transaction for
+the current upgrade authority after it checks the deployed program bytes and
+that no Config exists. `config-plan.mjs projects` lists every Project account
+and marks which ones the Config pins. Neither mode reads keys or sends a
+transaction.
 
 ### Project account migration
 
