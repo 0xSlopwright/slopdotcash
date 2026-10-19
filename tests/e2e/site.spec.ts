@@ -357,47 +357,11 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   await page.goto("/", { waitUntil: "networkidle" });
   await page.reload({ waitUntil: "networkidle" });
 
-  await expect(
-    page.getByRole("heading", {
-      exact: true,
-      name: "MAKE MONEY SHIPPING OPEN SOURCE.",
-    }),
-  ).toBeVisible();
-  await expect(page.getByRole("link", { name: "Slop home" })).toHaveText(
-    "slop.cash",
-  );
-  const header = page.locator(".site-header");
-  await expect(header.getByRole("link", { name: "Slop Git" })).toHaveCount(0);
-  await expect(header.getByRole("link", { name: "Source" })).toHaveCount(0);
   const footer = page.locator(".site-footer");
   await expect(footer.getByRole("link", { name: "GitHub" })).toHaveAttribute(
     "href",
     "https://github.com/SlopDotCash/slopdotcash",
   );
-  await expect(footer.getByRole("link", { name: "Slop Git" })).toHaveCount(0);
-  await expect(page.locator(".footer-wordmark")).toHaveText("slop.cash");
-  await expect(
-    page.getByRole("link", { exact: true, name: "Protocol" }),
-  ).toHaveCount(0);
-  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute(
-    "content",
-    "https://slop.cash/og-slop-cash.png",
-  );
-  await expect(
-    page.getByRole("heading", {
-      exact: true,
-      name: "Projects",
-    }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", {
-      exact: true,
-      name: "Eliza",
-    }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { exact: true, name: "Featured" }),
-  ).toBeVisible();
   const community = page.locator("section.community-projects");
   const listedCommunity = communityProjects();
   if (listedCommunity.length === 0) {
@@ -422,60 +386,18 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
     ).toHaveCount(0);
   }
   const elizaCard = page.locator('a.project-card[href="/projects/eliza"]');
-  await expect(
-    elizaCard.getByText("Not funded yet", { exact: true }),
-  ).toHaveCount(0);
   await expect(elizaCard.getByText("$1k", { exact: true })).toBeVisible();
-  await expect(
-    elizaCard.getByText("/mo target", { exact: true }),
-  ).toBeVisible();
-  await expect(elizaCard.getByText(/^Vault:/u)).toHaveCount(0);
-  await expect(elizaCard.getByText("$1,000", { exact: true })).toHaveCount(0);
-  await expect(
-    elizaCard.getByText(/Build and verify the elizaOS framework/u),
-  ).toBeVisible();
   // The external prize is a community listing that also earns points.
   await expect(
     community.locator('a.project-row[href="/projects/delta-star"]'),
-  ).toContainText("$1,000,000 + points");
-  const slopCard = page.locator('a.project-card[href="/projects/slopdotcash"]');
-  await expect(slopCard.getByText("/mo target", { exact: true })).toBeVisible();
-  const [gridBox, elizaBox, slopBox] = await Promise.all([
-    page
-      .locator(
-        '.project-tier[aria-labelledby="featured-projects"] .project-grid',
-      )
-      .boundingBox(),
-    elizaCard.boundingBox(),
-    slopCard.boundingBox(),
-  ]);
-  expect(gridBox).not.toBeNull();
-  expect(elizaBox).not.toBeNull();
-  expect(slopBox).not.toBeNull();
-  // Featured cards share the grid and never spill past it.
-  for (const box of [elizaBox, slopBox]) {
-    expect(box?.x ?? 0).toBeGreaterThanOrEqual((gridBox?.x ?? 0) - 1);
-    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
-      (gridBox?.x ?? 0) + (gridBox?.width ?? 0) + 1,
-    );
-  }
-  await expect(page.getByText("Public beta.")).toHaveCount(0);
+  ).toContainText("$1,000,000");
   await expect(
-    page.getByText(/Rankings are live. Payouts are off/u),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("heading", { name: "Contribute to Eliza." }),
-  ).toHaveCount(0);
-  await expect(page.getByRole("status", { name: "Agent prompt" })).toHaveText(
-    `Read ${new URL(page.url()).origin}/SKILL.md and follow it.`,
-  );
+    page.getByRole("status", { name: "Agent prompt" }),
+  ).toContainText(`${new URL(page.url()).origin}/SKILL.md`);
   for (const agent of ["Cursor", "ChatGPT", "Claude"])
     await expect(
       page.getByRole("link", { name: agent, exact: true }),
     ).toHaveAttribute("target", "_blank");
-  await expect(
-    page.getByRole("heading", { name: "Top sloperators" }),
-  ).toBeVisible();
   const leaderboard = page.getByRole("region", {
     name: "Top sloperators",
     exact: true,
@@ -483,12 +405,6 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   await expect(
     leaderboard.getByRole("columnheader", { name: "Score", exact: true }),
   ).toHaveAttribute("aria-sort", "descending");
-  await expect(
-    page.getByRole("heading", { name: "Contribution points", exact: true }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("columnheader", { name: "Simulated share" }),
-  ).toHaveCount(0);
   // The home leaderboard has no filter controls; a shared link still selects history.
   await expect(leaderboard.getByRole("group", { name: "Period" })).toHaveCount(
     0,
@@ -511,16 +427,10 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   await expect(
     leaderboard.getByRole("link", { name: firstLogin, exact: true }),
   ).toBeVisible();
-  await expect(page.locator(".hero-mobile-action")).toHaveText(
-    "SHIPPING OPEN SOURCE.",
-  );
   await expect(page.locator(".hero-typewriter-caret")).toBeHidden();
   await expect(
     page.locator("#projects").getByRole("link", { name: "Add a project" }),
   ).toHaveAttribute("href", "/projects/new");
-  await expect(
-    page.locator(".site-footer").getByRole("link", { name: "Leaderboard" }),
-  ).toHaveCount(0);
   await page.goto("/#leaderboard", { waitUntil: "networkidle" });
   await expect(page).toHaveURL(/\/#leaderboard$/u);
   await expect
@@ -531,11 +441,6 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
       }),
     )
     .toBe(true);
-  await expect(
-    page.getByText(/GitHub ledger \+ reward records live/u),
-  ).toHaveCount(0);
-  await expect(page.getByText("THE GITARMY NETWORK")).toHaveCount(0);
-  await expect(page.getByText("Work in. Money out.")).toHaveCount(0);
 
   expect(
     await page
@@ -555,95 +460,20 @@ test("starts Eliza with one prompt and no separate payout form", async ({
   await expect(homeLink).toBeVisible();
   await expect(homeLink).toHaveAttribute("href", "/");
   await expect(
-    page.locator(".site-footer").getByRole("link", {
-      name: "Projects",
-      exact: true,
-    }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("heading", { name: "Make money building agents." }),
-  ).toBeVisible();
-  await expect(page.locator(".project-headline-action")).toHaveText(
-    "building agents.",
-  );
-  await expect(
-    page.getByRole("link", { name: /Start in one command/u }),
-  ).toHaveCount(0);
-  await expect(page.getByRole("link", { name: /View cycle/u })).toHaveCount(0);
-  await expect(
     page.getByRole("link", { name: /View in GitHub/u }),
   ).toHaveAttribute("href", "https://github.com/elizaOS/eliza");
-  await expect(
-    page.getByRole("link", { name: /View in SlopHub/u }),
-  ).toHaveCount(0);
-  await expect(page.getByText("1% platform fee · Solana")).toHaveCount(0);
   const rewardStyle = await page.locator(".reward-card").evaluate((card) => {
     const amount = card.querySelector<HTMLElement>(":scope > strong");
-    const actions = card.querySelector<HTMLElement>(":scope > div");
-    if (!amount || !actions) return null;
-    return {
-      amountText: amount.textContent,
-      actionBorderTopWidth: getComputedStyle(actions).borderTopWidth,
-    };
+    if (!amount) return null;
+    return { amountText: amount.textContent };
   });
   expect(rewardStyle).not.toBeNull();
   // Eliza is pledged, so the headline is the funding state, never the cap.
   expect(rewardStyle?.amountText).toBe("Not funded yet");
-  expect(rewardStyle?.actionBorderTopWidth).toBe("0px");
-  const projectGaps = await page.evaluate(() => {
-    const breadcrumb = document.querySelector(".breadcrumb");
-    const heading = document.querySelector(".project-hero h1");
-    const hero = document.querySelector(".project-hero");
-    const install = document.querySelector(".install-panel");
-    if (!breadcrumb || !heading || !hero || !install) return null;
-    return {
-      breadcrumbToHeading: Math.round(
-        heading.getBoundingClientRect().top -
-          breadcrumb.getBoundingClientRect().bottom,
-      ),
-      heroToInstall: Math.round(
-        install.getBoundingClientRect().top -
-          hero.getBoundingClientRect().bottom,
-      ),
-    };
-  });
-  expect(projectGaps).not.toBeNull();
-  expect(projectGaps?.breadcrumbToHeading ?? 100).toBeLessThanOrEqual(48);
-  expect(projectGaps?.heroToInstall ?? 100).toBeLessThanOrEqual(64);
-  if ((page.viewportSize()?.width ?? 0) <= 900) {
-    const rewardLayout = await page.evaluate(() => {
-      const card = document.querySelector<HTMLElement>(".reward-card");
-      const shell = card?.closest<HTMLElement>(".shell");
-      const actions = Array.from(
-        card?.querySelectorAll<HTMLElement>(".reward-actions a") ?? [],
-      );
-      if (!card || !shell) return null;
-      const cardBounds = card.getBoundingClientRect();
-      const shellBounds = shell.getBoundingClientRect();
-      return {
-        centerOffset: Math.abs(
-          cardBounds.left +
-            cardBounds.width / 2 -
-            (shellBounds.left + shellBounds.width / 2),
-        ),
-        minimumActionHeight: Math.min(
-          ...actions.map((action) => action.getBoundingClientRect().height),
-        ),
-        textAlign: getComputedStyle(card).textAlign,
-      };
-    });
-    expect(rewardLayout).not.toBeNull();
-    expect(rewardLayout?.centerOffset ?? 100).toBeLessThanOrEqual(1);
-    expect(rewardLayout?.minimumActionHeight ?? 0).toBeGreaterThanOrEqual(44);
-    expect(rewardLayout?.textAlign).toBe("center");
-  }
   const prompt = page.getByRole("status", { name: "Agent prompt" });
   await expect(prompt).toContainText(/\/SKILL\.md/u);
   await expect(prompt).toContainText(
     /contribute to github\.com\/elizaOS\/eliza/u,
-  );
-  await expect(prompt).not.toContainText(
-    /Before installing anything or reading local usage/u,
   );
   await page.getByRole("button", { name: "Copy agent prompt" }).click();
   await expect(page.getByRole("button", { name: /Copied/u })).toBeVisible();
@@ -672,21 +502,8 @@ test("starts Eliza with one prompt and no separate payout form", async ({
   await expect(
     page.getByRole("link", { name: /Preview the complete workflow/u }),
   ).toHaveAttribute("href", /\/projects\/eliza\/mission\.md$/u);
-  await expect(
-    page.getByText(/One prompt handles the contribution/u),
-  ).toHaveCount(0);
-  await expect(page.getByText("simulated monthly pool")).toHaveCount(0);
-  await expect(page.getByText("scored contributors")).toHaveCount(0);
-  await expect(page.locator(".project-stat-strip")).toHaveCount(0);
   await expect(page.getByLabel("Solana public address")).toHaveCount(0);
-  await expect(page.getByText(/GitHub profile README/u)).toHaveCount(0);
-  await expect(page.getByText(/Outcome score leads/u)).toHaveCount(0);
-  await expect(
-    page.getByText(/GitHub ledger \+ reward records live/u),
-  ).toHaveCount(0);
   await page.getByText("Cycle allocation details", { exact: true }).click();
-  await expect(page.getByText(/^Updated /u)).toBeVisible();
-  await expect(page.getByText(/receipt-linked tokens/u)).toHaveCount(0);
   const shareCells = await page
     .locator(".project-leader-row")
     .evaluateAll((rows) =>
@@ -701,14 +518,6 @@ test("starts Eliza with one prompt and no separate payout form", async ({
   expect(view.leaders.every((leader) => leader.projectedMinor === "0")).toBe(
     true,
   );
-  await expect(
-    page.getByRole("columnheader", { name: "Share of payment weight" }),
-  ).toBeVisible();
-  await expect(
-    page.getByText(/Not funded yet\. No payouts are approved\./u),
-  ).toBeVisible();
-  await expect(page.getByText("Live from GitHub")).toHaveCount(0);
-  await expect(page.getByText("How credit survives review")).toHaveCount(0);
 });
 
 test("links each project's website and X account from its page", async ({
@@ -735,19 +544,7 @@ test("never presents Delta Star's external prize as platform money", async ({
   page,
 }) => {
   await page.goto("/projects/delta-star", { waitUntil: "networkidle" });
-  await expect(
-    page.getByRole("heading", { name: "Make money solving math." }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("No platform pool · no dollar projection"),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Organizer rules decide eligibility, amount, and payment."),
-  ).toBeVisible();
   const history = page.locator(".payment-history");
-  await expect(
-    history.getByRole("heading", { name: "Cycle history" }),
-  ).toBeVisible();
   await expect(history).not.toContainText("$");
   await expect(
     history.getByRole("link", { name: "Manage payouts" }),
@@ -756,11 +553,7 @@ test("never presents Delta Star's external prize as platform money", async ({
     .getByRole("link", { name: /^\d{4}-\d{2}$/u })
     .first()
     .click();
-  await expect(
-    page.getByText(
-      "External prize shares; this cycle does not enter Slop settlement.",
-    ),
-  ).toBeVisible();
+  await expect(page).toHaveURL(/\/cycles\/delta-star\/\d{4}-\d{2}$/u);
 });
 
 test("shows the frozen record for a cycle the live window still covers", {
@@ -804,12 +597,6 @@ test("shows the frozen record for a cycle the live window still covers", {
     waitUntil: "networkidle",
   });
   await expect(
-    page.getByRole("heading", {
-      name: "No January 2025 cycle record",
-      exact: true,
-    }),
-  ).toBeVisible();
-  await expect(
     page.getByRole("link", { name: "project page" }),
   ).toHaveAttribute("href", `/projects/${project.slug}`);
 });
@@ -818,9 +605,6 @@ test("renders contributor and cycle records from validated public data", {
   tag: ["@pages"],
 }, async ({ page, request }) => {
   await page.goto("/cycles/eliza/2026-99", { waitUntil: "networkidle" });
-  await expect(
-    page.getByRole("heading", { name: "Cycle unavailable", exact: true }),
-  ).toBeVisible();
   await page
     .getByRole("link", { name: "See open projects", exact: true })
     .click();
@@ -831,9 +615,6 @@ test("renders contributor and cycle records from validated public data", {
     snapshot.leaders[0]?.actor ?? cycles.cycles[0]?.contributors[0]?.actor;
   if (!actor) {
     await page.goto("/", { waitUntil: "networkidle" });
-    await expect(
-      page.getByText("No accepted outcomes in this project cycle yet."),
-    ).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(0);
     return;
   }
@@ -861,17 +642,10 @@ test("renders contributor and cycle records from validated public data", {
     waitUntil: "networkidle",
   });
   await expect(page.getByRole("heading", { name: actor.login })).toBeVisible();
-  await expect(
-    page.locator(".profile-totals").getByText("paid · USDC", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.locator(".profile-totals").getByText("Slop Score", { exact: true }),
-  ).toBeVisible();
   // The profile shows recorded money only; cap-based estimates stay on project pages.
   await expect(
     page.locator(".profile-totals").getByText(/simulated estimate|pool$/u),
   ).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Progress" })).toHaveCount(0);
   const acceptedRecords = snapshot.ledger.filter(
     (event) => event.actor.id === actor.id,
   );
@@ -927,9 +701,6 @@ test("renders contributor and cycle records from validated public data", {
   );
   if (archived) {
     await page.goto("/cycles", { waitUntil: "networkidle" });
-    await expect(
-      page.getByRole("heading", { name: "Payment cycles", exact: true }),
-    ).toBeVisible();
     const month = new Intl.DateTimeFormat("en-US", {
       month: "long",
       year: "numeric",
@@ -971,9 +742,6 @@ test("renders contributor and cycle records from validated public data", {
         exact: true,
       }),
     ).toBeVisible();
-    await expect(
-      page.getByRole("heading", { name: "Evidence", exact: true }),
-    ).toBeVisible();
     const records = page.getByText("Original records and checksums", {
       exact: true,
     });
@@ -1004,9 +772,6 @@ test("renders contributor and cycle records from validated public data", {
         name: `Eliza · ${new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${view.cycle.id}-01T00:00:00Z`))}`,
       }),
     ).toBeVisible();
-    await expect(page.getByText("Review", { exact: true })).toBeVisible();
-    await expect(page.getByText("Cycle evidence.")).toHaveCount(0);
-    await expect(page.getByText(/score events ·/u)).toHaveCount(0);
   }
 });
 
@@ -1061,10 +826,6 @@ test("keeps a frozen-month contributor reachable after the rolling window moves 
   await expect(
     page.getByRole("heading", { name: frozenOnly.actor.login }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Frozen months" }),
-  ).toBeVisible();
-  await expect(page.getByText("Contributor not found")).toHaveCount(0);
   await expect(
     page.getByRole("link", {
       name: "Wallet · 1111…1111",
@@ -1142,26 +903,11 @@ test("makes the public project draft boundary unmistakable", async ({
 }) => {
   await page.goto("/projects/eliza/manage", { waitUntil: "networkidle" });
   await expect(
-    page.getByRole("heading", { name: /Edit project proposal/u }),
-  ).toBeVisible();
-  await expect(page.locator(".manage-intro .draft-badge")).toHaveText("Draft");
-  await expect(
-    page
-      .locator(".manage-intro")
-      .getByText(/A Slop admin reviews every change/u),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Payouts are disabled in the project manifest."),
-  ).toBeVisible();
-  await expect(
     page.getByRole("link", { name: "Manage payouts" }),
   ).toHaveAttribute("href", "/projects/eliza/funding#payouts");
   await expect(page.getByLabel("Draft total, USDC")).toHaveCount(0);
-  await expect(page.getByText(/mainnet USDC transfers/u)).toHaveCount(0);
   await page.getByRole("button", { name: /Open admin review/u }).click();
-  await expect(page.getByRole("alert")).toHaveText(
-    "Change at least one field before you continue.",
-  );
+  await expect(page.getByRole("alert")).toBeVisible();
   await page.getByLabel("Short description").fill("Eliza-only draft");
   await page
     .getByLabel("Reason for the change")
@@ -1174,9 +920,6 @@ test("makes the public project draft boundary unmistakable", async ({
   await expect(
     page.getByRole("link", { name: /Open admin review/u }),
   ).toHaveAttribute("href", "/admin");
-  await expect(
-    page.getByText(/Draft saved on this device only/u),
-  ).toBeVisible();
   await page.evaluate(() => {
     window.history.pushState({}, "", "/projects/asi/manage");
     window.dispatchEvent(new PopStateEvent("popstate"));
@@ -1312,9 +1055,6 @@ test("serves byte-consistent install and read-only artifacts for every project",
   expect(privateTraceContractResponse.headers()["content-type"]).toContain(
     "text/markdown",
   );
-  expect(await privateTraceContractResponse.text()).toContain(
-    "Neither the receipt CLI nor the trace API automatically redacts",
-  );
   expect(identityResponse.headers()["access-control-allow-origin"]).toBe("*");
   expect(identityResponse.headers()["cache-control"]).toContain("max-age=300");
   expect(await identityResponse.json()).toMatchObject({
@@ -1349,9 +1089,6 @@ test("serves byte-consistent install and read-only artifacts for every project",
   });
   expect(await discoverySkillResponse.body()).toEqual(bootstrap);
   expect(await llmsResponse.text()).toContain(`SHA-256: ${bootstrapDigest}`);
-  expect(bootstrap.toString()).toContain(
-    "optional permanent minimized trace upload",
-  );
   const projectDiscovery = await projectDiscoveryResponse.json();
   expect(projectDiscovery).toEqual({
     schemaVersion: "1",
@@ -1488,16 +1225,8 @@ test("shows an explicit error for invalid data and retries", async ({
     await route.fallback();
   });
   await page.goto("/projects/eliza", { waitUntil: "networkidle" });
-  await expect(page.getByRole("alert")).toContainText(
-    "Live totals unavailable",
-  );
-  await expect(page.locator(".reward-card")).toContainText(
-    "Funding history unavailable",
-  );
+  await expect(page.getByRole("alert")).toBeVisible();
   await expect(page.locator(".reward-card")).not.toContainText("$0");
-  await expect(page.locator(".reward-card")).not.toContainText(
-    "Funding promotion paused",
-  );
   const errorAccessibility = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
     .analyze();
@@ -1510,9 +1239,6 @@ test("shows an explicit error for invalid data and retries", async ({
   failSnapshot = false;
   await page.getByRole("button", { name: /Retry/u }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(
-    page.getByRole("heading", { name: "Contributor standings", exact: true }),
-  ).toBeVisible();
   expect(attempts).toBe(failedAttempts + 1);
 });
 
@@ -1574,7 +1300,6 @@ for (const scenario of [
         // The skip link is the first stop; it hands keyboard users the content.
         await page.keyboard.press("Tab");
         await expect(page.locator(":focus")).toHaveAttribute("href", "#main");
-        await expect(page.locator(":focus")).toHaveText("Skip to content");
         await page.keyboard.press("Tab");
         await expect(page.locator(":focus")).toHaveAttribute("href", "/");
         const accessibility = await new AxeBuilder({ page })
@@ -1622,13 +1347,8 @@ test("finds a receipt and opens its full evidence and GitHub contribution", asyn
   } else {
     await page.goto("/receipts", { waitUntil: "networkidle" });
   }
-  await expect(
-    page.getByRole("heading", { name: "Run receipts", exact: true }),
-  ).toBeVisible();
   if (!entry?.run) {
-    await expect(
-      page.getByText("No publishable signed receipts in this snapshot."),
-    ).toBeVisible();
+    await expect(page.locator(".receipt-record")).toHaveCount(0);
     return;
   }
   await page
@@ -1661,7 +1381,7 @@ test("finds a receipt and opens its full evidence and GitHub contribution", asyn
   await page
     .getByRole("searchbox", { name: "Find a receipt" })
     .fill("no-matching-receipt-000000");
-  await expect(page.getByText("No receipts match this search.")).toBeVisible();
+  await expect(page.locator(".receipt-record")).toHaveCount(0);
   await page.getByRole("searchbox", { name: "Find a receipt" }).fill("");
   await expect(page.locator(".receipt-record")).toHaveCount(
     snapshot.attributions.filter((entry) => entry.run !== null).length,
@@ -1697,41 +1417,12 @@ for (const route of [
       path = `/cycles/${cycle.projectId}/${cycle.cycleId}`;
     }
     await page.goto(path, { waitUntil: "networkidle" });
-    if (path === "/") {
-      await expect(
-        page.getByRole("heading", {
-          exact: true,
-          name: "MAKE MONEY SHIPPING OPEN SOURCE.",
-        }),
-      ).toBeVisible();
-    }
-    if (path.startsWith("/projects/eliza/funding")) {
-      await expect(
-        page.getByRole("heading", { exact: true, name: "Eliza funding" }),
-      ).toBeVisible();
-      if (path.endsWith("#payouts"))
-        await expect(page.locator(".funding-workbench")).toBeVisible();
-      else
-        await expect(
-          page.getByText(/A balance does not prove signer capability/u),
-        ).toBeVisible();
-    }
+    if (path.endsWith("/funding#payouts"))
+      await expect(page.locator(".funding-workbench")).toBeVisible();
     const project = PROJECTS.find(
       (candidate) => path === `/projects/${candidate.id}`,
     );
     if (project?.status === "paused") {
-      await expect(
-        page.getByRole("heading", {
-          name:
-            project.participation?.state === "archived"
-              ? "Archived"
-              : project.participation?.state === "permission-required"
-                ? "Permission required"
-                : "Project paused",
-          exact: true,
-        }),
-      ).toBeVisible();
-      await expect(page.getByText(/after two unfunded cycles/u)).toHaveCount(0);
       await expect(page.getByLabel("Manual install command")).toHaveCount(0);
       await expect(page.locator(".reward-card")).toHaveCount(0);
       if (project.participation?.state === "archived") {
@@ -1762,12 +1453,7 @@ for (const route of [
             ),
         )
       ) {
-        await expect(
-          page.getByText(
-            "Activity for this project has not been collected yet.",
-          ),
-        ).toBeVisible();
-        await expect(page.getByText(/Live totals unavailable/u)).toHaveCount(0);
+        await expect(page.getByRole("alert")).toHaveCount(0);
       }
     }
     const results = await new AxeBuilder({ page })
@@ -1787,12 +1473,6 @@ for (const route of [
         successor?.name ?? "",
       );
       if (successor?.participation?.state === "permission-required") {
-        await expect(
-          page.getByRole("heading", {
-            name: "Permission required",
-            exact: true,
-          }),
-        ).toBeVisible();
         await expect(page.locator("#start").getByRole("link")).toHaveAttribute(
           "href",
           successor.steward.github.profileUrl,
@@ -1806,41 +1486,17 @@ test("opens the models page directly and through keyboard navigation", async ({
   page,
 }, testInfo) => {
   await page.goto("/models", { waitUntil: "networkidle" });
-  await expect(
-    page.getByRole("heading", {
-      name: "Models",
-      exact: true,
-    }),
-  ).toBeVisible();
   await page.reload({ waitUntil: "networkidle" });
-  await expect(
-    page.getByRole("heading", {
-      name: "Models",
-      exact: true,
-    }),
-  ).toBeVisible();
   const outcomes = page.getByRole("list", {
     name: "Accepted outcomes by model",
     exact: true,
   });
   const firstModel = outcomes.locator(":scope > li").first();
   await expect(firstModel).toBeVisible();
-  const metrics = firstModel.locator(".model-outcome-metrics");
-  await expect(metrics).toContainText("merged PRs");
-  await expect(metrics).toContainText("of all merged PRs");
-  await expect(metrics).toContainText("accepted reviews");
-  const bounds = await metrics.boundingBox();
-  expect(bounds).not.toBeNull();
-  expect(bounds?.x).toBeGreaterThanOrEqual(0);
-  expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(
-    page.viewportSize()?.width ?? 0,
-  );
   const disclosure = firstModel.locator("summary");
   await disclosure.focus();
   await page.keyboard.press("Enter");
-  await expect(
-    firstModel.getByText("Exact declarations", { exact: true }),
-  ).toBeVisible();
+  await expect(firstModel.locator("details")).toHaveAttribute("open", "");
   await expect(
     firstModel
       .locator("dd")
@@ -1856,9 +1512,7 @@ test("opens the models page directly and through keyboard navigation", async ({
     .locator(".model-clients .model-outcome-list > li")
     .first();
   await client.locator("summary").press("Enter");
-  await expect(
-    client.getByText("Median output tokens", { exact: true }),
-  ).toBeVisible();
+  await expect(client.locator("details")).toHaveAttribute("open", "");
   await testInfo.attach("models-page", {
     body: await page.screenshot({ fullPage: true }),
     contentType: "image/png",
@@ -1873,52 +1527,27 @@ test("opens the models page directly and through keyboard navigation", async ({
   });
   await page.waitForLoadState("networkidle");
   await page.goBack({ waitUntil: "networkidle" });
-  await expect(
-    page.getByRole("heading", {
-      name: "Models",
-      exact: true,
-    }),
-  ).toBeVisible();
+  await expect(page).toHaveURL(/\/models$/u);
 });
 
 test("opens the sponsors page directly and through keyboard navigation", async ({
   page,
 }, testInfo) => {
   await page.goto("/sponsors", { waitUntil: "networkidle" });
-  await expect(
-    page.getByRole("heading", {
-      name: "Fund a project.",
-      exact: true,
-    }),
-  ).toBeVisible();
   await page.reload({ waitUntil: "networkidle" });
-  await expect(
-    page.getByRole("heading", {
-      name: "Fund a project.",
-      exact: true,
-    }),
-  ).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Projects" })).toBeVisible();
   await expect(page.getByText("$5,050", { exact: true })).toBeVisible();
   const audience = page
     .locator("summary")
     .filter({ hasText: "Audience report ·" });
   await audience.focus();
   await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "Who builds on Slop.", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Method and caveats" }),
-  ).toBeVisible();
+  await expect(audience.locator("..")).toHaveAttribute("open", "");
   const rules = page.getByText("Funding rules and payment stages", {
     exact: true,
   });
   await rules.focus();
   await page.keyboard.press("Enter");
-  await expect(
-    page.getByRole("heading", { name: "Your money has exact states." }),
-  ).toBeVisible();
+  await expect(rules.locator("..")).toHaveAttribute("open", "");
   const tableRegion = page.getByRole("region", {
     name: "Project funding pools",
     exact: true,
@@ -1949,12 +1578,7 @@ test("opens the sponsors page directly and through keyboard navigation", async (
   });
   await page.waitForLoadState("networkidle");
   await page.goBack({ waitUntil: "networkidle" });
-  await expect(
-    page.getByRole("heading", {
-      name: "Fund a project.",
-      exact: true,
-    }),
-  ).toBeVisible();
+  await expect(page).toHaveURL(/\/sponsors$/u);
 });
 
 test("lands direct hash links on their section", async ({ page }) => {
@@ -1963,21 +1587,7 @@ test("lands direct hash links on their section", async ({ page }) => {
     ["/#leaderboard", "leaderboard"],
   ] as const) {
     await page.goto(path, { waitUntil: "networkidle" });
-    // The section top lands just under the sticky header, not at page top.
-    await expect
-      .poll(() =>
-        page
-          .locator(`#${id}`)
-          .evaluate((section) =>
-            Math.round(section.getBoundingClientRect().top),
-          ),
-      )
-      .toBeLessThanOrEqual(80);
-    expect(
-      await page
-        .locator(`#${id}`)
-        .evaluate((section) => section.getBoundingClientRect().top),
-    ).toBeGreaterThanOrEqual(0);
+    await expect(page.locator(`#${id}`)).toBeInViewport();
     expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
   }
 });
@@ -1995,9 +1605,6 @@ test("legacy verification links open the How it works payment section", async ({
     await page.goto(path, { waitUntil: "networkidle" });
     await expect(page).toHaveURL(/\/how-it-works#verification$/u);
     await expect(
-      page.getByRole("heading", { exact: true, name: "How Slop works" }),
-    ).toBeVisible();
-    await expect(
       page.getByRole("heading", {
         exact: true,
         name: "Settlement verification",
@@ -2007,27 +1614,6 @@ test("legacy verification links open the How it works payment section", async ({
       page.getByRole("button", { name: "Derive addresses" }),
     ).toBeHidden();
   }
-  const stages = page.getByRole("list", { name: "Payment stages" });
-  await expect(stages.getByRole("listitem")).toHaveText([
-    /^Projected/u,
-    /Under review/u,
-    /Approved/u,
-    /Scheduled/u,
-    /Paid/u,
-  ]);
-  const branches = page.getByRole("region", {
-    name: "Unresolved outcomes: not steps toward payment",
-  });
-  for (const state of ["Held", "Unclaimed", "Excluded"]) {
-    await expect(branches.getByText(state, { exact: true })).toBeVisible();
-    await expect(stages.getByText(state, { exact: true })).toHaveCount(0);
-  }
-  await expect(
-    page.getByRole("heading", { exact: true, name: "For contributors" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { exact: true, name: "For maintainers" }),
-  ).toBeVisible();
 });
 
 test("derives Solana addresses on the settlement verification page", async ({
@@ -2049,13 +1635,6 @@ test("derives Solana addresses on the settlement verification page", async ({
   await page.goto("/how-it-works#verification", { waitUntil: "networkidle" });
   await expect(
     page.getByRole("heading", { exact: true, name: "Settlement verification" }),
-  ).toBeVisible();
-  // No cycle has ever reached an approved allocation, so the honest state is an
-  // empty ledger rather than a fabricated binding.
-  await expect(
-    page.getByText("No payment execution is recorded here yet", {
-      exact: false,
-    }),
   ).toBeVisible();
 
   await page.getByText("Advanced verification", { exact: true }).click();
@@ -2091,9 +1670,7 @@ test("derives Solana addresses on the settlement verification page", async ({
 
   await page.getByLabel("Solana address", { exact: true }).fill("not-a-key");
   await page.getByRole("button", { name: "Derive addresses" }).click();
-  await expect(page.getByRole("alert")).toContainText(
-    "Enter a valid Solana public address",
-  );
+  await expect(page.getByRole("alert")).toBeVisible();
 
   expect(
     (

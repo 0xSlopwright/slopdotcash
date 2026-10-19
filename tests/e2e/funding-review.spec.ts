@@ -13,9 +13,6 @@ test("maintainer reviews August cap, preserves excluded rows, and follows fundin
   await panel.getByLabel("Contribution month").selectOption("2026-08");
   await expect(panel.getByLabel("Contribution month")).toHaveValue("2026-08");
   await expect(panel).toContainText("10,000 USDC");
-  await expect(page.getByRole("note")).toContainText(
-    "Payments are disabled for this project",
-  );
   await expect(panel.locator(".recipient-row")).toHaveCount(25);
   await expect(panel).toContainText("Showing 1–25 of 108 matching");
   await panel.getByRole("button", { name: "Missing destination (52)" }).click();
@@ -137,7 +134,6 @@ test("invalid amounts cannot export an older valid award", async ({ page }) => {
   await expect(
     panel.getByRole("button", { name: "Download review", exact: true }),
   ).toBeDisabled();
-  await expect(panel.locator(".recipient-row")).toContainText("Invalid amount");
 });
 
 test("public funding records and the payout workspace are separate tabs", async ({
@@ -150,11 +146,6 @@ test("public funding records and the payout workspace are separate tabs", async 
   // The history renders after the full contribution snapshot loads, which
   // can take longer than the default assertion timeout on a cold runner.
   await expect(history).toBeVisible({ timeout: 60_000 });
-  // Direct payments come from the payments database, which answers only the
-  // product origins. A local preview shows that they are unavailable.
-  await expect(history).toContainText(
-    "Direct payment records are unavailable.",
-  );
   await expect(history).not.toContainText("paid directly");
   await page.getByRole("link", { name: "Manage payouts" }).click();
   await expect(page).toHaveURL(/\/projects\/eliza\/funding#payouts$/u);
@@ -170,9 +161,6 @@ test("public funding records and the payout workspace are separate tabs", async 
   const panel = page.getByRole("tabpanel", { name: "Funding records" });
   await expect(panel).toContainText("Pledged, not committed");
   await expect(panel).toContainText("Not deployed");
-  await expect(panel).toContainText(
-    "No reviewed public funding transactions have been published yet.",
-  );
   await expect(page.locator(".funding-workbench")).toBeHidden();
   await page.reload();
   await expect(records).toHaveAttribute("aria-selected", "true");

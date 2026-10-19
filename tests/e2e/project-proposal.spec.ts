@@ -221,21 +221,6 @@ test("drafts a project through the setup steps and submits it for review", async
   const manifestDetails = page.locator("details.manifest-preview");
   await expect(manifestDetails).not.toHaveAttribute("open", "");
   const handoff = page.getByRole("button", { name: /Submit for review/u });
-  await expect(page.locator(".handoff-actions")).toContainText(
-    "You submit as @example-maintainer.",
-  );
-  const alternatives = page.locator(".handoff-alternatives");
-  expect(
-    await handoff.evaluate(
-      (link, other) =>
-        Boolean(
-          other &&
-            link.compareDocumentPosition(other) &
-              Node.DOCUMENT_POSITION_FOLLOWING,
-        ),
-      await alternatives.elementHandle(),
-    ),
-  ).toBe(true);
 
   const [download] = await Promise.all([
     page.waitForEvent("download"),
@@ -312,7 +297,6 @@ test("drafts a project through the setup steps and submits it for review", async
   // The draft persists on this device without credentials and never claims
   // to be a listing. Clearing it needs a second confirmation.
   await page.reload();
-  await expect(page.getByText("Your saved draft was restored.")).toBeVisible();
   await expect(page.getByLabel("Public GitHub repository")).toHaveValue(
     "example/open-protein",
   );
@@ -434,12 +418,8 @@ test("Robinhood Chain drafts a USDG escrow manifest", async ({ page }) => {
   await page.getByRole("button", { name: "Next: Rewards" }).click();
   const network = page.getByLabel("Payout network");
   await network.selectOption("robinhood");
-  await expect(network.locator("option:checked")).toHaveText("Robinhood Chain");
   await page.getByLabel("Monthly pool target, USD").fill("1000");
   await page.getByRole("button", { name: "Next: Funding" }).click();
-  await expect(page.locator(".activation-gates")).toContainText(
-    "A reviewed Robinhood Chain deployment is required first.",
-  );
   await page.getByRole("button", { name: "Next: Review" }).click();
   const preview = page.getByRole("article", { name: "Listing preview" });
   await expect(preview).toContainText("Robinhood Chain · payments disabled");

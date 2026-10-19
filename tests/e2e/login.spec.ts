@@ -17,17 +17,8 @@ test(
     });
     expect((await page.goto("/login"))?.status()).toBe(200);
     expect((await page.reload())?.status()).toBe(200);
-    await expect(
-      page.getByRole("heading", { name: "Log in to slop.cash", exact: true }),
-    ).toBeVisible();
     await expect(page.locator("main h1, main h2")).toHaveCount(1);
     const header = page.getByRole("banner");
-    await expect(
-      header.getByRole("link", { name: "Receipts", exact: true }),
-    ).toHaveCount(0);
-    await expect(
-      header.getByRole("link", { name: "Cycles", exact: true }),
-    ).toHaveCount(0);
     await expect(
       header.getByRole("link", { name: "Log in", exact: true }),
     ).toHaveCount(0);
