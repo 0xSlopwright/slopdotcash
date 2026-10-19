@@ -45,11 +45,14 @@ revision, so a revision or a revoked session removes access at once.
 - Triager: only assigned cases; triage, next action and remediation.
 - Financial approver: only cases with a reserved, exhausted or approved
   award, and only award and payment fields.
-- Dispute reviewer: only cases with an appeal.
+- Dispute reviewer: only cases with an appeal or a related-party award
+  review.
 - Platform admins, sponsors and the public: nothing.
 
 A reporter never acts on their own case. The financial approver cannot be the
-technical decider, and the technical decider cannot decide the appeal.
+technical decider. The technical decider cannot decide the appeal or the
+related-party review, and the related-party reviewer cannot decide an appeal
+of that review.
 
 ## States
 
@@ -58,7 +61,9 @@ remediation, award, payment and disclosure states. A claim is not a receipt
 until a technical approver verifies it; verification freezes the receipt
 time, the project revision in force then, and its gross amount and split.
 Slop does not fetch the advisory, so the receipt time is the time the
-approver reads on GitHub and enters by hand: a human-attested time.
+approver reads on GitHub and enters by hand: a human-attested time. Every
+case response says so with `receivedAtSource: "maintainer-attested"`, and the
+`record` and `verify-link` events store the same value beside the time.
 
 A rejected link stays as history. The reporter can link the advisory again,
 or a technical approver can record it, and that new case is verified
@@ -75,6 +80,19 @@ A confirmed critical finding with verified potential or actual loss on an
 in-scope asset reserves its gross amount once per root cause within the
 current capacity. Without capacity the award is `capacity-exhausted`; the
 finding stays confirmed. A reserved or approved award cannot be redecided.
+
+Capacity is read from the current project revision. When an admin raises
+`capacity.awards` by revision, a financial approver uses `reserve-award` on
+an exhausted case. The earliest received exhausted case is funded first
+(`409 earlier_receipt_waiting` otherwise). If no capacity is free, the request
+returns `409 capacity_exhausted` and writes nothing.
+
+The technical decision records `relatedParty`. The decider declares it, and a
+reporter who is a program approver or the sponsor account is always related.
+An eligible related-party award stays `pending` with no reservation until a
+dispute reviewer records `decide-related-party`. `approve` reserves within
+capacity like any other award; `refuse` makes the award `ineligible`, which
+the reporter can appeal to a different reviewer.
 
 ## Not available
 

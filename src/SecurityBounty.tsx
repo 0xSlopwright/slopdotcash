@@ -394,9 +394,13 @@ type SecurityCase = {
   allowedActions: string[];
   submissionState: "claimed" | "verified" | "link-rejected";
   receivedAt: string | null;
+  /** Slop does not read the advisory; a maintainer enters the time. */
+  receivedAtSource: "maintainer-attested" | null;
   policyRevision: number | null;
   terms: Terms | null;
   awardState: string;
+  relatedParty: "not-assessed" | "unrelated" | "related";
+  relatedPartyReview: "not-applicable" | "pending" | "approved" | "refused";
   paymentState: string;
   paymentRail: "unavailable";
   paymentDeadline: string | null;
@@ -851,6 +855,12 @@ function actionSpec(action: string, record: SecurityCase): ActionSpec | null {
             kind: "checkbox",
           },
           {
+            name: "relatedParty",
+            label:
+              "The reporter is a related party (owner, employee, sponsor or approver). An independent reviewer must then approve the award.",
+            kind: "checkbox",
+          },
+          {
             name: "rootCauseKey",
             label: "Root cause key",
             kind: "text",
@@ -972,6 +982,36 @@ function actionSpec(action: string, record: SecurityCase): ActionSpec | null {
             ],
           },
           REASON,
+        ],
+      };
+    case "decide-related-party":
+      return {
+        title: "Related-party award review",
+        submit: "Record review",
+        fields: [
+          {
+            name: "outcome",
+            label: "Outcome",
+            kind: "select",
+            options: [
+              ["approve", "Approve: reserve the award if capacity remains"],
+              ["refuse", "Refuse: the reporter is not eligible for this award"],
+            ],
+          },
+          REASON,
+        ],
+      };
+    case "reserve-award":
+      return {
+        title: "Reserve with raised capacity",
+        submit: "Reserve award",
+        fields: [
+          {
+            name: "reason",
+            label: "Private reason",
+            kind: "textarea",
+            hint: "Name the project revision that raised capacity and the published exhaustion rule you apply. The earliest receipt is funded first.",
+          },
         ],
       };
     case "approve-award":
@@ -1169,7 +1209,17 @@ const EVENT_LABELS: Record<string, string> = {
   appeal: "Appeal sent",
   "decide-appeal": "Appeal decided",
   "approve-award": "Award approved",
+  "decide-related-party": "Related-party award reviewed",
+  "reserve-award": "Award reserved with raised capacity",
 };
+
+const RELATED_PARTY_LABELS: Record<SecurityCase["relatedPartyReview"], string> =
+  {
+    "not-applicable": "No related-party review",
+    pending: "Waiting for an independent reviewer",
+    approved: "Approved by an independent reviewer",
+    refused: "Refused by an independent reviewer",
+  };
 
 function CaseDetail({
   caseId,
@@ -1225,12 +1275,20 @@ function CaseDetail({
         <Fact term="Submission">
           {SUBMISSION_LABELS[record.submissionState]}
         </Fact>
-        <Fact term="Received by GitHub (as entered by the maintainer)">
+        <Fact term="Received by GitHub">
           {formatUtc(record.receivedAt)}
+          {record.receivedAtSource === "maintainer-attested"
+            ? " — entered by a security maintainer from GitHub, not read from GitHub by Slop"
+            : ""}
         </Fact>
         <Fact term="Policy revision">{record.policyRevision ?? "—"}</Fact>
         <Fact term="Award terms">{caseMoney(record.terms)}</Fact>
         <Fact term="Award">{record.awardState}</Fact>
+        {record.relatedParty === "related" ? (
+          <Fact term="Related party">
+            {RELATED_PARTY_LABELS[record.relatedPartyReview]}
+          </Fact>
+        ) : null}
         <Fact term="Payment">
           {record.paymentState === "rail-unavailable"
             ? "Approved, not paid. No private payment rail is approved yet, so Slop cannot pay or mark this paid."
