@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { secp256k1 } from "@noble/curves/secp256k1.js";
 import {
-  baseAwardId,
+  type BindingInput,
   buildBindCalldata,
   buildCancelBindingCalldata,
   buildClaimFeesCalldata,
@@ -12,7 +13,13 @@ import {
   buildDepositCalldata,
   buildPayCalldata,
   buildWithdrawCalldata,
+  EVM_ESCROW_EVENT_TOPICS,
+  evmAwardId,
+  evmBindingDigest,
+  readEvmAuthorityRotation,
+  readVaultTotals,
   verifyBinding,
+  verifyEvmDeployment,
   verifyPayment,
   verifyReserve,
 } from "./adapter";
@@ -25,7 +32,17 @@ const anvil = spawn("anvil", ["--port", "18546", "--silent"], {
 const owner = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 const attester = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 const recipient = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
+// Public Anvil mnemonic account 2; it controls the recipient and accepts each binding.
+const recipientKey = Uint8Array.from(
+  "5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a".match(
+    /../g,
+  ) ?? [],
+  (pair) => Number.parseInt(pair, 16),
+);
 const fee = "0x0000000000000000000000000000000000000fee";
+const nextAttester = "0x90F79bf6EB2c4f870365E785982E1f101E93b906";
+// Public Anvil account 4: a third party that deposits without any project role.
+const donor = "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65";
 const projectId = `0x${"1".padStart(64, "0")}`;
 const source = `0x${"2".padStart(64, "0")}`;
 const delay = "3600";
@@ -90,27 +107,84 @@ try {
   }
   assert(ready, "Anvil startup");
   const token = deploy("integration/TestDollar.sol:TestDollar");
-  const vault = deploy("src/ProjectEscrow.sol:ProjectEscrow", [
-    projectId,
-    token,
-    owner,
+  // Vaults are created only by the factory, which holds the identity authority.
+  // The registrar is an explicit constructor parameter (the owner account here).
+  const factory = deploy("src/ProjectEscrow.sol:EscrowFactory", [
     owner,
     fee,
     attester,
     delay,
   ]);
-  const id = baseAwardId(31337n, vault, source);
-  await send(token, "mint(address,uint256)", [owner, "115000000"]);
-  await send(token, "approve(address,uint256)", [vault, "115000000"]);
+  const vaultOf = async (asset: string) =>
+    `0x${(
+      (await rpc("eth_call", [
+        {
+          to: factory,
+          data: `0x4627e7c0${projectId.slice(2)}${asset.slice(2).toLowerCase().padStart(64, "0")}`,
+        },
+        "latest",
+      ])) as string
+    ).slice(-40)}`;
+  await send(factory, "create(bytes32,address,address,address)", [
+    projectId,
+    token,
+    owner,
+    owner,
+  ]);
+  const vault = await vaultOf(token);
+  const id = evmAwardId(31337n, vault, source);
+  assert.notEqual(
+    evmAwardId(46630n, vault, source),
+    evmAwardId(31337n, vault, source),
+    "Award ids bind the chain id, so Robinhood Chain Testnet never collides with Anvil",
+  );
+  /** The destination wallet signs the exact binding; the authority submits it unchanged. */
+  const acceptBinding = (binding: BindingInput) => {
+    const signed = secp256k1.sign(
+      Uint8Array.from(
+        evmBindingDigest(31337n, vault, binding).slice(2).match(/../g) ?? [],
+        (pair) => Number.parseInt(pair, 16),
+      ),
+      recipientKey,
+      { prehash: false, format: "recovered" },
+    );
+    return `0x${Array.from(signed.slice(1), (b) => b.toString(16).padStart(2, "0")).join("")}${(signed[0] + 27).toString(16)}`;
+  };
+  await send(token, "mint(address,uint256)", [owner, "100000000"]);
+  await send(token, "approve(address,uint256)", [vault, "100000000"]);
   await rpc("eth_sendTransaction", [
     {
       from: owner,
       to: vault,
       gas: "0x7a1200",
-      data: buildDepositCalldata("115000000"),
+      data: buildDepositCalldata("100000000"),
     },
   ]);
   await rpc("anvil_mine", ["0x1"]);
+  // Deposits are permissionless: a third party funds the same free balance.
+  await send(token, "mint(address,uint256)", [donor, "15000000"]);
+  await send(token, "approve(address,uint256)", [vault, "15000000"], donor);
+  const donorDeposit = (await rpc("eth_sendTransaction", [
+    {
+      from: donor,
+      to: vault,
+      gas: "0x7a1200",
+      data: buildDepositCalldata(15000000n),
+    },
+  ])) as string;
+  await rpc("anvil_mine", ["0x1"]);
+  const donorLog = (
+    (await rpc("eth_getTransactionReceipt", [donorDeposit])) as {
+      logs: { topics: string[]; data: string; address: string }[];
+    }
+  ).logs.find((log) => log.address.toLowerCase() === vault.toLowerCase());
+  assert.equal(donorLog?.topics[0], EVM_ESCROW_EVENT_TOPICS.Deposited);
+  assert.equal(
+    donorLog?.topics[1],
+    `0x${donor.slice(2).toLowerCase().padStart(64, "0")}`,
+    "Deposited names the depositor",
+  );
+  assert.equal(BigInt(donorLog?.data ?? "0x0"), 15000000n);
   const reserveTx = (await rpc("eth_sendTransaction", [
     {
       from: owner,
@@ -126,6 +200,15 @@ try {
   ])) as string;
   await rpc("anvil_mine", ["0x1"]);
   const runtimeCode = (await rpc("eth_getCode", [vault, "latest"])) as string;
+  const codeSha256 = async (address: string) =>
+    createHash("sha256")
+      .update(
+        Buffer.from(
+          ((await rpc("eth_getCode", [address, "latest"])) as string).slice(2),
+          "hex",
+        ),
+      )
+      .digest("hex");
   const config = {
     rpcUrl,
     chainId: 31337n,
@@ -138,6 +221,9 @@ try {
       .update(Buffer.from(runtimeCode.slice(2), "hex"))
       .digest("hex"),
     bindingDelaySeconds: delay,
+    factory,
+    factoryCodeSha256: await codeSha256(factory),
+    registrar: owner,
   };
   await assert.rejects(
     verifyReserve(config, reserveTx, 0, id),
@@ -146,7 +232,31 @@ try {
   await rpc("anvil_mine", ["0x40"]);
   await assert.rejects(
     verifyReserve({ ...config, asset: owner }, reserveTx, 0, id),
-    /asset or authority/,
+    /asset, factory or registrar/,
+  );
+  // The factory is pinned by address, runtime code and registrar. A second
+  // factory with the same constructor arguments has identical code but did
+  // not create this vault.
+  const otherFactory = deploy("src/ProjectEscrow.sol:EscrowFactory", [
+    owner,
+    fee,
+    attester,
+    delay,
+  ]);
+  await assert.rejects(
+    verifyEvmDeployment({ ...config, factory: otherFactory }, "latest"),
+    /asset, factory or registrar/,
+  );
+  await assert.rejects(
+    verifyEvmDeployment(
+      { ...config, factoryCodeSha256: "f".repeat(64) },
+      "latest",
+    ),
+    /factory code/,
+  );
+  await assert.rejects(
+    verifyEvmDeployment({ ...config, registrar: attester }, "latest"),
+    /asset, factory or registrar/,
   );
   await assert.rejects(
     verifyReserve({ ...config, codeSha256: "f".repeat(64) }, reserveTx, 0, id),
@@ -154,7 +264,7 @@ try {
   );
   await assert.rejects(
     verifyReserve({ ...config, bindingDelaySeconds: "0" }, reserveTx, 0, id),
-    /binding delay/,
+    /delays do not match/,
   );
   const reservation = await verifyReserve(config, reserveTx, 0, id);
   assert.equal(reservation.githubUserId, "101");
@@ -166,6 +276,11 @@ try {
     /Wrong chain/,
   );
   await assert.rejects(
+    verifyReserve({ ...config, chainId: 46630n }, reserveTx, 0, id),
+    /Wrong chain/,
+    "A Robinhood Chain Testnet config refuses a reservation read from the 31337 node",
+  );
+  await assert.rejects(
     verifyReserve({ ...config, vault: token }, reserveTx, 0, id),
     /deployment/,
   );
@@ -174,17 +289,39 @@ try {
     /Wrong event/,
   );
   await assert.rejects(verifyReserve(config, reserveTx, 1, id), /event index/);
+  const firstBinding: BindingInput = {
+    githubUserId: "101",
+    destination: recipient,
+    expectedVersion: "0",
+    claimDigest: source,
+    expiresAt: "18446744073709551615",
+  };
+  // The authority alone cannot bind: a missing or foreign wallet signature reverts.
+  const unsigned = await rpc("eth_sendTransaction", [
+    {
+      from: attester,
+      to: vault,
+      gas: "0x7a1200",
+      data: buildBindCalldata({
+        ...firstBinding,
+        walletSignature: `0x${"0".repeat(130)}`,
+      }),
+    },
+  ]);
+  await rpc("anvil_mine", ["0x1"]);
+  assert.equal(
+    ((await rpc("eth_getTransactionReceipt", [unsigned])) as { status: string })
+      .status,
+    "0x0",
+  );
   const bindingTx = await rpc("eth_sendTransaction", [
     {
       from: attester,
       to: vault,
       gas: "0x7a1200",
       data: buildBindCalldata({
-        githubUserId: "101",
-        destination: recipient,
-        expectedVersion: "0",
-        claimDigest: source,
-        expiresAt: "18446744073709551615",
+        ...firstBinding,
+        walletSignature: acceptBinding(firstBinding),
       }),
     },
   ]);
@@ -229,17 +366,15 @@ try {
       .status,
     "0x1",
   );
+  const secondBinding: BindingInput = { ...firstBinding, expectedVersion: "1" };
   await rpc("eth_sendTransaction", [
     {
       from: attester,
       to: vault,
       gas: "0x7a1200",
       data: buildBindCalldata({
-        githubUserId: "101",
-        destination: recipient,
-        expectedVersion: "1",
-        claimDigest: source,
-        expiresAt: "18446744073709551615",
+        ...secondBinding,
+        walletSignature: acceptBinding(secondBinding),
       }),
     },
   ]);
@@ -269,7 +404,7 @@ try {
         to: vault,
         data: execFileSync(
           "cast",
-          ["calldata", "chargeService(uint64,bytes32)", amount, digest],
+          ["calldata", "chargeService(uint128,bytes32)", amount, digest],
           { encoding: "utf8" },
         ).trim(),
       },
@@ -289,7 +424,7 @@ try {
     charge("1", invoice, recipient),
     new RegExp(selector("Unauthorized()")),
   );
-  await send(vault, "chargeService(uint64,bytes32)", ["5000000", invoice]);
+  await send(vault, "chargeService(uint128,bytes32)", ["5000000", invoice]);
   await assert.rejects(charge("1"), new RegExp(selector("DuplicateInvoice()")));
   await rpc("eth_sendTransaction", [
     {
@@ -305,7 +440,8 @@ try {
     ["call", token, "balanceOf(address)(uint256)", owner, "--rpc-url", rpcUrl],
     { encoding: "utf8" },
   ).trim();
-  assert.equal(refunded.split(" ")[0], "9000000");
+  // 5% unused-fund withdrawal fee, floor(gross / 20): 10 gross returns 9.5.
+  assert.equal(refunded.split(" ")[0], "9500000");
   const payment = await verifyPayment(config, paymentTx, 0, id);
   assert.equal(payment.destination, recipient.toLowerCase());
   assert.equal(payment.bindingVersion, "2");
@@ -340,14 +476,167 @@ try {
     ["call", token, "balanceOf(address)(uint256)", fee, "--rpc-url", rpcUrl],
     { encoding: "utf8" },
   ).trim();
-  // 2 payout fee, 1 withdrawal fee and the 5 service charge.
-  assert.equal(feeBalance.split(" ")[0], "8000000");
+  // 2 payout fee, 0.5 withdrawal fee and the 5 service charge.
+  assert.equal(feeBalance.split(" ")[0], "7500000");
+  await rpc("anvil_mine", ["0x40"]);
+  const totals = await readVaultTotals({
+    rpcUrl,
+    network: "anvil",
+    vault,
+    chainId: 31337n,
+  });
+  const { blockNumber, blockTime, ...counters } = totals;
+  assert.ok(BigInt(blockNumber) > 0n && !Number.isNaN(Date.parse(blockTime)));
+  assert.deepEqual(
+    counters,
+    {
+      network: "anvil",
+      vault: vault.toLowerCase(),
+      asset: token.toLowerCase(),
+      decimals: 6,
+      totalDeposited: "115000000",
+      totalPaid: "98000000",
+      totalPayoutFees: "2000000",
+      totalGrossWithdrawn: "10000000",
+      totalWithdrawalFees: "500000",
+      totalServiceFees: "5000000",
+      freeBalance: "0",
+      reservedPrincipal: "0",
+      reservedFees: "0",
+      accruedFees: "0",
+      reserved: null,
+    },
+    "readVaultTotals returns every counter at the finalized block",
+  );
+  await assert.rejects(
+    readVaultTotals({ rpcUrl, network: "anvil", vault, chainId: 8453n }),
+    /Wrong chain/,
+  );
+  // The same factory creates a second vault for the project in an 18-decimal
+  // token, with amounts beyond uint64.
+  const wide = deploy("test/WideToken.sol:WideToken", ["18"]);
+  await send(factory, "create(bytes32,address,address,address)", [
+    projectId,
+    wide,
+    owner,
+    owner,
+  ]);
+  const wideVault = await vaultOf(wide);
+  assert.notEqual(wideVault, vault);
+  const wideGross = 20_000_000n * 10n ** 18n;
+  assert.ok(wideGross > 1n << 64n, "beyond uint64");
+  await send(wide, "mint(address,uint256)", [donor, `${wideGross * 2n}`]);
+  await send(
+    wide,
+    "approve(address,uint256)",
+    [wideVault, `${wideGross * 2n}`],
+    donor,
+  );
+  await rpc("eth_sendTransaction", [
+    {
+      from: donor,
+      to: wideVault,
+      gas: "0x7a1200",
+      data: buildDepositCalldata(wideGross * 2n),
+    },
+  ]);
+  const wideId = evmAwardId(31337n, wideVault, source);
+  const wideReserve = (await rpc("eth_sendTransaction", [
+    {
+      from: owner,
+      to: wideVault,
+      gas: "0x7a1200",
+      data: buildCommitAwardCalldata({
+        obligationId: wideId,
+        githubUserId: "101",
+        grossMicro: wideGross,
+        sourceDigest: source,
+      }),
+    },
+  ])) as string;
+  await rpc("anvil_mine", ["0x40"]);
+  const wideConfig = {
+    ...config,
+    vault: wideVault,
+    asset: wide,
+    codeSha256: await codeSha256(wideVault),
+  };
+  const wideReservation = await verifyReserve(
+    wideConfig,
+    wideReserve,
+    0,
+    wideId,
+  );
+  assert.equal(wideReservation.grossMicro, wideGross.toString());
+  assert.equal(wideReservation.feeMicro, (wideGross / 50n).toString());
+  await assert.rejects(
+    verifyEvmDeployment({ ...wideConfig, asset: token }, "latest"),
+    /asset, factory or registrar/,
+    "a vault verifies only against its own asset",
+  );
+  await rpc("anvil_mine", ["0x40"]);
+  const wideTotals = await readVaultTotals({
+    rpcUrl,
+    network: "anvil",
+    vault: wideVault,
+    chainId: 31337n,
+  });
+  assert.equal(wideTotals.decimals, 18);
+  assert.equal(wideTotals.totalDeposited, (wideGross * 2n).toString());
+  assert.equal(wideTotals.freeBalance, wideGross.toString());
+  assert.equal(wideTotals.reservedFees, (wideGross / 50n).toString());
+  assert.equal(
+    wideTotals.reservedPrincipal,
+    (wideGross - wideGross / 50n).toString(),
+  );
   await assert.rejects(
     verifyReserve(config, paymentTx, 0, id),
     /Wrong event topics/,
   );
+  // Identity authority rotation: the registrar (the deployer here) proposes and
+  // the change takes effect after 7 days. The adapter pins the factory and its
+  // rotation rules, not the authority in force, so verification continues
+  // through the rotation without a manifest change.
+  assert.deepEqual(await readEvmAuthorityRotation(config, "latest"), {
+    factory: factory.toLowerCase(),
+    identityAuthority: attester.toLowerCase(),
+    pendingIdentityAuthority: null,
+    effectiveAt: null,
+  });
+  await send(factory, "proposeIdentityAuthority(address)", [nextAttester]);
+  const pending = await readEvmAuthorityRotation(config, "latest");
+  assert.equal(pending.pendingIdentityAuthority, nextAttester.toLowerCase());
+  assert.ok(BigInt(pending.effectiveAt ?? "0") > 0n);
+  const premature = await send(
+    factory,
+    "executeIdentityAuthorityRotation()",
+    [],
+  );
+  assert.equal(
+    (
+      (await rpc("eth_getTransactionReceipt", [premature])) as {
+        status: string;
+      }
+    ).status,
+    "0x0",
+    "execution before the notice period reverts",
+  );
+  await rpc("evm_increaseTime", [7 * 24 * 60 * 60]);
+  await rpc("anvil_mine", ["0x1"]);
+  await send(factory, "executeIdentityAuthorityRotation()", [], recipient);
+  assert.equal(
+    (await readEvmAuthorityRotation(config, "latest")).identityAuthority,
+    nextAttester.toLowerCase(),
+  );
+  await rpc("anvil_mine", ["0x40"]);
+  await verifyEvmDeployment(config);
+  assert.equal(
+    (await verifyPayment(config, paymentTx, 0, id)).netMicro,
+    "98000000",
+    "a payment made before the rotation still verifies after it",
+  );
   console.log(
-    "Base adapter integration passed: real deployment, vault-bound award, delayed and cancellable binding, payment, fee claim, exactly-once service charge, finalized gating, wrong chain/vault/award/index/delay rejection.",
+    "EVM adapter integration passed: real factory deployment, permissionless deposit, 18-decimal vault beyond uint64, readVaultTotals, 5% withdrawal fee, vault-bound award, wallet-accepted delayed and cancellable binding, payment, fee claim, exactly-once service charge, finalized gating, wrong chain/vault/award/index/delay rejection, timelocked authority rotation.",
   );
 } finally {
   anvil.kill("SIGTERM");

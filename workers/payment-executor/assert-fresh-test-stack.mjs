@@ -3,19 +3,21 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
+
+const testNetworks = Object.entries(ESCROW_NETWORKS)
+  .filter(([, network]) => network.testnet)
+  .map(([name]) => name);
+const workerName = new RegExp(
+  `^slop-payments-(${testNetworks.join("|")})(-[a-z0-9]+)*-(attester|relayer|dispatcher)$`,
+);
 
 // Read-only remote admission before any mutation. One name is also supported for diagnostics.
 const names = process.argv.slice(2);
 if (
   ![1, 3].includes(names.length) ||
   new Set(names).size !== names.length ||
-  names.some(
-    (name) =>
-      name.length > 63 ||
-      !/^slop-payments-(base-sepolia|solana-devnet|solana-testnet)(-[a-z0-9]+)*-(attester|relayer|dispatcher)$/.test(
-        name,
-      ),
-  )
+  names.some((name) => name.length > 63 || !workerName.test(name))
 )
   throw new Error("Explicit isolated test worker names required");
 const account = process.env.CLOUDFLARE_ACCOUNT_ID;

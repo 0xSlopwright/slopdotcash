@@ -1,25 +1,12 @@
+import type {
+  OwnedRepository,
+  RepositoryLookup,
+} from "../../backend/projects/github-lookup";
 import { fetchWithDeadline, readBoundedJson } from "./browser-json";
 import {
   formatMonthlyCapDisplay,
   MAX_MONTHLY_CAP_MINOR,
 } from "./project-schema.mjs";
-import { PROJECTS, type ProjectDefinition } from "./projects.mjs";
-import { sha256Hex } from "./sha256";
-export function rootPublishedTemplateProject(
-  projects: readonly ProjectDefinition[] = PROJECTS,
-): ProjectDefinition {
-  const publishers = projects.filter(
-    (project) => project.skill.publishAtRoot === true,
-  );
-  if (publishers.length !== 1) {
-    throw new TypeError(
-      "project registry must declare exactly one root-published template skill",
-    );
-  }
-  return publishers[0];
-}
-
-export const ROOT_PUBLISHED_TEMPLATE = rootPublishedTemplateProject();
 
 export function safeProposalHttpsUrl(value: string): boolean {
   if (value.length === 0 || value.length > 500) return false;
@@ -117,132 +104,70 @@ export function monthlyPoolValue(value: string): {
   };
 }
 
-export interface RepositoryLookup {
-  repository: string;
-  numericId: string;
-  nodeId: string;
-  defaultBranch: string;
-  owner: {
-    login: string;
-    actorId: string;
-    nodeId: string;
-    kind: "individual" | "organization";
-  };
-  license:
-    | { state: "verified"; spdx: string; commitSha: string; fileSha256: string }
-    | { state: "unknown"; reason: string };
-}
+export type {
+  OwnedRepository,
+  RepositoryLookup,
+} from "../../backend/projects/github-lookup";
 
-async function githubJson(path: string, signal: AbortSignal) {
-  const response = await fetchWithDeadline(`https://api.github.com${path}`, {
-    credentials: "omit",
-    headers: { Accept: "application/vnd.github+json" },
+async function projectGithubRequest<T>(
+  path: string,
+  signal: AbortSignal,
+): Promise<T> {
+  const response = await fetchWithDeadline(`/api/v1/project-github/${path}`, {
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: { accept: "application/json" },
     signal,
   });
-  if (response.status === 404) return null;
-  if (response.status === 403 || response.status === 429)
+  let value: unknown;
+  try {
+    value = await readBoundedJson(response, 2 * 1024 * 1024, "GitHub lookup");
+  } catch {
+    throw new Error(`The GitHub lookup returned HTTP ${response.status}.`);
+  }
+  if (!response.ok) {
+    const message = (value as { message?: unknown } | null)?.message;
     throw new Error(
-      "GitHub limited lookups from this network. Try again later or enter the facts by hand.",
+      response.status === 401
+        ? "Sign in with GitHub to look up repositories."
+        : typeof message === "string"
+          ? message
+          : `The GitHub lookup returned HTTP ${response.status}.`,
     );
-  if (!response.ok) throw new Error(`GitHub returned ${response.status}.`);
-  const value = await readBoundedJson(response, 512 * 1024, "GitHub lookup");
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error("GitHub returned an unexpected response.");
-  return value as Record<string, unknown>;
-}
-
-function unknownLicense(
-  facts: Omit<RepositoryLookup, "license">,
-  reason: string,
-): RepositoryLookup {
-  return { ...facts, license: { state: "unknown", reason } };
+  }
+  return value as T;
 }
 
 /**
- * Reads public repository facts from GitHub without credentials. A failed or
- * partial lookup never fills a fact: unknown license terms stay unknown.
+ * Lists the signed-in maintainer's public, non-fork, non-archived
+ * repositories. The site server reads GitHub with the site session; the
+ * browser never calls api.github.com.
  */
+export async function listOwnedRepositories(
+  signal: AbortSignal,
+): Promise<OwnedRepository[]> {
+  const body = await projectGithubRequest<{ repositories?: unknown }>(
+    "owned-repositories",
+    signal,
+  );
+  if (!Array.isArray(body.repositories))
+    throw new Error("The GitHub lookup returned an unexpected response.");
+  return body.repositories as OwnedRepository[];
+}
+
+/** Reads public repository facts through the site server. */
 export async function lookupGitHubRepository(
   repository: string,
   signal: AbortSignal,
 ): Promise<RepositoryLookup> {
-  const repo = await githubJson(`/repos/${repository}`, signal);
-  if (!repo) throw new Error("GitHub has no public repository with that name.");
-  const owner = repo.owner as Record<string, unknown> | undefined;
-  if (
-    repo.private !== false ||
-    !Number.isSafeInteger(repo.id) ||
-    typeof repo.node_id !== "string" ||
-    !/^[A-Za-z0-9_=-]{1,100}$/u.test(repo.node_id) ||
-    typeof repo.full_name !== "string" ||
-    !validRepositoryPath(repo.full_name) ||
-    typeof repo.default_branch !== "string" ||
-    !owner ||
-    !Number.isSafeInteger(owner.id) ||
-    typeof owner.login !== "string" ||
-    typeof owner.node_id !== "string" ||
-    (owner.type !== "User" && owner.type !== "Organization")
-  )
-    throw new Error("GitHub returned incomplete repository facts.");
-  const facts: Omit<RepositoryLookup, "license"> = {
-    repository: repo.full_name,
-    numericId: String(repo.id),
-    nodeId: repo.node_id,
-    defaultBranch: repo.default_branch,
-    owner: {
-      login: owner.login,
-      actorId: String(owner.id),
-      nodeId: owner.node_id,
-      kind: owner.type === "User" ? "individual" : "organization",
-    },
-  };
-  try {
-    const branch = await githubJson(
-      `/repos/${repo.full_name}/branches/${encodeURIComponent(repo.default_branch)}`,
-      signal,
-    );
-    const commitSha = (branch?.commit as Record<string, unknown> | undefined)
-      ?.sha;
-    if (typeof commitSha !== "string" || !/^[0-9a-f]{40}$/u.test(commitSha))
-      return unknownLicense(facts, "The default branch could not be read.");
-    const license = await githubJson(
-      `/repos/${repo.full_name}/license?ref=${commitSha}`,
-      signal,
-    );
-    if (!license) return unknownLicense(facts, "GitHub found no license file.");
-    if (license.path !== "LICENSE")
-      return unknownLicense(
-        facts,
-        `The license file is ${String(license.path)}. A manifest records only a root LICENSE file.`,
-      );
-    const spdx = (license.license as Record<string, unknown> | undefined)
-      ?.spdx_id;
-    if (
-      typeof spdx !== "string" ||
-      spdx === "NOASSERTION" ||
-      !/^[A-Za-z0-9-.+]{1,80}$/u.test(spdx)
-    )
-      return unknownLicense(facts, "GitHub could not identify the license.");
-    if (license.encoding !== "base64" || typeof license.content !== "string")
-      return unknownLicense(facts, "GitHub did not return the license bytes.");
-    const binary = atob(license.content.replace(/\s/gu, ""));
-    const bytes = Uint8Array.from(binary, (character) =>
-      character.charCodeAt(0),
-    );
-    return {
-      ...facts,
-      license: {
-        state: "verified",
-        spdx,
-        commitSha,
-        fileSha256: sha256Hex(bytes),
-      },
-    };
-  } catch (error: unknown) {
-    if (signal.aborted) throw error;
-    return unknownLicense(
-      facts,
-      `License facts could not be read. ${error instanceof Error ? error.message : ""}`.trim(),
-    );
-  }
+  if (!validRepositoryPath(repository))
+    throw new Error("Enter the repository as owner/name first.");
+  const [owner, name] = repository.split("/");
+  const body = await projectGithubRequest<{ repository?: unknown }>(
+    `repositories/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`,
+    signal,
+  );
+  if (!body.repository || typeof body.repository !== "object")
+    throw new Error("The GitHub lookup returned an unexpected response.");
+  return body.repository as RepositoryLookup;
 }

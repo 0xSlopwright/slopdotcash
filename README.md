@@ -54,29 +54,25 @@ flowchart LR
 
 ## Add your open-source project
 
-The fastest path starts at
-[`slop.cash/projects/new`](https://slop.cash/projects/new). The form drafts a
-validated project manifest and a self-contained agent brief, then hands the
-proposal to GitHub. Nothing becomes active from the form alone: a pull request
-to this repository is the public review and approval boundary.
+Sign in with GitHub and submit your project at
+[`slop.cash/projects/new`](https://slop.cash/projects/new). The form builds a
+validated project manifest and stores the application. A Slop admin reviews it
+at `/admin`; approval lists the project as paused. Nothing becomes active from
+the form alone. No pull request adds or updates a project: every change is an
+append-only revision in the D1 registry that an admin approves. Slop generates
+the contributor and reviewer skills from that revision and one canonical
+generic template.
 
-A complete project proposal adds:
-
-```text
-projects/<project-id>/project.json
-skills/contribute-to-<project-id>/
-skills/review-<project-id>-contributions/
-```
-
-The pull request must establish:
+The application and its admin revisions must establish:
 
 - a public GitHub repository and immutable repository identity;
 - a verified GitHub steward, without implying legal ownership or capacity;
 - a concrete goal and deterministic acceptance criteria;
 - repository license facts observed at an immutable commit;
-- a contributor skill that selects live work and produces evidence;
-- a separate, adversarial reviewer skill;
-- a clearly labeled monthly pool or external opportunity;
+- the maintainer-authored skill fields: scope, contribution guide, supported
+  tasks, required tests, review expectations, security contact, closure policy
+  and maintainer notes;
+- a clearly labeled reward and its project vault, or an external opportunity;
 - focused tests for validation, installation, and failure paths.
 
 New projects begin paused. A paused project is registered and listed, but none
@@ -104,38 +100,38 @@ Slop uses precise financial states:
 - **Projected** — a live estimate based on accepted score.
 - **Under review** — a frozen monthly proposal that can still change.
 - **Approved** — immutable payout intents after public review.
-- **Scheduled** — an unsigned transfer plan exists.
-- **Paid** — finalized Solana evidence reconciles the exact transfers.
+- **Scheduled** — a funded award is reserved in the project vault and waits for
+  execution.
+- **Paid** — finalized chain evidence reconciles the exact vault transfers.
 - **Unclaimed / held / held below $2 / excluded** — visible unresolved states
   with reasons; sub-$2 awards accrue instead of being discarded.
 
-Project owners keep control of their funds and sign payments outside Slop.
-Slop does not create wallets, custody assets, hold keys, or broadcast
-transactions, except for one key on the opt-in `squads-project-vault`
-instrument (RFC #500). For that instrument only:
-
-> Slop holds one of three keys on a project vault. That key can vote on a
-> payout the creator proposed. It cannot propose a transfer, execute one,
-> change the signers, or act alone. Slop holds no customer balance, takes no
-> fee from the vault, and never broadcasts a transfer of vault funds.
-
-A 1% platform fee applies only when an approved payout is paid.
+The project vault contract is the only funding mode. Anyone may deposit into a
+vault; all free funds are refundable only to the project owner's refund
+destination. Slop does not create wallets, custody project funds, or hold a
+key that can move vault funds or payments. Slop holds two narrow kinds of key:
+the identity attester key, which only co-signs a wallet binding that the
+contributor's wallet also signs, and one fee-wallet key per network, which only
+converts fees already in Slop's fee wallet. A 2% fee is deducted from each
+gross award, and the same 2% applies to a withdrawal of unused funds. Legacy
+Squads and Sablier funding and its 1% fee are removed; their records stay in
+git history.
 
 ## Repository architecture
 
-`projects/*/project.json` is the only project and repository inventory. Never
-hardcode a second list. Generated registries, pages, raw Markdown endpoints,
-and downloadable skills are derived from those reviewed manifests.
+The D1 project registry is the only project and repository inventory. Never
+hardcode a second list. `bun run projects:sync` snapshots it; generated
+registries, pages, raw Markdown endpoints, and downloadable skills derive from
+that snapshot.
 
 ```text
-projects/       reviewed project manifests and reward policy
 skills/         canonical contributor and CI reviewer skills
 evaluations/    reviewed awards for useful otherwise-unscored work
 cycles/         append-only monthly reward and settlement records
 funding/        append-only direct-funding evidence
 disclosures/    payouts sent outside the verified settlement flow
 protocol/       public privacy and attribution contracts
-backend/        private trace metadata and storage boundary
+backend/        project registry API and private trace storage boundary
 workers/        narrowly scoped Cloudflare services
 src/            React product and strict browser/domain contracts
 scripts/        ingestion, packaging, rewards, settlement, and evidence
@@ -170,8 +166,8 @@ bun run test:e2e
 
 `bun run verify` checks project, evaluation, funding, cycle, and protocol
 integrity; audits dependencies; runs type, format, and lint checks; and
-produces the static build. The repository has no unit test suite; behavior is
-covered by `bun run test:e2e`.
+produces the static build. It also runs the Slopbot unit suite; browser behavior
+is covered by `bun run test:e2e`.
 
 ## Trust and deployment
 
@@ -221,10 +217,10 @@ and lint. Live chain verification and browser checks remain separate.
 - `bun run quality:simulate -- PREPARATION EVIDENCE PROPOSAL OUTPUT` recalculates
   a saved quality proposal against its exact source and budget. It creates a new
   output file and never authorizes payments or trusts imported output amounts.
-- Edit shared contributor helpers in the manifest-selected root-published skill,
-  then run `bun run skills:sync`. Other project copies are derived, checked by
-  `bun run skills:check`, and committed so each immutable archive remains
-  self-contained. Project-specific instructions remain in each canonical skill.
+- Edit shared contributor and reviewer rules in the canonical generic
+  project-skill templates. Project skills are generated from those templates
+  and each project's D1 revision; never commit a per-project skill copy.
+  Project-specific instructions live in the D1 revision.
 
 Browser evidence is retained separately under `test-results/preview` and
 `test-results/pages`, with matching `playwright-report/` subdirectories. CI keeps
@@ -239,12 +235,13 @@ login and write backend. `main` serves [production](https://slop.cash). See
 [release environments](docs/release-environments.md) for setup, promotion, and
 acceptance requirements.
 
-## Base and Solana escrow migration
+## Project vault payouts
 
-The new escrow protocol is being qualified separately from legacy payouts.
-Projects select one chain. A gross 100-USDC award pays 98 to the contributor
-and 2 in fees. Unused escrow withdrawals incur 10%, while funded unpaid awards
-remain reserved until their recipients register a wallet. GitHub remains the
+The project vault protocol is being qualified on Base, Solana, Robinhood Chain
+and Ethereum test networks. Projects select one chain and one asset. A gross
+100-USDC award pays 98 to the contributor and 2 in fees. Unused vault
+withdrawals also incur 2% and go only to the owner's refund destination, while
+funded unpaid awards remain reserved until their recipients register a wallet. GitHub remains the
 only login. See [the approved MVP](docs/payouts-mvp.md) for the authority model,
 acceptance tests and deployment gates. Existing project payment history and
 production activation are not changed by adding this implementation.

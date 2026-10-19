@@ -1,12 +1,22 @@
-export type PaymentChain = "base" | "solana";
-export interface AccountPayment {
+import { ESCROW_NETWORKS, type EscrowChain } from "../escrow-policy.mjs";
+
+export type PaymentChain = EscrowChain;
+/**
+ * The vault asset of an amount. Amounts are base-unit integer text of this
+ * asset: the token's smallest unit, scaled by `assetDecimals`.
+ */
+export interface PaymentAsset {
+  network: string;
+  assetAddress: string;
+  assetDecimals: number;
+}
+export interface AccountPayment extends PaymentAsset {
   id: string;
   projectId: string;
-  network: string;
   chain: PaymentChain;
-  grossMicro: string;
-  netMicro: string;
-  feeMicro: string;
+  grossBase: string;
+  netBase: string;
+  feeBase: string;
   state: "reserved" | "paid";
   deliveryState:
     | "needs_wallet"
@@ -27,7 +37,8 @@ export interface PaymentsAccount {
     activationEligibleAt: string | null;
   }[];
   payments: AccountPayment[];
-  balances: { chain: PaymentChain; netMicro: string }[];
+  /** Unpaid net per network and asset; never summed across networks or assets. */
+  balances: (PaymentAsset & { chain: PaymentChain; netBase: string })[];
   /** Imported from reviewed disclosures; never an escrow `paid` state. */
   directTransfers: DirectTransfer[];
   /** Legacy README observations; history only, never a payout destination. */
@@ -53,12 +64,94 @@ export interface DirectTransfer {
   transactionId: string;
   blockTime: string;
 }
-/** Fees are deducted from the gross award; integer micro-USDC only. */
+/** The largest vault amount: EVM and Solana counters are uint128. */
+export const MAX_BASE_UNITS = (1n << 128n) - 1n;
+/** The 2% payout fee is deducted from the gross award, in base units of the award asset. */
 export function payoutFee(gross: bigint): bigint {
-  if (gross <= 0n || gross > 18446744073709551615n)
+  if (gross <= 0n || gross > MAX_BASE_UNITS)
     throw new Error("Invalid gross award");
   return gross / 50n;
 }
+export function isBaseUnits(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^(0|[1-9][0-9]{0,38})$/.test(value) &&
+    BigInt(value) <= MAX_BASE_UNITS
+  );
+}
+export function isAssetDecimals(value: unknown): value is number {
+  return (
+    Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 36
+  );
+}
+/** Exact decimal text of a base-unit amount; trailing fraction zeros removed. */
+export function formatBaseUnits(value: string, decimals: number): string {
+  const amount = BigInt(value);
+  if (amount < 0n || !isAssetDecimals(decimals))
+    throw new Error("Invalid base-unit amount");
+  if (decimals === 0) return amount.toLocaleString("en-US");
+  const scale = 10n ** BigInt(decimals);
+  const fraction = (amount % scale)
+    .toString()
+    .padStart(decimals, "0")
+    .replace(/0+$/, "");
+  return `${(amount / scale).toLocaleString("en-US")}${fraction ? `.${fraction}` : ""}`;
+}
+/**
+ * The display name of a vault asset. Only a reviewed reference token of the
+ * network (escrow-policy `assets`) with the same decimals has a symbol. Any
+ * other token shows its shortened address, because a token's own symbol()
+ * text is not reviewed.
+ */
+export function assetLabel(
+  network: string,
+  assetAddress: string,
+  assetDecimals: number,
+): string {
+  const policy = Object.hasOwn(ESCROW_NETWORKS, network)
+    ? ESCROW_NETWORKS[network as keyof typeof ESCROW_NETWORKS]
+    : undefined;
+  const reference = policy?.assets.find(
+    (asset) =>
+      asset.decimals === assetDecimals &&
+      (policy.family === "evm"
+        ? asset.address.toLowerCase() === assetAddress.toLowerCase()
+        : asset.address === assetAddress),
+  );
+  return (
+    reference?.symbol ??
+    `token ${assetAddress.slice(0, 6)}…${assetAddress.slice(-4)}`
+  );
+}
+export function formatAssetAmount(
+  value: string,
+  asset: Pick<PaymentAsset, "network" | "assetAddress" | "assetDecimals">,
+): string {
+  return `${formatBaseUnits(value, asset.assetDecimals)} ${assetLabel(asset.network, asset.assetAddress, asset.assetDecimals)}`;
+}
+/** Vault counters cached from one finalized chain read (vault_snapshots). */
+export interface VaultSnapshot extends PaymentAsset {
+  projectId: string;
+  chain: PaymentChain;
+  vault: string;
+  totalDeposited: string;
+  totalPaid: string;
+  totalPayoutFees: string;
+  totalGrossWithdrawn: string;
+  totalWithdrawalFees: string;
+  totalServiceFees: string;
+  /** Null when this vault type has no such counter; never shown as zero. */
+  freeBalance: string | null;
+  reservedPrincipal: string | null;
+  reservedFees: string | null;
+  accruedFees: string | null;
+  reserved: string | null;
+  blockNumber: string;
+  blockTime: string;
+  observedAt: string;
+}
+/** A snapshot older than this is shown with a stale warning. Cron runs every 5 minutes. */
+export const VAULT_SNAPSHOT_STALE_MS = 30 * 60 * 1000;
 
 /** Public explorer link for a payment transaction, or null when none exists. */
 export function transactionUrl(
@@ -74,5 +167,13 @@ export function transactionUrl(
     return `https://explorer.solana.com/tx/${encodeURIComponent(id)}`;
   if (network === "solana-devnet" || network === "solana-testnet")
     return `https://explorer.solana.com/tx/${encodeURIComponent(id)}?cluster=${network.slice(7)}`;
+  if (network === "ethereum")
+    return `https://etherscan.io/tx/${encodeURIComponent(id)}`;
+  if (network === "ethereum-sepolia")
+    return `https://sepolia.etherscan.io/tx/${encodeURIComponent(id)}`;
+  if (network === "robinhood-mainnet")
+    return `https://robinhoodchain.blockscout.com/tx/${encodeURIComponent(id)}`;
+  if (network === "robinhood-testnet")
+    return `https://explorer.testnet.chain.robinhood.com/tx/${encodeURIComponent(id)}`;
   return null;
 }

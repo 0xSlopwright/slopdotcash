@@ -1,5 +1,6 @@
+import { exactKeys, readRecord as record } from "./record-validation";
 /**
- * Validates public reward-allocation, external-share, and settlement manifests.
+ * Validates public reward-allocation and external-share manifests.
  * All monetary values remain canonical integer minor units and every approved
  * amount is tied to one immutable payout intent.
  */
@@ -10,12 +11,13 @@ import {
   assertAllocationFundingBasis,
   LAST_LEGACY_CAP_CYCLE,
 } from "./allocation-funding";
-import { isEvmTransactionHash } from "./evm-funding";
-import { isSolanaTransactionId } from "./funding-address.mjs";
-import { findProject } from "./projects.mjs";
+import { chainFamily } from "./escrow-policy.mjs";
+import { fundingAssetForNetwork } from "./funding-address.mjs";
+import { findHistoricalProject } from "./projects.mjs";
 import {
   isWalletAddress,
   isWalletChain,
+  WALLET_CHAINS,
   WALLET_CLAIM_REPOSITORY,
   type WalletChain,
 } from "./wallets";
@@ -25,6 +27,18 @@ export const REVIEW_WINDOW_DAYS = 14;
 export const SHARE_PARTS_TOTAL = 1_000_000;
 export const PLATFORM_FEE_BASIS_POINTS = 100 as const;
 export const MINIMUM_TRANSFER_MINOR = "2000000" as const;
+
+/** Parse the exact UTC form used at reward lifecycle boundaries. */
+export function exactUtcMilliseconds(value: string, field: string): number {
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
+    !Number.isFinite(Date.parse(value)) ||
+    new Date(value).toISOString() !== value
+  ) {
+    throw new TypeError(`${field} must be an exact UTC timestamp`);
+  }
+  return Date.parse(value);
+}
 
 /**
  * The one network a cycle settles on. A proposal freezes the project's
@@ -194,63 +208,6 @@ export interface ExternalContributionShareManifest {
   }>;
 }
 
-export interface RewardSettlementManifest {
-  schemaVersion: typeof REWARD_PROTOCOL_VERSION;
-  kind: "reward-settlement";
-  projectId: string;
-  cycleId: string;
-  allocationSha256: string;
-  settledAt: string;
-  currency: "USDC";
-  chain: SettlementNetwork;
-  status: "failed" | "paid" | "partially-paid";
-  recipients: Array<{
-    intentId: string;
-    approvedMinor: string;
-    paidMinor: string;
-    state: "failed" | "paid" | "pending";
-    rewardLines?: {
-      sharedPool: { approvedMinor: string; paidMinor: string };
-      reviewBudget: { approvedMinor: string; paidMinor: string };
-    };
-  }>;
-  attempts: Array<{
-    attemptId: string;
-    intentIds: string[];
-    signature: string | null;
-    state: "broadcast" | "failed" | "finalized";
-  }>;
-  platformFee: {
-    recipient: string | null;
-    dueMinor: string;
-    paidMinor: string;
-    signature: string | null;
-    state: "failed" | "not-applicable" | "paid" | "pending" | "reported";
-  };
-  totals: {
-    approvedMinor: string;
-    paidMinor: string;
-    feeMinor: string;
-  };
-}
-
-function record(value: unknown, path: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  path: string,
-): void {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
-    throw new TypeError(`${path} has unexpected or missing fields`);
-  }
-}
-
 function text(
   value: unknown,
   path: string,
@@ -297,28 +254,6 @@ function safeInteger(value: unknown, path: string): number {
 
 function sha256(value: unknown, path: string): string {
   return text(value, path, { pattern: /^[0-9a-f]{64}$/u });
-}
-
-/** A finalized Solana signature or a confirmed Base transaction hash. */
-function transactionId(
-  value: unknown,
-  path: string,
-  chain: SettlementNetwork,
-): string {
-  if (chain === "base") {
-    if (!isEvmTransactionHash(value)) {
-      throw new TypeError(`${path} is not a canonical Base transaction hash`);
-    }
-    return value;
-  }
-  return solanaSignature(value, path);
-}
-
-function solanaSignature(value: unknown, path: string): string {
-  if (!isSolanaTransactionId(value)) {
-    throw new TypeError(`${path} is invalid`);
-  }
-  return value;
 }
 
 function array(value: unknown, path: string): unknown[] {
@@ -395,14 +330,14 @@ function assertWallet(
     (expectedChain !== null && wallet.chain !== expectedChain)
   ) {
     throw new TypeError(
-      `${path}.chain must be ${expectedChain ?? "solana or base"}`,
+      `${path}.chain must be ${expectedChain ?? WALLET_CHAINS.join(", ")}`,
     );
   }
   const chain = wallet.chain;
   if (!isWalletAddress(chain, wallet.address)) {
     throw new TypeError(
-      chain === "base"
-        ? `${path}.address is not a canonical Base address`
+      chainFamily(chain) === "evm"
+        ? `${path}.address is not a canonical EVM address`
         : `${path}.address is not a Solana public key`,
     );
   }
@@ -909,6 +844,11 @@ function assertAllocation(
           `${path} review-lapsed hold requires its original wallet and a public reason`,
         );
       }
+      if (accruedMinor !== undefined && accruedMinor !== suggestedMinor) {
+        throw new TypeError(
+          `${path} review-lapsed carry must equal its frozen suggested amount`,
+        );
+      }
       hold = {
         kind: "review-lapsed",
         lapsedAt: iso(rawHold.lapsedAt, `${path}.hold.lapsedAt`),
@@ -1047,13 +987,16 @@ export function assertRewardAllocationManifest(
     manifest.kind !== "reward-allocation" ||
     typeof manifest.projectId !== "string" ||
     (manifest.status !== "proposed" && manifest.status !== "approved") ||
+    !isWalletChain(manifest.chain) ||
+    // The monthly rail settles USDC on Base or Solana; Robinhood Chain pays
+    // only through escrow.
     manifest.currency !== "USDC" ||
-    !isWalletChain(manifest.chain)
+    fundingAssetForNetwork(manifest.chain) !== "USDC"
   ) {
     throw new TypeError("allocation manifest protocol header is invalid");
   }
   const chain = manifest.chain;
-  const project = findProject(manifest.projectId);
+  const project = findHistoricalProject(manifest.projectId);
   if (project?.reward.kind !== "monthly-pool") {
     throw new TypeError("allocation manifest project has no monthly pool");
   }
@@ -1188,6 +1131,17 @@ export function assertRewardAllocationManifest(
   if (lapsedAt) {
     if (allocations.some((allocation) => allocation.state === "proposed")) {
       throw new TypeError("lapsed allocation retains a proposed payment");
+    }
+    if (
+      manifest.status !== "proposed" ||
+      allocations.some((allocation) => allocation.state === "approved") ||
+      !allocations.some(
+        (allocation) => allocation.hold?.kind === "review-lapsed",
+      )
+    ) {
+      throw new TypeError(
+        "lapsed allocation requires a proposed manifest with lapsed rows and no approved payments",
+      );
     }
   }
   for (const allocation of allocations) {
@@ -1462,7 +1416,7 @@ export function assertExternalContributionShareManifest(
   ) {
     throw new TypeError("share manifest protocol header is invalid");
   }
-  const project = findProject(manifest.projectId);
+  const project = findHistoricalProject(manifest.projectId);
   if (project?.reward.kind !== "external-prize-share") {
     throw new TypeError("share manifest project has no external opportunity");
   }
@@ -1568,392 +1522,5 @@ export function assertExternalContributionShareManifest(
     ),
     platformSharePartsPerMillion,
     entries,
-  };
-}
-
-/** Validates a receipt ledger against its approved allocation manifest. */
-export function assertRewardSettlementManifest(
-  value: unknown,
-  allocation: RewardAllocationManifest,
-): RewardSettlementManifest {
-  if (allocation.status !== "approved" || allocation.approvedAt === null) {
-    throw new TypeError("settlement requires an approved allocation");
-  }
-  const manifest = record(value, "settlement manifest");
-  exactKeys(
-    manifest,
-    [
-      "allocationSha256",
-      "attempts",
-      "chain",
-      "currency",
-      "cycleId",
-      "kind",
-      "platformFee",
-      "projectId",
-      "recipients",
-      "schemaVersion",
-      "settledAt",
-      "status",
-      "totals",
-    ],
-    "settlement manifest",
-  );
-  if (
-    manifest.schemaVersion !== REWARD_PROTOCOL_VERSION ||
-    manifest.kind !== "reward-settlement" ||
-    manifest.projectId !== allocation.projectId ||
-    manifest.cycleId !== allocation.cycleId ||
-    manifest.currency !== allocation.currency ||
-    manifest.chain !== allocation.chain ||
-    (manifest.status !== "failed" &&
-      manifest.status !== "paid" &&
-      manifest.status !== "partially-paid")
-  ) {
-    throw new TypeError("settlement manifest protocol header is invalid");
-  }
-  const approvedByIntent = new Map(
-    allocation.allocations
-      .filter((entry) => entry.state === "approved")
-      .map((entry) => [entry.intentId, entry]),
-  );
-  const recipients = array(manifest.recipients, "settlement recipients").map(
-    (value, index) => {
-      const path = `settlement recipients[${index}]`;
-      const recipient = record(value, path);
-      const expectedAllocation =
-        typeof recipient.intentId === "string"
-          ? approvedByIntent.get(recipient.intentId)
-          : undefined;
-      const hasRewardLines = "rewardLines" in recipient;
-      exactKeys(
-        recipient,
-        [
-          "approvedMinor",
-          "intentId",
-          "paidMinor",
-          "state",
-          ...(hasRewardLines ? ["rewardLines"] : []),
-        ],
-        path,
-      );
-      const intentId = text(recipient.intentId, `${path}.intentId`, {
-        max: 160,
-      });
-      const approvedMinor = minor(
-        recipient.approvedMinor,
-        `${path}.approvedMinor`,
-      );
-      if (expectedAllocation?.approvedMinor !== approvedMinor) {
-        throw new TypeError(`${path} does not match an approved payout intent`);
-      }
-      const paidMinor = minor(recipient.paidMinor, `${path}.paidMinor`);
-      if (BigInt(paidMinor) > BigInt(approvedMinor)) {
-        throw new TypeError(`${path} paid more than approved`);
-      }
-      const state: RewardSettlementManifest["recipients"][number]["state"] =
-        recipient.state as RewardSettlementManifest["recipients"][number]["state"];
-      if (state !== "failed" && state !== "paid" && state !== "pending") {
-        throw new TypeError(`${path}.state is invalid`);
-      }
-      if (state === "paid" && paidMinor !== approvedMinor) {
-        throw new TypeError(`${path} paid state must be fully paid`);
-      }
-      if (state !== "paid" && BigInt(paidMinor) !== 0n) {
-        throw new TypeError(
-          `${path} non-paid state must have zero paid amount`,
-        );
-      }
-      let rewardLines: RewardSettlementManifest["recipients"][number]["rewardLines"];
-      if (expectedAllocation.lines) {
-        if (!hasRewardLines) {
-          throw new TypeError(`${path} must preserve reward line items`);
-        }
-        const rawLines = record(recipient.rewardLines, `${path}.rewardLines`);
-        exactKeys(
-          rawLines,
-          ["reviewBudget", "sharedPool"],
-          `${path}.rewardLines`,
-        );
-        const parseLine = (
-          value: unknown,
-          linePath: string,
-          expectedApprovedMinor: string,
-        ): { approvedMinor: string; paidMinor: string } => {
-          const line = record(value, linePath);
-          exactKeys(line, ["approvedMinor", "paidMinor"], linePath);
-          const lineApproved = minor(
-            line.approvedMinor,
-            `${linePath}.approvedMinor`,
-          );
-          const linePaid = minor(line.paidMinor, `${linePath}.paidMinor`);
-          if (
-            lineApproved !== expectedApprovedMinor ||
-            linePaid !== (state === "paid" ? lineApproved : "0")
-          ) {
-            throw new TypeError(`${linePath} does not reconcile`);
-          }
-          return { approvedMinor: lineApproved, paidMinor: linePaid };
-        };
-        rewardLines = {
-          sharedPool: parseLine(
-            rawLines.sharedPool,
-            `${path}.rewardLines.sharedPool`,
-            expectedAllocation.lines.sharedPool.approvedMinor,
-          ),
-          reviewBudget: parseLine(
-            rawLines.reviewBudget,
-            `${path}.rewardLines.reviewBudget`,
-            expectedAllocation.lines.reviewBudget.approvedMinor,
-          ),
-        };
-      } else if (hasRewardLines) {
-        throw new TypeError(`${path} has reward lines absent from allocation`);
-      }
-      return {
-        intentId,
-        approvedMinor,
-        paidMinor,
-        state,
-        ...(rewardLines ? { rewardLines } : {}),
-      };
-    },
-  );
-  unique(
-    recipients.map((recipient) => recipient.intentId),
-    "settlement recipient intents",
-  );
-  if (recipients.length !== approvedByIntent.size) {
-    throw new TypeError(
-      "settlement does not account for every approved intent",
-    );
-  }
-
-  const finalizedIntents = new Set<string>();
-  const attempts = array(manifest.attempts, "settlement attempts").map(
-    (value, index) => {
-      const path = `settlement attempts[${index}]`;
-      const attempt = record(value, path);
-      exactKeys(
-        attempt,
-        ["attemptId", "intentIds", "signature", "state"],
-        path,
-      );
-      const state: RewardSettlementManifest["attempts"][number]["state"] =
-        attempt.state as RewardSettlementManifest["attempts"][number]["state"];
-      if (
-        state !== "broadcast" &&
-        state !== "failed" &&
-        state !== "finalized"
-      ) {
-        throw new TypeError(`${path}.state is invalid`);
-      }
-      const intentIds = array(attempt.intentIds, `${path}.intentIds`).map(
-        (entry, intentIndex) =>
-          text(entry, `${path}.intentIds[${intentIndex}]`, { max: 160 }),
-      );
-      if (intentIds.length === 0) throw new TypeError(`${path} has no intents`);
-      unique(intentIds, `${path}.intentIds`);
-      for (const intentId of intentIds) {
-        if (!approvedByIntent.has(intentId)) {
-          throw new TypeError(`${path} references an unknown payout intent`);
-        }
-        if (state === "finalized" && finalizedIntents.has(intentId)) {
-          throw new TypeError("a payout intent finalized more than once");
-        }
-        if (state === "finalized") finalizedIntents.add(intentId);
-      }
-      const signature =
-        attempt.signature === null
-          ? null
-          : transactionId(
-              attempt.signature,
-              `${path}.signature`,
-              allocation.chain,
-            );
-      if (state === "finalized" && signature === null) {
-        throw new TypeError(`${path} finalized attempt needs a signature`);
-      }
-      return {
-        attemptId: text(attempt.attemptId, `${path}.attemptId`, {
-          max: 160,
-          pattern: /^attempt_[a-z0-9][a-z0-9_-]+$/u,
-        }),
-        intentIds,
-        signature,
-        state,
-      };
-    },
-  );
-  unique(
-    attempts.map((attempt) => attempt.attemptId),
-    "settlement attempt ids",
-  );
-  unique(
-    attempts.flatMap((attempt) =>
-      attempt.signature === null ? [] : [attempt.signature],
-    ),
-    "settlement transaction signatures",
-  );
-  const paidIntents = new Set(
-    recipients
-      .filter((recipient) => recipient.state === "paid")
-      .map((recipient) => recipient.intentId),
-  );
-  if (
-    paidIntents.size !== finalizedIntents.size ||
-    [...paidIntents].some((intentId) => !finalizedIntents.has(intentId))
-  ) {
-    throw new TypeError("paid recipients and finalized attempts disagree");
-  }
-  const approvedMinor = sumMinor(
-    recipients.map((recipient) => recipient.approvedMinor),
-  );
-  const paidMinor = sumMinor(
-    recipients.map((recipient) => recipient.paidMinor),
-  );
-  const feeMinor = feeForPrincipal(paidMinor, allocation.feeBasisPoints);
-  const platformFeeRecord = record(
-    manifest.platformFee,
-    "settlement platformFee",
-  );
-  exactKeys(
-    platformFeeRecord,
-    ["dueMinor", "paidMinor", "recipient", "signature", "state"],
-    "settlement platformFee",
-  );
-  const feeDueMinor = minor(
-    platformFeeRecord.dueMinor,
-    "settlement platformFee.dueMinor",
-  );
-  const feePaidMinor = minor(
-    platformFeeRecord.paidMinor,
-    "settlement platformFee.paidMinor",
-  );
-  if (feeDueMinor !== feeMinor || BigInt(feePaidMinor) > BigInt(feeDueMinor)) {
-    throw new TypeError("settlement platform fee does not reconcile");
-  }
-  const feeState = platformFeeRecord.state;
-  if (
-    feeState !== "failed" &&
-    feeState !== "not-applicable" &&
-    feeState !== "paid" &&
-    feeState !== "pending" &&
-    feeState !== "reported"
-  ) {
-    throw new TypeError("settlement platform fee state is invalid");
-  }
-  const feeRecipient =
-    platformFeeRecord.recipient === null
-      ? null
-      : text(platformFeeRecord.recipient, "settlement platformFee.recipient", {
-          max: 44,
-          min: 32,
-        });
-  if (
-    feeRecipient !== null &&
-    !isWalletAddress(allocation.chain, feeRecipient)
-  ) {
-    throw new TypeError("settlement platform fee recipient is invalid");
-  }
-  const feeSignature =
-    platformFeeRecord.signature === null
-      ? null
-      : transactionId(
-          platformFeeRecord.signature,
-          "settlement platformFee.signature",
-          allocation.chain,
-        );
-  if (BigInt(feeDueMinor) === 0n) {
-    if (
-      feeState !== "not-applicable" ||
-      feeRecipient !== null ||
-      feeSignature !== null ||
-      BigInt(feePaidMinor) !== 0n
-    ) {
-      throw new TypeError("zero platform fee must be not-applicable");
-    }
-  } else if (feeRecipient === null) {
-    throw new TypeError("non-zero platform fee needs a recipient");
-  }
-  if (
-    feeState === "paid" &&
-    (feePaidMinor !== feeDueMinor || feeSignature === null)
-  ) {
-    throw new TypeError("paid platform fee must be exact and signed");
-  }
-  if (feeState === "reported") {
-    if (BigInt(feePaidMinor) !== 0n || feeSignature === null) {
-      throw new TypeError(
-        "reported platform fee needs a signature but cannot claim verified payment",
-      );
-    }
-  } else if (
-    feeState !== "paid" &&
-    (BigInt(feePaidMinor) !== 0n || feeSignature !== null)
-  ) {
-    throw new TypeError(
-      "outstanding platform fee cannot claim transaction evidence",
-    );
-  }
-  if (
-    feeSignature &&
-    attempts.some((attempt) => attempt.signature === feeSignature)
-  ) {
-    throw new TypeError(
-      "platform fee and contributor payout reuse a signature",
-    );
-  }
-  const expectedStatus =
-    paidIntents.size === recipients.length &&
-    (feeState === "paid" || feeState === "not-applicable")
-      ? "paid"
-      : paidIntents.size === 0
-        ? "failed"
-        : "partially-paid";
-  if (manifest.status !== expectedStatus) {
-    throw new TypeError("settlement status does not match recipient states");
-  }
-  const totals = record(manifest.totals, "settlement totals");
-  exactKeys(
-    totals,
-    ["approvedMinor", "feeMinor", "paidMinor"],
-    "settlement totals",
-  );
-  if (
-    minor(totals.approvedMinor, "settlement totals.approvedMinor") !==
-      approvedMinor ||
-    minor(totals.paidMinor, "settlement totals.paidMinor") !== paidMinor ||
-    minor(totals.feeMinor, "settlement totals.feeMinor") !== feeMinor
-  ) {
-    throw new TypeError("settlement totals do not reconcile");
-  }
-  const settledAt = iso(manifest.settledAt, "settlement settledAt");
-  if (Date.parse(settledAt) < Date.parse(allocation.approvedAt)) {
-    throw new TypeError("settlement predates allocation approval");
-  }
-  return {
-    schemaVersion: REWARD_PROTOCOL_VERSION,
-    kind: "reward-settlement",
-    projectId: allocation.projectId,
-    cycleId: allocation.cycleId,
-    allocationSha256: sha256(
-      manifest.allocationSha256,
-      "settlement allocationSha256",
-    ),
-    settledAt,
-    currency: "USDC",
-    chain: allocation.chain,
-    status: expectedStatus,
-    recipients,
-    attempts,
-    platformFee: {
-      recipient: feeRecipient,
-      dueMinor: feeDueMinor,
-      paidMinor: feePaidMinor,
-      signature: feeSignature,
-      state: feeState,
-    },
-    totals: { approvedMinor, paidMinor, feeMinor },
   };
 }

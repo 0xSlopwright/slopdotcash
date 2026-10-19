@@ -1,15 +1,9 @@
-import {
-  ChevronRight,
-  CircleAlert,
-  ExternalLink,
-  RotateCcw,
-} from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { DonorFundingProfile, useFundingIndex } from "./FundingRecords";
+import { ChevronRight, ExternalLink } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Link } from "./Link";
 import { browserDeployment } from "./lib/browser-deployment";
 import { readBoundedJson } from "./lib/browser-json";
-import { isFundingAddress } from "./lib/funding";
+import { isFundingAddress } from "./lib/funding-address.mjs";
 import { githubUserIdFromNodeId } from "./lib/github-actor";
 import { createGlobalLeaders } from "./lib/global-leaderboard";
 import {
@@ -19,12 +13,8 @@ import {
 } from "./lib/leaderboard";
 import { findProject, type ProjectDefinition } from "./lib/projects.mjs";
 import { formatThirds } from "./lib/reviewer-leaders";
-import {
-  type FundingReviewsState,
-  useFundingReviews,
-} from "./lib/use-funding-reviews";
 import type { DataState } from "./lib/use-snapshot";
-import { ProfilePoints } from "./Points";
+import { ProfilePoints, useProfileMembership } from "./Points";
 import {
   ContributorIdentity,
   cycleLifecycleLabel,
@@ -35,6 +25,7 @@ import {
   formatMicroUsdc,
   formatScore,
 } from "./Presentation";
+import { useProfiles } from "./Profiles";
 import { RewardValue } from "./ProjectLeaderboard";
 
 export function ProfilePage({
@@ -46,131 +37,100 @@ export function ProfilePage({
   state: DataState;
   retry: () => void;
 }) {
-  const [funding, retryFunding] = useFundingIndex();
-  const [fundingReviews] = useFundingReviews(true);
-  const currentWallet = useCurrentWallet(state, login, fundingReviews);
+  const profiles = useProfiles();
+  const membership = useProfileMembership(login);
+  const actor = currentProfileActor(state, login, profiles.state, membership);
+  const currentWallet = useCurrentWallet(actor, login);
   if (state.status !== "ready")
     return (
       <main className="shell route-main">
-        <ProfilePoints
-          key={login.toLowerCase()}
-          login={login}
-          recordsLoading={state.status === "loading"}
-          showIdentity
+        <ContributorIdentity
+          actor={{
+            login,
+            avatarUrl: `https://avatars.githubusercontent.com/${encodeURIComponent(login)}?size=160`,
+            url: `https://github.com/${encodeURIComponent(login)}`,
+          }}
         />
         <DataNotice state={state} retry={retry} />
       </main>
     );
-  const matches = state.views.flatMap((view) =>
-    view.leaders
-      .filter(
-        (leader) => leader.actor.login.toLowerCase() === login.toLowerCase(),
-      )
-      .map((leader) => ({ leader, view })),
-  );
-  const history = state.cycleIndex.cycles.flatMap((cycle) =>
-    cycle.contributors
-      .filter(
-        (contributor) =>
-          contributor.actor.login.toLowerCase() === login.toLowerCase(),
-      )
-      .map((contributor) => ({ contributor, cycle })),
-  );
-  const loginOpportunities = state.views.flatMap((view) =>
-    view.opportunities
-      .filter(
-        (opportunity) =>
-          opportunity.actor.login.toLowerCase() === login.toLowerCase(),
-      )
-      .map((opportunity) => ({ opportunity, project: view.project })),
-  );
+  if (!actor)
+    return (
+      <main className="shell route-main">
+        <ContributorIdentity
+          actor={{
+            login,
+            avatarUrl: `https://avatars.githubusercontent.com/${encodeURIComponent(login)}?size=160`,
+            url: `https://github.com/${encodeURIComponent(login)}`,
+          }}
+        />
+        <p className="data-notice" role="status">
+          {profiles.state.status === "loading" ||
+          membership.joinStatus === "loading"
+            ? "Checking current contributor identity…"
+            : profiles.state.status === "error"
+              ? "Current contributor identity is unavailable. Contribution and wallet records are not shown."
+              : "Current contributor identity could not be verified. Contribution and wallet records are not shown."}
+        </p>
+        {profiles.state.status === "error" ? (
+          <button type="button" onClick={profiles.retry}>
+            Retry profile
+          </button>
+        ) : null}
+      </main>
+    );
   const globalLeaders = createGlobalLeaders(
     state.snapshot,
     state.views,
     state.cycleIndex,
   );
-  const globalRank = globalLeaders.findIndex(
-    (leader) => leader.actor.login.toLowerCase() === login.toLowerCase(),
+  const globalLeader = globalLeaders.find(
+    (leader) => leader.actor.id === actor.id,
   );
-  const globalLeader =
-    globalRank === -1 ? undefined : globalLeaders[globalRank];
-  // A frozen month with no cycle directory still records the contributor.
-  const preparations =
-    fundingReviews.status === "ready"
-      ? fundingReviews.index.reviews
-          .filter(
-            (review) =>
-              !state.cycleIndex.cycles.some(
-                (cycle) =>
-                  cycle.projectId === review.projectId &&
-                  cycle.cycleId === review.cycleId,
-              ),
-          )
-          .flatMap((review) =>
-            review.contributors
-              .filter(
-                (contributor) =>
-                  contributor.actor.login.toLowerCase() === login.toLowerCase(),
-              )
-              .map((contributor) => ({ contributor, review })),
-          )
-          .sort(
-            (left, right) =>
-              right.review.cycleId.localeCompare(left.review.cycleId) ||
-              left.review.projectId.localeCompare(right.review.projectId),
-          )
-      : [];
+  const globalRank = globalLeader
+    ? globalLeaders.findIndex((leader) => leader.score === globalLeader.score) +
+      1
+    : null;
+  const matches = state.views.flatMap((view) =>
+    view.leaders
+      .filter((leader) => leader.actor.id === actor.id)
+      .map((leader) => ({ leader, view })),
+  );
+  const history = state.cycleIndex.cycles.flatMap((cycle) =>
+    cycle.contributors
+      .filter((contributor) => contributor.actor.id === actor.id)
+      .map((contributor) => ({ contributor, cycle })),
+  );
+  const actorOpportunities = state.views.flatMap((view) =>
+    view.opportunities
+      .filter((opportunity) => opportunity.actor.id === actor.id)
+      .map((opportunity) => ({ opportunity, project: view.project })),
+  );
   if (
     matches.length === 0 &&
     history.length === 0 &&
     !globalLeader &&
-    loginOpportunities.length === 0 &&
-    preparations.length === 0
+    actorOpportunities.length === 0
   ) {
-    if (fundingReviews.status === "loading")
-      return (
-        <main className="shell route-main" aria-busy="true">
-          <ContributorIdentity
-            actor={{
-              login,
-              avatarUrl: `https://avatars.githubusercontent.com/${encodeURIComponent(login)}?size=160`,
-              url: `https://github.com/${encodeURIComponent(login)}`,
-            }}
-          />
-          <p className="data-notice" role="status">
-            Checking frozen months…
-          </p>
-        </main>
-      );
     return (
       <main className="shell route-main">
         <ProfilePoints
           key={login.toLowerCase()}
           login={login}
+          actorId={actor.id}
+          profileCensus={profiles}
+          profileMembership={membership}
           cycles={state.cycleIndex}
           showIdentity
-          notFoundWhenUnrecorded={fundingReviews.status === "ready"}
+          notFoundWhenUnrecorded
         />
       </main>
     );
   }
-  const historicalActor =
-    history[0]?.contributor.actor ?? preparations[0]?.contributor.actor;
-  const opportunityActor = loginOpportunities[0]?.opportunity.actor;
-  const actor: GitHubActor = globalLeader?.actor ??
-    matches[0]?.leader.actor ??
-    opportunityActor ?? {
-      id: historicalActor?.id ?? `historical:${login.toLowerCase()}`,
-      login: historicalActor?.login ?? login,
-      avatarUrl: `https://avatars.githubusercontent.com/${encodeURIComponent(login)}?size=160`,
-      url: `https://github.com/${encodeURIComponent(login)}`,
-      kind: "User",
-    };
   const events = state.snapshot.ledger.filter(
     (event) => event.actor.id === actor.id,
   );
-  const opportunities = loginOpportunities
-    .filter(({ opportunity }) => opportunity.actor.id === actor.id)
+  const opportunities = actorOpportunities
     .sort(
       (left, right) =>
         Date.parse(right.opportunity.occurredAt) -
@@ -179,17 +139,10 @@ export function ProfilePage({
         left.opportunity.id.localeCompare(right.opportunity.id),
     )
     .slice(0, PROFILE_OPPORTUNITY_LIMIT);
-  // Outside the rolling window the frozen months are the only scored record.
   const score = globalLeader
     ? formatScore(globalLeader.score)
-    : formatThirds(
-        preparations.reduce(
-          (total, { contributor }) => total + Number(contributor.scoreThirds),
-          0,
-        ),
-      );
-  // Closed cycles replace their overlapping ledger events in this cumulative score.
-  const scoreLabel = globalLeader ? "Slop Score" : "Slop Score · frozen months";
+    : formatThirds(0);
+  const scoreLabel = "Slop Score";
   const historicalWallet = history.find(({ contributor }) => contributor.wallet)
     ?.contributor.wallet;
   const wallet =
@@ -214,15 +167,17 @@ export function ProfilePage({
       </ContributorIdentity>
       <ProfilePoints
         key={login.toLowerCase()}
+        profileCensus={profiles}
+        profileMembership={membership}
         actorId={actor.id}
         work={events}
         login={login}
         cycles={state.cycleIndex}
         summary={
           <>
-            {globalRank >= 0 ? (
+            {globalRank !== null ? (
               <div>
-                <strong>#{globalRank + 1}</strong>
+                <strong>#{globalRank}</strong>
                 <span>overall rank</span>
               </div>
             ) : null}
@@ -335,74 +290,73 @@ export function ProfilePage({
           </div>
         </section>
       ) : null}
-      {preparations.length > 0 ? (
-        <section className="section profile-section">
-          <div className="profile-section-heading">
-            <h2>Frozen months</h2>
-            <span>scored, not approved</span>
-          </div>
-          <div className="profile-projects">
-            {preparations.map(({ contributor, review }) => {
-              const project = findProject(review.projectId);
-              return (
-                <Link
-                  href={`/projects/${project?.slug ?? review.projectId}/funding`}
-                  key={`${review.projectId}:${review.cycleId}`}
-                >
-                  <span>
-                    <strong>{project?.name ?? review.projectId}</strong>
-                    <small>{review.cycleId} · preparation</small>
-                  </span>
-                  <span>
-                    <strong title={`Exact score ${contributor.scoreThirds}/3`}>
-                      {formatThirds(Number(contributor.scoreThirds))} score
-                    </strong>
-                    <small>
-                      {contributor.eventCount} scored event
-                      {contributor.eventCount === 1 ? "" : "s"}
-                    </small>
-                  </span>
-                  <span>
-                    <strong>
-                      {contributor.simulatedMinor === null
-                        ? "External prize share"
-                        : formatMicroUsdc(contributor.simulatedMinor)}
-                    </strong>
-                    <small>
-                      {contributor.wallet
-                        ? "simulated · wallet on file at freeze"
-                        : "simulated · unclaimed, no wallet at freeze"}
-                    </small>
-                  </span>
-                  <ChevronRight aria-hidden="true" />
-                </Link>
-              );
-            })}
-          </div>
-        </section>
-      ) : fundingReviews.status === "error" ? (
-        <section className="section profile-section">
-          <div className="data-notice data-error" role="alert">
-            <CircleAlert aria-hidden="true" size={18} /> Frozen month records
-            unavailable: {fundingReviews.message}
-          </div>
-        </section>
-      ) : null}
-      {funding.status === "error" ? (
-        <section className="section profile-section">
-          <div className="data-notice data-error" role="alert">
-            <CircleAlert aria-hidden="true" size={18} />
-            <span>Public donor records unavailable: {funding.message}</span>
-            <button onClick={retryFunding} type="button">
-              <RotateCcw aria-hidden="true" size={15} /> Retry
-            </button>
-          </div>
-        </section>
-      ) : funding.status === "ready" ? (
-        <DonorFundingProfile actor={actor} records={funding.index.records} />
-      ) : null}
     </main>
   );
+}
+
+/** Historical aliases do not prove who currently owns a profile URL. */
+function currentProfileActor(
+  state: DataState,
+  login: string,
+  profiles: ReturnType<typeof useProfiles>["state"],
+  membership: ReturnType<typeof useProfileMembership>,
+): GitHubActor | undefined {
+  if (state.status !== "ready") return;
+  const normalizedLogin = login.toLowerCase();
+  const matchesLogin = (actor: { login: string }) =>
+    actor.login.toLowerCase() === normalizedLogin;
+  const asActor = (actor: {
+    id: string;
+    login: string;
+    avatarUrl?: string;
+  }): GitHubActor => ({
+    id: actor.id,
+    login: actor.login,
+    avatarUrl:
+      actor.avatarUrl ??
+      `https://avatars.githubusercontent.com/${encodeURIComponent(actor.login)}?size=160`,
+    url: `https://github.com/${encodeURIComponent(actor.login)}`,
+    kind: "User",
+  });
+  const actors: Array<{ id: string; login: string; avatarUrl?: string }> = [
+    ...(membership.signedInActor ? [membership.signedInActor] : []),
+    ...state.snapshot.leaders.map((leader) => leader.actor),
+    ...state.views.flatMap((view) => [
+      ...view.leaders.map((leader) => leader.actor),
+      ...view.opportunities.map((opportunity) => opportunity.actor),
+    ]),
+  ];
+  const conflictsWith = (candidate: { id: string }) =>
+    actors.some((actor) =>
+      actor.id === candidate.id ? !matchesLogin(actor) : matchesLogin(actor),
+    );
+  // Membership and activity records can retain an old login; wait for the
+  // directory's veto before either one names the current actor.
+  if (profiles.status !== "ready") return;
+  const directoryConflict = (candidate: { id: string }) =>
+    profiles.index.people.some((person) =>
+      person.id === candidate.id ? !matchesLogin(person) : matchesLogin(person),
+    );
+  const member = membership.own ?? membership.joined;
+  if (member)
+    return matchesLogin(member.actor) &&
+      !conflictsWith(member.actor) &&
+      !directoryConflict(member.actor)
+      ? asActor(member.actor)
+      : undefined;
+  const current = actors.find(matchesLogin);
+  if (current) {
+    if (conflictsWith(current) || directoryConflict(current)) return;
+    return asActor(current);
+  }
+  // The directory can resolve an inactive actor, but cannot override a known rename.
+  const candidates = profiles.index.people.filter(
+    (person) =>
+      matchesLogin(person) &&
+      !actors.some((actor) => actor.id === person.id && !matchesLogin(actor)),
+  );
+  if (candidates.length !== 1) return;
+  return asActor(candidates[0]);
 }
 
 function shortAddress(address: string): string {
@@ -410,34 +364,32 @@ function shortAddress(address: string): string {
 }
 
 function useCurrentWallet(
-  state: DataState,
+  actor: GitHubActor | undefined,
   login: string,
-  fundingReviews: FundingReviewsState,
 ): CurrentWalletState {
   const [wallet, setWallet] = useState<CurrentWalletState>({
     status: "loading",
   });
   const normalizedLogin = login.toLowerCase();
-  // Funding reviews matter only for an actor outside the rolling window and
-  // the cycles. Reduce the inputs to primitive values, so a window actor's
-  // request does not restart when the reviews finish loading.
-  const lookup = useMemo(
-    () => findWalletLookup(state, normalizedLogin, fundingReviews),
-    [state, normalizedLogin, fundingReviews],
-  );
-  const lookupStatus = lookup.status;
-  const githubActorId = lookup.status === "actor" ? lookup.githubActorId : "";
+  const lookupKey = `${normalizedLogin}\0${actor?.id ?? ""}`;
+  const avatarActorId = actor?.avatarUrl
+    ? /^https:\/\/avatars\.githubusercontent\.com\/u\/(\d+)(?:\?|$)/u.exec(
+        actor.avatarUrl,
+      )?.[1]
+    : undefined;
+  const githubActorId = actor
+    ? /^\d+$/u.test(actor.id)
+      ? actor.id
+      : (githubUserIdFromNodeId(actor.id) ?? avatarActorId ?? "")
+    : "";
+  const lookupStatus = !actor ? "none" : githubActorId ? "actor" : "error";
   useEffect(() => {
-    if (lookupStatus === "waiting") {
-      setWallet({ status: "loading" });
-      return;
-    }
     if (lookupStatus === "error") {
-      setWallet({ status: "error", login: normalizedLogin });
+      setWallet({ status: "error", key: lookupKey });
       return;
     }
     if (lookupStatus === "none") {
-      setWallet({ status: "none", login: normalizedLogin });
+      setWallet({ status: "none", key: lookupKey });
       return;
     }
     setWallet({ status: "loading" });
@@ -466,7 +418,7 @@ function useCurrentWallet(
       .then((value) => {
         if (!active) return;
         if (value === null) {
-          setWallet({ status: "none", login: normalizedLogin });
+          setWallet({ status: "none", key: lookupKey });
           return;
         }
         if (
@@ -489,12 +441,12 @@ function useCurrentWallet(
         setWallet({
           status: "ready",
           address: claim.address,
-          login: normalizedLogin,
+          key: lookupKey,
           sourceUrl: `${browserDeployment.api}/api/v1/wallet-claims/${claim.claimId}`,
         });
       })
       .catch(() => {
-        if (active) setWallet({ status: "error", login: normalizedLogin });
+        if (active) setWallet({ status: "error", key: lookupKey });
       })
       .finally(() => window.clearTimeout(timeout));
     return () => {
@@ -502,75 +454,18 @@ function useCurrentWallet(
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [lookupStatus, githubActorId, normalizedLogin]);
-  if (wallet.status !== "loading" && wallet.login !== normalizedLogin) {
+  }, [lookupStatus, githubActorId, lookupKey]);
+  if (wallet.status !== "loading" && wallet.key !== lookupKey) {
     return { status: "loading" };
   }
   return wallet;
 }
 
-type WalletLookup =
-  | { status: "waiting" }
-  | { status: "error" }
-  | { status: "none" }
-  | { status: "actor"; githubActorId: string };
-
-function findWalletLookup(
-  state: DataState,
-  normalizedLogin: string,
-  fundingReviews: FundingReviewsState,
-): WalletLookup {
-  if (state.status !== "ready") return { status: "waiting" };
-  const actors: Array<{ id: string; login: string; avatarUrl?: string }> = [
-    ...state.views.flatMap((view) => [
-      ...view.leaders.map((leader) => leader.actor),
-      ...view.opportunities.map((opportunity) => opportunity.actor),
-    ]),
-    ...state.cycleIndex.cycles.flatMap((cycle) =>
-      cycle.contributors.map((contributor) => contributor.actor),
-    ),
-  ];
-  const windowActor = actors.find(
-    (candidate) => candidate.login.toLowerCase() === normalizedLogin,
-  );
-  // A frozen-month-only actor is in neither list; its review record has it.
-  if (!windowActor && fundingReviews.status === "loading") {
-    return { status: "waiting" };
-  }
-  if (!windowActor && fundingReviews.status !== "ready") {
-    return { status: "error" };
-  }
-  const actor: { id: string; login: string; avatarUrl?: string } | undefined =
-    windowActor ??
-    (fundingReviews.status === "ready"
-      ? fundingReviews.index.reviews
-          .flatMap((review) => review.contributors)
-          .map((contributor) => contributor.actor)
-          .find(
-            (candidate) => candidate.login.toLowerCase() === normalizedLogin,
-          )
-      : undefined);
-  if (!actor) return { status: "none" };
-  const avatarActorId = actor.avatarUrl
-    ? /^https:\/\/avatars\.githubusercontent\.com\/u\/(\d+)(?:\?|$)/u.exec(
-        actor.avatarUrl,
-      )?.[1]
-    : undefined;
-  // Frozen-month records keep only the GitHub node id, which encodes the
-  // numeric id that wallet claims are keyed by.
-  const githubActorId = /^\d+$/u.test(actor.id)
-    ? actor.id
-    : (githubUserIdFromNodeId(actor.id) ?? avatarActorId);
-  return githubActorId
-    ? { status: "actor", githubActorId }
-    : { status: "error" };
-}
-
 type CurrentWalletState =
   | { status: "loading" }
-  | { status: "none"; login: string }
-  | { status: "error"; login: string }
-  | { status: "ready"; address: string; login: string; sourceUrl: string };
+  | { status: "none"; key: string }
+  | { status: "error"; key: string }
+  | { status: "ready"; address: string; key: string; sourceUrl: string };
 
 const WALLET_CLAIM_TIMEOUT_MS = 12_000;
 

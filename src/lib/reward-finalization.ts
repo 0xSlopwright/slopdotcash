@@ -6,20 +6,10 @@
 
 import {
   assertRewardAllocationManifest,
+  exactUtcMilliseconds,
   feeForPrincipal,
   type RewardAllocationManifest,
 } from "./rewards";
-
-function exactUtc(value: string, field: string): number {
-  if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
-  ) {
-    throw new TypeError(`${field} must be an exact UTC timestamp`);
-  }
-  return Date.parse(value);
-}
 
 /** Finalizes reviewed decisions without changing any contributor row. */
 export function finalizeRewardAllocation(
@@ -31,13 +21,18 @@ export function finalizeRewardAllocation(
   if (proposal.status !== "proposed") {
     throw new TypeError("Only a proposed reward allocation can be finalized");
   }
+  if (proposal.review.lapsedAt) {
+    throw new TypeError(
+      "A lapsed reward allocation cannot be finalized; its review deadline has closed the cycle",
+    );
+  }
   if (proposal.allocations.length === 0) {
     throw new RangeError(
       "A zero-award cycle is already closed and has no allocation to approve",
     );
   }
   if (!Number.isFinite(now)) throw new TypeError("Current time must be finite");
-  const approvalTime = exactUtc(approvedAt, "approvedAt");
+  const approvalTime = exactUtcMilliseconds(approvedAt, "approvedAt");
   if (approvalTime > now + 5 * 60_000) {
     throw new RangeError("Reward allocation approval cannot be in the future");
   }
@@ -50,6 +45,15 @@ export function finalizeRewardAllocation(
   if (unresolved.length > 0) {
     throw new TypeError(
       `Reward allocation has ${unresolved.length} unresolved proposed payment(s)`,
+    );
+  }
+  // A cycle with no approved row pays nothing. It needs no allocation file: the
+  // proposal already carries its held rows, and a plan cannot pay an empty set.
+  if (
+    !proposal.allocations.some((allocation) => allocation.state === "approved")
+  ) {
+    throw new RangeError(
+      "A reward allocation with no approved payment is already closed and has no allocation to approve",
     );
   }
   const approvedMinor = proposal.allocations

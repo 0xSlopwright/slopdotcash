@@ -7,7 +7,11 @@ if that actor has never signed in.
 
 `GET /api/v1/payments/me` returns gross awards, deducted fees, net amounts,
 finalized payment transactions, current wallet claims, and unpaid net balances.
-No failed query returns a fabricated zero balance.
+No failed query returns a fabricated zero balance. Every amount is base-unit
+integer text (`grossBase`, `feeBase`, `netBase`) of the award's vault asset,
+named by `assetAddress` and scaled by `assetDecimals`. One balance row exists
+per network and asset. Amounts of different assets are never summed and are
+never labelled as dollars.
 
 `POST /wallets/register` takes `chain` and `address` using the existing GitHub
 session. It writes the same canonical claim and atomic audit as the legacy
@@ -15,8 +19,9 @@ wallet API; concurrent successor changes return a conflict.
 
 A current authenticated registry claim must be explicitly authorized for
 automatic payments. `POST /wallets/challenge` takes `claimId` and returns a
-15-minute message. Sign that exact message with Base `personal_sign` or Solana
-Ed25519 `signMessage`. `POST /wallets/authorize` takes `claimId`, `challengeId`,
+15-minute message. Sign that exact message with `personal_sign` on Base or
+Robinhood Chain, or Solana Ed25519 `signMessage`. `POST /wallets/authorize`
+takes `claimId`, `challengeId`,
 and `signature` (Base hex r/s/v; Solana padded base64). The challenge binds
 actor, chain, address, claim, audience, and nonce; it can be used once. Contract
 wallets and off-curve Solana destinations need a separately reviewed recovery
@@ -33,10 +38,11 @@ Apply migration `0011_payments.sql` after prior migrations. Run the account and
 queue integration workflow with:
 
 ```
-bun backend/payments/base.integration.ts
+bun backend/payments/evm.integration.ts
 ```
 
-The Base vertical workflow deploys real local contracts, reserves a walletless
+The EVM vertical workflow deploys real local contracts on two Anvil chains
+(31337 as Base, 46630 as Robinhood Chain Testnet), reserves a walletless
 award, refunds free funds with the withdrawal fee, authorizes a late wallet,
 dispatches a payment, and indexes its finalized receipt into the account ledger.
 It checks actual contributor, fee, and refund token balances. It uses an isolated
@@ -44,7 +50,8 @@ Anvil test signer, not a deployed production signing service. The EVM adapter
 also has a separate Anvil integration workflow in `contracts/evm`.
 
 `workers/payments/index.ts` has no public fetch route. Its scheduled entry scans
-finalized Base logs and Solana signature history, then reconciles submitted or
+finalized EVM logs (Base, Robinhood Chain) and Solana signature history, then
+reconciles submitted or
 uncertain attempts and dispatches ready obligations. Cursors advance only after
 every recognized event is verified and indexed. Base starts from the reviewed
 deployment transaction. Solana stores one finalized signature page per run in a durable discovery
@@ -75,8 +82,16 @@ manifest output. Solana additionally needs `PAYMENT_SOLANA_GENESIS` trust roots.
 The manifest supplies its program, project PDA, token vault, network domain,
 and asset. Both chain adapters fetch actual finalized evidence independently.
 
-`BASE_PAYMENT_EXECUTOR` and `SOLANA_PAYMENT_EXECUTOR` are separate internal
-service bindings, not public URLs. The scoped signing implementations live in
+Each EVM deployment record also carries `gasCeiling` (executor gas units) and
+`scanPageBlocks` (blocks per `eth_getLogs` page, inclusive), copied from the
+network registry by `scripts/prepare-payment-deployments.ts`. A record missing
+either value is refused; no worker substitutes a default.
+
+`EVM_PAYMENT_EXECUTOR` and `SOLANA_PAYMENT_EXECUTOR` are separate internal
+service bindings, not public URLs. The dispatcher picks one by the
+deployment's execution family from the network registry
+(`src/lib/escrow-policy.mjs`), never by the literal chain name. The scoped
+signing implementations live in
 `workers/payment-executor`. Neither relayer key may approve awards or withdraw
 funds. A separate attester signs only a verified destination binding. Keys are
 runtime secrets; no production credentials are read by the local tests.
@@ -91,11 +106,37 @@ attempt is uncertain; successor binding rotation waits 24 hours after the later 
 and requires a proved ancestor claim with no unresolved old-wallet attempts.
 
 `GET /api/v1/payments/projects/<id>/totals` publishes net contributor payments,
-payout fees, and unpaid award reserves from verified events, plus cursor coverage
-and sync time. These fields are not a vault balance, deposit total, or refund
-ledger. Missing index coverage is explicit. Account `deliveryState` distinguishes
+payout fees, and unpaid award reserves from verified events, one `assets` row
+per network and asset, plus cursor coverage and sync time. These fields are not
+a vault balance, deposit total, or refund ledger. Missing index coverage is explicit. Account `deliveryState` distinguishes
 needs-wallet, awaiting-binding, submitted, held, and paid; only `state=paid`
 represents finalized chain payment.
+
+Migration `0021` changes `payment_obligations` to `asset_address`,
+`asset_decimals`, `gross_base` and `fee_base`. It copies each earlier row as
+the reviewed asset of its network (all 6 decimals). A row on a network with
+no reviewed asset fails the migration; no asset is guessed. It adds `ethereum`
+to the chain constraint of `wallet_claims`, `payment_obligations` and
+`payment_wallet_proposals`, and adds `vault_snapshots`.
+
+The scheduled worker first reads each reviewed vault's counters at the
+finalized block (EVM `finalized` tag, after `verifyEvmDeployment`; Solana
+`finalized` commitment) through the adapters' `readVaultTotals`, and upserts
+one `vault_snapshots` row per project vault: asset, decimals, every counter as
+integer text, the block or slot, its block time and `observed_at`. A counter
+that a vault type does not have is NULL. A read that names another vault or
+asset, changes the decimals, or lowers a cumulative counter fails and the
+stored row stays. An older block never replaces a newer one. The ledger then
+takes each award's asset and decimals from that row, so an award is indexed
+only after its vault was read.
+
+`GET /api/v1/payments/projects/<id>/vault` serves these rows with
+`staleAfterMs` (30 minutes). A page view reads D1 or the edge cache
+(`caches.default`, 60 seconds), never a chain RPC. The project page shows
+deposited, paid out, payout fees, withdrawn, withdrawal fees, free and
+reserved amounts in the vault asset, with the block time ("as of") and a stale
+warning past `staleAfterMs`. It shows "not reported" for a NULL counter and no
+totals before the first read, never zero.
 
 Migration `0014` adds `payment_direct_transfers`: transfers that a project
 creator sent outside escrow, imported from the reviewed `disclosures/*.json`
@@ -118,7 +159,7 @@ destinations. `GET /me` returns them as `walletObservations`, and the payouts
 page asks the contributor to connect and confirm a wallet. Registry-sourced
 frozen wallets are already D1 claims and are not imported again.
 
-For browser QA, `bun backend/payments/base.integration.ts --serve` starts a local
+For browser QA, `bun backend/payments/evm.integration.ts --serve` starts a local
 HTTP fixture on port 18548 with a seeded GitHub session, real migrated SQLite,
 and an isolated Anvil chain. It exposes `/fixture`, the account login read, and
 the actual payments API. Wallet registration and signing trigger real local

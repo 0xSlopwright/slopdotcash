@@ -5,15 +5,23 @@ import type {
 } from "../../backend/payments/dispatch";
 import {
   buildPaymentWalletMessage,
+  verifyEvmBindingSignature,
   verifyPaymentWalletSignature,
 } from "../../backend/payments/possession";
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import {
   buildBindCalldata,
   buildPayCalldata,
-  verifyBaseDeployment,
+  verifyEvmDeployment,
 } from "../../contracts/evm/adapter";
-import { finalizedBaseRevert } from "../payments/reconcile";
+import {
+  chainFamily,
+  ESCROW_NETWORKS,
+  type EscrowChain,
+  isEscrowChain,
+} from "../../src/lib/escrow-policy.mjs";
+import { finalizedEvmRevert } from "../payments/reconcile";
+import { mainnetExecutionEnabled } from "./mainnet-execution.mjs";
 
 type Hex = `0x${string}`;
 export interface Signer {
@@ -59,11 +67,16 @@ interface Deployment {
   feeRecipient: string;
   codeSha256: string;
   bindingDelaySeconds: string;
+  /** Reviewed executor gas ceiling in gas units, copied from the registry into the deployment record. */
+  gasCeiling: string;
+  factory: string;
+  factoryCodeSha256: string;
+  registrar: string;
 }
 export interface Authorization extends DispatchPayment {
   projectId: string;
-  grossMicro: string;
-  feeMicro: string;
+  grossBase: string;
+  feeBase: string;
   sourceDigest: string;
   message: string;
   signature: string;
@@ -139,10 +152,10 @@ function same(a: string, b: string) {
 export async function authorizeRegistry(
   env: { PAYMENTS_DB: D1Database },
   input: Input,
-  chain: "base" | "solana",
+  chain: EscrowChain,
 ): Promise<Authorization> {
   const authorization = await env.PAYMENTS_DB.prepare(
-    "SELECT o.id obligationId,o.project_id projectId,o.network,o.vault,o.github_user_id githubUserId,o.gross_micro grossMicro,o.fee_micro feeMicro,o.source_digest sourceDigest,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,c.message,a.signature,c.id challengeId,c.expires_at expiresAt FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id AND a.github_user_id=o.github_user_id JOIN payment_wallet_challenges c ON c.id=a.challenge_id AND c.claim_id=w.id AND c.github_user_id=o.github_user_id JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND t.id=? AND o.chain=? AND c.consumed_at IS NOT NULL AND c.consumed_at<=c.expires_at AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)",
+    "SELECT o.id obligationId,o.project_id projectId,o.network,o.vault,o.github_user_id githubUserId,o.gross_base grossBase,o.fee_base feeBase,o.source_digest sourceDigest,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,c.message,a.signature,c.id challengeId,c.expires_at expiresAt FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id AND a.github_user_id=o.github_user_id JOIN payment_wallet_challenges c ON c.id=a.challenge_id AND c.claim_id=w.id AND c.github_user_id=o.github_user_id JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND t.id=? AND o.chain=? AND c.consumed_at IS NOT NULL AND c.consumed_at<=c.expires_at AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)",
   )
     .bind(input.obligationId, input.idempotencyKey, chain)
     .first<Authorization>();
@@ -182,40 +195,84 @@ export async function authorizeRegistry(
   return authorization;
 }
 
-/** Public chain identity check runs before the hosted worker reads its signer secret. */
-export async function preflightBaseDeployment(
+/** The one reviewed deployment for this network and vault; no RPC, no secrets. */
+function selectDeployment(
+  env: Pick<ExecutorEnvironment, "PAYMENT_DEPLOYMENTS">,
+  input: DispatchPayment,
+): Omit<Deployment, "rpcUrl"> {
+  const configs = JSON.parse(env.PAYMENT_DEPLOYMENTS) as Omit<
+    Deployment,
+    "rpcUrl"
+  >[];
+  const selected = configs.filter(
+    (d) => d.network === input.network && same(d.vault, input.vault),
+  );
+  if (selected.length !== 1) throw new Error("Test deployment required");
+  return selected[0];
+}
+
+/**
+ * Public chain identity check, with no RPC and no secrets. A deployment is
+ * accepted only when it is an EVM registry network whose chain and chain id
+ * both match the registry entry, or the local Anvil chain under the
+ * integration override. A mainnet network also needs its reviewed
+ * MAINNET_EXECUTION value, which is off for every network.
+ */
+function selectReviewedEvmDeployment(
+  env: Pick<
+    ExecutorEnvironment,
+    "PAYMENT_DEPLOYMENTS" | "ALLOW_LOCAL_TEST_CHAIN"
+  >,
+  input: DispatchPayment,
+): Omit<Deployment, "rpcUrl"> & { chain: EscrowChain } {
+  const selected = selectDeployment(env, input);
+  const policy = Object.hasOwn(ESCROW_NETWORKS, selected.network)
+    ? ESCROW_NETWORKS[selected.network as keyof typeof ESCROW_NETWORKS]
+    : undefined;
+  const reviewedNetwork =
+    policy !== undefined &&
+    policy.family === "evm" &&
+    policy.chain === selected.chain &&
+    (policy.testnet || mainnetExecutionEnabled(selected.network)) &&
+    policy.chainId === selected.chainId;
+  const localChain =
+    policy === undefined &&
+    env.ALLOW_LOCAL_TEST_CHAIN === true &&
+    selected.chainId === "31337";
+  if (
+    !isEscrowChain(selected.chain) ||
+    chainFamily(selected.chain) !== "evm" ||
+    !(reviewedNetwork || localChain)
+  )
+    throw new Error("Test deployment required");
+  return selected as Omit<Deployment, "rpcUrl"> & { chain: EscrowChain };
+}
+
+/**
+ * Runs before the hosted worker reads its signer secret: the registry identity
+ * check, then the RPC chain id and the deployed vault.
+ */
+export async function preflightEvmDeployment(
   env: Pick<
     ExecutorEnvironment,
     "PAYMENT_DEPLOYMENTS" | "PAYMENT_RPC_URLS" | "ALLOW_LOCAL_TEST_CHAIN"
   >,
   input: DispatchPayment,
 ): Promise<Deployment> {
-  const configs = JSON.parse(env.PAYMENT_DEPLOYMENTS) as Deployment[];
-  const selected = configs.filter(
-    (d) => d.network === input.network && same(d.vault, input.vault),
-  );
-  if (
-    selected.length !== 1 ||
-    selected[0].chain !== "base" ||
-    !(
-      selected[0].chainId === "84532" ||
-      (env.ALLOW_LOCAL_TEST_CHAIN && selected[0].chainId === "31337")
-    )
-  )
-    throw new Error("Test deployment required");
-  if (selected[0].chainId === "84532" && selected[0].network !== "base-sepolia")
-    throw new Error("Base Sepolia network required");
+  const selected = selectReviewedEvmDeployment(env, input);
+  if (!/^[1-9][0-9]{0,9}$/.test(selected.gasCeiling ?? ""))
+    throw new Error("Reviewed gas ceiling required");
   const rpcUrls = JSON.parse(env.PAYMENT_RPC_URLS) as Record<string, string>;
   const rpcUrl = rpcUrls[input.network];
   if (typeof rpcUrl !== "string")
     throw new Error("Private RPC configuration missing");
-  const deployment = { ...selected[0], rpcUrl };
+  const deployment = { ...selected, rpcUrl };
   if (
     BigInt((await rpc(deployment, "eth_chainId", [])) as string) !==
     BigInt(deployment.chainId)
   )
     throw new Error("Wrong RPC chain");
-  await verifyBaseDeployment({
+  await verifyEvmDeployment({
     ...deployment,
     chainId: BigInt(deployment.chainId),
   });
@@ -236,41 +293,54 @@ async function authorize(
     !/^[A-Za-z0-9_-]{1,128}$/.test(input.idempotencyKey)
   )
     throw new Error("Invalid payout request");
-  const authorization = await authorizeRegistry(env, input, "base");
-  const deployment = await preflightBaseDeployment(env, input);
+  const { chain } = selectReviewedEvmDeployment(env, input);
+  const authorization = await authorizeRegistry(env, input, chain);
+  const deployment = await preflightEvmDeployment(env, input);
   if (deployment.projectId !== authorization.projectId)
     throw new Error("Reviewed project deployment mismatch");
   return { authorization, deployment };
 }
+/** Award state: awards(id) returns actorId, gross, fee, sourceDigest, committedAt, paid. */
 async function obligation(config: Deployment, authorization: Authorization) {
   const state = await call(
     config,
     `0xe76af61d${authorization.obligationId.slice(2)}`,
-    5,
+    6,
   );
   if (
     BigInt(`0x${state[0]}`).toString() !== authorization.githubUserId ||
-    BigInt(`0x${state[1]}`).toString() !== authorization.grossMicro ||
-    BigInt(`0x${state[2]}`).toString() !== authorization.feeMicro ||
+    BigInt(`0x${state[1]}`).toString() !== authorization.grossBase ||
+    BigInt(`0x${state[2]}`).toString() !== authorization.feeBase ||
     state[3].toLowerCase() !== authorization.sourceDigest ||
-    BigInt(authorization.feeMicro) !== BigInt(authorization.grossMicro) / 50n
+    BigInt(authorization.feeBase) !== BigInt(authorization.grossBase) / 50n
   )
     throw new Error("Finalized award differs from approved ledger");
-  return BigInt(`0x${state[4]}`) !== 0n;
+  return {
+    committedAt: BigInt(`0x${state[4]}`),
+    paid: BigInt(`0x${state[5]}`) !== 0n,
+  };
 }
-const CANCELLED = (1n << 64n) - 1n;
+/** Latest binding: bindings(actor) returns destination, version, claimDigest, activatesAt, cancelled. */
 async function binding(config: Deployment, actor: string) {
-  const state = await call(config, `0xa45d1232${word(actor)}`, 4);
+  const state = await call(config, `0xa45d1232${word(actor)}`, 5);
   return {
     destination: `0x${state[0].slice(24)}`,
     version: BigInt(`0x${state[1]}`).toString(),
     claimDigest: state[2],
     activatesAt: BigInt(`0x${state[3]}`),
+    cancelled: BigInt(`0x${state[4]}`) !== 0n,
   };
 }
-/** Pending and owner-cancelled bindings cannot pay; never sign a transaction that must revert. */
-async function assertBindingActive(config: Deployment, activatesAt: bigint) {
-  if (activatesAt === CANCELLED)
+/**
+ * Pending and owner-cancelled bindings cannot pay, and an award cannot pay until bindingDelay after its
+ * commit; never sign a transaction that must revert.
+ */
+async function assertPayable(
+  config: Deployment,
+  current: { activatesAt: bigint; cancelled: boolean },
+  committedAt: bigint,
+) {
+  if (current.cancelled)
     throw new Error(
       "Project owner cancelled this destination binding; identity review required",
     );
@@ -279,9 +349,15 @@ async function assertBindingActive(config: Deployment, activatesAt: bigint) {
     "latest",
     false,
   ])) as { timestamp: string };
-  if (BigInt(latest.timestamp) < activatesAt)
+  const now = BigInt(latest.timestamp);
+  if (now < current.activatesAt)
     throw new Error(
-      `Destination binding activates at ${new Date(Number(activatesAt) * 1000).toISOString()}; retry after activation`,
+      `Destination binding activates at ${new Date(Number(current.activatesAt) * 1000).toISOString()}; retry after activation`,
+    );
+  const payableAt = committedAt + BigInt(config.bindingDelaySeconds);
+  if (now < payableAt)
+    throw new Error(
+      `Award is inside its commit delay until ${new Date(Number(payableAt) * 1000).toISOString()}; retry after it ends`,
     );
 }
 /** A reverted bind changed nothing on-chain, so a fresh bind may replace it. */
@@ -291,10 +367,11 @@ async function retireRevertedBind(
   key: string,
   attempt: Attempt,
 ): Promise<boolean> {
-  const proof = await finalizedBaseRevert(
+  const proof = await finalizedEvmRevert(
     config.rpcUrl,
     config.chainId,
     attempt.transactionId,
+    config.chain,
   );
   if (!proof) return false;
   return env.JOURNAL.transaction(async (store) => {
@@ -346,7 +423,8 @@ async function signAndSubmit(
       ) *
         12n) /
       10n;
-    if (gas > 500_000n) throw new Error("Gas exceeds narrow operation policy");
+    if (gas > BigInt(config.gasCeiling))
+      throw new Error("Gas exceeds narrow operation policy");
     const nonceKey = `nonce:${config.chainId}:${env.SIGNER.address.toLowerCase()}`;
     attempt = await env.JOURNAL.transaction(async (store) => {
       if (await store.get(`retired:${input.network}:${input.idempotencyKey}`))
@@ -412,7 +490,7 @@ async function signAndSubmit(
   return { transactionId: attempt.transactionId };
 }
 
-export function createBaseAttester(env: ExecutorEnvironment): PaymentExecutor {
+export function createEvmAttester(env: ExecutorEnvironment): PaymentExecutor {
   return {
     async submit(input) {
       const { authorization, deployment } = await authorize(env, input);
@@ -438,31 +516,61 @@ export function createBaseAttester(env: ExecutorEnvironment): PaymentExecutor {
         !(await retireRevertedBind(env, deployment, key, existing))
       )
         return signAndSubmit(env, deployment, key, fingerprint, "", input);
-      if (await obligation(deployment, authorization))
+      if ((await obligation(deployment, authorization)).paid)
         throw new Error("Award already paid");
       const current = await binding(deployment, input.githubUserId);
       if (current.version !== "0")
         await authorizeWalletRotation(env, input, current.claimDigest);
       else await holdSuccessorClaim(env, input);
+      // The destination wallet's own EIP-712 signature over this exact binding,
+      // collected by the account API. The attester submits it unchanged and
+      // cannot bind without it.
+      const accepted = await env.PAYMENTS_DB.prepare(
+        "SELECT expires_at expiresAt,signature FROM payment_binding_authorizations WHERE claim_id=? AND github_user_id=? AND network=? AND vault=? AND chain_id=? AND expected_version=? AND CAST(expires_at AS INTEGER)>? ORDER BY CAST(expires_at AS INTEGER) DESC LIMIT 1",
+      )
+        .bind(
+          input.claimId,
+          input.githubUserId,
+          input.network,
+          input.vault.toLowerCase(),
+          deployment.chainId,
+          current.version,
+          Math.floor(Date.now() / 1000) + 600,
+        )
+        .first<{ expiresAt: string; signature: string }>();
+      if (!accepted)
+        throw new Error(
+          `Destination wallet signature required for binding version ${current.version}`,
+        );
+      const request = {
+        githubUserId: input.githubUserId,
+        destination: input.destination,
+        expectedVersion: current.version,
+        claimDigest: `0x${input.claimDigest}`,
+        expiresAt: accepted.expiresAt,
+      };
+      if (
+        !verifyEvmBindingSignature(
+          BigInt(deployment.chainId),
+          deployment.vault,
+          request,
+          accepted.signature,
+        )
+      )
+        throw new Error("Destination wallet signature rejected");
       return signAndSubmit(
         env,
         deployment,
         key,
         fingerprint,
-        buildBindCalldata({
-          githubUserId: input.githubUserId,
-          destination: input.destination,
-          expectedVersion: current.version,
-          claimDigest: `0x${input.claimDigest}`,
-          expiresAt: String(Math.floor(Date.now() / 1000) + 3600),
-        }),
+        buildBindCalldata({ ...request, walletSignature: accepted.signature }),
         input,
       );
     },
   };
 }
 
-export function createBaseExecutor(env: ExecutorEnvironment): PaymentExecutor {
+export function createEvmExecutor(env: ExecutorEnvironment): PaymentExecutor {
   return {
     async submit(input) {
       const { authorization, deployment } = await authorize(env, input);
@@ -487,7 +595,8 @@ export function createBaseExecutor(env: ExecutorEnvironment): PaymentExecutor {
       );
       if (await env.JOURNAL.get<Attempt>(key))
         return signAndSubmit(env, deployment, key, fingerprint, "", input);
-      if (await obligation(deployment, authorization))
+      const award = await obligation(deployment, authorization);
+      if (award.paid)
         throw new Error("Award already paid; index finalized evidence");
       const current = await binding(deployment, input.githubUserId);
       if (
@@ -501,7 +610,7 @@ export function createBaseExecutor(env: ExecutorEnvironment): PaymentExecutor {
           "Destination binding awaits finality; retry the same attempt",
         );
       }
-      await assertBindingActive(deployment, current.activatesAt);
+      await assertPayable(deployment, current, award.committedAt);
       // Re-read registry authorization before signing. The contract resolves any subsequent rotation race.
       await authorize(env, input);
       return signAndSubmit(
@@ -531,10 +640,10 @@ export async function lookupAttempt(
   )
     .bind(input.idempotencyKey, input.obligationId, input.network, input.vault)
     .first<{ chain: string }>();
-  if (!row || !["base", "solana"].includes(row.chain))
+  if (!row || !isEscrowChain(row.chain))
     throw new Error("Unknown payment attempt");
   const key =
-    row.chain === "base"
+    chainFamily(row.chain) === "evm"
       ? `pay:${input.idempotencyKey}`
       : `solana:relayer:${input.network}:${input.idempotencyKey}`;
   const attempt = await env.JOURNAL.get<Attempt>(key);
@@ -590,11 +699,11 @@ export async function authorizeWalletRotation(
   )
     .bind(input.claimId, input.githubUserId)
     .first<{
-      chain: "base" | "solana";
+      chain: EscrowChain;
       createdAt: string;
       authorizedAt: string;
     }>();
-  if (!current || !["base", "solana"].includes(current.chain))
+  if (!current || !isEscrowChain(current.chain))
     throw new Error("Wallet rotation authorization missing");
   await authorizeRegistry(env, input, current.chain);
   assertRotationHoldElapsed(current.createdAt, current.authorizedAt);
@@ -616,8 +725,10 @@ export async function authorizeWalletRotation(
     throw new Error(
       "Wallet rotation is not a successor of the on-chain binding",
     );
+  // A finalized payout settles its award, so an attempt that did not record that
+  // transaction cannot pay again; recovery and reconcile skip it too.
   const pending = await env.PAYMENTS_DB.prepare(
-    `${lineage} SELECT a.id FROM payment_attempts a JOIN lineage l ON l.id=a.claim_id WHERE l.depth>0 AND a.state IN ('prepared','unknown','submitted') LIMIT 1`,
+    `${lineage} SELECT a.id FROM payment_attempts a JOIN lineage l ON l.id=a.claim_id JOIN payment_obligations o ON o.id=a.obligation_id WHERE l.depth>0 AND a.state IN ('prepared','unknown','submitted') AND o.state='reserved' LIMIT 1`,
   )
     .bind(...args)
     .first();
@@ -641,8 +752,9 @@ export async function retireUnsignedAttempt(
     "SELECT a.claim_id claimId,o.github_user_id actorId,o.chain FROM payment_attempts a JOIN payment_obligations o ON o.id=a.obligation_id WHERE a.id=? AND o.id=? AND o.network=? AND o.vault=?",
   )
     .bind(input.idempotencyKey, input.obligationId, input.network, input.vault)
-    .first<{ claimId: string; actorId: string; chain: "base" | "solana" }>();
-  if (!previous) throw new Error("Unknown payment attempt");
+    .first<{ claimId: string; actorId: string; chain: EscrowChain }>();
+  if (!previous || !isEscrowChain(previous.chain))
+    throw new Error("Unknown payment attempt");
   const successor = await env.PAYMENTS_DB.prepare(
     "SELECT w.id claimId,w.wallet_address address,w.record_sha256 claimDigest,c.id nonce,c.expires_at expiresAt,c.message,a.signature FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id AND a.github_user_id=w.github_user_id JOIN payment_wallet_challenges c ON c.id=a.challenge_id AND c.claim_id=w.id AND c.github_user_id=w.github_user_id WHERE w.github_user_id=? AND w.chain=? AND c.consumed_at IS NOT NULL AND c.consumed_at<=c.expires_at AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)",
   )
@@ -688,7 +800,7 @@ export async function retireUnsignedAttempt(
   if (!ancestor) throw new Error("Authorized wallet is not a successor");
   return env.JOURNAL.transaction(async (store) => {
     const key =
-      previous.chain === "base"
+      chainFamily(previous.chain) === "evm"
         ? `pay:${input.idempotencyKey}`
         : `solana:relayer:${input.network}:${input.idempotencyKey}`;
     const existing = await store.get<Attempt>(key);

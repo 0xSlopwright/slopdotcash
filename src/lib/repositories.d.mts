@@ -24,7 +24,7 @@ export declare function collectTargetRepositories(
 
 export declare const TARGET_REPOSITORIES: readonly TargetRepository[];
 
-export declare const PRIMARY_REPOSITORY: TargetRepository;
+export declare const PRIMARY_REPOSITORY: TargetRepository | null;
 
 export declare const REGISTERED_REPOSITORIES: readonly TargetRepository[];
 export declare function findRegisteredRepository(

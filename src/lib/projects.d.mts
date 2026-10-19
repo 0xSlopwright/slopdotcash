@@ -1,15 +1,14 @@
 import type { EscrowPolicy } from "./escrow-policy.mjs";
+import type { ContributionField } from "./project-schema.mjs";
 /** Types for the public project and reward-policy registry. */
 
-import type { FundingCommitmentInstrument } from "./funding-instruments.mjs";
+import type { RewardAsset } from "./reward-asset.mjs";
 
 export type ProjectId = string;
 export type ProjectStatus = "active" | "paused";
 export type RewardKind = "monthly-pool" | "external-prize-share";
 
 export interface ProjectFundingPolicy {
-  /** Exact-cycle opt-in; release additionally requires protected reservation and live readiness. */
-  readonly freshCyclePaymentPolicy?: import("./funding-readiness").FreshCyclePaymentPolicy;
   readonly mode: "direct-noncustodial";
   readonly disclosure: "Funds go directly to the project wallet. Slop does not hold or recover funds.";
   readonly recordsPath: string;
@@ -20,7 +19,6 @@ export interface ProjectFundingPolicy {
     readonly effectiveAt: string;
     readonly replacedAt: string | null;
   }[];
-  readonly commitments?: readonly FundingCommitmentInstrument[];
 }
 
 export interface ProjectExternalEvaluationsPolicy {
@@ -44,8 +42,9 @@ export interface ProjectRewardPolicy {
     readonly monthlyCapMinor: string;
   }[];
   readonly kind: RewardKind;
-  readonly currency: "USDC" | null;
-  readonly chain: "solana" | "base" | null;
+  /** The paid symbol: the network stablecoin, or `rewardAsset.symbol`. */
+  readonly currency: string | null;
+  readonly chain: "solana" | "base" | "robinhood" | "ethereum" | null;
   readonly rewardStartAt: string;
   readonly cycle: "calendar-month-utc";
   readonly monthlyCapMinor: string;
@@ -71,6 +70,8 @@ export interface ProjectRewardPolicy {
 
 export interface ProjectDefinition {
   readonly escrow?: EscrowPolicy;
+  /** The one reward asset, with server-verified decimals. */
+  readonly rewardAsset?: RewardAsset;
   readonly schemaVersion: "1";
   readonly id: ProjectId;
   readonly slug: ProjectId;
@@ -208,6 +209,8 @@ export interface ProjectDefinition {
       readonly ipTerms: string;
     } | null;
   };
+  /** Maintainer-authored fields that generate the project skills (SKL-03). */
+  readonly contribution?: Readonly<Record<ContributionField, string>>;
   readonly repositories: readonly {
     readonly id: string;
     readonly aliases?: readonly string[];
@@ -237,6 +240,19 @@ export interface ProjectDefinition {
 
 export declare const PROJECTS: readonly ProjectDefinition[];
 export declare const HISTORICAL_PROJECTS: readonly ProjectDefinition[];
+/** The committed snapshot build-time ingestion collected from. */
+export declare const INGESTED_PROJECTS: readonly ProjectDefinition[];
+export declare const INGESTED_HISTORICAL_PROJECTS: readonly ProjectDefinition[];
+/** True for a registry project or a removed pre-registry project id. */
+export declare function isHistoricalProjectId(projectId: unknown): boolean;
+/** Resolves a registry or removed repository id or alias to its owner. */
+export declare function findHistoricalRepository(
+  repositoryId: unknown,
+): { projectId: string; repositoryId: string } | null;
+/** True for a registry repository or a removed pre-registry repository. */
+export declare function isHistoricalRepositoryId(
+  repositoryId: unknown,
+): boolean;
 export declare function findHistoricalProject(
   projectId: string,
 ): ProjectDefinition | null;
@@ -249,8 +265,3 @@ export declare function findProject(value: string): ProjectDefinition | null;
 export declare function findProjectByRepositoryId(
   repositoryId: string,
 ): ProjectDefinition | null;
-
-export declare function assertProjectPaymentsEnabled(
-  projectId: ProjectId,
-  cycleId?: string,
-): ProjectDefinition;

@@ -1,6 +1,8 @@
+import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import type { PaymentChainAdapter } from "../../backend/payments/ledger";
-import { decodeBase58Bytes } from "../../src/lib/squads-funding";
+import { decodeBase58Bytes } from "../../src/lib/base58";
+import type { VaultTotals } from "../vault-totals";
 
 export interface SolanaEscrowConfig {
   rpcUrl: string;
@@ -13,19 +15,36 @@ export interface SolanaEscrowConfig {
   vault: string;
   mint: string;
   owner: string;
+  /** The identity authority at activation. Later authorities come only from the program's
+   * owner-proposed, fee-recipient-confirmed, timelocked rotation, so it is not compared with
+   * live state. */
   identityAuthority: string;
+  /** Must equal both the fee recipient pinned in the program's Config PDA and the project's
+   * stored fee recipient. */
   feeRecipient: string;
   codeSha256: string;
   upgradeAuthority: string | null;
   /** Reviewed delay, in seconds, before a wallet binding can pay in this project. */
   bindingDelaySeconds: string;
+  /** Reviewed notice period, in seconds, before a proposed identity authority takes effect. */
+  rotationDelaySeconds: string;
 }
 const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-/** Project account size: 249 bytes of v2 state, the i64 binding delay and the u64 service fees. */
-export const PROJECT_SIZE = 265;
-/** Wallet binding size: 152 bytes of v2 state plus the i64 bound_at time. */
-export const BINDING_SIZE = 160;
+/** Project account size: 265 bytes of v3 state, then the pending identity authority, its
+ * effective time and confirmation, and the i64 rotation delay. `migrate_project` grows a
+ * 265-byte account to this size. */
+export const PROJECT_SIZE = 314;
+/** Wallet binding size: 160 bytes of latest-binding state plus the u64 paid version and u8 veto count. */
+export const BINDING_SIZE = 169;
+/** Obligation size: 137 bytes of v2 state plus the i64 commit time. */
+export const OBLIGATION_SIZE = 145;
+export const OBLIGATION_DISCRIMINATOR = "a8ce8d6a584caca7";
+export const PROJECT_DISCRIMINATOR = "cda8bdcab5f78e13";
+/** Config size: discriminator, identity authority, fee recipient and bump. */
+export const CONFIG_SIZE = 73;
+/** Classic SPL Token mint size. */
+const MINT_SIZE = 82;
 type Obj = Record<string, unknown>;
 const object = (value: unknown): Obj => {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -47,6 +66,9 @@ const anchorDiscriminator = (name: string) =>
   hex(sha256(encoder.encode(`global:${name}`)).slice(0, 8));
 const COMMIT = anchorDiscriminator("commit"),
   PAY = anchorDiscriminator("pay");
+export const CONFIG_DISCRIMINATOR = hex(
+  sha256(encoder.encode("account:Config")).slice(0, 8),
+);
 const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 const decode = (value: string) =>
   Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
@@ -72,6 +94,50 @@ const uint = (bytes: Uint8Array, offset: number) =>
   );
 const pubkey = (bytes: Uint8Array, offset: number) =>
   base58(bytes.slice(offset, offset + 32));
+function publicKeyBytes(value: string): Uint8Array {
+  const bytes = decodeBase58Bytes(value);
+  if (bytes.length !== 32) throw new Error("Invalid public key");
+  return bytes;
+}
+/** Solana `find_program_address`: the first bump from 255 down whose hash is off the curve. */
+function programAddress(programId: string, seeds: Uint8Array[]): string {
+  const program = publicKeyBytes(programId);
+  const marker = encoder.encode("ProgramDerivedAddress");
+  for (let bump = 255; bump >= 0; bump--) {
+    const input = new Uint8Array(
+      seeds.reduce((n, s) => n + s.length, 0) + 1 + 32 + marker.length,
+    );
+    let offset = 0;
+    for (const s of seeds) {
+      input.set(s, offset);
+      offset += s.length;
+    }
+    input[offset++] = bump;
+    input.set(program, offset);
+    input.set(marker, offset + 32);
+    const candidate = sha256(input);
+    try {
+      ed25519.Point.fromBytes(candidate);
+    } catch {
+      return base58(candidate);
+    }
+  }
+  throw new Error("No program address");
+}
+/** The program's singleton Config PDA (seeds `["config"]`). */
+export function solanaConfigAddress(programId: string): string {
+  return programAddress(programId, [encoder.encode("config")]);
+}
+/** The project's vault PDA (seeds `["vault", project]`). */
+export function solanaVaultAddress(
+  programId: string,
+  projectPda: string,
+): string {
+  return programAddress(programId, [
+    encoder.encode("vault"),
+    publicKeyBytes(projectPda),
+  ]);
+}
 function digest(value: string): Uint8Array {
   const plain = value.replace(/^0x/, "");
   if (!/^[a-fA-F0-9]{64}$/.test(plain))
@@ -81,7 +147,7 @@ function digest(value: string): Uint8Array {
   );
 }
 async function rpc(
-  config: SolanaEscrowConfig,
+  config: { rpcUrl: string },
   method: string,
   params: unknown[],
 ): Promise<unknown> {
@@ -113,6 +179,37 @@ function account(
   return bytes;
 }
 
+/** Reads a classic SPL Token account (owned by the Token program) as raw bytes. */
+function tokenProgramAccount(value: unknown, size: number): Uint8Array {
+  const info = object(value);
+  if (info.owner !== TOKEN_PROGRAM)
+    throw new Error("Not a classic SPL Token account");
+  const data = list(info.data);
+  if (data[1] !== "base64") throw new Error("Wrong account encoding");
+  const bytes = decode(string(data[0]));
+  if (bytes.length !== size) throw new Error("Token account layout mismatch");
+  return bytes;
+}
+/** Decimals of an initialized classic SPL mint (byte 44; byte 45 is `is_initialized`). */
+function mintDecimals(mint: Uint8Array): number {
+  if (mint[45] !== 1) throw new Error("Mint is not initialized");
+  return mint[44];
+}
+/** Reads the mint's decimals at finalized commitment. */
+export async function solanaMintDecimals(
+  config: { rpcUrl: string },
+  mint: string,
+): Promise<number> {
+  const response = object(
+    await rpc(config, "getAccountInfo", [
+      mint,
+      { commitment: "finalized", encoding: "base64" },
+    ]),
+  );
+  if (response.value === null) throw new Error("Mint account missing");
+  return mintDecimals(tokenProgramAccount(response.value, MINT_SIZE));
+}
+
 /** Bind the reviewed deployment to finalized executable bytes and all project authorities. */
 export async function verifySolanaDeployment(
   config: SolanaEscrowConfig,
@@ -128,11 +225,12 @@ export async function verifySolanaDeployment(
     config.upgradeAuthority !== null
   )
     throw new Error("Mainnet escrow requires a revoked upgrade authority");
-  if (
-    !/^(0|[1-9][0-9]{0,18})$/.test(config.bindingDelaySeconds) ||
-    BigInt(config.bindingDelaySeconds) > (1n << 63n) - 1n
-  )
-    throw new Error("Missing reviewed binding delay");
+  for (const delay of [config.bindingDelaySeconds, config.rotationDelaySeconds])
+    if (
+      !/^(0|[1-9][0-9]{0,18})$/.test(delay) ||
+      BigInt(delay) > (1n << 63n) - 1n
+    )
+      throw new Error("Missing reviewed binding or rotation delay");
   const response = object(
     await rpc(config, "getAccountInfo", [
       config.programId,
@@ -193,19 +291,67 @@ export async function verifySolanaDeployment(
     info.value,
     config.programId,
     PROJECT_SIZE,
-    "cda8bdcab5f78e13",
+    PROJECT_DISCRIMINATOR,
+  );
+  // L-3: the program pins the identity authority and fee recipient of every new project
+  // in its singleton Config. A project whose fee recipient differs (for example one
+  // created before the Config existed) is refused, and so is a deployment without a Config.
+  const configInfo = object(
+    await rpc(config, "getAccountInfo", [
+      solanaConfigAddress(config.programId),
+      { commitment: "finalized", encoding: "base64" },
+    ]),
+  );
+  if (configInfo.value === null) throw new Error("Escrow Config missing");
+  const pinned = account(
+    configInfo.value,
+    config.programId,
+    CONFIG_SIZE,
+    CONFIG_DISCRIMINATOR,
   );
   if (
-    new DataView(project.buffer, project.byteOffset).getBigInt64(249, true) !==
-      BigInt(config.bindingDelaySeconds) ||
+    pubkey(pinned, 40) !== config.feeRecipient ||
+    pubkey(project, 136) !== pubkey(pinned, 40) ||
+    pubkey(pinned, 8) !== config.identityAuthority
+  )
+    throw new Error("Project authorities differ from the pinned escrow Config");
+  const view = new DataView(project.buffer, project.byteOffset);
+  if (
+    view.getBigInt64(249, true) !== BigInt(config.bindingDelaySeconds) ||
+    view.getBigInt64(306, true) !== BigInt(config.rotationDelaySeconds) ||
     pubkey(project, 8) !== config.owner ||
-    pubkey(project, 104) !== config.identityAuthority ||
     pubkey(project, 136) !== config.feeRecipient ||
     pubkey(project, 168) !== config.mint ||
     hex(project.slice(72, 104)) !== hex(digest(config.networkDomain))
   )
     throw new Error("Reviewed project authorities or asset mismatch");
   return project;
+}
+
+export interface SolanaAuthorityRotation {
+  identityAuthority: string;
+  /** Null when no rotation is proposed. */
+  pendingIdentityAuthority: string | null;
+  effectiveAt: string | null;
+  confirmed: boolean;
+  rotationDelaySeconds: string;
+}
+/** The identity authority in force and any pending rotation, from finalized project state. */
+export function solanaAuthorityRotation(
+  project: Uint8Array,
+): SolanaAuthorityRotation {
+  if (project.length !== PROJECT_SIZE)
+    throw new Error("Account layout mismatch");
+  const view = new DataView(project.buffer, project.byteOffset);
+  const pending = pubkey(project, 265);
+  const proposed = pending !== "11111111111111111111111111111111";
+  return {
+    identityAuthority: pubkey(project, 104),
+    pendingIdentityAuthority: proposed ? pending : null,
+    effectiveAt: proposed ? view.getBigInt64(297, true).toString() : null,
+    confirmed: proposed && project[305] === 1,
+    rotationDelaySeconds: view.getBigInt64(306, true).toString(),
+  };
 }
 
 /** The only award ID the program accepts for a source in this project. */
@@ -335,7 +481,7 @@ export function solanaPaymentAdapter(
             commitment: "finalized",
             encoding: "base64",
             filters: [
-              { dataSize: 137 },
+              { dataSize: OBLIGATION_SIZE },
               { memcmp: { offset: 48, bytes: config.projectPda } },
               { memcmp: { offset: 80, bytes: b64(award), encoding: "base64" } },
             ],
@@ -348,8 +494,8 @@ export function solanaPaymentAdapter(
       const obligation = account(
         object(found[0]).account,
         config.programId,
-        137,
-        "a8ce8d6a584caca7",
+        OBLIGATION_SIZE,
+        OBLIGATION_DISCRIMINATOR,
       );
       const gross = uint(obligation, 8),
         actor = uint(obligation, 112),
@@ -389,12 +535,15 @@ export function solanaPaymentAdapter(
           accounts[4] !== config.vault
         )
           throw new Error("Payment differs from award");
+        // The program skips the fee transfer when the fee is zero.
         const expected = [
           { to: accounts[5], amount: net },
-          { to: accounts[6], amount: fee },
+          ...(fee > 0n ? [{ to: accounts[6], amount: fee }] : []),
         ];
         if (children.length !== expected.length)
           throw new Error("Unexpected payout instructions");
+        // Any classic SPL mint is accepted, so the transfer decimals must equal the mint's.
+        const decimals = await solanaMintDecimals(config, config.mint);
         children.forEach((child, i) => {
           const parsed = object(child.parsed),
             info = object(parsed.info),
@@ -406,7 +555,7 @@ export function solanaPaymentAdapter(
             info.mint !== config.mint ||
             info.authority !== config.projectPda ||
             info.destination !== expected[i].to ||
-            amount.decimals !== 6 ||
+            amount.decimals !== decimals ||
             amount.amount !== expected[i].amount.toString()
           )
             throw new Error("Payout transfer differs from award");
@@ -456,6 +605,83 @@ export function solanaPaymentAdapter(
         ...(destination ? { destination } : {}),
       };
     },
+  };
+}
+
+/**
+ * Reads the project's counters and mint decimals from one finalized slot. Counters are
+ * token base units as decimal text. `freeBalance` is the credited balance not reserved
+ * or spent; unsolicited transfers to the vault do not raise it.
+ */
+export async function readVaultTotals(config: {
+  rpcUrl: string;
+  network: string;
+  projectPda: string;
+  programId: string;
+}): Promise<VaultTotals> {
+  const first = object(
+    await rpc(config, "getAccountInfo", [
+      config.projectPda,
+      { commitment: "finalized", encoding: "base64" },
+    ]),
+  );
+  if (first.value === null) throw new Error("Project account missing");
+  const mint = pubkey(
+    account(first.value, config.programId, PROJECT_SIZE, PROJECT_DISCRIMINATOR),
+    168,
+  );
+  // Project and mint come from one finalized slot.
+  const response = object(
+    await rpc(config, "getMultipleAccounts", [
+      [config.projectPda, mint],
+      { commitment: "finalized", encoding: "base64" },
+    ]),
+  );
+  const slot = object(response.context).slot;
+  if (!Number.isSafeInteger(slot) || Number(slot) < 0)
+    throw new Error("Invalid RPC slot");
+  const [projectInfo, mintInfo] = list(response.value);
+  if (projectInfo === null || mintInfo === null)
+    throw new Error("Project or mint account missing");
+  const project = account(
+    projectInfo,
+    config.programId,
+    PROJECT_SIZE,
+    PROJECT_DISCRIMINATOR,
+  );
+  if (pubkey(project, 168) !== mint) throw new Error("Project mint changed");
+  const decimals = mintDecimals(tokenProgramAccount(mintInfo, MINT_SIZE));
+  const time = await rpc(config, "getBlockTime", [slot]);
+  if (!Number.isSafeInteger(time))
+    throw new Error("Missing finalized block time");
+  const reserved = uint(project, 200),
+    deposited = uint(project, 208),
+    paid = uint(project, 216),
+    payoutFees = uint(project, 224),
+    withdrawnGross = uint(project, 232),
+    withdrawalFees = uint(project, 240),
+    serviceFees = uint(project, 257);
+  const free =
+    deposited - paid - payoutFees - withdrawnGross - serviceFees - reserved;
+  if (free < 0n) throw new Error("Project counters exceed deposits");
+  return {
+    network: config.network,
+    vault: config.projectPda,
+    asset: mint,
+    decimals,
+    blockNumber: String(slot),
+    blockTime: new Date(Number(time) * 1000).toISOString(),
+    totalDeposited: deposited.toString(),
+    totalPaid: paid.toString(),
+    totalPayoutFees: payoutFees.toString(),
+    totalGrossWithdrawn: withdrawnGross.toString(),
+    totalWithdrawalFees: withdrawalFees.toString(),
+    totalServiceFees: serviceFees.toString(),
+    freeBalance: free.toString(),
+    reservedPrincipal: null,
+    reservedFees: null,
+    accruedFees: null,
+    reserved: reserved.toString(),
   };
 }
 

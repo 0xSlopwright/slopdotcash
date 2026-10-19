@@ -1,3 +1,4 @@
+import { isHistoricalRepositoryId } from "./projects.mjs";
 import { TARGET_REPOSITORIES } from "./repositories.mjs";
 export interface ProfileRecord {
   id: string;
@@ -14,6 +15,11 @@ export interface ProfileIndex {
   schemaVersion: "1" | "2";
   startedAt: string;
   generatedAt: string;
+  /**
+   * Every collected repository, plus the last census of a registered or
+   * legacy repository that is no longer collected. Those counts are carried
+   * unchanged, so a removed project does not erase contributor history.
+   */
   repositories: { repository: string; count: number; excluded: number }[];
   people: ProfileRecord[];
   issues?: ProfileIssueHistory;
@@ -53,6 +59,12 @@ export interface ProfileIssueHistory {
   firstObservedAt: string;
   repositories: { repository: string; count: number }[];
   items: ProfileIssue[];
+  /**
+   * Unchanged records of registered repositories outside this census, such as
+   * a paused project's issues. They are not displayed; a reactivated project
+   * resumes their history.
+   */
+  archived?: ProfileIssue[];
 }
 /**
  * `targets` defaults to the current active repositories. A previous census
@@ -75,9 +87,15 @@ export function assertProfiles(
     !Array.isArray(v.repositories)
   )
     throw Error("Invalid profile census");
-  const inventory = JSON.stringify([...targets].sort());
+  // Every collected repository is present. A repository outside the census
+  // keeps its last counts only when it is registered or legacy history.
+  const inventory = new Set(v.repositories.map((r) => r.repository));
   if (
-    JSON.stringify(v.repositories.map((r) => r.repository).sort()) !== inventory
+    inventory.size !== v.repositories.length ||
+    !targets.every((id) => inventory.has(id)) ||
+    ![...inventory].every(
+      (id) => targets.includes(id) || isHistoricalRepositoryId(id),
+    )
   )
     throw Error("Profile repository inventory mismatch");
   const ids = new Set<string>();
@@ -106,7 +124,7 @@ export function assertProfiles(
     const repos = new Set<string>();
     for (const r of p.repositories) {
       if (
-        !targets.includes(r.repository) ||
+        !inventory.has(r.repository) ||
         repos.has(r.repository) ||
         ![r.merged, r.open, r.closed].every(validCount)
       )
@@ -138,7 +156,8 @@ function assertProfileIssues(index: ProfileIndex, targets: readonly string[]) {
     !time(history.firstObservedAt) ||
     Date.parse(history.firstObservedAt) > Date.parse(index.generatedAt) ||
     !Array.isArray(history.repositories) ||
-    !Array.isArray(history.items)
+    !Array.isArray(history.items) ||
+    (history.archived !== undefined && !Array.isArray(history.archived))
   )
     throw Error("Invalid issue history coverage");
   if (
@@ -152,13 +171,18 @@ function assertProfileIssues(index: ProfileIndex, targets: readonly string[]) {
   const reason = (value: string | null) =>
     value === null ||
     (typeof value === "string" && /^[A-Z_]{1,64}$/.test(value));
-  for (const issue of history.items) {
+  const records = [...history.items, ...(history.archived ?? [])];
+  for (const [position, issue] of records.entries()) {
+    const archived = position >= history.items.length;
     if (
       !issue ||
       typeof issue.id !== "string" ||
       !issue.id ||
       ids.has(issue.id) ||
-      !targets.includes(issue.repository) ||
+      (archived
+        ? targets.includes(issue.repository) ||
+          !isHistoricalRepositoryId(issue.repository)
+        : !targets.includes(issue.repository)) ||
       !Number.isSafeInteger(issue.number) ||
       issue.number <= 0 ||
       (issue.authorId !== null && !people.has(issue.authorId)) ||
@@ -184,7 +208,7 @@ function assertProfileIssues(index: ProfileIndex, targets: readonly string[]) {
     )
       throw Error("Invalid issue history record");
     ids.add(issue.id);
-    if (issue.unavailableSince === null)
+    if (!archived && issue.unavailableSince === null)
       counts.set(issue.repository, (counts.get(issue.repository) ?? 0) + 1);
     const events = new Set<string>();
     let previous = Date.parse(issue.createdAt);
@@ -291,7 +315,10 @@ export function profileIssueOutcomes(
       new Date(occurredAt).toISOString().slice(0, 7) !== period
     )
       continue;
-    if (issue.unavailableSince !== null) {
+    if (
+      issue.unavailableSince !== null &&
+      Date.parse(issue.unavailableSince) < end
+    ) {
       counts.unavailable++;
       continue;
     }

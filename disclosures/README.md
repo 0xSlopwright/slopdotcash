@@ -21,6 +21,11 @@ proposal would fabricate a lifecycle and imply an approval that never happened.
 So the transfers are recorded here instead, in their own vocabulary, and the
 cycle tree stays honest about what it does and does not contain.
 
+The August 2026 disclosures for `asi` and `eliza` were removed on 18 October
+2026 with the projects listed before the D1 registry, together with their
+cycles, evaluations and preparations. They remain in Git history; the transfers
+themselves remain on chain.
+
 ## States
 
 A disclosure row uses one of three states. None of them is the reward

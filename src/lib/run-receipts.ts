@@ -1,3 +1,4 @@
+import { exactKeys, isRecord } from "./record-validation";
 /**
  * Defines the public, device-signed project-run receipt embedded in a GitHub
  * contribution footer. The receipt proves stable bytes and device continuity;
@@ -10,8 +11,8 @@ import {
   isExactProviderIdentifier,
 } from "./model-identity";
 import {
-  findProject,
-  findProjectByRepositoryId,
+  findHistoricalProject,
+  findHistoricalProjectByRepositoryId,
   type ProjectId,
 } from "./projects.mjs";
 import type { RepositoryId } from "./repositories.mjs";
@@ -314,22 +315,6 @@ export function assertProjectRunReceipt(value: unknown): ProjectRunReceipt {
   });
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-  path: string,
-): void {
-  const actual = Object.keys(value).sort();
-  const canonical = [...expected].sort();
-  if (actual.join("\0") !== canonical.join("\0")) {
-    throw new TypeError(`${path} has unexpected or missing fields`);
-  }
-}
-
 function nonNegativeInteger(value: unknown, path: string): number {
   if (!Number.isSafeInteger(value) || Number(value) < 0) {
     throw new TypeError(`${path} must be a non-negative safe integer`);
@@ -465,12 +450,12 @@ export function assertRunReceiptMarker(value: unknown): ProjectRunReceipt {
 
   const project =
     typeof value.run.project === "string"
-      ? findProject(value.run.project)
+      ? findHistoricalProject(value.run.project)
       : null;
   if (!project) throw new TypeError("run marker project is not registered");
   const repositoryProject =
     typeof value.run.repository === "string"
-      ? findProjectByRepositoryId(value.run.repository)
+      ? findHistoricalProjectByRepositoryId(value.run.repository)
       : null;
   if (!repositoryProject || repositoryProject.id !== project.id) {
     throw new TypeError("run marker repository does not belong to the project");
@@ -721,7 +706,7 @@ export function assertRunReceiptMarker(value: unknown): ProjectRunReceipt {
 
 /** Builds the exact marker object from a validated receipt. */
 export function runReceiptMarker(receipt: ProjectRunReceipt): RunReceiptMarker {
-  const project = findProject(receipt.projectId);
+  const project = findHistoricalProject(receipt.projectId);
   if (!project) throw new TypeError("receipt project is not registered");
   return {
     provider: receipt.provider,

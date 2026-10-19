@@ -487,7 +487,8 @@ export interface LeaderboardSourceMetadata {
   provider: "github-graphql";
   fetchedAt: string;
   cutoffAt: string;
-  repositoryId: string;
+  /** The primary repository's GraphQL node ID; null for an empty registry. */
+  repositoryId: string | null;
   repositories: Array<{ id: RepositoryId; repositoryId: string }>;
   requestCount: number;
   searchSliceCount: number;
@@ -539,6 +540,22 @@ export interface LeaderboardSnapshot {
   leaders: LeaderboardEntry[];
   ledger: ScoreEvent[];
   reviewExclusions?: ReviewExclusion[];
+  /** Separate allocation weights; never consumed by Score or Points. */
+  paymentReviewBasis?: {
+    policy: "scr-05-payments-production-v1";
+    effectiveAt: string;
+    leaders: LeaderboardEntry[];
+    /** Changed or added records only; unchanged records reuse the score ledger. */
+    ledger: ScoreEvent[];
+    removedEventIds: string[];
+    removedAttributionIds: string[];
+    attributionOrder: string[];
+    reviewExclusions: ReviewExclusion[];
+    attributions: ModelAttribution[];
+    invalidAttributionMarkers: InvalidAttributionMarker[];
+    attributionCoverage: AttributionCoverage;
+    opportunities: ScoreOpportunity[];
+  };
   opportunities: ScoreOpportunity[];
   attributions: ModelAttribution[];
   invalidAttributionMarkers: InvalidAttributionMarker[];

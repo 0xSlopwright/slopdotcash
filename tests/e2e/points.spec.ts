@@ -24,65 +24,34 @@ test(
     const reloaded = await page.reload();
     expect(reloaded?.status()).toBe(200);
     await expect(
-      page.getByRole("heading", { name: "Slop Points", exact: true }),
-    ).toBeVisible();
-    await expect(page.getByLabel("Sort by")).toHaveValue("score");
-    await page.getByLabel("Period", { exact: true }).selectOption("lifetime");
+      page.getByRole("columnheader", { name: "Score", exact: true }),
+    ).toHaveAttribute("aria-sort", "descending");
+    await page
+      .getByRole("button", { name: "Recorded history", exact: true })
+      .click();
     await expect(page.getByRole("table")).toBeVisible({ timeout: 30000 });
     await expect(
-      page.getByRole("columnheader", { name: "Slop Score", exact: true }),
+      page.getByRole("columnheader", { name: "Score", exact: true }),
     ).toBeVisible();
-    await page.getByLabel("Sort by").selectOption("money");
+    await page.getByRole("button", { name: "Amount", exact: true }).click();
     await expect(page).toHaveURL(/sort=money/);
     await page.reload();
-    await expect(page.getByLabel("Sort by")).toHaveValue("money");
-    await expect(page.getByLabel("Period", { exact: true })).toHaveValue(
-      "lifetime",
-    );
-    await page.getByLabel("Sort by").selectOption("points");
-    await expect(page.getByText(/Points have no monetary value/)).toBeVisible();
-    // Cohort and time window are separate, shareable controls.
-    await page.getByLabel("Cohort", { exact: true }).selectOption("new");
-    await expect(page).toHaveURL(/cohort=new/);
-    await expect(page.getByLabel("Period", { exact: true })).toHaveValue(
-      "lifetime",
-    );
-    await page.getByLabel("Period", { exact: true }).selectOption("month");
-    await expect(page.getByLabel("Cohort", { exact: true })).toHaveValue("new");
-    await page.reload();
-    await expect(page.getByLabel("Cohort", { exact: true })).toHaveValue("new");
-    await expect(page.getByLabel("Period", { exact: true })).toHaveValue(
-      "month",
-    );
-    await page.getByLabel("Cohort", { exact: true }).selectOption("all");
-    await expect(page).not.toHaveURL(/cohort=/);
-    // The earlier combined link keeps its meaning.
+    await expect(
+      page.getByRole("columnheader", { name: "Amount", exact: true }),
+    ).toHaveAttribute("aria-sort", "descending");
+    await expect(
+      page.getByRole("button", { name: "Recorded history", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("button", { name: "Points", exact: true }).click();
+    await expect(page.getByLabel("Cohort", { exact: true })).toHaveCount(0);
+    // The earlier combined link still opens recorded history.
     await page.goto("/points?period=new");
-    await expect(page.getByLabel("Cohort", { exact: true })).toHaveValue("new");
-    await expect(page.getByLabel("Period", { exact: true })).toHaveValue(
-      "lifetime",
-    );
+    await expect(
+      page.getByRole("button", { name: "Recorded history", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
     await page.goto("/points?sort=points&period=lifetime");
-    const rules = page.getByRole("list", { name: "Point categories" });
-    for (const [activity, points] of [
-      ["Join with GitHub", "5 once"],
-      ["First X connection", "10 once"],
-    ])
-      await expect(
-        rules.getByRole("listitem").filter({ hasText: activity }),
-      ).toContainText(`${points}Not in earned-point standings`);
-    await expect(
-      rules.getByRole("listitem").filter({ hasText: "Finalized payout cycle" }),
-    ).toContainText("Counts in earned-point standings");
-    await expect(
-      page.getByText(/Points never change Slop Score/u),
-    ).toBeVisible();
     const people = page.getByRole("region", { name: "People", exact: true });
     await expect(people.getByText(/^[\d,]+ people$/u)).toBeVisible();
-    // People without merged work stay discoverable without a rank.
-    await expect(
-      people.getByText("No merged PRs", { exact: true }).first(),
-    ).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
     if ((page.viewportSize()?.width ?? 0) <= 390) {
       const scroller = page.getByRole("region", {
@@ -100,14 +69,11 @@ test(
       await scroller.evaluate((el) => {
         el.scrollLeft = 0;
       });
-      const nameCell = page
-        .getByRole("table")
-        .locator("tbody tr td:nth-child(2)")
-        .first();
-      expect((await nameCell.boundingBox())?.width).toBeGreaterThan(100);
     }
 
-    await page.getByLabel("Period", { exact: true }).selectOption("lifetime");
+    await page
+      .getByRole("button", { name: "Recorded history", exact: true })
+      .click();
     const first = page.getByRole("table").getByRole("row").nth(1);
     const login = await first.getByRole("link").innerText();
     await page.getByLabel("Find a contributor").fill(login);
@@ -117,9 +83,7 @@ test(
     await page
       .getByLabel("Find a contributor")
       .fill("no-such-contributor-987654321");
-    await expect(
-      page.getByText("No recorded contributions match this view."),
-    ).toBeVisible();
+    await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(0);
     await page.getByLabel("Find a contributor").fill("");
     await page.getByRole("button", { name: "Next", exact: true }).click();
     await expect(page.getByText(/Page 2 of/)).toBeVisible();
@@ -205,10 +169,8 @@ test("ranks archived work separately from the month its payment settled", async 
   });
   await expect(recipient.locator("td").nth(4)).toHaveText("$1");
   await expect(recipient.locator("td").nth(2)).toHaveText("Unavailable");
-  await standings
-    .getByLabel("Period", { exact: true })
-    .selectOption("lifetime");
-  await standings.getByLabel("Sort by").selectOption("score");
+  await page.goto("/?sort=money&period=lifetime&q=archive-only#leaderboard");
+  await standings.getByRole("button", { name: "Score", exact: true }).click();
   await expect(recipient.locator("td").nth(2)).toHaveText("7");
   await expect(recipient.locator("td").nth(4)).toHaveText("$1");
   await page.clock.setFixedTime(new Date("2026-07-31T12:00:00.000Z"));

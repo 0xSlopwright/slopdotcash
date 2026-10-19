@@ -4,7 +4,11 @@ export interface EscrowDeployment {
     | "base-mainnet"
     | "solana-devnet"
     | "solana-testnet"
-    | "solana-mainnet";
+    | "solana-mainnet"
+    | "robinhood-testnet"
+    | "robinhood-mainnet"
+    | "ethereum-sepolia"
+    | "ethereum";
   vault: string;
   programId: string | null;
   upgradeAuthority: string | null;
@@ -18,28 +22,59 @@ export interface EscrowDeployment {
   sourceCommit: string;
   codeSha256: string;
   bindingDelaySeconds: string;
+  /** Solana only; null on EVM chains, where the factory fixes 7 days. */
+  rotationDelaySeconds: string | null;
+  /** EVM chains only; null on Solana. The EscrowFactory that created the vault and rotates its identity authority. */
+  factory: string | null;
+  /** EVM chains only; null on Solana. sha256 of the factory runtime code. */
+  factoryCodeSha256: string | null;
+  /** EVM chains only; null on Solana. The factory registrar, which alone proposes an authority rotation. */
+  registrar: string | null;
 }
+export type EscrowChain = "base" | "solana" | "robinhood" | "ethereum";
+export type EscrowFamily = "evm" | "solana";
 export interface EscrowPolicy {
   schemaVersion: "1";
   effectiveCycle: string;
-  chain: "base" | "solana";
+  chain: EscrowChain;
   feeBasisPoints: 200;
-  withdrawalFeeBasisPoints: 1000;
+  /** Escrow v2: 5%, floor(gross / 20) per withdrawal, enforced by the contracts. */
+  withdrawalFeeBasisPoints: 500;
   feeMode: "deduct-from-gross";
   deployments: EscrowDeployment[];
 }
 export declare const MIN_PRODUCTION_BINDING_DELAY: number;
+export declare const MIN_PRODUCTION_ROTATION_DELAY: number;
+/** A reference stablecoin on a network. Vaults accept any standard token; this is not an allowlist. */
+export interface EscrowAsset {
+  address: string;
+  symbol: string;
+  decimals: number;
+  /** The primary source that publishes the address. */
+  source: string;
+}
+export interface EscrowNetwork {
+  chain: EscrowChain;
+  family: EscrowFamily;
+  testnet: boolean;
+  chainId?: string;
+  /** The default reference stablecoin (assets[0]), or null. */
+  asset: string | null;
+  assetSymbol: string;
+  assetDecimals: number | null;
+  assets: readonly EscrowAsset[];
+  /** EVM only: executor gas ceiling in gas units, decimal string. */
+  gasCeiling?: string;
+  /** EVM only: blocks per eth_getLogs page, inclusive, decimal string. */
+  scanPageBlocks?: string;
+}
 export declare const ESCROW_NETWORKS: Readonly<
-  Record<
-    EscrowDeployment["network"],
-    {
-      chain: "base" | "solana";
-      testnet: boolean;
-      chainId?: string;
-      asset: string | null;
-    }
-  >
+  Record<EscrowDeployment["network"], EscrowNetwork>
 >;
+export declare const ESCROW_CHAINS: readonly EscrowChain[];
+export declare const EVM_CHAINS: readonly EscrowChain[];
+export declare function isEscrowChain(value: unknown): value is EscrowChain;
+export declare function chainFamily(chain: string): EscrowFamily;
 export declare function assertEscrowPolicy(value: unknown): EscrowPolicy;
 export declare function assertEscrowTransition(
   previous: EscrowPolicy | undefined,

@@ -20,6 +20,7 @@ import {
   authorExemption,
   type Exemption,
   GitHubClient,
+  GitHubError,
   sha256Hex,
 } from "./github";
 import {
@@ -144,31 +145,48 @@ async function loadPolicy(
   return files;
 }
 
-async function pullDiff(
+export async function pullDiff(
   github: GitHubClient,
   owner: string,
   repo: string,
   number: number,
+  changedFiles: number,
 ) {
   let diff = "";
   let truncated = false;
+  let filesRead = 0;
+  let sizeLimitReached = false;
   for (let page = 1; page <= 3; page += 1) {
     const files = await github.get<
-      { filename: string; status: string; patch?: string }[]
+      {
+        filename: string;
+        previous_filename?: string;
+        status: string;
+        patch?: string;
+      }[]
     >(
       `/repos/${owner}/${repo}/pulls/${number}/files?per_page=100&page=${page}`,
     );
     if (files === null || files.length === 0) break;
     for (const file of files) {
-      const chunk = `--- ${file.filename} (${file.status})\n${file.patch ?? "(binary or too large to show)"}\n`;
+      filesRead += 1;
+      if (file.patch === undefined) truncated = true;
+      const fileName =
+        file.previous_filename === undefined
+          ? file.filename
+          : `${file.previous_filename} -> ${file.filename}`;
+      const chunk = `--- ${fileName} (${file.status})\n${file.patch ?? "(binary or too large to show)"}\n`;
       if (diff.length + chunk.length > MAX_DIFF_CHARS) {
         truncated = true;
+        sizeLimitReached = true;
         break;
       }
       diff += chunk;
     }
-    if (truncated || files.length < 100) break;
+    if (sizeLimitReached || files.length < 100 || filesRead >= changedFiles)
+      break;
   }
+  if (filesRead < changedFiles) truncated = true;
   return { diff, truncated };
 }
 
@@ -226,8 +244,14 @@ async function loadContext(
   const { diff, truncated } =
     pull === null
       ? { diff: "", truncated: false }
-      : await pullDiff(github, job.owner, job.repo, job.number);
-  const itemText = `Title: ${issue.title}\n\nBody:\n${issue.body ?? ""}${pull === null ? "" : `\n\nDiff:\n${diff}`}`;
+      : await pullDiff(
+          github,
+          job.owner,
+          job.repo,
+          job.number,
+          pull.changed_files,
+        );
+  const itemText = reviewedItemText(issue, pull, diff);
   const revision =
     pull?.head.sha ?? (await sha256Hex(`${issue.title}\n${issue.body ?? ""}`));
   const policyDigest = await sha256Hex(
@@ -262,14 +286,25 @@ function buildPrompt(context: Context, itemKind: string) {
   };
 }
 
+function reviewedItemText(
+  issue: Issue,
+  pull: Pull | null,
+  diff: string,
+): string {
+  return `Title: ${issue.title}\n\nBody:\n${issue.body ?? ""}${pull === null ? "" : `\n\nDiff:\n${diff}`}`;
+}
+
 async function duplicateOf(
   env: ReviewEnv,
   job: Job,
   context: Context,
   contentDigest: string,
 ): Promise<Verdict | null> {
+  // Equal excerpts do not establish identical submissions when a patch or
+  // part of the file list is unavailable.
+  if (context.diffTruncated) return null;
   const prior = await env.SLOPBOT_DB.prepare(
-    `SELECT item_number FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND content_digest = ?
+    `SELECT item_number, item_kind FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND content_digest = ?
        AND item_node_id != ? ORDER BY created_at DESC LIMIT 1`,
   )
     .bind(
@@ -278,12 +313,36 @@ async function duplicateOf(
       contentDigest,
       context.issue.node_id,
     )
-    .first<{ item_number: number }>();
+    .first<{ item_number: number; item_kind: "issue" | "pull_request" }>();
   if (prior === null) return null;
   const other = await context.github.get<Issue>(
     `/repos/${job.owner}/${job.repo}/issues/${prior.item_number}`,
   );
   if (other === null || other.state !== "open") return null;
+  const otherPull =
+    prior.item_kind === "pull_request"
+      ? await context.github.get<Pull>(
+          `/repos/${job.owner}/${job.repo}/pulls/${prior.item_number}`,
+        )
+      : null;
+  if (prior.item_kind === "pull_request" && otherPull === null) return null;
+  const { diff, truncated } =
+    otherPull === null
+      ? { diff: "", truncated: false }
+      : await pullDiff(
+          context.github,
+          job.owner,
+          job.repo,
+          prior.item_number,
+          otherPull.changed_files,
+        );
+  // The stored digest identifies a historical candidate, not its current
+  // contents. An edited open original must not make this item a duplicate.
+  if (
+    truncated ||
+    reviewedItemText(other, otherPull, diff) !== context.itemText
+  )
+    return null;
   return {
     category: "duplicate",
     confidence: 1,
@@ -299,21 +358,19 @@ async function duplicateOf(
   };
 }
 
-function prefilter(context: Context): Verdict | null {
-  if (
-    context.pull !== null &&
-    (context.pull.changed_files === 0 ||
-      context.pull.additions + context.pull.deletions === 0)
-  ) {
+export function prefilter(
+  context: Pick<Context, "pull" | "issue">,
+): Verdict | null {
+  if (context.pull !== null && context.pull.changed_files === 0) {
     return {
       category: "empty",
       confidence: 1,
       rule_refs: [
-        { source: "universal", quote: "pull request changes no lines" },
+        { source: "universal", quote: "pull request changes no files" },
       ],
       evidence: [],
       summary:
-        "This pull request does not change any lines, so there is nothing to review.",
+        "This pull request does not change any files, so there is nothing to review.",
       limitations: [],
     };
   }
@@ -399,28 +456,29 @@ async function closureState(
       : (Date.now() - Date.parse(install.created_at)) / 86_400_000;
   const reviewed = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND status = 'completed'",
-    job.repositoryId,
+    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE installation_id = ? AND status = 'completed'",
+    job.installationId,
   );
   if (ageDays < SHADOW_DAYS || reviewed < SHADOW_MIN_REVIEWS)
     return { allowed: false, why: "shadow period" };
   const closes7 = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > datetime('now', '-7 days')",
+    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')",
     job.repositoryId,
   );
   const reopens7 = await store.count(
     db,
     `SELECT COUNT(*) AS n FROM slopbot_actions r WHERE r.repository_id = ? AND r.action = 'human_reopen'
-       AND r.created_at > datetime('now', '-7 days')
-       AND EXISTS (SELECT 1 FROM slopbot_actions c WHERE c.item_node_id = r.item_node_id AND c.action = 'close')`,
+       AND r.created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
+       AND EXISTS (SELECT 1 FROM slopbot_actions c WHERE c.repository_id = r.repository_id
+         AND c.item_node_id = r.item_node_id AND c.action = 'close' AND c.created_at <= r.created_at)`,
     job.repositoryId,
   );
   if (closes7 > 0 && reopens7 / closes7 > REOPEN_BREAKER_RATIO)
     return { allowed: false, why: "reopen-rate circuit breaker" };
   const closesToday = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > datetime('now', '-1 day')",
+    "SELECT COUNT(*) AS n FROM slopbot_actions WHERE repository_id = ? AND action = 'close' AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')",
     job.repositoryId,
   );
   if (closesToday >= context.config.config.dailyCloseCap)
@@ -437,7 +495,7 @@ function disclosure(call: CallRecord | null): string {
   return `${call.provider} / ${call.requestedModel} (route step ${call.routeStep}, ${served})`;
 }
 
-function commentBody(input: {
+export function commentBody(input: {
   verdict: Verdict;
   action: "label" | "close";
   blockedClose: string | null;
@@ -472,7 +530,9 @@ function commentBody(input: {
       ? ""
       : `- Confirmation: ${disclosure(input.confirm)}`,
     `- Limitations: static review only; tests were not run.${
-      context.diffTruncated ? " The diff was too large to review in full." : ""
+      context.diffTruncated
+        ? " The pull request diff was not available in full."
+        : ""
     }${verdict.limitations.length ? ` ${neutralize(verdict.limitations.join(" "))}` : ""}`,
     "",
     "</details>",
@@ -498,20 +558,29 @@ async function upsertComment(
       `/repos/${job.owner}/${job.repo}/issues/comments/${existing}`,
       { body },
     );
-    if (updated.status !== 404) return;
+    if (updated.status === 200 && updated.data !== null) return;
+    if (updated.status !== 404)
+      throw new GitHubError(
+        updated.status,
+        "GitHub did not confirm the comment update",
+      );
   }
   const created = await context.github.request<{ id: number }>(
     "POST",
     `/repos/${job.owner}/${job.repo}/issues/${job.number}/comments`,
     { body },
   );
-  if (created.data !== null)
-    await store.saveCommentId(
-      db,
-      context.issue.node_id,
-      job.repositoryId,
-      created.data.id,
+  if (created.status !== 201 || created.data === null)
+    throw new GitHubError(
+      created.status,
+      "GitHub did not confirm the comment creation",
     );
+  await store.saveCommentId(
+    db,
+    context.issue.node_id,
+    job.repositoryId,
+    created.data.id,
+  );
 }
 
 export async function reviewItem(
@@ -520,6 +589,11 @@ export async function reviewItem(
 ): Promise<string> {
   const db = env.SLOPBOT_DB;
   const install = await store.installation(db, job.installationId);
+  const installationActive =
+    install !== null &&
+    install.removed_at === null &&
+    install.suspended_at === null;
+  if (!installationActive) return "installation removed or suspended";
   const context = await loadContext(env, job);
   if (context === null) return "item or repository not readable";
   const { issue, pull, repo, config } = context;
@@ -542,7 +616,7 @@ export async function reviewItem(
   );
   const authorReviewsToday = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND status = 'completed' AND created_at > datetime('now', '-1 day')",
+    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND status = 'completed' AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')",
     job.repositoryId,
     issue.user.id,
   );
@@ -555,10 +629,7 @@ export async function reviewItem(
   }
   const routing = route({
     config: config.config,
-    installationActive:
-      install !== null &&
-      install.removed_at === null &&
-      install.suspended_at === null,
+    installationActive,
     repositoryPrivate: repo.private,
     itemKind: job.itemKind,
     itemOpen: issue.state === "open",
@@ -644,10 +715,7 @@ async function runReview(
       billable,
     );
     if (result.verdict === null) {
-      await store.finishReview(db, reviewKey, "failed", {
-        skipReason: "every model route step failed",
-      });
-      return "model route failed";
+      throw new Error("every model route step failed");
     }
     verdict = result.verdict;
     triage = result.servedBy;
@@ -716,6 +784,12 @@ async function runReview(
         ? ""
         : await sha256Hex(`${fresh.title}\n${fresh.body ?? ""}`));
     const freshInstall = await store.installation(db, job.installationId);
+    if (freshPull?.draft) {
+      await store.finishReview(db, reviewKey, "skipped", {
+        skipReason: "pull request became draft before closure",
+      });
+      return "pull request became draft before closure";
+    }
     if (
       fresh === null ||
       fresh.state !== "open" ||
@@ -747,13 +821,18 @@ async function runReview(
     "comment",
     category,
   );
-  await context.github.request(
+  const labeled = await context.github.request(
     "POST",
     `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
     {
       labels: [`slopbot: ${category.replaceAll("_", " ")}`],
     },
   );
+  if (labeled.status !== 200 || labeled.data === null)
+    throw new GitHubError(
+      labeled.status,
+      "GitHub did not confirm the label addition",
+    );
   await store.recordAction(
     db,
     reviewKey,

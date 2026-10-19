@@ -15,6 +15,7 @@ import {
 } from "../src/lib/funding-review-data";
 import {
   assertLeaderboardSnapshot,
+  paymentReviewSnapshot,
   type ScoreEvent,
 } from "../src/lib/leaderboard";
 import { findProject } from "../src/lib/projects.mjs";
@@ -79,11 +80,21 @@ export async function prepareSourceCorrection(input: {
     archive: unknown = JSON.parse(input.archiveBytes);
   assertLeaderboardSnapshot(original);
   assertLeaderboardSnapshot(archive);
+  const project = findProject(preparation.projectId);
+  check(project, "Unknown project");
+  // The prepare scripts build monthly-pool preparations from 2026-10 on the
+  // payment review ledger, not the raw snapshot ledger: compare the count and
+  // the quality baseline with that same ledger, or every such preparation is
+  // refused even when its snapshot digest matches.
+  const preparedLedger =
+    preparation.cycleId >= "2026-10" && project.reward.kind === "monthly-pool"
+      ? paymentReviewSnapshot(original).ledger
+      : original.ledger;
   check(
     original.ruleVersion === preparation.provenance.ruleVersion &&
       original.window.from === preparation.provenance.snapshotFrom &&
       original.window.to === preparation.provenance.snapshotTo &&
-      original.ledger.length === preparation.provenance.snapshotLedgerCount &&
+      preparedLedger.length === preparation.provenance.snapshotLedgerCount &&
       original.source.counts.mergedPullRequests ===
         preparation.provenance.sourceMergedPullRequests,
     "Original collection provenance differs from preparation",
@@ -93,15 +104,13 @@ export async function prepareSourceCorrection(input: {
     preparation,
   );
   await verifyQualityEventIds(evidence, preparation);
-  const project = findProject(preparation.projectId);
-  check(project, "Unknown project");
   const repositories = new Set(project.repositories.map((repo) => repo.id));
   const inCycle = (event: ScoreEvent) =>
     repositories.has(event.repository) &&
     Date.parse(event.occurredAt) >=
       Date.parse(preparation.provenance.periodFrom) &&
     Date.parse(event.occurredAt) < Date.parse(preparation.provenance.periodTo);
-  const baseline = original.ledger.filter(inCycle);
+  const baseline = preparedLedger.filter(inCycle);
   check(
     baseline.length === evidence.events.length &&
       baseline.every((event) => {
@@ -130,13 +139,12 @@ export async function prepareSourceCorrection(input: {
   );
   const history: { events: ScoreEvent[] } = JSON.parse(input.historyBytes);
   check(Array.isArray(history.events), "Missing accepted history");
-  const existingIds = new Set(original.ledger.map((event) => event.id));
-  const existingSources = new Set(
-    original.ledger.map((event) => event.source.id),
-  );
-  const existingUrls = new Set(
-    original.ledger.map((event) => event.source.url),
-  );
+  // A recovered source must be new to both ledgers: the payment review basis
+  // removes and adds events of the raw ledger.
+  const credited = [...original.ledger, ...preparedLedger];
+  const existingIds = new Set(credited.map((event) => event.id));
+  const existingSources = new Set(credited.map((event) => event.source.id));
+  const existingUrls = new Set(credited.map((event) => event.source.url));
   const recovered = request.eventIds
     .map((id) => {
       const matches = history.events.filter((event) => event.id === id),

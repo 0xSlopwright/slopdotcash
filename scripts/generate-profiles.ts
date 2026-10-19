@@ -6,10 +6,8 @@ import {
   type ProfileIndex,
   type ProfileRecord,
 } from "../src/lib/profiles";
-import {
-  REGISTERED_REPOSITORIES,
-  TARGET_REPOSITORIES,
-} from "../src/lib/repositories.mjs";
+import { isHistoricalRepositoryId } from "../src/lib/projects.mjs";
+import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
 import { GitHubGraphqlClient } from "./generate-leaderboard";
 import {
   type CensusRequest,
@@ -68,13 +66,20 @@ if (values.live) {
   // The last census may predate a project activation or retirement. It only
   // carries issue history forward, so it must name registered repositories,
   // not exactly the current active set.
-  const registered = new Set(REGISTERED_REPOSITORIES.map((r) => r.id));
   const previousInventory = Array.isArray(previous?.repositories)
     ? previous.repositories.map((r: { repository: string }) => r.repository)
     : [];
-  if (!previousInventory.every((id: string) => registered.has(id)))
+  if (!previousInventory.every((id: string) => isHistoricalRepositoryId(id)))
     throw Error("Previous census names an unregistered repository");
-  assertProfiles(previous, previousInventory);
+  // Its inventory also holds carried rows of repositories it no longer
+  // collected. The repositories it collected are those its issue census
+  // covered; a legacy census without issues collected its whole inventory.
+  const previousCollected = Array.isArray(previous?.issues?.repositories)
+    ? previous.issues.repositories.map(
+        (r: { repository: string }) => r.repository,
+      )
+    : previousInventory;
+  assertProfiles(previous, previousCollected);
   const client = new GitHubGraphqlClient(token);
   const request: CensusRequest = async <T>(
     query: string,
@@ -88,6 +93,27 @@ if (values.live) {
     people: [],
   };
   const people = new Map<string, ProfileRecord>();
+  // Carry the last counts of repositories that are no longer collected, as
+  // issue history is archived, so removing a project keeps profile totals.
+  const collected = new Set(TARGET_REPOSITORIES.map((repo) => repo.id));
+  const carried = new Set<string>();
+  for (const row of (previous as ProfileIndex).repositories) {
+    if (collected.has(row.repository)) continue;
+    carried.add(row.repository);
+    result.repositories.push({ ...row });
+  }
+  for (const person of (previous as ProfileIndex).people) {
+    const rows = person.repositories.filter((row) =>
+      carried.has(row.repository),
+    );
+    if (rows.length === 0) continue;
+    people.set(person.id, {
+      id: person.id,
+      login: person.login,
+      avatarUrl: person.avatarUrl,
+      repositories: rows.map((row) => ({ ...row })),
+    });
+  }
   for (const repo of TARGET_REPOSITORIES) {
     let cursor: string | null = null,
       // Pages are ordered by creation time, so a PR opened during the crawl

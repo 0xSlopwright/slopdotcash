@@ -14,10 +14,6 @@ import type {
   WalletPossessionChallengeRecord,
 } from "./contracts";
 import { sha256Hex } from "./validation";
-import {
-  consumeVerificationAdmission,
-  type VerificationAdmissionInput,
-} from "./verification-admission";
 
 type D1Result = { success: boolean; meta?: { changes?: number } };
 type D1Statement = {
@@ -286,10 +282,6 @@ export class CloudflareTracePersistence implements TracePersistence {
     private readonly db: D1Database,
     private readonly bucket: R2Bucket,
   ) {}
-
-  async consumeVerificationAdmission(input: VerificationAdmissionInput) {
-    return consumeVerificationAdmission(this.db, input);
-  }
 
   async createRun(input: CreateRunInput): Promise<PersistenceResult<TraceRun>> {
     const existing = await this.db
@@ -1019,9 +1011,9 @@ export class CloudflareTracePersistence implements TracePersistence {
   }
 
   /**
-   * Consumes a challenge exactly once. The guard is in the statement rather
-   * than a read followed by a write, so two concurrent submissions of the same
-   * signature cannot both succeed.
+   * Consumes an unexpired challenge exactly once. The guard is in the
+   * statement rather than a read followed by a write, so two concurrent
+   * submissions of the same signature cannot both succeed.
    */
   async consumeWalletPossessionChallenge(
     challengeId: string,
@@ -1031,10 +1023,10 @@ export class CloudflareTracePersistence implements TracePersistence {
       .prepare(
         `UPDATE wallet_possession_challenges
            SET consumed_at = ?
-         WHERE challenge_id = ? AND consumed_at IS NULL
+         WHERE challenge_id = ? AND consumed_at IS NULL AND expires_at > ?
          RETURNING *`,
       )
-      .bind(consumedAt, challengeId)
+      .bind(consumedAt, challengeId, consumedAt)
       .first<WalletPossessionChallengeRow>();
     return row === null ? null : mapWalletPossessionChallenge(row);
   }

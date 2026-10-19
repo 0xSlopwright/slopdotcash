@@ -63,7 +63,10 @@ export async function collectProfileIssues(
   startedAt: string,
 ): Promise<ProfileIssueHistory> {
   const prior = new Map(
-    (previous.issues?.items ?? []).map((issue) => [issue.id, issue]),
+    [
+      ...(previous.issues?.items ?? []),
+      ...(previous.issues?.archived ?? []),
+    ].map((issue) => [issue.id, issue]),
   );
   const result: ProfileIssueHistory = {
     firstObservedAt: previous.issues?.firstObservedAt ?? startedAt,
@@ -204,13 +207,19 @@ export async function collectProfileIssues(
   const previousPeople = new Map(
     previous.people.map((person) => [person.id, person]),
   );
+  const collected = new Set(TARGET_REPOSITORIES.map((r) => r.id));
+  const archived: ProfileIssue[] = [];
   for (const old of prior.values()) {
     if (seen.has(old.id)) continue;
     const retained: ProfileIssue = {
       ...old,
       unavailableSince: old.unavailableSince ?? new Date().toISOString(),
     };
-    result.items.push(retained);
+    // A paused project is not collected, and the census may only name active
+    // repositories. Its records are archived unchanged, so a reactivated
+    // project resumes their corrections, gaps and retained deletions.
+    if (collected.has(old.repository)) result.items.push(retained);
+    else archived.push(old);
     if (old.authorId && !people.has(old.authorId)) {
       const identity = previousPeople.get(old.authorId);
       if (!identity)
@@ -220,5 +229,9 @@ export async function collectProfileIssues(
     }
   }
   result.items.sort((left, right) => left.id.localeCompare(right.id));
+  if (archived.length)
+    result.archived = archived.sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
   return result;
 }

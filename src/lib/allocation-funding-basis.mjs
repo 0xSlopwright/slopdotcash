@@ -1,18 +1,11 @@
 import { resolveRewardCapMinor } from "./reward-cap.mjs";
 
-/** Stable public identity, never a mutable list index or observed balance. */
-export function fundingInstrumentId(instrument) {
-  switch (instrument.kind) {
-    case "squads-v4-vault":
-    case "squads-project-vault":
-      return `${instrument.kind}:solana:${instrument.multisig}:${instrument.vaultIndex}:${instrument.vault}`;
-    case "sablier-lockup-v4":
-      return `sablier-lockup-v4:${instrument.network}:${instrument.contract}:${instrument.streamId}`;
-    default:
-      throw new TypeError("unsupported funding instrument kind");
-  }
-}
-
+/**
+ * Frozen monetary basis of a monthly allocation. Escrow is the only funding
+ * mode and the escrow vault enforces available funds, so no manifest
+ * instrument backs a monthly commitment: `instrumentId` is always null and
+ * the funding-backed principal is zero.
+ */
 export function assertAllocationFundingBasis(value) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new TypeError("invalid allocation funding basis");
@@ -23,52 +16,22 @@ export function assertAllocationFundingBasis(value) {
     typeof value.cycleId !== "string" ||
     !/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(value.cycleId) ||
     !["pledged", "committed"].includes(value.fundingState) ||
-    typeof value.committedMinor !== "string" ||
-    !money.test(value.committedMinor) ||
+    value.committedMinor !== "0" ||
     typeof value.monthlyCapMinor !== "string" ||
     !money.test(value.monthlyCapMinor) ||
-    (value.instrumentId !== null &&
-      (typeof value.instrumentId !== "string" ||
-        value.instrumentId.length > 200 ||
-        !/^(?:(?:squads-v4-vault|squads-project-vault):solana:[1-9A-HJ-NP-Za-km-z]{32,44}:(?:0|[1-9][0-9]*):[1-9A-HJ-NP-Za-km-z]{32,44}|sablier-lockup-v4:(?:base|ethereum):0x[0-9a-fA-F]{40}:(?:0|[1-9][0-9]*))$/u.test(
-          value.instrumentId,
-        ))) ||
-    (BigInt(value.committedMinor) > 0n
-      ? value.fundingState !== "committed" || value.instrumentId === null
-      : value.instrumentId !== null)
+    value.instrumentId !== null
   )
     throw new TypeError("invalid allocation funding basis");
   return { ...value };
 }
 
-/** Input project has already passed the reviewed project schema. Wrong months
- * have no applicable principal; a later commitment never funds an earlier cycle. */
+/** Input project has already passed the reviewed project schema. */
 export function deriveAllocationFundingBasis(project, cycleId) {
-  const applicable = (project.funding.commitments ?? []).filter(
-    (instrument) =>
-      instrument.replacedAt === null &&
-      instrument.monthlyCommitment?.cycleId === cycleId,
-  );
-  if (applicable.length > 1)
-    throw new TypeError("ambiguous monthly funding instrument");
-  const instrument = applicable[0];
-  const committedMinor =
-    project.reward.fundingState === "committed" && instrument
-      ? project.reward.committedMinor
-      : "0";
-  if (
-    instrument &&
-    BigInt(committedMinor) > BigInt(instrument.monthlyCommitment.amountMinor)
-  )
-    throw new TypeError(
-      "monthly instrument does not cover committed principal",
-    );
   return assertAllocationFundingBasis({
     cycleId,
-    instrumentId:
-      BigInt(committedMinor) > 0n ? fundingInstrumentId(instrument) : null,
+    instrumentId: null,
     fundingState: project.reward.fundingState,
-    committedMinor,
+    committedMinor: "0",
     monthlyCapMinor: resolveRewardCapMinor(project, cycleId),
   });
 }

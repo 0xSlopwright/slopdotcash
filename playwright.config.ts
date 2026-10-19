@@ -22,10 +22,32 @@ if (!Number.isInteger(localPort) || localPort < 1024 || localPort > 65535)
 const localOrigin = `http://127.0.0.1:${localPort}`;
 const requestedWorkers = process.env.SLOP_E2E_WORKERS;
 
+// The registry lane gives Pages a fresh local D1 and a test-only admin.
+const registryPersistTo = process.env.SLOP_E2E_PERSIST_TO;
+const registryAdmins = process.env.SLOP_E2E_ADMIN_GITHUB_IDS;
+if (registryAdmins !== undefined && !/^[1-9][0-9]*$/u.test(registryAdmins))
+  throw new Error("SLOP_E2E_ADMIN_GITHUB_IDS must be one GitHub actor ID");
+const registryGitHub = process.env.SLOP_E2E_GITHUB_API_ORIGIN;
+if (
+  registryGitHub !== undefined &&
+  !/^http:\/\/127\.0\.0\.1:[0-9]{4,5}$/u.test(registryGitHub)
+)
+  throw new Error("SLOP_E2E_GITHUB_API_ORIGIN must be a loopback origin");
+const registryArguments = registryPersistTo
+  ? ` --persist-to ${JSON.stringify(registryPersistTo)}${
+      registryAdmins ? ` --binding ADMIN_GITHUB_IDS=${registryAdmins}` : ""
+    }${
+      registryGitHub
+        ? ` --binding SLOP_GITHUB_API_ORIGIN=${registryGitHub}`
+        : ""
+    }`
+  : "";
+const outputName = process.env.SLOP_E2E_OUTPUT ?? localServer;
+
 const localServerCommand =
   localServer === "preview"
     ? `node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${localPort} --strictPort`
-    : `node node_modules/wrangler/bin/wrangler.js pages dev dist --ip 127.0.0.1 --port ${localPort} --log-level warn --show-interactive-dev-session=false`;
+    : `node node_modules/wrangler/bin/wrangler.js pages dev dist --ip 127.0.0.1 --port ${localPort} --log-level warn --show-interactive-dev-session=false${registryArguments}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -38,7 +60,7 @@ export default defineConfig({
   timeout: 120_000,
   // The deploy job's own 180 min limit still bounds a hung suite.
   globalTimeout: 35 * 60_000,
-  outputDir: `test-results/${localServer}`,
+  outputDir: `test-results/${outputName}`,
   expect: { timeout: 10_000 },
   fullyParallel: true,
   // Wrangler's Pages proxy can terminate while serving concurrent browser
@@ -60,9 +82,9 @@ export default defineConfig({
   reporter: [
     [
       "html",
-      { open: "never", outputFolder: `playwright-report/${localServer}` },
+      { open: "never", outputFolder: `playwright-report/${outputName}` },
     ],
-    ["json", { outputFile: `test-results/${localServer}/results.json` }],
+    ["json", { outputFile: `test-results/${outputName}/results.json` }],
     ["list"],
   ],
   use: {

@@ -1,6 +1,6 @@
 /og-open-source.png /og-slop-cash.png 301
 /og-shipping-slop-tech.png /og-slop-tech.png 301
-/skill.md /projects/eliza/skill.md 301
+/skill.md /SKILL.md 301
 /how-it-works / 200
 /how-it-works/ / 200
 /receipts / 200
@@ -11,10 +11,13 @@
 /cycles/ / 200
 /sponsors / 200
 /sponsors/ / 200
-/verification / 200
-/verification/ / 200
+/verification /how-it-works 301
+/verification/ /how-it-works 301
 /login / 200
 /login/ / 200
+/admin / 200
+/admin/ / 200
+/admin/* / 200
 /account / 200
 /account/ / 200
 /points / 200

@@ -5,6 +5,7 @@ import { githubUserIdFromNodeId } from "./lib/github-actor";
 import type { ScoreEvent } from "./lib/leaderboard";
 import { transactionUrl } from "./lib/payments/contracts";
 import { type PointsMember, pointKey } from "./lib/points";
+import { dailySlopScore } from "./lib/profile-activity";
 import {
   assertProfiles,
   type ProfileIndex,
@@ -39,9 +40,12 @@ type State =
   | { status: "loading" }
   | { status: "error" }
   | { status: "ready"; index: ProfileIndex };
-export function useProfiles(): { state: State; retry: () => void } {
+export function useProfiles(enabled = true): {
+  state: State;
+  retry: () => void;
+} {
   const [state, retry] = usePublicResource(
-    true,
+    enabled,
     loadProfiles,
     "Profiles unavailable",
     15_000,
@@ -58,7 +62,6 @@ export function ProfileActivity({
   actorId,
   showIdentity = false,
   cycles,
-  recordsLoading = false,
   census,
   summary,
   badges,
@@ -70,8 +73,6 @@ export function ProfileActivity({
   actorId?: string;
   showIdentity?: boolean;
   cycles?: CycleIndex;
-  /** The cycle records are still loading; their absence is not a failure. */
-  recordsLoading?: boolean;
   census: ReturnType<typeof useProfiles>;
   summary?: ReactNode;
   badges?: ReactNode;
@@ -125,7 +126,7 @@ export function ProfileActivity({
           amount: BigInt(t.amountMicro),
           href:
             transactionUrl(t.network, t.transactionId) ??
-            `/projects/${encodeURIComponent(t.projectId)}/funding#payouts`,
+            `/projects/${encodeURIComponent(t.projectId)}/funding`,
           name: `${findProject(t.projectId)?.name ?? t.projectId} · ${formatCycleMonth(t.contributionMonth)}`,
         }))
       : [];
@@ -149,7 +150,7 @@ export function ProfileActivity({
               ? dollars(
                   [...payments, ...direct].reduce((n, r) => n + r.amount, 0n),
                 )
-              : recordsLoading || (!id && state.status === "loading")
+              : !id && state.status === "loading"
                 ? "Loading…"
                 : "Unavailable"}
           </strong>
@@ -238,24 +239,7 @@ const ACTIVITY_DAYS = 35;
 
 /** Daily Slop Score across the rolling window, so the rhythm reads at a glance. */
 function ActivityChart({ work }: { work: readonly ScoreEvent[] }) {
-  const today = new Date();
-  const days = Array.from({ length: ACTIVITY_DAYS }, (_, index) => {
-    const day = new Date(
-      Date.UTC(
-        today.getUTCFullYear(),
-        today.getUTCMonth(),
-        today.getUTCDate() - (ACTIVITY_DAYS - 1 - index),
-      ),
-    )
-      .toISOString()
-      .slice(0, 10);
-    return { day, score: 0 };
-  });
-  const byDay = new Map(days.map((entry) => [entry.day, entry]));
-  for (const event of work) {
-    const entry = byDay.get(event.occurredAt.slice(0, 10));
-    if (entry) entry.score += event.points;
-  }
+  const days = dailySlopScore(work, new Date(), ACTIVITY_DAYS);
   const max = Math.max(...days.map((entry) => entry.score));
   if (max <= 0) return null;
   const total = days.reduce((sum, entry) => sum + entry.score, 0);

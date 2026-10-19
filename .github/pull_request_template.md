@@ -28,9 +28,10 @@
 
 ## Slop protocol changes
 
-<!-- Keep only the applicable rows. Project proposals must include both skills. -->
+<!-- Keep only the applicable rows. Projects are added on slop.cash; a skill PR
+     names the registry project it serves. -->
 
-- Project manifest (`projects/<id>/project.json`):
+- Registry project id:
 - Contributor skill (`skills/contribute-to-<id>/`):
 - Isolated reviewer skill (`skills/review-<id>-contributions/`):
 - Evaluated-contribution award (`evaluations/<id>/award-*.json`):

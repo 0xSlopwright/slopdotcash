@@ -1,17 +1,29 @@
+import { evmBindingTypedData } from "../../contracts/evm/adapter";
 import { readBoundedJson } from "../../src/lib/browser-json";
-import type {
-  AccountPayment,
-  DirectTransfer,
-  PaymentsAccount,
+import {
+  ESCROW_CHAINS,
+  ESCROW_NETWORKS,
+  EVM_CHAINS,
+} from "../../src/lib/escrow-policy.mjs";
+import {
+  type AccountPayment,
+  type DirectTransfer,
+  type PaymentAsset,
+  type PaymentChain,
+  type PaymentsAccount,
+  VAULT_SNAPSHOT_STALE_MS,
 } from "../../src/lib/payments/contracts";
 import { isWalletAddress, isWalletChain } from "../../src/lib/wallets";
 import { sha256Hex } from "../../workers/identity/crypto";
 import type { D1Database } from "../trace/cloudflare-persistence";
 import {
   buildPaymentWalletMessage,
+  canonicalEvmSignature,
+  verifyEvmBindingSignature,
   verifyPaymentWalletSignature,
 } from "./possession";
 import { slopbotInvoice } from "./slopbot-billing";
+import { projectVaultSnapshots } from "./vault-snapshots";
 import { registerPaymentWallet } from "./wallet-registration";
 
 export interface PaymentsDependencies {
@@ -21,7 +33,26 @@ export interface PaymentsDependencies {
   allowedOrigins?: readonly string[];
   /** Trusted numeric GitHub operator allowlist; never request-supplied. */
   operatorIds?: readonly string[];
+  /** Reviewed escrow deployments (PAYMENT_DEPLOYMENTS); never request-supplied. */
+  paymentDeployments?: readonly PaymentDeploymentIdentity[];
+  /** Service binding to the Solana identity attester role; never request-supplied. */
+  solanaAttester?: { fetch(request: Request): Promise<Response> };
+  /** Edge cache for public vault snapshot reads (caches.default on Pages). */
+  edgeCache?: {
+    match(request: Request): Promise<Response | undefined>;
+    put(request: Request, response: Response): Promise<void>;
+  };
 }
+/** The payments cron writes snapshots every 5 minutes; one minute keeps reads near it. */
+const VAULT_EDGE_CACHE_SECONDS = 60;
+export interface PaymentDeploymentIdentity {
+  network: string;
+  chain: string;
+  vault: string;
+  chainId?: string;
+}
+/** The attester must still have this long to submit a binding authorization. */
+const BINDING_SUBMISSION_WINDOW_SECONDS = 600;
 const origins = new Set([
   "https://slop.cash",
   "https://slop.tech",
@@ -70,18 +101,18 @@ export async function handlePaymentsApi(
     const totalsRoute = /^\/projects\/([a-z0-9][a-z0-9-]*)\/totals$/.exec(path);
     if (totalsRoute && request.method === "GET") {
       const projectId = totalsRoute[1];
-      const result = await deps.db
-        .prepare(
-          "SELECT json_group_array(json_object('network',network,'gross',gross_micro,'fee',fee_micro,'state',state)) items FROM payment_obligations WHERE project_id=?",
-        )
-        .bind(projectId)
-        .first<{ items: string }>();
-      const rows = JSON.parse(result?.items ?? "[]") as {
-        network: string;
-        gross: string;
-        fee: string;
-        state: string;
-      }[];
+      // Indexed award totals, one row per network and asset. Amounts are
+      // base units of that asset and are never summed across assets.
+      const rows = JSON.parse(
+        (
+          await deps.db
+            .prepare(
+              "SELECT json_group_array(json_object('network',network,'assetAddress',asset_address,'assetDecimals',asset_decimals,'gross',gross_base,'fee',fee_base,'state',state)) items FROM (SELECT * FROM payment_obligations WHERE project_id=? ORDER BY network,asset_address)",
+            )
+            .bind(projectId)
+            .first<{ items: string }>()
+        )?.items ?? "[]",
+      ) as (PaymentAsset & { gross: string; fee: string; state: string })[];
       const cursor = await deps.db
         .prepare(
           "SELECT network,position,synced_at FROM payment_chain_cursors WHERE project_id=?",
@@ -90,28 +121,82 @@ export async function handlePaymentsApi(
         .first<{ network: string; position: string; synced_at: string }>();
       if (!rows.length && !cursor)
         return json(503, { error: "project_payments_not_indexed" });
-      const total = (state: string, fee: boolean) =>
-        rows
-          .filter((r) => r.state === state)
-          .reduce(
-            (sum, r) =>
-              sum + (fee ? BigInt(r.fee) : BigInt(r.gross) - BigInt(r.fee)),
-            0n,
-          )
-          .toString();
+      const assets = new Map<
+        string,
+        PaymentAsset & {
+          paidNet: bigint;
+          paidFee: bigint;
+          reservedNet: bigint;
+          reservedFee: bigint;
+        }
+      >();
+      for (const r of rows) {
+        const key = `${r.network}\u0000${r.assetAddress}`;
+        const total = assets.get(key) ?? {
+          network: r.network,
+          assetAddress: r.assetAddress,
+          assetDecimals: r.assetDecimals,
+          paidNet: 0n,
+          paidFee: 0n,
+          reservedNet: 0n,
+          reservedFee: 0n,
+        };
+        const fee = BigInt(r.fee);
+        const net = BigInt(r.gross) - fee;
+        if (r.state === "paid") {
+          total.paidNet += net;
+          total.paidFee += fee;
+        } else {
+          total.reservedNet += net;
+          total.reservedFee += fee;
+        }
+        assets.set(key, total);
+      }
       return json(200, {
         projectId,
         network: cursor?.network ?? rows[0].network,
-        totalNetPaidMicro: total("paid", false),
-        payoutFeesPaidMicro: total("paid", true),
-        reservedNetMicro: total("reserved", false),
-        reservedFeeMicro: total("reserved", true),
+        assets: [...assets.values()].map(
+          ({ paidNet, paidFee, reservedNet, reservedFee, ...asset }) => ({
+            ...asset,
+            totalNetPaidBase: paidNet.toString(),
+            payoutFeesPaidBase: paidFee.toString(),
+            reservedNetBase: reservedNet.toString(),
+            reservedFeeBase: reservedFee.toString(),
+          }),
+        ),
         coverage: {
           kind: "finalized-payment-events",
           completeThrough: cursor?.position ?? null,
         },
         syncedAt: cursor?.synced_at ?? null,
       });
+    }
+    // Vault counters cached by the payments worker from finalized reads. A
+    // page view never reaches a chain RPC; the edge cache keeps D1 reads low.
+    const vaultRoute = /^\/projects\/([a-z0-9][a-z0-9-]*)\/vault$/.exec(path);
+    if (vaultRoute && request.method === "GET") {
+      const key = new Request(url.toString(), { method: "GET" });
+      const cached = await deps.edgeCache?.match(key);
+      if (cached) return cached;
+      const snapshots = await projectVaultSnapshots(deps.db, vaultRoute[1]);
+      const response = new Response(
+        JSON.stringify({
+          projectId: vaultRoute[1],
+          snapshots,
+          staleAfterMs: VAULT_SNAPSHOT_STALE_MS,
+          servedAt: now,
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "cache-control": `public, max-age=${VAULT_EDGE_CACHE_SECONDS}, s-maxage=${VAULT_EDGE_CACHE_SECONDS}`,
+            "x-content-type-options": "nosniff",
+          },
+        },
+      );
+      await deps.edgeCache?.put(key, response.clone());
+      return response;
     }
     const directRoute =
       /^\/(?:projects\/([a-z0-9][a-z0-9-]*)|actors\/([1-9]\d{0,15}))\/direct-transfers$/.exec(
@@ -325,6 +410,213 @@ export async function handlePaymentsApi(
         ? json(200, { authorized: true })
         : json(409, { error: "claim_not_current" });
     }
+    // An EVM destination binding needs the destination wallet's EIP-712
+    // signature over the exact chain, vault, actor, destination, expected
+    // version, claim digest and expiry (PAY-05). The challenge is stateless:
+    // the authorize step verifies every field against the current claim, and
+    // the chain ID comes from the reviewed deployment, never the request.
+    if (
+      ["/wallets/bind-challenge", "/wallets/bind-authorize"].includes(path) &&
+      request.method === "POST"
+    ) {
+      const body = (await readBoundedJson(
+        request as unknown as Response,
+        4096,
+        "binding authorization",
+      )) as Record<string, unknown>;
+      const decimal = (value: unknown): value is string =>
+        typeof value === "string" && /^(0|[1-9][0-9]{0,18})$/.test(value);
+      const authorize = path === "/wallets/bind-authorize";
+      if (
+        typeof body.claimId !== "string" ||
+        typeof body.network !== "string" ||
+        typeof body.vault !== "string" ||
+        !/^0x[0-9a-fA-F]{40}$/.test(body.vault) ||
+        !decimal(body.expectedVersion) ||
+        (authorize &&
+          (!decimal(body.expiresAt) ||
+            typeof body.signature !== "string" ||
+            !/^0x[0-9a-fA-F]{130}$/.test(body.signature)))
+      )
+        return json(400, { error: "invalid_request" });
+      if (!deps.paymentDeployments)
+        return json(503, { error: "payment_deployments_unavailable" });
+      const vault = body.vault.toLowerCase();
+      // A registry network fixes the deployment's chain and chain id, so a
+      // Base claim never yields Robinhood Chain consent or the reverse, even
+      // when a deployment record is mislabelled. Only the local Anvil chain
+      // id (31337) may name a network outside the registry.
+      const registered = (d: PaymentDeploymentIdentity) => {
+        const policy = Object.hasOwn(ESCROW_NETWORKS, d.network)
+          ? ESCROW_NETWORKS[d.network as keyof typeof ESCROW_NETWORKS]
+          : undefined;
+        return policy
+          ? policy.family === "evm" &&
+              policy.chain === d.chain &&
+              policy.chainId === d.chainId
+          : d.chainId === "31337";
+      };
+      const deployments = deps.paymentDeployments.filter(
+        (d) =>
+          (EVM_CHAINS as readonly string[]).includes(d.chain) &&
+          d.network === body.network &&
+          d.vault.toLowerCase() === vault &&
+          typeof d.chainId === "string" &&
+          /^[1-9][0-9]{0,18}$/.test(d.chainId) &&
+          registered(d),
+      );
+      if (deployments.length !== 1)
+        return json(400, { error: "unknown_deployment" });
+      const chainId = BigInt(deployments[0].chainId as string);
+      const wallet = await deps.db
+        .prepare(
+          `SELECT w.id,w.wallet_address,w.record_sha256 FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id WHERE w.id=? AND w.github_user_id=? AND w.chain=? AND w.source='d1_registry' AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)`,
+        )
+        .bind(body.claimId, member.github_id, deployments[0].chain)
+        .first<{ id: string; wallet_address: string; record_sha256: string }>();
+      if (!wallet) return json(409, { error: "claim_not_current" });
+      const nowSeconds = Math.floor(Date.parse(now) / 1000);
+      const expiresAt = authorize
+        ? (body.expiresAt as string)
+        : String(nowSeconds + 90 * 24 * 60 * 60);
+      const binding = {
+        githubUserId: member.github_id,
+        destination: wallet.wallet_address,
+        expectedVersion: body.expectedVersion,
+        claimDigest: `0x${wallet.record_sha256}`,
+        expiresAt,
+      };
+      if (!authorize)
+        return json(200, {
+          claimId: wallet.id,
+          typedData: evmBindingTypedData(chainId, vault, binding),
+        });
+      // Only an authorization the attester can still submit is stored.
+      if (
+        BigInt(expiresAt) <=
+        BigInt(nowSeconds + BINDING_SUBMISSION_WINDOW_SECONDS)
+      )
+        return json(400, { error: "authorization_expires_too_soon" });
+      // Store the encoding the vault accepts: a recovery byte of 0 or 1
+      // becomes 27 or 28; a high-s signature is refused.
+      const signature = canonicalEvmSignature(body.signature as string);
+      if (
+        !signature ||
+        !verifyEvmBindingSignature(chainId, vault, binding, signature)
+      )
+        return json(403, { error: "wallet_signature_required" });
+      // Rows are append-only evidence. A new signature with another expiry is
+      // its own row, so an expired authorization never blocks a renewal.
+      await deps.db
+        .prepare(
+          "INSERT INTO payment_binding_authorizations(claim_id,github_user_id,network,vault,chain_id,expected_version,expires_at,signature,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(claim_id,network,vault,chain_id,expected_version,expires_at) DO NOTHING",
+        )
+        .bind(
+          wallet.id,
+          member.github_id,
+          body.network,
+          vault,
+          chainId.toString(),
+          body.expectedVersion,
+          expiresAt,
+          signature,
+          now,
+        )
+        .run();
+      // An identical earlier row is a signature over the same fields; report
+      // success only when a verified row for these exact fields is stored.
+      const stored = await deps.db
+        .prepare(
+          "SELECT signature FROM payment_binding_authorizations WHERE claim_id=? AND github_user_id=? AND network=? AND vault=? AND chain_id=? AND expected_version=? AND expires_at=?",
+        )
+        .bind(
+          wallet.id,
+          member.github_id,
+          body.network,
+          vault,
+          chainId.toString(),
+          body.expectedVersion,
+          expiresAt,
+        )
+        .first<{ signature: string }>();
+      if (
+        !stored ||
+        !verifyEvmBindingSignature(chainId, vault, binding, stored.signature)
+      )
+        throw new Error("Binding authorization was not stored");
+      return json(200, { authorized: true, expiresAt });
+    }
+    // A Solana binding transaction must carry the destination wallet's own
+    // signature (PAY-05). The attester prepares and half-signs the exact
+    // transaction for the contributor's current claim and payout attempt; the
+    // contributor's wallet signs the same bytes and returns them here.
+    if (
+      [
+        "/wallets/solana-bind/prepare",
+        "/wallets/solana-bind/complete",
+      ].includes(path) &&
+      request.method === "POST"
+    ) {
+      const body = (await readBoundedJson(
+        request as unknown as Response,
+        4096,
+        "solana binding",
+      )) as Record<string, unknown>;
+      const complete = path === "/wallets/solana-bind/complete";
+      if (
+        typeof body.obligationId !== "string" ||
+        !/^[0-9a-f]{64}$/.test(body.obligationId) ||
+        (complete &&
+          (typeof body.transaction !== "string" ||
+            body.transaction.length > 2048 ||
+            !/^[A-Za-z0-9+/]+={0,2}$/.test(body.transaction)))
+      )
+        return json(400, { error: "invalid_request" });
+      if (!deps.solanaAttester)
+        return json(503, { error: "identity_attester_unavailable" });
+      const payment = await deps.db
+        .prepare(
+          "SELECT o.id obligationId,o.network,o.vault,o.github_user_id githubUserId,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,t.id idempotencyKey FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND o.github_user_id=? AND o.chain='solana' AND o.state='reserved' AND w.source='d1_registry' AND t.state IN ('prepared','unknown','submitted') AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id) ORDER BY t.created_at LIMIT 1",
+        )
+        .bind(body.obligationId, member.github_id)
+        .first<Record<string, string>>();
+      if (!payment) return json(409, { error: "binding_not_ready" });
+      const response = await deps.solanaAttester.fetch(
+        new Request(
+          `https://identity-attester.internal/v1/${complete ? "complete-bind" : "pay"}`,
+          {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "idempotency-key": payment.idempotencyKey,
+            },
+            body: JSON.stringify(
+              complete
+                ? { ...payment, transaction: body.transaction }
+                : payment,
+            ),
+          },
+        ),
+      );
+      if (!response.ok)
+        return json(409, { error: "binding_pending_or_rejected" });
+      const result = (await response.json()) as {
+        transactionId?: unknown;
+        transaction?: unknown;
+      };
+      if (
+        typeof result.transactionId !== "string" ||
+        (result.transaction !== undefined &&
+          typeof result.transaction !== "string")
+      )
+        throw new Error("Invalid identity attester response");
+      return json(200, {
+        transactionId: result.transactionId,
+        ...(!complete && typeof result.transaction === "string"
+          ? { transaction: result.transaction }
+          : {}),
+      });
+    }
     if (path === "/me" && request.method === "GET") {
       const walletRows = await deps.db
         .prepare(
@@ -334,7 +626,7 @@ export async function handlePaymentsApi(
         .first<{ items: string }>();
       const paymentRows = await deps.db
         .prepare(
-          "SELECT json_group_array(json_object('id',o.id,'projectId',project_id,'network',network,'chain',chain,'grossMicro',gross_micro,'feeMicro',fee_micro,'state',o.state,'transactionId',paid_transaction,'submittedTransactionId',(SELECT transaction_id FROM payment_attempts a WHERE a.obligation_id=o.id AND a.transaction_id IS NOT NULL ORDER BY created_at DESC LIMIT 1),'deliveryState',CASE WHEN o.state='paid' THEN 'paid' WHEN q.state='submitted' THEN 'submitted' WHEN q.state='held' THEN 'held' WHEN q.state IS NULL THEN 'needs_wallet' ELSE 'awaiting_binding' END)) items FROM payment_obligations o LEFT JOIN payment_outbox q ON q.obligation_id=o.id WHERE github_user_id=?",
+          "SELECT json_group_array(json_object('id',o.id,'projectId',project_id,'network',network,'chain',chain,'assetAddress',asset_address,'assetDecimals',asset_decimals,'grossBase',gross_base,'feeBase',fee_base,'state',o.state,'transactionId',paid_transaction,'submittedTransactionId',(SELECT transaction_id FROM payment_attempts a WHERE a.obligation_id=o.id AND a.transaction_id IS NOT NULL ORDER BY created_at DESC LIMIT 1),'deliveryState',CASE WHEN o.state='paid' THEN 'paid' WHEN q.state='submitted' THEN 'submitted' WHEN q.state='held' THEN 'held' WHEN q.state IS NULL THEN 'needs_wallet' ELSE 'awaiting_binding' END)) items FROM payment_obligations o LEFT JOIN payment_outbox q ON q.obligation_id=o.id WHERE github_user_id=?",
         )
         .bind(member.github_id)
         .first<{ items: string }>();
@@ -342,14 +634,33 @@ export async function handlePaymentsApi(
         paymentRows?.items ?? "[]",
       ) as AccountPayment[];
       for (const p of payments)
-        p.netMicro = (BigInt(p.grossMicro) - BigInt(p.feeMicro)).toString();
-      const balances = (["base", "solana"] as const).map((chain) => ({
-        chain,
-        netMicro: payments
-          .filter((p) => p.chain === chain && p.state === "reserved")
-          .reduce((sum, p) => sum + BigInt(p.netMicro), 0n)
-          .toString(),
-      }));
+        p.netBase = (BigInt(p.grossBase) - BigInt(p.feeBase)).toString();
+      // One balance per network and asset: assets differ in value and in
+      // decimals, so amounts are never summed across them.
+      const reservedByNetwork = new Map<
+        string,
+        PaymentAsset & { chain: PaymentChain; net: bigint }
+      >();
+      for (const p of payments) {
+        const key = `${p.chain}\u0000${p.network}\u0000${p.assetAddress}`;
+        const row = reservedByNetwork.get(key) ?? {
+          chain: p.chain,
+          network: p.network,
+          assetAddress: p.assetAddress,
+          assetDecimals: p.assetDecimals,
+          net: 0n,
+        };
+        if (p.state === "reserved") row.net += BigInt(p.netBase);
+        reservedByNetwork.set(key, row);
+      }
+      const balances = [...reservedByNetwork.values()]
+        .sort(
+          (a, b) =>
+            ESCROW_CHAINS.indexOf(a.chain) - ESCROW_CHAINS.indexOf(b.chain) ||
+            a.network.localeCompare(b.network) ||
+            a.assetAddress.localeCompare(b.assetAddress),
+        )
+        .map(({ net, ...asset }) => ({ ...asset, netBase: net.toString() }));
       const account: PaymentsAccount = {
         githubUserId: member.github_id,
         wallets: JSON.parse(walletRows?.items ?? "[]"),

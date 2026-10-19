@@ -40,10 +40,6 @@ export function ProjectLeaderboard({
         retryScore={retry}
         compact
       />
-      <details>
-        <summary>Cycle allocation details</summary>
-        <CycleAllocation {...props} />
-      </details>
     </div>
   );
 }
@@ -54,6 +50,10 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
       reviewer.actor.id,
       reviewer,
     ]),
+  );
+  const leaders = [...view.leaders].sort(
+    (left, right) =>
+      left.rank - right.rank || left.actor.id.localeCompare(right.actor.id),
   );
   return (
     <>
@@ -89,13 +89,13 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
                   <th scope="col">
                     {view.reward.kind === "monthly-pool" &&
                     monthlyPoolUnfunded(view.project.reward)
-                      ? "Share of score"
+                      ? "Share of payment weight"
                       : "Simulated share"}
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {view.leaders.map((leader) => (
+                {leaders.map((leader) => (
                   <tr
                     className="leader-row project-leader-row"
                     key={leader.actor.id}
@@ -176,7 +176,7 @@ export function RewardValue({
           ? Math.round((leader.adjustedWeight * 1_000_000) / totalWeight)
           : 0,
       )}{" "}
-      of score
+      of payment weight
     </>
   );
 }

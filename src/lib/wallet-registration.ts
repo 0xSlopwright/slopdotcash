@@ -1,4 +1,7 @@
+import { isAddress } from "viem";
 import { browserDeployment } from "./browser-deployment";
+import { fetchWithDeadline, readBoundedJson } from "./browser-json";
+import { chainFamily } from "./escrow-policy.mjs";
 /** Browser adapter for the canonical wallet-claim/run-receipt OAuth protocol. */
 import {
   type IdentityAuthorization,
@@ -61,11 +64,18 @@ function record(value: unknown): Record<string, unknown> {
 function timestamp(value: unknown): number {
   if (
     typeof value !== "string" ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value)
   )
     invalid();
-  return Date.parse(value);
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) invalid();
+  const canonical = value.endsWith(".000Z")
+    ? value
+    : value.endsWith("Z") && !value.includes(".")
+      ? `${value.slice(0, -1)}.000Z`
+      : value;
+  if (new Date(milliseconds).toISOString() !== canonical) invalid();
+  return milliseconds;
 }
 function identity(value: Record<string, unknown>): WalletRegistrationIdentity {
   if (
@@ -93,10 +103,9 @@ async function claim(
 ): Promise<RegisteredWalletClaim> {
   const row = record(value);
   const actor = identity(row);
-  if (
-    actor.githubActorId !== owner.githubActorId ||
-    actor.githubLogin.toLowerCase() !== owner.githubLogin.toLowerCase()
-  )
+  // The numeric ID owns the claim. A claim recorded before a GitHub rename
+  // keeps the earlier login until the owner registers a new address (ACC-01).
+  if (actor.githubActorId !== owner.githubActorId)
     throw new Error(
       "Returned wallet claim belongs to a different GitHub identity.",
     );
@@ -132,7 +141,7 @@ async function claim(
     schemaVersion: 1,
     ...actor,
     address: row.address,
-    ...(chain === "base" ? { chain } : {}),
+    ...(chain !== "solana" ? { chain } : {}),
     source: row.source,
     issueRepository: row.issueRepository,
     issueNumber: row.issueNumber,
@@ -184,6 +193,55 @@ async function boundedJson(response: Response) {
     return invalid();
   }
 }
+/**
+ * Reads a typed or pasted address into the one spelling a claim stores.
+ * Wallets copy EVM addresses in EIP-55 checksum case, so mixed case is
+ * accepted only when its checksum is valid, then lowercased; records are
+ * still compared and hashed in canonical lowercase (WAL-01).
+ */
+export function canonicalWalletInput(
+  chain: WalletChain,
+  value: string,
+): { address: string } | { error: string } {
+  const typed = value.trim();
+  if (chainFamily(chain) !== "evm")
+    return isWalletAddress(chain, typed)
+      ? { address: typed }
+      : { error: "Enter a valid Solana public address (32-byte base58)." };
+  const address = typed.toLowerCase();
+  if (!isWalletAddress(chain, address))
+    return {
+      error: "Enter a valid public address (0x and 40 hexadecimal characters).",
+    };
+  if (!isAddress(typed, { strict: true }))
+    return {
+      error:
+        "This address has capital letters that do not match its checksum, so it may contain a typo. Copy it again from your wallet.",
+    };
+  return { address };
+}
+/** Reads the existing public receipt without obtaining a registration session. */
+export async function currentWalletRegistration(
+  owner: WalletRegistrationIdentity,
+  chain: WalletChain,
+  signal: AbortSignal,
+): Promise<RegisteredWalletClaim | null> {
+  identity({ ...owner });
+  if (!isWalletChain(chain)) invalid();
+  const response = await fetchWithDeadline(
+    `${API}/api/v1/wallet-claims/actors/${owner.githubActorId}/current?chain=${chain}`,
+    {
+      credentials: "omit",
+      redirect: "error",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+      signal,
+    },
+  );
+  if (!response.ok) throw new Error("Current wallet registration unavailable.");
+  const value = await readBoundedJson(response, 65536, "wallet registration");
+  return value === null ? null : claim(value, owner, chain);
+}
 /** No registry write until the returned confirm function is explicitly invoked. */
 export async function prepareWalletRegistration(
   address: string,
@@ -192,8 +250,8 @@ export async function prepareWalletRegistration(
   const chain = options.chain ?? "solana";
   if (!isWalletChain(chain) || !isWalletAddress(chain, address))
     throw new Error(
-      chain === "base"
-        ? "Enter a valid lowercase Base public address (0x and 40 hexadecimal characters)."
+      chainFamily(chain) === "evm"
+        ? "Enter a valid lowercase public address (0x and 40 hexadecimal characters)."
         : "Enter a valid Solana public address (32-byte base58).",
     );
   const now = options.now ?? Date.now;
@@ -296,7 +354,7 @@ export async function prepareWalletRegistration(
     )
       invalid();
     const currentResponse = await request(
-      `${API}/api/v1/wallet-claims/current${chain === "base" ? "?chain=base" : ""}`,
+      `${API}/api/v1/wallet-claims/current${chain !== "solana" ? `?chain=${chain}` : ""}`,
       { headers: { Authorization: `Bearer ${token}` } },
       true,
     );
@@ -338,13 +396,16 @@ export async function prepareWalletRegistration(
           );
         used = true;
         try {
+          // An unchanged address keeps its claim, even under an earlier login:
+          // payout authorization is keyed to that claim, and a login-only
+          // successor would supersede it (ACC-01, WAL-03).
           if (current?.address === address) return current;
           const result =
             (
               await request(`${API}/api/v1/wallet-claims`, {
                 ...post({
                   address,
-                  ...(chain === "base" ? { chain } : {}),
+                  ...(chain !== "solana" ? { chain } : {}),
                   supersedesClaimId: current?.claimId ?? null,
                 }),
                 headers: {
@@ -355,6 +416,8 @@ export async function prepareWalletRegistration(
             )?.body ?? invalid();
           const created = await claim(result, owner, chain);
           if (
+            created.githubLogin.toLowerCase() !==
+              owner.githubLogin.toLowerCase() ||
             created.address !== address ||
             created.supersedesClaimId !== (current?.claimId ?? null) ||
             created.source !== "d1_registry" ||
@@ -365,7 +428,7 @@ export async function prepareWalletRegistration(
                 schemaVersion: 1,
                 githubActorId: owner.githubActorId,
                 address,
-                ...(chain === "base" ? { chain } : {}),
+                ...(chain !== "solana" ? { chain } : {}),
                 supersedesClaimId: current?.claimId ?? null,
               }))
           )

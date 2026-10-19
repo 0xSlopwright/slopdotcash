@@ -9,6 +9,7 @@ import {
   allocationFundingMinor,
   deriveAllocationFundingBasis,
 } from "./allocation-funding";
+import { fundingAssetForNetwork } from "./funding-address.mjs";
 import type {
   CapUsageStatus,
   GitHubActor,
@@ -19,7 +20,11 @@ import type {
   ScoreOpportunity,
   WorkItem,
 } from "./leaderboard";
-import { SCORE_CAPS } from "./leaderboard";
+import {
+  assignLeaderboardRanks,
+  paymentReviewSnapshot,
+  SCORE_CAPS,
+} from "./leaderboard";
 import {
   findProject,
   type ProjectDefinition,
@@ -74,8 +79,8 @@ export interface ReceiptConflict {
 export type ProjectRewardProjection =
   | {
       kind: "monthly-pool";
-      currency: "USDC";
-      chain: "solana" | "base";
+      currency: "USDC" | "USDG";
+      chain: "solana" | "base" | "robinhood" | "ethereum";
       capMinor: string;
       projectedPrincipalMinor: string;
       platformFeeMinor: string;
@@ -536,6 +541,22 @@ export function createProjectView(
   const { conflicts, runs } = selectUniqueRuns(snapshot, project);
   const actors = new Map<string, GitHubActor>();
   for (const event of ledger) actors.set(event.actor.id, event.actor);
+  // Score and Points use the public ledger. Monetary previews must use the
+  // same weights as the proposal, including payment-only reviewers at score 0.
+  const paymentView =
+    snapshot.paymentReviewBasis &&
+    cycleId >= "2026-10" &&
+    project.reward.kind === "monthly-pool"
+      ? createProjectView(
+          paymentReviewSnapshot(snapshot),
+          projectId,
+          requestedCycleId,
+          fundingBasis,
+          archivedProject,
+        )
+      : null;
+  for (const leader of paymentView?.leaders ?? [])
+    actors.set(leader.actor.id, leader.actor);
 
   const leaders = [...actors.values()].map<ProjectContributor>((actor) => {
     const events = ledger.filter((event) => event.actor.id === actor.id);
@@ -597,9 +618,11 @@ export function createProjectView(
       right.score - left.score ||
       compareActors(left.actor, right.actor),
   );
-  leaders.forEach((entry, index) => {
-    entry.rank = index + 1;
-  });
+  // Preserve allocation order because frozen payment intent IDs use its index.
+  const scoreLeaders = [...leaders].sort(
+    (left, right) => right.scoreThirds - left.scoreThirds,
+  );
+  assignLeaderboardRanks(scoreLeaders);
 
   const opportunities = snapshot.opportunities
     .filter((opportunity) => repositoryIds.has(opportunity.repository))
@@ -624,6 +647,16 @@ export function createProjectView(
         left.id.localeCompare(right.id),
     );
 
+  if (paymentView) {
+    const weights = new Map(
+      paymentView.leaders.map((leader) => [
+        leader.actor.id,
+        leader.adjustedWeight,
+      ]),
+    );
+    for (const leader of leaders)
+      leader.adjustedWeight = weights.get(leader.actor.id) ?? 0;
+  }
   let reward: ProjectRewardProjection;
   if (project.reward.kind === "monthly-pool") {
     const capMinor =
@@ -668,8 +701,13 @@ export function createProjectView(
     }
     reward = {
       kind: "monthly-pool",
-      currency: "USDC",
-      chain: escrow?.chain ?? "solana",
+      // Escrow chains settle in USDC or USDG (FND-02), never another asset.
+      currency: fundingAssetForNetwork(escrow?.chain ?? project.reward.chain) as
+        | "USDC"
+        | "USDG",
+      chain: (escrow?.chain ?? project.reward.chain) as NonNullable<
+        ProjectDefinition["reward"]["chain"]
+      >,
       capMinor,
       projectedPrincipalMinor: [...projected.values()]
         .reduce(
@@ -743,4 +781,24 @@ export function createProjectView(
     receiptConflicts: conflicts,
     reward,
   };
+}
+
+/** Allocation-only view. Archived pre-October cycles keep their original basis. */
+export function createPaymentProjectView(
+  snapshot: LeaderboardSnapshot,
+  projectId: ProjectId,
+  cycleId: string,
+  fundingBasis?: Parameters<typeof createProjectView>[3],
+  archivedProject?: ProjectDefinition,
+): ProjectView {
+  const project = archivedProject ?? findProject(projectId);
+  return createProjectView(
+    cycleId >= "2026-10" && project?.reward.kind === "monthly-pool"
+      ? paymentReviewSnapshot(snapshot)
+      : snapshot,
+    projectId,
+    cycleId,
+    fundingBasis,
+    archivedProject,
+  );
 }

@@ -1,7 +1,8 @@
 /**
- * Converts a complete, immutable project snapshot into the public proposal for
- * one closed reward cycle. This layer proposes deterministic amounts or shares;
- * human review and on-chain settlement remain separate, auditable transitions.
+ * Deterministic cycle helpers. New monthly cycles use the escrow workflow,
+ * which reuses the complete-cycle check and the review-line allocation here.
+ * `createRewardCycleProposal` regenerates a historical monthly-pool proposal
+ * from its frozen snapshot so the cycle index can verify it; it never pays.
  */
 
 import {
@@ -11,19 +12,22 @@ import {
   deriveAllocationFundingBasis,
   LAST_LEGACY_CAP_CYCLE,
 } from "./allocation-funding";
+import { fundingAssetForNetwork } from "./funding-address.mjs";
 import type { LeaderboardSnapshot } from "./leaderboard";
-import { createProjectView } from "./project-view";
-import type { ProjectId } from "./projects.mjs";
+import { createPaymentProjectView } from "./project-view";
+import type { ProjectDefinition, ProjectId } from "./projects.mjs";
 import { findProject } from "./projects.mjs";
 import {
   assertExternalContributionShareManifest,
   assertRewardAllocationManifest,
   type ExternalContributionShareManifest,
+  exactUtcMilliseconds,
   feeForPrincipal,
   isSafeSuccessorWallet,
   MINIMUM_TRANSFER_MINOR,
   REVIEW_WINDOW_DAYS,
   type RewardAllocationManifest,
+  type SettlementNetwork,
   type UnsafeDestinationReport,
   type WalletProof,
 } from "./rewards";
@@ -36,6 +40,8 @@ export interface CreateRewardCycleProposalInput {
   cycleId: string;
   generatedAt: string;
   projectId: ProjectId;
+  /** Reconstruction only: retained policy for a retired project's frozen cycle. */
+  archivedProject?: ProjectDefinition;
   relatedPartyActorIds?: ReadonlySet<string>;
   snapshot: LeaderboardSnapshot;
   sourceSnapshotSha256: string;
@@ -45,6 +51,11 @@ export interface CreateRewardCycleProposalInput {
   fundingBasis?: AllocationFundingBasis;
   /** Reconstruction only: immutable trial records predate instrument binding. */
   legacyCapMinor?: string;
+  /**
+   * Reconstruction only: the settlement network the reviewed proposal froze.
+   * A later manifest change must not rewrite a closed cycle (PAY-09).
+   */
+  frozenChain?: SettlementNetwork;
   priorUnsafeDestinationReports?: ReadonlyMap<
     string,
     UnsafeDestinationReport[]
@@ -151,17 +162,6 @@ function cycleBounds(cycleId: string): { from: number; to: number } {
   };
 }
 
-function validTimestamp(value: string, field: string): number {
-  if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
-  ) {
-    throw new TypeError(`${field} must be an exact UTC timestamp`);
-  }
-  return Date.parse(value);
-}
-
 function intentComponent(value: string): string {
   return value
     .toLowerCase()
@@ -172,14 +172,14 @@ function intentComponent(value: string): string {
 
 export function ensureCompleteCycle(
   input: CreateRewardCycleProposalInput,
-  view: ReturnType<typeof createProjectView>,
+  view: ReturnType<typeof createPaymentProjectView>,
 ): void {
   const calendar = cycleBounds(input.cycleId);
   const expectedFrom = Math.max(
     calendar.from,
     Date.parse(view.project.reward.rewardStartAt),
   );
-  const generatedAt = validTimestamp(input.generatedAt, "generatedAt");
+  const generatedAt = exactUtcMilliseconds(input.generatedAt, "generatedAt");
   if (
     view.cycle.from !== new Date(expectedFrom).toISOString() ||
     view.cycle.to !== new Date(calendar.to).toISOString() ||
@@ -211,20 +211,10 @@ export function ensureCompleteCycle(
 export function createRewardCycleProposal(
   input: CreateRewardCycleProposalInput,
 ): RewardCycleProposal {
-  const project = findProject(input.projectId);
+  const project = input.archivedProject ?? findProject(input.projectId);
   if (project?.escrow && input.cycleId >= project.escrow.effectiveCycle)
     throw new TypeError(
       "Escrow awards use the v2 gross allocation workflow; legacy Solana plans cannot reserve them",
-    );
-  if (
-    project?.funding.freshCyclePaymentPolicy?.cycleId === input.cycleId &&
-    (input.legacyCapMinor !== undefined ||
-      [...(input.priorAccruedMinor?.values() ?? [])].some(
-        (v) => BigInt(v) !== 0n,
-      ))
-  )
-    throw new TypeError(
-      "Fresh-cycle policy forbids importing accrued principal or legacy caps",
     );
   const fundingBasis: AllocationFundingBasis | undefined =
     project?.reward.kind === "monthly-pool"
@@ -241,7 +231,7 @@ export function createRewardCycleProposal(
     throw new TypeError(
       "legacy cap reconstruction is restricted to historical trials",
     );
-  const view = createProjectView(
+  const view = createPaymentProjectView(
     input.snapshot,
     input.projectId,
     input.cycleId,
@@ -252,6 +242,7 @@ export function createRewardCycleProposal(
           committedMinor: input.legacyCapMinor,
           monthlyCapMinor: input.legacyCapMinor,
         },
+    input.archivedProject,
   );
   ensureCompleteCycle(input, view);
 
@@ -284,10 +275,15 @@ export function createRewardCycleProposal(
 
   if (!fundingBasis)
     throw new TypeError("Monthly proposal needs a funding basis");
-  // The proposal freezes the project's settlement network for this cycle.
-  const chain = view.project.reward.chain;
+  // The proposal freezes the project's settlement network for this cycle;
+  // reconstruction reuses the frozen value, never today's manifest.
+  const chain = input.frozenChain ?? view.project.reward.chain;
   if (chain === null)
     throw new TypeError("Monthly proposal needs a settlement network");
+  if (fundingAssetForNetwork(chain) !== "USDC")
+    throw new TypeError(
+      "The monthly reward rail settles USDC on Base or Solana only",
+    );
   // A previously reviewed balance survives a quiet month, so carried-only
   // actors get their own allocation rows after the leaders.
   const leaderIds = new Set(view.leaders.map((leader) => leader.actor.id));

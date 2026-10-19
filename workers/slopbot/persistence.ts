@@ -1,14 +1,21 @@
-// D1 access for Slopbot (migrations/0013_slopbot.sql). Cost and credit rows are
-// append-only; the balance is always derived, never stored.
+// D1 access for Slopbot (migrations/0013_slopbot.sql and
+// 0018_slopbot_delivery_processing.sql). Cost and credit rows are append-only;
+// the balance is always derived, never stored.
 import { PRICE_VERSION, priceUsage } from "./contracts";
 import type { CallRecord } from "./models";
 
-type D1Statement = {
+type D1Result = { success: boolean; meta?: { changes?: number } };
+export type D1Statement = {
   bind(...values: unknown[]): D1Statement;
   first<T>(): Promise<T | null>;
-  run(): Promise<{ success: boolean; meta?: { changes?: number } }>;
+  run(): Promise<D1Result>;
 };
-export type D1Database = { prepare(query: string): D1Statement };
+export type D1Database = {
+  prepare(query: string): D1Statement;
+};
+export type D1TransactionalDatabase = D1Database & {
+  batch(statements: D1Statement[]): Promise<D1Result[]>;
+};
 
 const now = () => new Date().toISOString();
 
@@ -26,40 +33,125 @@ export async function recordDelivery(
   return (result.meta?.changes ?? 0) === 1;
 }
 
-export async function upsertInstallation(
-  db: D1Database,
-  installation: {
-    id: number;
-    account: { id: number; login: string; type: string };
-  },
-) {
+export async function releaseDelivery(db: D1Database, deliveryId: string) {
   await db
-    .prepare(
-      `INSERT INTO slopbot_installations (installation_id, account_id, account_login, account_type, created_at)
-       VALUES (?, ?, ?, ?, ?) ON CONFLICT(installation_id) DO UPDATE SET removed_at = NULL, account_login = excluded.account_login`,
-    )
-    .bind(
-      installation.id,
-      installation.account.id,
-      installation.account.login,
-      installation.account.type,
-      now(),
-    )
+    .prepare("DELETE FROM slopbot_deliveries WHERE delivery_id = ?")
+    .bind(deliveryId)
     .run();
 }
 
-export async function setInstallationState(
+export async function claimInstallationDelivery(
   db: D1Database,
-  installationId: number,
-  state: "removed" | "suspended" | "active",
-) {
-  const column = state === "removed" ? "removed_at" : "suspended_at";
-  await db
+  deliveryId: string,
+  event: string,
+): Promise<boolean> {
+  const inserted = await db
     .prepare(
-      `UPDATE slopbot_installations SET ${column} = ? WHERE installation_id = ?`,
+      "INSERT OR IGNORE INTO slopbot_deliveries (delivery_id, event, received_at) VALUES (?, ?, ?)",
     )
-    .bind(state === "active" ? null : now(), installationId)
+    .bind(deliveryId, event, now())
     .run();
+  if ((inserted.meta?.changes ?? 0) === 1) return true;
+  const existing = await db
+    .prepare(
+      "SELECT event, installation_processed_at FROM slopbot_deliveries WHERE delivery_id = ?",
+    )
+    .bind(deliveryId)
+    .first<{ event: string; installation_processed_at: string | null }>();
+  return (
+    existing?.event === event && existing.installation_processed_at === null
+  );
+}
+
+type InstallationUpdate =
+  | {
+      kind: "upsert";
+      installation: {
+        id: number;
+        account: { id: number; login: string; type: string };
+      };
+      sourceUpdatedAt: number;
+    }
+  | {
+      kind: "state";
+      installation: {
+        id: number;
+        account: { id: number; login: string; type: string };
+      };
+      state: "removed" | "suspended" | "active";
+      sourceUpdatedAt: number;
+    };
+
+export async function completeInstallationDelivery(
+  db: D1TransactionalDatabase,
+  deliveryId: string,
+  update: InstallationUpdate | null,
+) {
+  const statements: D1Statement[] = [];
+  if (update?.kind === "upsert") {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO slopbot_installations (installation_id, account_id, account_login, account_type, created_at, source_updated_at)
+           VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(installation_id) DO UPDATE SET
+             removed_at = NULL,
+             account_login = excluded.account_login,
+             source_updated_at = excluded.source_updated_at
+           WHERE slopbot_installations.source_updated_at IS NULL
+             OR slopbot_installations.source_updated_at < excluded.source_updated_at`,
+        )
+        .bind(
+          update.installation.id,
+          update.installation.account.id,
+          update.installation.account.login,
+          update.installation.account.type,
+          now(),
+          update.sourceUpdatedAt,
+        ),
+    );
+  } else if (update?.kind === "state") {
+    const column = update.state === "removed" ? "removed_at" : "suspended_at";
+    const changedAt = update.state === "active" ? null : now();
+    const equalTimestampGuard =
+      update.state === "removed"
+        ? "slopbot_installations.removed_at IS NULL"
+        : update.state === "suspended"
+          ? "slopbot_installations.removed_at IS NULL AND slopbot_installations.suspended_at IS NULL"
+          : "0";
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO slopbot_installations
+             (installation_id, account_id, account_login, account_type, created_at, suspended_at, removed_at, source_updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(installation_id) DO UPDATE SET
+             ${column} = excluded.${column},
+             source_updated_at = excluded.source_updated_at
+           WHERE slopbot_installations.source_updated_at IS NULL
+             OR slopbot_installations.source_updated_at < excluded.source_updated_at
+             OR (slopbot_installations.source_updated_at = excluded.source_updated_at
+                 AND ${equalTimestampGuard})`,
+        )
+        .bind(
+          update.installation.id,
+          update.installation.account.id,
+          update.installation.account.login,
+          update.installation.account.type,
+          now(),
+          update.state === "suspended" ? changedAt : null,
+          update.state === "removed" ? changedAt : null,
+          update.sourceUpdatedAt,
+        ),
+    );
+  }
+  statements.push(
+    db
+      .prepare(
+        "UPDATE slopbot_deliveries SET installation_processed_at = ? WHERE delivery_id = ? AND installation_processed_at IS NULL",
+      )
+      .bind(now(), deliveryId),
+  );
+  await db.batch(statements);
 }
 
 export async function installation(db: D1Database, installationId: number) {
@@ -118,7 +210,7 @@ export async function reviewExists(
 ): Promise<boolean> {
   const row = await db
     .prepare(
-      "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND status != 'failed'",
+      "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND status IN ('running', 'completed')",
     )
     .bind(reviewKey)
     .first();
@@ -144,6 +236,21 @@ export async function startReview(
   db: D1Database,
   row: ReviewRow,
 ): Promise<"new" | "retry" | "exists"> {
+  // Eligibility skips are not completed reviews. Claim the same revision
+  // again when its draft/installation/budget state permits review. A skip
+  // before any model call is still a first billable attempt; prior calls
+  // retain the existing Slop-caused retry treatment.
+  const resumed = await db
+    .prepare(
+      `UPDATE slopbot_reviews SET status = 'running', content_digest = ?,
+        created_at = CASE WHEN EXISTS (SELECT 1 FROM slopbot_costs WHERE review_key = ?)
+          THEN created_at ELSE ? END, skip_reason = NULL, completed_at = NULL
+       WHERE review_key = ? AND status = 'skipped'
+       RETURNING EXISTS (SELECT 1 FROM slopbot_costs WHERE review_key = ?) AS retry`,
+    )
+    .bind(row.contentDigest, row.reviewKey, now(), row.reviewKey, row.reviewKey)
+    .first<{ retry: number }>();
+  if (resumed !== null) return resumed.retry === 1 ? "retry" : "new";
   const retried = await db
     .prepare(
       "UPDATE slopbot_reviews SET status = 'running' WHERE review_key = ? AND status = 'failed'",

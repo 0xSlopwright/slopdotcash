@@ -8,6 +8,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
   assertLeaderboardSnapshot,
+  assignLeaderboardRanks,
+  compareRankedEntries,
+  createLeaderboardSnapshot,
   LEADERBOARD_SCHEMA_VERSION,
   type LeaderboardEntry,
   type LeaderboardSnapshot,
@@ -170,10 +173,6 @@ function actorId(value: unknown): string {
   return actor.id;
 }
 
-function codeUnitCompare(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
 function eventThirds(event: ScoreEvent): number {
   return event.scoreThirds ?? event.points * 3;
 }
@@ -316,19 +315,8 @@ function rebuildLeaders(
       ),
     };
   });
-  leaders.sort(
-    (left, right) =>
-      right.scoreThirds - left.scoreThirds ||
-      codeUnitCompare(
-        left.actor.login.toLowerCase(),
-        right.actor.login.toLowerCase(),
-      ) ||
-      codeUnitCompare(left.actor.login, right.actor.login) ||
-      codeUnitCompare(left.actor.id, right.actor.id),
-  );
-  leaders.forEach((leader, index) => {
-    leader.rank = index + 1;
-  });
+  leaders.sort(compareRankedEntries);
+  assignLeaderboardRanks(leaders);
   return leaders;
 }
 
@@ -373,6 +361,76 @@ function retainCausalAttributions(
   });
 }
 
+/**
+ * With no active project nothing is collected, so the deployed rows belong to
+ * no current repository. Rebuild the empty snapshot over the deployed window.
+ */
+function emptyRegistryLedger(input: JsonRecord): LeaderboardSnapshot {
+  const window = record(input.window, "snapshot.window");
+  const source = record(input.source, "snapshot.source");
+  const rateLimit = record(source.rateLimit, "snapshot.source.rateLimit");
+  const evidence = record(
+    source.evidenceVerification,
+    "snapshot.source.evidenceVerification",
+  );
+  const generatedAt = String(input.generatedAt);
+  const windowFrom = String(window.from);
+  const windowTo = String(window.to);
+  return createLeaderboardSnapshot({
+    generatedAt,
+    windowFrom,
+    windowTo,
+    sourceUpdatedAt: windowTo,
+    source: {
+      provider: "github-graphql",
+      fetchedAt: generatedAt,
+      cutoffAt: windowTo,
+      repositoryId: null,
+      repositories: [],
+      requestCount: 1,
+      searchSliceCount: 0,
+      rateLimit: {
+        cost: Number(rateLimit.cost),
+        limit: Number(rateLimit.limit),
+        remaining: Number(rateLimit.remaining),
+        resetAt: String(rateLimit.resetAt),
+      },
+      counts: {
+        mergedPullRequests: 0,
+        detailedMergedPullRequests: 0,
+        closedIssues: 0,
+        detailedClosedIssues: 0,
+        resolvedIssues: 0,
+        openIssues: 0,
+        openPullRequests: 0,
+      },
+      verificationWindow: {
+        days: Number(window.days),
+        from: windowFrom,
+        to: windowTo,
+      },
+      evidenceVerification: {
+        status: "complete",
+        sourceCount: 0,
+        artifactCount: 0,
+        maxSources: Number(evidence.maxSources),
+        maxArtifacts: Number(evidence.maxArtifacts),
+      },
+    },
+    mergedPullRequestOutcomes: [],
+    mergedPullRequests: [],
+    reviewedMergedPullRequests: [],
+    detailEligibleMergedPullRequestIds: [],
+    closedIssueCount: 0,
+    resolvedIssues: [],
+    openIssues: [],
+    openPullRequests: [],
+    verificationWindowFrom: windowFrom,
+    verifiedEvidence: [],
+    evaluatedContributions: [],
+  });
+}
+
 export function preparePullRequestLedger(value: unknown): LeaderboardSnapshot {
   const input = record(value, "snapshot");
   if (
@@ -381,12 +439,17 @@ export function preparePullRequestLedger(value: unknown): LeaderboardSnapshot {
   ) {
     throw new TypeError("snapshot.generatedAt cannot be in the future");
   }
+  if (TARGET_REPOSITORIES.length === 0) return emptyRegistryLedger(input);
   const candidate = addActivatedRepositories(
     rebindTransferredRepositoryPresentation(record(value, "snapshot")),
   );
   if (candidate.schemaVersion === LEADERBOARD_SCHEMA_VERSION) {
     assertLeaderboardSnapshot(candidate);
-    return candidate as unknown as LeaderboardSnapshot;
+    const leaders = candidate.leaders
+      .map((leader) => ({ ...leader }))
+      .sort(compareRankedEntries);
+    assignLeaderboardRanks(leaders);
+    return { ...candidate, leaders };
   }
   if (candidate.schemaVersion !== "5") {
     throw new TypeError("deployed ledger is not schema 5 or 6");

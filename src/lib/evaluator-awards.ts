@@ -1,3 +1,4 @@
+import { exactKeys, readRecord } from "./record-validation";
 /**
  * Validates the maintainer-approved bridge between an evaluator finding and a
  * capped public score event. Raw model output never reaches the ledger: only a
@@ -15,6 +16,7 @@ import {
   externalSourceId,
   externalWorkKey,
 } from "./external-sources";
+import { githubUserIdFromNodeId } from "./github-actor";
 import {
   canonicalActorAvatarUrl,
   type GitHubActor,
@@ -52,25 +54,6 @@ export interface EvaluatorAwardEvent extends ScoreEvent {
     manifestPath: string;
     manifestSha256: string;
   };
-}
-
-function record(value: unknown, field: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-  field: string,
-): void {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  if (actual.join("\0") !== wanted.join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
 }
 
 function text(
@@ -134,7 +117,7 @@ function githubUrl(
 }
 
 function actor(value: unknown, field: string): GitHubActor {
-  const candidate = record(value, field);
+  const candidate = readRecord(value, field);
   exactKeys(candidate, ["avatarUrl", "id", "kind", "login", "url"], field);
   const login = text(candidate.login, `${field}.login`, {
     max: 39,
@@ -172,7 +155,7 @@ function actor(value: unknown, field: string): GitHubActor {
 }
 
 function review(value: unknown, field: string): EvaluatorAwardReview {
-  const candidate = record(value, field);
+  const candidate = readRecord(value, field);
   exactKeys(candidate, ["decisionUrl", "reviewedAt", "reviewer"], field);
   const reviewer = text(candidate.reviewer, `${field}.reviewer`, {
     max: 39,
@@ -194,7 +177,10 @@ function review(value: unknown, field: string): EvaluatorAwardReview {
       parsed.pathname,
     ) ||
     parsed.search ||
-    parsed.hash
+    parsed.hash ||
+    parsed.username ||
+    parsed.password ||
+    parsed.port
   ) {
     throw new TypeError(
       `${field}.decisionUrl must be a Slop review pull request`,
@@ -211,7 +197,7 @@ function review(value: unknown, field: string): EvaluatorAwardReview {
 export function assertEvaluatorAwardManifest(
   value: unknown,
 ): EvaluatorAwardManifest {
-  const manifest = record(value, "evaluator award");
+  const manifest = readRecord(value, "evaluator award");
   exactKeys(
     manifest,
     [
@@ -253,7 +239,7 @@ export function assertEvaluatorAwardManifest(
       "evaluator award repository is not canonical for its project",
     );
   }
-  const source = record(manifest.source, "evaluator award.source");
+  const source = readRecord(manifest.source, "evaluator award.source");
   const external = source.kind === "external";
   exactKeys(
     source,
@@ -422,6 +408,7 @@ export function loadEvaluatorAwardEvents(
   }
   const ids = new Set<string>();
   const sources = new Set<string>();
+  const reviewPairs = new Set<string>();
   const externalWork = new Set<string>();
   const externalContent = new Set<string>();
   return paths.map((path) => {
@@ -452,6 +439,21 @@ export function loadEvaluatorAwardEvents(
     const sourceKey = `${manifest.repository}\0${manifest.source.id}`;
     if (ids.has(manifest.id) || sources.has(sourceKey)) {
       throw new TypeError("evaluator award ids and sources must be unique");
+    }
+    if (manifest.source.kind === "review") {
+      const actorKey =
+        githubUserIdFromNodeId(manifest.actor.id) ?? manifest.actor.id;
+      const reviewKey = JSON.stringify([
+        manifest.repository,
+        actorKey,
+        manifest.source.number,
+      ]);
+      if (reviewPairs.has(reviewKey)) {
+        throw new TypeError(
+          "evaluator review awards must be unique per actor and pull request",
+        );
+      }
+      reviewPairs.add(reviewKey);
     }
     if (manifest.source.platform && manifest.source.evidence) {
       const workKey = `${manifest.repository}\0${externalWorkKey(

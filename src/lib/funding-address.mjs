@@ -100,6 +100,11 @@ function validBitcoinAddress(value) {
   if (witnessVersion === 0) {
     return (program.length === 20 || program.length === 32) && encoding === 1;
   }
+  // BIP341 defines a version 1 (Taproot) program as exactly 32 bytes. Any
+  // other version 1 length is not a Taproot output and is anyone-can-spend,
+  // so it can never be a safe funding receiving address. Future versions
+  // keep the BIP350 forward-compatible 2-40 byte range.
+  if (witnessVersion === 1 && program.length !== 32) return false;
   return encoding === 0x2bc830a3;
 }
 
@@ -109,6 +114,7 @@ export function fundingAssetForNetwork(network) {
       base: "USDC",
       bitcoin: "BTC",
       ethereum: "USDC",
+      robinhood: "USDG",
       solana: "USDC",
     }[network] ?? null
   );
@@ -119,7 +125,7 @@ export function isFundingAddress(network, value) {
     return decodedBase58Length(value, 32, 44) === 32;
   }
   if (network === "bitcoin") return validBitcoinAddress(value);
-  if (network === "base" || network === "ethereum") {
+  if (network === "base" || network === "ethereum" || network === "robinhood") {
     return (
       typeof value === "string" &&
       /^0x[0-9a-f]{40}$/u.test(value) &&
@@ -157,6 +163,11 @@ export function assertFundingAddresses(
       ["address", "asset", "effectiveAt", "network", "replacedAt"],
       routeField,
     );
+    if (route.network === "robinhood") {
+      throw new TypeError(
+        "Robinhood Chain projects settle through the project escrow; a direct funding address is not supported",
+      );
+    }
     const asset = fundingAssetForNetwork(route.network);
     if (asset === null || route.asset !== asset) {
       throw new TypeError(`${routeField} network or asset is unsupported`);

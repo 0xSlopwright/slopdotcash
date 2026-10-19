@@ -182,7 +182,6 @@ pre {
 /* Plain buttons inside panels and forms share the secondary treatment. */
 .points-panel button:not(.button),
 .data-panel button:not(.button),
-.funding-review button:not(.button),
 .funding-workbench button:not(.button),
 .wallet-registration button:not(.button),
 .earnings-page button:not(.button),
@@ -201,7 +200,6 @@ pre {
 }
 
 .points-panel button:not(.button):hover:not(:disabled),
-.funding-review button:not(.button):hover:not(:disabled),
 .funding-workbench button:not(.button):hover:not(:disabled),
 .wallet-registration button:not(.button):hover:not(:disabled),
 .earnings-page button:not(.button):hover:not(:disabled),
@@ -212,7 +210,6 @@ pre {
 }
 
 .points-panel button:not(.button):disabled,
-.funding-review button:not(.button):disabled,
 .funding-workbench button:not(.button):disabled,
 .wallet-registration button:not(.button):disabled,
 .earnings-page button:not(.button):disabled,
@@ -350,6 +347,27 @@ label {
   font-weight: 700;
 }
 
+.header-nav-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--brand-size-button-small);
+  margin-left: auto;
+  padding: 0 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--brand-radius-small);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.header-nav-link:hover {
+  border-color: var(--ink);
+}
+
+.header-nav-link + .account-control {
+  margin-left: 0;
+}
+
 .account-login:hover {
   background: #ffffff;
 }
@@ -442,15 +460,16 @@ label {
 
 /* Footer: orange band, inverse mark. */
 .site-footer {
-  padding-block: 72px 48px;
+  padding-block: 48px;
   border-top: 0;
   background: var(--orange);
   color: var(--on-accent);
 }
 
 .footer-grid {
-  grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr));
-  gap: 48px 32px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 32px;
 }
 
 .footer-brand-row {
@@ -469,18 +488,10 @@ label {
 .footer-links {
   flex-direction: column;
   flex-wrap: nowrap;
+  align-items: flex-end;
   gap: 12px;
   font-size: 16px;
   font-weight: 600;
-}
-
-.footer-links > span {
-  margin-bottom: 4px;
-  color: var(--on-accent);
-  font-size: 13px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .footer-links a {
@@ -495,25 +506,6 @@ label {
 
 .site-footer a:focus-visible {
   outline-color: var(--on-accent);
-}
-
-.footer-meta {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 12px;
-  padding-top: 24px;
-  border-top: 1px solid rgba(15, 14, 12, 0.22);
-}
-
-.footer-grid p,
-.footer-grid .footer-copyright {
-  margin: 0;
-  color: var(--on-accent);
-  font-size: 14px;
-  font-weight: 600;
-  text-align: left;
 }
 
 /* Skill box. */
@@ -639,13 +631,8 @@ label {
   color: var(--ink);
 }
 
-.install-heading p,
-.install-advanced {
+.install-heading p {
   color: var(--muted);
-}
-
-.install-advanced {
-  border-top-color: var(--line);
 }
 
 /* Home. */
@@ -744,7 +731,9 @@ label {
 }
 
 .project-card-content {
-  grid-template-columns: minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 16px;
 }
 
@@ -754,6 +743,7 @@ label {
 
 .project-bounty {
   justify-content: flex-start;
+  margin-top: auto;
   text-align: left;
 }
 
@@ -846,69 +836,9 @@ label {
   font-size: 14px;
 }
 
-.how-section {
-  padding-block: 112px;
-  border-block: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--ink);
-}
-
-.how-tracks {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 24px;
-}
-
-.how-tracks article {
-  padding: 40px;
-  border-radius: var(--brand-radius-large);
-  background: var(--paper);
-}
-
-.how-tracks h3 {
-  margin: 0 0 32px;
-  font-size: 32px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  text-transform: uppercase;
-}
-
-.how-steps {
-  display: grid;
-  gap: 28px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.how-steps li {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  align-items: start;
-  gap: 18px;
-  color: var(--muted);
-  font-size: 17px;
-  line-height: 1.5;
-}
-
-.how-steps li > svg {
-  width: 48px;
-  height: 48px;
-  padding: 12px;
-  border-radius: 50%;
-  background: rgba(255, 90, 25, 0.12);
-  color: var(--orange);
-}
-
-.how-steps strong {
-  display: block;
-  color: var(--ink);
-  font-size: 19px;
-}
-
 /* Leaderboard. */
 .home-leaderboard-section {
-  padding-block: 112px 144px;
+  padding-block: 0 144px;
 }
 
 .home-leaderboard-section > .points-panel > h2 {
@@ -942,6 +872,57 @@ label {
 .points-controls select {
   min-height: var(--brand-size-button-medium);
   border-radius: var(--brand-radius-small);
+}
+
+.points-period {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.points-period legend {
+  float: left;
+  width: 100%;
+  margin-bottom: 0.4rem;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.points-panel .points-period button {
+  min-height: var(--brand-size-button-medium);
+  margin: 0;
+  border-color: var(--input-border);
+  border-radius: var(--brand-radius-small);
+  color: var(--muted);
+  background: transparent;
+  font-weight: 600;
+}
+
+.points-panel .points-period button[aria-pressed="true"] {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.points-panel .points-table .points-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: none;
+  font: inherit;
+  text-align: inherit;
+}
+
+.points-table th[aria-sort="descending"] {
+  color: var(--ink);
 }
 
 .points-table table {
@@ -1008,7 +989,7 @@ label {
   font-size: 14px;
 }
 
-.points-panel > a {
+.points-panel > a:not(.button) {
   display: inline-flex;
   margin-top: 8px;
   font-weight: 700;
@@ -1035,14 +1016,6 @@ label {
   color: var(--danger);
 }
 
-.status-dot {
-  background: var(--green);
-}
-
-.stale-dot {
-  background: var(--warning);
-}
-
 /* Cards and panels shared across records. */
 .reward-card,
 .manifest-preview,
@@ -1058,23 +1031,15 @@ label {
   color: var(--orange);
 }
 
-@media (max-width: 900px) {
-  .footer-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .footer-brand-row {
-    grid-column: 1 / -1;
-  }
-
-  .how-tracks {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
 @media (max-width: 680px) {
   .header-inner {
     min-height: 72px;
+  }
+
+  .header-nav-link,
+  .account-login {
+    padding: 0 12px;
+    font-size: 14px;
   }
 
   .wordmark {
@@ -1089,10 +1054,6 @@ label {
     display: none;
   }
 
-  .footer-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
-
   .agent-prompt-box {
     grid-template-columns: minmax(0, 1fr);
     padding: 16px;
@@ -1104,10 +1065,6 @@ label {
 
   .command-box .button {
     width: 100%;
-  }
-
-  .how-tracks article {
-    padding: 28px 24px;
   }
 
   .project-card {
@@ -1144,11 +1101,4 @@ main h2 {
   font-weight: 800;
   letter-spacing: -0.03em;
   text-transform: uppercase;
-}
-
-.funding-workbench .payout-steps button[aria-current="step"],
-.funding-workbench .payout-steps button[aria-current="step"]:hover {
-  border-color: var(--orange);
-  background: var(--orange);
-  color: var(--on-accent);
 }

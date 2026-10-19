@@ -21,10 +21,17 @@ import {
 } from "@solana/web3.js";
 import {
   escrowInvocations,
+  readVaultTotals,
   solanaAwardId,
   solanaPaymentAdapter,
 } from "../.local/adapter.mjs";
-import { expectedDeployment } from "./deployment.mjs";
+import {
+  configAddress,
+  configFees,
+  configIdentity,
+  ensureConfig,
+  expectedDeployment,
+} from "./deployment.mjs";
 
 const { AnchorProvider, Program, BN } = anchor;
 const provider = AnchorProvider.env();
@@ -44,22 +51,33 @@ const pda = (...seeds) =>
 const key = (x) => x.toBuffer();
 const seed = (s) => Buffer.from(s);
 const actorSeed = (id) => bn(id).toArrayLike(Buffer, "le", 8);
-const DELAY = 5;
+const DELAY = 8;
+const ROTATION_DELAY = 4;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-// The validator clock follows wall time; wait past the binding delay.
-const activate = () => sleep((DELAY + 2) * 1000);
-const authority = Keypair.generate();
-const feeOwner = Keypair.generate();
+// The program reads the validator clock, which can lag wall time on a loaded host.
+// Wait until the validator clock itself has moved past the binding delay.
+const chainTime = async () =>
+  provider.connection.getBlockTime(
+    await provider.connection.getSlot("confirmed"),
+  );
+async function activate() {
+  const target = (await chainTime()) + DELAY + 2;
+  while ((await chainTime()) < target) await sleep(500);
+}
+// Every project uses the identity authority and fee recipient pinned in Config.
+const authority = configIdentity;
+const nextAuthority = Keypair.generate();
+// The identity authority in force; the rotation test below moves it to nextAuthority.
+let currentAuthority = authority;
+const feeOwner = configFees;
 const recipient = Keypair.generate();
 const late = Keypair.generate();
 let mint, source, feeAccount, destination, lateDestination, project, vault;
-const binding = (id) =>
-  pda(
-    seed("wallet"),
-    key(authority.publicKey),
-    Buffer.from(network),
-    actorSeed(id),
-  );
+// Bindings are per project, so one project's delay, vetoes and payments never
+// change another project's binding.
+const bindingIn = (projectKey, id) =>
+  pda(seed("wallet"), key(projectKey), actorSeed(id));
+const binding = (id) => bindingIn(project, id);
 const awardOf = (origin) =>
   Buffer.from(
     solanaAwardId(
@@ -69,6 +87,17 @@ const awardOf = (origin) =>
     "hex",
   );
 const obligation = (id) => pda(seed("award"), key(project), awardOf(id));
+// Submission expiry for bind_wallet; the binding itself never expires.
+const expiry = () => bn(Math.floor(Date.now() / 1000) + 3600);
+// The veto account always follows the stored latest version, whatever version the
+// payer names.
+async function latestVersion(actor, named) {
+  try {
+    return (await program.account.walletBinding.fetch(binding(actor))).version;
+  } catch {
+    return bn(named);
+  }
+}
 async function commit(
   id,
   actor,
@@ -92,28 +121,62 @@ async function commit(
     })
     .rpc();
 }
-async function bind(actor, address, expected = 0, domain = network) {
+// The authority and the destination keypair both sign; the program reads the
+// destination from its signer account. `expiresAt` limits submission only.
+async function bind(
+  actor,
+  wallet,
+  expected = 0,
+  domain = network,
+  {
+    claim = hash(`claim:${actor}:${expected}`),
+    expiresAt = expiry(),
+    signer = currentAuthority,
+    cosigners = [wallet],
+  } = {},
+) {
   return program.methods
-    .bindWallet(
-      bn(actor),
-      domain,
-      bn(expected),
-      address,
-      hash(`claim:${actor}:${expected}`),
-    )
+    .bindWallet(bn(actor), domain, bn(expected), claim, expiresAt)
     .accountsStrict({
       payer: payer.publicKey,
-      identityAuthority: authority.publicKey,
+      identityAuthority: signer.publicKey,
+      destination: wallet.publicKey,
       project,
       binding: binding(actor),
       systemProgram: SystemProgram.programId,
     })
-    .signers([authority])
+    .signers([signer, ...cosigners])
     .rpc();
 }
+const rotation = {
+  propose: (next, signer = payer) =>
+    program.methods
+      .proposeAuthorityRotation(next)
+      .accountsStrict({ owner: signer.publicKey, project })
+      .signers(signer === payer ? [] : [signer])
+      .rpc(),
+  confirm: (signer = feeOwner) =>
+    program.methods
+      .confirmAuthorityRotation()
+      .accountsStrict({ feeRecipient: signer.publicKey, project })
+      .signers(signer === payer ? [] : [signer])
+      .rpc(),
+  cancel: (signer = payer) =>
+    program.methods
+      .cancelAuthorityRotation()
+      .accountsStrict({ owner: signer.publicKey, project })
+      .signers(signer === payer ? [] : [signer])
+      .rpc(),
+  execute: () =>
+    program.methods
+      .executeAuthorityRotation()
+      .accountsStrict({ project })
+      .rpc(),
+};
 const veto = (actor, version) =>
   pda(seed("veto"), key(project), actorSeed(actor), actorSeed(version));
-function payInstruction(id, actor, address, version = 1) {
+async function payInstruction(id, actor, address, version = 1) {
+  const latest = await latestVersion(actor, version);
   return program.methods.pay(bn(version)).accountsStrict({
     project,
     obligation: obligation(id),
@@ -123,13 +186,14 @@ function payInstruction(id, actor, address, version = 1) {
     destination: address,
     feeAccount,
     tokenProgram: TOKEN_PROGRAM_ID,
-    veto: veto(actor, version),
+    veto: veto(actor, latest),
   });
 }
-function pay(id, actor, address, version = 1) {
-  return payInstruction(id, actor, address, version).rpc();
+async function pay(id, actor, address, version = 1) {
+  return (await payInstruction(id, actor, address, version)).rpc();
 }
-function vetoBinding(actor, version, signer = payer) {
+// `award` names an unpaid award whose commit delay extends the veto window.
+function vetoBinding(actor, version, signer = payer, award = null) {
   return program.methods
     .vetoBinding(bn(actor), bn(version))
     .accountsStrict({
@@ -137,6 +201,7 @@ function vetoBinding(actor, version, signer = payer) {
       project,
       binding: binding(actor),
       veto: veto(actor, version),
+      obligation: award ? obligation(award) : null,
       systemProgram: SystemProgram.programId,
     })
     .signers(signer === payer ? [] : [signer])
@@ -197,6 +262,7 @@ function chargeService(amount, digest, signer = payer) {
 const balance = async (address) =>
   (await getAccount(provider.connection, address)).amount;
 test("actual SPL escrow lifecycle, late wallet claim, reserve and authority attacks", async () => {
+  await ensureConfig(program);
   mint = await createMint(
     provider.connection,
     payer,
@@ -242,6 +308,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
       authority.publicKey,
       feeOwner.publicKey,
       bn(DELAY),
+      bn(ROTATION_DELAY),
     )
     .accountsStrict({
       owner: payer.publicKey,
@@ -250,12 +317,13 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
       vault,
       tokenProgram: TOKEN_PROGRAM_ID,
       systemProgram: SystemProgram.programId,
+      config: configAddress(program.programId),
     })
     .rpc();
   await program.methods
     .deposit(bn(1_000_000_000))
     .accountsStrict({
-      owner: payer.publicKey,
+      depositor: payer.publicKey,
       project,
       mint,
       source,
@@ -278,28 +346,27 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     pay("late", 102, lateDestination),
     /AccountNotInitialized/,
   );
-  await bind(101, recipient.publicKey);
+  // Let both awards pass their commit delay so the binding delay is what rejects.
+  await activate();
+  // The authority alone cannot bind a wallet it does not hold: without the
+  // destination's signature the transaction never verifies.
+  await assert.rejects(bind(101, recipient, 0, network, { cosigners: [] }));
+  // The destination alone cannot bind itself either.
+  await assert.rejects(
+    bind(101, recipient, 0, network, { signer: recipient, cosigners: [] }),
+  );
+  await bind(101, recipient);
   await assert.rejects(pay("first", 101, destination), /BindingPending/);
   await activate();
   await assert.rejects(vetoBinding(101, 1), /BindingActive/);
-  await assert.rejects(bind(101, late.publicKey), /StaleBinding/);
-  await assert.rejects(bind(102, late.publicKey, 0, hash("different-network")));
+  await assert.rejects(bind(101, late), /StaleBinding/);
+  await assert.rejects(bind(102, late, 0, hash("different-network")));
   await assert.rejects(
     pay("first", 101, lateDestination),
     /ConstraintRaw|WrongDestination/,
   );
-  await assert.rejects(
-    program.methods
-      .bindWallet(bn(101), network, bn(1), late.publicKey, hash("bad-claim"))
-      .accountsStrict({
-        payer: payer.publicKey,
-        identityAuthority: payer.publicKey,
-        project,
-        binding: binding(101),
-        systemProgram: SystemProgram.programId,
-      })
-      .rpc(),
-  );
+  // A co-signing wallet with a non-authority signer is still rejected.
+  await assert.rejects(bind(101, late, 1, network, { signer: payer }));
   await freezeAccount(provider.connection, payer, destination, mint, payer);
   await assert.rejects(pay("first", 101, destination));
   assert.equal(await balance(feeAccount), 0n);
@@ -347,7 +414,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     wrongMint,
     late.publicKey,
   );
-  await bind(102, late.publicKey);
+  await bind(102, late);
   await activate();
   await assert.rejects(
     pay("late", 102, wrongDestination),
@@ -380,14 +447,18 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
   const charged = await program.account.serviceCharge.fetch(service(invoice));
   assert.equal(charged.amount.toString(), "20000000");
   assert.equal(await balance(feeAccount), 22_000_000n);
-  // Split withdrawals cannot avoid the cumulative 10% charge.
+  // The 5% fee rounds down once per withdrawal: 1 pays 0, and
+  // 829,999,999 pays floor(829,999,999 / 20) = 41,499,999.
   await withdraw(1);
+  assert.equal(await balance(source), 1n);
+  assert.equal(await balance(feeAccount), 22_000_000n);
   await withdraw(829_999_999);
-  assert.equal(await balance(source), 747_000_000n);
-  assert.equal(await balance(feeAccount), 105_000_000n);
+  assert.equal(await balance(source), 788_500_001n);
+  assert.equal(await balance(feeAccount), 63_499_999n);
   await assert.rejects(withdraw(1), /InsufficientFreeBalance/);
-  // A stolen authority key rebinds actor 102 to a thief. Only the owner can
-  // veto it, and only while it is pending; the vetoed version never pays.
+  // A stolen authority key rebinds actor 102 to a thief, who must expose a
+  // wallet by co-signing. Only the owner can veto it, and only while it is
+  // pending; the vetoed version never pays.
   const thief = Keypair.generate();
   const thiefDestination = await createAccount(
     provider.connection,
@@ -395,7 +466,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     mint,
     thief.publicKey,
   );
-  await bind(102, thief.publicKey, 1);
+  await bind(102, thief, 1);
   // Fund the identity key so the owner check, not rent, rejects its veto.
   await sendAndConfirmTransaction(
     provider.connection,
@@ -413,18 +484,17 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
   await activate();
   await assert.rejects(pay("late", 102, thiefDestination, 2), /BindingVetoed/);
   assert.equal(await balance(thiefDestination), 0n);
-  await bind(102, recipient.publicKey, 2);
-  await assert.rejects(
-    pay("late", 102, lateDestination, 2),
-    /StaleBinding|ConstraintRaw|ConstraintSeeds/,
-  );
+  await bind(102, recipient, 2);
+  // Actor 102 has never been paid, so nothing pays while version 3 is pending.
+  await assert.rejects(pay("late", 102, destination, 2), /BindingPending/);
   await activate();
+  await assert.rejects(pay("late", 102, destination, 2), /StaleBinding/);
   // A third party pays with unrelated token movements in the same transaction.
   // The adapter must still verify this payment from its own instruction.
   const polluted = await sendAndConfirmTransaction(
     provider.connection,
     new Transaction().add(
-      await payInstruction("late", 102, destination, 3).instruction(),
+      await (await payInstruction("late", 102, destination, 3)).instruction(),
       (await import("@solana/spl-token")).createTransferInstruction(
         source,
         destination,
@@ -435,13 +505,13 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     [payer],
   );
   assert.equal(await balance(destination), 147_000_001n);
-  assert.equal(await balance(feeAccount), 106_000_000n);
+  assert.equal(await balance(feeAccount), 64_499_999n);
   assert.equal(await balance(vault), 0n);
   const state = await program.account.project.fetch(project);
   assert.equal(state.reserved.toString(), "0");
   assert.equal(state.paid.toString(), "147000000");
   assert.equal(state.payoutFees.toString(), "3000000");
-  assert.equal(state.withdrawalFees.toString(), "83000000");
+  assert.equal(state.withdrawalFees.toString(), "41499999");
   assert.equal(state.serviceFees.toString(), "20000000");
   assert.equal(
     (await balance(source)) +
@@ -486,6 +556,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     feeRecipient: feeOwner.publicKey.toBase58(),
     ...expectedDeployment,
     bindingDelaySeconds: String(DELAY),
+    rotationDelaySeconds: String(ROTATION_DELAY),
   });
   for (const [signature, kind] of [
     [firstCommit, "reserved"],
@@ -527,6 +598,44 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
   });
   assert.equal(pollutedEvidence.netMicro, "49000000");
   assert.equal(pollutedEvidence.destination, recipient.publicKey.toBase58());
+  // The vault totals read one finalized slot and match the on-chain counters.
+  const totals = await readVaultTotals({
+    rpcUrl: provider.connection.rpcEndpoint,
+    network: "solana:localnet",
+    projectPda: evidence.project,
+    programId: evidence.programId,
+  });
+  const counters = await program.account.project.fetch(project, "finalized");
+  assert.equal(totals.network, "solana:localnet");
+  assert.equal(totals.vault, project.toBase58());
+  assert.equal(totals.asset, mint.toBase58());
+  assert.equal(totals.decimals, 6);
+  assert.ok(BigInt(totals.blockNumber) > 0n);
+  assert.ok(!Number.isNaN(Date.parse(totals.blockTime)));
+  for (const [field, value] of [
+    ["totalDeposited", counters.deposited],
+    ["totalPaid", counters.paid],
+    ["totalPayoutFees", counters.payoutFees],
+    ["totalGrossWithdrawn", counters.withdrawnGross],
+    ["totalWithdrawalFees", counters.withdrawalFees],
+    ["totalServiceFees", counters.serviceFees],
+    ["reserved", counters.reserved],
+  ])
+    assert.equal(totals[field], value.toString(), field);
+  assert.equal(totals.freeBalance, "0");
+  assert.equal(totals.reservedPrincipal, null);
+  assert.equal(totals.accruedFees, null);
+  assert.equal(
+    BigInt(totals.totalDeposited),
+    [
+      totals.freeBalance,
+      totals.reserved,
+      totals.totalPaid,
+      totals.totalPayoutFees,
+      totals.totalGrossWithdrawn,
+      totals.totalServiceFees,
+    ].reduce((sum, value) => sum + BigInt(value), 0n),
+  );
   await mintTo(provider.connection, payer, mint, vault, payer, 1_000_000n);
   await assert.rejects(withdraw(1), /InsufficientFreeBalance/);
   await assert.rejects(
@@ -534,4 +643,530 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     /InsufficientFreeBalance/,
   );
   assert.equal(await balance(vault), 1_000_000n);
+  // Identity authority rotation: the owner proposes, the fee recipient
+  // confirms, anyone executes after the delay, and the current authority has
+  // no instruction that stops it. Existing bindings survive the rotation.
+  await mintTo(provider.connection, payer, mint, source, payer, 20_000_000n);
+  await program.methods
+    .deposit(bn(20_000_000))
+    .accountsStrict({
+      depositor: payer.publicKey,
+      project,
+      mint,
+      source,
+      vault,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .rpc();
+  await commit("again", 101, 5_000_000);
+  await commit("rotated", 104, 10_000_000);
+  await assert.rejects(rotation.execute(), /NoRotationPending/);
+  await assert.rejects(rotation.confirm(), /NoRotationPending/);
+  await assert.rejects(rotation.cancel(), /NoRotationPending/);
+  await assert.rejects(rotation.propose(payer.publicKey), /InvalidIdentity/);
+  await assert.rejects(rotation.propose(feeOwner.publicKey), /InvalidIdentity/);
+  await assert.rejects(
+    rotation.propose(authority.publicKey),
+    /InvalidIdentity/,
+  );
+  await assert.rejects(
+    rotation.propose(nextAuthority.publicKey, authority),
+    /ConstraintHasOne/,
+  );
+  await rotation.propose(nextAuthority.publicKey);
+  let rotated = await program.account.project.fetch(project);
+  assert.equal(
+    rotated.pendingIdentityAuthority.toBase58(),
+    nextAuthority.publicKey.toBase58(),
+  );
+  assert.equal(rotated.rotationConfirmed, false);
+  await assert.rejects(
+    rotation.propose(Keypair.generate().publicKey),
+    /RotationPending/,
+  );
+  await assert.rejects(rotation.execute(), /RotationUnconfirmed/);
+  await assert.rejects(rotation.confirm(authority), /ConstraintHasOne/);
+  await rotation.cancel();
+  await assert.rejects(rotation.execute(), /NoRotationPending/);
+  await rotation.propose(nextAuthority.publicKey);
+  await rotation.confirm();
+  await assert.rejects(rotation.confirm(), /RotationConfirmed/);
+  await assert.rejects(rotation.execute(), /RotationNotReady/);
+  // The current authority still binds while the proposal waits.
+  await bind(104, late);
+  await sleep((ROTATION_DELAY + 2) * 1000);
+  await rotation.execute();
+  rotated = await program.account.project.fetch(project);
+  assert.equal(
+    rotated.identityAuthority.toBase58(),
+    nextAuthority.publicKey.toBase58(),
+  );
+  assert.equal(
+    rotated.pendingIdentityAuthority.toBase58(),
+    SystemProgram.programId.toBase58(),
+  );
+  currentAuthority = nextAuthority;
+  await assert.rejects(
+    bind(104, late, 1, network, { signer: authority }),
+    /ConstraintHasOne/,
+  );
+  // Bindings made before the rotation keep paying: actor 101 through its
+  // active version 1, actor 104 through the version bound during the window.
+  await activate();
+  await pay("again", 101, destination, 1);
+  assert.equal(await balance(destination), 151_900_001n);
+  await activate();
+  await pay("rotated", 104, lateDestination, 1);
+  assert.equal(await balance(lateDestination), 9_800_000n);
+  // The new authority binds the next version at the same PDA.
+  await bind(104, recipient, 1, network, { signer: nextAuthority });
+  assert.equal(
+    (
+      await program.account.walletBinding.fetch(binding(104))
+    ).version.toString(),
+    "2",
+  );
+});
+
+// Binding lifecycle after the 12 October 2026 review (M-1, M-2, L-1 to L-5).
+test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay, project-scoped bindings, bind and fee checks", async () => {
+  const ata = async (owner) =>
+    createAccount(provider.connection, payer, mint, owner);
+  const walletA = Keypair.generate(),
+    walletB = Keypair.generate(),
+    walletC = Keypair.generate(),
+    walletD = Keypair.generate();
+  const [ataA, ataB, ataC, ataD] = await Promise.all(
+    [walletA, walletB, walletC, walletD].map((k) => ata(k.publicKey)),
+  );
+  await mintTo(provider.connection, payer, mint, source, payer, 100_000_000n);
+  await program.methods
+    .deposit(bn(100_000_000))
+    .accountsStrict({
+      depositor: payer.publicKey,
+      project,
+      mint,
+      source,
+      vault,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .rpc();
+  // M-1: a binding armed before any award pays only after the award's own delay, and
+  // the owner can veto it inside that window by naming the unpaid award.
+  await bind(201, walletA);
+  await activate();
+  await commit("m1", 201, 10_000_000);
+  await assert.rejects(pay("m1", 201, ataA), /AwardPending/);
+  await assert.rejects(vetoBinding(201, 1), /BindingActive/);
+  await vetoBinding(201, 1, payer, "m1");
+  await activate();
+  await assert.rejects(pay("m1", 201, ataA), /BindingVetoed/);
+  assert.equal(await balance(ataA), 0n);
+  await bind(201, walletA, 1);
+  await activate();
+  await pay("m1", 201, ataA, 2);
+  assert.equal(await balance(ataA), 9_800_000n);
+  // A binding that has paid cannot be vetoed, even while a new award is in its window.
+  await commit("m1b", 201, 1_000_000);
+  await assert.rejects(vetoBinding(201, 2, payer, "m1b"), /BindingActive/);
+  let state201 = await program.account.walletBinding.fetch(binding(201));
+  assert.equal(state201.paidVersion.toString(), "2");
+  assert.equal(state201.vetoCount, 0);
+  // M-2: while a rotation waits out its delay, and after the owner vetoes it, no
+  // payment goes to the earlier wallet. A rotation away from a compromised wallet
+  // therefore freezes payment to it at once.
+  await commit("m2", 201, 10_000_000);
+  await activate();
+  await bind(201, walletB, 2);
+  await assert.rejects(pay("m2", 201, ataB, 3), /BindingPending/);
+  await assert.rejects(pay("m2", 201, ataA, 2), /BindingPending/);
+  await vetoBinding(201, 3);
+  await activate();
+  await assert.rejects(pay("m2", 201, ataB, 3), /BindingVetoed/);
+  await assert.rejects(pay("m2", 201, ataA, 2), /BindingVetoed/);
+  // The veto cap applies between payments too: after the paid version, the owner
+  // can veto three rotations, and the fourth pays once its delay passes.
+  await bind(201, walletB, 3);
+  await vetoBinding(201, 4);
+  await bind(201, walletB, 4);
+  await vetoBinding(201, 5);
+  await bind(201, walletB, 5);
+  await assert.rejects(vetoBinding(201, 6), /VetoLimit/);
+  await activate();
+  await assert.rejects(pay("m2", 201, ataA, 2), /StaleBinding/);
+  await pay("m2", 201, ataB, 6);
+  await pay("m1b", 201, ataB, 6);
+  assert.equal(await balance(ataA), 9_800_000n);
+  assert.equal(await balance(ataB), 10_780_000n);
+  state201 = await program.account.walletBinding.fetch(binding(201));
+  assert.equal(state201.paidVersion.toString(), "6");
+  assert.equal(state201.vetoCount, 0);
+  // Veto cap: before the actor's first payment the owner gets three vetoes.
+  await commit("c1", 202, 10_000_000);
+  for (let version = 1; version <= 3; version++) {
+    await bind(202, walletC, version - 1);
+    await vetoBinding(202, version);
+  }
+  assert.equal(
+    (await program.account.walletBinding.fetch(binding(202))).vetoCount,
+    3,
+  );
+  await bind(202, walletC, 3);
+  await assert.rejects(vetoBinding(202, 4), /VetoLimit/);
+  await activate();
+  await pay("c1", 202, ataC, 4);
+  assert.equal(await balance(ataC), 9_800_000n);
+  // L-4: bind_wallet rejects the project and vault PDAs, a zero claim digest and an
+  // expired submission.
+  // A PDA cannot co-sign, so the project and vault addresses never bind.
+  await assert.rejects(
+    bind(203, { publicKey: project }, 0, network, { cosigners: [] }),
+  );
+  await assert.rejects(
+    bind(203, { publicKey: vault }, 0, network, { cosigners: [] }),
+  );
+  await assert.rejects(
+    bind(203, walletD, 0, network, { claim: Array(32).fill(0) }),
+    /InvalidIdentity/,
+  );
+  await assert.rejects(
+    bind(203, walletD, 0, network, { expiresAt: bn(1) }),
+    /BindingExpired/,
+  );
+  // L-2: a 49-unit award has a zero fee, so a frozen fee account does not stop it.
+  await commit("zero-fee", 204, 49);
+  await bind(204, walletD);
+  await activate();
+  await freezeAccount(provider.connection, payer, feeAccount, mint, payer);
+  const zeroFee = await pay("zero-fee", 204, ataD);
+  await thawAccount(provider.connection, payer, feeAccount, mint, payer);
+  assert.equal(await balance(ataD), 49n);
+  await provider.connection.confirmTransaction(zeroFee, "finalized");
+  const [zeroFeePay] = escrowInvocations(
+    await parsedTransaction(zeroFee),
+    program.programId.toBase58(),
+  );
+  assert.equal(zeroFeePay.children.length, 1);
+  const zeroFeeAdapter = solanaPaymentAdapter({
+    rpcUrl: provider.connection.rpcEndpoint,
+    genesisHash: await provider.connection.getGenesisHash(),
+    programId: program.programId.toBase58(),
+    projectPda: project.toBase58(),
+    projectId: "local-project",
+    network: "solana:localnet",
+    networkDomain: Buffer.from(network).toString("hex"),
+    vault: vault.toBase58(),
+    mint: mint.toBase58(),
+    owner: payer.publicKey.toBase58(),
+    // The authority at activation: verification continues after a rotation.
+    identityAuthority: authority.publicKey.toBase58(),
+    feeRecipient: feeOwner.publicKey.toBase58(),
+    ...expectedDeployment,
+    bindingDelaySeconds: String(DELAY),
+    rotationDelaySeconds: String(ROTATION_DELAY),
+  });
+  const zeroFeeEvidence = await zeroFeeAdapter.verifyFinalized({
+    transactionId: zeroFee,
+    eventIndex: zeroFeePay.index,
+    kind: "paid",
+    obligationId: awardOf("zero-fee").toString("hex"),
+  });
+  assert.equal(zeroFeeEvidence.feeMicro, "0");
+  assert.equal(zeroFeeEvidence.netMicro, "49");
+  // L-1 and L-3: initialize rejects an out-of-range delay and a fee recipient equal to
+  // the owner or the project.
+  const initialize = (
+    delay,
+    feeRecipient = feeOwner.publicKey,
+    label = "x",
+    identity = authority,
+  ) => {
+    const id = hash(`bounds:${label}:${delay}${RUN}`);
+    const p = pda(seed("project"), key(payer.publicKey), Buffer.from(id));
+    return program.methods
+      .initialize(
+        id,
+        network,
+        identity.publicKey,
+        feeRecipient,
+        bn(delay),
+        bn(ROTATION_DELAY),
+      )
+      .accountsStrict({
+        owner: payer.publicKey,
+        project: p,
+        mint,
+        vault: pda(seed("vault"), key(p)),
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        config: configAddress(program.programId),
+      })
+      .rpc();
+  };
+  await assert.rejects(initialize(0), /InvalidDelay/);
+  await assert.rejects(initialize(30 * 86400 + 1), /InvalidDelay/);
+  await assert.rejects(initialize(DELAY, payer.publicKey), /InvalidIdentity/);
+  // L-3: the identity authority and the fee recipient must equal the pinned Config.
+  await assert.rejects(
+    initialize(DELAY, Keypair.generate().publicKey, "fee"),
+    /ConfigMismatch/,
+  );
+  await assert.rejects(
+    initialize(DELAY, feeOwner.publicKey, "identity", Keypair.generate()),
+    /ConfigMismatch/,
+  );
+  const selfId = hash(`bounds:self:${DELAY}${RUN}`);
+  await assert.rejects(
+    initialize(
+      DELAY,
+      pda(seed("project"), key(payer.publicKey), Buffer.from(selfId)),
+      "self",
+    ),
+    /InvalidIdentity/,
+  );
+  await initialize(30 * 86400, feeOwner.publicKey, "max");
+  // Another project with the same identity authority and network has its own
+  // binding account: actor 201's bindings, vetoes and payments here do not exist
+  // there, so that project's delay and veto cap start from its own binding.
+  await initialize(DELAY, feeOwner.publicKey, "other");
+  const other = pda(
+    seed("project"),
+    key(payer.publicKey),
+    Buffer.from(hash(`bounds:other:${DELAY}${RUN}`)),
+  );
+  assert.notEqual(bindingIn(other, 201).toBase58(), binding(201).toBase58());
+  assert.equal(
+    await provider.connection.getAccountInfo(bindingIn(other, 201)),
+    null,
+  );
+});
+
+// Owner decisions of 18 October 2026: permissionless deposit, any classic SPL mint and
+// decimals, and the 5% withdrawal fee. Token-2022 stays rejected.
+test("permissionless deposit, 18-, 9- and 0-decimal mints, 5% withdrawal fee, Token-2022 rejected", async () => {
+  await ensureConfig(program);
+  const { TOKEN_2022_PROGRAM_ID } = await import("@solana/spl-token");
+  currentAuthority = authority;
+  const donor = Keypair.generate(),
+    contributor = Keypair.generate();
+  await sendAndConfirmTransaction(
+    provider.connection,
+    new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: payer.publicKey,
+        toPubkey: donor.publicKey,
+        lamports: 1_000_000_000,
+      }),
+    ),
+    [payer],
+  );
+  const initializeFor = (
+    projectMint,
+    label,
+    tokenProgram = TOKEN_PROGRAM_ID,
+  ) => {
+    const id = hash(`decimals:${label}${RUN}`);
+    const p = pda(seed("project"), key(payer.publicKey), Buffer.from(id));
+    return {
+      address: p,
+      send: () =>
+        program.methods
+          .initialize(
+            id,
+            network,
+            authority.publicKey,
+            feeOwner.publicKey,
+            bn(DELAY),
+            bn(ROTATION_DELAY),
+          )
+          .accountsStrict({
+            owner: payer.publicKey,
+            project: p,
+            mint: projectMint,
+            vault: pda(seed("vault"), key(p)),
+            tokenProgram,
+            systemProgram: SystemProgram.programId,
+            config: configAddress(program.programId),
+          })
+          .rpc(),
+    };
+  };
+  const deposit = (amount, signer, from) =>
+    program.methods
+      .deposit(bn(amount))
+      .accountsStrict({
+        depositor: signer.publicKey,
+        project,
+        mint,
+        source: from,
+        vault,
+        tokenProgram: TOKEN_PROGRAM_ID,
+      })
+      .signers(signer === payer ? [] : [signer])
+      .rpc();
+  // The main lifecycle above covers 6 decimals.
+  for (const decimals of [18, 9, 0]) {
+    // 10 whole tokens at 18 or 9 decimals; 1,000 base units at 0 decimals.
+    const total = decimals === 0 ? 1_000n : 10n * 10n ** BigInt(decimals);
+    const gross = total / 10n,
+      awardFee = gross / 50n,
+      unused = total - gross,
+      withdrawalFee = unused / 20n;
+    mint = await createMint(
+      provider.connection,
+      payer,
+      payer.publicKey,
+      payer.publicKey,
+      decimals,
+    );
+    source = await createAccount(
+      provider.connection,
+      payer,
+      mint,
+      payer.publicKey,
+    );
+    feeAccount = await createAccount(
+      provider.connection,
+      payer,
+      mint,
+      feeOwner.publicKey,
+    );
+    const donorAccount = await createAccount(
+      provider.connection,
+      payer,
+      mint,
+      donor.publicKey,
+    );
+    const contributorAccount = await createAccount(
+      provider.connection,
+      payer,
+      mint,
+      contributor.publicKey,
+    );
+    await mintTo(provider.connection, payer, mint, donorAccount, payer, total);
+    const created = initializeFor(mint, String(decimals));
+    await created.send();
+    project = created.address;
+    vault = pda(seed("vault"), key(project));
+    // A third party funds the project from its own token account.
+    await assert.rejects(deposit(1, donor, source), /ConstraintTokenOwner/);
+    const funded = await deposit(total, donor, donorAccount);
+    await provider.connection.confirmTransaction(funded, "confirmed");
+    let state = await program.account.project.fetch(project);
+    assert.equal(state.deposited.toString(), total.toString());
+    assert.equal(await balance(vault), total);
+    const logs = (
+      await provider.connection.getTransaction(funded, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0,
+      })
+    ).meta.logMessages;
+    const events = [
+      ...new anchor.EventParser(program.programId, program.coder).parseLogs(
+        logs,
+      ),
+    ];
+    const deposited = events.find((e) => /^deposited$/i.test(e.name));
+    assert.ok(deposited, "Deposited event");
+    assert.equal(deposited.data.project.toBase58(), project.toBase58());
+    assert.equal(
+      deposited.data.depositor.toBase58(),
+      donor.publicKey.toBase58(),
+    );
+    assert.equal(deposited.data.amount.toString(), total.toString());
+    // The depositor gains no refund right: only the owner withdraws.
+    await assert.rejects(
+      program.methods
+        .withdraw(bn(1))
+        .accountsStrict({
+          owner: donor.publicKey,
+          project,
+          mint,
+          vault,
+          destination: donorAccount,
+          feeAccount,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .signers([donor])
+        .rpc(),
+      /ConstraintHasOne/,
+    );
+    // Commit, bind and pay with the mint's own decimals.
+    await commit(`decimals-${decimals}`, 301, gross);
+    await bind(301, contributor);
+    await activate();
+    const paid = await pay(`decimals-${decimals}`, 301, contributorAccount);
+    assert.equal(await balance(contributorAccount), gross - awardFee);
+    assert.equal(await balance(feeAccount), awardFee);
+    // The owner withdraws the donor's unused funds at the 5% fee.
+    const withdrawn = await withdraw(unused);
+    assert.equal(await balance(source), unused - withdrawalFee);
+    assert.equal(await balance(feeAccount), awardFee + withdrawalFee);
+    assert.equal(await balance(vault), 0n);
+    state = await program.account.project.fetch(project);
+    assert.equal(state.withdrawalFees.toString(), withdrawalFee.toString());
+    // The adapter checks the transfer decimals against the mint's decimals.
+    await provider.connection.confirmTransaction(paid, "finalized");
+    const [payment] = escrowInvocations(
+      await parsedTransaction(paid),
+      program.programId.toBase58(),
+    );
+    const evidence = await solanaPaymentAdapter({
+      rpcUrl: provider.connection.rpcEndpoint,
+      genesisHash: await provider.connection.getGenesisHash(),
+      programId: program.programId.toBase58(),
+      projectPda: project.toBase58(),
+      projectId: `decimals-${decimals}`,
+      network: "solana:localnet",
+      networkDomain: Buffer.from(network).toString("hex"),
+      vault: vault.toBase58(),
+      mint: mint.toBase58(),
+      owner: payer.publicKey.toBase58(),
+      identityAuthority: authority.publicKey.toBase58(),
+      feeRecipient: feeOwner.publicKey.toBase58(),
+      ...expectedDeployment,
+      bindingDelaySeconds: String(DELAY),
+      rotationDelaySeconds: String(ROTATION_DELAY),
+    }).verifyFinalized({
+      transactionId: paid,
+      eventIndex: payment.index,
+      kind: "paid",
+      obligationId: awardOf(`decimals-${decimals}`).toString("hex"),
+    });
+    assert.equal(evidence.grossMicro, gross.toString());
+    assert.equal(evidence.netMicro, (gross - awardFee).toString());
+    assert.equal(evidence.feeMicro, awardFee.toString());
+    // readVaultTotals reads finalized state.
+    await provider.connection.confirmTransaction(withdrawn, "finalized");
+    const totals = await readVaultTotals({
+      rpcUrl: provider.connection.rpcEndpoint,
+      network: "solana:localnet",
+      projectPda: project.toBase58(),
+      programId: program.programId.toBase58(),
+    });
+    assert.equal(totals.decimals, decimals);
+    assert.equal(totals.totalDeposited, total.toString());
+    assert.equal(totals.totalGrossWithdrawn, unused.toString());
+    assert.equal(totals.totalWithdrawalFees, withdrawalFee.toString());
+    assert.equal(totals.freeBalance, "0");
+  }
+  // A Token-2022 mint is not a classic SPL mint.
+  const mint2022 = await createMint(
+    provider.connection,
+    payer,
+    payer.publicKey,
+    null,
+    6,
+    undefined,
+    undefined,
+    TOKEN_2022_PROGRAM_ID,
+  );
+  await assert.rejects(
+    initializeFor(mint2022, "token-2022").send(),
+    /AccountOwnedByWrongProgram/,
+  );
+  await assert.rejects(
+    initializeFor(mint2022, "token-2022", TOKEN_2022_PROGRAM_ID).send(),
+    /InvalidProgramId|AccountOwnedByWrongProgram/,
+  );
 });
