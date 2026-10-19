@@ -71,7 +71,15 @@ if (values.live) {
     : [];
   if (!previousInventory.every((id: string) => isHistoricalRepositoryId(id)))
     throw Error("Previous census names an unregistered repository");
-  assertProfiles(previous, previousInventory);
+  // Its inventory also holds carried rows of repositories it no longer
+  // collected. The repositories it collected are those its issue census
+  // covered; a legacy census without issues collected its whole inventory.
+  const previousCollected = Array.isArray(previous?.issues?.repositories)
+    ? previous.issues.repositories.map(
+        (r: { repository: string }) => r.repository,
+      )
+    : previousInventory;
+  assertProfiles(previous, previousCollected);
   const client = new GitHubGraphqlClient(token);
   const request: CensusRequest = async <T>(
     query: string,
