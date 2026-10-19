@@ -4,7 +4,9 @@ import { readFileSync } from "node:fs";
 import { BASE_PLATFORM_FEE_RECIPIENT } from "./fresh-cycle-policy.mjs";
 import { assertProjectDefinition } from "./project-schema.mjs";
 
-const eliza = JSON.parse(readFileSync("projects/eliza/project.json", "utf8"));
+const eliza = JSON.parse(
+  readFileSync("tests/fixtures/projects/eliza.json", "utf8"),
+);
 const evm = "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86";
 // Same keys as the reviewed `evmDeployment` in workers/payments/escrow-policy.test.ts.
 const deployment = {

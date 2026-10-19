@@ -92,10 +92,9 @@ function pythonOnlyPath(root: string): string {
 }
 
 function baseFiles(marker: string): Record<string, Buffer> {
-  const skill = execFileSync(
-    "git",
-    ["show", "HEAD:skills/contribute-to-eliza/SKILL.md"],
-    { cwd: repositoryRoot, encoding: null },
+  // Any real skill text works; the removed Eliza skill is a frozen fixture.
+  const skill = readFileSync(
+    join(repositoryRoot, "tests/fixtures/skills/contribute-to-eliza/SKILL.md"),
   );
   return {
     "SKILL.md": skill,
@@ -850,14 +849,18 @@ exec ${realPython} - ${shellQuote(pathToFileURL(artifact).href)} ${shellQuote(au
 
   it("revalidates an installed run and write gate without invalidating historical receipts", () => {
     const root = freshRoot("installed-freshness");
-    const skillRoot = join(packageRoot, "skills", "contribute-to-eliza");
+    // The frozen Eliza project file plus the current shared skill scripts.
     const files = baseFiles("installed-a");
-    for (const path of [
-      "project.json",
-      "scripts/run-receipt.mjs",
-      "scripts/skill-authority.mjs",
-    ])
-      files[path] = readFileSync(join(skillRoot, path));
+    files["project.json"] = readFileSync(
+      join(
+        packageRoot,
+        "tests/fixtures/skills/contribute-to-eliza/project.json",
+      ),
+    );
+    for (const name of ["run-receipt.mjs", "skill-authority.mjs"])
+      files[`scripts/${name}`] = readFileSync(
+        join(packageRoot, "scripts/skill-kit", name),
+      );
     const artifact = writeArtifact(root, revisionA, files);
     const authority = configureAuthority(root, {
       developHead: revisionA,

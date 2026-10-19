@@ -5,7 +5,7 @@ import { assertProjectDefinition } from "../src/lib/project-schema.mjs";
 import type { ProjectDefinition } from "../src/lib/projects.mjs";
 
 function manifest(id: string): ProjectDefinition {
-  return JSON.parse(readFileSync(`projects/${id}/project.json`, "utf8"));
+  return JSON.parse(readFileSync(`tests/fixtures/projects/${id}.json`, "utf8"));
 }
 
 describe("project X link", () => {

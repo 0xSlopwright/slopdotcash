@@ -1,7 +1,7 @@
 # Direct project funding records
 
 Slop does not receive, control, sign for, or recover project funds. A project
-may publish reviewed receiving addresses in `projects/<project>/project.json`.
+may publish reviewed receiving addresses in its registry manifest.
 Transfers go directly from the sender's wallet to the project-controlled
 address.
 

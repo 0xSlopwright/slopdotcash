@@ -7,10 +7,11 @@ submits a new project application. It exists because Pages Functions cannot use
 ## Route
 
 The Worker has no public route and `workers_dev` is off. The caller is a
-service binding named `SLOP_NOTIFY` on the Pages app. That caller is the
-authenticated project-application submit path, which is not released yet, so
-the root Pages `wrangler.toml` has no `SLOP_NOTIFY` binding. Add the binding in the same
-change that ships the caller. The only accepted route is:
+service binding named `SLOP_NOTIFY` on the production Pages app. That caller
+is the authenticated project-application submit path in
+`backend/projects/handler.ts`. Until the Worker is released, the call fails and
+the application records `adminNotification: "failed"`. The only accepted route
+is:
 
 ```http
 POST https://notify.internal/v1/project-applications

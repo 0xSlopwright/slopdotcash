@@ -11,7 +11,7 @@ import {
 // month and contributor set it publishes must be the preparation's own, because
 // prepare-payments-import writes the observed rows under the disclosure's
 // projectId and contributionMonth into an append-only table.
-const root = resolve(import.meta.dir, "..");
+const root = resolve(import.meta.dir, "../tests/fixtures/history");
 
 function load(name: string) {
   const disclosure = JSON.parse(

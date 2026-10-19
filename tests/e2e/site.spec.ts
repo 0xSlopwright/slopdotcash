@@ -1149,7 +1149,9 @@ test("makes the public project draft boundary unmistakable", async ({
   ).toBeVisible();
   await expect(page.locator(".manage-intro .draft-badge")).toHaveText("Draft");
   await expect(
-    page.locator(".manage-intro").getByText(/Changes go to GitHub for review/u),
+    page
+      .locator(".manage-intro")
+      .getByText(/A Slop admin reviews every change/u),
   ).toBeVisible();
   await expect(
     page.getByText("Payouts are disabled in the project manifest."),
@@ -1159,7 +1161,7 @@ test("makes the public project draft boundary unmistakable", async ({
   ).toHaveAttribute("href", "/projects/eliza/funding#payouts");
   await expect(page.getByLabel("Draft total, USDC")).toHaveCount(0);
   await expect(page.getByText(/mainnet USDC transfers/u)).toHaveCount(0);
-  await page.getByRole("button", { name: /Continue on GitHub/u }).click();
+  await page.getByRole("button", { name: /Open admin review/u }).click();
   await expect(page.getByRole("alert")).toHaveText(
     "Change at least one field before you continue.",
   );
@@ -1173,11 +1175,8 @@ test("makes the public project draft boundary unmistakable", async ({
     PROJECTS.find((project) => project.id === "eliza")?.headline ?? "",
   );
   await expect(
-    page.getByRole("link", { name: /Continue on GitHub/u }),
-  ).toHaveAttribute(
-    "href",
-    "https://github.com/SlopDotCash/slopdotcash/edit/development/projects/eliza/project.json",
-  );
+    page.getByRole("link", { name: /Open admin review/u }),
+  ).toHaveAttribute("href", "/admin");
   await expect(
     page.getByText(/Draft saved on this device only/u),
   ).toBeVisible();
@@ -1247,9 +1246,8 @@ test("serves byte-consistent install and read-only artifacts for every project",
     maxRedirects: 0,
   });
   expect(legacySkillResponse.status()).toBe(301);
-  expect(legacySkillResponse.headers().location).toBe(
-    "/projects/eliza/skill.md",
-  );
+  // The legacy lowercase path names no project; it reaches the bootstrap skill.
+  expect(legacySkillResponse.headers().location).toBe("/SKILL.md");
   const fundingRouteResponse = await request.get("/projects/eliza/funding", {
     maxRedirects: 0,
   });

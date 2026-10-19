@@ -215,7 +215,9 @@ describe("payment reservations cover the full transfer-plan bound", () => {
  * before a permanent reservation binds it.
  */
 describe("a fresh-cycle policy names its settlement network's fee recipient", () => {
-  const eliza = JSON.parse(readFileSync("projects/eliza/project.json", "utf8"));
+  const eliza = JSON.parse(
+    readFileSync("tests/fixtures/projects/eliza.json", "utf8"),
+  );
 
   async function solanaProject(feeRecipient: string) {
     const { instrument } = projectVaultInstrument();

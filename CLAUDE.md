@@ -23,13 +23,7 @@ alias only.
   control, or payment authority.
 - Slop never holds keys, signs transactions, broadcasts payments, or claims
   success before public evidence proves it, except for the two narrowly scoped
-  keys below. No other exception exists.
-  - One key on the opt-in `squads-project-vault` instrument (RFC #500,
-    `funding/README.md`). For that instrument only: Slop holds one of three
-    keys on a project vault. That key can vote on a payout the creator
-    proposed. It cannot propose a transfer, execute one, change the signers,
-    or act alone. Slop holds no customer balance, takes no fee from the vault,
-    and never broadcasts a transfer of vault funds.
+  kinds of key below. No other exception exists.
   - The escrow identity attester key (PAY-05, approved by the repository owner
     on 14 October 2026). It only attests the authenticated GitHub actor for a
     destination binding that the destination wallet also signs, and it submits
@@ -38,6 +32,16 @@ alias only.
     reviewed binding delay, and the project owner can cancel it in that time.
     A public timelocked rotation replaces the key, and the attester cannot
     block it.
+  - One fee-wallet hot key per network (PRD TOK-07, MVP-07c, owner decision
+    of 18 October 2026). It controls only the network fee wallet. It signs
+    only the scheduled conversion of fees already in that wallet to the
+    network stablecoin, through allowlisted routes, within the slippage limit,
+    with output to the same wallet. It holds no vault role and cannot touch
+    vaults, contributor principal, reserved awards or payments. The job runs
+    in dry run until a reviewed activation record enables signing.
+- Humans create, store and rotate these keys and deploy mainnet contracts.
+  Agents never handle key material or deploy to mainnet. The vote-only Squads
+  project vault key is removed with Squads.
 - Never publish secrets, prompts, responses, source files, credentials, session
   identifiers, private trajectories, or signing material.
 
@@ -133,15 +137,32 @@ their own issue text. Branding is not permission for agents to create issues.
 
 ## Source of truth
 
-`projects/*/project.json` is the only project and repository inventory. Never
-hardcode a project, repository, reward, steward, status, or funding route
-elsewhere. Generated registries and public pages must stay synchronized from
-those manifests.
+The D1 project registry (`projects`, `project_revisions`, and
+`project_applications` in `slop-private`) is the only project and repository
+inventory. Never hardcode a project, repository, reward, steward, status, or
+funding route elsewhere. Every manifest change appends an immutable revision.
+`bun run projects:sync` snapshots the registry from `GET /api/v1/projects` and
+`GET /api/v1/project-revisions` into `src/lib/project-registry.generated.mjs`
+and `src/lib/project-revisions.generated.json`; generated registries and
+public pages derive from that snapshot. Never edit the snapshot by hand.
 
-Each `project.skill.sourcePath` is the one canonical contributor-skill source.
-Do not maintain a second skill copy. `scripts/prepare-site.mjs` validates the
-tree, copies raw Markdown endpoints, builds downloadable `.skill` archives,
-and publishes the cycle index.
+Projects listed before the registry were removed with their manifests and
+history records. `src/lib/legacy-projects.json` keeps only their ids and
+repository ids so contributor points and profiles still validate. It is never
+listed, collected, scored, or paid. Unit tests use the frozen fixture registry
+under `tests/fixtures/`, loaded by `bunfig.toml`.
+
+Project skills are generated, never stored per project (PRD SKL-03, owner
+decision of 18 October 2026). The repository keeps one canonical generic
+contributor template and one canonical generic reviewer template. Slop
+renders each project's skills from its approved D1 revision (scope,
+contribution guide, supported tasks, required tests, review expectations,
+security contact, closure policy and maintainer notes) and those templates.
+The same template revision and D1 revision produce the same bytes. Maintainer
+notes cannot weaken a template rule. Do not add per-project skill folders or a
+second skill copy. `scripts/prepare-site.mjs` builds raw Markdown endpoints
+and downloadable `.skill` archives from the generated output and publishes the
+cycle index.
 
 Generated files under `public/brand/`, `public/downloads/`,
 `public/projects/`, `public/protocol/`, and `public/data/cycles/` are build
@@ -154,14 +175,13 @@ current.
 ## Repository map
 
 ```text
-projects/       reviewed manifests and project policy
-skills/         canonical contributor and CI reviewer skills
+skills/         general Slop skill and canonical generic project-skill templates
 evaluations/    reviewed awards for otherwise-unscored useful work
 cycles/         append-only reward lifecycle records
-funding/        append-only direct-funding evidence
+funding/        project vault funding guide; legacy records stay in git history
 disclosures/    payouts sent outside the verified settlement flow
 protocol/       public attribution and privacy contracts
-backend/        private trace storage boundary
+backend/        project registry API and private trace storage boundary
 workers/        narrowly scoped Cloudflare services
 src/            React product and strict browser/domain contracts
 scripts/        ingestion, packaging, rewards, settlement, and evidence
@@ -170,32 +190,34 @@ tests/e2e/      real-browser end-to-end, accessibility, and Pages coverage
 
 ## Add a project
 
-The public `/projects/new` route is the preferred starting point. It drafts a
-manifest and agent brief, then hands the proposal to GitHub. The website does
-not activate a project or create a private admin state.
+Projects are added on the website, never by pull request. An applicant signs
+in with GitHub through `/login` and submits a manifest at `/projects/new`. The
+API stores the application in D1 and emails the admins through the
+`slop-notify` Worker (`workers/notify/`). Admins, listed by GitHub actor ID in
+`ADMIN_GITHUB_IDS`, approve or reject it at `/admin`. See
+`backend/projects/README.md`.
 
-A complete proposal adds:
+An application must be a paused, unverified, unfunded community project with
+payments disabled. Approval lists it as revision 1, still paused. Admins record
+verified authority, terms, funding, and activation as manifest revisions on
+`/admin`; each revision must pass `assertProjectPolicyTransition`. An admin
+approval publishes the revision. No GitHub pull request adds or updates a
+project, and the repository holds no project JSON or per-project skill folder.
+A project can become active only after an admin approves an activation
+revision whose generated contributor and reviewer skills pass review in the
+`/admin` preview.
 
-```text
-projects/<project-id>/project.json
-skills/contribute-to-<project-id>/
-skills/review-<project-id>-contributions/
-```
+A paused project is registered and listed, but none of its repositories is
+collected, so nothing on them reaches the ledger or the leaderboard. It
+publishes no skill until its revision has the maintainer-authored skill
+fields. Verify immutable repository and
+actor IDs, repository license facts, GitHub stewardship, integration branch,
+reward policy, and failure paths before activating receipts or money states.
+Stewardship is a GitHub identity only.
 
-New projects begin paused. A paused project is registered and listed, but none
-of its repositories is collected, so nothing on them reaches the ledger or the
-leaderboard. Public contribution access may open independently
-when missing authority and terms remain explicit, receipts stay pending, and
-payments stay disabled. Verify immutable repository and actor IDs, repository
-license facts, GitHub stewardship, integration branch, reward policy, and
-failure paths before activating receipts or money states. Stewardship is a
-GitHub identity only.
-
-Maintainers may delete a paused project. The trusted transition gate refuses
-the deletion of an active project. When immutable cycle or points history still
-names a project repository, keep its manifest with `listingTier: "retired"`.
-A retired project stays paused, publishes no skill, and never appears on a page
-or list.
+Registry rows cannot be deleted. Pause a project, or append a revision with
+`listingTier: "retired"` to hide it from every page and list while its history
+still resolves.
 
 The contributor skill must inspect live GitHub, select bounded unblocked work,
 follow the target repository’s rules, test the result, prepare evidence, and
@@ -216,11 +238,17 @@ usefulness, and places the machine review before the signed attribution footer.
 
 ## Installer and attribution
 
-The public checksum detects corruption only. GitHub is the independent trust
-root. The generated installer may authorize:
+The public checksum detects corruption only. The trust root of a project
+skill is the pair (template revision on `main`, D1 revision digest) (PRD
+SKL-04). GitHub is the independent trust root for the template revision. The
+project registry API publishes the digest of the approved D1 revision; the
+installer refuses bytes that do not match the rendering of that pair. The D1
+digest binds the maintainer-authored fields to an approved revision; disclose
+that those fields come from Slop's registry. The generated installer may
+authorize this template revision:
 
 1. current `main`;
-2. a `main` ancestor whose canonical skill tree is unchanged, or a successful
+2. a `main` ancestor whose canonical template tree is unchanged, or a successful
    approved published revision not listed in `protocol/skill-revocations.json`; or
 3. an open, non-draft, same-repository PR head into `main` with the
    maintainer-controlled `slop-release-candidate` label applied after the exact
@@ -293,9 +321,9 @@ snapshot bytes and scoring-rule version. The trusted first-of-month automation
 runs from `main`, is idempotent, refuses partial cycles, and records
 zero-award months.
 
-Monthly allocations use integer USDC micro-units and largest remainder. The 1%
-monthly-pool fee applies to approved principal only. Never use floats for money or let
-rollover increase a later monthly cap.
+Monthly allocations use integer base units of the project asset and largest
+remainder. Never use floats for money, assume six decimals, or let rollover
+increase a later monthly cap.
 
 A review budget is an optional additive cash line. Review events remain in the
 shared pool unchanged; a committed review line may pay them only on top of that
@@ -308,30 +336,30 @@ next cycle and never touches the current proposal. History is never edited.
 Missing wallets remain unclaimed. Related-party money requires separate
 approval.
 
-Each monthly-pool project has one settlement network, `reward.chain`: Solana
-(default) or Base (RFC #472). A proposal freezes that network for its cycle; a
-network change lands by PR between cycles. Only a wallet claim on the cycle
-network is payable; otherwise the row stays unclaimed. Settlement tools create
-unsigned USDC plans only: Solana mainnet transfers from the frozen Squads vault,
-or Base mainnet EIP-681 transfers from the frozen Base Sablier stream recipient.
-The fee is a separate transfer on the same network. `paid` requires finalized
-Solana evidence, or Base evidence under the 2-of-3 RPC quorum and 12
-confirmations, whose exact source and destination deltas reconcile every
-immutable intent and fee. Reject replay, wrong mint or token, wrong owner,
-partial, duplicate, failed, or overpaid state. Delta Star publishes
-external-prize shares only and never enters the platform payment lifecycle.
+One funding mode exists: the project vault contract (PRD FND-01, owner
+decision of 18 October 2026). Squads v4, Sablier, legacy direct and committed
+instruments and the PAY-09 monthly-pool settlement rail are removed. Their
+historical records stay in git history at their original revisions; they are
+not an active funding route, balance or payment path. Each project has one
+network (Base, Robinhood Chain, Ethereum or Solana) and one asset. Anyone may
+deposit into a vault. All deposits share one bucket; there is no donor class.
+All free funds are refundable only to the owner's refund destination, and the
+deposit flow says so before signature. `paid` requires finalized evidence that
+reconciles the exact vault, obligation, recipient, principal and fee. Reject
+replay, wrong mint or token, wrong owner, partial, duplicate, failed, or
+overpaid state. Delta Star publishes external-prize shares only and never
+enters the platform payment lifecycle. Never call vault funds “guaranteed.”
 
-Committed funding uses reviewed immutable third-party instruments: Squads v4
-multisig vaults on Solana and Sablier Lockup v4 streams on Base or Ethereum.
-Slop has no admin or fee position in any instrument and no key in the 2-of-2
-vault or a stream. On a 2-of-3 project vault Slop holds one vote-only key, and
-a payout is approved for payment only once the creator's on-chain proposal is
-bound in `funding/executions/ledger.json`. A project vault activates payments
-only with its exact reviewed fresh-cycle policy; its release needs current
-capability reports from the creator and the independent signer, and Slop's
-key never attests. A positive committed amount requires an active reviewed
-instrument and deterministic verifier evidence. Never call funds “escrow” or
-“guaranteed.”
+Supported assets are the network stablecoin or any standard ERC-20 on Base,
+Robinhood Chain (chain id 4663) and Ethereum, or any classic SPL token on
+Solana, with any decimals (PRD TOK-01, TOK-03). Fee-on-transfer, rebasing and
+Token-2022 tokens are unsupported. Circle USDC is the Ethereum stablecoin;
+verify its address from Circle's primary source before activation.
+
+Public pages never read chain or GitHub state live per page view (PRD ARC-01).
+They serve cached D1 data and snapshots that background jobs refresh. Vault
+totals come from finalized on-chain counters cached in D1 with their observed
+time. A failed refresh shows the last value as stale, never zero.
 
 ## Project authority and IP
 
@@ -467,9 +495,12 @@ use production credentials or move mainnet funds during testnet qualification.
 New gross awards deduct 2% before contributor earnings are displayed or paid.
 For a project-token reward (PRD TOK-06, owner decision of 14 October 2026),
 the 2% is deducted in that token and paid in that token to the network fee
-wallet at payout. No contract converts it. Later USDC conversion inside the fee
-wallet is future backend work (TOK-07) that needs its own approved requirement.
-Unused-fund withdrawals deduct 10%; funded obligations cannot be withdrawn.
+wallet at payout. No contract converts it. A scheduled backend job converts
+fees already in the fee wallet to the network stablecoin inside that wallet
+(TOK-07, MVP-07c); it never blocks or touches a contributor payment.
+Unused-fund withdrawals deduct the same 2%, `floor(gross / 50)`, enforced in
+the contracts, and reach only the owner's refund destination; funded
+obligations cannot be withdrawn.
 Historical v1 records retain their original fee and authority rules. No project
 activates escrow merely because the new code is present. Keep project deployment
-bindings in the canonical manifest, never in a second project inventory.
+bindings in the D1 project revision, never in a second project inventory.

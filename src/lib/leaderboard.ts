@@ -135,7 +135,7 @@ export {
 } from "./repositories.mjs";
 
 /** Backward-compatible alias for the primary registry repository. */
-export const LEADERBOARD_REPOSITORY = PRIMARY_REPOSITORY.id;
+export const LEADERBOARD_REPOSITORY = PRIMARY_REPOSITORY?.id ?? null;
 export const LEADERBOARD_SCHEMA_VERSION = "6" as const;
 export const PROFILE_OPPORTUNITY_LIMIT = 5 as const;
 export const SCORE_RULE_VERSION = "slop-score-v2" as const;
@@ -3644,7 +3644,16 @@ function createSnapshotWithReviewCutoff(
     ledger.map((event) => `${event.repository}\0${event.source.id}`),
   );
   const retainedAttributionCandidates = new Map<string, ModelAttribution>();
+  // History from a repository that is no longer collected cannot score.
+  const collectedRepositoryIds = new Set(
+    TARGET_REPOSITORIES.map((repository) => repository.id),
+  );
   for (const [index, event] of [...(input.retainedReviewEvents ?? [])]
+    .filter(
+      (event) =>
+        !isRecord(event) ||
+        collectedRepositoryIds.has(String((event as ScoreEvent).repository)),
+    )
     .sort(
       (left, right) =>
         parseIsoTime(right.occurredAt) - parseIsoTime(left.occurredAt) ||
@@ -4306,7 +4315,10 @@ function assertSourceValue(
   }
   assertIsoTimestamp(source.fetchedAt, `${path}.fetchedAt`);
   assertIsoTimestamp(source.cutoffAt, `${path}.cutoffAt`);
-  assertString(source.repositoryId, `${path}.repositoryId`);
+  if (repositories.length === 0) {
+    if (source.repositoryId !== null)
+      throw new Error(`${path}.repositoryId must be null without repositories`);
+  } else assertString(source.repositoryId, `${path}.repositoryId`);
   if (
     !Array.isArray(source.repositories) ||
     source.repositories.length !== repositories.length
@@ -4341,7 +4353,14 @@ function assertSourceValue(
     }
   });
   assertPositiveInteger(source.requestCount, `${path}.requestCount`);
-  assertPositiveInteger(source.searchSliceCount, `${path}.searchSliceCount`);
+  // An empty registry runs no repository searches.
+  if (repositories.length === 0)
+    assertNonNegativeInteger(
+      source.searchSliceCount,
+      `${path}.searchSliceCount`,
+    );
+  else
+    assertPositiveInteger(source.searchSliceCount, `${path}.searchSliceCount`);
 
   const rateLimit = assertObject(source.rateLimit, `${path}.rateLimit`);
   assertNonNegativeInteger(rateLimit.cost, `${path}.rateLimit.cost`);
@@ -5423,10 +5442,10 @@ export function assertLeaderboardSnapshot(
   }
   if (
     !Array.isArray(snapshot.repositories) ||
-    snapshot.repositories.length === 0
+    (snapshot.repositories.length === 0) !== (TARGET_REPOSITORIES.length === 0)
   ) {
     throw new Error(
-      "snapshot.repositories must list a nonempty target repository registry",
+      "snapshot.repositories must list the target repository registry",
     );
   }
   let previousRepositoryIndex = -1;
@@ -5439,7 +5458,7 @@ export function assertLeaderboardSnapshot(
     );
     if (
       registeredIndex <= previousRepositoryIndex ||
-      (index === 0 && published.id !== PRIMARY_REPOSITORY.id)
+      (index === 0 && published.id !== PRIMARY_REPOSITORY?.id)
     ) {
       throw new Error(
         `${path}.id must follow the target repository registry order and include the primary repository`,

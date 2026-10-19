@@ -19,14 +19,16 @@ const FUTURE_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const rootPublishedProjects = PROJECTS.filter(
   (project) => project.skill.publishAtRoot === true,
 );
-if (rootPublishedProjects.length !== 1) {
+if (rootPublishedProjects.length > 1) {
   throw new TypeError(
-    "evidence contract requires exactly one root-published project skill",
+    "evidence contract allows at most one root-published project skill",
   );
 }
 const rootPublishedProject = rootPublishedProjects[0];
-const rootArchiveName = `${rootPublishedProject.skill.id}.skill`;
-
+// The root installer exists only while a project publishes at the root.
+const rootArchiveName = rootPublishedProject
+  ? `${rootPublishedProject.skill.id}.skill`
+  : null;
 export const REMOTE_ARTIFACT_PATHS = [
   "index.html",
   "SKILL.md",
@@ -34,14 +36,19 @@ export const REMOTE_ARTIFACT_PATHS = [
   ".well-known/agent-skills/slop/SKILL.md",
   ".well-known/slop/projects.json",
   "llms.txt",
-  `projects/${rootPublishedProject.id}/skill.md`,
-  "mission.md",
-  "codex.md",
-  "claude.md",
-  "claude-code.md",
+  ...(rootPublishedProject
+    ? [
+        `projects/${rootPublishedProject.id}/skill.md`,
+        "mission.md",
+        "codex.md",
+        "claude.md",
+        "claude-code.md",
+      ]
+    : []),
   "skill-manifest.json",
-  `downloads/${rootArchiveName}`,
-  `downloads/${rootArchiveName}.sha256`,
+  ...(rootArchiveName
+    ? [`downloads/${rootArchiveName}`, `downloads/${rootArchiveName}.sha256`]
+    : []),
   "data/leaderboard.json",
 ];
 
@@ -152,9 +159,9 @@ export function assertLiveLedgerReady(
   if (snapshot.schemaVersion !== "6") {
     throw new TypeError("leaderboard.schemaVersion must be 6");
   }
-  if (snapshot.repository !== PRIMARY_REPOSITORY.id) {
+  if (snapshot.repository !== (PRIMARY_REPOSITORY?.id ?? null)) {
     throw new TypeError(
-      `leaderboard.repository must be ${PRIMARY_REPOSITORY.id}`,
+      `leaderboard.repository must be ${PRIMARY_REPOSITORY?.id ?? "null"}`,
     );
   }
   if (

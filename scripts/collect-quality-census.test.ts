@@ -20,7 +20,7 @@ import { createPaymentProjectView } from "../src/lib/project-view";
 import { sha256 } from "./source-correction";
 
 const SNAPSHOT_BYTES = readFileSync(
-  "cycles/eliza/2026-07/source-snapshot.json",
+  "tests/fixtures/history/cycles/eliza/2026-07/source-snapshot.json",
   "utf8",
 );
 const snapshot = JSON.parse(SNAPSHOT_BYTES) as LeaderboardSnapshot;
@@ -192,7 +192,14 @@ writeFileSync(join(root, "nodes.json"), JSON.stringify(NODES));
 function census(projectId: string, cycleId: string, prefix: string) {
   return spawnSync(
     process.execPath,
-    [resolve("scripts/collect-quality-census.ts"), projectId, cycleId, prefix],
+    [
+      "--preload",
+      resolve("tests/registry-preload.ts"),
+      resolve("scripts/collect-quality-census.ts"),
+      projectId,
+      cycleId,
+      prefix,
+    ],
     {
       cwd,
       encoding: "utf8",
@@ -235,6 +242,8 @@ describe("collect-quality-census covers the preparation period", () => {
     const quality = spawnSync(
       process.execPath,
       [
+        "--preload",
+        resolve("tests/registry-preload.ts"),
         resolve("scripts/prepare-contribution-quality.ts"),
         join(root, "preparation.json"),
         join(root, "snapshot.json"),

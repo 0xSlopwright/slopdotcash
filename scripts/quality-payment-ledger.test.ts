@@ -14,7 +14,10 @@ import { createPaymentProjectView } from "../src/lib/project-view";
 import { prepareSourceCorrection, sha256 } from "./source-correction";
 
 const archived = JSON.parse(
-  readFileSync("cycles/eliza/2026-09/source-snapshot.json", "utf8"),
+  readFileSync(
+    "tests/fixtures/history/cycles/eliza/2026-09/source-snapshot.json",
+    "utf8",
+  ),
 ) as LeaderboardSnapshot;
 const dir = mkdtempSync(join(tmpdir(), "quality-payment-ledger-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -217,6 +220,8 @@ function prepareQuality(
   const run = spawnSync(
     process.execPath,
     [
+      "--preload",
+      "./tests/registry-preload.ts",
       "scripts/prepare-contribution-quality.ts",
       path("preparation.json"),
       path("snapshot.json"),

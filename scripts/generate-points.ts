@@ -23,7 +23,7 @@ import {
   pointMembers,
   pointRevisionId,
 } from "../src/lib/points";
-import { REGISTERED_REPOSITORIES } from "../src/lib/repositories.mjs";
+import { findHistoricalRepository } from "../src/lib/projects.mjs";
 import { syncCycleIndex } from "./sync-cycle-index";
 
 function hash(s: string) {
@@ -297,9 +297,8 @@ export function retainedHistoryAwards(events: ScoreEvent[]): PointAward[] {
   return events.map((event) => {
     if (Date.parse(event.occurredAt) < Date.parse(SCORE_V2_EFFECTIVE_AT))
       return awardForScore(event);
-    const projectId = REGISTERED_REPOSITORIES.find(
-      (repository) => repository.id === event.repository,
-    )?.projectId;
+    // Retained history may name a project removed from the registry.
+    const projectId = findHistoricalRepository(event.repository)?.projectId;
     if (!projectId)
       throw new Error(
         `Score event repository is not registered: ${event.repository}`,

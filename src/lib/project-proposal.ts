@@ -3,23 +3,7 @@ import {
   formatMonthlyCapDisplay,
   MAX_MONTHLY_CAP_MINOR,
 } from "./project-schema.mjs";
-import { PROJECTS, type ProjectDefinition } from "./projects.mjs";
 import { sha256Hex } from "./sha256";
-export function rootPublishedTemplateProject(
-  projects: readonly ProjectDefinition[] = PROJECTS,
-): ProjectDefinition {
-  const publishers = projects.filter(
-    (project) => project.skill.publishAtRoot === true,
-  );
-  if (publishers.length !== 1) {
-    throw new TypeError(
-      "project registry must declare exactly one root-published template skill",
-    );
-  }
-  return publishers[0];
-}
-
-export const ROOT_PUBLISHED_TEMPLATE = rootPublishedTemplateProject();
 
 export function safeProposalHttpsUrl(value: string): boolean {
   if (value.length === 0 || value.length > 500) return false;

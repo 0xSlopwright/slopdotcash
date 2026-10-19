@@ -17,7 +17,10 @@ const QUALITY_STAGE_ERROR =
   "Invalid preparation fields: expected schemaVersion,projectId,cycleId,sourceSnapshotSha256,closureCensus,events,closures";
 
 const archived = JSON.parse(
-  readFileSync("cycles/eliza/2026-09/source-snapshot.json", "utf8"),
+  readFileSync(
+    "tests/fixtures/history/cycles/eliza/2026-09/source-snapshot.json",
+    "utf8",
+  ),
 ) as LeaderboardSnapshot;
 
 /**

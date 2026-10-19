@@ -476,6 +476,13 @@ const ISSUE_FRAGMENT = `
   }
 `;
 
+/** Loads the rate-limit budget when no registry repository is collected. */
+const RATE_LIMIT_QUERY = `
+  query LeaderboardRateLimit {
+    rateLimit { cost limit remaining resetAt }
+  }
+`;
+
 const PREFLIGHT_QUERY = `
   query LeaderboardPreflight($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) { id updatedAt }
@@ -3675,6 +3682,9 @@ export async function generateLeaderboardFromGitHub(
   const closedIssues: IssueRecord[] = [];
   let closedIssueCount = 0;
 
+  // An empty registry is a complete, valid state with nothing to collect.
+  if (TARGET_REPOSITORIES.length === 0)
+    await client.execute(RATE_LIMIT_QUERY, {});
   for (const [index, repository] of TARGET_REPOSITORIES.entries()) {
     const preflight = await preflightRepository(client, repository, {
       requireStartingBudget: index === 0,
@@ -3903,18 +3913,21 @@ export async function generateLeaderboardFromGitHub(
     ...openIssues,
     ...openPullRequests,
   ];
-  const latestPreflightUpdate = collections
-    .map((collection) => collection.preflight.updatedAt)
-    .reduce((latest, current) =>
-      Date.parse(current) > Date.parse(latest) ? current : latest,
-    );
+  const latestPreflightUpdate =
+    collections.length === 0
+      ? now.toISOString()
+      : collections
+          .map((collection) => collection.preflight.updatedAt)
+          .reduce((latest, current) =>
+            Date.parse(current) > Date.parse(latest) ? current : latest,
+          );
   const fetchedAt = new Date().toISOString();
   const rateLimit = client.getRateLimit();
   const source: LeaderboardSourceMetadata = {
     provider: "github-graphql",
     fetchedAt,
     cutoffAt: now.toISOString(),
-    repositoryId: collections[0].preflight.id,
+    repositoryId: collections[0]?.preflight.id ?? null,
     repositories: collections.map((collection) => ({
       id: collection.repository.id,
       repositoryId: collection.preflight.id,

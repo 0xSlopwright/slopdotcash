@@ -29,6 +29,7 @@ const entries: {
   path: string;
 }[] = [];
 for (const name of (await readdir(join(root, "funding/quality"))).sort()) {
+  if (name === "README.md") continue;
   if (!/^[a-z0-9-]+\.json$/.test(name))
     throw new Error("Unexpected quality input");
   const stat = await lstat(join(root, "funding/quality", name));

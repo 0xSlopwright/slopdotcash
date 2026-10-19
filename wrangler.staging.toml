@@ -6,6 +6,9 @@ compatibility_date = "2026-07-30"
 PUBLIC_SITE_URL = "https://staging.slop.cash"
 SLOP_ENVIRONMENT = "staging"
 PAYMENTS_ALLOWED_ORIGIN = "https://staging.slop.cash"
+# GitHub numeric actor IDs allowed to review project applications: lalalune
+# and drew-dot-com. Admin email recipients live in workers/notify.
+ADMIN_GITHUB_IDS = "18633264,202660855"
 
 [[d1_databases]]
 binding = "SLOP_DB"

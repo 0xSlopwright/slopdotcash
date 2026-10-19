@@ -20,7 +20,8 @@
       "!protocol/payment-checkpoints",
       "!data/who-builds",
       "!data/points/history.json",
-      "!data/profiles/seed.json"
+      "!data/profiles/seed.json",
+      "!src/lib/project-registry.generated.mjs"
     ]
   },
   "formatter": {

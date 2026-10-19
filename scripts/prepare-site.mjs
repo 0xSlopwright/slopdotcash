@@ -33,39 +33,40 @@ const protocolRoot = join(repositoryRoot, "protocol");
 const publicProtocolRoot = join(publicRoot, "protocol");
 const bootstrapSkillRoot = join(repositoryRoot, "skills", "slop");
 const bootstrapSkillSource = join(bootstrapSkillRoot, "SKILL.md");
-const rootPublishedProjects = PROJECTS.filter(
-  (project) => project.skill.publishAtRoot === true,
-);
-if (rootPublishedProjects.length !== 1) {
-  throw new TypeError(
-    "[Slop] project registry must select exactly one root-published skill",
+/** Revisions the generated installer may authorize, for every skill manifest. */
+const ACCEPTED_SKILL_REVISIONS = [
+  "current main head",
+  "main ancestor whose complete canonical skill tree is byte-identical to current main",
+  "open non-draft same-repository PR head into main, zero behind current main, with a release-candidate label event after the exact current-head event",
+];
+
+/**
+ * An approved project starts paused before its reviewed skills reach this
+ * tree. It is listed, but publishes no skill until both folders exist; the
+ * registry snapshot check requires them before a project can be active.
+ */
+function publishesSkills(project) {
+  return [project.skill.sourcePath, project.reviewSkill.sourcePath].every(
+    (path) => existsSync(join(repositoryRoot, path, "SKILL.md")),
   );
 }
-const rootPublishedProject = rootPublishedProjects[0];
-const rootProjectId = rootPublishedProject.id;
-const rootSkillName = rootPublishedProject.skill.id;
-const skillRepositoryPath = rootPublishedProject.skill.sourcePath;
-const skillRoot = join(repositoryRoot, skillRepositoryPath);
-const skillSource = join(skillRoot, "SKILL.md");
-const repositoryContractPath = join(
-  skillRoot,
-  "references",
-  "repository-contract.md",
+const SKILL_PROJECTS = PROJECTS.filter(publishesSkills);
+
+// The registry may be empty; at most one project serves the root installer.
+const rootPublishedProjects = SKILL_PROJECTS.filter(
+  (project) => project.skill.publishAtRoot === true,
 );
-const evidenceRubricPath = join(
-  skillRoot,
-  "references",
-  "evidence-review-rubric.md",
-);
+if (rootPublishedProjects.length > 1) {
+  throw new TypeError(
+    "[Slop] project registry must select at most one root-published skill",
+  );
+}
 const skillValidator = join(
   repositoryRoot,
   "scripts",
   "skill-validation",
   "quick_validate.py",
 );
-const archiveName = `${rootSkillName}.skill`;
-const archivePath = join(downloadsRoot, archiveName);
-const sourcePath = `${skillRepositoryPath}/SKILL.md`;
 const publicSiteOrigin = "https://slop.cash";
 const sourceRepository = "SlopDotCash/slopdotcash";
 
@@ -164,55 +165,6 @@ if (existsSync(identityRecordPath)) {
 }
 runPython([skillValidator, bootstrapSkillRoot]);
 
-const skillMarkdown = readFileSync(skillSource);
-const repositoryContract = readFileSync(repositoryContractPath, "utf8");
-const evidenceRubric = readFileSync(evidenceRubricPath, "utf8");
-const skillDigest = sha256(skillMarkdown);
-const trackedSkillFiles = execFileSync(
-  "git",
-  ["ls-files", "-z", "--", skillRepositoryPath],
-  {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  },
-)
-  .split("\0")
-  .filter(Boolean)
-  .map((path) => relative(skillRepositoryPath, path).replaceAll("\\", "/"))
-  .sort();
-const actualSkillFiles = listRegularSkillFiles(skillRoot).sort();
-if (
-  trackedSkillFiles.length === 0 ||
-  trackedSkillFiles.includes("PROVENANCE.json") ||
-  trackedSkillFiles.some(
-    (path) => path === ".." || path.startsWith("../") || path.includes("/../"),
-  )
-) {
-  throw new TypeError(
-    "[Slop] tracked skill file manifest is empty, escaped its root, or reserves PROVENANCE.json",
-  );
-}
-if (trackedSkillFiles.length > 32) {
-  throw new TypeError(
-    "[Slop] canonical skill exceeds the installer's 32-file authority bound",
-  );
-}
-if (
-  trackedSkillFiles.length !== actualSkillFiles.length ||
-  trackedSkillFiles.some((path, index) => path !== actualSkillFiles[index])
-) {
-  const tracked = new Set(trackedSkillFiles);
-  const actual = new Set(actualSkillFiles);
-  const extras = actualSkillFiles.filter((path) => !tracked.has(path));
-  const missing = trackedSkillFiles.filter((path) => !actual.has(path));
-  throw new TypeError(
-    `[Slop] skill source must exactly match tracked files (extra: ${extras.join(", ") || "none"}; missing: ${missing.join(", ") || "none"})`,
-  );
-}
-const skillFileManifest = trackedSkillFiles.map((path) => ({
-  path,
-  sha256: sha256(readFileSync(join(skillRoot, path))),
-}));
 const commit = execFileSync("git", ["rev-parse", "HEAD"], {
   cwd: repositoryRoot,
   encoding: "utf8",
@@ -255,17 +207,10 @@ try {
 } catch {
   // error-policy:J3 an absent committed source is an explicit working-tree state.
 }
-const sourceMatchesCommit = skillSourceMatchesCommit(
-  repositoryRoot,
-  commit,
-  skillRepositoryPath,
-  trackedSkillFiles,
-);
-const sourceRevisionStatus = sourceMatchesCommit ? "committed" : "working-tree";
 const guideRendererPaths = [
   "scripts/render-install-guide.mjs",
   "src/lib/install-command.ts",
-  "skills/contribute-to-eliza/scripts/skill-authority.mjs",
+  "scripts/skill-kit/skill-authority.mjs",
 ];
 const rendererMatchesCommit = guideRendererPaths.every((path) => {
   try {
@@ -293,24 +238,6 @@ run(process.execPath, [
   "--favicons",
   "--ogembeds",
 ]);
-
-const archive = packageSkillArtifact({
-  repositoryRoot,
-  skillRoot,
-  downloadsRoot,
-  runPython,
-  provenance: {
-    schemaVersion: "1",
-    name: rootSkillName,
-    repository: sourceRepository,
-    revision: sourceRevisionStatus === "committed" ? commit : null,
-    revisionStatus: sourceRevisionStatus,
-    source: { path: sourcePath, sha256: skillDigest },
-    files: skillFileManifest,
-  },
-});
-
-const archiveDigest = sha256(archive);
 
 const discoveryRoot = join(publicRoot, ".well-known", "agent-skills");
 const discoverySkillRoot = join(discoveryRoot, "slop");
@@ -349,7 +276,7 @@ writeFileSync(
   `${JSON.stringify(
     {
       schemaVersion: "1",
-      projects: PROJECTS.flatMap((project) =>
+      projects: SKILL_PROJECTS.flatMap((project) =>
         project.repositories.map((repository) => ({
           project_id: project.id,
           project_url: `${publicSiteOrigin}/projects/${project.id}/`,
@@ -364,54 +291,6 @@ writeFileSync(
     null,
     2,
   )}\n`,
-);
-
-const standaloneMission = `${skillMarkdown.toString()}
-
----
-
-# Embedded repository contract
-
-The URL-only mission embeds both required references so an agent does not need
-to fetch or execute additional code. If the local live-report script is absent,
-use the read-only inspection commands below and verify live claim state
-manually.
-
-${repositoryContract}
-
----
-
-# Embedded evidence and review rubric
-
-${evidenceRubric}
-`;
-writeFileSync(join(publicRoot, "mission.md"), standaloneMission);
-
-const primaryGuideOptions = {
-  artifactOrigin: `${publicSiteOrigin}/projects/${rootProjectId}`,
-  skillName: rootSkillName,
-  skillRepositoryPath,
-};
-const codexBootstrap = renderInstallGuide({
-  ...primaryGuideOptions,
-  client: "codex",
-});
-
-writeFileSync(join(publicRoot, "codex.md"), codexBootstrap);
-const claudeBootstrap = renderInstallGuide({
-  ...primaryGuideOptions,
-  client: "claude-code",
-});
-writeFileSync(join(publicRoot, "claude.md"), claudeBootstrap);
-writeFileSync(join(publicRoot, "claude-code.md"), claudeBootstrap);
-const manualBootstrap = renderInstallGuide({
-  ...primaryGuideOptions,
-  client: "manual",
-});
-writeFileSync(join(publicRoot, "manual.md"), manualBootstrap);
-writeFileSync(
-  join(downloadsRoot, `${archiveName}.sha256`),
-  `${archiveDigest}  ${archiveName}\n`,
 );
 
 function guideRecord({
@@ -445,129 +324,276 @@ function guideRecord({
   };
 }
 
-const manifest = {
-  schemaVersion: "1",
-  name: rootSkillName,
-  repository: "SlopDotCash/slopdotcash",
-  revision: commit,
-  revisionStatus: sourceRevisionStatus,
-  generatedAt: new Date().toISOString(),
-  source: {
-    path: sourcePath,
-    url: `https://github.com/SlopDotCash/slopdotcash/blob/${commit}/${sourcePath}`,
-    publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/skill.md`,
-    sha256: skillDigest,
-  },
-  archive: {
-    url: `${publicSiteOrigin}/downloads/${archiveName}`,
-    sha256: archiveDigest,
-    checksumUrl: `${publicSiteOrigin}/downloads/${archiveName}.sha256`,
-  },
-  guides: {
-    codex: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "codex",
-      publicUrl: `${publicSiteOrigin}/codex.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: codexBootstrap,
-    }),
-    claude: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "claude-code",
-      publicUrl: `${publicSiteOrigin}/claude.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: claudeBootstrap,
-    }),
-    manual: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "manual",
-      publicUrl: `${publicSiteOrigin}/manual.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: manualBootstrap,
-    }),
-  },
-  authority: {
-    apiOrigin: "https://api.github.com",
-    rawOrigin: "https://raw.githubusercontent.com",
-    canonicalPath: skillRepositoryPath,
-    releaseCandidateLabel: "slop-release-candidate",
-    acceptedRevisions: [
-      "current main head",
-      "main ancestor whose complete canonical skill tree is byte-identical to current main",
-      "open non-draft same-repository PR head into main, zero behind current main, with a release-candidate label event after the exact current-head event",
-    ],
-  },
-  provenance: {
-    status: "self-reported",
-    policy:
-      "Contributors disclose provider, exact model identifier, client, and skill revision. Disclosure is not independently verified and does not affect score.",
-  },
-  telemetry: {
-    source: "ccusage@20.0.20",
-    policy:
-      "Contribute through GitHub with exact provider, model, and client disclosure. Signed receipts, usage collection, private traces, and wallet registration are optional. Inspected traces require consent under https://slop.cash/protocol/private-trace-v1.md; only finalized evidence earns the trace bonus. Missing evidence never blocks submission.",
-  },
-};
-
-writeFileSync(
-  join(publicRoot, "skill-manifest.json"),
-  `${JSON.stringify(manifest, null, 2)}\n`,
-);
-
-function publishPrimaryProjectAlias() {
-  const projectRoot = join(publicRoot, "projects", rootProjectId);
-  const projectDownloads = join(projectRoot, "downloads");
-  mkdirSync(projectDownloads, { recursive: true });
-  copyFileSync(skillSource, join(projectRoot, "skill.md"));
-  writeFileSync(join(projectRoot, "mission.md"), standaloneMission);
-  copyFileSync(archivePath, join(projectDownloads, archiveName));
-  copyFileSync(
-    join(downloadsRoot, `${archiveName}.sha256`),
-    join(projectDownloads, `${archiveName}.sha256`),
+/** Publishes the root installer, mission, and guides for the one root project. */
+function publishRootProject(rootPublishedProject) {
+  const rootProjectId = rootPublishedProject.id;
+  const rootSkillName = rootPublishedProject.skill.id;
+  const skillRepositoryPath = rootPublishedProject.skill.sourcePath;
+  const skillRoot = join(repositoryRoot, skillRepositoryPath);
+  const skillSource = join(skillRoot, "SKILL.md");
+  const repositoryContractPath = join(
+    skillRoot,
+    "references",
+    "repository-contract.md",
   );
-  const codexGuide = codexBootstrap;
-  writeFileSync(join(projectRoot, "codex.md"), codexGuide);
-  const claudeGuide = claudeBootstrap;
-  writeFileSync(join(projectRoot, "claude.md"), claudeGuide);
-  writeFileSync(join(projectRoot, "claude-code.md"), claudeGuide);
-  const manualGuide = manualBootstrap;
-  writeFileSync(join(projectRoot, "manual.md"), manualGuide);
-  const projectManifest = structuredClone(manifest);
-  projectManifest.source.publicUrl = `${publicSiteOrigin}/projects/${rootProjectId}/skill.md`;
-  projectManifest.archive.url = `${publicSiteOrigin}/projects/${rootProjectId}/downloads/${archiveName}`;
-  projectManifest.archive.checksumUrl = `${projectManifest.archive.url}.sha256`;
-  projectManifest.guides = {
-    codex: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "codex",
-      publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/codex.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: codexGuide,
-    }),
-    claude: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "claude-code",
-      publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/claude.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: claudeGuide,
-    }),
-    manual: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "manual",
-      publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/manual.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: manualGuide,
-    }),
+  const evidenceRubricPath = join(
+    skillRoot,
+    "references",
+    "evidence-review-rubric.md",
+  );
+  const archiveName = `${rootSkillName}.skill`;
+  const archivePath = join(downloadsRoot, archiveName);
+  const sourcePath = `${skillRepositoryPath}/SKILL.md`;
+  const skillMarkdown = readFileSync(skillSource);
+  const repositoryContract = readFileSync(repositoryContractPath, "utf8");
+  const evidenceRubric = readFileSync(evidenceRubricPath, "utf8");
+  const skillDigest = sha256(skillMarkdown);
+  const trackedSkillFiles = execFileSync(
+    "git",
+    ["ls-files", "-z", "--", skillRepositoryPath],
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    },
+  )
+    .split("\0")
+    .filter(Boolean)
+    .map((path) => relative(skillRepositoryPath, path).replaceAll("\\", "/"))
+    .sort();
+  const actualSkillFiles = listRegularSkillFiles(skillRoot).sort();
+  if (
+    trackedSkillFiles.length === 0 ||
+    trackedSkillFiles.includes("PROVENANCE.json") ||
+    trackedSkillFiles.some(
+      (path) =>
+        path === ".." || path.startsWith("../") || path.includes("/../"),
+    )
+  ) {
+    throw new TypeError(
+      "[Slop] tracked skill file manifest is empty, escaped its root, or reserves PROVENANCE.json",
+    );
+  }
+  if (trackedSkillFiles.length > 32) {
+    throw new TypeError(
+      "[Slop] canonical skill exceeds the installer's 32-file authority bound",
+    );
+  }
+  if (
+    trackedSkillFiles.length !== actualSkillFiles.length ||
+    trackedSkillFiles.some((path, index) => path !== actualSkillFiles[index])
+  ) {
+    const tracked = new Set(trackedSkillFiles);
+    const actual = new Set(actualSkillFiles);
+    const extras = actualSkillFiles.filter((path) => !tracked.has(path));
+    const missing = trackedSkillFiles.filter((path) => !actual.has(path));
+    throw new TypeError(
+      `[Slop] skill source must exactly match tracked files (extra: ${extras.join(", ") || "none"}; missing: ${missing.join(", ") || "none"})`,
+    );
+  }
+  const skillFileManifest = trackedSkillFiles.map((path) => ({
+    path,
+    sha256: sha256(readFileSync(join(skillRoot, path))),
+  }));
+  const sourceMatchesCommit = skillSourceMatchesCommit(
+    repositoryRoot,
+    commit,
+    skillRepositoryPath,
+    trackedSkillFiles,
+  );
+  const sourceRevisionStatus = sourceMatchesCommit
+    ? "committed"
+    : "working-tree";
+
+  const archive = packageSkillArtifact({
+    repositoryRoot,
+    skillRoot,
+    downloadsRoot,
+    runPython,
+    provenance: {
+      schemaVersion: "1",
+      name: rootSkillName,
+      repository: sourceRepository,
+      revision: sourceRevisionStatus === "committed" ? commit : null,
+      revisionStatus: sourceRevisionStatus,
+      source: { path: sourcePath, sha256: skillDigest },
+      files: skillFileManifest,
+    },
+  });
+
+  const archiveDigest = sha256(archive);
+  const standaloneMission = `${skillMarkdown.toString()}
+
+  ---
+
+  # Embedded repository contract
+
+  The URL-only mission embeds both required references so an agent does not need
+  to fetch or execute additional code. If the local live-report script is absent,
+  use the read-only inspection commands below and verify live claim state
+  manually.
+
+  ${repositoryContract}
+
+  ---
+
+  # Embedded evidence and review rubric
+
+  ${evidenceRubric}
+  `;
+  writeFileSync(join(publicRoot, "mission.md"), standaloneMission);
+
+  const primaryGuideOptions = {
+    artifactOrigin: `${publicSiteOrigin}/projects/${rootProjectId}`,
+    skillName: rootSkillName,
+    skillRepositoryPath,
   };
+  const codexBootstrap = renderInstallGuide({
+    ...primaryGuideOptions,
+    client: "codex",
+  });
+
+  writeFileSync(join(publicRoot, "codex.md"), codexBootstrap);
+  const claudeBootstrap = renderInstallGuide({
+    ...primaryGuideOptions,
+    client: "claude-code",
+  });
+  writeFileSync(join(publicRoot, "claude.md"), claudeBootstrap);
+  writeFileSync(join(publicRoot, "claude-code.md"), claudeBootstrap);
+  const manualBootstrap = renderInstallGuide({
+    ...primaryGuideOptions,
+    client: "manual",
+  });
+  writeFileSync(join(publicRoot, "manual.md"), manualBootstrap);
   writeFileSync(
-    join(projectRoot, "skill-manifest.json"),
-    `${JSON.stringify(projectManifest, null, 2)}\n`,
+    join(downloadsRoot, `${archiveName}.sha256`),
+    `${archiveDigest}  ${archiveName}\n`,
+  );
+
+  const manifest = {
+    schemaVersion: "1",
+    name: rootSkillName,
+    repository: "SlopDotCash/slopdotcash",
+    revision: commit,
+    revisionStatus: sourceRevisionStatus,
+    generatedAt: new Date().toISOString(),
+    source: {
+      path: sourcePath,
+      url: `https://github.com/SlopDotCash/slopdotcash/blob/${commit}/${sourcePath}`,
+      publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/skill.md`,
+      sha256: skillDigest,
+    },
+    archive: {
+      url: `${publicSiteOrigin}/downloads/${archiveName}`,
+      sha256: archiveDigest,
+      checksumUrl: `${publicSiteOrigin}/downloads/${archiveName}.sha256`,
+    },
+    guides: {
+      codex: guideRecord({
+        artifactOrigin: primaryGuideOptions.artifactOrigin,
+        client: "codex",
+        publicUrl: `${publicSiteOrigin}/codex.md`,
+        skillName: primaryGuideOptions.skillName,
+        skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
+        source: codexBootstrap,
+      }),
+      claude: guideRecord({
+        artifactOrigin: primaryGuideOptions.artifactOrigin,
+        client: "claude-code",
+        publicUrl: `${publicSiteOrigin}/claude.md`,
+        skillName: primaryGuideOptions.skillName,
+        skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
+        source: claudeBootstrap,
+      }),
+      manual: guideRecord({
+        artifactOrigin: primaryGuideOptions.artifactOrigin,
+        client: "manual",
+        publicUrl: `${publicSiteOrigin}/manual.md`,
+        skillName: primaryGuideOptions.skillName,
+        skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
+        source: manualBootstrap,
+      }),
+    },
+    authority: {
+      apiOrigin: "https://api.github.com",
+      rawOrigin: "https://raw.githubusercontent.com",
+      canonicalPath: skillRepositoryPath,
+      releaseCandidateLabel: "slop-release-candidate",
+      acceptedRevisions: ACCEPTED_SKILL_REVISIONS,
+    },
+    provenance: {
+      status: "self-reported",
+      policy:
+        "Contributors disclose provider, exact model identifier, client, and skill revision. Disclosure is not independently verified and does not affect score.",
+    },
+    telemetry: {
+      source: "ccusage@20.0.20",
+      policy:
+        "Contribute through GitHub with exact provider, model, and client disclosure. Signed receipts, usage collection, private traces, and wallet registration are optional. Inspected traces require consent under https://slop.cash/protocol/private-trace-v1.md; only finalized evidence earns the trace bonus. Missing evidence never blocks submission.",
+    },
+  };
+
+  writeFileSync(
+    join(publicRoot, "skill-manifest.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+
+  function publishPrimaryProjectAlias() {
+    const projectRoot = join(publicRoot, "projects", rootProjectId);
+    const projectDownloads = join(projectRoot, "downloads");
+    mkdirSync(projectDownloads, { recursive: true });
+    copyFileSync(skillSource, join(projectRoot, "skill.md"));
+    writeFileSync(join(projectRoot, "mission.md"), standaloneMission);
+    copyFileSync(archivePath, join(projectDownloads, archiveName));
+    copyFileSync(
+      join(downloadsRoot, `${archiveName}.sha256`),
+      join(projectDownloads, `${archiveName}.sha256`),
+    );
+    const codexGuide = codexBootstrap;
+    writeFileSync(join(projectRoot, "codex.md"), codexGuide);
+    const claudeGuide = claudeBootstrap;
+    writeFileSync(join(projectRoot, "claude.md"), claudeGuide);
+    writeFileSync(join(projectRoot, "claude-code.md"), claudeGuide);
+    const manualGuide = manualBootstrap;
+    writeFileSync(join(projectRoot, "manual.md"), manualGuide);
+    const projectManifest = structuredClone(manifest);
+    projectManifest.source.publicUrl = `${publicSiteOrigin}/projects/${rootProjectId}/skill.md`;
+    projectManifest.archive.url = `${publicSiteOrigin}/projects/${rootProjectId}/downloads/${archiveName}`;
+    projectManifest.archive.checksumUrl = `${projectManifest.archive.url}.sha256`;
+    projectManifest.guides = {
+      codex: guideRecord({
+        artifactOrigin: primaryGuideOptions.artifactOrigin,
+        client: "codex",
+        publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/codex.md`,
+        skillName: primaryGuideOptions.skillName,
+        skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
+        source: codexGuide,
+      }),
+      claude: guideRecord({
+        artifactOrigin: primaryGuideOptions.artifactOrigin,
+        client: "claude-code",
+        publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/claude.md`,
+        skillName: primaryGuideOptions.skillName,
+        skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
+        source: claudeGuide,
+      }),
+      manual: guideRecord({
+        artifactOrigin: primaryGuideOptions.artifactOrigin,
+        client: "manual",
+        publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/manual.md`,
+        skillName: primaryGuideOptions.skillName,
+        skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
+        source: manualGuide,
+      }),
+    };
+    writeFileSync(
+      join(projectRoot, "skill-manifest.json"),
+      `${JSON.stringify(projectManifest, null, 2)}\n`,
+    );
+  }
+
+  publishPrimaryProjectAlias();
+  console.log(
+    `[Slop] prepared root ${archiveName} (${archiveDigest.slice(0, 12)}) from ${commit.slice(0, 12)}`,
   );
 }
 
@@ -731,7 +757,7 @@ function publishAdditionalProject({
       rawOrigin: "https://raw.githubusercontent.com",
       canonicalPath: skillRepositoryPath,
       releaseCandidateLabel: "slop-release-candidate",
-      acceptedRevisions: manifest.authority.acceptedRevisions,
+      acceptedRevisions: ACCEPTED_SKILL_REVISIONS,
     },
     provenance: {
       status: "self-reported",
@@ -761,21 +787,56 @@ function publishAdditionalProject({
   );
 }
 
-publishPrimaryProjectAlias();
+if (rootPublishedProjects.length === 1)
+  publishRootProject(rootPublishedProjects[0]);
+else {
+  // Without a root project there is no installer, but the release record still
+  // names the deployed revision for released-source and evidence capture.
+  for (const name of [
+    "mission.md",
+    "codex.md",
+    "claude.md",
+    "claude-code.md",
+    "manual.md",
+  ])
+    rmSync(join(publicRoot, name), { force: true });
+  rmSync(downloadsRoot, { force: true, recursive: true });
+  writeFileSync(
+    join(publicRoot, "skill-manifest.json"),
+    `${JSON.stringify(
+      {
+        schemaVersion: "1",
+        name: null,
+        repository: sourceRepository,
+        revision: commit,
+        revisionStatus: bootstrapRevisionStatus,
+        generatedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
 for (const project of PROJECTS) {
-  if (!project.skill.publishAtRoot) {
+  if (publishesSkills(project)) {
+    if (!project.skill.publishAtRoot) {
+      publishAdditionalProject({
+        id: project.id,
+        name: project.skill.id,
+        skillRepositoryPath: project.skill.sourcePath,
+      });
+    }
     publishAdditionalProject({
       id: project.id,
-      name: project.skill.id,
-      skillRepositoryPath: project.skill.sourcePath,
+      name: project.reviewSkill.id,
+      publicationPrefix: "review-",
+      skillRepositoryPath: project.reviewSkill.sourcePath,
     });
+  } else if (project.status === "active") {
+    throw new TypeError(
+      `[Slop] active project ${project.id} must publish both reviewed skills`,
+    );
   }
-  publishAdditionalProject({
-    id: project.id,
-    name: project.reviewSkill.id,
-    publicationPrefix: "review-",
-    skillRepositoryPath: project.reviewSkill.sourcePath,
-  });
   const projectRoot = join(publicRoot, "projects", project.id);
   mkdirSync(projectRoot, { recursive: true });
   writeFileSync(
@@ -804,5 +865,5 @@ run("bun", [join(repositoryRoot, "scripts", "prepare-funding-review.ts")]);
 run("bun", [join(repositoryRoot, "scripts", "sync-contribution-quality.ts")]);
 
 console.log(
-  `[Slop] prepared ${archiveName} (${archiveDigest.slice(0, 12)}) from ${commit.slice(0, 12)}`,
+  `[Slop] prepared ${SKILL_PROJECTS.length} project skill set(s) from ${commit.slice(0, 12)}`,
 );

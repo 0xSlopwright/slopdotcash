@@ -21,6 +21,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  copyFileSync,
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -31,6 +33,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertCycleIndex, type CycleIndex } from "../src/lib/cycle-index";
+import { fixtureCheckout } from "../tests/fixture-checkout";
 
 const repositoryRoot = resolve(import.meta.dir, "..");
 const syncScript = "scripts/sync-cycle-index.ts";
@@ -49,33 +52,10 @@ function sync(args: string[] = [], cwd = workingCopy) {
     env: { ...process.env, TMPDIR: join(cwd, ".bun-tmp") },
   });
 }
-/**
- * Exports the tracked tree into a fresh scratch directory with the installed
- * dependencies linked in. `git archive` yields exactly what CI has.
- */
-function cloneWorkingCopy(): string {
-  const root = mkdtempSync(join(tmpdir(), "cycle-index-review-"));
-  const archive = spawnSync("git", ["archive", "HEAD"], {
-    cwd: repositoryRoot,
-    encoding: "buffer",
-    maxBuffer: 128 * 1024 * 1024,
-  });
-  expect(archive.status).toBe(0);
-  const extract = spawnSync("tar", ["-x", "-f", "-", "-C", root], {
-    input: archive.stdout,
-  });
-  expect(extract.status).toBe(0);
-  symlinkSync(
-    join(repositoryRoot, "node_modules"),
-    join(root, "node_modules"),
-    process.platform === "win32" ? "junction" : "dir",
-  );
-  mkdirSync(join(root, ".bun-tmp"), { recursive: true });
-  return root;
-}
-
 beforeAll(() => {
-  workingCopy = cloneWorkingCopy();
+  // The frozen registry and history still hold a cycle inside its public
+  // review window; the committed tree no longer lists any project.
+  workingCopy = fixtureCheckout("cycle-index-review-");
 
   // Publish the artifact the site build consumes, inside the scratch copy.
   const generated = sync();
@@ -203,7 +183,7 @@ function findExcludableRow(): { target: string; login: string } | null {
   );
   if (preChange === current) return null;
   for (const candidate of candidates) {
-    const probe = cloneWorkingCopy();
+    const probe = fixtureCheckout("cycle-index-review-");
     writeFileSync(join(probe, "src/lib/cycle-index.ts"), preChange);
     excludeRowOnDisk(
       join(

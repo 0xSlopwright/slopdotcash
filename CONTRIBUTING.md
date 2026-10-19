@@ -110,7 +110,7 @@ The PRD and MVP plan are binding. Accepted work, inside approved MVP scope:
   the installer, or signer and vault boundaries, with a demonstrated reachable
   path;
 - verification and settlement correctness: scoring, cycle proposals, funding
-  evidence, vault and Squads execution tracking, and on-chain reconciliation;
+  evidence, project vault execution tracking, and on-chain reconciliation;
 - tests that prove a real product path failed and now works;
 - hill climbing: a measured improvement to a required behavior, with the same
   method run before and after the change.
@@ -167,22 +167,19 @@ failed. Do not claim a client was tested when it was not.
 
 ## Add a project
 
-Start with the public proposal builder at
-[`slop.cash/projects/new`](https://slop.cash/projects/new). It prepares the
-manifest and an agent brief, then links to GitHub’s new-file flow. The website
-does not activate a project or create private platform state.
+Add a project on the website, not by pull request. Sign in with GitHub and
+submit the form at [`slop.cash/projects/new`](https://slop.cash/projects/new).
+A Slop admin reviews the application at `/admin`. Approval lists the project
+as paused. Every later change is an append-only D1 revision that an admin
+approves. Do not open a pull request to add or update a project, and do not
+add project JSON or a per-project skill folder to this repository.
 
-A project pull request must add all three canonical surfaces:
-
-```text
-projects/<project-id>/project.json
-skills/contribute-to-<project-id>/
-skills/review-<project-id>-contributions/
-```
-
-Use an existing project only as a structural reference. Rewrite its mission,
-work selection, repository rules, evidence requirements, and review policy for
-the proposed project.
+Slop generates the project's contributor and reviewer skills from its D1
+revision and the one canonical generic template in this repository (PRD
+SKL-03). In the form, write the approved scope, contribution guide, supported
+tasks, required tests, review expectations, security contact, closure policy,
+and any maintainer notes. An admin makes the project active only after the
+generated skills pass review.
 
 The manifest must use immutable GitHub repository and actor IDs, a reviewed
 license URL/commit/digest, a concrete integration branch, a verified steward,
@@ -220,14 +217,15 @@ bun run test:e2e
 
 Preserve these boundaries:
 
-- `projects/*/project.json` is the sole project and repository inventory.
+- The D1 project registry is the sole project and repository inventory.
 - Score accepted outcomes, not activity or token volume.
 - Keep projected, under-review, approved, scheduled, and paid states distinct.
 - Never infer ownership, legal capacity, wallet control, or payment authority.
 - Never expose secrets, raw prompts/responses, private traces, credentials,
   session identifiers, or signing material.
-- Settlement and commitment tooling is read-only or produces unsigned plans;
-  it never signs or broadcasts.
+- Settlement tooling never signs or broadcasts a vault transfer or a payment.
+  The only Slop signers are the PAY-05 identity attester and the TOK-07
+  fee-wallet conversion job, within the limits in `AGENTS.md`.
 - Generated public assets come from `bun run prepare:site`; do not edit them by
   hand.
 

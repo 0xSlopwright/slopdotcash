@@ -6,8 +6,9 @@ import type {
 } from "./leaderboard";
 import {
   findHistoricalProject,
-  findHistoricalProjectByRepositoryId,
-  findProjectByRepositoryId,
+  findHistoricalRepository,
+  isHistoricalProjectId,
+  isHistoricalRepositoryId,
 } from "./projects.mjs";
 import { sha256Hex } from "./sha256";
 
@@ -125,7 +126,7 @@ export function assertPointsJournal(
     if (
       !/^[A-Za-z0-9_=-]{4,256}$/.test(a.actor.id) ||
       !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(a.actor.login) ||
-      !findHistoricalProject(a.projectId) ||
+      !isHistoricalProjectId(a.projectId) ||
       !categories.has(a.category) ||
       !Number.isSafeInteger(a.amount) ||
       a.amount < 0 ||
@@ -190,7 +191,7 @@ export function assertPointsJournal(
   for (const c of p.coverage) {
     exact(c, ["repository", "from", "to", "digest"]);
     if (
-      !findHistoricalProjectByRepositoryId(c.repository) ||
+      !isHistoricalRepositoryId(c.repository) ||
       !iso(c.from) ||
       !iso(c.to) ||
       c.from >= c.to ||
@@ -219,18 +220,19 @@ export function pointsForScore(
   return amount;
 }
 export function awardForScore(event: ScoreEvent): PointAward {
-  const project = findProjectByRepositoryId(event.repository);
+  // Retained history may name a project that is no longer listed.
+  const project = findHistoricalRepository(event.repository);
   if (!project || event.actor.kind !== "User")
     throw new Error("Points require a registered project and user");
   return {
     key: pointKey(
-      project.id,
+      project.projectId,
       event.actor.id,
       event.category,
       event.category === "evidence" ? event.id : event.source.id,
     ),
     actor: { id: event.actor.id, login: event.actor.login },
-    projectId: project.id,
+    projectId: project.projectId,
     category: event.category,
     amount: pointsForScore(event),
     occurredAt: new Date(event.occurredAt).toISOString(),
@@ -295,7 +297,8 @@ export function applyPointsSnapshot(
   // on a review submitted before the window. An exclusion is that ruling.
   const excludedReviews = new Set(
     (snapshot.reviewExclusions ?? []).map(
-      (x) => `${findProjectByRepositoryId(x.repository)?.id}\0${x.reviewId}`,
+      (x) =>
+        `${findHistoricalRepository(x.repository)?.projectId}\0${x.reviewId}`,
     ),
   );
   // A complete newer census can correct a formerly accepted source. Never infer
@@ -352,7 +355,7 @@ export function applyPointsSnapshot(
  * marker, and dot-segment paths (including percent-encoded dot-segments).
  *
  * The owner/repo is resolved through the registered project repository
- * inventory (project.json manifests via findProjectByRepositoryId), so a
+ * inventory (registry and removed projects via findHistoricalRepository), so a
  * registered alias maps to the canonical repository id: the validator
  * accepts alias paths as review sources, and without this the same PR
  * reached through the canonical id and through an alias would get different
@@ -392,15 +395,9 @@ export function canonicalReviewIdentity(url: string): string | undefined {
   // substantive review on an alias (or vice versa) miss the dedup set and
   // double-count.
   const ownerRepo = `${path[1]}/${path[2]}`;
-  const project = findProjectByRepositoryId(ownerRepo);
-  const canonical = project?.repositories.find(
-    (repository) =>
-      repository.id.toLowerCase() === ownerRepo.toLowerCase() ||
-      (repository.aliases ?? []).some(
-        (alias) => alias.toLowerCase() === ownerRepo.toLowerCase(),
-      ),
-  );
-  const repositoryId = (canonical?.id ?? ownerRepo).toLowerCase();
+  const repositoryId = (
+    findHistoricalRepository(ownerRepo)?.repositoryId ?? ownerRepo
+  ).toLowerCase();
   return `${repositoryId}/pull/${path[3]}`;
 }
 export function pointMembers(

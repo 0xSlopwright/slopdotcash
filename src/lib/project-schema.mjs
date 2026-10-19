@@ -1291,16 +1291,17 @@ export function assertHistoricalProjectDefinition(value) {
 
 /** Validates uniqueness and trust boundaries across the full registry. */
 export function assertProjectRegistry(values) {
-  if (!Array.isArray(values) || values.length === 0 || values.length > 100) {
-    throw new TypeError("project registry must contain 1 to 100 projects");
+  // Projects are added on slop.cash, so a new registry starts empty.
+  if (!Array.isArray(values) || values.length > 100) {
+    throw new TypeError("project registry must contain 0 to 100 projects");
   }
   const projects = values.map(assertProjectDefinition);
   if (
-    projects.filter((project) => project.skill.publishAtRoot === true)
-      .length !== 1
+    projects.filter((project) => project.skill.publishAtRoot === true).length >
+    1
   ) {
     throw new TypeError(
-      "project registry must declare exactly one root-published contributor skill",
+      "project registry must declare at most one root-published contributor skill",
     );
   }
   for (const [field, entries] of [

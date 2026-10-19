@@ -972,9 +972,7 @@ export function ContributorStandings({
   const metric = (
     m: ReturnType<typeof contributorStandings>["rows"][number],
   ) => (sort === "score" ? m.score : sort === "points" ? m.points : m.money);
-  const [direct] = useAllDirectTransfers(
-    PROJECTS.map((p) => p.id),
-  );
+  const [direct] = useAllDirectTransfers(PROJECTS.map((p) => p.id));
   const projection = contributorStandings(
     scores,
     state.status === "ready" ? members : null,
