@@ -1111,7 +1111,7 @@ jobs:
           # Admin notification Worker (workers/notify). The owner creates the
           # Worker shell and its ADMIN_EMAILS secret once, then sets the
           # SLOP_NOTIFY_RELEASE repository variable to "enabled". Releases only
-          # upload and promote versions. Pages binds it only with its caller.
+          # upload and promote versions. Pages binds it only after the first release.
           if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
           notify_secrets="$RUNNER_TEMP/slop-notify-secrets.json"
           ./node_modules/.bin/wrangler secret list \
