@@ -46,7 +46,7 @@ export interface WalletPossessionAttestation {
  * How a destination's possession currently reads. `unproven` is the honest
  * pre-existing state and never blocks a payout or extinguishes a position.
  * `not-provable-by-signature` marks an off-curve address, such as a program
- * derived address or a Squads vault, which is a valid destination that simply
+ * derived address or a multisig vault, which is a valid destination that simply
  * cannot produce a detached Ed25519 signature.
  */
 export type WalletPossessionState =

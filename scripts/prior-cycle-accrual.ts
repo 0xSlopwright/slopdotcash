@@ -241,12 +241,6 @@ export async function loadPriorCycleAccrual(input: {
   cycleId: string;
   cyclesRoot: string;
   projectId: ProjectId;
-  /**
-   * A fresh-cycle payment policy imports no accrued principal. The reviewed
-   * prior README proofs and unsafe destination history still apply, so they
-   * are loaded without the monetary readiness checks.
-   */
-  freshPolicy?: boolean;
 }): Promise<PriorCycleAccrual> {
   const priorId = previousCycleId(input.cycleId);
   const unsafeDestinationReports = await loadUnsafeDestinationHistory(input);
@@ -301,14 +295,6 @@ export async function loadPriorCycleAccrual(input: {
     throw new RangeError(
       `Prior cycle ${input.projectId}/${priorId} contains future review state`,
     );
-  }
-  if (input.freshPolicy) {
-    return {
-      actorLogins: new Map(),
-      actorReadmeProofs,
-      accruedMinor: new Map(),
-      unsafeDestinationReports,
-    };
   }
   // The historical trial never creates a monetary balance, including when
   // a later reviewed allocation retains its original unclaimed suggestions.

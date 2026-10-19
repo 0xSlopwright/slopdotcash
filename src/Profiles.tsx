@@ -126,7 +126,7 @@ export function ProfileActivity({
           amount: BigInt(t.amountMicro),
           href:
             transactionUrl(t.network, t.transactionId) ??
-            `/projects/${encodeURIComponent(t.projectId)}/funding#payouts`,
+            `/projects/${encodeURIComponent(t.projectId)}/funding`,
           name: `${findProject(t.projectId)?.name ?? t.projectId} · ${formatCycleMonth(t.contributionMonth)}`,
         }))
       : [];

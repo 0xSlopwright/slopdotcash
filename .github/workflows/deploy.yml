@@ -225,12 +225,6 @@ jobs:
       - name: Validate reward lifecycle
         run: bun run cycles:check
 
-      - name: Validate finalized Solana evidence on trusted revisions
-        if: github.event_name != 'pull_request'
-        env:
-          SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
-        run: bun run cycles:verify
-
       - name: Check code
         run: bun run verify:code
 

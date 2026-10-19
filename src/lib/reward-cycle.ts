@@ -1,7 +1,8 @@
 /**
- * Converts a complete, immutable project snapshot into the public proposal for
- * one closed reward cycle. This layer proposes deterministic amounts or shares;
- * human review and on-chain settlement remain separate, auditable transitions.
+ * Deterministic cycle helpers. New monthly cycles use the escrow workflow,
+ * which reuses the complete-cycle check and the review-line allocation here.
+ * `createRewardCycleProposal` regenerates a historical monthly-pool proposal
+ * from its frozen snapshot so the cycle index can verify it; it never pays.
  */
 
 import {
@@ -214,16 +215,6 @@ export function createRewardCycleProposal(
   if (project?.escrow && input.cycleId >= project.escrow.effectiveCycle)
     throw new TypeError(
       "Escrow awards use the v2 gross allocation workflow; legacy Solana plans cannot reserve them",
-    );
-  if (
-    project?.funding.freshCyclePaymentPolicy?.cycleId === input.cycleId &&
-    (input.legacyCapMinor !== undefined ||
-      [...(input.priorAccruedMinor?.values() ?? [])].some(
-        (v) => BigInt(v) !== 0n,
-      ))
-  )
-    throw new TypeError(
-      "Fresh-cycle policy forbids importing accrued principal or legacy caps",
     );
   const fundingBasis: AllocationFundingBasis | undefined =
     project?.reward.kind === "monthly-pool"

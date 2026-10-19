@@ -21,7 +21,7 @@ abstract contract DeployEscrowFactory {
     /// @dev Production delay before a new or rotated destination binding can pay; also used on testnets so a
     /// rehearsal measures the real delay.
     uint64 public constant BINDING_DELAY = 48 hours;
-    /// @dev Slop's published Base platform-fee recipient (src/lib/fresh-cycle-policy.mjs). Default on Base only.
+    /// @dev Slop's published Base platform-fee recipient (src/lib/platform-fee-recipients.mjs). Default on Base only.
     address public constant BASE_PUBLISHED_FEE_RECIPIENT = 0x8f77C37D8650776bFe73c9b12B15209eE15D9b86;
 
     event FactoryDeployed(

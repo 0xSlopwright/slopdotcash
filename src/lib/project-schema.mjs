@@ -1,8 +1,4 @@
 import { assertEscrowPolicy } from "./escrow-policy.mjs";
-import {
-  assertFreshCyclePaymentPolicy,
-  platformFeeRecipientForNetwork,
-} from "./fresh-cycle-policy.mjs";
 /**
  * Validates untrusted project folders before they enter discovery, ingestion,
  * skills, or money-shaped views. The schema is intentionally narrow so a pull
@@ -13,11 +9,6 @@ import {
   assertFundingAddresses,
   fundingAssetForNetwork,
 } from "./funding-address.mjs";
-import {
-  assertFundingCommitments,
-  assertMonthlyCommitmentPolicy,
-  hasActiveFundingCommitment,
-} from "./funding-instruments.mjs";
 import {
   assertRewardAsset,
   REWARD_ASSET_NETWORK_IDS,
@@ -972,9 +963,9 @@ function validateReward(
       reward.currency !==
         (rewardAsset?.symbol ?? fundingAssetForNetwork(reward.chain)) ||
       // `reward.chain` is the project's one settlement network (RFC #472).
-      // An escrow project settles on its escrow chain; the legacy rail is
-      // Base and Solana USDC only (PAY-09). Any other declared asset stays
-      // display metadata until a reviewed payout path enables it.
+      // An escrow project settles on its escrow chain. Before it adopts an
+      // escrow policy, a project names Base or Solana with a stablecoin, or
+      // declares another reviewed reward asset as display metadata only.
       (escrow
         ? reward.chain !== escrow.chain
         : !legacyRail &&
@@ -1065,20 +1056,11 @@ function validateReward(
   return reward;
 }
 
-function validateFunding(value, projectId, settlementNetwork) {
+function validateFunding(value, projectId) {
   const funding = record(value, "project.funding");
-  const hasCommitments = Object.hasOwn(funding, "commitments");
-  const hasPaymentPolicy = Object.hasOwn(funding, "freshCyclePaymentPolicy");
   exactKeys(
     funding,
-    [
-      "addresses",
-      ...(hasCommitments ? ["commitments"] : []),
-      ...(hasPaymentPolicy ? ["freshCyclePaymentPolicy"] : []),
-      "disclosure",
-      "mode",
-      "recordsPath",
-    ],
+    ["addresses", "disclosure", "mode", "recordsPath"],
     "project.funding",
   );
   if (
@@ -1090,51 +1072,6 @@ function validateFunding(value, projectId, settlementNetwork) {
     throw new TypeError("project.funding non-custodial policy is invalid");
   }
   assertFundingAddresses(funding.addresses, "project.funding.addresses");
-  if (hasCommitments) {
-    assertFundingCommitments(
-      funding.commitments,
-      "project.funding.commitments",
-    );
-  }
-  if (hasPaymentPolicy) {
-    const policy = assertFreshCyclePaymentPolicy(
-      funding.freshCyclePaymentPolicy,
-    );
-    // The instrument must settle on the project's network (RFC #472): a
-    // Squads vault on Solana, or a Base Sablier stream with a reviewed
-    // recipient actor who attests control of the source address.
-    if (settlementNetwork === "robinhood")
-      throw new TypeError(
-        "Robinhood Chain projects settle through the project escrow; a fresh-cycle instrument is not supported",
-      );
-    if (
-      policy.feeRecipient !==
-      platformFeeRecipientForNetwork(
-        settlementNetwork === "base" ? "base" : "solana",
-      )
-    )
-      throw new TypeError(
-        "Fresh-cycle policy must name the published fee recipient of the settlement network",
-      );
-    const fundsNetwork = (v) =>
-      settlementNetwork === "base"
-        ? v.kind === "sablier-lockup-v4" &&
-          v.network === "base" &&
-          v.recipientGithub !== undefined
-        : v.kind === "squads-v4-vault" || v.kind === "squads-project-vault";
-    if (
-      policy.projectId !== projectId ||
-      !(funding.commitments ?? []).some(
-        (v) =>
-          fundsNetwork(v) &&
-          v.replacedAt === null &&
-          v.monthlyCommitment?.cycleId === policy.cycleId,
-      )
-    )
-      throw new TypeError(
-        "Fresh-cycle policy requires its exact active monthly instrument on the settlement network",
-      );
-  }
   return funding;
 }
 
@@ -1145,7 +1082,6 @@ function validateProjectDefinition(
     allowLegacyMissingPublishAtRoot = false,
     allowLegacyExternalPrizeFee = false,
     allowLegacyUnsupportedOwnershipClaim = false,
-    allowLegacyCommitmentPolicy = false,
   } = {},
 ) {
   const project = record(value, "project");
@@ -1281,18 +1217,18 @@ function validateProjectDefinition(
     escrow: project.escrow,
     rewardAsset: project.rewardAsset,
   });
-  validateFunding(project.funding, id, project.reward.chain);
+  validateFunding(project.funding, id);
+  // Escrow is the only funding mode, and the escrow vault holds the balance.
+  // No manifest instrument can back a committed amount or an enabled payment.
   if (
-    (project.reward.fundingState === "committed" ||
-      project.reward.reviewBudget?.fundingState === "committed") &&
-    !hasActiveFundingCommitment(project.funding.commitments)
+    project.reward.fundingState === "committed" ||
+    project.reward.reviewBudget?.fundingState === "committed"
   ) {
     throw new TypeError(
-      "project.reward committed funding requires an active commitment instrument",
+      "project.reward committed funding is unsupported; fund the project escrow",
     );
   }
   validateSteward(project.steward);
-  if (!allowLegacyCommitmentPolicy) assertMonthlyCommitmentPolicy(project);
   validateAuthority(project.authority, repositories[0]);
   validateTerms(
     project.terms,
@@ -1380,7 +1316,6 @@ export function assertHistoricalProjectDefinition(value) {
     allowLegacyMissingPublishAtRoot: true,
     allowLegacyExternalPrizeFee: true,
     allowLegacyUnsupportedOwnershipClaim: true,
-    allowLegacyCommitmentPolicy: true,
   });
 }
 

@@ -131,7 +131,7 @@ test("funding and wallet keyboard flows remain accessible at 200 percent text si
   page,
 }, info) => {
   const evidence = observe(page);
-  for (const path of ["/wallet", "/projects/eliza/funding#payouts"]) {
+  for (const path of ["/wallet", "/projects/eliza/funding"]) {
     await page.goto(path, { waitUntil: "networkidle" });
     await page.evaluate(() => {
       const sizes = [...document.querySelectorAll<HTMLElement>("body *")].map(
@@ -155,28 +155,14 @@ test("funding and wallet keyboard flows remain accessible at 200 percent text si
       await expect(page.getByRole("alert")).toBeVisible();
       await audit(page, info, "wallet-200-percent-text");
     } else {
-      const panel = page.locator(".funding-workbench");
-      await panel.getByLabel("Contribution month").selectOption("2026-08");
-      await keyboardTo(page, panel.getByLabel("Find contributor"));
-      await page.keyboard.type("lalalune");
-      await expect(panel.locator(".recipient-row")).toHaveCount(1);
-      await audit(page, info, "funding-review-200-percent-text");
-      for (const label of [
-        "Prepare funding",
-        "Approve cycle",
-        "Track payments",
-      ]) {
-        const button = panel.getByRole("button", { name: label });
-        await keyboardTo(page, button, label === "Prepare funding");
-        await page.keyboard.press("Enter");
-        await expect(button).toHaveAttribute("aria-current", "step");
-        await audit(
-          page,
-          info,
-          `funding-${label.toLowerCase().replaceAll(" ", "-")}`,
-        );
-      }
-      await expect(panel).toContainText("Payments have not been authorized");
+      await expect(
+        page.getByRole("heading", { exact: true, name: "Eliza funding" }),
+      ).toBeVisible();
+      await keyboardTo(
+        page,
+        page.getByRole("link", { name: "cycle archive", exact: true }),
+      );
+      await audit(page, info, "funding-200-percent-text");
     }
   }
   await info.attach("console-network.json", {

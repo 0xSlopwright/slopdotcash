@@ -662,25 +662,6 @@ textarea:focus-visible {
   color: var(--danger);
 }
 
-.pulse {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--green);
-}
-
-.pulse {
-  animation: pulse 1.2s ease-in-out infinite;
-  background: var(--orange);
-}
-
-@keyframes pulse {
-  50% {
-    opacity: 0.35;
-    transform: scale(0.82);
-  }
-}
-
 h1,
 h2,
 h3,
@@ -2091,40 +2072,6 @@ small {
   letter-spacing: -0.04em;
 }
 
-.funding-routes {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
-  gap: 18px;
-  margin-block: 24px;
-}
-
-.funding-route {
-  display: grid;
-  align-content: start;
-  gap: 12px;
-  padding: 18px;
-  border: 1px solid var(--line);
-}
-
-.funding-route code {
-  overflow-wrap: anywhere;
-  font-size: 14px;
-}
-
-.funding-route > div {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px 20px;
-}
-
-.funding-qr {
-  width: 176px;
-  height: 176px;
-  max-width: 100%;
-  image-rendering: pixelated;
-}
-
 .money-summary {
   display: flex;
   flex-wrap: wrap;
@@ -2804,46 +2751,6 @@ small {
   border-block: 1px solid var(--line);
   padding-block: 2rem;
 }
-.payout-steps {
-  display: flex;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-  margin-block: 1.5rem;
-}
-.payout-steps button {
-  display: flex;
-  overflow-wrap: normal;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.8rem;
-  border: 1px solid currentColor;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
-.payout-steps button[aria-current="step"] {
-  background: var(--orange);
-  border-color: var(--orange);
-  color: var(--on-accent);
-}
-.payout-steps button span {
-  font-weight: 700;
-}
-.payout-summary {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1rem;
-  margin-block: 1.5rem;
-}
-.payout-summary p {
-  display: grid;
-  gap: 0.4rem;
-  margin: 0;
-}
-.payout-summary strong {
-  font-size: 1.3rem;
-}
-.review-cycle-selector,
 .funding-workbench label {
   display: grid;
   gap: 0.4rem;
@@ -2886,24 +2793,8 @@ small {
   max-width: 230px;
   margin-top: 0.4rem;
 }
-.review-filters,
-.review-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 1rem;
-  margin-block: 1rem;
-}
-.review-filters label {
-  min-width: 0;
-  max-width: 100%;
-}
 .funding-workbench input {
   min-width: 0;
-}
-.review-filters label:has(input[type="checkbox"]) {
-  display: flex;
-  align-items: center;
 }
 .funding-workbench button:disabled {
   opacity: 0.55;
@@ -2914,18 +2805,6 @@ small {
 }
 .funding-workbench details code {
   overflow-wrap: anywhere;
-}
-@media (max-width: 650px) {
-  .payout-summary {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .payout-steps {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 12em), 1fr));
-  }
-  .review-cycle-selector select {
-    width: 100%;
-  }
 }
 .funding-workbench .simple-heading h2 {
   font-size: 2rem;
@@ -2942,84 +2821,6 @@ small {
   top: 0;
   background: var(--paper);
   z-index: 1;
-}
-.funding-review {
-  max-width: 850px;
-}
-.funding-review p {
-  margin-block: 1rem;
-}
-.funding-review form {
-  display: grid;
-  gap: 0.75rem;
-  max-width: 640px;
-  margin-block: 1.5rem;
-}
-.funding-review input {
-  padding: 0.8rem;
-  font: inherit;
-  min-width: 0;
-  width: 100%;
-}
-.funding-review button,
-.funding-workbench .review-actions button {
-  min-height: 44px;
-  padding: 0.65rem 1rem;
-  font: inherit;
-  cursor: pointer;
-  background: var(--ink);
-  color: var(--paper);
-  border: 1px solid var(--ink);
-}
-.funding-review code {
-  overflow-wrap: anywhere;
-}
-
-.funding-quality-review {
-  margin-block: 1rem;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-}
-.funding-quality-review summary {
-  cursor: pointer;
-  min-height: 44px;
-}
-.funding-quality-review label {
-  display: grid;
-  gap: 0.4rem;
-  margin-block: 0.8rem;
-}
-.funding-quality-review input:not([type="checkbox"]),
-.funding-quality-review select,
-.funding-quality-review textarea {
-  font: inherit;
-  width: 100%;
-  max-width: 100%;
-  min-height: 44px;
-}
-.funding-quality-review input[type="checkbox"] {
-  width: 24px;
-  height: 24px;
-  margin-right: 0.5rem;
-}
-.funding-quality-review li {
-  padding-block: 0.5rem;
-}
-.funding-quality-review button {
-  min-height: 44px;
-  margin: 0.25rem;
-  padding: 0.5rem;
-}
-.funding-quality-review fieldset {
-  min-width: 0;
-}
-.funding-quality-review .table-scroll {
-  overflow-x: auto;
-}
-.funding-quality-review td,
-.funding-quality-review th {
-  padding: 0.4rem;
-  text-align: left;
 }
 
 .review-score-detail {
@@ -4075,28 +3876,6 @@ small {
   overflow-wrap: anywhere;
 }
 
-.funding-tabs {
-  display: flex;
-  gap: 24px;
-  margin: 24px 0 32px;
-  border-bottom: 1px solid var(--line);
-}
-
-.funding-tabs [role="tab"] {
-  min-height: 48px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-}
-
-.funding-tabs [role="tab"][aria-selected="true"] {
-  box-shadow: 0 3px 0 var(--orange);
-  color: var(--ink);
-  font-weight: 700;
-}
-
 .funding-page [role="tabpanel"][hidden] {
   display: none;
 }
@@ -4106,47 +3885,9 @@ small {
   gap: 24px;
 }
 
-.funding-record-group h2 {
-  font-size: 22px;
-}
-
 .funding-records-note {
   color: var(--muted);
   font-size: 14px;
-}
-
-.funding-workbench .payout-steps {
-  padding: 0;
-  list-style: none;
-}
-
-.funding-workbench .payout-steps li {
-  min-width: 0;
-  flex: 1 1 200px;
-}
-
-.funding-workbench .payout-steps button {
-  width: 100%;
-  height: 100%;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  text-align: left;
-}
-
-.payout-steps .step-tone {
-  flex-basis: 100%;
-  color: inherit;
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.step-status {
-  margin: 0 0 16px;
-}
-
-.step-status strong,
-.payments-disabled-notice strong {
-  color: var(--warning);
 }
 
 .step-status-done strong {
@@ -4155,111 +3896,6 @@ small {
 
 .step-status-blocked strong {
   color: var(--danger);
-}
-
-.payments-disabled-notice {
-  padding: 14px 16px;
-  border: 1px solid var(--warning);
-  border-radius: var(--brand-radius-medium);
-}
-
-.review-working-summary {
-  padding: 12px 0;
-  border-bottom: 1px solid var(--line);
-  background: var(--paper);
-}
-
-.review-working-summary p {
-  margin: 0;
-}
-
-.review-working-summary .review-actions {
-  margin-block: 10px 0;
-}
-
-.review-working-summary textarea {
-  width: 100%;
-}
-
-.review-filters fieldset {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.review-filters legend {
-  margin-bottom: 6px;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.funding-workbench .review-filters button[aria-pressed="true"] {
-  border-color: var(--orange);
-  background: rgba(255, 90, 25, 0.14);
-}
-
-.recipient-table td small {
-  color: var(--muted);
-}
-
-.recipient-details > td {
-  background: var(--surface);
-}
-
-.recipient-detail-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
-  gap: 20px;
-}
-
-.recipient-detail-grid p {
-  margin: 0 0 8px;
-}
-
-.recipient-detail-grid .wallet-address {
-  max-width: none;
-}
-
-.funding-workbench .recipient-detail-grid input,
-.funding-workbench .recipient-detail-grid select,
-.funding-workbench .recipient-detail-grid textarea {
-  width: 100%;
-}
-
-.recipient-pagination {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  margin-block: 12px;
-}
-
-.readiness-checklist {
-  display: grid;
-  gap: 10px;
-  padding-left: 20px;
-}
-
-.readiness-checklist li[data-state="blocked"] strong {
-  color: var(--danger);
-}
-
-.readiness-checklist li[data-state="done"] strong {
-  color: var(--green);
-}
-
-.workflow-inputs {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 8px 16px;
-}
-
-.workflow-inputs dd {
-  margin: 0;
-  overflow-wrap: anywhere;
 }
 
 @media (max-width: 680px) {
@@ -4279,27 +3915,16 @@ small {
   .lookup-row > .button {
     margin-top: 0;
   }
-
-  .workflow-inputs {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 .proposal-intro p a,
 .payout-status a,
-.payments-disabled-notice a,
-.review-footnote a,
 .funding-records-note a,
 .activation-gates a {
   color: var(--ink);
   font-weight: 700;
   text-decoration: underline;
   text-underline-offset: 4px;
-}
-
-.recipient-table thead th,
-.recipient-table td:first-of-type {
-  white-space: nowrap;
 }
 
 .issue-outcome-counts {

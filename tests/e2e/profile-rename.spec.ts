@@ -4,10 +4,6 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 import { assertCycleIndex } from "../../src/lib/cycle-index";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
-import {
-  assertFundingReviewIndex,
-  createFundingReview,
-} from "../../src/lib/funding-review-data";
 import { assertLeaderboardSnapshot } from "../../src/lib/leaderboard";
 import { assertProfiles } from "../../src/lib/profiles";
 import { TARGET_REPOSITORIES } from "../../src/lib/repositories.mjs";
@@ -17,7 +13,6 @@ async function profileRecords(
   page: Page,
   options: {
     reusedHandle?: boolean;
-    frozenOnly?: boolean;
     directoryOnly?: boolean;
     unverified?: boolean;
   } = {},
@@ -34,49 +29,6 @@ async function profileRecords(
   archived.id = "MDQ6VXNlcjI=";
   if (!options.reusedHandle && !options.directoryOnly && !options.unverified)
     archived.id = current.id;
-  const reviews = assertFundingReviewIndex({
-    schemaVersion: "1",
-    generatedAt: "2026-09-02T00:00:00.000Z",
-    reviews: [
-      createFundingReview({
-        projectId: "eliza",
-        cycleId: "2026-08",
-        sourceSnapshotSha256: "a".repeat(64),
-        sourceAuditSha256: "b".repeat(64),
-        observedAt: "2026-09-02T00:00:00.000Z",
-        provenance: {
-          ruleVersion: "slop-score-v2",
-          walletObservationsSha256: "c".repeat(64),
-          snapshotFrom: "2026-07-28T00:00:00.000Z",
-          snapshotTo: "2026-09-01T00:00:00.000Z",
-          periodFrom: "2026-08-01T00:00:00.000Z",
-          periodTo: "2026-09-01T00:00:00.000Z",
-          snapshotLedgerCount: 1,
-          sourceMergedPullRequests: 1,
-          mergedCensus: 1,
-          scoredMerges: 1,
-        },
-        counts: {
-          contributors: 1,
-          events: 1,
-          scoreThirds: "3",
-          weight: "30000",
-        },
-        contributors: [
-          {
-            actor: { ...archived },
-            scoreThirds: "3",
-            weight: "30000",
-            eventCount: 1,
-            eventIdsSha256: "d".repeat(64),
-            wallet: null,
-            lookupUnavailable: false,
-          },
-        ],
-      }),
-    ],
-  });
-  if (options.frozenOnly) cycles.cycles = [];
   const now = new Date().toISOString();
   const profiles = {
     schemaVersion: "1",
@@ -117,9 +69,6 @@ async function profileRecords(
   await page.route("**/data/cycles/index.json*", (r) =>
     r.fulfill({ json: cycles }),
   );
-  await page.route("**/data/funding-reviews.json*", (r) =>
-    r.fulfill({ json: reviews }),
-  );
   // Decorative images are local fixtures, so these identity regressions do
   // not depend on GitHub's image service or a machine-specific CA store.
   await page.route("https://avatars.githubusercontent.com/**", async (r) =>
@@ -133,7 +82,6 @@ async function profileRecords(
   return {
     snapshot,
     cycles,
-    reviews,
     profiles,
     current,
     archived,
@@ -141,9 +89,7 @@ async function profileRecords(
   };
 }
 
-test("a renamed contributor keeps archived cycles and frozen-month links", async ({
-  page,
-}, info) => {
+test("a renamed contributor keeps archived cycles", async ({ page }, info) => {
   const { current } = await profileRecords(page);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -161,15 +107,6 @@ test("a renamed contributor keeps archived cycles and frozen-month links", async
   await expect(pastCycle).toHaveAttribute("href", "/cycles/eliza/2026-07");
   await expect(pastCycle).toContainText("7 score");
   await expect(pastCycle).toContainText("$1");
-  const frozen = page.locator(".profile-section", {
-    has: page.getByRole("heading", { name: "Frozen months", exact: true }),
-  });
-  await expect(frozen.getByRole("link")).toHaveAttribute(
-    "href",
-    "/projects/eliza/funding",
-  );
-  await expect(frozen).toContainText("2026-08");
-  await expect(frozen).toContainText("1 score");
   // July Eliza events are replaced by the archived 7, plus 10 from Delta
   // Star. Resolving identity must not recalculate or double-count the score.
   await expect(
@@ -183,7 +120,6 @@ test("a renamed contributor keeps archived cycles and frozen-month links", async
   await expect(pastCycle).toBeVisible();
   await page.reload();
   await expect(pastCycle).toBeVisible();
-  await expect(frozen.getByRole("link")).toBeVisible();
   expect(
     (
       await new AxeBuilder({ page })
@@ -206,10 +142,6 @@ test("a different actor reusing an old login does not inherit its history", asyn
   await expect(page.getByRole("heading", { name: "Past cycles" })).toHaveCount(
     0,
   );
-  // networkidle above includes the independent frozen-month loader.
-  await expect(
-    page.getByRole("heading", { name: "Frozen months" }),
-  ).toHaveCount(0);
   await expect(
     page.getByTitle("Closed cycles and ledger events outside those cycles"),
   ).toHaveText("10");
@@ -218,52 +150,42 @@ test("a different actor reusing an old login does not inherit its history", asyn
   ).toBeVisible();
 });
 
-for (const frozenOnly of [false, true]) {
-  test(`an inactive new owner does not inherit ${frozenOnly ? "frozen-only" : "archived"} records or wallet lookups`, async ({
-    page,
-  }, info) => {
-    const { current, archived, walletRequests } = await profileRecords(page, {
-      frozenOnly,
-    });
-    // The new owner has no leaderboard, points, census or membership record.
-    await page.goto(`/contributors/${archived.login}`, {
-      waitUntil: "networkidle",
-    });
-    await expect(
-      page.getByRole("heading", { name: "Past cycles" }),
-    ).toHaveCount(0);
-    await expect(
-      page.getByRole("heading", { name: "Frozen months" }),
-    ).toHaveCount(0);
-    await expect(
-      page.getByRole("heading", { name: current.login }),
-    ).toHaveCount(0);
-    await expect(page.getByText(/Past wallet/)).toHaveCount(0);
-    await expect(
-      page.getByTitle("Closed cycles and ledger events outside those cycles"),
-    ).toHaveCount(0);
-    expect(walletRequests).toEqual([]);
-    await page.reload({ waitUntil: "networkidle" });
-    expect(walletRequests).toEqual([]);
-    await page.screenshot({ path: info.outputPath("inactive-owner.png") });
-    // The same immutable actor's new URL must retain its own history.
-    await page.goto(`/contributors/${current.login}`, {
-      waitUntil: "networkidle",
-    });
-    await expect(
-      page.getByRole("heading", { name: current.login, exact: true }),
-    ).toBeVisible();
-    await expect(
-      page.getByTitle("Closed cycles and ledger events outside those cycles"),
-    ).toHaveText(frozenOnly ? "34" : "17");
-    await expect(
-      page.getByRole("heading", { name: "Frozen months" }),
-    ).toBeVisible();
-    expect(walletRequests).toEqual(["/api/v1/wallet-claims/actors/1/current"]);
+test("an inactive new owner does not inherit archived records or wallet lookups", async ({
+  page,
+}, info) => {
+  const { current, archived, walletRequests } = await profileRecords(page);
+  // The new owner has no leaderboard, points, census or membership record.
+  await page.goto(`/contributors/${archived.login}`, {
+    waitUntil: "networkidle",
   });
-}
+  await expect(page.getByRole("heading", { name: "Past cycles" })).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole("heading", { name: current.login })).toHaveCount(
+    0,
+  );
+  await expect(page.getByText(/Past wallet/)).toHaveCount(0);
+  await expect(
+    page.getByTitle("Closed cycles and ledger events outside those cycles"),
+  ).toHaveCount(0);
+  expect(walletRequests).toEqual([]);
+  await page.reload({ waitUntil: "networkidle" });
+  expect(walletRequests).toEqual([]);
+  await page.screenshot({ path: info.outputPath("inactive-owner.png") });
+  // The same immutable actor's new URL must retain its own history.
+  await page.goto(`/contributors/${current.login}`, {
+    waitUntil: "networkidle",
+  });
+  await expect(
+    page.getByRole("heading", { name: current.login, exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByTitle("Closed cycles and ledger events outside those cycles"),
+  ).toHaveText("17");
+  expect(walletRequests).toEqual(["/api/v1/wallet-claims/actors/1/current"]);
+});
 
-test("a directory-verified historical contributor keeps archived and frozen links", async ({
+test("a directory-verified historical contributor keeps archived links", async ({
   page,
 }) => {
   const { archived } = await profileRecords(page, { directoryOnly: true });
@@ -272,9 +194,6 @@ test("a directory-verified historical contributor keeps archived and frozen link
   });
   await expect(
     page.getByRole("heading", { name: "Past cycles", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Frozen months", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByTitle("Closed cycles and ledger events outside those cycles"),
@@ -293,9 +212,6 @@ test("historical names alone do not identify a current contributor or wallet", a
   await expect(page.getByRole("heading", { name: "Past cycles" })).toHaveCount(
     0,
   );
-  await expect(
-    page.getByRole("heading", { name: "Frozen months" }),
-  ).toHaveCount(0);
   await expect(page.getByText(/Past wallet/)).toHaveCount(0);
   expect(walletRequests).toEqual([]);
   await expect(page.getByRole("status")).toContainText(
@@ -323,9 +239,6 @@ test("a new owner listed without activity uses only its own identity and wallet"
   await expect(page.getByRole("heading", { name: "Past cycles" })).toHaveCount(
     0,
   );
-  await expect(
-    page.getByRole("heading", { name: "Frozen months" }),
-  ).toHaveCount(0);
   await expect(page.getByText(/Past wallet/)).toHaveCount(0);
   expect(walletRequests).toEqual(["/api/v1/wallet-claims/actors/2/current"]);
 });
@@ -374,9 +287,6 @@ test("a stale activity login cannot override a directory rename", async ({
     0,
   );
   await expect(
-    page.getByRole("heading", { name: "Frozen months" }),
-  ).toHaveCount(0);
-  await expect(
     page.getByTitle("Closed cycles and ledger events outside those cycles"),
   ).toHaveCount(0);
   await expect(page.getByText(/Past wallet/)).toHaveCount(0);
@@ -408,9 +318,6 @@ test("an unavailable identity directory hides historical records until retry suc
     .click();
   await expect(
     page.getByRole("heading", { name: "Past cycles", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Frozen months", exact: true }),
   ).toBeVisible();
   await expect
     .poll(() => walletRequests)
@@ -473,9 +380,6 @@ for (const staleMembership of [false, true]) {
         await expect(
           page.getByRole("heading", { name: "Past cycles" }),
         ).toHaveCount(0);
-        await expect(
-          page.getByRole("heading", { name: "Frozen months" }),
-        ).toHaveCount(0);
         await expect(page.getByText(/Past wallet/)).toHaveCount(0);
         await expect(page.getByRole("status")).toContainText(
           "could not be verified",
@@ -493,9 +397,6 @@ for (const staleMembership of [false, true]) {
       await expect(
         page.getByRole("heading", { name: "Past cycles" }),
       ).toHaveCount(0);
-      await expect(
-        page.getByRole("heading", { name: "Frozen months" }),
-      ).toHaveCount(0);
       await expect(page.getByText(/Past wallet/)).toHaveCount(0);
       expect(walletRequests).toEqual([
         "/api/v1/wallet-claims/actors/2/current",
@@ -512,13 +413,14 @@ for (const scenario of [
 ] as const) {
   test(`directory-only membership identity: ${scenario}`, async ({ page }) => {
     const site = await serveProfileSite(page);
-    const { cycles, reviews, profiles, archived, walletRequests } =
-      await profileRecords(page, { directoryOnly: true });
+    const { cycles, profiles, archived, walletRequests } = await profileRecords(
+      page,
+      { directoryOnly: true },
+    );
     archived.login = "alice";
     const wallet = cycles.cycles[0].contributors[0].wallet;
     if (wallet && "sourceCommit" in wallet)
       wallet.sourceUrl = `https://github.com/alice/alice/blob/${wallet.sourceCommit}/README.md`;
-    reviews.reviews[0].contributors[0].actor.login = "alice";
     profiles.people = profiles.people.filter(
       (person) => person.id !== archived.id,
     );
@@ -538,7 +440,6 @@ for (const scenario of [
         repositories: [],
       });
     assertCycleIndex(cycles);
-    assertFundingReviewIndex(reviews);
     assertProfiles(profiles);
     const login = scenario === "current member" ? "alice2" : "alice";
     await page.route(`${site}/api/v1/points/**`, (route) =>
@@ -591,9 +492,6 @@ for (const scenario of [
           page.getByRole("heading", { name: "Past cycles", exact: true }),
         ).toBeVisible();
         await expect(
-          page.getByRole("heading", { name: "Frozen months", exact: true }),
-        ).toBeVisible();
-        await expect(
           page.getByTitle(
             "Closed cycles and ledger events outside those cycles",
           ),
@@ -610,9 +508,6 @@ for (const scenario of [
       } else {
         await expect(
           page.getByRole("heading", { name: "Past cycles" }),
-        ).toHaveCount(0);
-        await expect(
-          page.getByRole("heading", { name: "Frozen months" }),
         ).toHaveCount(0);
         await expect(page.getByText(/Past wallet/)).toHaveCount(0);
         await expect(page.getByText("points", { exact: true })).toHaveCount(0);
