@@ -1,4 +1,5 @@
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
+import { EVM_ESCROW_EVENT_TOPICS } from "../../contracts/evm/adapter";
 import { escrowInvocations } from "../../contracts/solana/adapter";
 export interface ScanDeployment {
   projectId: string;
@@ -19,10 +20,9 @@ export interface ScanEvent {
   kind: "reserved" | "paid";
   obligationId: string;
 }
-const RESERVED =
-  "0xd42548deb9ef20b582fe02f194f3c5e39fd0b7d1803321cd197e4ce48c30a857";
-const PAID =
-  "0x4bf296cb04d665f3fe904ce30894876ea577c828bbc117e8bacad4c4bcb757f7";
+// The adapter derives each topic from the reviewed event signature.
+const RESERVED = EVM_ESCROW_EVENT_TOPICS.AwardCommitted;
+const PAID = EVM_ESCROW_EVENT_TOPICS.Paid;
 async function rpc(
   url: string,
   method: string,
