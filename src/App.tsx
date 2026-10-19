@@ -17,7 +17,6 @@ import {
   useMemo,
   useState,
 } from "react";
-import { AutomationSection } from "./Automation";
 import { CycleArchivePage, CyclePage } from "./CyclePages";
 import { EarningsPage } from "./Earnings";
 import { EscrowFunding } from "./EscrowFunding";
@@ -30,7 +29,6 @@ import {
 import { Link, useInitialHashScroll } from "./Link";
 import { SlopMark, Wordmark } from "./Logo";
 import {
-  allocationFundingMinor,
   type PromotionCycle,
   projectPromotionEligible,
 } from "./lib/allocation-funding";
@@ -39,7 +37,6 @@ import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
 import { currentProjectFundingRecords } from "./lib/funding";
 import { communityProjects, homeProjects } from "./lib/home-projects";
-import { createInstallCommand } from "./lib/install-command";
 import {
   type ModelOutcomeSummary,
   modelIdentityKey,
@@ -845,14 +842,6 @@ function AgentPromptBox({
   );
 }
 
-function projectInstallCommand(project: ProjectDefinition): string {
-  const origin = `${window.location.origin.replace(/\/$/u, "")}/projects/${project.slug}`;
-  return createInstallCommand(origin, `\${HOME}/.agents/skills`, {
-    skillName: project.skill.id,
-    skillRepositoryPath: project.skill.sourcePath,
-  });
-}
-
 function ProjectLinksLine({ project }: { project: ProjectDefinition }) {
   const links = projectLinks(project);
   return (
@@ -931,23 +920,6 @@ export function ProjectParticipation({
 }
 
 function InstallPanel({ project }: { project: ProjectDefinition }) {
-  const [copy, setCopy] = useState<"manual-copied" | "error" | "idle">("idle");
-  const origin = window.location.origin.replace(/\/$/u, "");
-  const manualCommand = projectInstallCommand(project);
-  const copyManualCommand = async () => {
-    try {
-      await copyText(manualCommand);
-      setCopy("manual-copied");
-    } catch {
-      // error-policy:J4 Clipboard denial remains visibly distinct and selectable text stays available.
-      setCopy("error");
-    }
-  };
-  useEffect(() => {
-    if (copy !== "manual-copied") return;
-    const timer = window.setTimeout(() => setCopy("idle"), 1_600);
-    return () => window.clearTimeout(timer);
-  }, [copy]);
   return (
     <div className="install-panel" id="start">
       <div className="install-heading">
@@ -956,67 +928,6 @@ function InstallPanel({ project }: { project: ProjectDefinition }) {
         </div>
       </div>
       <AgentPromptBox prompt={projectAgentPrompt(project)} />
-      {project.reward.kind === "monthly-pool" &&
-      allocationFundingMinor(project.reward) === 0n ? (
-        <p>
-          This project has no funding yet. Accepted work still earns Slop Score.
-        </p>
-      ) : null}
-      <p className="install-note">
-        Any model can join. The skill publishes the exact provider, model, and
-        client. Signed receipts and permanent private traces are optional; only
-        Slop operators can access uploaded trace contents.
-      </p>
-      <details className="install-advanced">
-        <summary>Advanced options</summary>
-        <p>
-          Use the direct installer if your agent cannot follow the prompt, or
-          open the workflow document to inspect the instructions without running
-          them.
-        </p>
-        <div className="command-box command-box-secondary">
-          <textarea
-            aria-label="Manual install command"
-            readOnly
-            spellCheck={false}
-            value={manualCommand}
-          />
-          <button
-            aria-label={
-              copy === "manual-copied"
-                ? "Copied manual install command"
-                : copy === "error"
-                  ? "Copy unavailable; select manual install command"
-                  : "Copy manual install command"
-            }
-            onClick={() => void copyManualCommand()}
-            type="button"
-          >
-            {copy === "manual-copied" ? <Check /> : <Clipboard />}
-            {copy === "manual-copied"
-              ? "Copied"
-              : copy === "error"
-                ? "Select text"
-                : "Copy"}
-          </button>
-        </div>
-        <a
-          href={`${origin}/projects/${project.slug}/mission.md`}
-          rel="noreferrer"
-          target="_blank"
-        >
-          Preview the complete workflow
-          <ExternalLink aria-hidden="true" />
-        </a>
-        <a
-          href={`${origin}/projects/${project.slug}/review-codex.md`}
-          rel="noreferrer"
-          target="_blank"
-        >
-          Install the independent reviewer skill
-          <ExternalLink aria-hidden="true" />
-        </a>
-      </details>
     </div>
   );
 }
@@ -1037,18 +948,6 @@ function ProjectPaymentHistory({
   const cycles = state.cycleIndex.cycles
     .filter((cycle) => cycle.projectId === project.id)
     .sort((left, right) => right.cycleId.localeCompare(left.cycleId));
-  const approved = cycles.reduce(
-    (total, cycle) => total + BigInt(cycle.reward.approvedMinor),
-    0n,
-  );
-  const paid = cycles.reduce(
-    (total, cycle) => total + BigInt(cycle.reward.paidMinor),
-    0n,
-  );
-  const fees = cycles.reduce(
-    (total, cycle) => total + BigInt(cycle.reward.feeMinor),
-    0n,
-  );
   const externalPrize = project.reward.kind === "external-prize-share";
   const direct = new Map<
     string,
@@ -1067,10 +966,6 @@ function ProjectPaymentHistory({
     if (payment.blockTime > month.paidOn) month.paidOn = payment.blockTime;
     direct.set(payment.contributionMonth, month);
   }
-  const directTotal = [...direct.values()].reduce(
-    (total, month) => total + month.amount,
-    0n,
-  );
   return (
     <section className="section payment-history">
       <div className="simple-heading">
@@ -1084,15 +979,6 @@ function ProjectPaymentHistory({
           Draft a project update
         </Link>
       </div>
-      {externalPrize ? null : (
-        <p className="money-summary">
-          <strong>
-            {formatMicroUsdc((paid + directTotal).toString())} paid
-          </strong>
-          <span>{formatMicroUsdc(approved.toString())} approved</span>
-          <span>{formatMicroUsdc(fees.toString())} in 1% payout fees</span>
-        </p>
-      )}
       {directState.status === "error" && !externalPrize ? (
         <p role="status">
           Direct payment records are unavailable.{" "}
@@ -1236,13 +1122,7 @@ export function ProjectFunding({ project }: { project: ProjectDefinition }) {
       Date.parse(route.effectiveAt) <= now &&
       (route.replacedAt === null || now < Date.parse(route.replacedAt)),
   );
-  if (activeRoutes.length === 0) {
-    return project.reward.kind === "external-prize-share" ? null : (
-      <p className="project-funding-unavailable">
-        Direct funding unavailable. No reviewed receiving address is published.
-      </p>
-    );
-  }
+  if (activeRoutes.length === 0) return null;
   return (
     <section className="section project-funding">
       <details>
@@ -1791,7 +1671,8 @@ function ProjectPage({
                   Funding promotion cannot be determined until the records load.
                 </p>
               </aside>
-            ) : promotionEligible ? (
+            ) : project.reward.kind === "monthly-pool" &&
+              monthlyPoolUnfunded(project.reward) ? null : promotionEligible ? (
               <aside className="reward-card">
                 <strong
                   className={
@@ -1868,7 +1749,6 @@ function ProjectPage({
           </p>
         ) : null}
         <ProjectPaymentHistory project={project} state={state} />
-        <AutomationSection project={project} />
         {view && state.status === "ready" ? (
           <ProjectLeaderboard
             state={state}

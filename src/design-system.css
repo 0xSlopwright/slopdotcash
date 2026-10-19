@@ -634,13 +634,8 @@ label {
   color: var(--ink);
 }
 
-.install-heading p,
-.install-advanced {
+.install-heading p {
   color: var(--muted);
-}
-
-.install-advanced {
-  border-top-color: var(--line);
 }
 
 /* Home. */
@@ -1022,14 +1017,6 @@ label {
 /* Data and state colors. */
 .data-error {
   color: var(--danger);
-}
-
-.status-dot {
-  background: var(--green);
-}
-
-.stale-dot {
-  background: var(--warning);
 }
 
 /* Cards and panels shared across records. */
