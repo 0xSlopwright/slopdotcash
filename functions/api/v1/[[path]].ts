@@ -33,6 +33,8 @@ import {
   type R2Bucket,
 } from "../../../backend/trace/cloudflare-persistence";
 import { handleTraceApi } from "../../../backend/trace/handler";
+import { handleVettingApi } from "../../../backend/vetting/handler";
+import { CloudflareVettingPersistence } from "../../../backend/vetting/persistence";
 import { deploymentTier } from "../../../src/lib/deployment";
 import type { ProjectDefinition } from "../../../src/lib/projects.mjs";
 
@@ -63,6 +65,8 @@ type Env = {
   /** Admin email Worker; absent where no notifier is deployed. */
   SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
   ASSETS?: { fetch(request: Request): Promise<Response> };
+  /** Secure-VM vetting service Ed25519 public keys (base64, comma separated). */
+  VETTING_RESULT_PUBLIC_KEYS?: string;
   /** Optional RPC overrides for reward token decimals verification. */
   REWARD_RPC_BASE?: string;
   REWARD_RPC_ETHEREUM?: string;
@@ -290,8 +294,14 @@ async function repositoryControl(
 }
 
 export async function onRequest(context: PagesContext): Promise<Response> {
+  const projectPersistence = new CloudflareProjectPersistence(
+    context.env.SLOP_DB,
+  );
+  const vetting = new CloudflareVettingPersistence(context.env.SLOP_DB);
   const projectResponse = await handleProjectApi(context.request, {
-    persistence: new CloudflareProjectPersistence(context.env.SLOP_DB),
+    persistence: projectPersistence,
+    vettingClearance: (projectId, manifest, throughRevision) =>
+      vetting.manifestClearance(projectId, manifest, throughRevision),
     adminGithubIds: githubIdSet(context.env.ADMIN_GITHUB_IDS),
     moderatorGithubIds: githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),
     now: () => new Date(),
@@ -339,6 +349,30 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     waitUntil: context.waitUntil?.bind(context),
   });
   if (securityResponse !== null) return securityResponse;
+  const vettingResponse = await handleVettingApi(context.request, {
+    vetting,
+    projects: projectPersistence,
+    resultPublicKeys: context.env.VETTING_RESULT_PUBLIC_KEYS,
+    session: async (request) => {
+      const actor = await sessionGithubActor(
+        request,
+        context.env.SLOP_DB,
+        new Date().toISOString(),
+      );
+      return actor === null
+        ? null
+        : {
+            ...actor,
+            admin: githubIdSet(context.env.ADMIN_GITHUB_IDS).has(
+              actor.githubId,
+            ),
+          };
+    },
+    now: () => new Date(),
+    randomId: () => crypto.randomUUID(),
+    cache: edgeCache(),
+  });
+  if (vettingResponse !== null) return vettingResponse;
   const feeConversionsResponse = await handleFeeConversionsApi(
     context.request,
     {

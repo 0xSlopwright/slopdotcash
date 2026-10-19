@@ -17,7 +17,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -143,9 +143,18 @@ function prepareRegistryDatabase() {
     "--command",
     sql,
   ]);
+  // A throwaway key stands in for the external secure-VM vetting service.
+  const vettingKey = generateKeyPairSync("ed25519");
   return {
     persistTo,
     env: {
+      SLOP_E2E_VETTING_PUBLIC_KEY: Buffer.from(
+        vettingKey.publicKey.export({ format: "jwk" }).x,
+        "base64url",
+      ).toString("base64"),
+      SLOP_E2E_VETTING_PRIVATE_KEY: vettingKey.privateKey
+        .export({ format: "der", type: "pkcs8" })
+        .toString("base64"),
       SLOP_E2E_PERSIST_TO: persistTo,
       SLOP_E2E_ADMIN_GITHUB_IDS: `${E2E_ADMIN_GITHUB_ID},${E2E_MODERATOR_GITHUB_ID}`,
       SLOP_E2E_MODERATOR_GITHUB_IDS: `${E2E_ADMIN_GITHUB_ID},${E2E_MODERATOR_GITHUB_ID}`,

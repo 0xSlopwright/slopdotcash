@@ -47,6 +47,8 @@ export type SkillPublicationDependencies = {
   listEnforcements(): Promise<ProjectEnforcement[]>;
   enforcementGeneration(): Promise<number>;
   loadTemplate(): Promise<SkillTemplateSource>;
+  /** True only when the revision's exact content passed security vetting (VET-01). */
+  vettingCleared(project: ProjectRecord): Promise<boolean>;
   cache?: EdgeCache;
   waitUntil?: (promise: Promise<unknown>) => void;
 };
@@ -139,10 +141,14 @@ async function discovery(
     deps.listProjects(),
     deps.listEnforcements(),
   ]);
-  const projects = all.filter(
-    (project) =>
-      listed(project, records) && publishesGeneratedSkills(project.manifest),
-  );
+  const projects: ProjectRecord[] = [];
+  for (const project of all)
+    if (
+      listed(project, records) &&
+      publishesGeneratedSkills(project.manifest) &&
+      (await deps.vettingCleared(project))
+    )
+      projects.push(project);
   return jsonResponse({
     schemaVersion: "1",
     projects: projects.flatMap((project) =>
@@ -191,6 +197,11 @@ async function artifact(
     return text(
       404,
       "This project has not published its skills yet. Its maintainers must complete the contribution fields first.\n",
+    );
+  if (!(await deps.vettingCleared(project)))
+    return text(
+      404,
+      "This project revision has not passed security vetting. Slop serves no skill for an unscanned, queued, quarantined or banned revision.\n",
     );
   const template = await deps.loadTemplate();
   const files = await buildProjectPublication({

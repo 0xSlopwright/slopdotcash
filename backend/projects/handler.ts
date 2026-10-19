@@ -13,6 +13,7 @@ import {
   sameRewardAsset,
 } from "../../src/lib/reward-asset.mjs";
 import { readJsonObject, sha256Hex } from "../trace/validation";
+import type { VettingClearance } from "../vetting/persistence";
 import {
   type ApplicationStatus,
   type EnforcementAction,
@@ -81,6 +82,15 @@ export type ProjectApiDependencies = {
   /** Edge cache for public reads; absent in tests and local tooling. */
   cache?: EdgeCache;
   waitUntil?: (promise: Promise<unknown>) => void;
+  /**
+   * Security vetting of a manifest's executable content through a revision
+   * (PRD VET-01). Only "cleared" lets a revision activate or serve skills.
+   */
+  vettingClearance: (
+    projectId: string,
+    manifest: ProjectDefinition,
+    throughRevision: number,
+  ) => Promise<VettingClearance>;
   /** Asks GitHub whether the applicant controls the manifest's repository. */
   repositoryControl: (
     manifest: ProjectDefinition,
@@ -754,6 +764,20 @@ async function replaceProjectManifest(
       "Root skill publication is retired; project skills are served at /projects/<id>/SKILL.md",
     );
   }
+  // VET-01: only content a secure-VM scan cleared can become active.
+  if (manifest.status === "active") {
+    const vetting = await deps.vettingClearance(
+      projectId,
+      manifest,
+      current.revision,
+    );
+    if (vetting.state !== "cleared")
+      fail(
+        422,
+        "vetting_required",
+        `Security vetting is ${vetting.state}. Only a revision whose exact content passed a clean secure-VM scan can activate; change nothing but the status of the scanned revision.`,
+      );
+  }
   const result = await deps.persistence.appendProjectRevision(
     {
       projectId,
@@ -1060,13 +1084,20 @@ async function readPublicProject(
     });
   if (project.manifest.listingTier === "retired")
     fail(404, "not_found", "Project not found");
+  const vetting = await deps.vettingClearance(
+    project.id,
+    project.manifest,
+    project.revision,
+  );
   return publicJson({
     schemaVersion: "1",
     project: project.manifest,
     revision: project.revision,
     manifestSha256: project.manifestSha256,
     updatedAt: project.updatedAt,
-    skillsPublished: publishesGeneratedSkills(project.manifest),
+    skillsPublished:
+      publishesGeneratedSkills(project.manifest) && vetting.state === "cleared",
+    vetting,
   });
 }
 

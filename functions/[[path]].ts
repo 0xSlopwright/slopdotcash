@@ -8,6 +8,7 @@ import {
   type SkillTemplateIndex,
   type SkillTemplateSource,
 } from "../backend/projects/skill-publication";
+import { CloudflareVettingPersistence } from "../backend/vetting/persistence";
 import { onRequest as socialMetadata } from "./index";
 
 type Env = {
@@ -55,12 +56,21 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   const db = context.env.SLOP_DB;
   if (db !== undefined) {
     const persistence = new CloudflareProjectPersistence(db);
+    const vetting = new CloudflareVettingPersistence(db);
     const artifact = await handleProjectArtifactRequest(context.request, {
       getProject: (id) => persistence.getProject(id),
       listProjects: () => persistence.listProjects(),
       listEnforcements: () => persistence.listEnforcements(),
       enforcementGeneration: () => persistence.enforcementGeneration(),
       loadTemplate: templateSource(context),
+      vettingCleared: async (project) =>
+        (
+          await vetting.manifestClearance(
+            project.id,
+            project.manifest,
+            project.revision,
+          )
+        ).state === "cleared",
       cache: edgeCache(),
       waitUntil: context.waitUntil?.bind(context),
     });

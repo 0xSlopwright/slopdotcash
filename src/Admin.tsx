@@ -16,6 +16,7 @@ import {
 import contributorTemplate from "../skills/project-contributor-template/SKILL.md?raw";
 import reviewerTemplate from "../skills/project-reviewer-template/SKILL.md?raw";
 import { ProjectEnforcementPanel } from "./AdminProjectEnforcement";
+import { VettingSection } from "./AdminVetting";
 import { CONTRIBUTION_LABELS } from "./lib/contribution-fields";
 import {
   type AdminProject,
@@ -949,6 +950,7 @@ export function AdminPage() {
           onDecided={() => setRegistryVersion((value) => value + 1)}
         />
         <ProjectsSection key={registryVersion} />
+        <VettingSection key={`vetting-${registryVersion}`} />
       </>
     );
   }

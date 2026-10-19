@@ -149,6 +149,9 @@ rate limit, and caches each answer for five minutes. The browser never calls
   and keep 3 waiting.
 - `/admin` previews the exact generated contributor and reviewer skills before
   an admin approves or activates a revision.
+- A revision activates, and its skills and discovery entry are served, only
+  when a secure-VM scan cleared its exact content. See
+  `backend/vetting/README.md` (PRD VET-01).
 - An admin delists a project by appending a paused, `retired` revision.
 - Quarantine, Ban project and Request reinstatement (PRD ADM-06) need an admin
   who is also in the `PROJECT_MODERATOR_GITHUB_IDS` Pages variable. While that
