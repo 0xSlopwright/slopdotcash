@@ -59,7 +59,7 @@ export interface ProjectPersistence {
   /** Returns "conflict" when the project or repository already has an open application. */
   createApplication(
     application: ProjectApplication & { manifestText: string },
-  ): Promise<"created" | "conflict">;
+  ): Promise<"created" | "conflict" | "too_many_pending">;
   recordAdminNotification(
     applicationId: string,
     outcome: Exclude<AdminNotification, "pending">,

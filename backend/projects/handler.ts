@@ -621,7 +621,15 @@ async function submitApplication(
       ),
     referrer,
   };
-  if ((await deps.persistence.createApplication(application)) === "conflict") {
+  const created = await deps.persistence.createApplication(application);
+  if (created === "too_many_pending") {
+    fail(
+      429,
+      "too_many_pending",
+      `You already have ${MAX_PENDING_APPLICATIONS_PER_APPLICANT} applications awaiting review`,
+    );
+  }
+  if (created === "conflict") {
     fail(
       409,
       "application_exists",

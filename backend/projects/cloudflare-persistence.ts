@@ -1,3 +1,4 @@
+import { MAX_PENDING_APPLICATIONS_PER_APPLICANT } from "./contracts";
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
 import type {
   D1QueryStatement as D1Statement,
@@ -355,16 +356,18 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
 
   async createApplication(
     application: ProjectApplication & { manifestText: string },
-  ): Promise<"created" | "conflict"> {
+  ): Promise<"created" | "conflict" | "too_many_pending"> {
     try {
-      await this.db
+      const result = await this.db
         .prepare(
           `INSERT INTO project_applications (
              id, project_id, repository_key, manifest, manifest_sha256,
              acceptance_criteria, applicant_github_id, applicant_github_login,
              submitted_at, status, admin_notification, github_check, expected_revision, change_reason,
              referrer_github_id, referrer_github_login
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?, ?, ?)`,
+           ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?, ?, ?
+             WHERE (SELECT COUNT(*) FROM project_applications
+               WHERE applicant_github_id = ? AND status = 'pending') < ?`,
         )
         .bind(
           application.id,
@@ -381,9 +384,11 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           application.changeReason ?? null,
           application.referrer?.githubId ?? null,
           application.referrer?.githubLogin ?? null,
+          application.applicant.githubId,
+          MAX_PENDING_APPLICATIONS_PER_APPLICANT,
         )
         .run();
-      return "created";
+      return (result.meta?.changes ?? 0) === 1 ? "created" : "too_many_pending";
     } catch (error) {
       if (isConstraintConflict(error)) return "conflict";
       throw error;
