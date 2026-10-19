@@ -9,6 +9,10 @@ import {
   EVM_CHAINS,
 } from "./lib/escrow-policy.mjs";
 import {
+  formatAssetAmount,
+  formatBaseUnits,
+  isAssetDecimals,
+  isBaseUnits,
   type PaymentChain,
   type PaymentsAccount,
   transactionUrl,
@@ -24,22 +28,19 @@ const networkName: Record<EscrowChain, string> = {
   ethereum: "Ethereum",
 };
 
+// Network names only: each amount names its own vault asset.
 const networkLabels: Record<string, string> = {
-  "base-mainnet": "Base · USDC",
-  "base-sepolia": "Base Sepolia · test USDC",
-  "solana-mainnet": "Solana · USDC",
-  "solana-devnet": "Solana Devnet · test USDC",
-  "solana-testnet": "Solana Testnet · test token",
-  "robinhood-mainnet": "Robinhood Chain · USDG",
-  "robinhood-testnet": "Robinhood Chain Testnet · test USDG",
-  anvil: "Local EVM test · test USDC",
+  "base-mainnet": "Base",
+  "base-sepolia": "Base Sepolia (test)",
+  "solana-mainnet": "Solana",
+  "solana-devnet": "Solana Devnet (test)",
+  "solana-testnet": "Solana Testnet (test)",
+  "robinhood-mainnet": "Robinhood Chain",
+  "robinhood-testnet": "Robinhood Chain Testnet (test)",
+  ethereum: "Ethereum",
+  "ethereum-sepolia": "Ethereum Sepolia (test)",
+  anvil: "Local EVM test",
 };
-
-function symbol(network: string): string {
-  return Object.hasOwn(ESCROW_NETWORKS, network)
-    ? ESCROW_NETWORKS[network as keyof typeof ESCROW_NETWORKS].assetSymbol
-    : "USDC";
-}
 
 function chainDefaultNetwork(chain: EscrowChain): string {
   return (
@@ -49,13 +50,9 @@ function chainDefaultNetwork(chain: EscrowChain): string {
   );
 }
 
-function amount(value: string, network: string): string {
-  const number = BigInt(value);
-  const fraction = (number % 1_000_000n)
-    .toString()
-    .padStart(6, "0")
-    .replace(/0+$/, "");
-  return `${(number / 1_000_000n).toLocaleString()}${fraction ? `.${fraction}` : ""} ${symbol(network)}`;
+/** Direct transfers are imported only from reviewed USDC disclosures (6 decimals). */
+function usdcAmount(value: string): string {
+  return `${formatBaseUnits(value, 6)} USDC`;
 }
 
 class SignedOutError extends Error {}
@@ -90,8 +87,10 @@ function account(value: unknown): PaymentsAccount {
   if (!value || typeof value !== "object")
     throw new Error("Invalid payment account response.");
   const data = value as PaymentsAccount;
-  const money = (v: unknown) =>
-    typeof v === "string" && /^(0|[1-9]\d*)$/.test(v);
+  const asset = (v: { assetAddress?: unknown; assetDecimals?: unknown }) =>
+    typeof v.assetAddress === "string" &&
+    /^[0-9A-Za-z]{32,44}$/.test(v.assetAddress) &&
+    isAssetDecimals(v.assetDecimals);
   if (
     typeof data.githubUserId !== "string" ||
     !/^\d+$/.test(data.githubUserId) ||
@@ -115,10 +114,11 @@ function account(value: unknown): PaymentsAccount {
         (p.transactionId !== null && typeof p.transactionId !== "string") ||
         (p.state === "paid" && !p.transactionId) ||
         typeof p.id !== "string" ||
-        !money(p.grossMicro) ||
-        !money(p.netMicro) ||
-        !money(p.feeMicro) ||
-        BigInt(p.grossMicro) !== BigInt(p.netMicro) + BigInt(p.feeMicro) ||
+        !asset(p) ||
+        !isBaseUnits(p.grossBase) ||
+        !isBaseUnits(p.netBase) ||
+        !isBaseUnits(p.feeBase) ||
+        BigInt(p.grossBase) !== BigInt(p.netBase) + BigInt(p.feeBase) ||
         !["reserved", "paid"].includes(p.state) ||
         ![
           "needs_wallet",
@@ -136,7 +136,8 @@ function account(value: unknown): PaymentsAccount {
         (Object.hasOwn(ESCROW_NETWORKS, b.network) &&
           ESCROW_NETWORKS[b.network as keyof typeof ESCROW_NETWORKS].chain !==
             b.chain) ||
-        !money(b.netMicro),
+        !asset(b) ||
+        !isBaseUnits(b.netBase),
     ) ||
     !Array.isArray(data.directTransfers) ||
     !data.directTransfers.every(isDirectTransfer) ||
@@ -434,22 +435,21 @@ export function EarningsPage() {
           <section aria-label="Payout wallets" className="earnings-wallets">
             {ESCROW_CHAINS.map((chain) => {
               const wallet = data.wallets.find((w) => w.chain === chain);
-              // Each network keeps its own asset, so balances stay separate.
+              // Each network and asset keeps its own balance; never summed.
               const unpaid = data.balances.filter(
-                (b) => b.chain === chain && b.netMicro !== "0",
+                (b) => b.chain === chain && b.netBase !== "0",
               );
               const defaultNetwork = chainDefaultNetwork(chain);
               return (
                 <article key={chain} className="funding-workbench">
                   <h2>{networkName[chain]}</h2>
                   {unpaid.length === 0 ? (
-                    <p>
-                      <strong>{amount("0", defaultNetwork)}</strong> unpaid
-                    </p>
+                    <p>No unpaid awards</p>
                   ) : (
                     unpaid.map((b) => (
-                      <p key={b.network}>
-                        <strong>{amount(b.netMicro, b.network)}</strong> unpaid
+                      <p key={`${b.network}:${b.assetAddress}`}>
+                        <strong>{formatAssetAmount(b.netBase, b)}</strong>{" "}
+                        unpaid
                         {b.network === defaultNetwork
                           ? ""
                           : ` on ${networkLabels[b.network] ?? b.network}`}
@@ -637,9 +637,9 @@ export function EarningsPage() {
                         <td>
                           {networkLabels[payment.network] ?? payment.network}
                         </td>
-                        <td>{amount(payment.grossMicro, payment.network)}</td>
-                        <td>{amount(payment.feeMicro, payment.network)}</td>
-                        <td>{amount(payment.netMicro, payment.network)}</td>
+                        <td>{formatAssetAmount(payment.grossBase, payment)}</td>
+                        <td>{formatAssetAmount(payment.feeBase, payment)}</td>
+                        <td>{formatAssetAmount(payment.netBase, payment)}</td>
                         <td>
                           {
                             {
@@ -715,7 +715,7 @@ export function EarningsPage() {
                         </td>
                         <td>{t.contributionMonth}</td>
                         <td>{networkLabels[t.network] ?? t.network}</td>
-                        <td>{amount(t.amountMicro, t.network)}</td>
+                        <td>{usdcAmount(t.amountMicro)}</td>
                         <td>
                           {transactionUrl(t.network, t.transactionId) ? (
                             <a

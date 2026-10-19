@@ -5,11 +5,13 @@ import {
   ESCROW_NETWORKS,
   EVM_CHAINS,
 } from "../../src/lib/escrow-policy.mjs";
-import type {
-  AccountPayment,
-  DirectTransfer,
-  PaymentChain,
-  PaymentsAccount,
+import {
+  type AccountPayment,
+  type DirectTransfer,
+  type PaymentAsset,
+  type PaymentChain,
+  type PaymentsAccount,
+  VAULT_SNAPSHOT_STALE_MS,
 } from "../../src/lib/payments/contracts";
 import { isWalletAddress, isWalletChain } from "../../src/lib/wallets";
 import { sha256Hex } from "../../workers/identity/crypto";
@@ -21,6 +23,7 @@ import {
   verifyPaymentWalletSignature,
 } from "./possession";
 import { slopbotInvoice } from "./slopbot-billing";
+import { projectVaultSnapshots } from "./vault-snapshots";
 import { registerPaymentWallet } from "./wallet-registration";
 
 export interface PaymentsDependencies {
@@ -34,7 +37,14 @@ export interface PaymentsDependencies {
   paymentDeployments?: readonly PaymentDeploymentIdentity[];
   /** Service binding to the Solana identity attester role; never request-supplied. */
   solanaAttester?: { fetch(request: Request): Promise<Response> };
+  /** Edge cache for public vault snapshot reads (caches.default on Pages). */
+  edgeCache?: {
+    match(request: Request): Promise<Response | undefined>;
+    put(request: Request, response: Response): Promise<void>;
+  };
 }
+/** The payments cron writes snapshots every 5 minutes; one minute keeps reads near it. */
+const VAULT_EDGE_CACHE_SECONDS = 60;
 export interface PaymentDeploymentIdentity {
   network: string;
   chain: string;
@@ -91,18 +101,18 @@ export async function handlePaymentsApi(
     const totalsRoute = /^\/projects\/([a-z0-9][a-z0-9-]*)\/totals$/.exec(path);
     if (totalsRoute && request.method === "GET") {
       const projectId = totalsRoute[1];
-      const result = await deps.db
-        .prepare(
-          "SELECT json_group_array(json_object('network',network,'gross',gross_micro,'fee',fee_micro,'state',state)) items FROM payment_obligations WHERE project_id=?",
-        )
-        .bind(projectId)
-        .first<{ items: string }>();
-      const rows = JSON.parse(result?.items ?? "[]") as {
-        network: string;
-        gross: string;
-        fee: string;
-        state: string;
-      }[];
+      // Indexed award totals, one row per network and asset. Amounts are
+      // base units of that asset and are never summed across assets.
+      const rows = JSON.parse(
+        (
+          await deps.db
+            .prepare(
+              "SELECT json_group_array(json_object('network',network,'assetAddress',asset_address,'assetDecimals',asset_decimals,'gross',gross_base,'fee',fee_base,'state',state)) items FROM (SELECT * FROM payment_obligations WHERE project_id=? ORDER BY network,asset_address)",
+            )
+            .bind(projectId)
+            .first<{ items: string }>()
+        )?.items ?? "[]",
+      ) as (PaymentAsset & { gross: string; fee: string; state: string })[];
       const cursor = await deps.db
         .prepare(
           "SELECT network,position,synced_at FROM payment_chain_cursors WHERE project_id=?",
@@ -111,28 +121,82 @@ export async function handlePaymentsApi(
         .first<{ network: string; position: string; synced_at: string }>();
       if (!rows.length && !cursor)
         return json(503, { error: "project_payments_not_indexed" });
-      const total = (state: string, fee: boolean) =>
-        rows
-          .filter((r) => r.state === state)
-          .reduce(
-            (sum, r) =>
-              sum + (fee ? BigInt(r.fee) : BigInt(r.gross) - BigInt(r.fee)),
-            0n,
-          )
-          .toString();
+      const assets = new Map<
+        string,
+        PaymentAsset & {
+          paidNet: bigint;
+          paidFee: bigint;
+          reservedNet: bigint;
+          reservedFee: bigint;
+        }
+      >();
+      for (const r of rows) {
+        const key = `${r.network}\u0000${r.assetAddress}`;
+        const total = assets.get(key) ?? {
+          network: r.network,
+          assetAddress: r.assetAddress,
+          assetDecimals: r.assetDecimals,
+          paidNet: 0n,
+          paidFee: 0n,
+          reservedNet: 0n,
+          reservedFee: 0n,
+        };
+        const fee = BigInt(r.fee);
+        const net = BigInt(r.gross) - fee;
+        if (r.state === "paid") {
+          total.paidNet += net;
+          total.paidFee += fee;
+        } else {
+          total.reservedNet += net;
+          total.reservedFee += fee;
+        }
+        assets.set(key, total);
+      }
       return json(200, {
         projectId,
         network: cursor?.network ?? rows[0].network,
-        totalNetPaidMicro: total("paid", false),
-        payoutFeesPaidMicro: total("paid", true),
-        reservedNetMicro: total("reserved", false),
-        reservedFeeMicro: total("reserved", true),
+        assets: [...assets.values()].map(
+          ({ paidNet, paidFee, reservedNet, reservedFee, ...asset }) => ({
+            ...asset,
+            totalNetPaidBase: paidNet.toString(),
+            payoutFeesPaidBase: paidFee.toString(),
+            reservedNetBase: reservedNet.toString(),
+            reservedFeeBase: reservedFee.toString(),
+          }),
+        ),
         coverage: {
           kind: "finalized-payment-events",
           completeThrough: cursor?.position ?? null,
         },
         syncedAt: cursor?.synced_at ?? null,
       });
+    }
+    // Vault counters cached by the payments worker from finalized reads. A
+    // page view never reaches a chain RPC; the edge cache keeps D1 reads low.
+    const vaultRoute = /^\/projects\/([a-z0-9][a-z0-9-]*)\/vault$/.exec(path);
+    if (vaultRoute && request.method === "GET") {
+      const key = new Request(url.toString(), { method: "GET" });
+      const cached = await deps.edgeCache?.match(key);
+      if (cached) return cached;
+      const snapshots = await projectVaultSnapshots(deps.db, vaultRoute[1]);
+      const response = new Response(
+        JSON.stringify({
+          projectId: vaultRoute[1],
+          snapshots,
+          staleAfterMs: VAULT_SNAPSHOT_STALE_MS,
+          servedAt: now,
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "cache-control": `public, max-age=${VAULT_EDGE_CACHE_SECONDS}, s-maxage=${VAULT_EDGE_CACHE_SECONDS}`,
+            "x-content-type-options": "nosniff",
+          },
+        },
+      );
+      await deps.edgeCache?.put(key, response.clone());
+      return response;
     }
     const directRoute =
       /^\/(?:projects\/([a-z0-9][a-z0-9-]*)|actors\/([1-9]\d{0,15}))\/direct-transfers$/.exec(
@@ -562,7 +626,7 @@ export async function handlePaymentsApi(
         .first<{ items: string }>();
       const paymentRows = await deps.db
         .prepare(
-          "SELECT json_group_array(json_object('id',o.id,'projectId',project_id,'network',network,'chain',chain,'grossMicro',gross_micro,'feeMicro',fee_micro,'state',o.state,'transactionId',paid_transaction,'submittedTransactionId',(SELECT transaction_id FROM payment_attempts a WHERE a.obligation_id=o.id AND a.transaction_id IS NOT NULL ORDER BY created_at DESC LIMIT 1),'deliveryState',CASE WHEN o.state='paid' THEN 'paid' WHEN q.state='submitted' THEN 'submitted' WHEN q.state='held' THEN 'held' WHEN q.state IS NULL THEN 'needs_wallet' ELSE 'awaiting_binding' END)) items FROM payment_obligations o LEFT JOIN payment_outbox q ON q.obligation_id=o.id WHERE github_user_id=?",
+          "SELECT json_group_array(json_object('id',o.id,'projectId',project_id,'network',network,'chain',chain,'assetAddress',asset_address,'assetDecimals',asset_decimals,'grossBase',gross_base,'feeBase',fee_base,'state',o.state,'transactionId',paid_transaction,'submittedTransactionId',(SELECT transaction_id FROM payment_attempts a WHERE a.obligation_id=o.id AND a.transaction_id IS NOT NULL ORDER BY created_at DESC LIMIT 1),'deliveryState',CASE WHEN o.state='paid' THEN 'paid' WHEN q.state='submitted' THEN 'submitted' WHEN q.state='held' THEN 'held' WHEN q.state IS NULL THEN 'needs_wallet' ELSE 'awaiting_binding' END)) items FROM payment_obligations o LEFT JOIN payment_outbox q ON q.obligation_id=o.id WHERE github_user_id=?",
         )
         .bind(member.github_id)
         .first<{ items: string }>();
@@ -570,34 +634,33 @@ export async function handlePaymentsApi(
         paymentRows?.items ?? "[]",
       ) as AccountPayment[];
       for (const p of payments)
-        p.netMicro = (BigInt(p.grossMicro) - BigInt(p.feeMicro)).toString();
-      // One balance per settlement network: networks carry different assets
-      // (USDC, USDG, test tokens), so amounts are never summed across them.
+        p.netBase = (BigInt(p.grossBase) - BigInt(p.feeBase)).toString();
+      // One balance per network and asset: assets differ in value and in
+      // decimals, so amounts are never summed across them.
       const reservedByNetwork = new Map<
         string,
-        { chain: PaymentChain; network: string; net: bigint }
+        PaymentAsset & { chain: PaymentChain; net: bigint }
       >();
       for (const p of payments) {
-        const key = `${p.chain}\u0000${p.network}`;
+        const key = `${p.chain}\u0000${p.network}\u0000${p.assetAddress}`;
         const row = reservedByNetwork.get(key) ?? {
           chain: p.chain,
           network: p.network,
+          assetAddress: p.assetAddress,
+          assetDecimals: p.assetDecimals,
           net: 0n,
         };
-        if (p.state === "reserved") row.net += BigInt(p.netMicro);
+        if (p.state === "reserved") row.net += BigInt(p.netBase);
         reservedByNetwork.set(key, row);
       }
       const balances = [...reservedByNetwork.values()]
         .sort(
           (a, b) =>
             ESCROW_CHAINS.indexOf(a.chain) - ESCROW_CHAINS.indexOf(b.chain) ||
-            a.network.localeCompare(b.network),
+            a.network.localeCompare(b.network) ||
+            a.assetAddress.localeCompare(b.assetAddress),
         )
-        .map(({ chain, network, net }) => ({
-          chain,
-          network,
-          netMicro: net.toString(),
-        }));
+        .map(({ net, ...asset }) => ({ ...asset, netBase: net.toString() }));
       const account: PaymentsAccount = {
         githubUserId: member.github_id,
         wallets: JSON.parse(walletRows?.items ?? "[]"),

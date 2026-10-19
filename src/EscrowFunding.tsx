@@ -1,16 +1,20 @@
 import { useEffect, useState } from "react";
 import { readBoundedJson } from "./lib/browser-json";
 import { ESCROW_NETWORKS } from "./lib/escrow-policy.mjs";
+import {
+  formatAssetAmount,
+  isAssetDecimals,
+  isBaseUnits,
+  type VaultSnapshot,
+} from "./lib/payments/contracts";
 import type { ProjectDefinition } from "./lib/projects.mjs";
+import { formatDateTime } from "./Presentation";
 
-interface Totals {
-  network: string;
-  totalNetPaidMicro: string;
-  payoutFeesPaidMicro: string;
-  reservedNetMicro: string;
-  reservedFeeMicro: string;
-  syncedAt: string | null;
-  coverage: { kind: string; completeThrough: string | null };
+interface VaultResponse {
+  projectId: string;
+  snapshots: VaultSnapshot[];
+  staleAfterMs: number;
+  servedAt: string;
 }
 const chainNames = {
   base: "Base",
@@ -18,56 +22,140 @@ const chainNames = {
   robinhood: "Robinhood Chain",
   ethereum: "Ethereum",
 } as const;
+const CUMULATIVE = [
+  "totalDeposited",
+  "totalPaid",
+  "totalPayoutFees",
+  "totalGrossWithdrawn",
+  "totalWithdrawalFees",
+  "totalServiceFees",
+] as const;
+const CURRENT = [
+  "freeBalance",
+  "reservedPrincipal",
+  "reservedFees",
+  "accruedFees",
+  "reserved",
+] as const;
 
-function amount(value: string, network: string) {
-  const n = BigInt(value);
-  const symbol = Object.hasOwn(ESCROW_NETWORKS, network)
-    ? ESCROW_NETWORKS[network as keyof typeof ESCROW_NETWORKS].assetSymbol
-    : "USDC";
-  return `${n / 1_000_000n}.${(n % 1_000_000n).toString().padStart(6, "0")} ${symbol}`;
+function validSnapshot(s: VaultSnapshot, projectId: string): boolean {
+  return (
+    !!s &&
+    s.projectId === projectId &&
+    typeof s.network === "string" &&
+    Object.hasOwn(chainNames, s.chain) &&
+    typeof s.vault === "string" &&
+    typeof s.assetAddress === "string" &&
+    /^[0-9A-Za-z]{32,44}$/.test(s.assetAddress) &&
+    isAssetDecimals(s.assetDecimals) &&
+    CUMULATIVE.every((k) => isBaseUnits(s[k])) &&
+    CURRENT.every((k) => s[k] === null || isBaseUnits(s[k])) &&
+    /^(0|[1-9][0-9]*)$/.test(s.blockNumber) &&
+    !Number.isNaN(Date.parse(s.blockTime)) &&
+    !Number.isNaN(Date.parse(s.observedAt))
+  );
+}
+
+function VaultTotals({
+  snapshot,
+  staleAfterMs,
+}: {
+  snapshot: VaultSnapshot;
+  staleAfterMs: number;
+}) {
+  const value = (amount: string | null) =>
+    amount === null
+      ? "Not reported by this vault type"
+      : formatAssetAmount(amount, snapshot);
+  // EVM vaults split reserved principal and fees; Solana reports one reserved total.
+  const reservedAwards = snapshot.reservedPrincipal ?? snapshot.reserved;
+  // Measured against the viewer's clock: the response itself can be edge-cached.
+  const stale = Date.now() - Date.parse(snapshot.observedAt) > staleAfterMs;
+  const network = Object.hasOwn(ESCROW_NETWORKS, snapshot.network)
+    ? snapshot.network
+    : `${snapshot.network} (not a registry network)`;
+  return (
+    <>
+      {stale && (
+        <p role="alert">
+          These totals are stale. The last finalized vault read was at{" "}
+          {formatDateTime(snapshot.observedAt)}. The chain may show newer
+          activity.
+        </p>
+      )}
+      <dl>
+        <dt>Deposited</dt>
+        <dd>{value(snapshot.totalDeposited)}</dd>
+        <dt>Paid out to contributors</dt>
+        <dd>{value(snapshot.totalPaid)}</dd>
+        <dt>Payout fees</dt>
+        <dd>{value(snapshot.totalPayoutFees)}</dd>
+        <dt>Withdrawn by the owner (gross)</dt>
+        <dd>{value(snapshot.totalGrossWithdrawn)}</dd>
+        <dt>Withdrawal fees</dt>
+        <dd>{value(snapshot.totalWithdrawalFees)}</dd>
+        <dt>Free balance</dt>
+        <dd>{value(snapshot.freeBalance)}</dd>
+        <dt>Reserved for committed awards</dt>
+        <dd>{value(reservedAwards)}</dd>
+        {snapshot.reservedFees !== null && (
+          <>
+            <dt>Reserved payout fees</dt>
+            <dd>{value(snapshot.reservedFees)}</dd>
+          </>
+        )}
+      </dl>
+      <p>
+        As of {formatDateTime(snapshot.blockTime)} (finalized block{" "}
+        {snapshot.blockNumber} on {network}). Read from the vault counters at{" "}
+        {formatDateTime(snapshot.observedAt)}. Amounts are in the vault asset
+        only and are not dollar values.
+      </p>
+    </>
+  );
 }
 
 export function EscrowFunding({ project }: { project: ProjectDefinition }) {
-  const [totals, setTotals] = useState<Totals | null>(null);
+  const [vault, setVault] = useState<VaultResponse | null>(null);
   const [error, setError] = useState("");
   const [revision, setRevision] = useState(0);
   const deployed = Boolean(project.escrow?.deployments.length);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: explicit refresh reloads the verified projection.
+  const withdrawalFee = project.escrow
+    ? project.escrow.withdrawalFeeBasisPoints / 100
+    : null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: explicit refresh reloads the cached vault totals.
   useEffect(() => {
-    setTotals(null);
+    setVault(null);
     setError("");
     if (!deployed) return;
     const controller = new AbortController();
-    fetch(
-      `/api/v1/payments/projects/${encodeURIComponent(project.id)}/totals`,
-      { cache: "no-store", signal: controller.signal },
-    )
+    fetch(`/api/v1/payments/projects/${encodeURIComponent(project.id)}/vault`, {
+      signal: controller.signal,
+    })
       .then(async (response) => {
         if (!response.ok)
-          throw new Error("Verified payout totals are not available yet.");
+          throw new Error("Vault totals are not available. Please retry.");
         const value = (await readBoundedJson(
           response,
           65536,
-          "project payout totals",
-        )) as Totals;
+          "project vault totals",
+        )) as VaultResponse;
         if (
-          ![
-            value.totalNetPaidMicro,
-            value.payoutFeesPaidMicro,
-            value.reservedNetMicro,
-            value.reservedFeeMicro,
-          ].every((n) => typeof n === "string" && /^(0|[1-9]\d*)$/.test(n)) ||
-          value.coverage?.kind !== "finalized-payment-events"
+          !value ||
+          !Array.isArray(value.snapshots) ||
+          !Number.isSafeInteger(value.staleAfterMs) ||
+          Number.isNaN(Date.parse(value.servedAt)) ||
+          !value.snapshots.every((s) => validSnapshot(s, project.id))
         )
-          throw new Error("Invalid payout totals.");
-        if (!controller.signal.aborted) setTotals(value);
+          throw new Error("The vault totals could not be verified.");
+        if (!controller.signal.aborted) setVault(value);
       })
       .catch((reason) => {
         if (!controller.signal.aborted)
           setError(
             reason instanceof Error
               ? reason.message
-              : "Could not verify payouts.",
+              : "Could not load vault totals.",
           );
       });
     return () => controller.abort();
@@ -76,8 +164,10 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
     <section className="section project-funding" aria-label="Project escrow">
       <h2>{chainNames[project.escrow?.chain ?? "solana"]} escrow</h2>
       <p>
-        Contributor amounts deduct a 2% fee. Funded awards remain reserved until
-        paid. Returning unused sponsor funds costs 10%.
+        Contributor amounts deduct a 2% fee in the reward token. Funded awards
+        remain reserved until paid.
+        {withdrawalFee !== null &&
+          ` Returning unused sponsor funds costs ${withdrawalFee}%.`}
       </p>
       {!deployed ? (
         <p>
@@ -87,42 +177,35 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
       ) : (
         <>
           <p>
-            Only the project owner can fund this version through its deposit
-            transaction. Direct token transfers do not create reward or refund
-            credit. Public donations are not enabled.
+            Anyone can fund this vault through its deposit transaction. A
+            deposit joins the free balance. Only the project owner can commit it
+            to awards or return it, and a depositor gets no refund right. Direct
+            token transfers are not credited.
           </p>
           {error ? (
             <p role="alert">{error}</p>
-          ) : !totals ? (
-            <p role="status">Checking finalized payout records…</p>
+          ) : !vault ? (
+            <p role="status">Loading the cached vault totals…</p>
+          ) : vault.snapshots.length === 0 ? (
+            <p role="status">
+              No finalized vault read is recorded yet. Totals appear after the
+              next payments scan.
+            </p>
           ) : (
-            <>
-              <dl>
-                <dt>Indexed contributor payouts</dt>
-                <dd>{amount(totals.totalNetPaidMicro, totals.network)}</dd>
-                <dt>Indexed payout fees</dt>
-                <dd>{amount(totals.payoutFeesPaidMicro, totals.network)}</dd>
-                <dt>Reserved contributor awards</dt>
-                <dd>{amount(totals.reservedNetMicro, totals.network)}</dd>
-                <dt>Reserved payout fees</dt>
-                <dd>{amount(totals.reservedFeeMicro, totals.network)}</dd>
-              </dl>
-              <p>
-                Network: {totals.network}.{" "}
-                {totals.coverage.completeThrough
-                  ? "Finalized event scan recorded."
-                  : "Initial event scan is incomplete."}{" "}
-                These figures describe indexed awards and payments; they are not
-                the vault balance.
-              </p>
-            </>
+            vault.snapshots.map((snapshot) => (
+              <VaultTotals
+                key={`${snapshot.network}:${snapshot.vault}`}
+                snapshot={snapshot}
+                staleAfterMs={vault.staleAfterMs}
+              />
+            ))
           )}
           <button
             className="button secondary-button"
             type="button"
             onClick={() => setRevision((value) => value + 1)}
           >
-            Refresh verified totals
+            Refresh vault totals
           </button>
         </>
       )}

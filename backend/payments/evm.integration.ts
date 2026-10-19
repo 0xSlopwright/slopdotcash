@@ -29,6 +29,7 @@ import {
   preflightEvmDeployment,
   retireUnsignedAttempt,
 } from "../../workers/payment-executor/core";
+import { readDeploymentVaultTotals } from "../../workers/payments/index";
 import { scanEvmPayments } from "../../workers/payments/scanner";
 import type { D1Database } from "../trace/cloudflare-persistence";
 import { dispatchPayment } from "./dispatch";
@@ -36,6 +37,7 @@ import { evmPaymentAdapter } from "./evm-adapter";
 import { handlePaymentsApi, type PaymentDeploymentIdentity } from "./handler";
 import { indexPaymentEvent } from "./ledger";
 import { personalMessageHash } from "./possession";
+import { refreshVaultSnapshots } from "./vault-snapshots";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const localPort = process.argv.includes("--serve") ? 18547 : 18557;
@@ -213,6 +215,45 @@ async function rpc(method: string, params: unknown[], url = rpcUrl) {
   return body.result;
 }
 const deploymentTransactions = new Map<string, string>();
+/**
+ * The payments cron's first step: read the vault counters at the finalized
+ * block and store them in vault_snapshots. The ledger takes each award's asset
+ * and decimals from that row.
+ */
+async function snapshotVault(
+  db: D1Database,
+  config: {
+    projectId: string;
+    network: string;
+    vault: string;
+    asset: string;
+    chainId: bigint;
+    factory: string;
+    factoryCodeSha256: string;
+    registrar: string;
+    owner: string;
+    identityAuthority: string;
+    feeRecipient: string;
+    codeSha256: string;
+    bindingDelaySeconds: string;
+  },
+  chain: "base" | "robinhood",
+  url: string,
+) {
+  await refreshVaultSnapshots(
+    db,
+    [
+      {
+        ...config,
+        chain,
+        chainId: config.chainId.toString(),
+        upgradeAuthority: null,
+      },
+    ],
+    { [config.network]: url },
+    readDeploymentVaultTotals,
+  );
+}
 /** The factory's vaults(projectId, token) lookup. */
 async function factoryVault(factory: string, token: string, url = rpcUrl) {
   return `0x${(
@@ -372,8 +413,9 @@ try {
     ),
     /scan page size/,
   );
-  const scan = () =>
-    scanEvmPayments(
+  const scan = async () => {
+    await snapshotVault(db, config, "base", rpcUrl);
+    await scanEvmPayments(
       db,
       {
         ...config,
@@ -386,6 +428,7 @@ try {
         await indexPaymentEvent(db, adapter, event, new Date().toISOString());
       },
     );
+  };
   await assert.rejects(
     indexPaymentEvent(
       db,
@@ -966,12 +1009,63 @@ try {
   const account = (await (
     await handlePaymentsApi(request("/me"), { db })
   ).json()) as {
-    payments: { state: string; netMicro: string }[];
-    balances: { chain: string; network: string; netMicro: string }[];
+    payments: { state: string; netBase: string }[];
+    balances: { chain: string; network: string; netBase: string }[];
   };
   assert.equal(account.payments[0].state, "paid");
-  assert.equal(account.payments[0].netMicro, "98000000");
-  assert.equal(account.balances.find((b) => b.chain === "base")?.netMicro, "0");
+  assert.equal(account.payments[0].netBase, "98000000");
+  // The cron stored every counter from the finalized block; the public route
+  // serves that row without any chain RPC.
+  const vaultRoute = (await (
+    await handlePaymentsApi(
+      new Request(
+        "https://slop.cash/api/v1/payments/projects/integration-fixture/vault",
+      ),
+      { db },
+    )
+  ).json()) as { snapshots: Record<string, unknown>[] };
+  assert.equal(vaultRoute.snapshots.length, 1);
+  assert.deepEqual(
+    {
+      ...vaultRoute.snapshots[0],
+      blockNumber: undefined,
+      blockTime: undefined,
+      observedAt: undefined,
+    },
+    {
+      projectId: "integration-fixture",
+      network: "anvil",
+      chain: "base",
+      vault,
+      assetAddress: asset,
+      assetDecimals: 6,
+      totalDeposited: "200000000",
+      totalPaid: "98000000",
+      totalPayoutFees: "2000000",
+      totalGrossWithdrawn: "100000000",
+      totalWithdrawalFees: "5000000",
+      totalServiceFees: "0",
+      freeBalance: "0",
+      reservedPrincipal: "0",
+      reservedFees: "0",
+      accruedFees: "7000000",
+      reserved: null,
+      blockNumber: undefined,
+      blockTime: undefined,
+      observedAt: undefined,
+    },
+    "vault_snapshots holds the finalized counters after deposit, commit, withdraw and pay",
+  );
+  assert.equal(
+    sql
+      .query<{ asset_address: string; asset_decimals: number }, []>(
+        "SELECT asset_address,asset_decimals FROM payment_obligations",
+      )
+      .get()?.asset_decimals,
+    6,
+    "The award carries the vault asset decimals",
+  );
+  assert.equal(account.balances.find((b) => b.chain === "base")?.netBase, "0");
   const balance = execFileSync(
     "cast",
     [
@@ -1516,8 +1610,9 @@ try {
     ...rcConfig,
     chain: "robinhood",
   });
-  const rcScan = () =>
-    scanEvmPayments(
+  const rcScan = async () => {
+    await snapshotVault(db, rcConfig, "robinhood", rcRpcUrl);
+    await scanEvmPayments(
       db,
       {
         ...rcDeployment,
@@ -1528,6 +1623,7 @@ try {
         await indexPaymentEvent(db, rcAdapter, event, new Date().toISOString());
       },
     );
+  };
   await rcScan();
   assert.equal(
     (
@@ -1547,13 +1643,13 @@ try {
         id: string;
         chain: string;
         state: string;
-        netMicro: string;
+        netBase: string;
       }[];
-      balances: { chain: string; network: string; netMicro: string }[];
+      balances: { chain: string; network: string; netBase: string }[];
     };
   const rcReserved = await readAccount();
   assert.equal(
-    rcReserved.balances.find((b) => b.chain === "robinhood")?.netMicro,
+    rcReserved.balances.find((b) => b.chain === "robinhood")?.netBase,
     "98000000",
     "The reserved Robinhood Chain award shows its net before payment",
   );
@@ -1565,7 +1661,7 @@ try {
     "Balances are reported per network, never summed across assets",
   );
   assert.equal(
-    rcReserved.balances.find((b) => b.chain === "base")?.netMicro,
+    rcReserved.balances.find((b) => b.chain === "base")?.netBase,
     "0",
     "Base balance is unaffected by the Robinhood Chain reservation",
   );
@@ -1608,7 +1704,7 @@ try {
     "The Robinhood Chain award is paid from finalized evidence",
   );
   assert.equal(
-    rcPaid.balances.find((b) => b.chain === "robinhood")?.netMicro,
+    rcPaid.balances.find((b) => b.chain === "robinhood")?.netBase,
     "0",
     "Nothing stays reserved on Robinhood Chain after payment",
   );
@@ -1666,6 +1762,8 @@ try {
       [browserAward, "456", "100000000", `0x${"5".padStart(64, "0")}`],
     );
     await rpc("anvil_mine", ["0x40"]);
+    // As the cron does: refresh the finalized vault totals, then index.
+    await snapshotVault(db, config, "base", rpcUrl);
     await indexPaymentEvent(
       db,
       adapter,
@@ -1761,6 +1859,7 @@ try {
         );
         if (tx) {
           await rpc("anvil_mine", ["0x40"]);
+          await snapshotVault(db, config, "base", rpcUrl);
           await indexPaymentEvent(
             db,
             adapter,

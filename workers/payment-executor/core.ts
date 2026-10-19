@@ -21,6 +21,7 @@ import {
   isEscrowChain,
 } from "../../src/lib/escrow-policy.mjs";
 import { finalizedEvmRevert } from "../payments/reconcile";
+import { mainnetExecutionEnabled } from "./mainnet-execution.mjs";
 
 type Hex = `0x${string}`;
 export interface Signer {
@@ -74,8 +75,8 @@ interface Deployment {
 }
 export interface Authorization extends DispatchPayment {
   projectId: string;
-  grossMicro: string;
-  feeMicro: string;
+  grossBase: string;
+  feeBase: string;
   sourceDigest: string;
   message: string;
   signature: string;
@@ -154,7 +155,7 @@ export async function authorizeRegistry(
   chain: EscrowChain,
 ): Promise<Authorization> {
   const authorization = await env.PAYMENTS_DB.prepare(
-    "SELECT o.id obligationId,o.project_id projectId,o.network,o.vault,o.github_user_id githubUserId,o.gross_micro grossMicro,o.fee_micro feeMicro,o.source_digest sourceDigest,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,c.message,a.signature,c.id challengeId,c.expires_at expiresAt FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id AND a.github_user_id=o.github_user_id JOIN payment_wallet_challenges c ON c.id=a.challenge_id AND c.claim_id=w.id AND c.github_user_id=o.github_user_id JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND t.id=? AND o.chain=? AND c.consumed_at IS NOT NULL AND c.consumed_at<=c.expires_at AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)",
+    "SELECT o.id obligationId,o.project_id projectId,o.network,o.vault,o.github_user_id githubUserId,o.gross_base grossBase,o.fee_base feeBase,o.source_digest sourceDigest,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,c.message,a.signature,c.id challengeId,c.expires_at expiresAt FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id AND a.github_user_id=o.github_user_id JOIN payment_wallet_challenges c ON c.id=a.challenge_id AND c.claim_id=w.id AND c.github_user_id=o.github_user_id JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND t.id=? AND o.chain=? AND c.consumed_at IS NOT NULL AND c.consumed_at<=c.expires_at AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)",
   )
     .bind(input.obligationId, input.idempotencyKey, chain)
     .first<Authorization>();
@@ -212,9 +213,10 @@ function selectDeployment(
 
 /**
  * Public chain identity check, with no RPC and no secrets. A deployment is
- * accepted only when it is an EVM registry testnet whose chain and chain id
+ * accepted only when it is an EVM registry network whose chain and chain id
  * both match the registry entry, or the local Anvil chain under the
- * integration override; every mainnet network is rejected here.
+ * integration override. A mainnet network also needs its reviewed
+ * MAINNET_EXECUTION value, which is off for every network.
  */
 function selectReviewedEvmDeployment(
   env: Pick<
@@ -227,11 +229,11 @@ function selectReviewedEvmDeployment(
   const policy = Object.hasOwn(ESCROW_NETWORKS, selected.network)
     ? ESCROW_NETWORKS[selected.network as keyof typeof ESCROW_NETWORKS]
     : undefined;
-  const reviewedTestnet =
+  const reviewedNetwork =
     policy !== undefined &&
     policy.family === "evm" &&
     policy.chain === selected.chain &&
-    policy.testnet &&
+    (policy.testnet || mainnetExecutionEnabled(selected.network)) &&
     policy.chainId === selected.chainId;
   const localChain =
     policy === undefined &&
@@ -240,7 +242,7 @@ function selectReviewedEvmDeployment(
   if (
     !isEscrowChain(selected.chain) ||
     chainFamily(selected.chain) !== "evm" ||
-    !(reviewedTestnet || localChain)
+    !(reviewedNetwork || localChain)
   )
     throw new Error("Test deployment required");
   return selected as Omit<Deployment, "rpcUrl"> & { chain: EscrowChain };
@@ -307,10 +309,10 @@ async function obligation(config: Deployment, authorization: Authorization) {
   );
   if (
     BigInt(`0x${state[0]}`).toString() !== authorization.githubUserId ||
-    BigInt(`0x${state[1]}`).toString() !== authorization.grossMicro ||
-    BigInt(`0x${state[2]}`).toString() !== authorization.feeMicro ||
+    BigInt(`0x${state[1]}`).toString() !== authorization.grossBase ||
+    BigInt(`0x${state[2]}`).toString() !== authorization.feeBase ||
     state[3].toLowerCase() !== authorization.sourceDigest ||
-    BigInt(authorization.feeMicro) !== BigInt(authorization.grossMicro) / 50n
+    BigInt(authorization.feeBase) !== BigInt(authorization.grossBase) / 50n
   )
     throw new Error("Finalized award differs from approved ledger");
   return {

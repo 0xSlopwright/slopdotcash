@@ -2,7 +2,10 @@ import {
   type FeeConversionsDependencies,
   handleFeeConversionsApi,
 } from "../../../backend/fee-conversions/handler";
-import { handlePaymentsApi } from "../../../backend/payments/handler";
+import {
+  handlePaymentsApi,
+  type PaymentsDependencies,
+} from "../../../backend/payments/handler";
 import {
   handlePointsApi,
   sessionGithubActor,
@@ -320,6 +323,14 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   if (new URL(context.request.url).pathname.startsWith("/api/v1/payments/"))
     return handlePaymentsApi(context.request, {
       db: context.env.SLOP_DB,
+      // Cloudflare's per-colo edge cache; absent outside the Workers runtime.
+      edgeCache: (
+        globalThis as {
+          caches?: {
+            default?: NonNullable<PaymentsDependencies["edgeCache"]>;
+          };
+        }
+      ).caches?.default,
       operatorIds: (context.env.OPERATOR_GITHUB_IDS ?? "")
         .split(",")
         .map((id) => id.trim())

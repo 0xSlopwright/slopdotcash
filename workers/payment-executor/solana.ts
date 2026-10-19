@@ -26,6 +26,7 @@ import {
   holdSuccessorClaim,
   type JournalStore,
 } from "./core";
+import { mainnetExecutionEnabled } from "./mainnet-execution.mjs";
 
 export interface SolanaSigner {
   address: string;
@@ -185,7 +186,9 @@ function createAta(payer: string, mint: string, owner: string): Instruction {
   };
 }
 
-/** Rejects mainnet and wrong RPC genesis before the hosted wrapper reads a signer seed. */
+/** Solana mainnet genesis hash; used only when its reviewed MAINNET_EXECUTION value is on. */
+const SOLANA_MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+/** Rejects mainnet unless reviewed, and a wrong RPC genesis, before the hosted wrapper reads a signer seed. */
 export async function preflightSolanaDeployment(
   env: Preflight,
   input: DispatchPayment,
@@ -206,9 +209,12 @@ export async function preflightSolanaDeployment(
       ? "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
       : input.network === "solana-testnet"
         ? "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
-        : env.ALLOW_LOCAL_TEST_CHAIN && input.network === "solana-localnet"
-          ? env.LOCAL_SOLANA_GENESIS
-          : undefined;
+        : input.network === "solana-mainnet" &&
+            mainnetExecutionEnabled(input.network)
+          ? SOLANA_MAINNET_GENESIS
+          : env.ALLOW_LOCAL_TEST_CHAIN && input.network === "solana-localnet"
+            ? env.LOCAL_SOLANA_GENESIS
+            : undefined;
   if (!expected)
     throw new Error("Only approved Solana test clusters are supported");
   const rpcUrl = (JSON.parse(env.PAYMENT_RPC_URLS) as Record<string, string>)[
@@ -307,8 +313,8 @@ async function authorized(
     !obligation ||
     solanaPubkey(obligation, 48) !== config.projectPda ||
     solanaUint(obligation, 112).toString() !== input.githubUserId ||
-    solanaUint(obligation, 8).toString() !== authorization.grossMicro ||
-    solanaUint(obligation, 128).toString() !== authorization.feeMicro ||
+    solanaUint(obligation, 8).toString() !== authorization.grossBase ||
+    solanaUint(obligation, 128).toString() !== authorization.feeBase ||
     hex(obligation.slice(16, 48)) !== authorization.sourceDigest ||
     solanaUint(obligation, 128) !== solanaUint(obligation, 8) / 50n ||
     solanaUint(obligation, 120) + solanaUint(obligation, 128) !==

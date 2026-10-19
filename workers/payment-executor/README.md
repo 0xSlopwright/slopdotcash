@@ -39,10 +39,17 @@ transaction must be completed inside its blockhash lifetime, so a Solana
 binding is always an interactive step; the relayer reports a missing binding
 and never requests one.
 
-The hosted wrapper checks the configured test network and the RPC's chain or
-genesis identity before reading the signer secret. Base mainnet, Robinhood Chain
-mainnet and Solana mainnet are rejected. The local integration override exists
-only in the core APIs and is not forwarded by the hosted wrapper.
+The hosted wrapper checks the configured network and the RPC's chain or
+genesis identity before reading the signer secret. Every registry test network
+is accepted (Base Sepolia, Robinhood Chain Testnet, Ethereum Sepolia, Solana
+Devnet and Testnet); each network's chain and chain id come from
+`src/lib/escrow-policy.mjs`. A mainnet network (Base, Ethereum, Robinhood
+Chain, Solana) is accepted only when its value in `mainnet-execution.mjs` is
+`true`. Every value is `false`. Only a reviewed pull request that records that
+network's production activation can change one. The local integration
+override exists only in the core APIs and is not forwarded by the hosted
+wrapper. `configure.mjs` and `assert-fresh-test-stack.mjs` accept only registry
+test networks.
 
 ## Durability and retries
 

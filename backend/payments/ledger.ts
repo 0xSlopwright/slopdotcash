@@ -1,5 +1,9 @@
 import { chainFamily } from "../../src/lib/escrow-policy.mjs";
-import { type PaymentChain, payoutFee } from "../../src/lib/payments/contracts";
+import {
+  isBaseUnits,
+  type PaymentChain,
+  payoutFee,
+} from "../../src/lib/payments/contracts";
 import type { D1Database } from "../trace/cloudflare-persistence";
 
 export interface FinalizedPaymentEvent {
@@ -13,11 +17,32 @@ export interface FinalizedPaymentEvent {
   chain: PaymentChain;
   vault: string;
   githubUserId: string;
+  /** Historical names; the values are base units of the vault asset. */
   grossMicro: string;
   netMicro: string;
   feeMicro: string;
   sourceDigest: string;
   destination?: string;
+}
+/** The facts of a stored finalized event, compared field by field. */
+function evidenceFacts(value: Record<string, unknown>) {
+  return JSON.stringify([
+    value.kind,
+    value.transactionId,
+    value.eventIndex,
+    value.blockId,
+    value.obligationId,
+    value.projectId,
+    value.network,
+    value.chain,
+    value.vault,
+    value.githubUserId,
+    value.grossMicro,
+    value.netMicro,
+    value.feeMicro,
+    value.sourceDigest,
+    value.destination ?? null,
+  ]);
 }
 /** Adapters must independently fetch canonical finalized chain evidence. */
 export interface PaymentChainAdapter {
@@ -42,13 +67,23 @@ export async function indexPaymentEvent(
     event.kind !== input.kind ||
     event.obligationId !== input.obligationId ||
     !/^[1-9]\d*$/.test(event.githubUserId) ||
-    !/^[1-9]\d*$/.test(event.grossMicro) ||
+    !isBaseUnits(event.grossMicro) ||
+    event.grossMicro === "0" ||
     payoutFee(BigInt(event.grossMicro)).toString() !== event.feeMicro ||
     (BigInt(event.grossMicro) - BigInt(event.feeMicro)).toString() !==
       event.netMicro ||
     !/^[a-f0-9]{64}$/.test(event.sourceDigest)
   )
     throw new Error("Chain event mismatch");
+  // The asset and its decimals come from the finalized vault read that the
+  // payments worker caches (vault_snapshots), never from the event request.
+  const asset = await db
+    .prepare(
+      "SELECT asset_address,asset_decimals FROM vault_snapshots WHERE project_id=? AND network=? AND vault=?",
+    )
+    .bind(event.projectId, event.network, event.vault)
+    .first<{ asset_address: string; asset_decimals: number }>();
+  if (!asset) throw new Error("Finalized vault asset snapshot required");
   const existing = await db
     .prepare("SELECT * FROM payment_obligations WHERE id=?")
     .bind(event.obligationId)
@@ -56,9 +91,11 @@ export async function indexPaymentEvent(
       project_id: string;
       network: string;
       vault: string;
+      asset_address: string;
+      asset_decimals: number;
       github_user_id: string;
-      gross_micro: string;
-      fee_micro: string;
+      gross_base: string;
+      fee_base: string;
       source_digest: string;
       state: string;
       paid_transaction: string | null;
@@ -68,11 +105,11 @@ export async function indexPaymentEvent(
     (existing.project_id !== event.projectId ||
       existing.network !== event.network ||
       existing.vault !== event.vault ||
+      existing.asset_address !== asset.asset_address ||
+      existing.asset_decimals !== asset.asset_decimals ||
       existing.github_user_id !== event.githubUserId ||
-      existing.gross_micro !== event.grossMicro ||
-      existing.fee_micro !== event.feeMicro ||
-      (BigInt(event.grossMicro) - BigInt(event.feeMicro)).toString() !==
-        event.netMicro ||
+      existing.gross_base !== event.grossMicro ||
+      existing.fee_base !== event.feeMicro ||
       existing.source_digest !== event.sourceDigest)
   )
     throw new Error("Immutable obligation mismatch");
@@ -110,9 +147,20 @@ export async function indexPaymentEvent(
     )
     .bind(event.network, event.transactionId, event.eventIndex)
     .first<{ evidence_json: string }>();
-  const evidence = JSON.stringify(event);
+  const evidence = JSON.stringify({
+    ...event,
+    assetAddress: asset.asset_address,
+    assetDecimals: asset.asset_decimals,
+  });
   if (prior) {
-    if (prior.evidence_json !== evidence)
+    const stored = JSON.parse(prior.evidence_json) as Record<string, unknown>;
+    if (
+      evidenceFacts(stored) !==
+        evidenceFacts(event as unknown as Record<string, unknown>) ||
+      (stored.assetAddress !== undefined &&
+        (stored.assetAddress !== asset.asset_address ||
+          stored.assetDecimals !== asset.asset_decimals))
+    )
       throw new Error("Conflicting finalized event");
     return;
   }
@@ -134,7 +182,7 @@ export async function indexPaymentEvent(
     statements.push(
       db
         .prepare(
-          "INSERT INTO payment_obligations VALUES(?,?,?,?,?,?,?,?,?,'reserved',?,NULL) ON CONFLICT(id) DO NOTHING",
+          "INSERT INTO payment_obligations(id,project_id,github_user_id,network,chain,vault,asset_address,asset_decimals,gross_base,fee_base,source_digest,state,created_at,paid_transaction) VALUES(?,?,?,?,?,?,?,?,?,?,?,'reserved',?,NULL) ON CONFLICT(id) DO NOTHING",
         )
         .bind(
           event.obligationId,
@@ -143,6 +191,8 @@ export async function indexPaymentEvent(
           event.network,
           event.chain,
           event.vault,
+          asset.asset_address,
+          asset.asset_decimals,
           event.grossMicro,
           event.feeMicro,
           event.sourceDigest,
