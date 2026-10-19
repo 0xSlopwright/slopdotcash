@@ -38,8 +38,8 @@ import { browserDeployment } from "./lib/browser-deployment";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
 import { currentProjectFundingRecords } from "./lib/funding";
+import { createGeneratedSkillInstallCommand } from "./lib/generated-skill-install";
 import { communityProjects, homeProjects } from "./lib/home-projects";
-import { createInstallCommand } from "./lib/install-command";
 import {
   type ModelOutcomeSummary,
   modelIdentityKey,
@@ -51,6 +51,7 @@ import {
   PROJECTS,
   type ProjectDefinition,
 } from "./lib/projects.mjs";
+import { REWARD_ASSET_NETWORKS } from "./lib/reward-asset.mjs";
 import {
   type PublicSignerReport,
   publicSignerStatus,
@@ -847,10 +848,7 @@ function AgentPromptBox({
 
 function projectInstallCommand(project: ProjectDefinition): string {
   const origin = `${window.location.origin.replace(/\/$/u, "")}/projects/${project.slug}`;
-  return createInstallCommand(origin, `\${HOME}/.agents/skills`, {
-    skillName: project.skill.id,
-    skillRepositoryPath: project.skill.sourcePath,
-  });
+  return createGeneratedSkillInstallCommand(origin, project.skill.id);
 }
 
 function ProjectLinksLine({ project }: { project: ProjectDefinition }) {
@@ -1001,19 +999,19 @@ function InstallPanel({ project }: { project: ProjectDefinition }) {
           </button>
         </div>
         <a
-          href={`${origin}/projects/${project.slug}/mission.md`}
+          href={`${origin}/projects/${project.slug}/SKILL.md`}
           rel="noreferrer"
           target="_blank"
         >
-          Preview the complete workflow
+          Preview the generated contributor skill
           <ExternalLink aria-hidden="true" />
         </a>
         <a
-          href={`${origin}/projects/${project.slug}/review-codex.md`}
+          href={`${origin}/projects/${project.slug}/review/SKILL.md`}
           rel="noreferrer"
           target="_blank"
         >
-          Install the independent reviewer skill
+          Read the independent reviewer skill
           <ExternalLink aria-hidden="true" />
         </a>
       </details>
@@ -1774,6 +1772,14 @@ function ProjectPage({
                 ) : null}
               </p>
               <ProjectLinksLine project={project} />
+              {project.rewardAsset ? (
+                <p className="project-terms-line">
+                  Reward asset: {project.rewardAsset.symbol} on{" "}
+                  {REWARD_ASSET_NETWORKS[project.rewardAsset.network].name} ·{" "}
+                  <code>{project.rewardAsset.address}</code> ·{" "}
+                  {project.rewardAsset.decimals} decimals
+                </p>
+              ) : null}
               {project.terms.externalPrize ? (
                 <p className="project-policy-warning">
                   Organizer rules decide eligibility, amount, and payment.

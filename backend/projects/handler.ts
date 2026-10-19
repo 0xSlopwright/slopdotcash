@@ -4,6 +4,12 @@ import {
   assertProjectRegistry,
 } from "../../src/lib/project-schema.mjs";
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
+import {
+  REWARD_ASSET_NETWORKS,
+  type RewardAsset,
+  rewardAssetChoice,
+  sameRewardAsset,
+} from "../../src/lib/reward-asset.mjs";
 import { readJsonObject, sha256Hex } from "../trace/validation";
 import {
   type ApplicationStatus,
@@ -15,6 +21,21 @@ import {
   type ProjectRecord,
   type WebSession,
 } from "./contracts";
+import {
+  cachedPublicResponse,
+  type EdgeCache,
+  PUBLIC_PROJECT_CACHE_CONTROL,
+  purgeProjectCache,
+} from "./edge-cache";
+import {
+  type GithubFetch,
+  GithubLookupError,
+  listOwnedRepositories,
+  lookupGitHubRepository,
+  validGithubLogin,
+  validRepositoryPath,
+} from "./github-lookup";
+import { TokenMetadataError, type TokenMetadataReader } from "./token-metadata";
 
 export type AdminApplicationNotice = {
   applicationId: string;
@@ -35,8 +56,13 @@ export type ProjectApiDependencies = {
   sessionActor: (request: Request) => Promise<GithubActor | null>;
   /** Resolves true only when every admin was emailed. */
   notifyAdmins: (notice: AdminApplicationNotice) => Promise<boolean>;
-  /** Resolves whether a skill directory exists on the reviewed development branch. */
-  skillPublished: (sourcePath: string) => Promise<boolean>;
+  /** Reads a reward token's decimals from chain once, at submission or change. */
+  readTokenMetadata: TokenMetadataReader;
+  /** Public GitHub reads for the setup form, with an optional server token. */
+  github: { fetch: GithubFetch; token?: string };
+  /** Edge cache for public reads; absent in tests and local tooling. */
+  cache?: EdgeCache;
+  waitUntil?: (promise: Promise<unknown>) => void;
 };
 
 type ApiError = Error & { status?: number; code?: string };
@@ -172,6 +198,80 @@ function assertApplicationManifest(manifest: ProjectDefinition): void {
 }
 
 /**
+ * Replaces a submitted reward asset with its verified form. An unchanged
+ * asset keeps its stored decimals; a new or changed one is read from chain
+ * once. The paid symbol and network of the pool follow the asset.
+ */
+async function verifiedRewardAsset(
+  value: unknown,
+  prior: RewardAsset | undefined,
+  deps: ProjectApiDependencies,
+): Promise<unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return value;
+  const manifest = value as Record<string, unknown>;
+  if (!Object.hasOwn(manifest, "rewardAsset")) return value;
+  const submitted = manifest.rewardAsset as Record<string, unknown> | null;
+  let choice: ReturnType<typeof rewardAssetChoice>;
+  try {
+    choice = rewardAssetChoice(
+      String(submitted?.network ?? ""),
+      String(submitted?.kind ?? ""),
+      String(submitted?.address ?? ""),
+      String(submitted?.symbol ?? ""),
+    );
+  } catch (error) {
+    invalidManifest(error);
+  }
+  const network = REWARD_ASSET_NETWORKS[choice.network];
+  let asset: RewardAsset;
+  if (prior !== undefined && sameRewardAsset(prior, choice as RewardAsset)) {
+    asset = prior;
+  } else if (choice.kind === "stablecoin") {
+    asset = {
+      ...choice,
+      decimals: network.stablecoin.decimals,
+      chainId: network.chainId,
+      cluster: network.cluster,
+      verifiedAt: deps.now().toISOString(),
+    };
+  } else {
+    let metadata: Awaited<ReturnType<TokenMetadataReader>>;
+    try {
+      metadata = await deps.readTokenMetadata(choice.network, choice.address);
+    } catch (error) {
+      fail(
+        error instanceof TokenMetadataError ? 422 : 503,
+        "reward_asset_unverified",
+        error instanceof TokenMetadataError
+          ? `The reward token could not be verified on ${network.name}: ${error.message}`
+          : `${network.name} could not be reached to verify the reward token. Try again.`,
+      );
+    }
+    asset = {
+      ...choice,
+      symbol: metadata.symbol ?? choice.symbol,
+      decimals: metadata.decimals,
+      chainId: network.chainId,
+      cluster: network.cluster,
+      verifiedAt: deps.now().toISOString(),
+    };
+  }
+  const reward = manifest.reward as Record<string, unknown> | undefined;
+  return {
+    ...manifest,
+    rewardAsset: asset,
+    ...(reward?.kind === "monthly-pool"
+      ? { reward: { ...reward, chain: asset.network, currency: asset.symbol } }
+      : {}),
+  };
+}
+
+function skillNames(manifest: ProjectDefinition): string[] {
+  return [manifest.skill.id, manifest.reviewSkill.id];
+}
+
+/**
  * A review budget added or newly funded may not shrink the contributor pool
  * or reach back into an open or closed cycle.
  */
@@ -297,7 +397,9 @@ async function submitApplication(
   const session = await requireSession(request, deps);
   const body = await readJsonObject(request);
   exactKeys(body, ["manifest", "acceptanceCriteria"]);
-  const { manifest, text } = canonicalManifest(body.manifest);
+  const { manifest, text } = canonicalManifest(
+    await verifiedRewardAsset(body.manifest, undefined, deps),
+  );
   assertApplicationManifest(manifest);
   const acceptanceCriteria = boundedText(
     body.acceptanceCriteria,
@@ -460,6 +562,12 @@ async function decideApplication(
         "The project id or repository is already listed, or the application was decided",
       );
     }
+    await purgeProjectCache(
+      deps.cache,
+      new URL(request.url).origin,
+      application.projectId,
+      skillNames(application.manifest),
+    );
   }
   const updated = await deps.persistence.getApplication(applicationId);
   if (updated === null) fail(500, "internal_error", "Application vanished");
@@ -498,7 +606,13 @@ async function replaceProjectManifest(
   if (current.revision !== body.expectedRevision) {
     fail(409, "stale_revision", "The project changed since you loaded it");
   }
-  const { manifest, text } = canonicalManifest(body.manifest);
+  const { manifest, text } = canonicalManifest(
+    await verifiedRewardAsset(
+      body.manifest,
+      current.manifest.rewardAsset,
+      deps,
+    ),
+  );
   if (manifest.id !== projectId) {
     fail(422, "invalid_manifest", "Project id cannot change");
   }
@@ -509,17 +623,21 @@ async function replaceProjectManifest(
   }
   assertReviewBudgetTransition(current.manifest, manifest, deps.now());
   assertRegistryWith(projects, manifest);
-  // A project goes live only after both reviewed skills are on development.
-  if (manifest.status === "active") {
-    for (const skill of [manifest.skill, manifest.reviewSkill]) {
-      if (!(await deps.skillPublished(skill.sourcePath))) {
-        fail(
-          422,
-          "skill_not_published",
-          `${skill.sourcePath} is not on the reviewed development branch`,
-        );
-      }
-    }
+  // Project skills are generated from this manifest and the reviewed
+  // template, so a project goes live only with complete skill content.
+  if (manifest.status === "active" && manifest.skillContent === undefined) {
+    fail(
+      422,
+      "skill_content_incomplete",
+      "Complete the contributor and reviewer skill content before activation",
+    );
+  }
+  if (manifest.skill.publishAtRoot) {
+    fail(
+      422,
+      "invalid_manifest",
+      "Root skill publication is retired; project skills are served at /projects/<id>/SKILL.md",
+    );
   }
   const result = await deps.persistence.appendProjectRevision({
     projectId,
@@ -534,36 +652,121 @@ async function replaceProjectManifest(
   if (result === "conflict") {
     fail(409, "stale_revision", "The project changed since you loaded it");
   }
+  await purgeProjectCache(deps.cache, new URL(request.url).origin, projectId, [
+    ...new Set([...skillNames(current.manifest), ...skillNames(manifest)]),
+  ]);
   const updated = await deps.persistence.getProject(projectId);
   if (updated === null) fail(500, "internal_error", "Project vanished");
   return json(200, { project: adminProject(updated) });
+}
+
+function publicJson(body: Record<string, unknown>): Response {
+  const response = json(200, body, PUBLIC_PROJECT_CACHE_CONTROL);
+  response.headers.set("access-control-allow-origin", "*");
+  return response;
 }
 
 async function listPublicProjects(
   deps: ProjectApiDependencies,
 ): Promise<Response> {
   const projects = await deps.persistence.listProjects();
-  return json(
-    200,
-    {
-      schemaVersion: "1",
-      projects: projects.map((project) => project.manifest),
-    },
-    "public, max-age=60",
-  );
+  return publicJson({
+    schemaVersion: "1",
+    projects: projects.map((project) => project.manifest),
+  });
+}
+
+async function readPublicProject(
+  deps: ProjectApiDependencies,
+  projectId: string,
+): Promise<Response> {
+  if (!PROJECT_ID.test(projectId)) fail(404, "not_found", "Project not found");
+  const project = await deps.persistence.getProject(projectId);
+  if (project === null || project.manifest.listingTier === "retired")
+    fail(404, "not_found", "Project not found");
+  return publicJson({
+    schemaVersion: "1",
+    project: project.manifest,
+    revision: project.revision,
+    manifestSha256: project.manifestSha256,
+    updatedAt: project.updatedAt,
+    skillsPublished: project.manifest.skillContent !== undefined,
+  });
 }
 
 async function listPublicRevisions(
   deps: ProjectApiDependencies,
 ): Promise<Response> {
   const revisions = await deps.persistence.listRevisions();
-  return json(200, { schemaVersion: "1", revisions }, "public, max-age=60");
+  return publicJson({ schemaVersion: "1", revisions });
+}
+
+const GITHUB_LOOKUP_CACHE_CONTROL = "private, max-age=300";
+
+async function githubLookup(
+  request: Request,
+  deps: ProjectApiDependencies,
+  parts: string[],
+): Promise<Response> {
+  const session = await requireSession(request, deps);
+  // Public GitHub facts are the same for every caller, so the edge cache is
+  // shared; the session only gates who may spend the lookup budget.
+  const url = new URL(request.url);
+  const cacheRequest = new Request(
+    parts[1] === "owned-repositories"
+      ? `${url.origin}/api/v1/project-github/owned-repositories/${session.githubLogin.toLowerCase()}`
+      : `${url.origin}${url.pathname.toLowerCase()}`,
+  );
+  const build = async () => {
+    try {
+      if (parts[1] === "owned-repositories") {
+        if (!validGithubLogin(session.githubLogin))
+          fail(
+            400,
+            "invalid_request",
+            "The signed-in GitHub login is not valid.",
+          );
+        const repositories = await listOwnedRepositories(
+          deps.github.fetch,
+          deps.github.token,
+          session.githubLogin,
+        );
+        return json(200, { repositories }, "public, max-age=0, s-maxage=300");
+      }
+      const repository = `${parts[2]}/${parts[3]}`;
+      if (!validRepositoryPath(repository))
+        fail(400, "invalid_request", "Enter the repository as owner/name.");
+      const facts = await lookupGitHubRepository(
+        deps.github.fetch,
+        deps.github.token,
+        repository,
+      );
+      return json(
+        200,
+        { repository: facts },
+        "public, max-age=0, s-maxage=300",
+      );
+    } catch (error) {
+      if (error instanceof GithubLookupError)
+        fail(error.status, error.code, error.message);
+      throw error;
+    }
+  };
+  const response = await cachedPublicResponse(
+    deps.cache,
+    cacheRequest,
+    build,
+    deps.waitUntil,
+  );
+  response.headers.set("cache-control", GITHUB_LOOKUP_CACHE_CONTROL);
+  return response;
 }
 
 function isProjectRoute(parts: string[]): boolean {
   return (
     // Deeper /projects/:id/... paths belong to the trace API.
-    (parts[0] === "projects" && parts.length === 1) ||
+    (parts[0] === "projects" && parts.length <= 2) ||
+    parts[0] === "project-github" ||
     parts[0] === "project-revisions" ||
     parts[0] === "project-session" ||
     parts[0] === "project-applications" ||
@@ -585,7 +788,16 @@ export async function handleProjectApi(
 ): Promise<Response | null> {
   const parts = pathParts(request);
   const route = `${request.method} ${parts
-    .map((part, index) => (parts[0] === "admin" && index === 2 ? ":id" : part))
+    .map((part, index) =>
+      (parts[0] === "admin" && index === 2) ||
+      (parts[0] === "projects" && index === 1)
+        ? ":id"
+        : parts[0] === "project-github" &&
+            parts[1] === "repositories" &&
+            index >= 2
+          ? ":name"
+          : part,
+    )
     .join("/")}`;
   try {
     // Writes ride the SameSite session cookie, so they must come from this
@@ -602,9 +814,29 @@ export async function handleProjectApi(
     }
     switch (route) {
       case "GET projects":
-        return await listPublicProjects(deps);
+        return await cachedPublicResponse(
+          deps.cache,
+          request,
+          () => listPublicProjects(deps),
+          deps.waitUntil,
+        );
       case "GET project-revisions":
-        return await listPublicRevisions(deps);
+        return await cachedPublicResponse(
+          deps.cache,
+          request,
+          () => listPublicRevisions(deps),
+          deps.waitUntil,
+        );
+      case "GET projects/:id":
+        return await cachedPublicResponse(
+          deps.cache,
+          request,
+          () => readPublicProject(deps, parts[1]),
+          deps.waitUntil,
+        );
+      case "GET project-github/owned-repositories":
+      case "GET project-github/repositories/:name/:name":
+        return await githubLookup(request, deps, parts);
       case "GET project-session": {
         // Signed out is an ordinary state, not an error the browser logs.
         const actor = await deps.sessionActor(request);

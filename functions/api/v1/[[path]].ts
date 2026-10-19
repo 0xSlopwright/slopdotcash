@@ -11,10 +11,12 @@ import {
   CloudflareProjectPersistence,
   type ProjectD1Database,
 } from "../../../backend/projects/cloudflare-persistence";
+import { edgeCache } from "../../../backend/projects/edge-cache";
 import {
   type AdminApplicationNotice,
   handleProjectApi,
 } from "../../../backend/projects/handler";
+import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata";
 import { handleSlopbotApi } from "../../../backend/slopbot/summary";
 import {
   CloudflareTracePersistence,
@@ -39,11 +41,19 @@ type Env = {
   /** Admin email Worker; absent where no notifier is deployed. */
   SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
   ASSETS?: { fetch(request: Request): Promise<Response> };
+  /** Optional read-only GitHub token for setup-form lookups; never sent to browsers. */
+  GITHUB_LOOKUP_TOKEN?: string;
+  /** Optional RPC overrides for reward token decimals verification. */
+  REWARD_RPC_BASE?: string;
+  REWARD_RPC_ETHEREUM?: string;
+  REWARD_RPC_ROBINHOOD?: string;
+  REWARD_RPC_SOLANA?: string;
 };
 
 type PagesContext = {
   request: Request;
   env: Env;
+  waitUntil?: (promise: Promise<unknown>) => void;
 };
 
 export const MAX_IDENTITY_RESPONSE_BYTES = 16 * 1024;
@@ -149,9 +159,6 @@ async function verifyIdentityAssertion(
   return { githubId: id, githubLogin: login };
 }
 
-/** Reviewed skill code lives only on this repository's development branch. */
-const SKILL_SOURCE_REPOSITORY = "SlopDotCash/slopdotcash";
-
 function githubIdSet(value: string | undefined): Set<string> {
   return new Set(
     (value ?? "")
@@ -176,22 +183,6 @@ async function notifyAdmins(
   return response.status === 202;
 }
 
-async function skillPublished(sourcePath: string): Promise<boolean> {
-  if (!/^skills\/[a-z0-9-]{1,80}$/u.test(sourcePath)) return false;
-  const response = await fetch(
-    `https://api.github.com/repos/${SKILL_SOURCE_REPOSITORY}/contents/${sourcePath}/SKILL.md?ref=development`,
-    {
-      headers: {
-        accept: "application/vnd.github+json",
-        "user-agent": "slop.cash-project-registry",
-      },
-    },
-  );
-  if (response.status === 404) return false;
-  if (!response.ok) throw new Error("GitHub skill lookup failed");
-  return true;
-}
-
 export async function onRequest(context: PagesContext): Promise<Response> {
   const projectResponse = await handleProjectApi(context.request, {
     persistence: new CloudflareProjectPersistence(context.env.SLOP_DB),
@@ -205,7 +196,18 @@ export async function onRequest(context: PagesContext): Promise<Response> {
         new Date().toISOString(),
       ),
     notifyAdmins: (notice) => notifyAdmins(context.env.SLOP_NOTIFY, notice),
-    skillPublished,
+    readTokenMetadata: rpcTokenMetadataReader(fetch, {
+      base: context.env.REWARD_RPC_BASE,
+      ethereum: context.env.REWARD_RPC_ETHEREUM,
+      robinhood: context.env.REWARD_RPC_ROBINHOOD,
+      solana: context.env.REWARD_RPC_SOLANA,
+    }),
+    github: {
+      fetch: (url, init) => fetch(url, init),
+      token: context.env.GITHUB_LOOKUP_TOKEN,
+    },
+    cache: edgeCache(),
+    waitUntil: context.waitUntil?.bind(context),
   });
   if (projectResponse !== null) return projectResponse;
   const feeConversionsResponse = await handleFeeConversionsApi(

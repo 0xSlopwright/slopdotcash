@@ -5,11 +5,8 @@
     "/api/v1/*",
     "/projects/*",
     "/contributors/*",
-    "/cycles/*"
+    "/cycles/*",
+    "/.well-known/slop/*"
   ],
-  "exclude": [
-    "/projects/*/*.md",
-    "/projects/*/*.json",
-    "/projects/*/downloads/*"
-  ]
+  "exclude": []
 }

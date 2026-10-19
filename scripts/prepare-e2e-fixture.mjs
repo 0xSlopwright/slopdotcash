@@ -22,7 +22,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -63,7 +63,7 @@ function overlayFixtures(workspace) {
   cpSync(join(fixtures, "history"), workspace, { recursive: true });
 }
 
-export function prepareE2eFixture() {
+export async function prepareE2eFixture() {
   const workspace = mkdtempSync(join(tmpdir(), "slop-e2e-fixture-"));
   copyWorkingTree(workspace);
   overlayFixtures(workspace);
@@ -104,8 +104,21 @@ export function prepareE2eFixture() {
     workspace,
   );
   rmSync(ledger);
-  run("bun", ["run", "build"], workspace);
+  // The browser reads the registry at runtime. The fixture build serves the
+  // frozen registry as a static file in the API's response shape, so its
+  // specs need no D1 rows.
+  const { RAW_PROJECT_DEFINITIONS } = await import(
+    pathToFileURL(join(fixtures, "project-registry.mjs")).href
+  );
+  writeFileSync(
+    join(workspace, "public", "data", "fixture-project-registry.json"),
+    `${JSON.stringify({ schemaVersion: "1", projects: RAW_PROJECT_DEFINITIONS })}\n`,
+  );
+  run("bun", ["run", "build"], workspace, {
+    ...process.env,
+    VITE_SLOP_PROJECT_REGISTRY_URL: "/data/fixture-project-registry.json",
+  });
   return workspace;
 }
 
-if (import.meta.main) process.stdout.write(`${prepareE2eFixture()}\n`);
+if (import.meta.main) process.stdout.write(`${await prepareE2eFixture()}\n`);

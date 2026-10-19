@@ -3,11 +3,12 @@
  * its append-only revision history. The live registry is served by
  * GET /api/v1/projects and GET /api/v1/project-revisions; sync mode downloads
  * both and check mode proves the committed snapshot is canonical, matches the
- * newest revision of every project, and names only skills in this tree.
+ * newest revision of every project, and that every active project carries
+ * the content its generated skills need.
  */
 
 import { createHash } from "node:crypto";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -28,23 +29,16 @@ const DEFAULT_API_ORIGIN = "https://slop.cash";
 const MAX_REGISTRY_BYTES = 4 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 30_000;
 
-/** An active project must name skills that exist in this reviewed tree. */
-async function assertPublishedSkillsExist(definitions) {
+/**
+ * Project skills are generated from the manifest and the reviewed template,
+ * so an active project must carry complete skill content.
+ */
+function assertActiveSkillContent(definitions) {
   for (const definition of definitions) {
-    if (definition.status !== "active") continue;
-    for (const skillPath of [
-      definition.skill.sourcePath,
-      definition.reviewSkill.sourcePath,
-    ]) {
-      try {
-        await access(resolve(REPOSITORY_ROOT, skillPath, "SKILL.md"));
-      } catch (error) {
-        throw new TypeError(
-          `Project ${definition.id} references a missing skill: ${skillPath}`,
-          { cause: error },
-        );
-      }
-    }
+    if (definition.status === "active" && definition.skillContent === undefined)
+      throw new TypeError(
+        `Active project ${definition.id} has no generated-skill content`,
+      );
   }
 }
 
@@ -52,7 +46,7 @@ export async function renderProjectRegistry(values) {
   const definitions = [...assertProjectRegistry(values)].sort((left, right) =>
     left.id.localeCompare(right.id),
   );
-  await assertPublishedSkillsExist(definitions);
+  assertActiveSkillContent(definitions);
   const encodedDefinitions = JSON.stringify(definitions)
     .replaceAll("\\", "\\\\")
     .replaceAll("'", "\\'")

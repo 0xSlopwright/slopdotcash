@@ -1,10 +1,13 @@
 /**
- * Flattens the project registry into the GitHub repositories consumed by the
- * existing ingestion pipeline. Repository identity stays canonical while each
+ * Flattens the ingested project registry snapshot into the GitHub
+ * repositories consumed by the ingestion pipeline and the published ledger. Repository identity stays canonical while each
  * row now carries the project that owns its scoring and reward policy.
  */
 
-import { HISTORICAL_PROJECTS, PROJECTS } from "./projects.mjs";
+import {
+  INGESTED_HISTORICAL_PROJECTS,
+  INGESTED_PROJECTS,
+} from "./projects.mjs";
 
 /**
  * Builds the ingestion target rows for a project list.
@@ -53,12 +56,12 @@ export function collectTargetRepositories(projects) {
 }
 
 export const TARGET_REPOSITORIES = Object.freeze(
-  collectTargetRepositories(PROJECTS),
+  collectTargetRepositories(INGESTED_PROJECTS),
 );
 
 /** Registered identities remain available to validate immutable history after retirement. */
 export const REGISTERED_REPOSITORIES = Object.freeze(
-  flattenRepositories(HISTORICAL_PROJECTS).map((repository) =>
+  flattenRepositories(INGESTED_HISTORICAL_PROJECTS).map((repository) =>
     Object.freeze({
       ...repository,
       role: repository.id === TARGET_REPOSITORIES[0]?.id ? "primary" : "member",

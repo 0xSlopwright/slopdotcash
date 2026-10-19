@@ -130,11 +130,12 @@ jobs:
             --require-hashes \
             --requirement "$RUNNER_TEMP/slop-python-requirements.txt"
 
-      - name: Snapshot the D1 project registry
+      - name: Snapshot the D1 project registry for ingestion
         # Projects are applied for and approved on slop.cash; D1 is the only
-        # registry and its API enforces every policy transition. Trusted runs
-        # rebuild from it once the operator sets the repository variable after
-        # the registry API is first deployed.
+        # registry and its API enforces every policy transition. The site
+        # reads projects and generated skills from D1 at runtime, so a newly
+        # approved project appears without this step. The snapshot only tells
+        # build-time ingestion which active repositories to collect.
         if: github.event_name != 'pull_request' && vars.SLOP_PROJECT_REGISTRY_SOURCE == 'd1'
         env:
           SLOP_API_ORIGIN: ${{ env.VITE_SLOP_ENVIRONMENT == 'staging' && 'https://staging.slop.cash' || 'https://slop.cash' }}

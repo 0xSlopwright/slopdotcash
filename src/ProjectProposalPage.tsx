@@ -3,7 +3,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "./Link";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
-import { fundingAssetForNetwork } from "./lib/funding-address.mjs";
+import { isEscrowChain } from "./lib/escrow-policy.mjs";
 import {
   type ProjectApplication,
   submitProjectApplication,
@@ -21,15 +21,35 @@ import {
   slugify,
   validRepositoryPath,
 } from "./lib/project-proposal";
+import {
+  SKILL_CONTENT_FIELDS,
+  type SkillContentKey,
+  skillContentFieldError,
+} from "./lib/project-skill-content.mjs";
 import type { ProjectDefinition } from "./lib/projects.mjs";
+import {
+  REWARD_ASSET_NETWORKS,
+  type RewardAssetNetwork,
+  rewardAssetChoice,
+} from "./lib/reward-asset.mjs";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
 import { loginHref, useSignedInLogin } from "./Points";
 
-const SETTLEMENT_CHAIN_NAMES: Record<string, string> = {
-  base: "Base",
-  solana: "Solana",
-  robinhood: "Robinhood Chain",
-};
+const SETTLEMENT_CHAIN_NAMES: Record<string, string> = Object.fromEntries(
+  Object.entries(REWARD_ASSET_NETWORKS).map(([id, network]) => [
+    id,
+    network.name,
+  ]),
+);
+
+/** The proposal field that holds one skill content section. */
+function skillField(key: SkillContentKey) {
+  return `skill${key[0].toUpperCase()}${key.slice(1)}` as `skill${Capitalize<SkillContentKey>}`;
+}
+const SKILL_FIELDS = SKILL_CONTENT_FIELDS.map((field) => ({
+  ...field,
+  proposalField: skillField(field.key),
+}));
 const PROPOSAL_DRAFT_KEY = "slop:project-proposal:v1";
 /** PRJ-03 default, shown as editable text the maintainer can replace. */
 const DEFAULT_CRITERIA =
@@ -59,6 +79,17 @@ const EMPTY_PROPOSAL = {
   criteria: "",
   monthlyPool: "0",
   settlementChain: "base",
+  rewardKind: "stablecoin",
+  rewardAssetAddress: "",
+  rewardAssetSymbol: "",
+  skillScope: "",
+  skillContributionGuide: "",
+  skillSupportedTasks: "",
+  skillRequiredTests: "",
+  skillReviewExpectations: "",
+  skillSecurityContact: "",
+  skillClosurePolicy: "",
+  skillNotes: "",
   reviewBudgetEnabled: "no",
   monthlyReviewBudget: "",
   copyrightModel: "unknown",
@@ -112,6 +143,9 @@ const FIELD_STEP: Partial<Record<ProposalField, number>> = {
   assignmentSignedAt: 1,
   monthlyPool: 2,
   monthlyReviewBudget: 2,
+  rewardAssetAddress: 2,
+  rewardAssetSymbol: 2,
+  ...Object.fromEntries(SKILL_FIELDS.map((field) => [field.proposalField, 1])),
 };
 const FIELD_LABELS: Partial<Record<ProposalField, string>> = {
   repository: "Public GitHub repository",
@@ -143,6 +177,11 @@ const FIELD_LABELS: Partial<Record<ProposalField, string>> = {
   assignmentSignedAt: "Signed at",
   monthlyPool: "Monthly pool target",
   monthlyReviewBudget: "Monthly review budget",
+  rewardAssetAddress: "Token address",
+  rewardAssetSymbol: "Token symbol",
+  ...Object.fromEntries(
+    SKILL_FIELDS.map((field) => [field.proposalField, field.label]),
+  ),
 };
 
 const TERMS_FIELDS = new Set<string>([
@@ -174,6 +213,10 @@ function lengthError(
   return boundedText(value, minimum, maximum)
     ? undefined
     : `Enter ${minimum} to ${maximum} characters.`;
+}
+
+function skillContentStarted(p: Proposal): boolean {
+  return SKILL_FIELDS.some((field) => p[field.proposalField].trim() !== "");
 }
 
 /** One validation source for the setup wizard, its summary and its handoff. */
@@ -259,6 +302,31 @@ function proposalErrors(p: Proposal): FieldErrors {
     if (p.assignmentSignedAt.length === 0)
       errors.assignmentSignedAt = "Enter the signing date and time.";
   }
+  // Skill content is optional at submission and complete or absent: the
+  // project cannot be activated until it is complete.
+  if (skillContentStarted(p))
+    for (const field of SKILL_FIELDS) {
+      const error = skillContentFieldError(
+        field,
+        p[field.proposalField].trim(),
+      );
+      if (error) errors[field.proposalField] = `${error}.`;
+    }
+  if (p.rewardKind === "token") {
+    try {
+      rewardAssetChoice(
+        p.settlementChain,
+        "token",
+        p.rewardAssetAddress,
+        p.rewardAssetSymbol,
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? `${error.message}.` : "Check the token.";
+      if (/symbol/iu.test(message)) errors.rewardAssetSymbol = message;
+      else errors.rewardAssetAddress = message;
+    }
+  }
   if (!monthlyPoolValue(p.monthlyPool).valid)
     errors.monthlyPool =
       "Enter a dollar amount with up to two decimals, within the schema limit.";
@@ -281,7 +349,7 @@ function readDraft(): Proposal | null {
     const draft = { ...EMPTY_PROPOSAL };
     for (const key of Object.keys(EMPTY_PROPOSAL) as ProposalField[]) {
       const entry = (value as Record<string, unknown>)[key];
-      if (typeof entry === "string" && entry.length <= 4_000)
+      if (typeof entry === "string" && entry.length <= 8_000)
         draft[key] = entry;
     }
     return draft;
@@ -444,7 +512,7 @@ function RepositoryPicker({
     if (!login) return;
     const controller = new AbortController();
     setList({ status: "loading" });
-    void listOwnedRepositories(login, controller.signal).then(
+    void listOwnedRepositories(controller.signal).then(
       (repositories) => {
         if (!controller.signal.aborted)
           setList({ status: "ready", repositories });
@@ -685,6 +753,32 @@ export default function ProjectProposalPage() {
   const pool = monthlyPoolValue(p.monthlyPool);
   const includesReviewBudget = p.reviewBudgetEnabled === "yes";
   const reviewBudget = monthlyPoolValue(p.monthlyReviewBudget);
+  const network =
+    REWARD_ASSET_NETWORKS[p.settlementChain as RewardAssetNetwork];
+  const escrow = isEscrowChain(p.settlementChain);
+  const asset = useMemo(
+    () =>
+      p.rewardKind === "token"
+        ? {
+            network: p.settlementChain,
+            kind: "token",
+            address: p.rewardAssetAddress.trim(),
+            symbol: p.rewardAssetSymbol.trim(),
+          }
+        : {
+            network: p.settlementChain,
+            kind: "stablecoin",
+            address: network.stablecoin.address,
+            symbol: network.stablecoin.symbol,
+          },
+    [
+      p.rewardKind,
+      p.settlementChain,
+      p.rewardAssetAddress,
+      p.rewardAssetSymbol,
+      network,
+    ],
+  );
   const manifest = useMemo(() => {
     const now = new Date();
     const repository = p.repository || "owner/repository";
@@ -793,18 +887,36 @@ export default function ProjectProposalPage() {
         id: `review-${slug}-contributions`,
         sourcePath: `skills/review-${slug}-contributions`,
       },
-      escrow: {
-        schemaVersion: "1",
-        effectiveCycle: now.toISOString().slice(0, 7),
-        chain: p.settlementChain,
-        feeBasisPoints: 200,
-        withdrawalFeeBasisPoints: 500,
-        feeMode: "deduct-from-gross",
-        deployments: [],
-      },
+      // Networks without a reviewed escrow program keep the asset as
+      // display metadata with payments disabled.
+      ...(escrow
+        ? {
+            escrow: {
+              schemaVersion: "1",
+              effectiveCycle: now.toISOString().slice(0, 7),
+              chain: p.settlementChain,
+              feeBasisPoints: 200,
+              withdrawalFeeBasisPoints: 500,
+              feeMode: "deduct-from-gross",
+              deployments: [],
+            },
+          }
+        : {}),
+      // The server verifies the asset and stores its decimals.
+      rewardAsset: asset,
+      ...(skillContentStarted(p)
+        ? {
+            skillContent: Object.fromEntries(
+              SKILL_FIELDS.map((field) => [
+                field.key,
+                p[field.proposalField].replaceAll("\r\n", "\n").trim(),
+              ]),
+            ),
+          }
+        : {}),
       reward: {
         kind: "monthly-pool",
-        currency: fundingAssetForNetwork(p.settlementChain),
+        currency: asset.symbol,
         chain: p.settlementChain,
         rewardStartAt: now.toISOString(),
         cycle: "calendar-month-utc",
@@ -812,7 +924,7 @@ export default function ProjectProposalPage() {
         monthlyCapDisplay: pool.display,
         committedMinor: "0",
         paymentMode: "disabled",
-        feeBasisPoints: 200,
+        feeBasisPoints: escrow ? 200 : 100,
         unusedFunds: "rollover-without-cap-increase",
         fundingState: "pledged",
         ...(includesReviewBudget
@@ -847,7 +959,16 @@ export default function ProjectProposalPage() {
         issues: `https://github.com/${repository}/issues`,
       },
     };
-  }, [p, slug, pool.display, pool.minor, includesReviewBudget, reviewBudget]);
+  }, [
+    p,
+    slug,
+    pool.display,
+    pool.minor,
+    includesReviewBudget,
+    reviewBudget,
+    escrow,
+    asset,
+  ]);
   const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
   const [submission, setSubmission] = useState<
     | { status: "idle" | "submitting" }
@@ -1263,6 +1384,29 @@ export default function ProjectProposalPage() {
               placeholder="What accepted GitHub outcomes qualify?"
               value={p.criteria}
             />
+            <fieldset className="proposal-skill-content">
+              <legend>Contributor and reviewer skill</legend>
+              <p className="field-hint">
+                Slop generates this project&apos;s contributor and reviewer
+                skills from these sections and its reviewed template. Write
+                Markdown. You can leave all of them empty now; the project
+                cannot be activated until every required section is complete.
+              </p>
+              {SKILL_FIELDS.map((field) => (
+                <TextField
+                  error={shown(field.proposalField)}
+                  hint={field.hint}
+                  key={field.key}
+                  label={
+                    field.min === 0 ? `${field.label} (optional)` : field.label
+                  }
+                  multiline={field.key !== "securityContact"}
+                  name={field.proposalField}
+                  onChange={set(field.proposalField)}
+                  value={p[field.proposalField]}
+                />
+              ))}
+            </fieldset>
             <details
               className="proposal-advanced"
               onToggle={(event) => setTermsOpen(event.currentTarget.open)}
@@ -1398,13 +1542,54 @@ export default function ProjectProposalPage() {
               label="Payout network"
               name="settlementChain"
               onChange={set("settlementChain")}
-              options={[
-                ["base", "Base"],
-                ["solana", "Solana"],
-                ["robinhood", "Robinhood Chain"],
-              ]}
+              options={Object.entries(SETTLEMENT_CHAIN_NAMES)}
               value={p.settlementChain}
             />
+            <SelectField
+              label="Reward asset"
+              name="rewardKind"
+              onChange={set("rewardKind")}
+              options={[
+                [
+                  "stablecoin",
+                  `${network.stablecoin.symbol} (network stablecoin)`,
+                ],
+                ["token", "Another token"],
+              ]}
+              value={p.rewardKind}
+            />
+            {p.rewardKind === "token" ? (
+              <>
+                <TextField
+                  error={shown("rewardAssetAddress")}
+                  hint={
+                    network.family === "evm"
+                      ? `The ERC-20 contract address on ${network.name}.`
+                      : "The classic SPL mint address on Solana."
+                  }
+                  label="Token address"
+                  name="rewardAssetAddress"
+                  onChange={set("rewardAssetAddress")}
+                  placeholder={
+                    network.family === "evm" ? "0x…" : "Mint address"
+                  }
+                  value={p.rewardAssetAddress}
+                />
+                <TextField
+                  error={shown("rewardAssetSymbol")}
+                  hint="Shown on the project page. Slop reads the decimals from chain when you submit."
+                  label="Token symbol"
+                  name="rewardAssetSymbol"
+                  onChange={set("rewardAssetSymbol")}
+                  value={p.rewardAssetSymbol}
+                />
+              </>
+            ) : (
+              <p className="field-hint">
+                {network.stablecoin.symbol} on {network.name}:{" "}
+                <code>{network.stablecoin.address}</code>
+              </p>
+            )}
             <TextField
               error={shown("monthlyPool")}
               hint="A target, not committed money. It stays a pledge until funding is verified."
@@ -1452,9 +1637,10 @@ export default function ProjectProposalPage() {
             </p>
             <ul className="activation-gates">
               <li>
-                <strong>Project vault:</strong> not deployed. A reviewed{" "}
-                {SETTLEMENT_CHAIN_NAMES[p.settlementChain] ?? "Base"} deployment
-                is required first.
+                <strong>Project vault:</strong>{" "}
+                {escrow
+                  ? `not deployed. A reviewed ${network.name} deployment is required first.`
+                  : `no reviewed escrow exists on ${network.name}. The reward asset is shown, and payments stay disabled.`}
               </li>
               <li>
                 <strong>Funding and refund authority:</strong> not verified.
@@ -1507,6 +1693,23 @@ export default function ProjectProposalPage() {
                   <dd>
                     {SETTLEMENT_CHAIN_NAMES[p.settlementChain] ?? "Base"} ·
                     payments disabled
+                  </dd>
+                </div>
+                <div>
+                  <dt>Reward asset</dt>
+                  <dd>
+                    {asset.symbol || "Not set"} ·{" "}
+                    {p.rewardKind === "token"
+                      ? "token, decimals read from chain on submit"
+                      : "network stablecoin"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Skills</dt>
+                  <dd>
+                    {skillContentStarted(p)
+                      ? `Generated at /projects/${slug}/SKILL.md after approval`
+                      : "Not written yet · required before activation"}
                   </dd>
                 </div>
                 <div>

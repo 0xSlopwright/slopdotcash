@@ -1,13 +1,20 @@
 /**
- * The setup wizard reads public GitHub facts. These routes are test fixtures
- * for GitHub's REST responses so the run does not depend on its rate limit;
- * the page, validation, manifest and handoff are the real application.
+ * The setup wizard reads public GitHub facts through the same-origin
+ * /api/v1/project-github API. The preview lane has no Pages Functions, so the
+ * route below runs the real server lookup code against fixtures of GitHub's
+ * REST responses; the page, validation, manifest and handoff are the real
+ * application, and the browser never calls api.github.com.
  */
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
+import {
+  GithubLookupError,
+  listOwnedRepositories,
+  lookupGitHubRepository,
+} from "../../backend/projects/github-lookup";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
 
 const deployment = deploymentOrigins(
@@ -17,54 +24,96 @@ const deployment = deploymentOrigins(
 const LICENSE_TEXT = "MIT License\n\nCopyright (c) Example Research\n";
 const COMMIT = "c".repeat(40);
 
+type GithubFixture = (url: URL) => Promise<Response> | Response;
+
+/** Serves the same-origin lookup API with the real server code. */
+async function serveGithubLookups(page: Page, github: GithubFixture) {
+  await page.route("**/api/v1/project-github/**", async (route) => {
+    const path = new URL(route.request().url()).pathname.slice(
+      "/api/v1/project-github/".length,
+    );
+    const fetcher = async (url: string, init: RequestInit) => {
+      expect(new Headers(init.headers).get("authorization")).toBeNull();
+      return github(new URL(url));
+    };
+    try {
+      const body =
+        path === "owned-repositories"
+          ? {
+              repositories: await listOwnedRepositories(
+                fetcher,
+                undefined,
+                "example",
+              ),
+            }
+          : {
+              repository: await lookupGitHubRepository(
+                fetcher,
+                undefined,
+                path.replace(/^repositories\//u, ""),
+              ),
+            };
+      await route.fulfill({ json: body });
+    } catch (error) {
+      if (!(error instanceof GithubLookupError)) throw error;
+      await route.fulfill({
+        status: error.status,
+        json: { error: error.code, message: error.message },
+      });
+    }
+  });
+}
+
 async function routeGitHub(
   page: Page,
   {
     repository = 200,
     licensePath = "LICENSE",
     description = null as string | null,
+    owned = undefined as GithubFixture | undefined,
   } = {},
   beforeRepository?: () => Promise<void>,
 ) {
-  await page.route("https://api.github.com/**", async (route) => {
-    const url = new URL(route.request().url());
+  await serveGithubLookups(page, async (url) => {
     if (url.pathname === "/repos/example/open-protein") {
       await beforeRepository?.();
-      return route.fulfill({
-        status: repository,
-        json:
-          repository === 200
-            ? {
-                id: 123456789,
-                node_id: "R_fixture",
-                full_name: "example/open-protein",
-                description,
-                private: false,
-                default_branch: "trunk",
-                owner: {
-                  login: "example",
-                  id: 987654321,
-                  node_id: "O_fixture",
-                  type: "Organization",
-                },
-              }
-            : { message: repository === 404 ? "Not Found" : "rate limited" },
-      });
+      return Response.json(
+        repository === 200
+          ? {
+              id: 123456789,
+              node_id: "R_fixture",
+              full_name: "example/open-protein",
+              description,
+              private: false,
+              default_branch: "trunk",
+              owner: {
+                login: "example",
+                id: 987654321,
+                node_id: "O_fixture",
+                type: "Organization",
+              },
+            }
+          : { message: repository === 404 ? "Not Found" : "rate limited" },
+        {
+          status: repository,
+          headers:
+            repository === 403 ? { "x-ratelimit-remaining": "0" } : undefined,
+        },
+      );
     }
     if (url.pathname === "/repos/example/open-protein/branches/trunk")
-      return route.fulfill({ json: { commit: { sha: COMMIT } } });
+      return Response.json({ commit: { sha: COMMIT } });
     if (url.pathname === "/repos/example/open-protein/license") {
       expect(url.searchParams.get("ref")).toBe(COMMIT);
-      return route.fulfill({
-        json: {
-          path: licensePath,
-          encoding: "base64",
-          content: Buffer.from(LICENSE_TEXT).toString("base64"),
-          license: { spdx_id: "MIT" },
-        },
+      return Response.json({
+        path: licensePath,
+        encoding: "base64",
+        content: Buffer.from(LICENSE_TEXT).toString("base64"),
+        license: { spdx_id: "MIT" },
       });
     }
-    return route.fulfill({ status: 500, json: {} });
+    if (owned && url.pathname === "/users/example/repos") return owned(url);
+    return Response.json({}, { status: 500 });
   });
 }
 
@@ -83,7 +132,7 @@ function observe(page: Page) {
     // tested failure paths, not application errors.
     if (
       message.type() === "error" &&
-      !message.location().url.startsWith("https://api.github.com/")
+      !message.location().url.includes("/api/v1/project-github/")
     )
       errors.push(message.text());
   });
@@ -334,7 +383,7 @@ test("failed or partial GitHub lookups never fill unknown facts", async ({
   await routeGitHub(page, { repository: 403 });
   await page.getByRole("button", { name: "Look up on GitHub" }).click();
   await expect(page.locator(".lookup-status")).toContainText(
-    "GitHub limited lookups from this network",
+    "GitHub limited lookups. Try again later or enter the facts by hand.",
   );
   await expect(page.getByLabel("Repository numeric ID")).toHaveValue("");
 
@@ -458,53 +507,44 @@ test("a signed-in maintainer picks an owned repository and gets suggested text",
   const errors = observe(page);
   const description =
     "Reproducible protein-folding benchmarks for open research labs.";
-  await routeGitHub(page, { description });
   // Only the public repository list for the signed-in login is a new fixture.
-  await page.route(
-    "https://api.github.com/users/example/repos?**",
-    async (route) => {
-      const url = new URL(route.request().url());
-      expect(url.searchParams.get("type")).toBe("owner");
-      expect(route.request().headers().authorization).toBeUndefined();
-      if (url.searchParams.get("page") === "1") {
-        await route.fulfill({
-          headers: {
-            "access-control-expose-headers": "Link",
-            link: '<https://api.github.com/users/example/repos?type=owner&sort=pushed&per_page=100&page=2>; rel="next"',
-          },
-          json: [
-            {
-              full_name: "example/forked-tool",
-              description: null,
-              private: false,
-              fork: true,
-              archived: false,
-            },
-            {
-              full_name: "example/old-notes",
-              description: null,
-              private: false,
-              fork: false,
-              archived: true,
-            },
-          ],
-        });
-        return;
-      }
-      expect(url.searchParams.get("page")).toBe("2");
-      await route.fulfill({
-        json: [
+  const owned: GithubFixture = (url) => {
+    expect(url.searchParams.get("type")).toBe("owner");
+    if (url.searchParams.get("page") === "1")
+      return Response.json(
+        [
           {
-            full_name: "example/open-protein",
-            description,
+            full_name: "example/forked-tool",
+            description: null,
             private: false,
-            fork: false,
+            fork: true,
             archived: false,
           },
+          {
+            full_name: "example/old-notes",
+            description: null,
+            private: false,
+            fork: false,
+            archived: true,
+          },
         ],
-      });
-    },
-  );
+        {
+          headers: {
+            link: '<https://api.github.com/users/example/repos?type=owner&sort=pushed&per_page=100&page=2>; rel="next"',
+          },
+        },
+      );
+    expect(url.searchParams.get("page")).toBe("2");
+    return Response.json([
+      {
+        full_name: "example/open-protein",
+        description,
+        private: false,
+        fork: false,
+        archived: false,
+      },
+    ]);
+  };
   let signedIn = false;
   await page.route(`${deployment.site}/**`, async (route) => {
     const url = new URL(route.request().url());
@@ -537,6 +577,8 @@ test("a signed-in maintainer picks an owned repository and gets suggested text",
     });
   });
 
+  // Registered last, so it takes precedence over the site fixture above.
+  await routeGitHub(page, { description, owned });
   // Signed out, the page offers GitHub sign-in that returns here.
   await page.goto(`${deployment.site}/projects/new`);
   await expect(

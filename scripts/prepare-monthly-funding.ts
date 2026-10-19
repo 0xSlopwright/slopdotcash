@@ -34,7 +34,11 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
  * Solana observation, which grants no payment authority.
  */
 function observedChain(project: ProjectDefinition): WalletChain {
-  return project.reward.chain ?? "solana";
+  const chain = project.reward.chain ?? "solana";
+  // An Ethereum reward asset is display metadata with payments disabled.
+  if (chain === "ethereum")
+    throw new TypeError("Ethereum reward assets have no reviewed payout path");
+  return chain;
 }
 
 export function fundingCycle(cycleId: string, observedAt: string) {

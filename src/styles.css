@@ -4945,7 +4945,8 @@ small {
 .admin-badge-approved,
 .admin-badge-active {
   background: rgba(31, 157, 99, 0.14);
-  color: #126b42;
+  /* The brand success color keeps AA contrast on the dark admin card. */
+  color: var(--green);
 }
 
 .admin-badge-rejected {

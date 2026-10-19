@@ -18,6 +18,11 @@ import {
   assertMonthlyCommitmentPolicy,
   hasActiveFundingCommitment,
 } from "./funding-instruments.mjs";
+import { assertSkillContent } from "./project-skill-content.mjs";
+import {
+  assertRewardAsset,
+  REWARD_ASSET_NETWORK_IDS,
+} from "./reward-asset.mjs";
 
 const PROJECT_KEYS = [
   "authority",
@@ -39,6 +44,16 @@ const PROJECT_KEYS = [
   "status",
   "steward",
   "terms",
+];
+/**
+ * Optional manifest sections. `rewardAsset` and `skillContent` arrive with
+ * the D1 registry; older revisions omit them.
+ */
+const OPTIONAL_PROJECT_KEYS = [
+  "escrow",
+  "participation",
+  "rewardAsset",
+  "skillContent",
 ];
 export const MAX_MONTHLY_CAP_MINOR = 1_000_000_000_000_000n;
 
@@ -831,7 +846,11 @@ function validateReviewBudget(value, field, poolPaymentMode) {
 function validateReward(
   value,
   field,
-  { allowLegacyExternalPrizeFee = false, escrow = undefined } = {},
+  {
+    allowLegacyExternalPrizeFee = false,
+    escrow = undefined,
+    rewardAsset = undefined,
+  } = {},
 ) {
   const reward = record(value, field);
   const hasExternal = Object.hasOwn(reward, "externalOpportunity");
@@ -894,16 +913,27 @@ function validateReward(
   }
   if (reward.kind === "monthly-pool") {
     const paymentsDisabled = reward.paymentMode === "disabled";
+    // A chosen reward asset fixes the network and the paid symbol. Without
+    // one, each settlement network has one approved stablecoin (FND-02).
+    const legacyRail =
+      !escrow &&
+      (reward.chain === "solana" || reward.chain === "base") &&
+      (rewardAsset === undefined || rewardAsset.kind === "stablecoin");
     if (
       hasExternal ||
-      // Each settlement network has one approved stablecoin (FND-02).
-      reward.currency !== fundingAssetForNetwork(reward.chain) ||
+      (rewardAsset !== undefined && rewardAsset.network !== reward.chain) ||
+      reward.currency !==
+        (rewardAsset?.symbol ?? fundingAssetForNetwork(reward.chain)) ||
       // `reward.chain` is the project's one settlement network (RFC #472).
       // An escrow project settles on its escrow chain; the legacy rail is
-      // Base and Solana only (PAY-09).
+      // Base and Solana USDC only (PAY-09). Any other declared asset stays
+      // display metadata until a reviewed payout path enables it.
       (escrow
         ? reward.chain !== escrow.chain
-        : reward.chain !== "solana" && reward.chain !== "base") ||
+        : !legacyRail &&
+          (rewardAsset === undefined ||
+            !REWARD_ASSET_NETWORK_IDS.includes(reward.chain) ||
+            reward.paymentMode !== "disabled")) ||
       reward.unusedFunds !== "rollover-without-cap-increase" ||
       (paymentsDisabled
         ? !(
@@ -1077,13 +1107,11 @@ function validateProjectDefinition(
     allowLegacyMissingListingTier && !("listingTier" in project)
       ? [
           ...PROJECT_KEYS.filter((key) => key !== "listingTier"),
-          ...(Object.hasOwn(project, "escrow") ? ["escrow"] : []),
-          ...(Object.hasOwn(project, "participation") ? ["participation"] : []),
+          ...OPTIONAL_PROJECT_KEYS.filter((key) => Object.hasOwn(project, key)),
         ]
       : [
           ...PROJECT_KEYS,
-          ...(Object.hasOwn(project, "escrow") ? ["escrow"] : []),
-          ...(Object.hasOwn(project, "participation") ? ["participation"] : []),
+          ...OPTIONAL_PROJECT_KEYS.filter((key) => Object.hasOwn(project, key)),
         ],
     "project",
   );
@@ -1182,9 +1210,17 @@ function validateProjectDefinition(
     "project.reviewSkill",
     `review-${id}-contributions`,
   );
+  if (project.rewardAsset !== undefined) {
+    assertRewardAsset(project.rewardAsset);
+    if (project.reward?.kind !== "monthly-pool")
+      throw new TypeError("project.rewardAsset requires a monthly pool");
+  }
+  if (project.skillContent !== undefined)
+    assertSkillContent(project.skillContent);
   validateReward(project.reward, "project.reward", {
     allowLegacyExternalPrizeFee,
     escrow: project.escrow,
+    rewardAsset: project.rewardAsset,
   });
   validateFunding(project.funding, id, project.reward.chain);
   if (

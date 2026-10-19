@@ -154,8 +154,8 @@ async function runRegistryPhase() {
 }
 
 /** Runs the preview and Pages phases inside the fixture workspace. */
-function runFixturePhases() {
-  const workspace = prepareE2eFixture();
+async function runFixturePhases() {
+  const workspace = await prepareE2eFixture();
   const status = runE2ePhase({
     label: "fixture",
     command: "node",

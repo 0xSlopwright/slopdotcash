@@ -1,0 +1,61 @@
+/** Types for the one reward asset a project pays in. */
+
+export type RewardAssetNetwork = "base" | "ethereum" | "robinhood" | "solana";
+export type RewardAssetKind = "stablecoin" | "token";
+
+export interface RewardAssetNetworkDefinition {
+  readonly name: string;
+  readonly family: "evm" | "solana";
+  readonly chainId: string | null;
+  readonly cluster: "mainnet-beta" | null;
+  readonly stablecoin: {
+    readonly address: string;
+    readonly symbol: "USDC" | "USDG";
+    readonly decimals: 6;
+  };
+}
+
+export interface RewardAsset {
+  readonly network: RewardAssetNetwork;
+  readonly kind: RewardAssetKind;
+  readonly address: string;
+  readonly symbol: string;
+  readonly decimals: number;
+  readonly chainId: string | null;
+  readonly cluster: "mainnet-beta" | null;
+  readonly verifiedAt: string;
+}
+
+export interface RewardAssetChoice {
+  readonly network: RewardAssetNetwork;
+  readonly kind: RewardAssetKind;
+  readonly address: string;
+  readonly symbol: string;
+}
+
+export declare const REWARD_ASSET_NETWORKS: Readonly<
+  Record<RewardAssetNetwork, RewardAssetNetworkDefinition>
+>;
+export declare const REWARD_ASSET_NETWORK_IDS: readonly RewardAssetNetwork[];
+export declare const MAX_REWARD_ASSET_DECIMALS: number;
+export declare function isRewardAssetNetwork(
+  value: unknown,
+): value is RewardAssetNetwork;
+export declare function canonicalRewardAssetAddress(
+  network: string,
+  value: unknown,
+): string | null;
+export declare function rewardAssetChoice(
+  network: string,
+  kind: string,
+  address: string,
+  symbol: string,
+): RewardAssetChoice;
+export declare function assertRewardAsset(
+  value: unknown,
+  field?: string,
+): RewardAsset;
+export declare function sameRewardAsset(
+  left: RewardAsset | undefined,
+  right: RewardAsset | undefined,
+): boolean;

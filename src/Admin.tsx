@@ -20,6 +20,16 @@ import {
   projectApiRequest,
   useProjectSession,
 } from "./lib/project-api";
+import {
+  SKILL_CONTENT_FIELDS,
+  type SkillContentKey,
+  skillContentFieldError,
+} from "./lib/project-skill-content.mjs";
+import {
+  REWARD_ASSET_NETWORKS,
+  type RewardAssetNetwork,
+  rewardAssetChoice,
+} from "./lib/reward-asset.mjs";
 import { loginHref } from "./Points";
 
 function errorMessage(error: unknown): string {
@@ -333,6 +343,32 @@ function ApplicationsSection({ onDecided }: { onDecided: () => void }) {
   );
 }
 
+type AssetDraft = {
+  network: RewardAssetNetwork;
+  kind: "stablecoin" | "token";
+  address: string;
+  symbol: string;
+};
+
+function initialAsset(project: AdminProject): AssetDraft {
+  const asset = project.manifest.rewardAsset;
+  if (asset) return { ...asset };
+  const chain = project.manifest.reward.chain;
+  const network: RewardAssetNetwork =
+    chain && chain in REWARD_ASSET_NETWORKS ? chain : "base";
+  return {
+    network,
+    kind: "stablecoin",
+    address: REWARD_ASSET_NETWORKS[network].stablecoin.address,
+    symbol: REWARD_ASSET_NETWORKS[network].stablecoin.symbol,
+  };
+}
+
+/**
+ * Edits one project revision. The structured skill, reward asset and status
+ * fields replace the matching manifest keys when the revision is saved; the
+ * API validates the whole manifest and verifies a new token on chain.
+ */
 function ProjectEditor({
   project,
   onSaved,
@@ -343,24 +379,82 @@ function ProjectEditor({
   const [text, setText] = useState(() =>
     JSON.stringify(project.manifest, null, 2),
   );
+  const [skill, setSkill] = useState<Record<SkillContentKey, string>>(
+    () =>
+      Object.fromEntries(
+        SKILL_CONTENT_FIELDS.map((field) => [
+          field.key,
+          project.manifest.skillContent?.[field.key] ?? "",
+        ]),
+      ) as Record<SkillContentKey, string>,
+  );
+  const [asset, setAsset] = useState<AssetDraft>(() => initialAsset(project));
+  const [status, setStatus] = useState(project.status);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const skillStarted = SKILL_CONTENT_FIELDS.some(
+    (field) => skill[field.key].trim() !== "",
+  );
+  const skillErrors = Object.fromEntries(
+    SKILL_CONTENT_FIELDS.map((field) => [
+      field.key,
+      skillStarted
+        ? skillContentFieldError(field, skill[field.key].trim())
+        : null,
+    ]),
+  ) as Record<SkillContentKey, string | null>;
+  const network = REWARD_ASSET_NETWORKS[asset.network];
   const save = (event: FormEvent) => {
     event.preventDefault();
-    let manifest: unknown;
+    let manifest: Record<string, unknown>;
     try {
-      manifest = JSON.parse(text);
+      manifest = JSON.parse(text) as Record<string, unknown>;
     } catch {
       setError("The manifest is not valid JSON.");
       return;
     }
+    if (Object.values(skillErrors).some((value) => value !== null)) {
+      setError("Complete every required skill section, or clear them all.");
+      return;
+    }
+    let choice: ReturnType<typeof rewardAssetChoice>;
+    try {
+      choice = rewardAssetChoice(
+        asset.network,
+        asset.kind,
+        asset.address,
+        asset.symbol,
+      );
+    } catch (caught) {
+      setError(errorMessage(caught));
+      return;
+    }
+    const { skillContent: _skill, rewardAsset: _asset, ...rest } = manifest;
+    const next = {
+      ...rest,
+      status,
+      ...(skillStarted
+        ? {
+            skillContent: Object.fromEntries(
+              SKILL_CONTENT_FIELDS.map((field) => [
+                field.key,
+                skill[field.key].replaceAll("\r\n", "\n").trim(),
+              ]),
+            ),
+          }
+        : {}),
+      ...((rest.reward as { kind?: unknown } | undefined)?.kind ===
+      "monthly-pool"
+        ? { rewardAsset: choice }
+        : {}),
+    };
     setBusy(true);
     setError(null);
     projectApiRequest(
       "PUT",
       `admin/projects/${encodeURIComponent(project.id)}/manifest`,
-      { manifest, expectedRevision: project.revision, reason },
+      { manifest: next, expectedRevision: project.revision, reason },
     ).then(onSaved, (caught: unknown) => {
       setBusy(false);
       setError(errorMessage(caught));
@@ -368,6 +462,132 @@ function ProjectEditor({
   };
   return (
     <form className="admin-editor" onSubmit={save}>
+      <fieldset className="admin-fieldset">
+        <legend>Status</legend>
+        <label>
+          Project status
+          <select
+            onChange={(event) =>
+              setStatus(event.target.value as AdminProject["status"])
+            }
+            value={status}
+          >
+            <option value="paused">Paused</option>
+            <option value="active">Active</option>
+          </select>
+        </label>
+        <p className="admin-status">
+          A project can become active only with complete skill content.
+        </p>
+      </fieldset>
+      <fieldset className="admin-fieldset">
+        <legend>Generated skill content</legend>
+        {SKILL_CONTENT_FIELDS.map((field) => (
+          <label key={field.key}>
+            {field.min === 0 ? `${field.label} (optional)` : field.label}
+            <textarea
+              aria-invalid={skillErrors[field.key] ? true : undefined}
+              onChange={(event) =>
+                setSkill((current) => ({
+                  ...current,
+                  [field.key]: event.target.value,
+                }))
+              }
+              rows={field.key === "securityContact" ? 1 : 4}
+              value={skill[field.key]}
+            />
+            {skillErrors[field.key] ? (
+              <small className="field-error">{skillErrors[field.key]}</small>
+            ) : (
+              <small className="field-hint">{field.hint}</small>
+            )}
+          </label>
+        ))}
+      </fieldset>
+      <fieldset className="admin-fieldset">
+        <legend>Reward asset</legend>
+        <label>
+          Network
+          <select
+            onChange={(event) => {
+              const id = event.target.value as RewardAssetNetwork;
+              setAsset((current) => ({
+                ...current,
+                network: id,
+                ...(current.kind === "stablecoin"
+                  ? {
+                      address: REWARD_ASSET_NETWORKS[id].stablecoin.address,
+                      symbol: REWARD_ASSET_NETWORKS[id].stablecoin.symbol,
+                    }
+                  : {}),
+              }));
+            }}
+            value={asset.network}
+          >
+            {Object.entries(REWARD_ASSET_NETWORKS).map(([id, definition]) => (
+              <option key={id} value={id}>
+                {definition.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Asset
+          <select
+            onChange={(event) => {
+              const kind = event.target.value as AssetDraft["kind"];
+              setAsset((current) => ({
+                ...current,
+                kind,
+                address:
+                  kind === "stablecoin" ? network.stablecoin.address : "",
+                symbol: kind === "stablecoin" ? network.stablecoin.symbol : "",
+              }));
+            }}
+            value={asset.kind}
+          >
+            <option value="stablecoin">
+              {network.stablecoin.symbol} (network stablecoin)
+            </option>
+            <option value="token">Another token</option>
+          </select>
+        </label>
+        {asset.kind === "token" ? (
+          <>
+            <label>
+              Token address
+              <input
+                onChange={(event) =>
+                  setAsset((current) => ({
+                    ...current,
+                    address: event.target.value,
+                  }))
+                }
+                spellCheck={false}
+                value={asset.address}
+              />
+            </label>
+            <label>
+              Token symbol
+              <input
+                onChange={(event) =>
+                  setAsset((current) => ({
+                    ...current,
+                    symbol: event.target.value,
+                  }))
+                }
+                value={asset.symbol}
+              />
+            </label>
+          </>
+        ) : null}
+        <p className="admin-status">
+          {project.manifest.rewardAsset
+            ? `Stored: ${project.manifest.rewardAsset.symbol}, ${project.manifest.rewardAsset.decimals} decimals, verified ${formatTime(project.manifest.rewardAsset.verifiedAt)} UTC.`
+            : "No reward asset is stored yet."}{" "}
+          A changed token is read from chain once when you save.
+        </p>
+      </fieldset>
       <label>
         Manifest (revision {project.revision})
         <textarea
@@ -410,9 +630,10 @@ function ProjectsSection() {
         <h2 id="admin-projects">Projects</h2>
       </div>
       <p className="admin-status">
-        Approved projects start paused. The public site lists registry changes
-        after the next build. A project can open only after its reviewed
-        contributor and reviewer skills are on the development branch.
+        Approved projects start paused. The public site shows each saved
+        revision within a minute, without a rebuild. A project can become active
+        only after its skill content is complete; Slop then generates its
+        contributor and reviewer skills from that content.
       </p>
       {state.status !== "ready" ? (
         <LoadNotice label="projects" retry={reload} state={state} />
@@ -442,8 +663,19 @@ function ProjectsSection() {
               <div>
                 <dt>Skills</dt>
                 <dd>
-                  {project.manifest.skill.sourcePath} ·{" "}
-                  {project.manifest.reviewSkill.sourcePath}
+                  {project.manifest.skillContent ? (
+                    <>
+                      <a href={`/projects/${project.id}/SKILL.md`}>
+                        {project.manifest.skill.id}
+                      </a>{" "}
+                      ·{" "}
+                      <a href={`/projects/${project.id}/review/SKILL.md`}>
+                        {project.manifest.reviewSkill.id}
+                      </a>
+                    </>
+                  ) : (
+                    "Not published: skill content is incomplete"
+                  )}
                 </dd>
               </div>
             </dl>
