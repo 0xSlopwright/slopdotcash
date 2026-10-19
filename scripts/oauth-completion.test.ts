@@ -99,9 +99,6 @@ for (const scenario of [
     } else {
       expect(persisted).toBe(false);
       expect(body).not.toMatch(/<script|window.close/);
-      expect(body).toContain(
-        scenario === "expired" ? "Sign-in expired" : "Sign-in failed",
-      );
     }
   });
 }

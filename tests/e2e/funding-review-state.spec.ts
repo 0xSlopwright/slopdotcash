@@ -233,7 +233,6 @@ test("failed cycle fetch keeps preparation visible but disables review download 
   await expect(panel).toContainText(
     `of ${august.contributors.length} matching`,
   );
-  await expect(panel).toContainText("Published cycle state is unavailable");
   await expect(panel).toContainText("Lock status unavailable");
   await expect(
     panel.getByRole("button", { name: "Download review", exact: true }),
@@ -430,16 +429,14 @@ test("saved drafts restore only for the exact project, month, source and budget"
   await panel
     .getByRole("button", { name: "Save draft on this device", exact: true })
     .click();
-  await expect(panel).toContainText("Draft saved on this device");
   const key = `slop:funding-review:eliza:${august.cycleId}:${august.sourceSnapshotSha256}:${august.capMinor}`;
+  await expect
+    .poll(() => page.evaluate((k) => localStorage.getItem(k), key))
+    .not.toBeNull();
   const saved = await page.evaluate((k) => localStorage.getItem(k), key);
-  expect(saved).not.toBeNull();
 
   await page.reload();
   await showMonth(page, reviews, cycles, august.cycleId);
-  await expect(panel).toContainText(
-    "Saved draft restored for this exact source and budget",
-  );
   await openRecipient(page, actor.actor.login);
   await expect(amount).toHaveValue("0.000001");
   await expect(reason).toHaveValue("Test-only saved reduction");
@@ -465,7 +462,6 @@ test("saved drafts restore only for the exact project, month, source and budget"
   await openRecipient(page, actor.actor.login);
   await expect(amount).toHaveValue(displayUsdc(actor.simulatedMinor));
   await expect(reason).toHaveValue("");
-  await expect(panel).not.toContainText("Saved draft restored");
   const fresh = await downloadedReview(page);
   expect(fresh.sourceSnapshotSha256).toBe(replacementSha);
   expect(

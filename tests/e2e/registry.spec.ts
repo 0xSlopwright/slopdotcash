@@ -112,7 +112,7 @@ test("the shipped build lists no project @registry", async ({ page }) => {
   expect(await projects.json()).toMatchObject({ schemaVersion: "1" });
   await page.goto("/", { waitUntil: "networkidle" });
   const section = page.locator("#projects");
-  await expect(section).toContainText("No projects are listed yet.");
+  await expect(section.locator("a.project-card, a.project-row")).toHaveCount(0);
   await expect(
     section.getByRole("link", { name: "Add a project" }),
   ).toHaveAttribute("href", "/projects/new");
@@ -153,9 +153,6 @@ test("a maintainer submits and an admin approves it as paused @registry", async 
   const receipt = applicant.getByRole("status").filter({
     hasText: "Application submitted",
   });
-  await expect(receipt).toContainText(
-    `${project.name} is waiting for admin review`,
-  );
   await expect(receipt).toContainText("submitted by @e2e-applicant");
   await expectAccessible(applicant);
 

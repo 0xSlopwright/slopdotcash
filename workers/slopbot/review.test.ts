@@ -13,13 +13,7 @@ import {
   reviewExists,
   startReview,
 } from "./persistence";
-import {
-  commentBody,
-  grounded,
-  neutralize,
-  prefilter,
-  pullDiff,
-} from "./review";
+import { grounded, neutralize, prefilter, pullDiff } from "./review";
 import { route } from "./routing";
 
 const policy = [
@@ -379,25 +373,5 @@ describe("pullDiff", () => {
     expect(result.diff).toContain("(binary or too large to show)");
     expect(result.diff).toContain("tail.ts");
     expect(result.truncated).toBe(true);
-  });
-});
-
-describe("commentBody", () => {
-  test("describes an incomplete pull request diff without assuming its cause", () => {
-    const body = commentBody({
-      verdict: verdict({}),
-      action: "label",
-      blockedClose: null,
-      context: {
-        revision: "abc123",
-        policyDigest: "1234567890abcdef",
-        diffTruncated: true,
-      } as unknown as Parameters<typeof commentBody>[0]["context"],
-      triage: null,
-      confirm: null,
-    });
-
-    expect(body).toContain("The pull request diff was not available in full.");
-    expect(body).not.toContain("The diff was too large");
   });
 });

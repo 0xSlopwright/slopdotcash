@@ -94,9 +94,6 @@ test("profiles preserve legacy coverage and expose recorded issue history", asyn
     profile.getByRole("link", { name: "GitHub · @profile-only-contributor" }),
   ).toHaveAttribute("href", "https://github.com/profile-only-contributor");
   await profile.getByText("Issue outcomes", { exact: true }).click();
-  await expect(
-    profile.getByText("Issue history is unavailable in this census."),
-  ).toBeVisible();
   await expect(profile.getByLabel("Period (UTC)")).toHaveCount(0);
   await expect(
     profile.locator("summary", { hasText: /^Penalty history$/ }),

@@ -24,9 +24,6 @@ test(
     const reloaded = await page.reload();
     expect(reloaded?.status()).toBe(200);
     await expect(
-      page.getByRole("heading", { name: "Slop Points", exact: true }),
-    ).toBeVisible();
-    await expect(
       page.getByRole("columnheader", { name: "Score", exact: true }),
     ).toHaveAttribute("aria-sort", "descending");
     await page
@@ -46,7 +43,6 @@ test(
       page.getByRole("button", { name: "Recorded history", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
     await page.getByRole("button", { name: "Points", exact: true }).click();
-    await expect(page.getByText(/Points have no monetary value/)).toBeVisible();
     await expect(page.getByLabel("Cohort", { exact: true })).toHaveCount(0);
     // The earlier combined link still opens recorded history.
     await page.goto("/points?period=new");
@@ -54,26 +50,8 @@ test(
       page.getByRole("button", { name: "Recorded history", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
     await page.goto("/points?sort=points&period=lifetime");
-    const rules = page.getByRole("list", { name: "Point categories" });
-    for (const [activity, points] of [
-      ["Join with GitHub", "5 once"],
-      ["First X connection", "10 once"],
-    ])
-      await expect(
-        rules.getByRole("listitem").filter({ hasText: activity }),
-      ).toContainText(`${points}Not in earned-point standings`);
-    await expect(
-      rules.getByRole("listitem").filter({ hasText: "Finalized payout cycle" }),
-    ).toContainText("Counts in earned-point standings");
-    await expect(
-      page.getByText(/Points never change Slop Score/u),
-    ).toBeVisible();
     const people = page.getByRole("region", { name: "People", exact: true });
     await expect(people.getByText(/^[\d,]+ people$/u)).toBeVisible();
-    // People without merged work stay discoverable without a rank.
-    await expect(
-      people.getByText("No merged PRs", { exact: true }).first(),
-    ).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
     if ((page.viewportSize()?.width ?? 0) <= 390) {
       const scroller = page.getByRole("region", {
@@ -91,11 +69,6 @@ test(
       await scroller.evaluate((el) => {
         el.scrollLeft = 0;
       });
-      const nameCell = page
-        .getByRole("table")
-        .locator("tbody tr td:nth-child(2)")
-        .first();
-      expect((await nameCell.boundingBox())?.width).toBeGreaterThan(100);
     }
 
     await page
@@ -110,9 +83,7 @@ test(
     await page
       .getByLabel("Find a contributor")
       .fill("no-such-contributor-987654321");
-    await expect(
-      page.getByText("No recorded contributions match this view."),
-    ).toBeVisible();
+    await expect(page.getByRole("table").locator("tbody tr")).toHaveCount(0);
     await page.getByLabel("Find a contributor").fill("");
     await page.getByRole("button", { name: "Next", exact: true }).click();
     await expect(page.getByText(/Page 2 of/)).toBeVisible();

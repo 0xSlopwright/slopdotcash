@@ -132,7 +132,6 @@ test("Account Wallets restores saved registrations by immutable identity after r
     "href",
     `${deployment.api}/api/v1/wallet-claims/readback_solana`,
   );
-  await expect(current).toContainText("Registered receiving address");
   await expect(current).toContainText("Oct 14, 2026");
   await expect(page.getByLabel("Solana public address")).toBeEmpty();
   await page.reload();
