@@ -70,9 +70,9 @@ abstract contract OpusBase {
         walletKeys[vm.addr(OpusWallets.NEW_WALLET_KEY)] = OpusWallets.NEW_WALLET_KEY;
         usdc = new TestDollar();
         vm.prank(REGISTRAR);
-        factory = new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, delay);
+        factory = new EscrowFactory(REGISTRAR, FEE, AUTHORITY, delay);
         vm.prank(REGISTRAR);
-        escrow = ProjectEscrow(factory.create(keccak256("project"), OWNER, OWNER));
+        escrow = ProjectEscrow(factory.create(keccak256("project"), IERC20(address(usdc)), OWNER, OWNER));
         usdc.mint(OWNER, 1_000_000e6);
         vm.prank(OWNER);
         usdc.approve(address(escrow), type(uint256).max);

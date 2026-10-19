@@ -74,13 +74,13 @@ contract OpusFindingsTest is OpusBase {
     /// delay cannot make the cancel unreachable and an oversized delay cannot overflow every binding.
     function test_F4_delayIsBounded() public {
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, 0);
+        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, 0);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, 1 hours - 1);
+        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, 1 hours - 1);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, 30 days + 1);
+        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, 30 days + 1);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, type(uint64).max - 1_000);
+        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, type(uint64).max - 1_000);
         deployWithDelay(1 hours);
         check(escrow.bindingDelay() == 1 hours, "floor accepted");
         deployWithDelay(30 days);
@@ -107,7 +107,7 @@ contract OpusFindingsTest is OpusBase {
     /// Info: a one-unit withdrawal can carry a 100% fee (net zero transfer, event net 0).
     function test_withdrawFeeCanEqualGross() public {
         vm.startPrank(OWNER);
-        escrow.withdrawUnused(9);
+        escrow.withdrawUnused(49);
         uint256 before = usdc.balanceOf(OWNER);
         escrow.withdrawUnused(1);
         vm.stopPrank();
@@ -148,7 +148,7 @@ contract OpusFindingsTest is OpusBase {
     /// Sound: award IDs are vault-bound; another vault cannot commit this vault's ID.
     function test_sound_awardIdIsVaultBound() public {
         vm.prank(REGISTRAR);
-        ProjectEscrow other = ProjectEscrow(factory.create(keccak256("project-2"), OWNER, OWNER));
+        ProjectEscrow other = ProjectEscrow(factory.create(keccak256("project-2"), IERC20(address(usdc)), OWNER, OWNER));
         bytes32 src = keccak256("same-source");
         bytes32 idHere = escrow.awardId(src);
         check(other.awardId(src) != idHere, "distinct");
@@ -161,7 +161,7 @@ contract OpusFindingsTest is OpusBase {
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
         other.commitAward(idHere, ALICE, 1e6, src);
         vm.prank(REGISTRAR);
-        vm.expectRevert(ProjectEscrow.DuplicateAward.selector);
-        factory.create(keccak256("project"), OWNER, OWNER);
+        vm.expectRevert(EscrowFactory.DuplicateVault.selector);
+        factory.create(keccak256("project"), IERC20(address(usdc)), OWNER, OWNER);
     }
 }

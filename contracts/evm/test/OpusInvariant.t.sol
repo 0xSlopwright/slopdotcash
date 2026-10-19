@@ -2,12 +2,21 @@
 pragma solidity 0.8.30;
 
 import "./OpusBase.sol";
+import {WideToken} from "./WideToken.sol";
 
-/// Drives random owner / authority / payer / anyone sequences against one vault and tracks ghost totals.
+interface MintableToken {
+    function mint(address to, uint256 amount) external;
+    function approve(address who, uint256 amount) external returns (bool);
+    function balanceOf(address who) external view returns (uint256);
+}
+
+/// Drives random owner / depositor / authority / payer / anyone sequences against one vault and tracks ghost
+/// totals. maxDeposit sets the amount scale, so the 18-decimal run moves amounts beyond uint64.
 contract OpusHandler {
     OpusVm internal constant vm = OpusVm(address(uint160(uint256(keccak256("hevm cheat code")))));
     ProjectEscrow public escrow;
-    TestDollar public usdc;
+    MintableToken public usdc;
+    uint256 public maxDeposit;
     address public owner;
     address public authority;
 
@@ -24,11 +33,12 @@ contract OpusHandler {
     bool public paidToWrongDestination;
     bool public paidBeforeActivation;
 
-    constructor(ProjectEscrow e, TestDollar t, address o, address a) {
+    constructor(ProjectEscrow e, MintableToken t, address o, address a, uint256 maxDeposit_) {
         escrow = e;
         usdc = t;
         owner = o;
         authority = a;
+        maxDeposit = maxDeposit_;
     }
 
     function idsLength() external view returns (uint256) {
@@ -47,22 +57,26 @@ contract OpusHandler {
         return vm.addr(_destKey(s));
     }
 
-    function deposit(uint256 amount) external {
-        amount = 1 + (amount % 50_000e6);
-        usdc.mint(owner, amount);
-        vm.prank(owner);
-        escrow.deposit(uint64(amount));
+    /// @dev Any address may deposit; the owner is one of the depositors.
+    function deposit(uint256 amount, uint256 depositorSeed) external {
+        amount = 1 + (amount % maxDeposit);
+        address depositor = depositorSeed % 3 == 0 ? owner : address(uint160(0xD000 + (depositorSeed % 5)));
+        usdc.mint(depositor, amount);
+        vm.startPrank(depositor);
+        usdc.approve(address(escrow), amount);
+        escrow.deposit(uint128(amount));
+        vm.stopPrank();
     }
 
     function commit(uint256 actorSeed, uint256 gross) external {
-        uint64 free = escrow.freeBalance();
+        uint128 free = escrow.freeBalance();
         if (free == 0) return;
         gross = 1 + (gross % free);
         bytes32 src = keccak256(abi.encode("src", nonce++));
         bytes32 id = escrow.awardId(src);
         uint64 actor = _actor(actorSeed);
         vm.prank(owner);
-        escrow.commitAward(id, actor, uint64(gross), src);
+        escrow.commitAward(id, actor, uint128(gross), src);
         ids.push(id);
         actorOf.push(actor);
     }
@@ -92,7 +106,7 @@ contract OpusHandler {
     function pay(uint256 idx, address caller) external {
         if (ids.length == 0) return;
         bytes32 id = ids[idx % ids.length];
-        (uint64 actor, uint64 gross, uint64 fee,, uint64 committedAt,) = escrow.awards(id);
+        (uint64 actor, uint128 gross, uint128 fee,, uint64 committedAt,) = escrow.awards(id);
         (address dest, uint64 v) = escrow.payableBinding(actor);
         (, uint64 latest,, uint64 activatesAt, bool cancelled) = escrow.bindings(actor);
         uint256 before = usdc.balanceOf(dest);
@@ -118,29 +132,29 @@ contract OpusHandler {
     }
 
     function withdraw(uint256 gross) external {
-        uint64 free = escrow.freeBalance();
+        uint128 free = escrow.freeBalance();
         if (free == 0) return;
         gross = 1 + (gross % free);
         vm.prank(owner);
-        escrow.withdrawUnused(uint64(gross));
+        escrow.withdrawUnused(uint128(gross));
     }
 
     function charge(uint256 amount) external {
-        uint64 free = escrow.freeBalance();
+        uint128 free = escrow.freeBalance();
         if (free == 0) return;
         amount = 1 + (amount % free);
         vm.prank(owner);
-        escrow.chargeService(uint64(amount), keccak256(abi.encode("inv", nonce++)));
+        escrow.chargeService(uint128(amount), keccak256(abi.encode("inv", nonce++)));
     }
 
     function claim() external {
-        uint64 amt = escrow.accruedFees();
+        uint128 amt = escrow.accruedFees();
         escrow.claimFees();
         ghostClaimed += amt;
     }
 
     function donate(uint256 amount) external {
-        amount = amount % 1_000e6;
+        amount = amount % (maxDeposit / 50);
         usdc.mint(address(escrow), amount);
         ghostDonated += amount;
     }
@@ -149,9 +163,13 @@ contract OpusHandler {
 contract OpusInvariantTest is OpusBase {
     OpusHandler internal handler;
 
-    function setUp() public {
+    function setUp() public virtual {
         deployWithDelay(DELAY);
-        handler = new OpusHandler(escrow, usdc, OWNER, AUTHORITY);
+        handler = new OpusHandler(escrow, MintableToken(address(usdc)), OWNER, AUTHORITY, 50_000e6);
+    }
+
+    function token() internal view virtual returns (address) {
+        return address(usdc);
     }
 
     function targetContracts() public view returns (address[] memory t) {
@@ -169,7 +187,9 @@ contract OpusInvariantTest is OpusBase {
     function invariant_balanceIdentity() public view {
         uint256 accounted =
             uint256(escrow.freeBalance()) + escrow.reservedPrincipal() + escrow.reservedFees() + escrow.accruedFees();
-        require(usdc.balanceOf(address(escrow)) == accounted + handler.ghostDonated(), "vault balance identity");
+        require(
+            IERC20(token()).balanceOf(address(escrow)) == accounted + handler.ghostDonated(), "vault balance identity"
+        );
     }
 
     function invariant_feeIdentity() public view {
@@ -178,11 +198,35 @@ contract OpusInvariantTest is OpusBase {
                 == uint256(escrow.totalPayoutFees()) + escrow.totalWithdrawalFees() + escrow.totalServiceFees(),
             "fee identity"
         );
-        require(usdc.balanceOf(FEE) == handler.ghostClaimed(), "fee recipient balance");
+        require(IERC20(token()).balanceOf(FEE) == handler.ghostClaimed(), "fee recipient balance");
     }
 
-    function invariant_withdrawalFeeIsTenPercentCumulative() public view {
-        require(escrow.totalWithdrawalFees() == escrow.totalGrossWithdrawn() / 10, "withdrawal fee");
+    function invariant_withdrawalFeeIsTwoPercentCumulative() public view {
+        require(escrow.totalWithdrawalFees() == escrow.totalGrossWithdrawn() / 50, "withdrawal fee");
+    }
+
+    function invariant_totalsMatchGetters() public view {
+        (
+            uint128 deposited,
+            uint128 paid,
+            uint128 payoutFees,
+            uint128 grossWithdrawn,
+            uint128 withdrawalFees,
+            uint128 serviceFees,
+            uint128 free,
+            uint128 principalReserved,
+            uint128 feesReserved,
+            uint128 feesAccrued,
+            uint256 balance
+        ) = escrow.totals();
+        require(
+            deposited == escrow.totalDeposited() && paid == escrow.totalPaid() && payoutFees == escrow.totalPayoutFees()
+                && grossWithdrawn == escrow.totalGrossWithdrawn() && withdrawalFees == escrow.totalWithdrawalFees()
+                && serviceFees == escrow.totalServiceFees() && free == escrow.freeBalance()
+                && principalReserved == escrow.reservedPrincipal() && feesReserved == escrow.reservedFees()
+                && feesAccrued == escrow.accruedFees() && balance == IERC20(token()).balanceOf(address(escrow)),
+            "totals() equals the getters"
+        );
     }
 
     function invariant_paymentsExactOnceAndRouted() public view {
@@ -194,7 +238,7 @@ contract OpusInvariantTest is OpusBase {
         uint256 reservedF;
         for (uint256 i = 0; i < n; i++) {
             bytes32 id = handler.ids(i);
-            (, uint64 gross, uint64 fee,,, bool paid) = escrow.awards(id);
+            (, uint128 gross, uint128 fee,,, bool paid) = escrow.awards(id);
             require(handler.timesPaid(id) <= 1, "paid twice");
             require(paid == (handler.timesPaid(id) == 1), "paid flag");
             require(fee == gross / 50, "fee formula");
@@ -205,5 +249,22 @@ contract OpusInvariantTest is OpusBase {
         }
         require(reservedP == escrow.reservedPrincipal(), "reservedPrincipal equals unpaid net");
         require(reservedF == escrow.reservedFees(), "reservedFees equals unpaid fees");
+    }
+}
+
+/// @notice The same invariants with an 18-decimal token and amounts up to 1e30 base units, far beyond uint64.
+contract OpusInvariant18DecimalsTest is OpusInvariantTest {
+    WideToken internal wide;
+
+    function setUp() public override {
+        deployWithDelay(DELAY);
+        wide = new WideToken(18);
+        vm.prank(REGISTRAR);
+        escrow = ProjectEscrow(factory.create(keccak256("project"), IERC20(address(wide)), OWNER, OWNER));
+        handler = new OpusHandler(escrow, MintableToken(address(wide)), OWNER, AUTHORITY, 1e30);
+    }
+
+    function token() internal view override returns (address) {
+        return address(wide);
     }
 }

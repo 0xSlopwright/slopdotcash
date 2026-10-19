@@ -21,6 +21,7 @@ const networkName: Record<EscrowChain, string> = {
   base: "Base",
   solana: "Solana",
   robinhood: "Robinhood Chain",
+  ethereum: "Ethereum",
 };
 
 const networkLabels: Record<string, string> = {

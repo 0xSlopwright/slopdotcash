@@ -13,7 +13,7 @@ interface IERC20 {
 uint64 constant MIN_BINDING_DELAY = 1 hours;
 uint64 constant MAX_BINDING_DELAY = 30 days;
 
-/// @notice Version 3, immutable single-project, single-asset escrow.
+/// @notice Version 4, immutable single-project, single-asset escrow for any standard ERC-20.
 /// @dev A binding needs the identity authority's transaction and the destination wallet's EIP-712 signature,
 /// so the authority alone cannot point funds at a wallet it does not hold; it cannot change amounts. The
 /// authority is read from the factory, which replaces it only through a public 7-day timelock. A new binding waits
@@ -25,12 +25,15 @@ uint64 constant MAX_BINDING_DELAY = 30 days;
 /// has paid, and at most MAX_CANCELS_BETWEEN_PAYMENTS times between two payments to the actor, so the owner
 /// can delay a payout by a bounded number of delays but never retract it. Fees accrue in the vault and are pulled separately, so a blocked fee recipient cannot
 /// stop payouts or refunds.
-/// Tokens must have exact transfers and six decimals (USDC). No upgrade or reserve rescue exists.
+/// Anyone may deposit; deposits join one free balance that only the owner commits or refunds to its refund
+/// destination. Payout and unused-fund withdrawal fees are both 2% (floor(gross / 50)). Tokens must have exact
+/// transfers: a fee-on-transfer deposit or payout reverts. Decimals are stored for display only; amounts are
+/// token base units. No upgrade or reserve rescue exists.
 contract ProjectEscrow {
     struct Award {
         uint64 actorId;
-        uint64 gross;
-        uint64 fee;
+        uint128 gross;
+        uint128 fee;
         bytes32 sourceDigest;
         uint64 committedAt;
         bool paid;
@@ -59,6 +62,8 @@ contract ProjectEscrow {
     bytes32 private constant MAX_S = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
 
     IERC20 public immutable token;
+    /// @notice The token's decimals at vault creation, for display only. The vault never scales amounts.
+    uint8 public immutable decimals;
     bytes32 public immutable projectId;
     address public immutable owner;
     address public immutable refundDestination;
@@ -66,16 +71,16 @@ contract ProjectEscrow {
     /// @notice The factory that created this vault and holds the identity authority in force.
     EscrowFactory public immutable factory;
     uint64 public immutable bindingDelay;
-    uint64 public freeBalance;
-    uint64 public reservedPrincipal;
-    uint64 public reservedFees;
-    uint64 public totalDeposited;
-    uint64 public totalPaid;
-    uint64 public totalPayoutFees;
-    uint64 public totalGrossWithdrawn;
-    uint64 public totalWithdrawalFees;
-    uint64 public accruedFees;
-    uint64 public totalServiceFees;
+    uint128 public freeBalance;
+    uint128 public reservedPrincipal;
+    uint128 public reservedFees;
+    uint128 public totalDeposited;
+    uint128 public totalPaid;
+    uint128 public totalPayoutFees;
+    uint128 public totalGrossWithdrawn;
+    uint128 public totalWithdrawalFees;
+    uint128 public accruedFees;
+    uint128 public totalServiceFees;
     mapping(bytes32 => Award) public awards;
     mapping(bytes32 => bool) public consumedSources;
     mapping(uint64 => Binding) public bindings;
@@ -99,24 +104,24 @@ contract ProjectEscrow {
     error CancelLimit();
     error InvalidWalletSignature();
 
-    event Deposited(address indexed sponsor, uint256 amount);
-    event AwardCommitted(bytes32 indexed id, uint64 indexed actorId, uint64 gross, uint64 fee, bytes32 sourceDigest);
+    event Deposited(address indexed depositor, uint128 amount);
+    event AwardCommitted(bytes32 indexed id, uint64 indexed actorId, uint128 gross, uint128 fee, bytes32 sourceDigest);
     event DestinationBound(
         uint64 indexed actorId, address indexed destination, uint64 version, bytes32 claimDigest, uint64 activatesAt
     );
     event BindingCancelled(uint64 indexed actorId, uint64 version);
-    event FeesClaimed(address indexed feeRecipient, uint256 amount);
+    event FeesClaimed(address indexed feeRecipient, uint128 amount);
     event Paid(
         bytes32 indexed id,
         uint64 indexed actorId,
         address indexed destination,
         uint64 version,
-        uint64 gross,
-        uint64 net,
-        uint64 fee
+        uint128 gross,
+        uint128 net,
+        uint128 fee
     );
-    event UnusedWithdrawn(address indexed destination, uint256 gross, uint256 net, uint256 fee);
-    event ServiceCharged(bytes32 indexed invoiceDigest, uint256 amount);
+    event UnusedWithdrawn(address indexed destination, uint128 gross, uint128 net, uint128 fee);
+    event ServiceCharged(bytes32 indexed invoiceDigest, uint128 amount);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -141,15 +146,16 @@ contract ProjectEscrow {
     ) {
         EscrowFactory factory_ = EscrowFactory(msg.sender);
         address identityAuthority_ = factory_.identityAuthority();
-        // Refunds go only to the sponsor that deposited them.
+        // Free funds are refunded only to the owner, whoever deposited them.
         if (
-            projectId_ == bytes32(0) || address(token_).code.length == 0 || token_.decimals() != 6
-                || owner_ == address(0) || refundDestination_ != owner_ || feeRecipient_ == address(0)
+            projectId_ == bytes32(0) || address(token_).code.length == 0 || owner_ == address(0)
+                || owner_ == address(this) || refundDestination_ != owner_ || feeRecipient_ == address(0)
                 || identityAuthority_ == address(0) || owner_ == identityAuthority_ || feeRecipient_ == address(this)
                 || bindingDelay_ < MIN_BINDING_DELAY || bindingDelay_ > MAX_BINDING_DELAY
         ) revert InvalidInput();
         projectId = projectId_;
         token = token_;
+        decimals = readDecimals(token_);
         owner = owner_;
         refundDestination = refundDestination_;
         feeRecipient = feeRecipient_;
@@ -165,7 +171,7 @@ contract ProjectEscrow {
     /// @notice EIP-712 domain: the chain and this vault, so a wallet signature cannot be replayed elsewhere.
     function domainSeparator() public view returns (bytes32) {
         return keccak256(
-            abi.encode(DOMAIN_TYPEHASH, keccak256("SlopProjectEscrow"), keccak256("3"), block.chainid, address(this))
+            abi.encode(DOMAIN_TYPEHASH, keccak256("SlopProjectEscrow"), keccak256("4"), block.chainid, address(this))
         );
     }
 
@@ -205,12 +211,47 @@ contract ProjectEscrow {
         return keccak256(abi.encode(block.chainid, address(this), sourceDigest));
     }
 
-    function payoutFee(uint64 gross) public pure returns (uint64) {
+    /// @notice The 2% fee on a payout or on cumulative unused-fund withdrawals, rounded down.
+    function payoutFee(uint128 gross) public pure returns (uint128) {
         return gross / 50;
     }
 
-    /// @notice Only the declared sponsor deposits; direct donations do not grant refund rights.
-    function deposit(uint64 amount) external onlyOwner nonReentrant {
+    /// @notice Every counter in one call, so a reader gets one consistent block. Equal to the public getters.
+    function totals()
+        external
+        view
+        returns (
+            uint128 deposited,
+            uint128 paid,
+            uint128 payoutFees,
+            uint128 grossWithdrawn,
+            uint128 withdrawalFees,
+            uint128 serviceFees,
+            uint128 free,
+            uint128 principalReserved,
+            uint128 feesReserved,
+            uint128 feesAccrued,
+            uint256 balance
+        )
+    {
+        return (
+            totalDeposited,
+            totalPaid,
+            totalPayoutFees,
+            totalGrossWithdrawn,
+            totalWithdrawalFees,
+            totalServiceFees,
+            freeBalance,
+            reservedPrincipal,
+            reservedFees,
+            accruedFees,
+            token.balanceOf(address(this))
+        );
+    }
+
+    /// @notice Anyone may deposit. The amount joins the free balance, which only the owner can commit to awards
+    /// or refund to its refund destination; a depositor gets no refund right. Direct transfers are not credited.
+    function deposit(uint128 amount) external nonReentrant {
         if (amount == 0) revert InvalidInput();
         uint256 beforeBalance = token.balanceOf(address(this));
         callToken(abi.encodeCall(IERC20.transferFrom, (msg.sender, address(this), amount)));
@@ -221,12 +262,12 @@ contract ProjectEscrow {
     }
 
     /// @param sourceDigest Unique per award origin (project/cycle/actor/allocation), not a whole-cycle digest.
-    function commitAward(bytes32 id, uint64 actorId, uint64 gross, bytes32 sourceDigest) external onlyOwner {
+    function commitAward(bytes32 id, uint64 actorId, uint128 gross, bytes32 sourceDigest) external onlyOwner {
         if (actorId == 0 || gross == 0 || sourceDigest == bytes32(0) || id != awardId(sourceDigest)) {
             revert InvalidInput();
         }
         if (awards[id].actorId != 0 || consumedSources[sourceDigest]) revert DuplicateAward();
-        uint64 fee = payoutFee(gross);
+        uint128 fee = payoutFee(gross);
         if (gross > freeBalance) revert InsufficientFreeBalance();
         freeBalance -= gross;
         reservedPrincipal += gross - fee;
@@ -309,7 +350,7 @@ contract ProjectEscrow {
         if (version == 0 || version != expectedBindingVersion) revert InvalidBinding();
         paidVersion[award.actorId] = version;
         cancelCount[award.actorId] = 0;
-        uint64 net = award.gross - award.fee;
+        uint128 net = award.gross - award.fee;
         award.paid = true;
         reservedPrincipal -= net;
         reservedFees -= award.fee;
@@ -320,13 +361,13 @@ contract ProjectEscrow {
         emit Paid(id, award.actorId, destination, version, award.gross, net, award.fee);
     }
 
-    /// @notice 10% of cumulative gross withdrawals, rounded down. Splitting cannot reduce fees.
-    function withdrawUnused(uint64 gross) external onlyOwner nonReentrant {
+    /// @notice 2% of cumulative gross withdrawals (payoutFee), rounded down. Splitting cannot reduce fees.
+    function withdrawUnused(uint128 gross) external onlyOwner nonReentrant {
         if (gross == 0) revert InvalidInput();
         if (gross > freeBalance) revert InsufficientFreeBalance();
-        uint64 cumulative = totalGrossWithdrawn + gross;
-        uint64 nextFee = cumulative / 10;
-        uint64 fee = nextFee - totalWithdrawalFees;
+        uint128 cumulative = totalGrossWithdrawn + gross;
+        uint128 nextFee = payoutFee(cumulative);
+        uint128 fee = nextFee - totalWithdrawalFees;
         freeBalance -= gross;
         totalGrossWithdrawn = cumulative;
         totalWithdrawalFees = nextFee;
@@ -337,7 +378,7 @@ contract ProjectEscrow {
 
     /// @notice PAY-10: the owner pays one Slopbot invoice from free sponsor funds, exactly once per digest.
     /// The charge accrues for the fee recipient like other fees; reserved awards are never touched.
-    function chargeService(uint64 amount, bytes32 invoiceDigest) external onlyOwner nonReentrant {
+    function chargeService(uint128 amount, bytes32 invoiceDigest) external onlyOwner nonReentrant {
         if (amount == 0 || invoiceDigest == bytes32(0)) revert InvalidInput();
         if (chargedInvoices[invoiceDigest]) revert DuplicateInvoice();
         if (amount > freeBalance) revert InsufficientFreeBalance();
@@ -350,7 +391,7 @@ contract ProjectEscrow {
 
     /// @notice Anyone can move accrued fees to the fee recipient. Only this call depends on that address.
     function claimFees() external nonReentrant {
-        uint64 amount = accruedFees;
+        uint128 amount = accruedFees;
         if (amount == 0) revert InvalidInput();
         accruedFees = 0;
         sendExact(feeRecipient, amount);
@@ -368,6 +409,15 @@ contract ProjectEscrow {
         ) revert TransferFailed();
     }
 
+    /// @dev decimals() is optional in ERC-20 but every supported asset has it; a token without it is rejected.
+    function readDecimals(IERC20 token_) private view returns (uint8) {
+        (bool ok, bytes memory result) = address(token_).staticcall(abi.encodeCall(IERC20.decimals, ()));
+        if (!ok || result.length != 32) revert InvalidInput();
+        uint256 value = abi.decode(result, (uint256));
+        if (value > type(uint8).max) revert InvalidInput();
+        return uint8(value);
+    }
+
     function callToken(bytes memory data) private {
         (bool ok, bytes memory result) = address(token).call(data);
         if (!ok || (result.length != 0 && (result.length != 32 || !abi.decode(result, (bool))))) {
@@ -376,27 +426,34 @@ contract ProjectEscrow {
     }
 }
 
-/// @notice One vault per immutable project ID in this version of the deployment registry.
+/// @notice One vault per (project ID, token) in this deployment. The token is a per-vault parameter, so one
+/// factory serves every standard ERC-20 on its chain.
 /// The registrar is a disclosed project-registration trust boundary, not a money authority. It also holds
 /// the only mutable authority: the identity authority every vault reads, replaced through a public 7-day
 /// timelock that the registrar proposes and may cancel, and that the current authority cannot block.
+/// The registrar, fee recipient and identity authority are explicit constructor parameters.
 contract EscrowFactory {
     uint64 public constant AUTHORITY_ROTATION_DELAY = 7 days;
     address public immutable registrar;
-    IERC20 public immutable token;
     address public immutable feeRecipient;
     uint64 public immutable bindingDelay;
     address public identityAuthority;
     address public pendingIdentityAuthority;
     uint64 public identityAuthorityEffectiveAt;
-    mapping(bytes32 => address) public vaults;
+    mapping(bytes32 => mapping(address => address)) public vaults;
 
     error RotationPending();
     error NoRotationPending();
     error RotationNotReady();
+    error DuplicateVault();
 
     event VaultCreated(
-        bytes32 indexed projectId, address indexed vault, address indexed owner, address refundDestination
+        bytes32 indexed projectId,
+        address indexed token,
+        address indexed vault,
+        address owner,
+        address refundDestination,
+        uint8 decimals
     );
     event IdentityAuthorityRotationProposed(address indexed current, address indexed proposed, uint64 effectiveAt);
     event IdentityAuthorityRotationCancelled(address indexed proposed);
@@ -407,30 +464,35 @@ contract EscrowFactory {
         _;
     }
 
-    constructor(IERC20 token_, address feeRecipient_, address identityAuthority_, uint64 bindingDelay_) {
+    constructor(address registrar_, address feeRecipient_, address identityAuthority_, uint64 bindingDelay_) {
         if (
-            address(token_).code.length == 0 || token_.decimals() != 6 || feeRecipient_ == address(0)
-                || identityAuthority_ == address(0) || identityAuthority_ == msg.sender
-                || bindingDelay_ < MIN_BINDING_DELAY || bindingDelay_ > MAX_BINDING_DELAY
+            registrar_ == address(0) || feeRecipient_ == address(0) || identityAuthority_ == address(0)
+                || identityAuthority_ == registrar_ || bindingDelay_ < MIN_BINDING_DELAY
+                || bindingDelay_ > MAX_BINDING_DELAY
         ) revert ProjectEscrow.InvalidInput();
-        registrar = msg.sender;
-        token = token_;
+        registrar = registrar_;
         feeRecipient = feeRecipient_;
         identityAuthority = identityAuthority_;
         bindingDelay = bindingDelay_;
     }
 
-    function create(bytes32 projectId, address owner, address refundDestination)
+    /// @notice The CREATE2 salt of the vault for a project and token.
+    function vaultSalt(bytes32 projectId, IERC20 token) public pure returns (bytes32) {
+        return keccak256(abi.encode(projectId, token));
+    }
+
+    function create(bytes32 projectId, IERC20 token, address owner, address refundDestination)
         external
         onlyRegistrar
         returns (address vault)
     {
-        if (vaults[projectId] != address(0)) revert ProjectEscrow.DuplicateAward();
-        vault = address(
-            new ProjectEscrow{salt: projectId}(projectId, token, owner, refundDestination, feeRecipient, bindingDelay)
+        if (vaults[projectId][address(token)] != address(0)) revert DuplicateVault();
+        ProjectEscrow created = new ProjectEscrow{salt: vaultSalt(projectId, token)}(
+            projectId, token, owner, refundDestination, feeRecipient, bindingDelay
         );
-        vaults[projectId] = vault;
-        emit VaultCreated(projectId, vault, owner, refundDestination);
+        vault = address(created);
+        vaults[projectId][address(token)] = vault;
+        emit VaultCreated(projectId, address(token), vault, owner, refundDestination, created.decimals());
     }
 
     /// @notice Starts the public notice period for a replacement identity authority. One proposal at a time.

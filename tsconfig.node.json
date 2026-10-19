@@ -16,6 +16,7 @@
     "src/lib/payments/**/*.ts",
     "contracts/evm/adapter.ts",
     "contracts/solana/adapter.ts",
+    "contracts/vault-totals.ts",
     "src/lib/points.ts",
     "src/lib/payout-points.ts",
     "src/lib/squads-batch-message.ts",

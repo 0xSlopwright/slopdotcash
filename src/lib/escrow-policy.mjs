@@ -7,72 +7,167 @@ import { isFundingAddress, isSolanaTransactionId } from "./funding-address.mjs";
  * networks also carry the executor gas ceiling (gas units) and the scanner
  * window (blocks per eth_getLogs page, inclusive), which the generated
  * deployment record copies so hosted workers never assume a value.
+ *
+ * Escrow v2 vaults accept any standard ERC-20 or classic SPL mint with any
+ * decimals; a deployment's asset is not limited to the list here. `assets`
+ * lists the reference stablecoins each network knows, with their decimals and
+ * the primary source that publishes the address. `asset`, `assetSymbol` and
+ * `assetDecimals` repeat the first entry (the network's default stablecoin).
  */
+const asset = (address, symbol, decimals, source) =>
+  Object.freeze({ address, symbol, decimals, source });
+const CIRCLE_USDC_ADDRESSES =
+  "https://developers.circle.com/stablecoins/usdc-contract-addresses";
+function network(definition, assets) {
+  const first = assets[0];
+  return Object.freeze({
+    ...definition,
+    asset: first?.address ?? null,
+    assetSymbol: first?.symbol ?? "TEST",
+    assetDecimals: first?.decimals ?? null,
+    assets: Object.freeze(assets),
+  });
+}
 export const ESCROW_NETWORKS = Object.freeze({
-  "base-sepolia": {
-    chain: "base",
-    family: "evm",
-    testnet: true,
-    chainId: "84532",
-    asset: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
-    assetSymbol: "USDC",
-    gasCeiling: "500000",
-    scanPageBlocks: "2000",
-  },
-  "base-mainnet": {
-    chain: "base",
-    family: "evm",
-    testnet: false,
-    chainId: "8453",
-    asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-    assetSymbol: "USDC",
-    gasCeiling: "500000",
-    scanPageBlocks: "2000",
-  },
-  "solana-devnet": {
-    chain: "solana",
-    family: "solana",
-    testnet: true,
-    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-    assetSymbol: "USDC",
-  },
-  "solana-testnet": {
-    chain: "solana",
-    family: "solana",
-    testnet: true,
-    asset: null,
-    assetSymbol: "TEST",
-  },
-  "solana-mainnet": {
-    chain: "solana",
-    family: "solana",
-    testnet: false,
-    asset: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    assetSymbol: "USDC",
-  },
-  "robinhood-testnet": {
-    chain: "robinhood",
-    family: "evm",
-    testnet: true,
-    chainId: "46630",
-    /** Paxos testnet USDG, listed by the Paxos USDG testnet guide and read back on chain (design record). */
-    asset: "0x7e955252e15c84f5768b83c41a71f9eba181802f",
-    assetSymbol: "USDG",
-    gasCeiling: "2000000",
-    scanPageBlocks: "9000",
-  },
-  "robinhood-mainnet": {
-    chain: "robinhood",
-    family: "evm",
-    testnet: false,
-    chainId: "4663",
-    /** Paxos USDG, listed by the Robinhood and Paxos docs and read back on chain (design record). */
-    asset: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
-    assetSymbol: "USDG",
-    /** eth_estimateGas on Arbitrum Nitro includes the Ethereum data-posting fee. */
-    gasCeiling: "2000000",
-    scanPageBlocks: "9000",
-  },
+  "base-sepolia": network(
+    {
+      chain: "base",
+      family: "evm",
+      testnet: true,
+      chainId: "84532",
+      gasCeiling: "500000",
+      scanPageBlocks: "2000",
+    },
+    [
+      asset(
+        "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+        "USDC",
+        6,
+        CIRCLE_USDC_ADDRESSES,
+      ),
+    ],
+  ),
+  "base-mainnet": network(
+    {
+      chain: "base",
+      family: "evm",
+      testnet: false,
+      chainId: "8453",
+      gasCeiling: "500000",
+      scanPageBlocks: "2000",
+    },
+    [
+      asset(
+        "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "USDC",
+        6,
+        CIRCLE_USDC_ADDRESSES,
+      ),
+    ],
+  ),
+  "solana-devnet": network(
+    { chain: "solana", family: "solana", testnet: true },
+    [
+      asset(
+        "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "USDC",
+        6,
+        CIRCLE_USDC_ADDRESSES,
+      ),
+    ],
+  ),
+  "solana-testnet": network(
+    { chain: "solana", family: "solana", testnet: true },
+    [],
+  ),
+  "solana-mainnet": network(
+    { chain: "solana", family: "solana", testnet: false },
+    [
+      asset(
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "USDC",
+        6,
+        CIRCLE_USDC_ADDRESSES,
+      ),
+    ],
+  ),
+  "robinhood-testnet": network(
+    {
+      chain: "robinhood",
+      family: "evm",
+      testnet: true,
+      chainId: "46630",
+      gasCeiling: "2000000",
+      scanPageBlocks: "9000",
+    },
+    [
+      /** Paxos testnet USDG, listed by the Paxos USDG testnet guide and read back on chain (design record). */
+      asset(
+        "0x7e955252e15c84f5768b83c41a71f9eba181802f",
+        "USDG",
+        6,
+        "https://docs.paxos.com/guides/stablecoin/usdg/testnet",
+      ),
+    ],
+  ),
+  "robinhood-mainnet": network(
+    {
+      chain: "robinhood",
+      family: "evm",
+      testnet: false,
+      chainId: "4663",
+      /** eth_estimateGas on Arbitrum Nitro includes the Ethereum data-posting fee. */
+      gasCeiling: "2000000",
+      scanPageBlocks: "9000",
+    },
+    [
+      /** Paxos USDG, listed by the Robinhood and Paxos docs and read back on chain (design record). */
+      asset(
+        "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        "USDG",
+        6,
+        "https://docs.robinhood.com/chain/contracts",
+      ),
+    ],
+  ),
+  "ethereum-sepolia": network(
+    {
+      chain: "ethereum",
+      family: "evm",
+      testnet: true,
+      chainId: "11155111",
+      gasCeiling: "500000",
+      scanPageBlocks: "2000",
+    },
+    [
+      /** Circle test USDC; read back on chain 18 October 2026 (symbol USDC, 6 decimals, chain 11155111). */
+      asset(
+        "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
+        "USDC",
+        6,
+        CIRCLE_USDC_ADDRESSES,
+      ),
+    ],
+  ),
+  ethereum: network(
+    {
+      chain: "ethereum",
+      family: "evm",
+      testnet: false,
+      chainId: "1",
+      gasCeiling: "500000",
+      scanPageBlocks: "2000",
+    },
+    [
+      /** Circle USDC; read back on chain 18 October 2026 (symbol USDC, 6 decimals, chain 1). */
+      asset(
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "USDC",
+        6,
+        CIRCLE_USDC_ADDRESSES,
+      ),
+    ],
+  ),
 });
 /** Chains a policy may name, in registry order; each maps to exactly one family. */
 export const ESCROW_CHAINS = Object.freeze([
@@ -121,7 +216,9 @@ export function assertEscrowPolicy(value) {
     !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(value.effectiveCycle) ||
     !isEscrowChain(value.chain) ||
     value.feeBasisPoints !== 200 ||
-    value.withdrawalFeeBasisPoints !== 1000 ||
+    // Escrow v2: the unused-fund withdrawal fee equals the payout fee, 2%
+    // (floor(gross / 50)), and the contracts enforce both.
+    value.withdrawalFeeBasisPoints !== 200 ||
     value.feeMode !== "deduct-from-gross" ||
     !Array.isArray(value.deployments)
   )
@@ -166,9 +263,10 @@ export function assertEscrowPolicy(value) {
       ].every((address) => isFundingAddress(value.chain, address))
     )
       throw new TypeError("Invalid escrow address");
+    // Any standard token is allowed (TOK-01); the adapter reads its decimals
+    // from chain and rejects a vault whose token differs from the manifest.
     if (
-      (network.asset && deployment.asset !== network.asset) ||
-      (chainFamily(value.chain) === "evm"
+      chainFamily(value.chain) === "evm"
         ? deployment.programId !== null ||
           deployment.upgradeAuthority !== null ||
           deployment.projectPda !== null ||
@@ -184,9 +282,9 @@ export function assertEscrowPolicy(value) {
             !isFundingAddress("solana", deployment.upgradeAuthority)) ||
           !isFundingAddress("solana", deployment.programId) ||
           !isFundingAddress("solana", deployment.projectPda) ||
-          !/^[0-9a-f]{64}$/.test(deployment.networkDomain))
+          !/^[0-9a-f]{64}$/.test(deployment.networkDomain)
     )
-      throw new TypeError("Escrow asset or program does not match the network");
+      throw new TypeError("Escrow program does not match the network");
     // The owner proposes and the fee recipient confirms a new identity
     // authority; the notice period gives every binding made with a stolen
     // key time to be vetoed. Base fixes 7 days in the factory contract.

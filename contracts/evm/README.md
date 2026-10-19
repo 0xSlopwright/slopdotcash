@@ -1,7 +1,9 @@
-# EVM escrow v3
+# EVM escrow v4
 
-This is an immutable escrow implementation for a single project and a
-six-decimal stablecoin: Circle USDC on Base, Paxos USDG on Robinhood Chain. It
+This is an immutable escrow implementation for one project and one token. The
+token can be any standard ERC-20 with any decimals: Circle USDC, Paxos USDG or
+a project token. One factory on each chain creates one vault for each
+(project ID, token) pair. It
 has no proxy, owner change, token approval, arbitrary call, rescue, claim
 expiry, or award cancellation entry point. An approved award remains reserved until it is paid. The owner can cancel only a wallet binding that has
 not paid yet, and only inside a bounded window. The only mutable authority is
@@ -11,26 +13,37 @@ security review or a public testnet deployment.
 
 ## Networks
 
-| Network | Chain id | Asset | Deploy script |
+| Network | Chain id | Reference asset (not an allowlist) | Deploy script |
 | --- | --- | --- | --- |
 | Base Sepolia | 84532 | Circle test USDC `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | `DeployBaseSepolia.s.sol` |
 | Base | 8453 | Circle USDC `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` | `DeployBase.s.sol` |
 | Robinhood Chain Testnet | 46630 | Paxos test USDG `0x7E955252E15c84f5768B83c41a71F9eba181802F` | `DeployRobinhoodTestnet.s.sol` |
 | Robinhood Chain | 4663 | Paxos USDG `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` | `DeployRobinhood.s.sol` |
+| Ethereum Sepolia | 11155111 | Circle test USDC `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` | `DeployEthereumSepolia.s.sol` |
+| Ethereum | 1 | Circle USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | `DeployEthereum.s.sol` |
+
+The Ethereum USDC addresses come from Circle's
+[USDC contract addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses)
+page. On 18 October 2026 an `eth_call` on each chain returned symbol `USDC`
+and 6 decimals. `src/lib/escrow-policy.mjs` records each reference asset with
+its decimals and source. The registry lists reference assets only; a project
+can fund a vault in any standard token.
 
 The contract reads only `block.timestamp` and `block.chainid`, never `block.number`, so Arbitrum Nitro's block-number semantics on Robinhood Chain do not affect award ids or delays. `foundry.toml` targets Cancun. Opcode support on Robinhood Chain is not yet proven: the first testnet deployment must record the ArbOS version read from the `ArbSys` precompile and a successful deployment receipt before any activation.
 
 ## Authority and identity
 
-The factory registrar creates one vault for each nonzero project ID in that
-factory and holds no money power. The project owner deposits, approves awards,
+The factory registrar creates one vault for each nonzero project ID and token
+in that factory and holds no money power. The registrar, the fee recipient and
+the identity authority are explicit constructor parameters; the deploying
+account holds no role. Anyone can deposit. The project owner approves awards
 and withdraws free funds to an immutable refund address. The identity authority
 is a factory-level address that every vault reads; it is Slop's attester key. A
 binding needs two signatures. The identity authority submits the
 `bindDestination` transaction, and the destination wallet signs an EIP-712
 message over the chain ID, vault, actor ID, destination, expected predecessor
 version, wallet-claim digest and expiry (`DestinationBinding` under the
-`SlopProjectEscrow` version `3` domain). The vault recovers the signer with
+`SlopProjectEscrow` version `4` domain). The vault recovers the signer with
 `ecrecover` and rejects a binding whose signer is not the destination, so the
 authority alone cannot point funds at a wallet it does not hold. Only an
 externally owned account can produce that signature; a contract wallet cannot
@@ -158,13 +171,15 @@ unclaimed awards. Missing destinations cause a revert and leave reserves intact.
 
 ## Accounting
 
-All values are integer USDC micro-units. Each award reserves its gross allocation. The payout fee is
-`floor(gross * 2 / 100)` and the recipient receives `gross - fee`. A 100-USDC
-award costs the project 100 USDC and sends 98 USDC to the contributor plus
-2 USDC of fees. Each unused-fund
-withdrawal charges the increase in `floor(cumulative gross withdrawals / 10)`.
-This prevents reduced withdrawal fees from splitting transactions. A one-unit
-award requires one unit of funding and has a zero fee; tiny award rounding is intentional.
+All values are integer token base units, stored as checked `uint128`. The vault
+stores `decimals()` once, for display only, and never scales an amount. Each
+award reserves its gross allocation. The payout fee is `floor(gross / 50)` (2%)
+and the recipient receives `gross - fee`. A 100-USDC award costs the project
+100 USDC and sends 98 USDC to the contributor plus 2 USDC of fees. The 2% is
+paid in the vault token. Each unused-fund withdrawal charges the increase in
+`floor(cumulative gross withdrawals / 50)`, the same 2% rate, so splitting a
+withdrawal cannot reduce its fee. A one-unit award requires one unit of
+funding and has a zero fee; tiny award rounding is intentional.
 
 Payout and withdrawal fees accrue in the vault as `accruedFees`. Anyone can
 call `claimFees()` to move them to the immutable fee recipient. A blocked fee
@@ -172,20 +187,25 @@ recipient (for example, a USDC blacklist) stops only `claimFees`; payouts and
 refunds continue. Refunds go only to the owner: the constructor requires
 `refundDestination == owner`.
 
-Deposits and transfers must move exact amounts. Token failures or blocked
-recipients revert the full payment. The accepted token
-must have six decimals and ordinary exact-transfer behavior. The deployment
-script fixes its token: the Base scripts name Circle's USDC addresses and the
-Robinhood Chain scripts name Paxos USDG (the testnet script uses the Paxos
-testnet USDG address); verify the asset again before any deployment. Arbitrary tokens with dishonest `balanceOf` results are
-outside the supported asset model. Direct transfers to the vault do not create
-refundable credits and cannot be rescued in this version. The supported funding
-path is owner `approve` followed by `deposit`.
+`deposit(amount)` is permissionless. Any account approves the vault and calls
+it; the vault pulls the exact amount from the caller, credits `freeBalance`,
+and emits `Deposited(depositor, amount)`. All deposits join one free balance.
+A depositor gets no refund right: only the owner commits free funds to awards
+or withdraws them to its refund destination. Direct transfers to the vault are
+not credited and cannot be rescued.
 
-USDG is an upgradeable proxy with a pause switch and a per-address freeze, the
-same risk class as Circle's USDC on Base. The contract fails closed: a frozen or
-paused recipient reverts `pay` and the award stays reserved; a frozen fee
-recipient blocks only `claimFees`.
+Deposits and transfers must move exact amounts. The vault compares balances
+before and after each transfer, so a fee-on-transfer token reverts the deposit
+or payment. Rebasing tokens break the balance identity and are not supported;
+the contract cannot detect every rebase, so the registry review must reject
+them. A token without a `decimals()` function that returns a `uint8` value is
+rejected when the vault is created. Arbitrary tokens with dishonest
+`balanceOf` results are outside the supported asset model. Token failures or
+blocked recipients revert the full payment.
+
+USDC and USDG are upgradeable proxies with a pause switch and a per-address
+freeze. The contract fails closed: a frozen or paused recipient reverts `pay`
+and the award stays reserved; a frozen fee recipient blocks only `claimFees`.
 
 The conservation identities are unchanged by the binding lifecycle:
 
@@ -194,33 +214,62 @@ totalDeposited = freeBalance + reservedPrincipal + reservedFees
                + totalPaid + totalPayoutFees + totalGrossWithdrawn
                + totalServiceFees
 vault balance  = freeBalance + reservedPrincipal + reservedFees + accruedFees
+               + unsolicited direct transfers
 accruedFees + claimed fees = totalPayoutFees + totalWithdrawalFees
                            + totalServiceFees
 ```
 
+`totals()` returns every counter and the vault token balance in one call, so a
+reader gets one consistent block. Each counter also has its own public getter.
+The adapter's `readVaultTotals` reads `totals()`, `token()` and `decimals()` at
+one pinned finalized block and checks the first identity.
+
 `chargeService(amount, invoiceDigest)` (PAY-10) lets only the owner pay one
 Slopbot invoice from `freeBalance`. The amount accrues for the fee recipient
 like other fees. Each nonzero invoice digest can be charged once. It cannot
-spend reserved principal or reserved fees. Only the owner deposits, so every
-vault balance is sponsor-class; this version holds no donor-class funds.
+spend reserved principal or reserved fees.
 
 The owner can commit an award to any GitHub actor, including an account the
-owner controls. That moves unused funds out at the 2% payout fee instead of the
-10% withdrawal fee. This is an accepted, documented risk: maintainer review of
-related-party awards enforces the policy, not the contract.
+owner controls. Payout and withdrawal fees are now both 2%, so this gives no
+fee advantage. Maintainer review of related-party awards enforces the policy,
+not the contract.
 
-All escrow accounting counters are checked uint64 values for Solana parity;
-lifetime deposits cannot exceed uint64 maximum. `reservedPrincipal` records
-net contributor obligations; `reservedFees` records their deducted fees.
-`totalWithdrawalFees` is included within gross withdrawals. `totalPaid` is only
-contributor net. Event observations and counters are not finality proof;
-backend receipts must use finalized chain state. Before indexing an event or
-signing, the adapter verifies the finalized runtime code SHA-256 and the token,
-owner, fee recipient, binding delay and factory (address, runtime code digest,
-registrar and rotation delay) against the reviewed manifest.
-`codeSha256` hashes decoded `eth_getCode` bytes, including constructor
-immutables. The current manifest has one sponsor address, so activation also
-requires the refund destination to equal that owner.
+`reservedPrincipal` records net contributor obligations; `reservedFees`
+records their deducted fees. `totalWithdrawalFees` is included within gross
+withdrawals. `totalPaid` is only contributor net. Event observations and
+counters are not finality proof; backend receipts must use finalized chain
+state. Before indexing an event or signing, the adapter verifies the finalized
+runtime code SHA-256 and the token, owner, fee recipient, binding delay and
+factory (address, runtime code digest, registrar and rotation delay) against
+the reviewed manifest, and that the factory indexed this vault under its
+project ID and token. `codeSha256` hashes decoded `eth_getCode` bytes,
+including constructor immutables. The current manifest has one sponsor
+address, so activation also requires the refund destination to equal that
+owner.
+
+## Events and ABI (v4)
+
+```
+ProjectEscrow
+  Deposited(address indexed depositor, uint128 amount)
+  AwardCommitted(bytes32 indexed id, uint64 indexed actorId, uint128 gross, uint128 fee, bytes32 sourceDigest)
+  DestinationBound(uint64 indexed actorId, address indexed destination, uint64 version, bytes32 claimDigest, uint64 activatesAt)
+  BindingCancelled(uint64 indexed actorId, uint64 version)
+  Paid(bytes32 indexed id, uint64 indexed actorId, address indexed destination, uint64 version, uint128 gross, uint128 net, uint128 fee)
+  UnusedWithdrawn(address indexed destination, uint128 gross, uint128 net, uint128 fee)
+  ServiceCharged(bytes32 indexed invoiceDigest, uint128 amount)
+  FeesClaimed(address indexed feeRecipient, uint128 amount)
+  deposit(uint128) commitAward(bytes32,uint64,uint128,bytes32) withdrawUnused(uint128)
+  chargeService(uint128,bytes32) pay(bytes32,uint64) claimFees() totals() decimals()
+EscrowFactory
+  constructor(address registrar, address feeRecipient, address identityAuthority, uint64 bindingDelay)
+  create(bytes32 projectId, address token, address owner, address refundDestination)
+  vaults(bytes32 projectId, address token) vaultSalt(bytes32,address)
+  VaultCreated(bytes32 indexed projectId, address indexed token, address indexed vault, address owner, address refundDestination, uint8 decimals)
+```
+
+The adapter exports the topics as `EVM_ESCROW_EVENT_TOPICS`, computed from
+these signatures. For the full ABI, use `forge inspect ProjectEscrow abi`.
 
 ## Local validation
 
@@ -234,7 +283,12 @@ forge test --root contracts/evm
 bun contracts/evm/adapter.integration.ts
 ```
 
-`forge test` runs the Foundry suites under `test/`: regression tests for the
+`forge test` runs the Foundry suites under `test/`. `test/AnyToken.t.sol`
+covers 0-, 2-, 9- and 18-decimal tokens, amounts beyond `uint64`, `uint128`
+overflow, permissionless deposit, the 2% withdrawal fee, fee-on-transfer
+rejection, tokens without valid decimals, one vault per project and token, and
+`totals()`. The invariant suite runs at 6 and 18 decimals with random
+depositors. The suites also include regression tests for the
 binding lifecycle (commit delay, payment frozen during a rotation and after its
 cancel, cancel cap between payments, delay bounds, one-shot cancel), token and
 accounting checks, and invariant runs over random owner, authority and payer
@@ -243,7 +297,7 @@ sequences. These suites are regression evidence, not a security review. The
 and `forge test` on every escrow change.
 
 The integration deploys `integration/TestDollar.sol`, a six-decimal test
-ERC-20. The test token is not Circle USDC; Circle integration, wallet signatures, OAuth, indexer finality,
+ERC-20, and `test/WideToken.sol` at 18 decimals with amounts beyond `uint64`. The test token is not Circle USDC; Circle integration, wallet signatures, OAuth, indexer finality,
 and live broadcast require separate public-chain acceptance. The adapter integration
 script starts an isolated Anvil on port 18546, executes actual deployment, award,
 and payment transactions, and checks canonical finalized receipts plus rejection
@@ -251,17 +305,17 @@ of wrong chains, vaults, obligations, event indices, and nonfinalized receipts.
 
 ## Testnet deployment
 
-Each checked-in script rejects every chain except its own (Base Sepolia 84532,
-Robinhood Chain Testnet 46630). It reads
-only public destination addresses from the environment. Supply a dedicated
-test-only external signer through Foundry's account or hardware-wallet options.
-Do not put a private key in a command, environment dump, source file, or evidence.
-The signer becomes the factory registrar. It is not the project owner unless
-explicitly selected when the registrar later creates a project vault.
+Each checked-in script rejects every chain except its own. Every script reads
+three public addresses from the environment: `ESCROW_REGISTRAR`,
+`ESCROW_FEE_RECIPIENT` and `ESCROW_IDENTITY_AUTHORITY`. Each is required.
+Only `DeployBase.s.sol` defaults `ESCROW_FEE_RECIPIENT` to Slop's published
+Base fee recipient `0x8f77C37D8650776bFe73c9b12B15209eE15D9b86` when it is not
+set. No script fixes a token: one factory serves every ERC-20 on its chain.
+Supply a dedicated test-only external signer through Foundry's account or
+hardware-wallet options. The signer only pays gas and holds no role. Do not put
+a private key in a command, environment dump, source file, or evidence.
 
-Set `BASE_SEPOLIA_RPC_URL`, `TEST_FEE_RECIPIENT`, and
-`TEST_IDENTITY_AUTHORITY` in the isolated test deployment environment. First
-simulate the exact compiled source:
+First simulate the exact compiled source:
 
 ```sh
 cd contracts/evm
@@ -269,28 +323,24 @@ forge script script/DeployBaseSepolia.s.sol:DeployBaseSepolia \
   --rpc-url "$BASE_SEPOLIA_RPC_URL" --account slop-test-deployer
 ```
 
-For Robinhood Chain Testnet:
+Use `DeployEthereumSepolia.s.sol:DeployEthereumSepolia` with
+`$ETHEREUM_SEPOLIA_RPC_URL`, or follow
+[`docs/robinhood-chain-testnet-runbook.md`](../../docs/robinhood-chain-testnet-runbook.md)
+for Robinhood Chain Testnet. After the test deployment authority reviews the
+simulation, the same invocation with `--broadcast` submits testnet
+transactions. No public deployment was run as part of the local
+implementation. Mainnet steps are in [`../DEPLOY-MAINNET.md`](../DEPLOY-MAINNET.md);
+only humans run them. Keep transaction artifacts in ignored `broadcast/`, and
+publish only reviewed safe deployment evidence.
 
-```sh
-cd contracts/evm
-forge script script/DeployRobinhoodTestnet.s.sol:DeployRobinhoodTestnet \
-  --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" --account slop-test-deployer
-```
-
-Set `ROBINHOOD_TESTNET_RPC_URL`, `TEST_FEE_RECIPIENT` and `TEST_IDENTITY_AUTHORITY`; the public RPC `https://rpc.testnet.chain.robinhood.com` is rate-limited and acceptable for a one-off deployment, not for the scanner.
-
-After the test deployment authority reviews that simulation, the same invocation
-with `--broadcast` submits testnet transactions. No public deployment was run as
-part of the local implementation. Production release is outside this script.
-Keep transaction artifacts in ignored `broadcast/`, and publish only reviewed
-safe deployment evidence.
-
-Record the source SHA, compiler settings, factory address, deployment transaction,
-chain ID, token address/code, registrar and its custody, fee address, and identity authority.
-Verify runtime bytecode and constructor configuration. Create each vault from
-its reviewed project manifest, then verify its owner, refund address, token,
-project ID, and authority. Export the ABI from `forge inspect ProjectEscrow abi`
-as build output for the adapter; do not maintain a handwritten second ABI.
-Run the full acceptance scenario with actual test USDC and finalized receipts.
-Independent review, a rehearsed run of the key recovery runbook on the test
-deployment, and public-chain evidence remain launch gates.
+Record the source SHA, compiler settings, factory address, deployment
+transaction, chain ID, registrar and its custody, fee address, and identity
+authority. Verify runtime bytecode and constructor configuration. Create each
+vault from its reviewed project manifest with
+`create(projectId, token, owner, owner)`, then verify its owner, refund
+address, token, decimals, project ID, and authority. Export the ABI from
+`forge inspect ProjectEscrow abi` as build output for the adapter; do not
+maintain a handwritten second ABI. Run the full acceptance scenario with
+actual test tokens and finalized receipts. Independent review, a rehearsed run
+of the key recovery runbook on the test deployment, and public-chain evidence
+remain launch gates.

@@ -6,7 +6,9 @@ export interface EscrowDeployment {
     | "solana-testnet"
     | "solana-mainnet"
     | "robinhood-testnet"
-    | "robinhood-mainnet";
+    | "robinhood-mainnet"
+    | "ethereum-sepolia"
+    | "ethereum";
   vault: string;
   programId: string | null;
   upgradeAuthority: string | null;
@@ -29,26 +31,38 @@ export interface EscrowDeployment {
   /** EVM chains only; null on Solana. The factory registrar, which alone proposes an authority rotation. */
   registrar: string | null;
 }
-export type EscrowChain = "base" | "solana" | "robinhood";
+export type EscrowChain = "base" | "solana" | "robinhood" | "ethereum";
 export type EscrowFamily = "evm" | "solana";
 export interface EscrowPolicy {
   schemaVersion: "1";
   effectiveCycle: string;
   chain: EscrowChain;
   feeBasisPoints: 200;
-  withdrawalFeeBasisPoints: 1000;
+  /** Escrow v2: equal to the payout fee, 2%, enforced by the contracts. */
+  withdrawalFeeBasisPoints: 200;
   feeMode: "deduct-from-gross";
   deployments: EscrowDeployment[];
 }
 export declare const MIN_PRODUCTION_BINDING_DELAY: number;
 export declare const MIN_PRODUCTION_ROTATION_DELAY: number;
+/** A reference stablecoin on a network. Vaults accept any standard token; this is not an allowlist. */
+export interface EscrowAsset {
+  address: string;
+  symbol: string;
+  decimals: number;
+  /** The primary source that publishes the address. */
+  source: string;
+}
 export interface EscrowNetwork {
   chain: EscrowChain;
   family: EscrowFamily;
   testnet: boolean;
   chainId?: string;
+  /** The default reference stablecoin (assets[0]), or null. */
   asset: string | null;
   assetSymbol: string;
+  assetDecimals: number | null;
+  assets: readonly EscrowAsset[];
   /** EVM only: executor gas ceiling in gas units, decimal string. */
   gasCeiling?: string;
   /** EVM only: blocks per eth_getLogs page, inclusive, decimal string. */

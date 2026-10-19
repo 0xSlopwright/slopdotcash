@@ -16,6 +16,7 @@ const chainNames = {
   base: "Base",
   solana: "Solana",
   robinhood: "Robinhood Chain",
+  ethereum: "Ethereum",
 } as const;
 
 function amount(value: string, network: string) {

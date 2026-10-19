@@ -45,9 +45,9 @@ contract BoundedAttesterTest {
         contributor = vm.addr(CONTRIBUTOR_KEY);
         usdc = new TestDollar();
         vm.prank(REGISTRAR);
-        factory = new EscrowFactory(IERC20(address(usdc)), FEE, AUTHORITY, DELAY);
+        factory = new EscrowFactory(REGISTRAR, FEE, AUTHORITY, DELAY);
         vm.prank(REGISTRAR);
-        vault = ProjectEscrow(factory.create(PROJECT, OWNER, OWNER));
+        vault = ProjectEscrow(factory.create(PROJECT, IERC20(address(usdc)), OWNER, OWNER));
         usdc.mint(OWNER, 1_000_000e6);
         vm.prank(OWNER);
         usdc.approve(address(vault), type(uint256).max);
@@ -111,7 +111,7 @@ contract BoundedAttesterTest {
 
     function test_signatureCannotReplayOnAnotherVault() public {
         vm.prank(REGISTRAR);
-        ProjectEscrow other = ProjectEscrow(factory.create(keccak256("other"), OWNER, OWNER));
+        ProjectEscrow other = ProjectEscrow(factory.create(keccak256("other"), IERC20(address(usdc)), OWNER, OWNER));
         uint64 expiresAt = uint64(block.timestamp + 1 hours);
         bytes memory signature = walletSignature(CONTRIBUTOR_KEY, 0, expiresAt, contributor);
         vm.prank(AUTHORITY);
@@ -342,7 +342,7 @@ contract BoundedAttesterTest {
     function test_factoryRejectsRegistrarAsAuthority() public {
         vm.prank(REGISTRAR);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(IERC20(address(usdc)), FEE, REGISTRAR, DELAY);
+        new EscrowFactory(REGISTRAR, FEE, REGISTRAR, DELAY);
     }
 
     function assertEq(uint256 a, uint256 b) internal pure {
