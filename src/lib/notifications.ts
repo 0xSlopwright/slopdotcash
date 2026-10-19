@@ -8,6 +8,14 @@ export const NOTIFICATION_KINDS = [
   "payment_paid",
   "payout_held",
   "wallet_changed",
+  "project_quarantined",
+  "project_banned",
+  "reinstatement_requested",
+  "project_reinstated",
+  "reinstatement_denied",
+  "reinstatement_review",
+  "payout_exception",
+  "security_case",
 ] as const;
 
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
@@ -16,7 +24,10 @@ export interface Notification {
   /** Stable source event identity; a replay of the event reuses it. */
   eventKey: string;
   kind: NotificationKind;
-  /** The project id, or the network for a wallet change. */
+  /**
+   * The project id, the network for a wallet change, or the private case
+   * reference for a security case.
+   */
   subject: string;
   detail: string | null;
   /** A same-site path that opens the details. */
@@ -99,6 +110,22 @@ export function notificationTitle(n: Notification): string {
       return `A payout from ${n.subject} is held.`;
     case "wallet_changed":
       return `A ${n.subject} payout wallet was added to your account.`;
+    case "project_quarantined":
+      return `The ${n.subject} project is quarantined. It is paused and not listed.`;
+    case "project_banned":
+      return `The ${n.subject} project is banned. It is paused and not listed.`;
+    case "reinstatement_requested":
+      return `A reinstatement request for ${n.subject} is open for independent review.`;
+    case "project_reinstated":
+      return `The ${n.subject} project is reinstated. It stays paused until an admin activates it.`;
+    case "reinstatement_denied":
+      return `The reinstatement request for ${n.subject} was denied.`;
+    case "reinstatement_review":
+      return `A reinstatement request for ${n.subject} needs your independent review.`;
+    case "payout_exception":
+      return `A payout from ${n.subject} is held and needs attention.`;
+    case "security_case":
+      return `Private security case ${n.subject} changed.`;
   }
 }
 
@@ -107,7 +134,17 @@ export function notificationAction(n: Notification): string {
   switch (n.kind) {
     case "application_approved":
     case "project_revision":
+    case "project_quarantined":
+    case "project_banned":
+    case "reinstatement_requested":
+    case "project_reinstated":
+    case "reinstatement_denied":
+    case "payout_exception":
       return "Open project";
+    case "reinstatement_review":
+      return "Open admin";
+    case "security_case":
+      return "Open security cases";
     case "application_rejected":
       return "Apply again";
     case "award_reserved":

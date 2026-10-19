@@ -13,6 +13,7 @@ import {
   type SecurityBountyTerms,
   securityBountySplit,
 } from "../../src/lib/security-bounty.mjs";
+import { notifySecurityCase } from "../notifications/events";
 import { cachedPublicResponse, type EdgeCache } from "../projects/edge-cache";
 import { readJsonObject } from "../trace/validation";
 
@@ -735,6 +736,55 @@ function eventStatement(
         .bind(...values);
 }
 
+/**
+ * Inbox rows for one case event (NOT-01, SEC-09): the reporter for every
+ * event their own view shows, the security maintainers for a new claim to
+ * verify, the dispute reviewers for an appeal, the assigned triager, and the
+ * financial approvers when a decision reserved an award. The actor is never
+ * notified of their own action.
+ */
+function inboxStatements(
+  deps: SecurityApiDependencies,
+  input: {
+    caseId: string;
+    revision: number;
+    kind: string;
+    idempotencyKey: string;
+    reporterGithubId: string;
+    detail: Record<string, unknown>;
+    terms: SecurityBountyTerms | undefined;
+  },
+): D1Statement[] {
+  const ids = (role: keyof SecurityBountyTerms["approvers"]) =>
+    (input.terms?.approvers[role] ?? []).map((entry) => entry.githubId);
+  const event = {
+    caseId: input.caseId,
+    revision: input.revision,
+    idempotencyKey: input.idempotencyKey,
+  };
+  const recipients = [
+    ...(REPORTER_EVENT_KINDS.has(input.kind) ? [input.reporterGithubId] : []),
+    ...(input.kind === "claim" ? ids("technical") : []),
+    ...(input.kind === "appeal" ? ids("dispute") : []),
+    ...(input.kind === "assign-triager" &&
+    typeof input.detail.githubId === "string"
+      ? [input.detail.githubId]
+      : []),
+  ];
+  return [
+    notifySecurityCase(deps.db, { ...event, recipients }),
+    ...(input.kind === "decide"
+      ? [
+          notifySecurityCase(deps.db, {
+            ...event,
+            recipients: ids("financial"),
+            awardState: "reserved",
+          }),
+        ]
+      : []),
+  ];
+}
+
 function constraintError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -847,6 +897,15 @@ async function createCase(
         guard: false,
       }),
       accessLog(deps, id, actor, new Set([role]), "write"),
+      ...inboxStatements(deps, {
+        caseId: id,
+        revision: 1,
+        kind: mode,
+        idempotencyKey,
+        reporterGithubId: reporter.githubId,
+        detail: {},
+        terms,
+      }),
     ]);
   } catch (error) {
     if (!/UNIQUE/iu.test(constraintError(error))) throw error;
@@ -1517,6 +1576,15 @@ async function actOnCase(
       }),
       ...(change.after ?? []),
       accessLog(deps, row.id, actor, roles, "write"),
+      ...inboxStatements(deps, {
+        caseId: row.id,
+        revision: row.revision + 1,
+        kind: change.kind,
+        idempotencyKey,
+        reporterGithubId: row.reporter_github_id,
+        detail: change.detail,
+        terms: program?.manifest.securityBounty,
+      }),
     ]);
   } catch (error) {
     const message = constraintError(error);

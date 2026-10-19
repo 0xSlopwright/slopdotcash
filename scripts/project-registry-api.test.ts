@@ -59,6 +59,7 @@ beforeEach(() => {
     "0020_project_application_github_check.sql",
     "0023_project_enforcements.sql",
     "0024_notifications.sql",
+    "0029_notification_event_kinds.sql",
   ]);
   sqlite = database.sqlite;
   persistence = new CloudflareProjectPersistence(database.db);
