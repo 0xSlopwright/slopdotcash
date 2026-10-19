@@ -499,6 +499,17 @@ try {
       viewport,
     });
     const page = await context.newPage();
+    // The site reads the project registry from D1 at startup. A local
+    // preview has no Pages Functions, so it serves the committed snapshot
+    // the build ingested; production evidence reads the live API.
+    if (mode !== "production")
+      await page.route("**/api/v1/projects", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json; charset=utf-8",
+          body: JSON.stringify({ schemaVersion: "1", projects: PROJECTS }),
+        }),
+      );
     page.on("console", (message) => {
       log.console.push({
         page: name,

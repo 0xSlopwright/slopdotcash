@@ -71,6 +71,16 @@ try {
       body: await response.text(),
     });
   });
+  // The site reads the project registry from D1 at startup. The payments
+  // fixture serves no registry, so answer it with the empty registry the
+  // payout flow needs; registered last, this route takes precedence.
+  await page.route("**/api/v1/projects", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ schemaVersion: "1", projects: [] }),
+    }),
+  );
   await page.exposeFunction("localWalletSign", (message) =>
     signer.signMessage({ message: { raw: message } }),
   );
