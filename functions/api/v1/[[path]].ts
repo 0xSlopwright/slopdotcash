@@ -25,6 +25,7 @@ import {
   handleProjectApi,
 } from "../../../backend/projects/handler";
 import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata";
+import { handleSecurityApi } from "../../../backend/security/handler";
 import { handleSlopbotApi } from "../../../backend/slopbot/summary";
 import {
   CloudflareTracePersistence,
@@ -313,6 +314,25 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     waitUntil: context.waitUntil?.bind(context),
   });
   if (projectResponse !== null) return projectResponse;
+  const securityResponse = await handleSecurityApi(context.request, {
+    db: context.env.SLOP_DB,
+    now: () => new Date(),
+    randomId: () => crypto.randomUUID(),
+    sessionActor: (request) =>
+      sessionGithubActor(
+        request,
+        context.env.SLOP_DB,
+        new Date().toISOString(),
+      ),
+    github: {
+      fetch: (url, init) => fetch(url, init),
+      token: context.env.SLOP_GITHUB_READ_TOKEN,
+      apiOrigin: githubApiOrigin(context.env),
+    },
+    cache: edgeCache(),
+    waitUntil: context.waitUntil?.bind(context),
+  });
+  if (securityResponse !== null) return securityResponse;
   const feeConversionsResponse = await handleFeeConversionsApi(
     context.request,
     {

@@ -204,6 +204,12 @@ function assertApplicationManifest(manifest: ProjectDefinition): void {
         (manifest.escrow?.deployments ?? []).length === 0,
       "Funding addresses and escrow deployments need admin verification",
     ],
+    [
+      manifest.securityBounty === undefined ||
+        (manifest.securityBounty.status === "pending-approval" &&
+          manifest.securityBounty.funding.state === "pledged"),
+      "A security bounty program starts pending approval with pledged funding",
+    ],
   ];
   for (const [valid, message] of rules) {
     if (!valid) fail(422, "invalid_manifest", message);

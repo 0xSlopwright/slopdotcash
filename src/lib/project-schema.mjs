@@ -13,6 +13,7 @@ import {
   assertRewardAsset,
   REWARD_ASSET_NETWORK_IDS,
 } from "./reward-asset.mjs";
+import { assertSecurityBountyTerms } from "./security-bounty.mjs";
 
 /**
  * The canonical generic templates every generated project skill renders from
@@ -65,6 +66,7 @@ const OPTIONAL_PROJECT_KEYS = [
   "participation",
   "rewardAsset",
   "contribution",
+  "securityBounty",
 ];
 export const MAX_MONTHLY_CAP_MINOR = 1_000_000_000_000_000n;
 
@@ -1218,6 +1220,11 @@ function validateProjectDefinition(
     rewardAsset: project.rewardAsset,
   });
   validateFunding(project.funding, id);
+  if (project.securityBounty !== undefined)
+    assertSecurityBountyTerms(project.securityBounty, {
+      repositories,
+      reward: project.reward,
+    });
   // Escrow is the only funding mode, and the escrow vault holds the balance.
   // No manifest instrument can back a committed amount or an enabled payment.
   if (

@@ -96,6 +96,12 @@ export { readBoundedJson } from "./lib/browser-json";
 const ProjectProposalPage = lazy(() => import("./ProjectProposalPage"));
 const AdminPage = lazy(() => import("./Admin"));
 const InboxPage = lazy(() => import("./Inbox"));
+const SecurityCasesPage = lazy(() => import("./SecurityBounty"));
+const SecurityProgramPage = lazy(() =>
+  import("./SecurityBounty").then((module) => ({
+    default: module.SecurityProgramPage,
+  })),
+);
 const ProjectUpdatePage = lazy(() =>
   import("./ProjectProposalPage").then((module) => ({
     default: module.ProjectUpdatePage,
@@ -142,7 +148,9 @@ interface Route {
     | "points"
     | "login"
     | "earnings"
-    | "inbox";
+    | "inbox"
+    | "security-cases"
+    | "security-program";
   projectId?: string;
   cycleId?: string;
   login?: string;
@@ -162,6 +170,8 @@ function internalRoute(pathname: string): Route {
     return { kind: "login" };
   if (segments.length === 1 && segments[0] === "inbox")
     return { kind: "inbox" };
+  if (segments.length === 1 && segments[0] === "security")
+    return { kind: "security-cases" };
   // The admin email deep-links one application at /admin/applications/<id>.
   if (
     segments[0] === "admin" &&
@@ -205,6 +215,13 @@ function internalRoute(pathname: string): Route {
     segments[2] === "manage"
   ) {
     return { kind: "manage-project", projectId: segments[1] };
+  }
+  if (
+    segments[0] === "projects" &&
+    segments.length === 3 &&
+    segments[2] === "security"
+  ) {
+    return { kind: "security-program", projectId: segments[1] };
   }
   if (
     segments[0] === "projects" &&
@@ -259,6 +276,7 @@ const PRIVATE_PAGE_TITLES = new Map<Route["kind"], string>([
   ["login", "Log in"],
   ["earnings", "Your payouts"],
   ["inbox", "Inbox"],
+  ["security-cases", "Security cases"],
 ]);
 
 /** The title and canonical path of a route; a missing page has no canonical. */
@@ -266,7 +284,10 @@ function routeHead(route: Route): { title: string; path: string | null } {
   const notFound = { title: pageTitle("Page not found"), path: null };
   const privateTitle = PRIVATE_PAGE_TITLES.get(route.kind);
   if (privateTitle) {
-    return { title: pageTitle(privateTitle), path: `/${route.kind}` };
+    return {
+      title: pageTitle(privateTitle),
+      path: route.kind === "security-cases" ? "/security" : `/${route.kind}`,
+    };
   }
   if (route.kind === "profile") {
     const login = route.login ?? "";
@@ -279,6 +300,7 @@ function routeHead(route: Route): { title: string; path: string | null } {
     route.kind === "project" ||
     route.kind === "funding-project" ||
     route.kind === "manage-project" ||
+    route.kind === "security-program" ||
     route.kind === "cycle"
   ) {
     const project = findProject(route.projectId ?? "");
@@ -294,6 +316,12 @@ function routeHead(route: Route): { title: string; path: string | null } {
       return {
         title: pageTitle(`${project.name} funding`),
         path: `${base}/funding`,
+      };
+    }
+    if (route.kind === "security-program") {
+      return {
+        title: pageTitle(`${project.name} security bounty`),
+        path: `${base}/security`,
       };
     }
     if (route.kind === "manage-project") {
@@ -1169,6 +1197,14 @@ function ProjectPage({
                   ? "inbound terms unknown"
                   : `${project.terms.inbound.mode} inbound terms`}{" "}
                 · <a href={`/projects/${project.id}/terms.json`}>Terms</a>
+                {project.securityBounty ? (
+                  <>
+                    {" · "}
+                    <Link href={`/projects/${project.slug}/security`}>
+                      Security bounty
+                    </Link>
+                  </>
+                ) : null}
                 {project.steward.github.type === "User" ? (
                   <PublicXLink actorId={project.steward.github.nodeId} />
                 ) : null}
@@ -2810,6 +2846,8 @@ function AppContent({ route }: { route: Route }) {
     "how-it-works",
     "new-project",
     "manage-project",
+    "security-cases",
+    "security-program",
     "unknown",
     "cycle-archive",
   ];
@@ -2834,7 +2872,15 @@ function AppContent({ route }: { route: Route }) {
   else if (route.kind === "cycle-archive")
     content = <CycleArchivePage retry={retryArchive} state={archive} />;
   else if (route.kind === "new-project") content = <ProjectProposalPage />;
-  else if (route.kind === "manage-project") {
+  else if (route.kind === "security-cases") content = <SecurityCasesPage />;
+  else if (route.kind === "security-program") {
+    const project = findProject(route.projectId ?? "");
+    content = project ? (
+      <SecurityProgramPage project={project} />
+    ) : (
+      <NotFound title="Project not found" />
+    );
+  } else if (route.kind === "manage-project") {
     const project = findProject(route.projectId ?? "");
     content = project ? (
       <ProjectUpdatePage key={project.id} project={project} />

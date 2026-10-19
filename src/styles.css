@@ -4641,3 +4641,69 @@ small {
   align-items: center;
   gap: 1rem;
 }
+
+/* Private security bounty pages (SecurityBounty.tsx). */
+.admin-intro .security-lead {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.security-page .admin-card ul,
+.security-case-list,
+.security-history {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.security-handoff {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.security-handoff svg {
+  width: 14px;
+  height: 14px;
+}
+
+.security-form {
+  display: grid;
+  gap: 10px;
+}
+
+.security-action {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.security-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.security-form .checkbox-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-weight: 400;
+}
+
+.security-form input:not([type="checkbox"]),
+.security-form select,
+.security-form textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 400;
+}

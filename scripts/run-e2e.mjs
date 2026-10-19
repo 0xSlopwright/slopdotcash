@@ -24,6 +24,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   E2E_OWNER,
+  E2E_SECURITY_ACCOUNTS,
   startGitHubApiFixture,
 } from "../tests/github-api-fixture.mjs";
 import { childEnvironment } from "./child-environment.mjs";
@@ -114,6 +115,13 @@ function prepareRegistryDatabase() {
     admin: { token: sessionToken(), githubId: E2E_ADMIN_GITHUB_ID },
     applicant: { token: sessionToken(), githubId: "900000002" },
     owner: { token: sessionToken(), githubId: E2E_OWNER.githubId },
+    // Private security bounty roles (tests/e2e/security-bounty.spec.ts).
+    ...Object.fromEntries(
+      Object.entries(E2E_SECURITY_ACCOUNTS).map(([role, githubId]) => [
+        role,
+        { token: sessionToken(), githubId },
+      ]),
+    ),
   };
   const expires = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
   const sql = Object.entries(sessions)
@@ -140,6 +148,14 @@ function prepareRegistryDatabase() {
       SLOP_E2E_ADMIN_TOKEN: sessions.admin.token,
       SLOP_E2E_APPLICANT_TOKEN: sessions.applicant.token,
       SLOP_E2E_OWNER_TOKEN: sessions.owner.token,
+      SLOP_E2E_SECURITY_TOKENS: JSON.stringify(
+        Object.fromEntries(
+          Object.keys(E2E_SECURITY_ACCOUNTS).map((role) => [
+            role,
+            sessions[role].token,
+          ]),
+        ),
+      ),
     },
   };
 }
