@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { ArrowDown, ChevronDown } from "lucide-react";
 import {
   createContext,
   type ReactNode,
@@ -915,16 +915,13 @@ export function ContributorStandings({
     const params = new URLSearchParams(window.location.search);
     const sort = params.get("sort");
     const period = params.get("period");
-    // `period=new` was the earlier combined control: the new-earner cohort
-    // over recorded history.
+    // `period=new` was an earlier link to recorded history.
     return {
       sort:
         sort === "points" || sort === "money"
           ? sort
           : ("score" as StandingsSort),
       period: period === "lifetime" || period === "new" ? "lifetime" : "month",
-      cohort:
-        params.get("cohort") === "new" || period === "new" ? "new" : "all",
       query: params.get("q") ?? "",
       project: projectId ?? findProject(params.get("project") ?? "")?.id ?? "",
       page: Math.max(
@@ -934,13 +931,11 @@ export function ContributorStandings({
     };
   }, [projectId]);
   const [filters, setFilters] = useState(readFilters);
-  const { sort, period, cohort, query, project, page } = filters;
+  const { sort, period, query, project, page } = filters;
   const setSort = (sort: StandingsSort) =>
     setFilters((v) => ({ ...v, sort, page: 0 }));
   const setPeriod = (period: string) =>
     setFilters((v) => ({ ...v, period, page: 0 }));
-  const setCohort = (cohort: string) =>
-    setFilters((v) => ({ ...v, cohort, page: 0 }));
   const setQuery = (query: string) =>
     setFilters((v) => ({ ...v, query, page: 0 }));
   const setProject = (project: string) =>
@@ -956,7 +951,6 @@ export function ContributorStandings({
     for (const [key, value] of Object.entries({
       sort: sort === "score" ? "" : sort,
       period: period === "month" ? "" : period,
-      cohort: cohort === "all" ? "" : cohort,
       q: query,
       project: projectId ? "" : project,
       page: page ? String(page + 1) : "",
@@ -965,7 +959,7 @@ export function ContributorStandings({
       else url.searchParams.delete(key);
     }
     window.history.replaceState(window.history.state, "", url);
-  }, [sort, period, cohort, query, project, page, projectId]);
+  }, [sort, period, query, project, page, projectId]);
   const { state } = useContext(Context);
   const members = useMemo(() => {
     if (state.status !== "ready") return [];
@@ -992,12 +986,6 @@ export function ContributorStandings({
   const scoreMissing = scores.status === "loading" ? "Loading…" : "Unavailable";
   const pointsMissing = state.status === "loading" ? "Loading…" : "Unavailable";
   const ranked = projection.rows
-    .filter(
-      (m) =>
-        cohort !== "new" ||
-        (m.firstContributionAt !== null &&
-          Date.parse(m.firstContributionAt) >= Date.now() - 30 * 86400000),
-    )
     .filter((m) => metric(m) !== null)
     .sort((a, b) => {
       const left = metric(a) ?? 0;
@@ -1045,70 +1033,51 @@ export function ContributorStandings({
       ) : null}
       {scores.status === "ready" && !projection.scoreAvailable ? (
         <p className="points-meta">
-          No score records cover this period. Select Recorded history.
+          {compact
+            ? "No score records cover this month yet."
+            : "No score records cover this period. Select Recorded history."}
         </p>
       ) : null}
-      <div className="points-controls">
-        <label>
-          Sort by
-          <select
-            value={sort}
-            onChange={(e) => {
-              setSort(e.target.value as StandingsSort);
-              setPage(0);
-            }}
-          >
-            <option value="score">Slop Score</option>
-            <option value="points">Points</option>
-            <option value="money">Money received</option>
-          </select>
-        </label>
-        <label>
-          Period
-          <select
-            aria-label="Period"
-            value={period}
-            onChange={(e) => {
-              setPeriod(e.target.value);
-              setPage(0);
-            }}
-          >
-            <option value="month">This month (UTC)</option>
-            <option value="lifetime">Recorded history</option>
-          </select>
-        </label>
-        <label>
-          Cohort
-          <select
-            aria-label="Cohort"
-            value={cohort}
-            onChange={(e) => setCohort(e.target.value)}
-          >
-            <option value="all">All contributors</option>
-            <option value="new">New · first contribution in 30 days</option>
-          </select>
-        </label>
-        {!projectId ? (
-          <label>
-            Project
-            <select
-              aria-label="Project"
-              value={project}
-              onChange={(e) => {
-                setProject(e.target.value);
-                setPage(0);
-              }}
-            >
-              <option value="">All projects</option>
-              {PROJECTS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-        {!compact ? (
+      {!compact ? (
+        <div className="points-controls">
+          <fieldset className="points-period">
+            <legend>Period</legend>
+            {(
+              [
+                ["month", "This month (UTC)"],
+                ["lifetime", "Recorded history"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                aria-pressed={period === value}
+                key={value}
+                onClick={() => setPeriod(value)}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+          </fieldset>
+          {!projectId ? (
+            <label>
+              Project
+              <select
+                aria-label="Project"
+                value={project}
+                onChange={(e) => {
+                  setProject(e.target.value);
+                  setPage(0);
+                }}
+              >
+                <option value="">All projects</option>
+                {PROJECTS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <label>
             Find a contributor
             <input
@@ -1120,8 +1089,8 @@ export function ContributorStandings({
               type="search"
             />
           </label>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       {(
         sort === "points"
           ? state.status === "ready"
@@ -1129,9 +1098,6 @@ export function ContributorStandings({
             (sort !== "score" || projection.scoreAvailable)
       ) ? (
         <>
-          <p className="standings-scroll-hint">
-            Scroll the table to see all columns.
-          </p>
           <section
             className="points-table"
             aria-label="Contributor standings table"
@@ -1143,9 +1109,30 @@ export function ContributorStandings({
                 <tr>
                   <th scope="col">Rank</th>
                   <th scope="col">Contributor</th>
-                  <th scope="col">Slop Score</th>
-                  <th scope="col">Points</th>
-                  <th scope="col">Money received · USDC</th>
+                  {(
+                    [
+                      ["score", "Score"],
+                      ["points", "Points"],
+                      ["money", "Amount"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <th
+                      aria-sort={sort === key ? "descending" : "none"}
+                      key={key}
+                      scope="col"
+                    >
+                      <button
+                        className="points-sort"
+                        onClick={() => setSort(key)}
+                        type="button"
+                      >
+                        {label}
+                        {sort === key ? (
+                          <ArrowDown aria-hidden="true" size={14} />
+                        ) : null}
+                      </button>
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>

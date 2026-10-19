@@ -1128,13 +1128,6 @@ p {
   text-transform: uppercase;
 }
 
-.how-section {
-  padding-block: 96px;
-  background: var(--band);
-  color: var(--band-ink);
-  scroll-margin-top: 64px;
-}
-
 .project-card-heading svg {
   flex: 0 0 auto;
   color: var(--orange-dark);
@@ -1350,16 +1343,6 @@ small {
 
 .footer-wordmark {
   margin: 0;
-}
-
-.footer-grid p {
-  margin: 0;
-  color: #aaa398;
-  font-size: 13px;
-}
-
-.footer-grid .footer-copyright {
-  text-align: right;
 }
 
 .footer-links {
@@ -2522,10 +2505,6 @@ small {
     margin-bottom: 28px;
   }
 
-  .how-section {
-    padding-block: 72px;
-  }
-
   .home-leaderboard-section {
     padding-block: 28px 72px;
   }
@@ -3404,9 +3383,6 @@ small {
   max-width: 100%;
   overflow-x: auto;
 }
-.standings-scroll-hint {
-  display: none;
-}
 .points-table table {
   min-width: 40rem;
   width: 100%;
@@ -3807,13 +3783,6 @@ small {
   .model-outcome-details dl > div {
     grid-template-columns: 1fr;
     gap: 4px;
-  }
-}
-
-@media (max-width: 760px) {
-  .standings-scroll-hint {
-    display: block;
-    font-size: 0.875rem;
   }
 }
 

@@ -1,19 +1,13 @@
 import {
   ArrowLeft,
   ArrowRight,
-  BadgeCheck,
   Check,
   ChevronRight,
   CircleAlert,
   Clipboard,
-  Coins,
   ExternalLink,
-  FolderGit2,
-  GitPullRequest,
   Plus,
   RotateCcw,
-  ShieldCheck,
-  Terminal,
 } from "lucide-react";
 import {
   lazy,
@@ -28,7 +22,6 @@ import { CycleArchivePage, CyclePage } from "./CyclePages";
 import { EarningsPage } from "./Earnings";
 import { EscrowFunding } from "./EscrowFunding";
 import {
-  type FundingDataState,
   formatFundingAmount,
   formatFundingMinor,
   fundingTransactionExplorer,
@@ -45,7 +38,6 @@ import { browserDeployment } from "./lib/browser-deployment";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
 import { currentProjectFundingRecords } from "./lib/funding";
-import { commitmentVerifiedNetMinor } from "./lib/funding-commitment";
 import { communityProjects, homeProjects } from "./lib/home-projects";
 import { createInstallCommand } from "./lib/install-command";
 import {
@@ -372,6 +364,9 @@ function Header() {
             <Wordmark domain={domain} />
           </span>
         </Link>
+        <Link className="header-nav-link" href="/how-it-works">
+          How It Works
+        </Link>
         <PointsNav />
       </div>
     </header>
@@ -388,7 +383,6 @@ function Footer() {
           <div className="wordmark footer-wordmark">{domain}</div>
         </div>
         <nav className="footer-links" aria-label="Community">
-          <span>Community</span>
           <ExternalLinkAnchor href={SOURCE_REPOSITORY}>
             GitHub
           </ExternalLinkAnchor>
@@ -401,12 +395,6 @@ function Footer() {
           </ExternalLinkAnchor>
           <a href={CONTACT_MAILTO}>{CONTACT_EMAIL}</a>
         </nav>
-        <div className="footer-meta">
-          <p className="footer-copyright">
-            © {new Date().getUTCFullYear()} slop.cash.
-          </p>
-          <p>GitHub is the record.</p>
-        </div>
       </div>
     </footer>
   );
@@ -509,44 +497,7 @@ function ProjectOwnerAvatar({ project }: { project: ProjectDefinition }) {
   );
 }
 
-function ProjectCard({
-  project,
-  funding,
-}: {
-  project: ProjectDefinition;
-  funding: FundingDataState;
-}) {
-  const vaults =
-    project.funding.commitments?.filter(
-      (instrument) =>
-        instrument.kind === "squads-v4-vault" && instrument.replacedAt === null,
-    ) ?? [];
-  const vaultRecords =
-    funding.status === "ready"
-      ? funding.index.commitments.filter(
-          (record) =>
-            record.projectId === project.id &&
-            "vault" in record.instrument &&
-            vaults.some(
-              (vault) =>
-                vault.kind === "squads-v4-vault" &&
-                "vault" in record.instrument &&
-                vault.vault === record.instrument.vault,
-            ),
-        )
-      : [];
-  const vaultBalance =
-    vaults.length === 0
-      ? "Not funded"
-      : funding.status === "loading"
-        ? "Loading…"
-        : funding.status === "error"
-          ? "Unavailable"
-          : !vaultRecords.some((record) => record.state === "verified-on-chain")
-            ? "Not verified"
-            : formatMicroUsdc(
-                commitmentVerifiedNetMinor(vaultRecords).toString(),
-              );
+function ProjectCard({ project }: { project: ProjectDefinition }) {
   const amount =
     project.reward.kind === "monthly-pool"
       ? monthlyPoolCapLabel(project.reward)
@@ -570,13 +521,11 @@ function ProjectCard({
             <span>/mo target</span>
           )}
         </p>
-        <small className="project-money-state">
-          {monthlyPoolPointsOnly(project.reward)
-            ? "Points only"
-            : project.reward.kind === "monthly-pool"
-              ? `Vault: ${vaultBalance}`
-              : "External prize"}
-        </small>
+        {monthlyPoolPointsOnly(project.reward) ? (
+          <small className="project-money-state">Points only</small>
+        ) : project.reward.kind === "monthly-pool" ? null : (
+          <small className="project-money-state">External prize</small>
+        )}
         {project.reward.reviewBudget ? (
           <small className="project-review-budget">
             + {reviewBudgetLabel(project.reward.reviewBudget)}
@@ -682,7 +631,6 @@ function bootstrapAgentPrompt(): string {
 }
 
 function HomePage() {
-  const [funding] = useFundingIndex();
   const featuredProjects = homeProjects().filter(
     (project) => project.listingTier === "featured",
   );
@@ -705,79 +653,11 @@ function HomePage() {
           <h3 id="featured-projects">Featured</h3>
           <div className="project-grid">
             {featuredProjects.map((project) => (
-              <ProjectCard
-                key={project.id}
-                project={project}
-                funding={funding}
-              />
+              <ProjectCard key={project.id} project={project} />
             ))}
           </div>
         </section>
         <CommunityProjects projects={communityProjects()} />
-      </section>
-      <section className="how-section" id="how-it-works">
-        <div className="shell">
-          <div className="home-section-heading">
-            <h2 className="home-section-title">How it works</h2>
-            <Link className="button secondary-button" href="/how-it-works">
-              Scores and rewards <ArrowRight aria-hidden="true" />
-            </Link>
-          </div>
-          <div className="how-tracks">
-            <article>
-              <h3>Contributors</h3>
-              <ol className="how-steps">
-                <li>
-                  <Terminal aria-hidden="true" />
-                  <span>
-                    <strong>Paste the skill.</strong> Your agent reads the
-                    project terms and picks unblocked work on GitHub.
-                  </span>
-                </li>
-                <li>
-                  <GitPullRequest aria-hidden="true" />
-                  <span>
-                    <strong>Ship a PR.</strong> The skill tests the change and
-                    prepares the evidence.
-                  </span>
-                </li>
-                <li>
-                  <BadgeCheck aria-hidden="true" />
-                  <span>
-                    <strong>Get merged.</strong> Accepted work raises your Slop
-                    Score. Maintainers approve rewards.
-                  </span>
-                </li>
-              </ol>
-            </article>
-            <article>
-              <h3>Maintainers</h3>
-              <ol className="how-steps">
-                <li>
-                  <FolderGit2 aria-hidden="true" />
-                  <span>
-                    <strong>Add your repo.</strong> Draft the manifest and the
-                    agent brief, then open the PR on GitHub.
-                  </span>
-                </li>
-                <li>
-                  <Coins aria-hidden="true" />
-                  <span>
-                    <strong>Set a monthly pool.</strong> Fund it through a
-                    reviewed third-party instrument.
-                  </span>
-                </li>
-                <li>
-                  <ShieldCheck aria-hidden="true" />
-                  <span>
-                    <strong>Review on GitHub.</strong> You merge the work. You
-                    approve each payout.
-                  </span>
-                </li>
-              </ol>
-            </article>
-          </div>
-        </div>
       </section>
       <GlobalLeaderboard />
     </main>

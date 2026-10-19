@@ -37,7 +37,6 @@ export function contributorStandings(
       score: number | null;
       points: number | null;
       money: bigint | null;
-      firstContributionAt: string | null;
     }
   >();
   const row = (actor: { id: string; login: string }) => {
@@ -48,7 +47,6 @@ export function contributorStandings(
         score: scoreAvailable ? 0 : null,
         points: members ? 0 : null,
         money: state.status === "ready" ? 0n : null,
-        firstContributionAt: null,
       };
       rows.set(actor.id, value);
     }
@@ -116,7 +114,6 @@ export function contributorStandings(
   for (const member of members ?? []) {
     const value = row(member.actor);
     value.points = month ? member.monthly : member.total;
-    value.firstContributionAt = member.firstContributionAt;
   }
   return { rows: [...rows.values()], scoreAvailable };
 }

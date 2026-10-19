@@ -432,9 +432,7 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   await expect(
     elizaCard.getByText("/mo target", { exact: true }),
   ).toBeVisible();
-  await expect(
-    elizaCard.getByText("Vault: Not funded", { exact: true }),
-  ).toBeVisible();
+  await expect(elizaCard.getByText(/^Vault:/u)).toHaveCount(0);
   await expect(elizaCard.getByText("$1,000", { exact: true })).toHaveCount(0);
   await expect(
     elizaCard.getByText(/Build and verify the elizaOS framework/u),
@@ -485,19 +483,21 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
     name: "Top sloperators",
     exact: true,
   });
-  await expect(leaderboard.getByLabel("Sort by")).toHaveValue("score");
+  await expect(
+    leaderboard.getByRole("columnheader", { name: "Score", exact: true }),
+  ).toHaveAttribute("aria-sort", "descending");
   await expect(
     page.getByRole("heading", { name: "Contribution points", exact: true }),
   ).toHaveCount(0);
   await expect(
     page.getByRole("columnheader", { name: "Simulated share" }),
   ).toHaveCount(0);
-  await expect(leaderboard.getByLabel("Period", { exact: true })).toHaveValue(
-    "month",
+  // The home leaderboard has no filter controls; a shared link still selects history.
+  await expect(leaderboard.getByRole("group", { name: "Period" })).toHaveCount(
+    0,
   );
-  await leaderboard
-    .getByLabel("Period", { exact: true })
-    .selectOption("lifetime");
+  await expect(leaderboard.getByLabel("Project")).toHaveCount(0);
+  await page.goto("/?period=lifetime#leaderboard");
   await expect(leaderboard.getByRole("table")).toBeVisible();
   const pointValues = await leaderboard
     .locator("tbody tr td:nth-child(3)")
