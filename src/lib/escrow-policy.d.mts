@@ -38,8 +38,8 @@ export interface EscrowPolicy {
   effectiveCycle: string;
   chain: EscrowChain;
   feeBasisPoints: 200;
-  /** Escrow v2: equal to the payout fee, 2%, enforced by the contracts. */
-  withdrawalFeeBasisPoints: 200;
+  /** Escrow v2: 5%, floor(gross / 20) per withdrawal, enforced by the contracts. */
+  withdrawalFeeBasisPoints: 500;
   feeMode: "deduct-from-gross";
   deployments: EscrowDeployment[];
 }

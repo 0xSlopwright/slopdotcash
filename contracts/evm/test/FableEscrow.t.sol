@@ -280,29 +280,30 @@ contract FableEscrowTest is FableBase {
         vm.assume(total > 0 && total <= 1_000_000e6);
         depositAs(total);
         uint128 remaining = total;
+        uint128 fees;
         for (uint8 i = 0; i < parts && remaining > 0; i++) {
             uint128 g = i == parts - 1 ? remaining : remaining / (parts - i);
             if (g == 0) g = remaining;
             vm.prank(OWNER);
             vault.withdrawUnused(g);
+            fees += g / 20;
             remaining -= g;
         }
         require(vault.totalGrossWithdrawn() == total, "all out");
-        require(vault.totalWithdrawalFees() == total / 50, "fee == floor(total/50) regardless of split");
-        require(vault.accruedFees() == total / 50, "accrued");
-        require(usdc.balanceOf(OWNER) == 1_000_000_000e6 - total + (total - total / 50), "owner net");
+        require(vault.totalWithdrawalFees() == fees, "fee == sum of floor(piece/20)");
+        require(fees <= total / 20 && total / 20 - fees < parts, "a split saves under one unit per piece");
+        require(vault.accruedFees() == fees, "accrued");
+        require(usdc.balanceOf(OWNER) == 1_000_000_000e6 - total + (total - fees), "owner net");
         require(conservationHolds(), "conservation");
     }
 
-    function test_sound_oneUnitWithdrawalCanBeAllFee() public {
-        depositAs(100);
-        vm.prank(OWNER);
-        vault.withdrawUnused(49); // cumulative 49, fee 0
+    function test_sound_withdrawalFeeIsFivePercentRoundedDown() public {
+        depositAs(1_000);
         uint256 before = usdc.balanceOf(OWNER);
         vm.prank(OWNER);
-        vault.withdrawUnused(1); // cumulative 50, fee 1, net 0: sendExact(0) returns early, no revert
-        require(usdc.balanceOf(OWNER) == before, "net zero");
-        require(vault.totalWithdrawalFees() == 1 && vault.accruedFees() == 1, "fee 1");
+        vault.withdrawUnused(850); // floor(850 / 20) = 42
+        require(usdc.balanceOf(OWNER) - before == 808, "net 808");
+        require(vault.totalWithdrawalFees() == 42 && vault.accruedFees() == 42, "fee 42");
         require(conservationHolds(), "conservation");
     }
 

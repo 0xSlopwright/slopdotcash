@@ -104,15 +104,17 @@ contract OpusFindingsTest is OpusBase {
         check(logs.length == 1, "one BindingCancelled event for one binding");
     }
 
-    /// Info: a one-unit withdrawal can carry a 100% fee (net zero transfer, event net 0).
-    function test_withdrawFeeCanEqualGross() public {
+    /// Info: the 5% withdrawal fee rounds down once per withdrawal, so a withdrawal under 20 base units pays
+    /// no fee and a split saves under one base unit per transaction.
+    function test_withdrawFeeRoundsDownPerWithdrawal() public {
         vm.startPrank(OWNER);
-        escrow.withdrawUnused(49);
         uint256 before = usdc.balanceOf(OWNER);
-        escrow.withdrawUnused(1);
+        escrow.withdrawUnused(19);
+        check(usdc.balanceOf(OWNER) - before == 19 && escrow.totalWithdrawalFees() == 0, "19 pays no fee");
+        escrow.withdrawUnused(20);
         vm.stopPrank();
-        check(usdc.balanceOf(OWNER) == before, "net zero");
-        check(escrow.totalWithdrawalFees() == 1, "fee 1 on gross 1");
+        check(usdc.balanceOf(OWNER) - before == 19 + 19, "20 refunds 19");
+        check(escrow.totalWithdrawalFees() == 1, "fee 1 on gross 20");
     }
 
     /// Sound: a cancelled binding never pays, even far in the future, and a rotation after it pays only

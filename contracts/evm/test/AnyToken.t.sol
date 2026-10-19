@@ -35,7 +35,7 @@ contract HugeDecimalsToken {
     }
 }
 
-/// Escrow v2: any standard ERC-20 with any decimals, uint128 amounts, permissionless deposit and the 2%
+/// Escrow v2: any standard ERC-20 with any decimals, uint128 amounts, permissionless deposit and the 5%
 /// unused-fund withdrawal fee.
 contract AnyTokenTest is OpusBase {
     AnyTokenVm internal constant vm2 = AnyTokenVm(address(uint160(uint256(keccak256("hevm cheat code")))));
@@ -108,9 +108,10 @@ contract AnyTokenTest is OpusBase {
         uint256 ownerBefore = token.balanceOf(OWNER);
         vm.prank(OWNER);
         vault.withdrawUnused(withdrawal);
-        uint128 withdrawalFee = withdrawal / 50;
-        check(token.balanceOf(OWNER) - ownerBefore == withdrawal - withdrawalFee, "refund minus 2%");
-        check(vault.totalWithdrawalFees() == withdrawalFee, "withdrawal fee is 2%");
+        uint128 withdrawalFee = withdrawal / 20;
+        check(vault.withdrawalFee(withdrawal) == withdrawalFee, "withdrawalFee view");
+        check(token.balanceOf(OWNER) - ownerBefore == withdrawal - withdrawalFee, "refund minus 5%");
+        check(vault.totalWithdrawalFees() == withdrawalFee, "withdrawal fee is 5%");
         uint128 accrued = vault.accruedFees();
         check(accrued == payout + withdrawalFee, "fees accrue");
         vault.claimFees();
@@ -173,19 +174,26 @@ contract AnyTokenTest is OpusBase {
         uint256 before = usdc.balanceOf(OWNER);
         vm.prank(OWNER);
         escrow.withdrawUnused(500e6);
-        check(usdc.balanceOf(OWNER) - before == 490e6, "owner refund destination gets 98%");
+        check(usdc.balanceOf(OWNER) - before == 475e6, "owner refund destination gets 95%");
         check(usdc.balanceOf(DONOR) == 0, "donor gets no refund");
-        check(escrow.accruedFees() == 10e6, "2% withdrawal fee");
+        check(escrow.accruedFees() == 25e6, "5% withdrawal fee");
     }
 
-    function test_withdrawalFeeIsCumulativeTwoPercent() public {
-        fund(1_000);
+    function test_withdrawalFeeIsFivePercentPerWithdrawal() public {
+        // PRD section 18 example: 850 USDC free gives a 42.5 USDC fee and 807.5 USDC to the refund destination.
+        fund(1_000e6);
+        uint256 before = usdc.balanceOf(OWNER);
+        vm.prank(OWNER);
+        escrow.withdrawUnused(850e6);
+        check(escrow.totalWithdrawalFees() == 42_500_000, "floor(850e6 / 20)");
+        check(usdc.balanceOf(OWNER) - before == 807_500_000, "807.5 USDC refunded");
+        // Rounded down once per withdrawal.
         vm.startPrank(OWNER);
-        for (uint256 i; i < 10; i++) {
-            escrow.withdrawUnused(10);
-        }
+        escrow.withdrawUnused(39);
+        escrow.withdrawUnused(19);
         vm.stopPrank();
-        check(escrow.totalWithdrawalFees() == 2, "100 withdrawn in ten steps pays floor(100/50)");
+        check(escrow.totalWithdrawalFees() == 42_500_000 + 1, "39 pays 1, 19 pays 0");
+        check(escrow.withdrawalFee(type(uint128).max) == type(uint128).max / 20, "no overflow at uint128 max");
     }
 
     function test_feeOnTransferDepositReverts() public {
@@ -279,8 +287,8 @@ contract AnyTokenTest is OpusBase {
             uint256 balance
         ) = escrow.totals();
         check(deposited == 1_000e6 && paid == 294e6 && payoutFees == 6e6, "award totals");
-        check(grossWithdrawn == 100e6 && withdrawalFees == 2e6 && serviceFees == 5e6, "withdrawal totals");
+        check(grossWithdrawn == 100e6 && withdrawalFees == 5e6 && serviceFees == 5e6, "withdrawal totals");
         check(free == 595e6 && principalReserved == 0 && feesReserved == 0, "balances");
-        check(feesAccrued == 13e6 && balance == 608e6, "vault holds free plus accrued fees");
+        check(feesAccrued == 16e6 && balance == 611e6, "vault holds free plus accrued fees");
     }
 }

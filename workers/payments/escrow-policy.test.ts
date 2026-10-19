@@ -61,7 +61,7 @@ const policy = (chain: string, deployment: object) => ({
   effectiveCycle: "2026-11",
   chain,
   feeBasisPoints: 200,
-  withdrawalFeeBasisPoints: 200,
+  withdrawalFeeBasisPoints: 500,
   feeMode: "deduct-from-gross",
   deployments: [deployment],
 });
@@ -256,11 +256,17 @@ describe("escrow v2 network registry", () => {
       expect(network.assetDecimals).toBe(network.assets[0]?.decimals ?? null);
     }
   });
-  test("the withdrawal fee is 2% and nothing else", () => {
+  test("the withdrawal fee is 5% and nothing else", () => {
     expect(() =>
       assertEscrowPolicy({
         ...policy("base", evmDeployment),
         withdrawalFeeBasisPoints: 1000,
+      }),
+    ).toThrow(/fee policy/);
+    expect(() =>
+      assertEscrowPolicy({
+        ...policy("base", evmDeployment),
+        withdrawalFeeBasisPoints: 200,
       }),
     ).toThrow(/fee policy/);
   });

@@ -237,14 +237,14 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
     (await getAccount(provider.connection, vault)).amount,
     25_000_000n,
   );
-  // 2% of 75,000,000 is 1,500,000. The owner started with 100M and deposited 60M.
+  // 5% of 75,000,000 is 3,750,000. The owner started with 100M and deposited 60M.
   assert.equal(
     (await getAccount(provider.connection, source.address)).amount,
-    113_500_000n,
+    111_250_000n,
   );
   assert.equal(
     (await getAccount(provider.connection, feeAccount.address)).amount,
-    1_500_000n,
+    3_750_000n,
   );
 });
 

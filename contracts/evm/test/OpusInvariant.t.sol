@@ -27,6 +27,7 @@ contract OpusHandler {
     uint256 public ghostDonated;
     uint256 public ghostNetToContributors;
     uint256 public ghostPayCount;
+    uint256 public ghostWithdrawalFees;
     uint256 public nonce;
     mapping(bytes32 => uint256) public timesPaid;
     // Track that a paid award went to the binding that was active at that instant.
@@ -137,6 +138,7 @@ contract OpusHandler {
         gross = 1 + (gross % free);
         vm.prank(owner);
         escrow.withdrawUnused(uint128(gross));
+        ghostWithdrawalFees += gross / 20;
     }
 
     function charge(uint256 amount) external {
@@ -201,8 +203,9 @@ contract OpusInvariantTest is OpusBase {
         require(IERC20(token()).balanceOf(FEE) == handler.ghostClaimed(), "fee recipient balance");
     }
 
-    function invariant_withdrawalFeeIsTwoPercentCumulative() public view {
-        require(escrow.totalWithdrawalFees() == escrow.totalGrossWithdrawn() / 50, "withdrawal fee");
+    function invariant_withdrawalFeeIsFivePercentPerWithdrawal() public view {
+        require(escrow.totalWithdrawalFees() == handler.ghostWithdrawalFees(), "withdrawal fee");
+        require(escrow.totalWithdrawalFees() <= escrow.totalGrossWithdrawn() / 20, "never above 5%");
     }
 
     function invariant_totalsMatchGetters() public view {

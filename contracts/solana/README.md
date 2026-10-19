@@ -163,17 +163,18 @@ confirmed, so the identity key of that project becomes fixed. There is no
 owner or fee recipient change in this version.
 
 The owner can commit an award to any GitHub actor, including an account the
-owner controls. Awards and withdrawals both pay 2%, so this path saves no fee.
-Maintainer review of related-party awards enforces the policy, not the program.
+owner controls. That moves unused funds out at the 2% award fee instead of the
+5% withdrawal fee. Maintainer review of related-party awards enforces the
+policy, not the program.
 
 The 2% fee is deducted from each gross award: 100 pays 98 to the contributor
 and 2 to the fee recipient, reserving 100. Integer arithmetic floors gross/50 once
-per immutable award. An unused-funds withdrawal also pays 2%. It charges
-`floor(cumulative withdrawn gross / 50)` minus the withdrawal fees already
-charged, so split withdrawals pay the same total as one withdrawal. The
-subtraction saturates at zero. A test project that paid the earlier 10%
-schedule has charged more than the 2% schedule; it pays zero withdrawal fee
-until the 2% schedule catches up, and its withdrawals never fail on underflow.
+per immutable award. An unused-funds withdrawal pays 5%: `floor(gross / 20)`,
+rounded down once per withdrawal (PRD section 18). Withdrawing 850 USDC pays
+42.5 USDC and returns 807.5 USDC. A withdrawal under 20 base units pays no fee,
+so a split saves under one base unit per transaction. The fee depends only on
+the current withdrawal, so a test project that paid the earlier 10% schedule
+is not affected.
 Amounts are token base units. Tiny awards and withdrawals can incur zero fee.
 Withdrawals consume only free vault balance, return funds only to the declared
 owner, and retain fees after any earlier payout.
@@ -219,7 +220,7 @@ a second call fails. Every later suite creates or checks the Config first
 (`integration/deployment.mjs`) and uses its fixture identity authority and fee
 recipient. The suites also cover a permissionless deposit by a third party
 that the owner then withdraws, 18-decimal and 0-decimal mints through deposit,
-commit, pay and withdraw, the 2% withdrawal fee including a split withdrawal,
+commit, pay and withdraw, the 5% withdrawal fee rounded down per withdrawal,
 `initialize` rejected when the identity authority or fee recipient differs from
 the Config, a Token-2022 mint rejected at `initialize`, and `readVaultTotals`
 against the on-chain counters.

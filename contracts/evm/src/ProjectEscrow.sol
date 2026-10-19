@@ -26,7 +26,8 @@ uint64 constant MAX_BINDING_DELAY = 30 days;
 /// can delay a payout by a bounded number of delays but never retract it. Fees accrue in the vault and are pulled separately, so a blocked fee recipient cannot
 /// stop payouts or refunds.
 /// Anyone may deposit; deposits join one free balance that only the owner commits or refunds to its refund
-/// destination. Payout and unused-fund withdrawal fees are both 2% (floor(gross / 50)). Tokens must have exact
+/// destination. The payout fee is 2% (floor(gross / 50)); the unused-fund withdrawal fee is 5% (floor(gross / 20)),
+/// rounded down once per withdrawal. Tokens must have exact
 /// transfers: a fee-on-transfer deposit or payout reverts. Decimals are stored for display only; amounts are
 /// token base units. No upgrade or reserve rescue exists.
 contract ProjectEscrow {
@@ -211,9 +212,14 @@ contract ProjectEscrow {
         return keccak256(abi.encode(block.chainid, address(this), sourceDigest));
     }
 
-    /// @notice The 2% fee on a payout or on cumulative unused-fund withdrawals, rounded down.
+    /// @notice The 2% fee deducted from a gross award, rounded down once per award.
     function payoutFee(uint128 gross) public pure returns (uint128) {
         return gross / 50;
+    }
+
+    /// @notice The 5% fee on one unused-fund withdrawal, rounded down once per withdrawal (PRD section 18).
+    function withdrawalFee(uint128 gross) public pure returns (uint128) {
+        return gross / 20;
     }
 
     /// @notice Every counter in one call, so a reader gets one consistent block. Equal to the public getters.
@@ -361,16 +367,15 @@ contract ProjectEscrow {
         emit Paid(id, award.actorId, destination, version, award.gross, net, award.fee);
     }
 
-    /// @notice 2% of cumulative gross withdrawals (payoutFee), rounded down. Splitting cannot reduce fees.
+    /// @notice Refunds free funds to the refund destination less withdrawalFee(gross), 5% rounded down. A
+    /// withdrawal under 20 base units pays no fee; splitting saves under one base unit per transaction.
     function withdrawUnused(uint128 gross) external onlyOwner nonReentrant {
         if (gross == 0) revert InvalidInput();
         if (gross > freeBalance) revert InsufficientFreeBalance();
-        uint128 cumulative = totalGrossWithdrawn + gross;
-        uint128 nextFee = payoutFee(cumulative);
-        uint128 fee = nextFee - totalWithdrawalFees;
+        uint128 fee = withdrawalFee(gross);
         freeBalance -= gross;
-        totalGrossWithdrawn = cumulative;
-        totalWithdrawalFees = nextFee;
+        totalGrossWithdrawn += gross;
+        totalWithdrawalFees += fee;
         accruedFees += fee;
         sendExact(refundDestination, gross - fee);
         emit UnusedWithdrawn(refundDestination, gross, gross - fee, fee);

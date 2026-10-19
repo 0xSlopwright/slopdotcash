@@ -174,7 +174,7 @@ Placeholders:
 1. The change is merged to `main` through a reviewed PR. CI is green on the
    exact commit. Record the commit SHA as `$COMMIT`.
 2. The independent review covers this program version (any-mint, permissionless
-   deposit, 2% withdrawal fee, Config pinning).
+   deposit, 5% withdrawal fee, Config pinning).
 3. `$IDENTITY` and `$FEES` are published and approved by the repository owner.
    They must be distinct. They cannot change after step 6.
 4. The build has no `short-delay-for-tests` feature. Only `test-e2e.sh` sets it.
@@ -318,7 +318,7 @@ Config, or with another fee recipient. Record each one in the release issue
 with its owner, fee recipient, identity authority and size. The adapter refuses
 every unpinned project, so its manifest cannot activate payments. Tell its owner
 to create a new project under the Config and move unused funds with
-`withdraw` (2% fee).
+`withdraw` (5% fee).
 
 ### 8. Revoke the upgrade authority
 
