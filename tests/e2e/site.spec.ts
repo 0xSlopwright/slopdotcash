@@ -209,8 +209,8 @@ test("equal contributors share cycle and profile ranks", async ({
   const tiedLeaders = view.leaders.filter(
     (leader) => leader.scoreThirds === tiedScore,
   );
-  await page.goto(`/projects/${view.project.id}`);
-  await page.getByText("Cycle allocation details", { exact: true }).click();
+  // The open cycle page carries the allocation table.
+  await page.goto(`/cycles/${view.project.id}/${view.cycle.id}`);
   await expect(page.locator(".project-leader-row .rank-cell")).toHaveText(
     [...view.leaders]
       .sort(
@@ -459,17 +459,8 @@ test("starts Eliza with one prompt and no separate payout form", async ({
   const homeLink = page.getByRole("link", { name: "Slop home", exact: true });
   await expect(homeLink).toBeVisible();
   await expect(homeLink).toHaveAttribute("href", "/");
-  await expect(
-    page.getByRole("link", { name: /View in GitHub/u }),
-  ).toHaveAttribute("href", "https://github.com/elizaOS/eliza");
-  const rewardStyle = await page.locator(".reward-card").evaluate((card) => {
-    const amount = card.querySelector<HTMLElement>(":scope > strong");
-    if (!amount) return null;
-    return { amountText: amount.textContent };
-  });
-  expect(rewardStyle).not.toBeNull();
-  // Eliza is pledged, so the headline is the funding state, never the cap.
-  expect(rewardStyle?.amountText).toBe("Not funded yet");
+  // An unfunded pool shows no funding card.
+  await expect(page.locator(".reward-card")).toHaveCount(0);
   const prompt = page.getByRole("status", { name: "Agent prompt" });
   await expect(prompt).toContainText(/\/SKILL\.md/u);
   await expect(prompt).toContainText(
@@ -480,36 +471,18 @@ test("starts Eliza with one prompt and no separate payout form", async ({
   expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(
     "/SKILL.md",
   );
-  await page.getByText("Advanced options").click();
-  const command = page.getByRole("textbox", {
-    name: "Manual install command",
-  });
-  await expect(command).toHaveValue(/skills\/contribute-to-eliza/u);
-  await expect(command).toHaveValue(/\/projects\/eliza/u);
-  await expect(command).toHaveValue(
-    /SKILLS_ROOT="\$\{HOME\}\/\.agents\/skills"/u,
-  );
-  await expect(command).not.toHaveValue(/CODEX_HOME/u);
-  await page
-    .getByRole("button", { name: "Copy manual install command" })
-    .click();
-  await expect(
-    page.getByRole("button", { name: "Copied manual install command" }),
-  ).toBeVisible();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(
-    "skills/contribute-to-eliza",
-  );
-  await expect(
-    page.getByRole("link", { name: /Preview the complete workflow/u }),
-  ).toHaveAttribute("href", /\/projects\/eliza\/mission\.md$/u);
+  await expect(page.getByLabel("Manual install command")).toHaveCount(0);
   await expect(page.getByLabel("Solana public address")).toHaveCount(0);
-  await page.getByText("Cycle allocation details", { exact: true }).click();
+  await expect(page.getByText("Cycle allocation details")).toHaveCount(0);
+  const view = createProjectView(await loadSnapshot(request), "eliza");
+  // The open cycle page carries the allocation table.
+  await page.goto(`/cycles/eliza/${view.cycle.id}`);
+  await expect(page.locator(".project-leader-row").first()).toBeVisible();
   const shareCells = await page
     .locator(".project-leader-row")
     .evaluateAll((rows) =>
       rows.map((row) => row.querySelectorAll("td")[3]?.textContent ?? ""),
     );
-  const view = createProjectView(await loadSnapshot(request), "eliza");
   expect(shareCells).toHaveLength(view.leaders.length);
   // No committed funds: every row is a share of payment weight, never dollars.
   for (const cell of shareCells) {

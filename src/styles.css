@@ -662,7 +662,6 @@ textarea:focus-visible {
   color: var(--danger);
 }
 
-.status-dot,
 .pulse {
   width: 7px;
   height: 7px;
@@ -673,10 +672,6 @@ textarea:focus-visible {
 .pulse {
   animation: pulse 1.2s ease-in-out infinite;
   background: var(--orange);
-}
-
-.stale-dot {
-  background: var(--warning);
 }
 
 @keyframes pulse {
@@ -1401,11 +1396,6 @@ small {
   text-decoration: underline;
 }
 
-.project-funding-unavailable {
-  margin-block: 24px;
-  color: var(--muted);
-}
-
 .project-headline-action {
   color: var(--orange-dark);
 }
@@ -1617,59 +1607,6 @@ small {
 .manifest-preview button svg {
   width: 14px;
   height: 14px;
-}
-
-.install-note {
-  max-width: 760px;
-  margin: 14px 0 0;
-  color: var(--ink);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.install-advanced {
-  max-width: 940px;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid rgba(15, 14, 12, 0.22);
-  color: var(--ink);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.install-advanced summary {
-  width: fit-content;
-  cursor: pointer;
-  font-weight: 750;
-}
-
-.install-advanced > p {
-  max-width: 70ch;
-  margin: 10px 0 14px;
-  color: var(--ink);
-}
-
-.command-box-secondary {
-  margin-bottom: 14px;
-}
-
-.install-advanced > a {
-  width: fit-content;
-  display: flex;
-  min-height: 44px;
-  align-items: center;
-  gap: 6px;
-  font-weight: 750;
-}
-
-.install-advanced > a:hover {
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.install-advanced > a svg {
-  width: 13px;
-  height: 13px;
 }
 
 .project-leader-section {
@@ -3297,38 +3234,6 @@ small {
 }
 .home-leaderboard-section > .points-panel + .points-panel {
   margin-top: 3rem;
-}
-/* Slopbot is a separate, unranked Automation row (PRD LDR-04). */
-.automation-row {
-  display: grid;
-  gap: 1rem;
-  padding: 1rem 1.125rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
-.automation-name {
-  display: grid;
-  gap: 0.25rem;
-  margin: 0;
-}
-.automation-name small {
-  color: var(--muted);
-}
-.automation-metrics {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  gap: 1rem;
-  margin: 0;
-}
-.automation-metrics dt {
-  color: var(--muted);
-  font-size: 0.8125rem;
-}
-.automation-metrics dd {
-  margin: 0.25rem 0 0;
-  font-size: 1.125rem;
-  font-weight: 700;
 }
 .points-meta {
   font-size: 0.875rem;

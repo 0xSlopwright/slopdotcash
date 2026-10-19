@@ -40,10 +40,6 @@ export function ProjectLeaderboard({
         retryScore={retry}
         compact
       />
-      <details>
-        <summary>Cycle allocation details</summary>
-        <CycleAllocation {...props} />
-      </details>
     </div>
   );
 }

@@ -580,10 +580,7 @@ try {
         await page.locator("h1").waitFor({ state: "visible" });
         await page.locator("#start").scrollIntoViewIfNeeded();
         await page.waitForTimeout(900);
-        await page
-          .getByText("Cycle allocation details", { exact: true })
-          .click();
-        await page.locator(".project-leader-section").scrollIntoViewIfNeeded();
+        await page.locator("#contributors").scrollIntoViewIfNeeded();
         await page.waitForTimeout(900);
       }
 
