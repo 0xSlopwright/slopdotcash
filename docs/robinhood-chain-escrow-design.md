@@ -6,7 +6,7 @@ Date: 12 October 2026, proposed by Drew Pierson. Status: scope approved by the r
 
 - The project vault is the only funding mode (FND-01). The legacy monthly-pool rail (PAY-09), Squads and Sablier are removed, so the "legacy rail stays Base and Solana" statements below are historical.
 - A project is added and activated only through admin-approved revisions in the D1 registry (PRJ-02). No pull request activates a project, and deployment bindings live in the D1 revision.
-- The withdrawal fee is 2%, `floor(gross / 50)`, enforced in the contract (PRD section 18). The 10% figure below is superseded.
+- The withdrawal fee is 5%, `floor(gross / 20)`, enforced in the contract (PRD section 18). The 10% figure below is superseded.
 - Any standard ERC-20 with any decimals may be a Robinhood Chain reward asset (TOK-01, TOK-03); USDG stays the network stablecoin. Generalization of `ProjectEscrow.sol` and the adapter beyond six decimals is MVP-06/MVP-07b work.
 - Fee-wallet conversion to USDG on Robinhood Chain is MVP-07c work under TOK-07.
 
@@ -73,7 +73,7 @@ The escrow contract reads `block.timestamp` and `block.chainid` only. It never r
 - Choosing the Robinhood Chain fee recipient or identity authority addresses. These are policy inputs recorded at deployment.
 - The legacy 1% monthly-pool settlement rail (PAY-09, RFC #472). It stayed Base and Solana only and was removed on 18 October 2026.
 - Bridging, on-ramp or faucet guidance for sponsors and contributors beyond the runbook's test-gas steps.
-- Any change to the 2% fee or the fee incidence. (The withdrawal fee changed from 10% to 2% on 18 October 2026 by a separate product-owner decision; see the amendment above.)
+- Any change to the 2% fee or the fee incidence. (The withdrawal fee changed from 10% to 5% on 18 October 2026 by a separate product-owner decision; see the amendment above.)
 
 ## Design
 

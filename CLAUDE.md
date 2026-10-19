@@ -486,8 +486,8 @@ the 2% is deducted in that token and paid in that token to the network fee
 wallet at payout. No contract converts it. A scheduled backend job converts
 fees already in the fee wallet to the network stablecoin inside that wallet
 (TOK-07, MVP-07c); it never blocks or touches a contributor payment.
-Unused-fund withdrawals deduct the same 2%, `floor(gross / 50)`, enforced in
-the contracts, and reach only the owner's refund destination; funded
+Unused-fund withdrawals deduct 5%, `floor(gross / 20)`, enforced in the
+contracts, and reach only the owner's refund destination; funded
 obligations cannot be withdrawn.
 Historical v1 records retain their original fee and authority rules. No project
 activates escrow merely because the new code is present. Keep project deployment
