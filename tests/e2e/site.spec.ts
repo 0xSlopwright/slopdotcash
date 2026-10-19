@@ -477,6 +477,7 @@ test("starts Eliza with one prompt and no separate payout form", async ({
   const view = createProjectView(await loadSnapshot(request), "eliza");
   // The open cycle page carries the allocation table.
   await page.goto(`/cycles/eliza/${view.cycle.id}`);
+  await expect(page.locator(".project-leader-row").first()).toBeVisible();
   const shareCells = await page
     .locator(".project-leader-row")
     .evaluateAll((rows) =>
