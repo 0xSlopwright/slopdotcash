@@ -8,6 +8,7 @@
  * it unavailable, and no revision can be cleared.
  */
 
+import type { ProjectDefinition } from "../../src/lib/projects.mjs";
 import type { ProjectPersistence, WebSession } from "../projects/contracts";
 import { type EdgeCache, purgeProjectCache } from "../projects/edge-cache";
 import {
@@ -20,6 +21,7 @@ import {
   type CloudflareVettingPersistence,
   summarize,
   type VettingAssessment,
+  type VettingPin,
   vettedContentSha256,
 } from "./persistence";
 import {
@@ -36,9 +38,17 @@ const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
 
 export type VettingApiDependencies = {
   vetting: CloudflareVettingPersistence;
-  projects: Pick<ProjectPersistence, "getProject" | "listProjects">;
+  projects: Pick<
+    ProjectPersistence,
+    "getProject" | "listProjects" | "enforcementGeneration"
+  >;
   /** Raw 32-byte Ed25519 public keys of the vetting service, base64. */
   resultPublicKeys: string | undefined;
+  /**
+   * Reads the live pin of a project: its integration-branch head on GitHub
+   * and the deployed skill template commit. Throws when either is unreadable.
+   */
+  livePin: (manifest: ProjectDefinition) => Promise<VettingPin>;
   /** Resolves the site session; null when signed out. */
   session: (request: Request) => Promise<WebSession | null>;
   now: () => Date;
@@ -214,6 +224,7 @@ async function adminOverview(
         project.id,
         project.manifest,
         project.revision,
+        () => deps.livePin(project.manifest),
       ),
     })),
   );
@@ -257,12 +268,26 @@ async function requestAssessment(
   // Only the current revision is scanned: an older one can never be served.
   if (project.revision !== body.revision)
     fail(409, "stale_revision", "Scan the project's current revision");
+  // The queue assigns the exact commits to scan (VET-07); the service cannot
+  // choose them, and a result for any other commit is refused.
+  let pin: VettingPin;
+  try {
+    pin = await deps.livePin(project.manifest);
+  } catch {
+    fail(
+      503,
+      "pin_unavailable",
+      "Slop could not read the integration-branch head or the skill template commit, so a scan cannot be queued",
+    );
+  }
   const assessment = {
     id: `vet_${deps.randomId().replaceAll("-", "").toLowerCase()}`,
     projectId: project.id,
     revision: project.revision,
     manifestSha256: project.manifestSha256,
     contentSha256: await vettedContentSha256(project.manifest),
+    commitSha: pin.commitSha,
+    templateCommit: pin.templateCommit,
     requestedBy: {
       githubId: session.githubId,
       githubLogin: session.githubLogin,
@@ -279,7 +304,10 @@ async function requestAssessment(
   return json(201, { assessment: adminAssessment(stored) });
 }
 
-/** The service's work queue: exact revisions waiting for a scan. */
+/**
+ * The service's work queue: exact revisions waiting for a scan, each with the
+ * repository commit and skill template commit the service must scan.
+ */
 async function serviceQueue(
   request: Request,
   deps: VettingApiDependencies,
@@ -294,6 +322,8 @@ async function serviceQueue(
       projectId: assessment.projectId,
       revision: assessment.revision,
       manifestSha256: assessment.manifestSha256,
+      commitSha: assessment.commitSha,
+      templateCommit: assessment.templateCommit,
       manifestUrl: `${origin}/api/v1/project-revisions/${assessment.projectId}/${assessment.revision}`,
       templateIndexUrl: `${origin}/skill-templates/index.json`,
       requestedAt: assessment.requestedAt,
@@ -341,6 +371,15 @@ async function serviceResult(
   const repository = project.manifest.repositories[0]?.id ?? "";
   if (result.assessed.repository.toLowerCase() !== repository.toLowerCase())
     fail(422, "revision_mismatch", "The result scanned another repository");
+  if (
+    result.assessed.commitSha !== assessment.commitSha ||
+    result.assessed.templateCommit !== assessment.templateCommit
+  )
+    fail(
+      422,
+      "commit_mismatch",
+      `The result must scan commit ${assessment.commitSha} with skill template ${assessment.templateCommit}, which the queue assigned`,
+    );
   const resultText = JSON.stringify(result);
   const recorded = await deps.vetting.recordResult({
     result,
@@ -352,10 +391,14 @@ async function serviceResult(
   if (recorded === "conflict")
     fail(409, "already_recorded", "This assessment already has a result");
   // Skills and discovery change with the clearance, so drop cached copies.
-  await purgeProjectCache(deps.cache, new URL(request.url).origin, project.id, [
-    project.manifest.skill.id,
-    project.manifest.reviewSkill.id,
-  ]);
+  // Cache keys carry the enforcement generation (ADM-06), so purge that scope.
+  await purgeProjectCache(
+    deps.cache,
+    new URL(request.url).origin,
+    project.id,
+    [project.manifest.skill.id, project.manifest.reviewSkill.id],
+    await deps.projects.enforcementGeneration(),
+  );
   const stored = await deps.vetting.getAssessment(result.assessmentId);
   if (stored === null) fail(500, "internal_error", "Assessment vanished");
   return json(200, { assessment: summarize(stored) });

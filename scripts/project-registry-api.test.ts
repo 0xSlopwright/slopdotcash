@@ -19,6 +19,7 @@ import { handleProjectArtifactRequest } from "../backend/projects/skill-publicat
 import { TokenMetadataError } from "../backend/projects/token-metadata";
 import {
   CloudflareVettingPersistence,
+  type VettingPin,
   vettedContentSha256,
 } from "../backend/vetting/persistence";
 import { parseVettingResult } from "../backend/vetting/result";
@@ -55,6 +56,8 @@ let persistence: CloudflareProjectPersistence;
 let sqlite: Database;
 let vetting: CloudflareVettingPersistence;
 let scans = 0;
+/** The live integration-branch head and template commit vetting compares. */
+let livePin: VettingPin;
 let cache: MemoryCache;
 let tokenReads: string[];
 let githubReads: string[];
@@ -74,6 +77,7 @@ beforeEach(() => {
   sqlite = database.sqlite;
   persistence = new CloudflareProjectPersistence(database.db);
   vetting = new CloudflareVettingPersistence(database.db);
+  livePin = { commitSha: "a".repeat(40), templateCommit: "d".repeat(40) };
   cache = new MemoryCache();
   tokenReads = [];
   githubReads = [];
@@ -99,7 +103,12 @@ beforeEach(() => {
     notifyAdmins: async () => true,
     repositoryControl: async (manifest) => control(manifest.repositories[0].id),
     vettingClearance: (projectId, manifest, throughRevision) =>
-      vetting.manifestClearance(projectId, manifest, throughRevision),
+      vetting.manifestClearance(
+        projectId,
+        manifest,
+        throughRevision,
+        async () => livePin,
+      ),
     readTokenMetadata: async (network, address) => {
       tokenReads.push(`${network}:${address}`);
       if (address === TOKEN) return { decimals: 18, symbol: "OPEN" };
@@ -162,6 +171,8 @@ async function clearCurrentRevision(projectId: string) {
     revision: project.revision,
     manifestSha256: project.manifestSha256,
     contentSha256: await vettedContentSha256(project.manifest),
+    commitSha: livePin.commitSha,
+    templateCommit: livePin.templateCommit,
     requestedBy: ADMIN,
     requestedAt: `2026-10-18T12:00:${String(scans).padStart(2, "0")}.000Z`,
     requestReason: "Fixture scan",
@@ -174,6 +185,8 @@ async function clearCurrentRevision(projectId: string) {
         revision: project.revision,
         manifestSha256: project.manifestSha256,
         repository: project.manifest.repositories[0].id,
+        commitSha: livePin.commitSha,
+        templateCommit: livePin.templateCommit,
       },
       "clean",
     ),
@@ -504,18 +517,20 @@ async function publicationRequests() {
       readFile: async (path: string) =>
         new Uint8Array(readFileSync(join(root, path))),
     }),
-    vettingCleared: async (project: {
-      id: string;
-      manifest: object;
-      revision: number;
-    }) =>
-      (
-        await vetting.manifestClearance(
-          project.id,
-          project.manifest,
-          project.revision,
-        )
-      ).state === "cleared",
+    vettingClearance: (
+      project: { id: string; manifest: object; revision: number },
+      templateCommit: string,
+    ) =>
+      vetting.manifestClearance(
+        project.id,
+        project.manifest,
+        project.revision,
+        async () => {
+          if (livePin.commitSha === "unreadable")
+            throw new Error("GitHub returned 502.");
+          return { commitSha: livePin.commitSha, templateCommit };
+        },
+      ),
     cache,
   };
   const get = (path: string) =>
@@ -523,12 +538,12 @@ async function publicationRequests() {
       new Request(`${ORIGIN}${path}`),
       publication,
     ) as Promise<Response>;
-  return { publication, get };
+  return { publication, get, index };
 }
 
 describe("generated skill publication", () => {
   test("serves skills from the current revision and refuses unpublished ones", async () => {
-    const { publication, get } = await publicationRequests();
+    const { publication, get, index } = await publicationRequests();
     expect(
       await handleProjectArtifactRequest(
         new Request(`${ORIGIN}/projects/open-registry`),
@@ -575,6 +590,31 @@ describe("generated skill publication", () => {
     expect(await sha256Hex(new Uint8Array(await archive.arrayBuffer()))).toBe(
       manifest.archive.sha256,
     );
+    // A clearance binds the scanned commit and template (VET-07). A new
+    // integration-branch head or a new skill template is not served on it.
+    const cleared = livePin;
+    livePin = { ...cleared, commitSha: "e".repeat(40) };
+    cache.entries.clear();
+    const moved = await get("/projects/open-registry/skill.md");
+    expect(moved.status).toBe(404);
+    expect(await moved.text()).toContain("branch head or skill template");
+    expect(
+      (await (await get("/.well-known/slop/projects.json")).json()).projects,
+    ).toEqual([]);
+    // A deploy with a new skill template renders other skill bytes.
+    livePin = cleared;
+    index.commit = "f".repeat(40);
+    cache.entries.clear();
+    expect((await get("/projects/open-registry/skill.md")).status).toBe(404);
+    index.commit = cleared.templateCommit;
+    livePin = { ...cleared, commitSha: "unreadable" };
+    cache.entries.clear();
+    // An unreadable branch head fails closed and says so.
+    const unreadable = await get("/projects/open-registry/skill.md");
+    expect(unreadable.status).toBe(503);
+    expect(await unreadable.text()).toContain("cannot confirm");
+    livePin = cleared;
+    cache.entries.clear();
     const discovery = await (
       await get("/.well-known/slop/projects.json")
     ).json();
@@ -644,6 +684,8 @@ describe("project enforcement (ADM-06)", () => {
   test("quarantines, bans and reinstates through independent review", async () => {
     const { get } = await publicationRequests();
     await listProject();
+    // Activation needs a clean security scan of this revision (VET-01).
+    await clearCurrentRevision("open-registry");
     const listed = await persistence.getProject("open-registry");
     const activated = await call(
       "PUT",
@@ -653,10 +695,9 @@ describe("project enforcement (ADM-06)", () => {
         manifest: {
           ...listed?.manifest,
           status: "active",
-          listingTier: "featured",
         },
         expectedRevision: 1,
-        reason: "Activate and feature",
+        reason: "Activate the scanned revision",
       },
     );
     expect(activated.status).toBe(200);
@@ -689,7 +730,7 @@ describe("project enforcement (ADM-06)", () => {
         after: 3,
         statusBefore: "active",
         statusAfter: "paused",
-        listingTierBefore: "featured",
+        listingTierBefore: "community",
         listingTierAfter: "retired",
       },
     });
@@ -789,6 +830,11 @@ describe("project enforcement (ADM-06)", () => {
     expect((await (await call("GET", "projects")).json()).restrictions).toEqual(
       [],
     );
+    // The reinstated revision is new content, so it needs a fresh clean
+    // scan before Slop serves its skill again (VET-07).
+    expect((await get("/projects/open-registry/SKILL.md")).status).toBe(404);
+    await clearCurrentRevision("open-registry");
+    cache.entries.clear();
     expect((await get("/projects/open-registry/SKILL.md")).status).toBe(200);
 
     // A stale preview cannot be confirmed, and history is append-only.

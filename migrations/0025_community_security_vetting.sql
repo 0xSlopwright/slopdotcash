@@ -13,12 +13,16 @@ CREATE TABLE vetting_assessments (
   -- SHA-256 of the manifest with its status set to paused. An activation
   -- revision that changes only the status keeps this digest.
   content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  -- The queue assigns the exact integration-branch commit and skill template
+  -- commit to scan. The result must report these commits, and a clearance
+  -- counts only while they are still the live branch head and template.
+  commit_sha TEXT NOT NULL CHECK (length(commit_sha) = 40 AND commit_sha NOT GLOB '*[^0-9a-f]*'),
+  template_commit TEXT NOT NULL CHECK (length(template_commit) = 40 AND template_commit NOT GLOB '*[^0-9a-f]*'),
   requested_by_github_id TEXT NOT NULL CHECK (requested_by_github_id GLOB '[1-9]*'),
   requested_by_github_login TEXT NOT NULL,
   requested_at TEXT NOT NULL,
   request_reason TEXT NOT NULL CHECK (length(request_reason) BETWEEN 1 AND 1000),
   state TEXT NOT NULL CHECK (state IN ('pending', 'incomplete', 'clean', 'malicious')),
-  commit_sha TEXT CHECK (commit_sha IS NULL OR (length(commit_sha) = 40 AND commit_sha NOT GLOB '*[^0-9a-f]*')),
   policy_version TEXT,
   result TEXT CHECK (result IS NULL OR json_valid(result)),
   result_sha256 TEXT CHECK (result_sha256 IS NULL OR length(result_sha256) = 64),
@@ -26,14 +30,16 @@ CREATE TABLE vetting_assessments (
   completed_at TEXT,
   FOREIGN KEY (project_id, revision) REFERENCES project_revisions(project_id, revision),
   CHECK (
-    (state = 'pending' AND commit_sha IS NULL AND policy_version IS NULL AND
+    (state = 'pending' AND policy_version IS NULL AND
       result IS NULL AND result_sha256 IS NULL AND signing_key_sha256 IS NULL AND
       completed_at IS NULL) OR
-    (state <> 'pending' AND commit_sha IS NOT NULL AND policy_version IS NOT NULL AND
+    (state <> 'pending' AND policy_version IS NOT NULL AND
       result IS NOT NULL AND result_sha256 IS NOT NULL AND
       signing_key_sha256 IS NOT NULL AND completed_at IS NOT NULL AND
       json_extract(result, '$.assessmentId') = id AND
-      json_extract(result, '$.disposition') = state)
+      json_extract(result, '$.disposition') = state AND
+      json_extract(result, '$.assessed.commitSha') = commit_sha AND
+      json_extract(result, '$.assessed.templateCommit') = template_commit)
   )
 ) STRICT;
 
@@ -58,6 +64,7 @@ WHEN OLD.state <> 'pending' OR NEW.state = 'pending' OR
   NEW.id <> OLD.id OR NEW.project_id <> OLD.project_id OR
   NEW.revision <> OLD.revision OR NEW.manifest_sha256 <> OLD.manifest_sha256 OR
   NEW.content_sha256 <> OLD.content_sha256 OR
+  NEW.commit_sha <> OLD.commit_sha OR NEW.template_commit <> OLD.template_commit OR
   NEW.requested_by_github_id <> OLD.requested_by_github_id OR
   NEW.requested_by_github_login <> OLD.requested_by_github_login OR
   NEW.requested_at <> OLD.requested_at OR NEW.request_reason <> OLD.request_reason

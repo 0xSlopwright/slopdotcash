@@ -16,7 +16,8 @@ type AssessmentSummary = {
   id: string;
   revision: number;
   state: AssessmentState;
-  commitSha: string | null;
+  commitSha: string;
+  templateCommit: string;
   policyVersion: string | null;
   requestedAt: string;
   completedAt: string | null;
@@ -27,6 +28,12 @@ type AssessmentSummary = {
 
 type Clearance =
   | { state: "unscanned" }
+  | { state: "unverified"; reason: string }
+  | {
+      state: "stale";
+      assessment: AssessmentSummary;
+      live: { commitSha: string; templateCommit: string };
+    }
   | {
       state: "queued" | "quarantined" | "cleared" | "banned";
       assessment: AssessmentSummary;
@@ -64,6 +71,8 @@ type Overview = {
 
 const LABELS: Record<Clearance["state"], string> = {
   unscanned: "Unscanned",
+  unverified: "Unverified",
+  stale: "Stale",
   queued: "Queued",
   quarantined: "Quarantined",
   cleared: "Cleared",
@@ -161,8 +170,12 @@ function AssessmentDetails({ assessment }: { assessment: AdminAssessment }) {
           </dd>
         </div>
         <div>
-          <dt>Assessed commit</dt>
-          <dd>{assessment.commitSha ?? "Not scanned yet"}</dd>
+          <dt>Assigned commit</dt>
+          <dd>{assessment.commitSha}</dd>
+        </div>
+        <div>
+          <dt>Skill template commit</dt>
+          <dd>{assessment.templateCommit}</dd>
         </div>
         <div>
           <dt>Policy version</dt>
@@ -331,10 +344,14 @@ export function VettingSection() {
                       <dd>
                         {clearance.state === "unscanned"
                           ? "No scan of this content yet"
-                          : `Scan of revision ${clearance.assessment.revision} · ${STATE_TEXT[clearance.assessment.state]}`}
+                          : clearance.state === "unverified"
+                            ? clearance.reason
+                            : clearance.state === "stale"
+                              ? `No scan of the live branch head ${clearance.live.commitSha} with skill template ${clearance.live.templateCommit}. The last scan covered ${clearance.assessment.commitSha}.`
+                              : `Scan of revision ${clearance.assessment.revision} · ${STATE_TEXT[clearance.assessment.state]}`}
                       </dd>
                     </div>
-                    {clearance.state !== "unscanned" ? (
+                    {"assessment" in clearance ? (
                       <div>
                         <dt>Held artifacts</dt>
                         <dd>

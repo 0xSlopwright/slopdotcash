@@ -20,10 +20,12 @@ import {
 } from "../../../backend/projects/cloudflare-persistence";
 import type { RepositoryControl } from "../../../backend/projects/contracts";
 import { edgeCache } from "../../../backend/projects/edge-cache";
+import { githubApiOrigin } from "../../../backend/projects/github-lookup";
 import {
   type AdminApplicationNotice,
   handleProjectApi,
 } from "../../../backend/projects/handler";
+import { assetTemplateSource } from "../../../backend/projects/skill-publication";
 import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata";
 import { handleSecurityApi } from "../../../backend/security/handler";
 import { handleSlopbotApi } from "../../../backend/slopbot/summary";
@@ -34,6 +36,7 @@ import {
 } from "../../../backend/trace/cloudflare-persistence";
 import { handleTraceApi } from "../../../backend/trace/handler";
 import { handleVettingApi } from "../../../backend/vetting/handler";
+import { readVettingPin } from "../../../backend/vetting/live-pin";
 import { CloudflareVettingPersistence } from "../../../backend/vetting/persistence";
 import { deploymentTier } from "../../../src/lib/deployment";
 import type { ProjectDefinition } from "../../../src/lib/projects.mjs";
@@ -221,19 +224,12 @@ function githubHeaders(token: string | undefined): Record<string, string> {
  * repository, or is a public member of the owning organization. The manifest's
  * repository and steward identities must match GitHub exactly.
  */
-function githubApiOrigin(env: Env): string {
-  const origin = env.SLOP_GITHUB_API_ORIGIN;
-  return origin && /^http:\/\/127\.0\.0\.1:[1-9][0-9]{3,4}$/u.test(origin)
-    ? origin
-    : "https://api.github.com";
-}
-
 async function repositoryControl(
   manifest: ProjectDefinition,
   actor: { githubId: string; githubLogin: string },
   env: Env,
 ): Promise<RepositoryControl> {
-  const api = githubApiOrigin(env);
+  const api = githubApiOrigin(env.SLOP_GITHUB_API_ORIGIN);
   const token = env.SLOP_GITHUB_READ_TOKEN;
   const repository = manifest.repositories[0];
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository.id))
@@ -298,10 +294,24 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     context.env.SLOP_DB,
   );
   const vetting = new CloudflareVettingPersistence(context.env.SLOP_DB);
+  const github = {
+    fetch: (url: string, init: RequestInit) => fetch(url, init),
+    token: context.env.SLOP_GITHUB_READ_TOKEN,
+    apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
+  };
+  const loadTemplate = assetTemplateSource(
+    context.env.ASSETS,
+    new URL(context.request.url).origin,
+  );
+  // A clearance counts only for the live branch head and template (VET-07).
+  const livePin = async (manifest: ProjectDefinition) =>
+    readVettingPin(github, manifest, (await loadTemplate()).index.commit);
   const projectResponse = await handleProjectApi(context.request, {
     persistence: projectPersistence,
     vettingClearance: (projectId, manifest, throughRevision) =>
-      vetting.manifestClearance(projectId, manifest, throughRevision),
+      vetting.manifestClearance(projectId, manifest, throughRevision, () =>
+        livePin(manifest),
+      ),
     adminGithubIds: githubIdSet(context.env.ADMIN_GITHUB_IDS),
     moderatorGithubIds: githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),
     now: () => new Date(),
@@ -321,11 +331,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       robinhood: context.env.REWARD_RPC_ROBINHOOD,
       solana: context.env.REWARD_RPC_SOLANA,
     }),
-    github: {
-      fetch: (url, init) => fetch(url, init),
-      token: context.env.SLOP_GITHUB_READ_TOKEN,
-      apiOrigin: githubApiOrigin(context.env),
-    },
+    github,
     cache: edgeCache(),
     waitUntil: context.waitUntil?.bind(context),
   });
@@ -343,7 +349,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     github: {
       fetch: (url, init) => fetch(url, init),
       token: context.env.SLOP_GITHUB_READ_TOKEN,
-      apiOrigin: githubApiOrigin(context.env),
+      apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
     },
     cache: edgeCache(),
     waitUntil: context.waitUntil?.bind(context),
@@ -353,6 +359,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     vetting,
     projects: projectPersistence,
     resultPublicKeys: context.env.VETTING_RESULT_PUBLIC_KEYS,
+    livePin,
     session: async (request) => {
       const actor = await sessionGithubActor(
         request,

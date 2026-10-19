@@ -775,7 +775,7 @@ async function replaceProjectManifest(
       fail(
         422,
         "vetting_required",
-        `Security vetting is ${vetting.state}. Only a revision whose exact content passed a clean secure-VM scan can activate; change nothing but the status of the scanned revision.`,
+        `Security vetting is ${vetting.state}. Only a revision whose exact content passed a clean secure-VM scan of the current integration-branch head and skill template can activate; change nothing but the status of the scanned revision.`,
       );
   }
   const result = await deps.persistence.appendProjectRevision(

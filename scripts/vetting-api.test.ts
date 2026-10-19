@@ -6,7 +6,10 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import { handleProjectApi } from "../backend/projects/handler";
 import { handleVettingApi } from "../backend/vetting/handler";
-import { CloudflareVettingPersistence } from "../backend/vetting/persistence";
+import {
+  CloudflareVettingPersistence,
+  type VettingPin,
+} from "../backend/vetting/persistence";
 import { applicationManifest } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 import {
@@ -24,18 +27,31 @@ let projects: CloudflareProjectPersistence;
 let vetting: CloudflareVettingPersistence;
 let keys: Awaited<ReturnType<typeof vettingKeyPair>>;
 let configuredKeys: string | undefined;
+/** The live integration-branch head and template commit; null is unreadable. */
+let livePin: VettingPin | null;
+const HEAD = "a".repeat(40);
+const TEMPLATE = "b".repeat(40);
+
+async function readLivePin(): Promise<VettingPin> {
+  if (livePin === null) throw new Error("GitHub returned 502.");
+  return livePin;
+}
 let ids = 0;
 
 beforeEach(async () => {
   const { db } = sqliteD1([
     "0019_project_registry.sql",
     "0020_project_application_github_check.sql",
+    "0023_project_enforcements.sql",
+    "0024_notifications.sql",
     "0025_community_security_vetting.sql",
+    "0026_private_security_cases.sql",
   ]);
   projects = new CloudflareProjectPersistence(db);
   vetting = new CloudflareVettingPersistence(db);
   keys = await vettingKeyPair();
   configuredKeys = keys.publicKey;
+  livePin = { commitSha: HEAD, templateCommit: TEMPLATE };
 });
 
 const actorOf = (request: Request) =>
@@ -49,6 +65,7 @@ function projectApi(request: Request) {
   return handleProjectApi(request, {
     persistence: projects,
     adminGithubIds: new Set([ADMIN.githubId]),
+    moderatorGithubIds: new Set(),
     now: () => NOW,
     randomId: () =>
       `00000000-0000-4000-8000-${String(++ids).padStart(12, "0")}`,
@@ -60,7 +77,7 @@ function projectApi(request: Request) {
     },
     github: { fetch: async () => new Response(null, { status: 404 }) },
     vettingClearance: (projectId, manifest, through) =>
-      vetting.manifestClearance(projectId, manifest, through),
+      vetting.manifestClearance(projectId, manifest, through, readLivePin),
   }) as Promise<Response>;
 }
 
@@ -69,6 +86,7 @@ function vettingApi(request: Request) {
     vetting,
     projects,
     resultPublicKeys: configuredKeys,
+    livePin: readLivePin,
     session: async (value) => {
       const actor = actorOf(value);
       return actor && { ...actor, admin: actor === ADMIN };
@@ -159,6 +177,9 @@ async function fixture(
 ) {
   const project = await projects.getProject("open-registry");
   if (project === null) throw new Error("project was not listed");
+  // The service scans exactly the commits the queue assigned.
+  const assessment = await vetting.getAssessment(assessmentId);
+  if (assessment === null) throw new Error("assessment was not queued");
   return vettingResult(
     {
       assessmentId,
@@ -166,6 +187,8 @@ async function fixture(
       revision: project.revision,
       manifestSha256: project.manifestSha256,
       repository: "example/open-registry",
+      commitSha: assessment.commitSha,
+      templateCommit: assessment.templateCommit,
     },
     disposition,
   );
@@ -206,6 +229,8 @@ describe("community security vetting", () => {
         assessmentId: id,
         projectId: "open-registry",
         revision: 1,
+        commitSha: HEAD,
+        templateCommit: TEMPLATE,
         manifestUrl: `${ORIGIN}/api/v1/project-revisions/open-registry/1`,
       },
     ]);
@@ -231,6 +256,61 @@ describe("community security vetting", () => {
       state: "cleared",
       assessment: { revision: 1 },
     });
+  });
+
+  test("a clearance binds the assigned commit and template; a moved head is stale", async () => {
+    await listPausedProject();
+    const id = await queueScan();
+    const result = await fixture(id, "clean");
+    // The service cannot choose the commit or template it reports (VET-07).
+    for (const assessed of [
+      { ...result.assessed, commitSha: "c".repeat(40) },
+      { ...result.assessed, templateCommit: "c".repeat(40) },
+    ]) {
+      const refused = await postResult({ ...result, assessed });
+      expect(refused.status).toBe(422);
+      expect((await refused.json()).error).toBe("commit_mismatch");
+    }
+    expect((await postResult(result)).status).toBe(200);
+    expect((await publicVetting()).state).toBe("cleared");
+
+    // New commits on the integration branch lose the clearance.
+    livePin = { commitSha: "e".repeat(40), templateCommit: TEMPLATE };
+    expect(await publicVetting()).toMatchObject({
+      state: "stale",
+      assessment: { commitSha: HEAD, templateCommit: TEMPLATE },
+      live: { commitSha: "e".repeat(40) },
+    });
+    const refused = await activate();
+    expect(refused.status).toBe(422);
+    expect((await refused.json()).message).toContain(
+      "Security vetting is stale",
+    );
+    // A rescan is assigned the new head, and its clean result clears it.
+    const rescan = await queueScan();
+    expect((await vetting.getAssessment(rescan))?.commitSha).toBe(
+      "e".repeat(40),
+    );
+    expect((await publicVetting()).state).toBe("queued");
+    expect((await postResult(await fixture(rescan, "clean"))).status).toBe(200);
+    expect((await publicVetting()).state).toBe("cleared");
+
+    // A new skill template loses the clearance too.
+    livePin = { commitSha: "e".repeat(40), templateCommit: "f".repeat(40) };
+    expect((await publicVetting()).state).toBe("stale");
+    // An unreadable head never counts as cleared, and no scan can be queued.
+    livePin = null;
+    expect((await publicVetting()).state).toBe("unverified");
+    expect((await activate()).status).toBe(422);
+    const unqueued = await vettingApi(
+      sessionRequest("POST", "admin/vetting/assessments", "admin", {
+        projectId: "open-registry",
+        revision: 1,
+        reason: "Rescan while GitHub is down",
+      }),
+    );
+    expect(unqueued.status).toBe(503);
+    expect((await unqueued.json()).error).toBe("pin_unavailable");
   });
 
   test("an incomplete result quarantines the revision and blocks activation", async () => {

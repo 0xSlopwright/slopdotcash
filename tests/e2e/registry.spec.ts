@@ -61,6 +61,8 @@ async function postVettingResult(
         projectId: string;
         revision: number;
         manifestSha256: string;
+        commitSha: string;
+        templateCommit: string;
       }[];
     }
   ).assessments.find((entry) => entry.projectId === projectId);

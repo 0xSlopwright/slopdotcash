@@ -15,6 +15,10 @@ export type VettingFixtureTarget = {
   revision: number;
   manifestSha256: string;
   repository: string;
+  /** The integration-branch commit the queue assigned. */
+  commitSha: string;
+  /** The skill template commit the queue assigned. */
+  templateCommit: string;
 };
 
 const digest = (character: string) => character.repeat(64);
@@ -48,8 +52,8 @@ export function vettingResult(
     policyVersion: "vet-policy-1",
     assessed: {
       repository: target.repository,
-      commitSha: "a".repeat(40),
-      templateCommit: "b".repeat(40),
+      commitSha: target.commitSha,
+      templateCommit: target.templateCommit,
       inputManifestSha256: digest("c"),
       dependencyLocks: [{ path: "bun.lock", sha256: digest("d") }],
     },

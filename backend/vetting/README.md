@@ -12,7 +12,8 @@ absent.
 `migrations/0025_community_security_vetting.sql` creates:
 
 - `vetting_assessments`: one scan of one exact project revision (project id,
-  revision, manifest SHA-256, content SHA-256). States are `pending`,
+  revision, manifest SHA-256, content SHA-256) at one exact integration-branch
+  commit and skill template commit, which the queue assigns. States are `pending`,
   `incomplete`, `clean` and `malicious`. A trigger allows exactly one update,
   from `pending` to a result. Rows are never deleted.
 - `vetting_artifacts`: the artifact quarantine records of a result (VET-04):
@@ -23,18 +24,33 @@ absent.
 ## Clearance
 
 The content SHA-256 is the key-sorted canonical JSON of the manifest with
-`status` set to `paused`. A revision is cleared when the newest finished scan
-of the unbroken run of revisions with the same content is `clean`. So an
-activation revision that changes only the status of a cleared revision keeps
-its clearance; any other change needs a new scan (VET-07).
+`status` set to `paused`. A clearance binds three things (VET-07):
+
+- the content SHA-256 of the unbroken run of revisions with the same content;
+- the integration-branch head commit that the queue assigned to the scan;
+- the skill template commit that the queue assigned to the scan.
+
+Every check reads the live pin: the current head of the manifest's
+`integrationBranch` on GitHub and the `commit` of the deployed
+`/skill-templates/index.json`. Only scans of the same content and of that
+exact pin count, and the newest finished one decides. So an activation
+revision that changes only the status of a cleared revision keeps its
+clearance. A new commit on the integration branch, a new skill template, or
+any other manifest change needs a new scan before Slop serves the skill.
 
 | State | Meaning | Skills, discovery, activation |
 |---|---|---|
 | `unscanned` | No scan of this content | Blocked |
-| `queued` | A scan waits for a result | Blocked |
-| `quarantined` | The newest finished scan is `incomplete` | Blocked |
-| `cleared` | The newest finished scan is `clean` | Allowed |
+| `unverified` | Slop could not read the live branch head or template commit | Blocked; skill routes return HTTP 503 |
+| `stale` | Scans of this content exist, but none of the live branch head and template | Blocked |
+| `queued` | A scan of the live pin waits for a result | Blocked |
+| `quarantined` | The newest finished scan of the live pin is `incomplete` | Blocked |
+| `cleared` | The newest finished scan of the live pin is `clean` | Allowed |
 | `banned` | Any scan of the project is `malicious` | Blocked; a new scan or commit cannot lift it |
+
+Merging to the integration branch therefore pauses skills and discovery for
+the project until an admin queues a scan of the new head and its clean result
+lands. Edge copies of public skill responses expire within 30 seconds.
 
 A queued rescan keeps the last finished decision until its result lands.
 Reinstatement after a ban belongs to the ADM-06 path (issue #911) and is not
@@ -45,8 +61,8 @@ in this module.
 | Route | Access | Purpose |
 |---|---|---|
 | `GET /api/v1/admin/vetting` | admin | Service state, clearance of every project, full results |
-| `POST /api/v1/admin/vetting/assessments` | admin | Queues a scan of the current revision (`projectId`, `revision`, `reason`) |
-| `GET /api/v1/vetting/requests` | signed service | Queued scans with the revision URL and template index URL |
+| `POST /api/v1/admin/vetting/assessments` | admin | Queues a scan of the current revision (`projectId`, `revision`, `reason`) at the live branch head and template commit; HTTP 503 `pin_unavailable` when either cannot be read |
+| `GET /api/v1/vetting/requests` | signed service | Queued scans with the assigned `commitSha` and `templateCommit`, the revision URL and the template index URL |
 | `POST /api/v1/vetting/results` | signed service | Records one `slop-vetting-result-v1` result |
 | `GET /api/v1/projects/:id` | public | Adds the safe `vetting` summary; `skillsPublished` needs `cleared` |
 
@@ -70,7 +86,8 @@ unavailable.
 `backend/vetting/result.ts` parses the result exactly. Unknown, missing or
 malformed fields refuse it. The result binds the assessment id, project id,
 revision, manifest SHA-256 and repository of the queued scan, the assessed
-commit, template commit, input inventory digest, dependency lock digests, VM
+commit and template commit (which must equal the commits the queue assigned,
+or the API returns HTTP 422 `commit_mismatch`), input inventory digest, dependency lock digests, VM
 provider, isolation, image digest, collector and run ids, the eleven
 telemetry channels, visibility gaps, tamper and canary signals, the trace
 digest, exactly one Astra and one Opus review with provider, model, prompt

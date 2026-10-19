@@ -79,7 +79,10 @@ in the writing colo; other colos expire within the TTL. Each public project
 request also reads one enforcement generation counter from D1 and keys the
 cache on it, so a Quarantine or a Ban replaces every cached list, skill and
 archive in every colo on the next request. Admin and session routes are never
-cached. Page views never read GitHub or a chain.
+cached. Page views never read a chain. For a project with a security scan,
+the public project read, the skill artifacts and discovery read the
+integration-branch head on GitHub once per cache miss, to compare it with the
+scanned commit (`backend/vetting/README.md`).
 
 ## Generated skills
 
@@ -150,7 +153,8 @@ rate limit, and caches each answer for five minutes. The browser never calls
 - `/admin` previews the exact generated contributor and reviewer skills before
   an admin approves or activates a revision.
 - A revision activates, and its skills and discovery entry are served, only
-  when a secure-VM scan cleared its exact content. See
+  when a secure-VM scan cleared its exact content at the live
+  integration-branch head and skill template commit. See
   `backend/vetting/README.md` (PRD VET-01).
 - An admin delists a project by appending a paused, `retired` revision.
 - Quarantine, Ban project and Request reinstatement (PRD ADM-06) need an admin

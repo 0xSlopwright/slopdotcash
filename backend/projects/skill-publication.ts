@@ -1,8 +1,9 @@
 /**
  * Serves each project's generated skills, guides, routing manifests,
  * archives, terms, and the project discovery index from the current D1
- * revision and the canonical templates. Nothing here reads GitHub or a
- * chain; responses are edge cached and purged on admin writes.
+ * revision and the canonical templates. Only the security-vetting clearance
+ * reads GitHub, to compare the cleared commit with the live integration-branch
+ * head; responses are edge cached and purged on admin writes.
  */
 
 import { publishesGeneratedSkills } from "../../src/lib/project-skill.mjs";
@@ -10,6 +11,7 @@ import {
   buildProjectPublication,
   PUBLIC_SITE_ORIGIN,
 } from "../../src/lib/project-skill-publication.mjs";
+import type { VettingClearance } from "../vetting/persistence";
 import type { ProjectEnforcement, ProjectRecord } from "./contracts";
 import {
   cachedPublicResponse,
@@ -41,14 +43,49 @@ export type SkillTemplateSource = {
   readFile(path: string): Promise<Uint8Array>;
 };
 
+const MAX_TEMPLATE_FILE_BYTES = 1024 * 1024;
+
+/** Reads the build's published template bytes through the static assets. */
+export function assetTemplateSource(
+  assets: { fetch(request: Request): Promise<Response> } | undefined,
+  origin: string,
+): () => Promise<SkillTemplateSource> {
+  return async () => {
+    if (!assets) throw new Error("Static assets are unavailable");
+    const read = async (path: string) => {
+      const response = await assets.fetch(
+        new Request(`${origin}/skill-templates/${path}`),
+      );
+      if (!response.ok) throw new Error(`Skill template ${path} is missing`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.length > MAX_TEMPLATE_FILE_BYTES)
+        throw new Error(`Skill template ${path} is too large`);
+      return bytes;
+    };
+    const index = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        await read("index.json"),
+      ),
+    ) as SkillTemplateIndex;
+    return { index, readFile: read };
+  };
+}
+
 export type SkillPublicationDependencies = {
   getProject(id: string): Promise<ProjectRecord | null>;
   listProjects(): Promise<ProjectRecord[]>;
   listEnforcements(): Promise<ProjectEnforcement[]>;
   enforcementGeneration(): Promise<number>;
   loadTemplate(): Promise<SkillTemplateSource>;
-  /** True only when the revision's exact content passed security vetting (VET-01). */
-  vettingCleared(project: ProjectRecord): Promise<boolean>;
+  /**
+   * Security vetting of the revision's exact content, integration-branch head
+   * and the template commit the skills render from (VET-01, VET-07). Only
+   * "cleared" serves a skill or lists the project.
+   */
+  vettingClearance(
+    project: ProjectRecord,
+    templateCommit: string,
+  ): Promise<VettingClearance>;
   cache?: EdgeCache;
   waitUntil?: (promise: Promise<unknown>) => void;
 };
@@ -142,11 +179,13 @@ async function discovery(
     deps.listEnforcements(),
   ]);
   const projects: ProjectRecord[] = [];
+  const template = await deps.loadTemplate();
   for (const project of all)
     if (
       listed(project, records) &&
       publishesGeneratedSkills(project.manifest) &&
-      (await deps.vettingCleared(project))
+      (await deps.vettingClearance(project, template.index.commit)).state ===
+        "cleared"
     )
       projects.push(project);
   return jsonResponse({
@@ -198,12 +237,18 @@ async function artifact(
       404,
       "This project has not published its skills yet. Its maintainers must complete the contribution fields first.\n",
     );
-  if (!(await deps.vettingCleared(project)))
+  const template = await deps.loadTemplate();
+  const vetting = await deps.vettingClearance(project, template.index.commit);
+  if (vetting.state === "unverified")
+    return text(
+      503,
+      "Slop cannot confirm that this project's current commit passed security vetting. Try again.\n",
+    );
+  if (vetting.state !== "cleared")
     return text(
       404,
-      "This project revision has not passed security vetting. Slop serves no skill for an unscanned, queued, quarantined or banned revision.\n",
+      "This project revision has not passed security vetting. Slop serves no skill for an unscanned, queued, quarantined, stale or banned revision, or for a branch head or skill template that no clean scan covered.\n",
     );
-  const template = await deps.loadTemplate();
   const files = await buildProjectPublication({
     template: template.index,
     readFile: template.readFile,

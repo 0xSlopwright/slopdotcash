@@ -22,11 +22,14 @@ export type VettingAssessment = {
   revision: number;
   manifestSha256: string;
   contentSha256: string;
+  /** The integration-branch commit the queue assigned to the scan. */
+  commitSha: string;
+  /** The skill template commit the queue assigned to the scan. */
+  templateCommit: string;
   requestedBy: GithubActor;
   requestedAt: string;
   requestReason: string;
   state: AssessmentState;
-  commitSha: string | null;
   policyVersion: string | null;
   result: VettingResult | null;
   resultSha256: string | null;
@@ -39,7 +42,8 @@ export type AssessmentSummary = {
   id: string;
   revision: number;
   state: AssessmentState;
-  commitSha: string | null;
+  commitSha: string;
+  templateCommit: string;
   policyVersion: string | null;
   requestedAt: string;
   completedAt: string | null;
@@ -49,13 +53,27 @@ export type AssessmentSummary = {
 };
 
 /**
+ * The exact code a clearance binds (PRD VET-07): the head commit of the
+ * project's integration branch and the commit of the skill template that
+ * Slop renders the project skills from.
+ */
+export type VettingPin = { commitSha: string; templateCommit: string };
+
+/** Reads the live pin; throws when GitHub or the template cannot be read. */
+export type VettingPinReader = () => Promise<VettingPin>;
+
+/**
  * What a revision may do. Only "cleared" lets Slop serve skills, list the
- * project for discovery, or activate the revision.
+ * project for discovery, or activate the revision. "stale" means a scan of
+ * this content exists, but for another branch head or template commit;
+ * "unverified" means Slop could not read the live pin to compare.
  */
 export type VettingClearance =
   | { state: "unscanned" }
+  | { state: "unverified"; reason: string }
   | { state: "queued"; assessment: AssessmentSummary }
   | { state: "quarantined"; assessment: AssessmentSummary }
+  | { state: "stale"; assessment: AssessmentSummary; live: VettingPin }
   | { state: "cleared"; assessment: AssessmentSummary }
   | { state: "banned"; assessment: AssessmentSummary };
 
@@ -65,12 +83,13 @@ type AssessmentRow = {
   revision: number;
   manifest_sha256: string;
   content_sha256: string;
+  commit_sha: string;
+  template_commit: string;
   requested_by_github_id: string;
   requested_by_github_login: string;
   requested_at: string;
   request_reason: string;
   state: AssessmentState;
-  commit_sha: string | null;
   policy_version: string | null;
   result: string | null;
   result_sha256: string | null;
@@ -79,7 +98,7 @@ type AssessmentRow = {
 };
 
 const COLUMNS =
-  "id, project_id, revision, manifest_sha256, content_sha256, requested_by_github_id, requested_by_github_login, requested_at, request_reason, state, commit_sha, policy_version, result, result_sha256, signing_key_sha256, completed_at";
+  "id, project_id, revision, manifest_sha256, content_sha256, commit_sha, template_commit, requested_by_github_id, requested_by_github_login, requested_at, request_reason, state, policy_version, result, result_sha256, signing_key_sha256, completed_at";
 
 function fromRow(row: AssessmentRow): VettingAssessment {
   return {
@@ -88,6 +107,8 @@ function fromRow(row: AssessmentRow): VettingAssessment {
     revision: row.revision,
     manifestSha256: row.manifest_sha256,
     contentSha256: row.content_sha256,
+    commitSha: row.commit_sha,
+    templateCommit: row.template_commit,
     requestedBy: {
       githubId: row.requested_by_github_id,
       githubLogin: row.requested_by_github_login,
@@ -95,7 +116,6 @@ function fromRow(row: AssessmentRow): VettingAssessment {
     requestedAt: row.requested_at,
     requestReason: row.request_reason,
     state: row.state,
-    commitSha: row.commit_sha,
     policyVersion: row.policy_version,
     result:
       row.result === null ? null : (JSON.parse(row.result) as VettingResult),
@@ -124,6 +144,7 @@ export function summarize(assessment: VettingAssessment): AssessmentSummary {
     revision: assessment.revision,
     state: assessment.state,
     commitSha: assessment.commitSha,
+    templateCommit: assessment.templateCommit,
     policyVersion: assessment.policyVersion,
     requestedAt: assessment.requestedAt,
     completedAt: assessment.completedAt,
@@ -206,7 +227,6 @@ export class CloudflareVettingPersistence {
     assessment: Omit<
       VettingAssessment,
       | "state"
-      | "commitSha"
       | "policyVersion"
       | "result"
       | "resultSha256"
@@ -217,8 +237,8 @@ export class CloudflareVettingPersistence {
     try {
       await this.db
         .prepare(
-          `INSERT INTO vetting_assessments (id, project_id, revision, manifest_sha256, content_sha256, requested_by_github_id, requested_by_github_login, requested_at, request_reason, state)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+          `INSERT INTO vetting_assessments (id, project_id, revision, manifest_sha256, content_sha256, commit_sha, template_commit, requested_by_github_id, requested_by_github_login, requested_at, request_reason, state)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
         )
         .bind(
           assessment.id,
@@ -226,6 +246,8 @@ export class CloudflareVettingPersistence {
           assessment.revision,
           assessment.manifestSha256,
           assessment.contentSha256,
+          assessment.commitSha,
+          assessment.templateCommit,
           assessment.requestedBy.githubId,
           assessment.requestedBy.githubLogin,
           assessment.requestedAt,
@@ -259,13 +281,12 @@ export class CloudflareVettingPersistence {
         this.db
           .prepare(
             `UPDATE vetting_assessments
-                SET state = ?, commit_sha = ?, policy_version = ?, result = ?,
+                SET state = ?, policy_version = ?, result = ?,
                     result_sha256 = ?, signing_key_sha256 = ?, completed_at = ?
               WHERE id = ?`,
           )
           .bind(
             result.disposition,
-            result.assessed.commitSha,
             result.policyVersion,
             input.resultText,
             input.resultSha256,
@@ -309,11 +330,13 @@ export class CloudflareVettingPersistence {
     projectId: string,
     manifest: object,
     throughRevision: number,
+    readPin: VettingPinReader,
   ): Promise<VettingClearance> {
     return this.clearance(
       projectId,
       await vettedContentSha256(manifest),
       throughRevision,
+      readPin,
     );
   }
 
@@ -321,13 +344,18 @@ export class CloudflareVettingPersistence {
    * The clearance of a project's content digest through a revision. A
    * confirmed-malicious result at any revision bans the project until the
    * separate reinstatement path (ADM-06) exists; a new commit or a later
-   * clean scan cannot lift it. Otherwise the newest finished assessment of
-   * the unbroken run of revisions with the same content decides.
+   * clean scan cannot lift it. Otherwise only scans of the unbroken run of
+   * revisions with the same content count, and of those only scans of the
+   * live pin: the current integration-branch head and template commit. The
+   * newest finished one decides (VET-07). A scan of another commit or
+   * template is stale, so a moved branch or a new template is never served
+   * on an old clearance.
    */
   async clearance(
     projectId: string,
     contentSha256: string,
     throughRevision: number,
+    readPin: VettingPinReader,
   ): Promise<VettingClearance> {
     const assessments = await this.projectAssessments(projectId);
     const malicious = newest(
@@ -348,8 +376,25 @@ export class CloudflareVettingPersistence {
         window.has(assessment.revision) &&
         assessment.contentSha256 === contentSha256,
     );
+    const latest = relevant.at(-1);
+    if (latest === undefined) return { state: "unscanned" };
+    let live: VettingPin;
+    try {
+      live = await readPin();
+    } catch (error) {
+      return {
+        state: "unverified",
+        reason:
+          `Slop could not read the live integration-branch head or skill template commit. ${error instanceof Error ? error.message : ""}`.trim(),
+      };
+    }
+    const pinned = relevant.filter(
+      (assessment) =>
+        assessment.commitSha === live.commitSha &&
+        assessment.templateCommit === live.templateCommit,
+    );
     const finished = newest(
-      relevant,
+      pinned,
       (assessment) => assessment.state !== "pending",
     );
     if (finished?.state === "clean")
@@ -357,11 +402,10 @@ export class CloudflareVettingPersistence {
     if (finished !== undefined)
       return { state: "quarantined", assessment: summarize(finished) };
     const queued = newest(
-      relevant,
+      pinned,
       (assessment) => assessment.state === "pending",
     );
-    return queued
-      ? { state: "queued", assessment: summarize(queued) }
-      : { state: "unscanned" };
+    if (queued) return { state: "queued", assessment: summarize(queued) };
+    return { state: "stale", assessment: summarize(latest), live };
   }
 }
