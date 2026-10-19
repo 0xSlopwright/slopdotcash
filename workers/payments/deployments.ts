@@ -49,6 +49,7 @@ export interface RegistryDeployments {
  * next run without a Worker change. A paused project keeps its vault and its
  * funded obligations, so its deployments stay in scope. One invalid manifest
  * is reported and skipped; it never removes the other projects' vaults.
+ * `db` is the registry database (`REGISTRY_DB`), never the payment database.
  */
 export async function loadRegistryPaymentDeployments(
   db: D1Database,
@@ -93,5 +94,15 @@ export async function loadRegistryPaymentDeployments(
       );
     }
   }
+  // A served network without a vault is a failure, not an empty success: a
+  // Worker bound to the wrong database or to an unreviewed network would
+  // otherwise scan nothing and report nothing.
+  for (const network of networks)
+    if (!deployments.some((deployment) => deployment.network === network))
+      failures.push(
+        new Error(
+          `Project registry has no escrow deployment for served network ${network}`,
+        ),
+      );
   return { deployments, failures };
 }

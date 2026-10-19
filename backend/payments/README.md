@@ -83,9 +83,13 @@ named in `PAYMENT_NETWORKS` (a JSON array of registry network names, for
 example `["base-sepolia"]`). A vault that an admin revision records is read on
 the next run; no Worker variable lists projects or vaults. A paused project
 keeps its vault and funded obligations, so it stays in scope. One invalid
-manifest is reported as a run failure and never hides other vaults. A
-missing, empty, unknown or repeated network name stops the run. The Worker
-must bind the same D1 database as the Pages `SLOP_DB` that holds the registry.
+manifest is reported as a run failure and never hides other vaults. A served
+network with no vault in the registry is also a run failure. A missing,
+empty, unknown or repeated network name stops the run. The Worker reads the
+registry through a separate `REGISTRY_DB` binding to the Pages `SLOP_DB`
+database (`slop-private` in `wrangler.toml`) and only reads it. Its payment
+tables stay in `PAYMENTS_DB`. An isolated payment database has an empty
+`projects` table, so it can never stand in for the registry.
 
 Resolve private RPC URLs through `PAYMENT_RPC_URLS`, keyed by network; do not
 publish them in manifest output. Each endpoint must serve the finalized tag

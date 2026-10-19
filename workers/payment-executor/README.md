@@ -166,8 +166,10 @@ Supply only the one signer secret for the Worker's chain and role. The
 `PAYMENT_DEPLOYMENTS` public configuration of the two signer roles is
 generated from the D1 project registry snapshot (`bun run projects:sync`); it
 is not a second editable project inventory. The dispatcher has no deployment
-list: it reads the vaults of its `PAYMENT_NETWORKS` from the registry in its
-own D1 database on every run. Both roles use
+list: it reads the vaults of its `PAYMENT_NETWORKS` on every run from
+`REGISTRY_DB`, which `configure.mjs` binds to the `SLOP_DB` registry database
+in `wrangler.toml` without a migrations directory. The generator refuses an
+isolated payment database that is the registry database. Both roles use
 `PAYMENTS_DB`; the executor code reads authorization data and does not create
 wallet authorizations or approve awards. Journal storage contains sensitive
 operational material and has no read route other than transaction-ID lookup.

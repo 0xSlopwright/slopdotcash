@@ -378,8 +378,10 @@ only. A production payment stack needs a separate reviewed stack definition.
    `bun run projects:sync`, then
    `bun run payments:deployments mainnet <network>`.
 3. Set the dispatcher variable `PAYMENT_NETWORKS` to a JSON array with only
-   this network, for example `["base-mainnet"]`. The dispatcher reads the
-   vaults from the D1 registry; do not copy a deployment list into it.
+   this network, for example `["base-mainnet"]`. Bind `REGISTRY_DB` on the
+   dispatcher to the registry database (`SLOP_DB` in `wrangler.toml`). The
+   dispatcher reads the vaults from it; do not copy a deployment list into
+   it.
 4. Set `PAYMENT_RPC_URLS` on each Worker to a private endpoint for this
    network that serves the finalized tag (EVM) or finalized commitment
    (Solana). On Solana also set `PAYMENT_SOLANA_GENESIS` to the cluster
@@ -401,7 +403,8 @@ bun run payments:readiness \
 ```
 
 For each network the report states `factory`, `attester`, `rpc` and
-`executor`. `--probe` reads the chain id or genesis hash and the finalized
+`executor`. `executor` is `missing` when the dispatcher's `REGISTRY_DB` is not
+the registry database. `--require` needs `--probe`. `--probe` reads the chain id or genesis hash and the finalized
 head; `rpc=finalized` is the only passing probe result. Before step 3.4 the
 only expected failure for this network is `executor=off-by-review`. Attach
 the report to the release issue.

@@ -5,8 +5,9 @@
  * and the executor switch are in place. It reads public configuration and
  * the operator's local RPC map; it never prints an RPC URL, reads a key,
  * signs, deploys or changes a value. A network is ready only when every
- * check passes. `--require NETWORK` makes the command fail unless that
- * network is ready, so a release step can stop on it.
+ * check passes, including that the dispatcher reads its vaults from the
+ * registry database (`SLOP_DB` in wrangler.toml) through `REGISTRY_DB`. `--require NETWORK` makes the command fail unless that
+ * network is ready, so a release step can stop on it; it requires `--probe`.
  *
  *   PAYMENT_RPC_URLS='{"base-sepolia":"https://…"}' \
  *   bun scripts/check-payout-readiness.ts \
@@ -28,6 +29,7 @@ import { assertProjectRegistry } from "../src/lib/project-schema.mjs";
 import { HISTORICAL_PROJECTS } from "../src/lib/projects.mjs";
 import { mainnetExecutionEnabled } from "../workers/payment-executor/mainnet-execution.mjs";
 import { parsePaymentNetworks } from "../workers/payments/deployments";
+import { readRegistryDatabase } from "../workers/payments/registry-database.mjs";
 import { fetchProjectRegistry } from "./sync-project-registry.mjs";
 
 type Network = EscrowDeployment["network"];
@@ -37,6 +39,7 @@ export interface StackConfig {
   name?: unknown;
   vars?: Record<string, unknown>;
   services?: { binding?: unknown; service?: unknown }[];
+  d1_databases?: { binding?: unknown; database_id?: unknown }[];
 }
 
 /** RPC probe result: `finalized` proves chain identity and a finalized head. */
@@ -55,7 +58,7 @@ export interface NetworkReadiness {
   /** Every deployment names an identity authority and an attester Worker pins exactly the registry deployments. */
   attester: "configured" | "missing";
   rpc: "configured" | "missing" | RpcProbe;
-  /** The relayer pins the deployments, the dispatcher serves the network and binds the executor, and a mainnet's reviewed switch is on. */
+  /** The relayer pins the deployments, the dispatcher serves the network, binds the executor and reads the registry database, and a mainnet's reviewed switch is on. */
   executor: "enabled" | "missing" | "off-by-review";
   ready: boolean;
   reasons: string[];
@@ -64,6 +67,8 @@ export interface NetworkReadiness {
 export interface ReadinessInput {
   /** Current registry manifests (D1 API or the synced snapshot). */
   registry: unknown;
+  /** D1 database id of the project registry (the Pages SLOP_DB). */
+  registryDatabaseId: string;
   configs: readonly StackConfig[];
   /** The operator's PAYMENT_RPC_URLS map, or undefined when not supplied. */
   rpcUrls?: Record<string, unknown>;
@@ -101,16 +106,23 @@ export function payoutReadiness(input: ReadinessInput): NetworkReadiness[] {
       config.vars?.PAYMENT_NETWORKS !== undefined &&
       config.vars.SIGNER_ROLE === undefined,
   );
-  const served = new Set(
-    dispatchers.flatMap((config) =>
-      parsePaymentNetworks(config.vars?.PAYMENT_NETWORKS),
-    ),
-  );
-  const bound = new Set(
-    dispatchers.flatMap((config) =>
-      (config.services ?? []).map((service) => service.binding),
-    ),
-  );
+  const servedBy = (network: string) =>
+    dispatchers.filter((config) =>
+      parsePaymentNetworks(config.vars?.PAYMENT_NETWORKS).includes(
+        network as Network,
+      ),
+    );
+  // The dispatcher finds vaults only in REGISTRY_DB. Any other database
+  // (for example the isolated payment database) has no registry rows.
+  const readsRegistry = (config: StackConfig) => {
+    const bindings = (config.d1_databases ?? []).filter(
+      (database) => database.binding === "REGISTRY_DB",
+    );
+    return (
+      bindings.length === 1 &&
+      bindings[0].database_id === input.registryDatabaseId
+    );
+  };
   const pins = (role: "attester" | "relayer", network: string) =>
     input.configs.flatMap(
       (config) => signerNetworks(config, role).get(network) ?? [],
@@ -177,9 +189,21 @@ export function payoutReadiness(input: ReadinessInput): NetworkReadiness[] {
         "relayer Worker does not pin exactly the registry deployments",
       );
     }
-    if (!served.has(network) || !bound.has(binding)) {
+    const serving = servedBy(network);
+    if (
+      !serving.length ||
+      !serving.every((config) =>
+        (config.services ?? []).some((service) => service.binding === binding),
+      )
+    ) {
       executor = "missing";
       reasons.push(`dispatcher does not serve the network with ${binding}`);
+    }
+    if (serving.length && !serving.every(readsRegistry)) {
+      executor = "missing";
+      reasons.push(
+        "dispatcher REGISTRY_DB is not the project registry database",
+      );
     }
     if (!policy.testnet && !executionEnabled(network)) {
       executor = "off-by-review";
@@ -277,6 +301,10 @@ if (import.meta.main) {
     for (const network of required)
       if (!Object.hasOwn(ESCROW_NETWORKS, network))
         throw new TypeError(`Unknown registry network: ${network}`);
+    // Without the probe a configured URL proves neither chain identity nor
+    // finality, so a required network must be probed.
+    if (required.length && !probe)
+      throw new TypeError("--require needs --probe");
     const registry = origin
       ? (await fetchProjectRegistry(origin)).projects
       : HISTORICAL_PROJECTS;
@@ -293,6 +321,7 @@ if (import.meta.main) {
           probes[network as Network] = await probeRpc(network as Network, url);
     const report = payoutReadiness({
       registry,
+      registryDatabaseId: (await readRegistryDatabase()).database_id,
       configs,
       rpcUrls,
       solanaGenesis: parseMap("PAYMENT_SOLANA_GENESIS"),

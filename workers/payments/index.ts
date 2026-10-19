@@ -57,9 +57,14 @@ export interface PaymentDeployment {
 export interface PaymentsWorkerEnvironment {
   PAYMENTS_DB: D1Database;
   /**
+   * The D1 project registry (the Pages `SLOP_DB`, `slop-private`), bound
+   * separately from PAYMENTS_DB. The Worker only reads it.
+   */
+  REGISTRY_DB: D1Database;
+  /**
    * JSON array of the registry networks this Worker serves. Their vaults come
-   * from the D1 project registry on every run; no deployment list is copied
-   * into the Worker configuration.
+   * from REGISTRY_DB on every run; no deployment list is copied into the
+   * Worker configuration.
    */
   PAYMENT_NETWORKS: string;
   /** Private JSON map of network name to a finalized-capable RPC endpoint. */
@@ -72,7 +77,7 @@ export interface PaymentsWorkerEnvironment {
 /** The served networks' reviewed vaults, read from the D1 project registry. */
 export function registryDeployments(env: PaymentsWorkerEnvironment) {
   return loadRegistryPaymentDeployments(
-    env.PAYMENTS_DB,
+    env.REGISTRY_DB,
     parsePaymentNetworks(env.PAYMENT_NETWORKS),
   );
 }

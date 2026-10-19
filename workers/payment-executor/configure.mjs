@@ -8,6 +8,7 @@ import {
 } from "../../src/lib/escrow-policy.mjs";
 import { assertProjectRegistry } from "../../src/lib/project-schema.mjs";
 import { HISTORICAL_PROJECTS } from "../../src/lib/projects.mjs";
+import { readRegistryDatabase } from "../payments/registry-database.mjs";
 
 // Local generation only: no resource creation, signing, secret reads, or deployment.
 const args = {};
@@ -47,6 +48,13 @@ if (
 )
   throw new Error(
     "Explicit test network and isolated slop-payments-NETWORK database identity required",
+  );
+// The dispatcher finds vaults in the project registry, which is the Pages
+// SLOP_DB, not the isolated payment database (its projects table is empty).
+const registryDatabase = await readRegistryDatabase();
+if (registryDatabase.database_id === args["database-id"])
+  throw new Error(
+    "The isolated payment database must not be the project registry database",
   );
 const root = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(root, "../..");
@@ -107,7 +115,16 @@ for (const role of ["attester", "relayer", "dispatcher"]) {
     name: names[role],
     main: resolve(root, signer ? "index.ts" : "../payments/index.ts"),
     // Signers sign only for the deployments pinned here at review time. The
-    // dispatcher reads its vaults from the D1 registry of the same database.
+    // dispatcher reads its vaults from the registry database (REGISTRY_DB).
+    ...(signer
+      ? {}
+      : {
+          d1_databases: [
+            ...common.d1_databases,
+            // No migrations_dir: this configuration never migrates the registry.
+            { binding: "REGISTRY_DB", ...registryDatabase },
+          ],
+        }),
     vars: signer
       ? {
           PAYMENT_DEPLOYMENTS: JSON.stringify(deployments),
