@@ -738,6 +738,22 @@ async function decideApplication(
     // Re-check against the live registry: another approval may have claimed
     // the id or repository since this application was submitted.
     canonicalManifest(application.manifest);
+    assertApplicationManifest(application.manifest);
+    let control: RepositoryControl;
+    try {
+      control = await deps.repositoryControl(
+        application.manifest,
+        application.applicant,
+      );
+    } catch {
+      fail(
+        503,
+        "github_unavailable",
+        "GitHub could not be checked; retry approval later",
+      );
+    }
+    if (control.state === "mismatch")
+      fail(422, "invalid_manifest", control.reason);
     assertRepositoryUnrestricted(
       application.manifest,
       await deps.persistence.listEnforcements(),
