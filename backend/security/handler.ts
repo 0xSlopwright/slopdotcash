@@ -850,20 +850,41 @@ async function createCase(
     ]);
   } catch (error) {
     if (!/UNIQUE/iu.test(constraintError(error))) throw error;
-    // The same reporter linking the same advisory again is a replay.
+    // A rejected link is history; only a live case for this reporter and
+    // advisory can answer the request.
     const existing = await deps.db
       .prepare(
-        `SELECT ${CASE_COLUMNS} FROM security_cases WHERE project_id = ? AND advisory_ghsa = ? AND reporter_github_id = ?`,
+        `SELECT ${CASE_COLUMNS} FROM security_cases WHERE project_id = ? AND advisory_ghsa = ? AND reporter_github_id = ? AND submission_state <> 'link-rejected'`,
       )
       .bind(projectId, advisory, reporter.githubId)
       .first<CaseRow>();
     if (existing !== null) {
-      const roles = await caseRoles(deps, existing, actor, terms);
-      if (roles.size > 0)
-        return json(200, {
-          replayed: true,
-          case: await caseView(deps, existing, roles, true),
-        });
+      // A claim is idempotent by reporter and advisory. A record is a replay
+      // only when this exact request created the verified case; otherwise it
+      // wrote nothing and must not report success.
+      const replayed =
+        mode === "claim" ||
+        (existing.submission_state === "verified" &&
+          (await deps.db
+            .prepare(
+              "SELECT 1 AS ok FROM security_case_events WHERE case_id = ? AND case_revision = 1 AND kind = 'record' AND idempotency_key = ? AND actor_github_id = ?",
+            )
+            .bind(existing.id, idempotencyKey, actor.githubId)
+            .first<{ ok: number }>()) !== null);
+      if (replayed) {
+        const roles = await caseRoles(deps, existing, actor, terms);
+        if (roles.size > 0)
+          return json(200, {
+            replayed: true,
+            case: await caseView(deps, existing, roles, true),
+          });
+      } else if (existing.submission_state === "claimed") {
+        fail(
+          409,
+          "claim_pending",
+          "The reporter already linked this advisory; verify or reject that claim",
+        );
+      }
     }
     fail(
       409,
@@ -886,8 +907,28 @@ type Change = {
   /** Raw SQL for award_state when it depends on a reservation in this batch. */
   awardStateSql?: string;
   before?: D1Statement[];
+  /** Runs after the event; each must be guarded by {@link triagerEvent}. */
   after?: D1Statement[];
 };
+
+/**
+ * Guards a triager membership write so it commits only when this request's
+ * own audit event landed at the next case revision for the same account.
+ * That event is written only when the revision-checked case update matched,
+ * so a stale request can never grant or revoke access without an audit
+ * event (SEC-08, SEC-10).
+ */
+function triagerEvent(
+  row: CaseRow,
+  idempotencyKey: string,
+  kind: "assign-triager" | "revoke-triager",
+  githubId: string,
+): { sql: string; values: unknown[] } {
+  return {
+    sql: "EXISTS (SELECT 1 FROM security_case_events WHERE case_id = ? AND case_revision = ? AND idempotency_key = ? AND kind = ? AND json_extract(detail, '$.githubId') = ?)",
+    values: [row.id, row.revision + 1, idempotencyKey, kind, githubId],
+  };
+}
 
 function requireRole(roles: Set<Role>, role: Role, message: string): void {
   if (!roles.has(role)) fail(403, "forbidden", message);
@@ -910,6 +951,7 @@ async function planChange(
   actor: Actor,
   action: string,
   body: Record<string, unknown>,
+  idempotencyKey: string,
 ): Promise<Change> {
   const now = deps.now();
   const at = now.toISOString();
@@ -974,6 +1016,7 @@ async function planChange(
       const githubId = stringField(body, "githubId", GITHUB_ID);
       if (githubId === row.reporter_github_id)
         fail(409, "conflicted", "The reporter cannot triage their own case");
+      const guard = triagerEvent(row, idempotencyKey, action, githubId);
       if (action === "assign-triager") {
         const githubLogin = stringField(body, "githubLogin", GITHUB_LOGIN);
         return {
@@ -986,9 +1029,16 @@ async function planChange(
           after: [
             deps.db
               .prepare(
-                "INSERT INTO security_case_members (case_id, github_id, github_login, role, added_by_github_id, added_at) VALUES (?, ?, ?, 'triager', ?, ?)",
+                `INSERT INTO security_case_members (case_id, github_id, github_login, role, added_by_github_id, added_at) SELECT ?, ?, ?, 'triager', ?, ? WHERE ${guard.sql}`,
               )
-              .bind(row.id, githubId, githubLogin, actor.githubId, at),
+              .bind(
+                row.id,
+                githubId,
+                githubLogin,
+                actor.githubId,
+                at,
+                ...guard.values,
+              ),
           ],
         };
       }
@@ -1004,9 +1054,9 @@ async function planChange(
         after: [
           deps.db
             .prepare(
-              "UPDATE security_case_members SET revoked_at = ?, revoked_by_github_id = ? WHERE case_id = ? AND github_id = ? AND revoked_at IS NULL",
+              `UPDATE security_case_members SET revoked_at = ?, revoked_by_github_id = ? WHERE case_id = ? AND github_id = ? AND revoked_at IS NULL AND ${guard.sql}`,
             )
-            .bind(at, actor.githubId, row.id, githubId),
+            .bind(at, actor.githubId, row.id, githubId, ...guard.values),
         ],
       };
     }
@@ -1420,7 +1470,15 @@ async function actOnCase(
     action !== "reject-link"
   )
     fail(409, "not_verified", "The case is not verified yet");
-  const change = await planChange(deps, row, roles, actor, action, body);
+  const change = await planChange(
+    deps,
+    row,
+    roles,
+    actor,
+    action,
+    body,
+    idempotencyKey,
+  );
   const at = deps.now().toISOString();
   const columns = Object.keys(change.set);
   const assignments = [

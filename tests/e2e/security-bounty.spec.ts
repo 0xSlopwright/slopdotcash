@@ -608,6 +608,57 @@ test("private security bounty programs keep cases restricted from intake to awar
     }
   });
 
+  await test.step("a rejected link can be corrected", async () => {
+    const advisory = "GHSA-7c8f-9g2h-3j4m";
+    const claim = () =>
+      api(request, "POST", "security-cases", TOKENS["reporter-b"], {
+        mode: "claim",
+        projectId: a.id,
+        advisory,
+        idempotencyKey: key(),
+      });
+    const first = await claim();
+    expect(first.status).toBe(201);
+    const firstId = (first.body.case as { id: string }).id;
+    // A record over an open claim writes nothing and is refused.
+    const overClaim = await api(
+      request,
+      "POST",
+      "security-cases",
+      TOKENS.security,
+      {
+        mode: "record",
+        projectId: a.id,
+        advisory,
+        reporterGithubId: account("reporter-b").githubId,
+        reporterGithubLogin: account("reporter-b").githubLogin,
+        receivedAt: afterOpen,
+        confirmation: true,
+        idempotencyKey: key(),
+      },
+    );
+    expect(overClaim.body.error).toBe("claim_pending");
+    expect(
+      (
+        await act(request, "security", firstId, "reject-link", {
+          reason: "The advisory ID was mistyped in the link.",
+        })
+      ).status,
+    ).toBe(200);
+    const again = await claim();
+    expect(again.status, JSON.stringify(again.body)).toBe(201);
+    const againId = (again.body.case as { id: string }).id;
+    expect(againId).not.toBe(firstId);
+    const verified = await act(request, "security", againId, "verify-link", {
+      receivedAt: afterOpen,
+      confirmation: true,
+    });
+    expect(verified.body.case).toMatchObject({
+      submissionState: "verified",
+      receivedAt: afterOpen,
+    });
+  });
+
   await test.step("identity and access stay isolated", async () => {
     const read = (role: Role | "admin" | "applicant" | null, id: string) =>
       api(

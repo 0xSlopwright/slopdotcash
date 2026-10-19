@@ -488,7 +488,8 @@ function caseMoney(terms: Terms | null): string {
 const SUBMISSION_LABELS: Record<SecurityCase["submissionState"], string> = {
   claimed: "Not submitted yet — waiting for a maintainer to verify the link",
   verified: "Submitted and verified",
-  "link-rejected": "Link rejected",
+  "link-rejected":
+    "Link rejected — link the GitHub report again, or ask a maintainer to record it",
 };
 
 function ProjectSelect({
@@ -1224,7 +1225,9 @@ function CaseDetail({
         <Fact term="Submission">
           {SUBMISSION_LABELS[record.submissionState]}
         </Fact>
-        <Fact term="Received by GitHub">{formatUtc(record.receivedAt)}</Fact>
+        <Fact term="Received by GitHub (as entered by the maintainer)">
+          {formatUtc(record.receivedAt)}
+        </Fact>
         <Fact term="Policy revision">{record.policyRevision ?? "—"}</Fact>
         <Fact term="Award terms">{caseMoney(record.terms)}</Fact>
         <Fact term="Award">{record.awardState}</Fact>

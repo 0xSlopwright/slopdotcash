@@ -73,8 +73,11 @@ CREATE TABLE security_cases (
 -- One verified case per advisory; several unverified claims may compete.
 CREATE UNIQUE INDEX security_cases_one_verified_advisory
   ON security_cases(project_id, advisory_ghsa) WHERE submission_state = 'verified';
+-- One live case per reporter and advisory. A rejected link stays as history
+-- and does not block a corrected claim or a maintainer record (SEC-07).
 CREATE UNIQUE INDEX security_cases_one_claim_per_reporter
-  ON security_cases(project_id, advisory_ghsa, reporter_github_id);
+  ON security_cases(project_id, advisory_ghsa, reporter_github_id)
+  WHERE submission_state <> 'link-rejected';
 CREATE INDEX security_cases_reporter ON security_cases(reporter_github_id);
 CREATE INDEX security_cases_project ON security_cases(project_id, created_at);
 

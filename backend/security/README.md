@@ -55,8 +55,19 @@ technical decider, and the technical decider cannot decide the appeal.
 
 Migration `0026_private_security_cases.sql` keeps independent receipt,
 remediation, award, payment and disclosure states. A claim is not a receipt
-until a technical approver verifies it; verification freezes GitHub's receipt
+until a technical approver verifies it; verification freezes the receipt
 time, the project revision in force then, and its gross amount and split.
+Slop does not fetch the advisory, so the receipt time is the time the
+approver reads on GitHub and enters by hand: a human-attested time.
+
+A rejected link stays as history. The reporter can link the advisory again,
+or a technical approver can record it, and that new case is verified
+normally. A `record` that finds an open claim from the same reporter returns
+`409 claim_pending`: verify or reject that claim instead. A `record` replays
+only the exact request that created the verified case.
+
+Triager assignment and revocation commit only together with their audit
+event at the next case revision. A stale request changes no membership.
 Triggers keep the frozen receipt, events, reservations, membership history
 and the access log append-only.
 
