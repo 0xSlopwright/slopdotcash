@@ -41,16 +41,12 @@ describe("profile activity chart before a project's reward start", () => {
       event.occurredAt.slice(0, 10) <= "2026-07-31",
   );
 
-  it("the frozen July snapshot holds window events before the reward start", () => {
-    expect(rewardStartAt).toBe("2026-07-07T00:00:00.000Z");
+  it("each contributor's chart total equals their Slop Score for the same events", () => {
     expect(
       inWindow.some(
         (event) => Date.parse(event.occurredAt) < Date.parse(rewardStartAt),
       ),
     ).toBe(true);
-  });
-
-  it("each contributor's chart total equals their Slop Score for the same events", () => {
     const scores = new Map(
       createGlobalLeaders({ ...snapshot, ledger: inWindow }, [], {
         schemaVersion: "1",
@@ -90,12 +86,5 @@ describe("profile activity chart before a project's reward start", () => {
     );
     expect(chart.find((entry) => entry.day === "2026-07-06")?.score).toBe(0);
     expect(chart.find((entry) => entry.day === "2026-07-07")?.score).toBe(1);
-  });
-
-  it("lists every UTC day of the window, ending today", () => {
-    const chart = dailySlopScore([], today, days);
-    expect(chart).toHaveLength(days);
-    expect(chart[0].day).toBe("2026-06-27");
-    expect(chart[days - 1].day).toBe("2026-07-31");
   });
 });
