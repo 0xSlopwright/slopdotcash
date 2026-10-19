@@ -19,6 +19,7 @@ import {
   ensureCompleteCycle,
 } from "../src/lib/reward-cycle";
 import { resolveGitHubToken } from "./github-token";
+import { currentProjectPolicy } from "./project-revision-policy.mjs";
 import { writeNewFile, writeNewJsonFile } from "./write-new-file";
 
 function digest(value: string | Buffer): string {
@@ -240,10 +241,12 @@ export async function prepareEscrowCycle(input: {
     view.leaders.map((leader) => leader.actor.id),
     input.githubToken,
   );
-  const canonicalProject = findProject(input.projectId);
-  if (!canonicalProject) throw new Error("Unknown project");
-  const policyBytes = await readFile(
-    resolve("projects", canonicalProject.id, "project.json"),
+  if (!findProject(input.projectId)) throw new Error("Unknown project");
+  // The archived policy is the exact current D1 revision, so the proposal's
+  // projectPolicySha256 equals that revision's public manifestSha256.
+  const { bytes: policyBytes } = await currentProjectPolicy(
+    process.cwd(),
+    input.projectId,
   );
   const identityBytes = Buffer.from(`${JSON.stringify(identities, null, 2)}\n`);
   const proposal = buildEscrowCycle(
