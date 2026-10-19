@@ -739,7 +739,7 @@ jobs:
           # importing anything". A failed import rolls back, and every
           # statement is idempotent and keyed by the batch digest, so retry
           # and accept a failed attempt only when the batch is recorded.
-          points_digest="$(sed -n "s/^INSERT INTO points_batches(digest,[^)]*) VALUES('\([0-9a-f]\{64\}\)'.*/\1/p" "$RUNNER_TEMP/points-import.sql")"
+          points_digest="$(sed -n "s/^INSERT INTO points_batches(digest,[^)]*) SELECT '\([0-9a-f]\{64\}\)'.*/\1/p" "$RUNNER_TEMP/points-import.sql")"
           points_revisions="$(grep -c '^INSERT INTO points_staging(' "$RUNNER_TEMP/points-import.sql")"
           [ "${#points_digest}" -eq 64 ] || exit 1
           points_recorded() {
