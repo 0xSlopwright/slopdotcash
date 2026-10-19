@@ -23,7 +23,7 @@ import {
   pointMembers,
   pointRevisionId,
 } from "../src/lib/points";
-import { findHistoricalRepository } from "../src/lib/projects.mjs";
+import { findHistoricalRepository, findProject } from "../src/lib/projects.mjs";
 import { syncCycleIndex } from "./sync-cycle-index";
 
 function hash(s: string) {
@@ -193,7 +193,10 @@ async function archivePaths(directory: string): Promise<string[]> {
  * A snapshot-owned award is never zeroed here, even when the snapshot
  * that supplied it is absent from this run's inputs; snapshot corrections
  * stay with applyPointsSnapshot. An already-zero latest award needs no
- * successor, so replaying the same inputs appends nothing.
+ * successor, so replaying the same inputs appends nothing. Removing a whole
+ * project from the registry also removes its manifests, but that is not a
+ * maintainer revocation: an award of a project that is no longer listed keeps
+ * its last recorded amount.
  */
 export function retainedHistoryCorrections(
   journal: PointsJournal,
@@ -209,6 +212,7 @@ export function retainedHistoryCorrections(
       (award.category === "substantive-review" ||
         award.category === "evaluated-contribution") &&
       !currentKeys.has(award.key) &&
+      findProject(award.projectId) !== null &&
       revision.sourceRule === "slop-score-v2" &&
       !coverageDigests.has(revision.sourceDigest)
     )

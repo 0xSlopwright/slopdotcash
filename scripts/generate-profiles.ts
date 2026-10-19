@@ -85,6 +85,27 @@ if (values.live) {
     people: [],
   };
   const people = new Map<string, ProfileRecord>();
+  // Carry the last counts of repositories that are no longer collected, as
+  // issue history is archived, so removing a project keeps profile totals.
+  const collected = new Set(TARGET_REPOSITORIES.map((repo) => repo.id));
+  const carried = new Set<string>();
+  for (const row of (previous as ProfileIndex).repositories) {
+    if (collected.has(row.repository)) continue;
+    carried.add(row.repository);
+    result.repositories.push({ ...row });
+  }
+  for (const person of (previous as ProfileIndex).people) {
+    const rows = person.repositories.filter((row) =>
+      carried.has(row.repository),
+    );
+    if (rows.length === 0) continue;
+    people.set(person.id, {
+      id: person.id,
+      login: person.login,
+      avatarUrl: person.avatarUrl,
+      repositories: rows.map((row) => ({ ...row })),
+    });
+  }
   for (const repo of TARGET_REPOSITORIES) {
     let cursor: string | null = null,
       // Pages are ordered by creation time, so a PR opened during the crawl

@@ -15,6 +15,11 @@ export interface ProfileIndex {
   schemaVersion: "1" | "2";
   startedAt: string;
   generatedAt: string;
+  /**
+   * Every collected repository, plus the last census of a registered or
+   * legacy repository that is no longer collected. Those counts are carried
+   * unchanged, so a removed project does not erase contributor history.
+   */
   repositories: { repository: string; count: number; excluded: number }[];
   people: ProfileRecord[];
   issues?: ProfileIssueHistory;
@@ -82,9 +87,15 @@ export function assertProfiles(
     !Array.isArray(v.repositories)
   )
     throw Error("Invalid profile census");
-  const inventory = JSON.stringify([...targets].sort());
+  // Every collected repository is present. A repository outside the census
+  // keeps its last counts only when it is registered or legacy history.
+  const inventory = new Set(v.repositories.map((r) => r.repository));
   if (
-    JSON.stringify(v.repositories.map((r) => r.repository).sort()) !== inventory
+    inventory.size !== v.repositories.length ||
+    !targets.every((id) => inventory.has(id)) ||
+    ![...inventory].every(
+      (id) => targets.includes(id) || isHistoricalRepositoryId(id),
+    )
   )
     throw Error("Profile repository inventory mismatch");
   const ids = new Set<string>();
@@ -113,7 +124,7 @@ export function assertProfiles(
     const repos = new Set<string>();
     for (const r of p.repositories) {
       if (
-        !targets.includes(r.repository) ||
+        !inventory.has(r.repository) ||
         repos.has(r.repository) ||
         ![r.merged, r.open, r.closed].every(validCount)
       )
