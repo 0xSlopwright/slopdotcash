@@ -1088,7 +1088,9 @@ test.describe("private evidence console", () => {
         );
     });
     await signIn(page, ADMIN_TOKEN);
-    const overview = await page.request.get("/api/v1/admin/vetting");
+    const overview = await page.request.get("/api/v1/admin/vetting", {
+      headers: { cookie: `__Host-slop_points=${ADMIN_TOKEN}` },
+    });
     expect(overview.status()).toBe(200);
     const assessment = (await overview.json()).assessments.find(
       (entry: { projectId: string; result: unknown }) =>
@@ -1097,7 +1099,13 @@ test.describe("private evidence console", () => {
     expect(assessment).toBeTruthy();
     const path = `/vetting-evidence?assessmentId=${assessment.id}&runId=${assessment.result.environment.runId}`;
     const privatePath = `/api/v1/operator/vetting-evidence?assessmentId=${assessment.id}&runId=${assessment.result.environment.runId}`;
-    expect((await page.request.get(privatePath)).status()).toBe(403);
+    expect(
+      (
+        await page.request.get(privatePath, {
+          headers: { cookie: `__Host-slop_points=${ADMIN_TOKEN}` },
+        })
+      ).status(),
+    ).toBe(403);
     await page.goto("/admin", { waitUntil: "networkidle" });
     const consoleLink = page.locator(`a[href="${path}"]`);
     await consoleLink
