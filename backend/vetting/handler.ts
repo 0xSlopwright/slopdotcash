@@ -245,8 +245,9 @@ async function adminOverview(
         : {
             state: "unavailable",
             queueRegistrationAvailable,
-            reason:
-              "The secure-VM service key or private evidence policy and bucket are unavailable. No revision can be cleared, so no project skill can be served or activated.",
+            reason: queueRegistrationAvailable
+              ? "Private evidence storage or policy is unavailable. You may queue a scan, but acquisition and clean clearance must wait."
+              : "The secure-VM service key is unavailable. New scans cannot be queued, acquired or recorded. Existing decisions still require current retained evidence.",
           },
     assessments: assessments.map(adminAssessment),
   });
