@@ -27,7 +27,13 @@ The Worker has no HTTP route. A cron trigger runs it every 15 minutes. For each
 enabled network:
 
 1. Take the network lock in D1 (`fee_converter_locks`). A second run on the
-   same network exits, so two runs never sign with one nonce.
+   same network exits, so two runs never sign with one nonce. The lease lasts
+   14 minutes and a run renews it at a chunk boundary every 7 minutes, so a
+   run that needs longer than one lease keeps the lock instead of losing it to
+   the next cron tick. A renewal that fails means the lease lapsed or another
+   run took it over: that run starts no further send and logs
+   `fee_conversion_lock_lost`. Releasing a lease that already lapsed leaves the
+   row for `acquireLock` to reclaim, so a late run never disturbs a successor.
 2. Reconcile every unresolved live send (`submitted`, `unknown`) before
    anything new. See [Idempotency](#idempotency).
 3. List candidate tokens from D1 project manifests: a `rewardAsset` of kind
@@ -125,7 +131,10 @@ decides each unresolved row:
   no pending transaction, the row fails only when another transaction used its
   nonce in a finalized block, or the router deadline (20 minutes) has passed,
   after which the swap reverts even if mined. Otherwise the Worker
-  rebroadcasts the recorded bytes unchanged.
+  rebroadcasts the recorded bytes unchanged. Only the node's "not found"
+  answer counts as no receipt or no transaction. A failed lookup (HTTP 429,
+  timeout or another RPC error) logs `fee_conversion_reconcile_error` and
+  leaves the row open for the next run.
 - **Solana.** A finalized signature status settles the row. With no status,
   the row fails only when the finalized block height is past the recorded
   `lastValidBlockHeight`. Otherwise the Worker rebroadcasts the recorded bytes.
@@ -213,10 +222,11 @@ sweep is a human-signed transfer outside this Worker.
 
 ## Turn on live mode
 
-1. The owner approves MVP-07c and the fee wallet per network. Robinhood Chain
-   and Ethereum fee wallets are still undecided; those networks stay disabled
-   until `FEE_WALLET_ROBINHOOD` / `FEE_WALLET_ETHEREUM` are set by a reviewed
-   pull request.
+1. The owner approves MVP-07c and the fee wallet per network. On 19 October
+   2026 the owner chose the Base fee wallet
+   `0x8f77C37D8650776bFe73c9b12B15209eE15D9b86` for Robinhood Chain and
+   Ethereum too. `FEE_WALLET_ROBINHOOD` and `FEE_WALLET_ETHEREUM` are set in
+   `wrangler.toml`. Each network still runs only when it is enabled.
 2. Create the Worker shell once: `wrangler deploy --config
    workers/fee-converter/wrangler.toml` from a trusted machine with mode `off`.
 3. Set the secrets for each network you will enable (key custodian only).

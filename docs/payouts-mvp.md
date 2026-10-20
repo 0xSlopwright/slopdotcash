@@ -10,7 +10,7 @@ Projects select one payout chain: Base, Solana or Robinhood Chain (USDG, see [th
 
 All new escrow allocations are gross amounts of the project network's stablecoin: USDC on Base and Solana, USDG on Robinhood Chain. Both have six decimals. The fee is deducted: `fee = floor(gross / 50)`, `recipientNet = gross - fee`. A 100-unit allocation reserves 100, transfers 98 to the contributor, and transfers 2 to the fee recipient. Contributor earnings display net. Per-award gross and fee remain inspectable. Monetary arithmetic is integer micro-units (one millionth of one USDC or USDG).
 
-Every return of unused escrow principal incurs a 10% fee, calculated as the difference of cumulative floor-rounded fees. Previously paid awards do not exempt the remaining refund. Funded unpaid awards, including recipients without wallets, are permanently reserved and cannot be reclaimed by the sponsor.
+Every return of unused escrow principal incurs the same 2% fee as an award, `fee = floor(gross / 50)`, enforced in the contracts (owner decision of 19 October 2026, #907). The earlier 10% and 5% rates are superseded. Previously paid awards do not exempt the remaining refund. Funded unpaid awards, including recipients without wallets, are permanently reserved and cannot be reclaimed by the sponsor.
 
 GitHub is the only account login. Immutable numeric actor identity owns each award, not a mutable login name. The backend stores independent append-only Base, Solana and Robinhood Chain wallet claims. A Base claim does not satisfy a Robinhood Chain award, even for the same address, because the consent and binding signatures name the chain. Registering and proving a wallet enables automatic payment of eligible unpaid awards on that chain. A wrong-chain wallet does not satisfy the award.
 
@@ -20,7 +20,7 @@ Operator wallet assistance records actor, address, reason and operator identity.
 
 ## Acceptance
 
-The same real local-chain workflow must pass on EVM, under each EVM network's chain id (Base and Robinhood Chain), and on Solana: deposit 1,000; commit gross awards 100 and 50; pay 98 plus fee 2 to the registered recipient; retain 50 for the walletless recipient; refund free 850 as 765 sponsor plus 85 fee; register the late recipient; pay 49 plus fee 1. Final totals are 147 contributors, 3 payout fees, 765 sponsor returns and 85 withdrawal fees. Repeating requests cannot pay again.
+The same real local-chain workflow must pass on EVM, under each EVM network's chain id (Base and Robinhood Chain), and on Solana: deposit 1,000; commit gross awards 100 and 50; pay 98 plus fee 2 to the registered recipient; retain 50 for the walletless recipient; refund free 850 as 833 to the owner's refund destination plus a 17 fee; register the late recipient; pay 49 plus fee 1. Final totals are 147 contributors, 3 payout fees, 833 refund returns and 17 withdrawal fees. Repeating requests cannot pay again.
 
 Cover unauthenticated registration, actor mismatch, wallet change/payment races, wrong asset/network/vault, stale bindings, failed token transfers, duplicate origins, retry after ambiguous submission, queue restart, finality, and counter reconciliation. Contract execution, database integration and browser interaction are separate evidence boundaries. Seeded local identity is not proof of live GitHub OAuth.
 

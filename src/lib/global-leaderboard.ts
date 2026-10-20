@@ -10,7 +10,7 @@
 import type { CycleIndex } from "./cycle-index";
 import type { GitHubActor, LeaderboardSnapshot } from "./leaderboard";
 import type { ProjectView } from "./project-view";
-import { findProjectByRepositoryId } from "./projects.mjs";
+import { findIngestedProjectByRepositoryId } from "./projects.mjs";
 
 export interface GlobalLeader {
   actor: GitHubActor;
@@ -96,7 +96,7 @@ export function createGlobalLeaders(
   }
 
   for (const event of snapshot.ledger) {
-    const project = findProjectByRepositoryId(event.repository);
+    const project = findIngestedProjectByRepositoryId(event.repository);
     if (!project) {
       throw new TypeError(
         `Accepted event ${event.id} references an unregistered project`,

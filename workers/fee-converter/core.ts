@@ -5,6 +5,7 @@
  */
 
 import type { Limits, Mode, Network, NetworkConfig } from "./config";
+import { LOCK_MS } from "./store";
 
 export type ConversionState =
   | "quoted"
@@ -104,7 +105,16 @@ export interface ChainClient {
 
 export interface ConversionStore {
   acquireLock(network: Network, runId: string, now: Date): Promise<boolean>;
-  releaseLock(network: Network, runId: string): Promise<void>;
+  /**
+   * Drops the lock only while this run still owns an unexpired lease; a run
+   * that lost its lease never deletes the successor's lock.
+   */
+  releaseLock(network: Network, runId: string, now: Date): Promise<void>;
+  /**
+   * Extends this run's own lease. False when the lease lapsed or was taken
+   * over: another run may own the network, so this one stops signing.
+   */
+  renewLock(network: Network, runId: string, now: Date): Promise<boolean>;
   /** Live rows still waiting on chain: submitted, unknown and abandoned quotes. */
   openRows(network: Network): Promise<ConversionRow[]>;
   insert(row: ConversionRow): Promise<void>;
@@ -138,6 +148,14 @@ export interface NetworkRunResult {
 
 const QUOTE_ABANDON_MS = 60 * 60 * 1000;
 const RESCALE_ATTEMPTS = 3;
+/**
+ * How long a run may go without renewing its lease. A run renews at a chunk
+ * boundary once this much time has passed, so a chunk that starts always has
+ * more than LOCK_MS - RUN_BUDGET_MS of lease left; that margin must cover one
+ * send (two receipt waits plus quote, build and RPC). Half the lease leaves
+ * seven minutes for a send that takes about two.
+ */
+export const RUN_BUDGET_MS = LOCK_MS / 2;
 
 /**
  * Bounded, single-line error text for D1 and logs. RPC URLs can carry a
@@ -271,7 +289,11 @@ export async function runNetwork(
     reconciled: 0,
     records: emptyRecords(),
   };
-  if (!(await deps.store.acquireLock(config.network, runId, deps.now()))) {
+  const acquiredAt = deps.now();
+  let renewedAt = acquiredAt.getTime();
+  // Replaced with false when the lease lapses or another run takes it over.
+  let ownsLock = true;
+  if (!(await deps.store.acquireLock(config.network, runId, acquiredAt))) {
     return { ...result, status: "locked" };
   }
   try {
@@ -307,6 +329,20 @@ export async function runNetwork(
 
     for (const token of candidates) {
       if (blocked.has(token)) continue;
+      // The lease must cover every send this run starts. Renew before a chunk
+      // once the interval has passed; a renewal that fails means the lease
+      // lapsed or another run took it over, so no send may be signed here.
+      const at = deps.now();
+      if (ownsLock && at.getTime() - renewedAt >= RUN_BUDGET_MS) {
+        ownsLock = await deps.store.renewLock(config.network, runId, at);
+        if (!ownsLock)
+          deps.log({
+            event: "fee_conversion_lock_lost",
+            network: config.network,
+          });
+        else renewedAt = at.getTime();
+      }
+      if (!ownsLock) break;
       try {
         const balance = await client.balance(token);
         if (balance === 0n) continue;
@@ -330,7 +366,7 @@ export async function runNetwork(
       }
     }
   } finally {
-    await deps.store.releaseLock(config.network, runId);
+    await deps.store.releaseLock(config.network, runId, deps.now());
   }
   return result;
 }

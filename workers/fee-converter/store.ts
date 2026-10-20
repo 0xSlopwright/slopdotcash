@@ -12,7 +12,11 @@ export interface FeeD1Database {
   prepare(query: string): D1Statement;
 }
 
-const LOCK_MS = 14 * 60 * 1000;
+/**
+ * One lease covers a whole run. core.ts sizes its own renewal interval from
+ * this so a run never signs after the lease it holds has expired.
+ */
+export const LOCK_MS = 14 * 60 * 1000;
 
 const COLUMNS: [keyof ConversionRow, string][] = [
   ["id", "id"],
@@ -72,13 +76,37 @@ export class D1ConversionStore implements ConversionStore {
     return (result.meta?.changes ?? 0) === 1;
   }
 
-  async releaseLock(network: Network, runId: string) {
+  /**
+   * Deletes this run's lease only while it is still live. The `run_id` match
+   * alone never removes a successor's row, but it would remove this run's own
+   * already-expired row; `acquireLock` reclaims that through `expires_at < now`.
+   */
+  async releaseLock(network: Network, runId: string, now: Date) {
     await this.db
       .prepare(
-        "DELETE FROM fee_converter_locks WHERE network = ? AND run_id = ?",
+        `DELETE FROM fee_converter_locks
+          WHERE network = ? AND run_id = ? AND expires_at >= ?`,
       )
-      .bind(network, runId)
+      .bind(network, runId, now.toISOString())
       .run();
+  }
+
+  /**
+   * Extends this run's own unexpired lease, so a long run keeps the lock it
+   * holds instead of losing it to the next cron run. Returns false when the
+   * lease is no longer this run's (taken over or lapsed): the caller must stop
+   * signing, because another run may now own the network.
+   */
+  async renewLock(network: Network, runId: string, now: Date) {
+    const expires = new Date(now.getTime() + LOCK_MS).toISOString();
+    const result = await this.db
+      .prepare(
+        `UPDATE fee_converter_locks SET expires_at = ?
+          WHERE network = ? AND run_id = ? AND expires_at >= ?`,
+      )
+      .bind(expires, network, runId, now.toISOString())
+      .run();
+    return (result.meta?.changes ?? 0) === 1;
   }
 
   async openRows(network: Network) {
