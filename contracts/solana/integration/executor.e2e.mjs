@@ -546,6 +546,7 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
   // signed bytes. Completion must reconcile the journaled signature, not resend.
   const bindingFetch = globalThis.fetch;
   let bindingSends = 0;
+  let bindingFinalizedBeforeDrop = false;
   globalThis.fetch = async (url, options) => {
     const body = JSON.parse(options?.body ?? "{}");
     const response = await bindingFetch(url, options);
@@ -554,6 +555,7 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
       const accepted = await response.clone().json();
       assert.equal(accepted.result, prepared.transactionId);
       await finalized(accepted.result);
+      bindingFinalizedBeforeDrop = true;
       throw new Error("Injected lost binding response after real finalization");
     }
     return response;
@@ -568,6 +570,7 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
     globalThis.fetch = bindingFetch;
   }
   assert.equal(bindingSends, 1);
+  assert.equal(bindingFinalizedBeforeDrop, true);
   assert.equal(completed.status, 200);
   const bound = await completed.json();
   assert.equal(bound.transactionId, prepared.transactionId);
