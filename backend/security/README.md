@@ -111,6 +111,17 @@ root_cause_reserved` and is recorded as a duplicate. Once a case is related,
 it stays related. A redecision after a returned appeal needs a new review,
 and the earlier reviewer stays recorded.
 
+## Disclosure approval records
+
+A disclosure decision records its private human-approval evidence reference.
+Approving redacted text also binds the exact content SHA-256. Recording disclosure
+requires the latest disclosure decision to approve those same bytes, and retains
+that approval's case revision. Changed bytes need a new approval. Any approved
+embargo change is explicit in the immutable event; omission means no change.
+These records do not publish content or schedule disclosure. Reporter recognition
+consent stays separate. Older events remain unchanged and cannot authorize a new
+disclosure without an exact content approval.
+
 ## Not available
 
 - Payment: no private settlement rail is approved. An approved award has
