@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { assembleEvidence } from "../workers/vetting/assembly";
+import { indexSyscalls, syscallEvidence } from "../workers/vetting/events";
 
 const [
   acquisitionDirectory,
@@ -97,6 +98,119 @@ assert(
   ),
 );
 assert(review.visibilityGaps.includes("complete-collector-not-attached"));
+if (input.guestEvidence) {
+  const raw = await readFile(join(vmDirectory, "guest-events.log"));
+  const guest = JSON.parse(
+    (
+      await readFile(join(vmDirectory, "guest-source-evidence.json"))
+    ).toString(),
+  );
+  const vm = JSON.parse(
+    (await readFile(join(vmDirectory, "evidence.json"))).toString(),
+  );
+  const context = {
+    expectedSha256: guest.traceSha256,
+    collectorExitCode: guest.exitCode,
+    collectorTermination: guest.termination,
+    vmTermination: vm.termination,
+  };
+  const indexed = indexSyscalls(raw, context);
+  const structured = syscallEvidence(indexed);
+  assert.equal(digest(structured.bytes), structured.indexSha256);
+  assert(structured.review.length <= 64 * 1024);
+  const summary = JSON.parse(structured.review.toString());
+  assert.equal(summary.indexSha256, structured.indexSha256);
+  assert.equal(
+    summary.omittedEvents,
+    indexed.events.length - summary.events.length,
+  );
+  assert(
+    summary.visibilityGaps.includes(
+      "structured-index-not-fully-in-model-review",
+    ),
+  );
+  assert.equal(indexed.state, "incomplete");
+  assert.equal(indexed.kernelLostEventCount, null);
+  assert.equal(indexed.publicationAuthorized, false);
+  assert.equal(indexed.indexedBytes, raw.length);
+  assert(indexed.events.some((event) => event.operation === "execve"));
+  assert(indexed.events.some((event) => event.family === "file"));
+  assert(indexed.events.some((event) => event.family === "memoryMap"));
+  assert(indexed.childObservations.length > 0);
+  let end = 0;
+  for (const event of indexed.events) {
+    assert.equal(event.spans[0].start, end);
+    end = event.spans[0].end;
+    assert(end <= raw.length);
+    if (event.pairedOrdinal !== undefined) {
+      const other = indexed.events[event.pairedOrdinal];
+      assert.equal(other.pid, event.pid);
+      assert.equal(other.operation, event.operation);
+      assert.equal(other.pairedOrdinal, event.ordinal);
+    }
+  }
+  assert.equal(end, raw.length);
+  assert.throws(() =>
+    indexSyscalls(raw, { ...context, expectedSha256: "0".repeat(64) }),
+  );
+  const reindex = (value: Buffer) =>
+    indexSyscalls(value, { ...context, expectedSha256: digest(value) });
+  const truncated = raw.subarray(0, raw.length - 1);
+  assert(reindex(truncated).visibilityGaps.includes("unterminated-final-line"));
+  const resumed = indexed.events.find(
+    (event) => event.kind === "resumed" && event.pairedOrdinal !== undefined,
+  );
+  assert(resumed);
+  const isolatedResume = raw.subarray(
+    resumed.spans[0].start,
+    resumed.spans[0].end,
+  );
+  assert(
+    reindex(isolatedResume).visibilityGaps.includes("unmatched-resumed-call"),
+  );
+  assert.equal(reindex(isolatedResume).childObservations.length, 0);
+  const invalid = Buffer.concat([raw, Buffer.from([255, 10])]);
+  assert(reindex(invalid).visibilityGaps.includes("invalid-utf8-line"));
+  const unknown = Buffer.concat([
+    raw,
+    Buffer.from("\nunknown collector record\n"),
+  ]);
+  assert(reindex(unknown).visibilityGaps.includes("unrecognized-trace-line"));
+  assert(
+    reindex(Buffer.alloc(16_385, 10)).visibilityGaps.includes(
+      "event-index-limit-unindexed-tail",
+    ),
+  );
+  // Expand actual observed lines to exercise the consumer budget, not a new VM run.
+  const short = indexed.events.find(
+    (event) =>
+      event.kind === "syscall" &&
+      event.spans[0].end - event.spans[0].start <= 60,
+  );
+  assert(short);
+  const line = raw.subarray(short.spans[0].start, short.spans[0].end);
+  const dense = reindex(
+    Buffer.concat(Array.from({ length: 16_385 }, () => line)),
+  );
+  const bounded = syscallEvidence(dense);
+  assert.equal(dense.events.length, 16_384);
+  assert(dense.visibilityGaps.includes("event-index-limit-unindexed-tail"));
+  assert(bounded.review.length <= 64 * 1024);
+  assert(bounded.bytes.length <= 8 * 1024 * 1024);
+  console.log(
+    JSON.stringify({
+      structuredTrace: {
+        rawBytes: raw.length,
+        events: indexed.events.length,
+        privateIndexBytes: structured.bytes.length,
+        reviewBytes: structured.review.length,
+        denseIndexBytes: bounded.bytes.length,
+        denseReviewBytes: bounded.review.length,
+        state: "incomplete",
+      },
+    }),
+  );
+}
 for (const item of review.items)
   assert.equal(digest(Buffer.from(item.text)), item.sha256);
 const before = (await readdir(outputDirectory)).sort();
