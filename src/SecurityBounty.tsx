@@ -383,6 +383,10 @@ type CaseEvent = {
   reason: string | null;
   actorRole?: string;
   evidenceReference?: string | null;
+  detail?: {
+    redactedContentDigest?: string | null;
+    embargoChange?: string | null;
+  };
 };
 
 type SecurityCase = {
@@ -932,6 +936,26 @@ function actionSpec(action: string, record: SecurityCase): ActionSpec | null {
               ["disclosed", "Disclosed by the security maintainer"],
             ],
           },
+          {
+            name: "evidenceReference",
+            label: "Private disclosure approval evidence",
+            kind: "text",
+            hint: "Reference the human approval and exact content version in the private advisory. Do not paste the content here.",
+          },
+          {
+            name: "redactedContentDigest",
+            label: "Approved redacted content SHA-256",
+            kind: "text",
+            optional: true,
+            hint: "Required when approving redacted text or recording disclosure. Use the digest of the exact approved content.",
+          },
+          {
+            name: "embargoChange",
+            label: "Approved embargo change",
+            kind: "textarea",
+            optional: true,
+            hint: "Record any approved deadline or terms change. Leave blank if unchanged. This does not publish content or schedule disclosure.",
+          },
           REASON,
         ],
       };
@@ -1359,6 +1383,13 @@ function CaseDetail({
                 {event.reason ? ` — ${event.reason}` : ""}
                 {event.evidenceReference
                   ? ` (evidence: ${event.evidenceReference})`
+                  : ""}
+                {event.kind === "disclosure" &&
+                event.detail?.redactedContentDigest
+                  ? ` (approved content SHA-256: ${event.detail.redactedContentDigest})`
+                  : ""}
+                {event.kind === "disclosure" && event.detail?.embargoChange
+                  ? ` (embargo change: ${event.detail.embargoChange})`
                   : ""}
               </li>
             ))}

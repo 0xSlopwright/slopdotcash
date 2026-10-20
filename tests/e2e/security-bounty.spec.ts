@@ -1266,6 +1266,172 @@ test("private security bounty programs keep cases restricted from intake to awar
     await context.close();
   });
 
+  await test.step("disclosure records bind approved bytes without publishing or identity consent", async () => {
+    const digest = "a".repeat(64);
+    const decision = {
+      disclosureState: "redaction-approved",
+      reason: "Independent human approval of the synthetic redacted text",
+      evidenceReference: "private advisory approval record version 1",
+    };
+    expect(
+      (await act(request, "security", caseA, "disclosure", decision)).status,
+    ).toBe(400);
+    expect(
+      (
+        await act(request, "reporter-a", caseA, "disclosure", {
+          ...decision,
+          redactedContentDigest: digest,
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await act(request, "security", caseA, "disclosure", {
+          ...decision,
+          disclosureState: "disclosed",
+          redactedContentDigest: digest,
+        })
+      ).status,
+    ).toBe(409);
+    const context = await browser.newContext({
+      viewport: test.info().project.use.viewport,
+      recordVideo: { dir: test.info().outputPath("disclosure-video") },
+    });
+    const page = await context.newPage();
+    const errors = observe(page);
+    await signIn(page, TOKENS.security);
+    const failures: string[] = [];
+    page.on("requestfailed", (request) => {
+      if (new URL(request.url()).origin === new URL(page.url()).origin)
+        failures.push(new URL(request.url()).pathname);
+    });
+    await page.goto("/security", { waitUntil: "networkidle" });
+    await page
+      .getByRole("button", {
+        name: new RegExp(`${a.id} · GHSA-2c3f-4g5h-6j7m`, "u"),
+      })
+      .click();
+    const form = page.locator("form").filter({
+      has: page.getByRole("button", { name: "Save disclosure decision" }),
+    });
+    await form
+      .getByLabel("Disclosure state")
+      .selectOption("redaction-approved");
+    await form
+      .getByLabel("Private disclosure approval evidence")
+      .fill(decision.evidenceReference);
+    await form.getByLabel("Approved redacted content SHA-256").fill(digest);
+    await form
+      .getByLabel("Approved embargo change")
+      .fill(
+        "Maintainer approved extending the embargo until the private retest is complete.",
+      );
+    await form.getByLabel("Private reason").fill(decision.reason);
+    await form
+      .getByRole("button", { name: "Save disclosure decision" })
+      .focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("status")).toContainText("Disclosure: saved.");
+    await page.getByText(/^History \(/u).click();
+    await expect(page.locator(".security-history")).toContainText(digest);
+    await expect(page.locator(".security-history")).toContainText(
+      "extending the embargo",
+    );
+    await expectAccessible(page);
+    await page.screenshot({
+      path: test.info().outputPath("disclosure-approved.png"),
+      fullPage: true,
+    });
+    await page.evaluate(() => {
+      document.documentElement.style.zoom = "2";
+    });
+    await expectAccessible(page);
+    await page.screenshot({
+      path: test.info().outputPath("disclosure-zoom.png"),
+      fullPage: true,
+    });
+    expect(errors).toEqual([]);
+    expect(failures).toEqual([]);
+    await context.close();
+    expect(
+      (
+        await act(request, "security", caseA, "disclosure", {
+          ...decision,
+          disclosureState: "disclosed",
+          redactedContentDigest: "b".repeat(64),
+        })
+      ).status,
+    ).toBe(409);
+    const disclosureKey = key();
+    const disclosedFields = {
+      ...decision,
+      disclosureState: "disclosed",
+      redactedContentDigest: digest,
+      idempotencyKey: disclosureKey,
+    };
+    const disclosed = await act(
+      request,
+      "security",
+      caseA,
+      "disclosure",
+      disclosedFields,
+    );
+    expect(disclosed.status).toBe(200);
+    const replay = await act(
+      request,
+      "security",
+      caseA,
+      "disclosure",
+      disclosedFields,
+    );
+    expect(replay.status).toBe(200);
+    expect(replay.body.replayed).toBe(true);
+    const after = await api(
+      request,
+      "GET",
+      `security-cases/${caseA}`,
+      TOKENS["reporter-a"],
+    );
+    expect(after.body.case).toMatchObject({
+      disclosureState: "disclosed",
+      recognition: "private",
+    });
+    const history = await api(
+      request,
+      "GET",
+      `security-cases/${caseA}`,
+      TOKENS.security,
+    );
+    const events = (
+      history.body.case as {
+        events: {
+          kind: string;
+          revision: number;
+          detail: {
+            disclosureState: string;
+            redactedContentDigest: string;
+            approvalRevision: number | null;
+            embargoChange: string | null;
+          };
+        }[];
+      }
+    ).events.filter((event) => event.kind === "disclosure");
+    expect(events).toHaveLength(2);
+    const approval = events.find(
+      (event: { detail: { disclosureState: string } }) =>
+        event.detail.disclosureState === "redaction-approved",
+    );
+    const receipt = events.find(
+      (event: { detail: { disclosureState: string } }) =>
+        event.detail.disclosureState === "disclosed",
+    );
+    expect(receipt?.detail).toMatchObject({
+      redactedContentDigest: digest,
+      approvalRevision: approval?.revision,
+      embargoChange: null,
+    });
+  });
+
   await test.step("the reporter sees the case in the inbox UI", async () => {
     const context = await browser.newContext();
     const page = await context.newPage();

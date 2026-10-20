@@ -1297,7 +1297,11 @@ async function planChange(
       };
     }
     case "disclosure": {
-      exactKeys(body, [...common, "disclosureState", "reason"]);
+      exactKeys(
+        body,
+        [...common, "disclosureState", "reason", "evidenceReference"],
+        ["redactedContentDigest", "embargoChange"],
+      );
       requireRole(roles, "security-maintainer", "Security maintainers decide");
       requireAction(row, roles, action);
       const disclosureState = choice(body, "disclosureState", [
@@ -1305,12 +1309,49 @@ async function planChange(
         "redaction-approved",
         "disclosed",
       ] as const);
+      const redactedContentDigest =
+        body.redactedContentDigest === undefined
+          ? null
+          : stringField(body, "redactedContentDigest", SHA256);
+      if (disclosureState !== "embargoed" && redactedContentDigest === null)
+        fail(
+          400,
+          "evidence_required",
+          "Bind the exact approved redacted content digest",
+        );
+      let approvalRevision: number | null = null;
+      if (disclosureState === "disclosed") {
+        const approval = await deps.db
+          .prepare(
+            "SELECT case_revision, detail FROM security_case_events WHERE case_id = ? AND kind = 'disclosure' ORDER BY case_revision DESC LIMIT 1",
+          )
+          .bind(row.id)
+          .first<{ case_revision: number; detail: string }>();
+        const approved = approval ? JSON.parse(approval.detail) : null;
+        if (
+          approval === null ||
+          row.disclosure_state !== "redaction-approved" ||
+          approved?.disclosureState !== "redaction-approved" ||
+          approved?.redactedContentDigest !== redactedContentDigest
+        )
+          fail(
+            409,
+            "disclosure_approval_required",
+            "Approve these exact redacted bytes before recording disclosure",
+          );
+        approvalRevision = approval.case_revision;
+      }
       return {
         kind: action,
         role: "security-maintainer",
         reason: textField(body, "reason", 8, 2000),
-        evidenceReference: null,
-        detail: { disclosureState },
+        evidenceReference: textField(body, "evidenceReference", 3, 500),
+        detail: {
+          disclosureState,
+          redactedContentDigest,
+          approvalRevision,
+          embargoChange: optionalText(body, "embargoChange", 2000),
+        },
         set: { disclosure_state: disclosureState },
       };
     }
