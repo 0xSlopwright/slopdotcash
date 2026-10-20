@@ -10,8 +10,9 @@ The Worker has no public route and `workers_dev` is off. The caller is a
 service binding named `SLOP_NOTIFY` on the production Pages app. That caller
 is the authenticated project-application submit path in
 `backend/projects/handler.ts`. Cloudflare refuses to publish Pages with a
-binding to a Worker that does not exist, so `wrangler.toml` has no
-`SLOP_NOTIFY` binding until the Worker is released. Without the binding, the
+binding to a Worker that does not exist. The protected production release
+39373511823 deployed this Worker before the binding was added to
+`wrangler.toml`. Without the binding, the
 application is saved and records `adminNotification: "failed"`. The only accepted route
 is:
 
@@ -75,7 +76,8 @@ time, application id, and the admin review link.
 2. Create the `slop-notify` Worker once and set its `ADMIN_EMAILS` secret.
 3. Set the repository variable `SLOP_NOTIFY_RELEASE` to `enabled`, and let one
    production release deploy the Worker.
-4. Then add the binding to the root `wrangler.toml` in a reviewed pull request:
+4. The production binding in the root `wrangler.toml` connects Pages to the
+   released Worker:
 
    ```toml
    [[services]]
