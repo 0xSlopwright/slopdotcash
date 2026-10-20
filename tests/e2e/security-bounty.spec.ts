@@ -928,8 +928,28 @@ test("private security bounty programs keep cases restricted from intake to awar
       },
     }));
     expect(raised.status).toBe(200);
+    // A later decision cannot take the slot the earlier receipt waits for.
+    const fifth = await recordCase(
+      request,
+      a.id,
+      "GHSA-8c9f-2g3h-5j6m",
+      "reporter-b",
+      new Date(Date.now() - 500).toISOString(),
+    );
+    expect(
+      (
+        await act(
+          request,
+          "security",
+          fifth,
+          "decide",
+          decision({ rootCauseKey: "price-feed-replay" }),
+        )
+      ).body.case,
+    ).toMatchObject({ awardState: "capacity-exhausted", reservation: null });
     // The earlier receipt is funded first, whatever the request order.
     expect((await reserve(fourth)).body.error).toBe("earlier_receipt_waiting");
+    expect((await reserve(fifth)).body.error).toBe("earlier_receipt_waiting");
     const reserved = await reserve(third);
     expect(reserved.status, JSON.stringify(reserved.body)).toBe(200);
     expect(reserved.body.case).toMatchObject({
@@ -938,8 +958,9 @@ test("private security bounty programs keep cases restricted from intake to awar
       reservation: { grossMinor: "1000000", policyRevision: 2 },
       allowedActions: ["approve-award"],
     });
-    // Capacity 2 is now used; the later finding still waits.
+    // Capacity 2 is now used; the later findings still wait in receipt order.
     expect((await reserve(fourth)).body.error).toBe("capacity_exhausted");
+    expect((await reserve(fifth)).body.error).toBe("earlier_receipt_waiting");
     const history = await api(
       request,
       "GET",

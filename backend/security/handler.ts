@@ -1362,22 +1362,15 @@ async function planChange(
         evidenceReference: null,
         detail: { outcome },
         set: reviewed,
-        ...(await reservationChange(deps, row, at)),
+        ...(await reservationChange(deps, row, at)).change,
       };
     }
     case "reserve-award": {
       exactKeys(body, [...common, "reason"]);
       requireAction(row, roles, action);
       const reason = textField(body, "reason", 8, 2000);
-      // Freed capacity goes to the earliest receipt first, so the order of
-      // requests never chooses who is funded (SEC-04, SEC-06).
-      const earlier = await deps.db
-        .prepare(
-          "SELECT 1 AS ok FROM security_cases c WHERE c.project_id = ? AND c.id <> ? AND c.award_state = 'capacity-exhausted' AND c.receipt_state = 'confirmed' AND (c.received_at < ? OR (c.received_at = ? AND c.id < ?)) AND NOT EXISTS (SELECT 1 FROM security_award_reservations r WHERE r.project_id = c.project_id AND r.root_cause_key = c.root_cause_key) LIMIT 1",
-        )
-        .bind(row.project_id, row.id, row.received_at, row.received_at, row.id)
-        .first<{ ok: number }>();
-      if (earlier !== null)
+      const { earlierWaiting, change } = await reservationChange(deps, row, at);
+      if (earlierWaiting)
         fail(
           409,
           "earlier_receipt_waiting",
@@ -1390,7 +1383,7 @@ async function planChange(
         evidenceReference: null,
         detail: {},
         set: {},
-        ...(await reservationChange(deps, row, at)),
+        ...change,
         // Without capacity nothing is written; the case stays as it was.
         awardStateSql: "'reserved'",
         requireSql:
@@ -1584,11 +1577,13 @@ async function planDecision(
   }
   return {
     ...change,
-    ...(await reservationChange(
-      deps,
-      { ...row, root_cause_key: rootCauseKey },
-      at,
-    )),
+    ...(
+      await reservationChange(
+        deps,
+        { ...row, root_cause_key: rootCauseKey },
+        at,
+      )
+    ).change,
   };
 }
 
@@ -1614,16 +1609,32 @@ async function assertRootCauseFree(
 }
 
 /**
+ * A confirmed case received before the given one that waits for capacity and
+ * whose root cause holds no reservation. Binds: project id, case id, received
+ * at, received at, case id.
+ */
+const EARLIER_RECEIPT_WAITING =
+  "SELECT 1 FROM security_cases c WHERE c.project_id = ? AND c.id <> ? AND c.award_state = 'capacity-exhausted' AND c.receipt_state = 'confirmed' AND (c.received_at < ? OR (c.received_at = ? AND c.id < ?)) AND NOT EXISTS (SELECT 1 FROM security_award_reservations r WHERE r.project_id = c.project_id AND r.root_cause_key = c.root_cause_key)";
+
+/**
  * Reserves the case's frozen gross amount for its root cause when the current
  * program revision still has capacity, in the same batch as the revision-
- * checked case update. Without capacity the award is `capacity-exhausted`;
- * the finding stays confirmed (SEC-06, SEC-10).
+ * checked case update. Every reserving path (decide, related-party approval,
+ * reserve-award) uses it. Capacity goes to the earliest receipt first: while
+ * an earlier confirmed case waits for capacity, nothing is reserved, so the
+ * order of requests never chooses who is funded (SEC-04, SEC-06). Without a
+ * reservation the award is `capacity-exhausted`; the finding stays confirmed
+ * (SEC-06, SEC-10). `earlierWaiting` reports the ordering state at read time
+ * for a clear refusal; the insert guard decides it again in the batch.
  */
 async function reservationChange(
   deps: SecurityApiDependencies,
   row: CaseRow,
   at: string,
-): Promise<Pick<Change, "before" | "awardStateSql">> {
+): Promise<{
+  earlierWaiting: boolean;
+  change: Pick<Change, "before" | "awardStateSql">;
+}> {
   const terms = frozenTerms(row);
   const rootCauseKey = row.root_cause_key;
   if (terms === null || rootCauseKey === null)
@@ -1634,10 +1645,22 @@ async function reservationChange(
   const program = await currentProgram(deps, row.project_id);
   const capacity =
     program?.manifest.securityBounty?.capacity.awards ?? terms.capacityAwards;
+  const order = [
+    row.project_id,
+    row.id,
+    row.received_at,
+    row.received_at,
+    row.id,
+  ];
+  const earlierWaiting =
+    (await deps.db
+      .prepare(`${EARLIER_RECEIPT_WAITING} LIMIT 1`)
+      .bind(...order)
+      .first()) !== null;
   const before = [
     deps.db
       .prepare(
-        "INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM security_award_reservations WHERE project_id = ?) < ? AND (SELECT revision FROM security_cases WHERE id = ?) = ?",
+        `INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM security_award_reservations WHERE project_id = ?) < ? AND (SELECT revision FROM security_cases WHERE id = ?) = ? AND NOT EXISTS (${EARLIER_RECEIPT_WAITING})`,
       )
       .bind(
         row.id,
@@ -1651,12 +1674,16 @@ async function reservationChange(
         capacity,
         row.id,
         row.revision,
+        ...order,
       ),
   ];
   return {
-    before,
-    awardStateSql:
-      "CASE WHEN EXISTS (SELECT 1 FROM security_award_reservations WHERE case_id = security_cases.id) THEN 'reserved' ELSE 'capacity-exhausted' END",
+    earlierWaiting,
+    change: {
+      before,
+      awardStateSql:
+        "CASE WHEN EXISTS (SELECT 1 FROM security_award_reservations WHERE case_id = security_cases.id) THEN 'reserved' ELSE 'capacity-exhausted' END",
+    },
   };
 }
 

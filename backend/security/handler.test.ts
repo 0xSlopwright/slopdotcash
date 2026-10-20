@@ -15,27 +15,56 @@ const PROJECT = "bounty";
 const MAINTAINER = { githubId: "900000101", githubLogin: "maintainer" };
 const REPORTER = { githubId: "900000102", githubLogin: "reporter" };
 const TRIAGER = { githubId: "900000103", githubLogin: "triager" };
+const FINANCE = { githubId: "900000104", githubLogin: "finance" };
+const DISPUTE = { githubId: "900000105", githubLogin: "dispute" };
 const ADVISORY = "GHSA-7c8f-9g2h-3j4m";
 const RECEIVED = "2026-10-19T09:00:00.000Z";
 
 type Reply = {
   error?: string;
   replayed?: boolean;
-  case: { id: string; submissionState: string; receivedAt: string | null };
+  case: {
+    id: string;
+    revision: number;
+    submissionState: string;
+    receivedAt: string | null;
+    awardState: string;
+  };
 };
 
-function open() {
+// An open paid program with separate financial and dispute approvers.
+const OPEN_PROGRAM = {
+  status: "open",
+  intake: { repository: "example/bounty" },
+  amount: {
+    currency: "USD",
+    decimals: 2,
+    network: null,
+    grossMinor: "1000000",
+  },
+  sponsor: { name: "Slop", githubId: null },
+  approvers: {
+    technical: [MAINTAINER],
+    financial: [FINANCE],
+    dispute: [DISPUTE],
+  },
+  capacity: { awards: 1, closesAt: null },
+};
+
+function programManifest(securityBounty: Record<string, unknown>): string {
+  return JSON.stringify({ id: PROJECT, status: "active", securityBounty });
+}
+
+function open(
+  securityBounty: Record<string, unknown> = {
+    status: "pending-approval",
+    intake: { repository: "example/bounty" },
+    approvers: { technical: [MAINTAINER], financial: [], dispute: [] },
+    capacity: { awards: 1, closesAt: null },
+  },
+) {
   const { db, sqlite } = sqliteD1(migrations);
-  const manifest = JSON.stringify({
-    id: PROJECT,
-    status: "active",
-    securityBounty: {
-      status: "pending-approval",
-      intake: { repository: "example/bounty" },
-      approvers: { technical: [MAINTAINER], financial: [], dispute: [] },
-      capacity: { awards: 1, closesAt: null },
-    },
-  });
+  const manifest = programManifest(securityBounty);
   const digest = createHash("sha256").update(manifest).digest("hex");
   sqlite
     .query(
@@ -324,5 +353,115 @@ describe("security cases", () => {
       )
       .all(id) as { kind: string }[];
     expect(events).toEqual([{ kind: "assign-triager" }]);
+  });
+
+  test("raised capacity funds the earliest waiting receipt on every reserving path", async () => {
+    const { call, key, sqlite } = open(OPEN_PROGRAM);
+    let advisories = 0;
+    const record = async (receivedAt: string) => {
+      advisories += 1;
+      const recorded = await call(MAINTAINER, "POST", "security-cases", {
+        mode: "record",
+        projectId: PROJECT,
+        advisory: `GHSA-2c3f-4g5h-6j${"2345"[advisories - 1]}m`,
+        reporterGithubId: REPORTER.githubId,
+        reporterGithubLogin: REPORTER.githubLogin,
+        receivedAt,
+        confirmation: true,
+        idempotencyKey: key(),
+      });
+      expect(recorded.status).toBe(201);
+      return recorded.body.case;
+    };
+    const act = async (
+      as: typeof MAINTAINER,
+      id: string,
+      fields: Record<string, unknown>,
+    ) => {
+      const current = await call(as, "GET", `security-cases/${id}`);
+      return call(as, "POST", `security-cases/${id}/actions`, {
+        expectedRevision: current.body.case.revision,
+        idempotencyKey: key(),
+        ...fields,
+      });
+    };
+    const decide = (id: string, rootCauseKey: string, relatedParty = false) =>
+      act(MAINTAINER, id, {
+        action: "decide",
+        outcome: "confirmed",
+        severity: "critical",
+        loss: "verified-actual",
+        inScope: true,
+        reason: "Confirmed critical loss of covered funds.",
+        evidenceReference: "private-evidence-1",
+        relatedParty,
+        rootCauseKey,
+        evidenceDigest: "a".repeat(64),
+      });
+    const funded = await record("2026-10-19T09:10:00.000Z");
+    const waiting = await record("2026-10-19T09:20:00.000Z");
+    const later = await record("2026-10-19T09:30:00.000Z");
+    const related = await record("2026-10-19T09:40:00.000Z");
+    expect((await decide(funded.id, "vault-drain")).body.case.awardState).toBe(
+      "reserved",
+    );
+    // Capacity 1 is used, so the earlier valid finding waits.
+    expect((await decide(waiting.id, "oracle-skew")).body.case.awardState).toBe(
+      "capacity-exhausted",
+    );
+    // The owner raises capacity to 2 by a project revision.
+    const raised = programManifest({
+      ...OPEN_PROGRAM,
+      capacity: { awards: 2, closesAt: null },
+    });
+    const raisedDigest = createHash("sha256").update(raised).digest("hex");
+    sqlite
+      .query(
+        "INSERT INTO project_revisions (project_id, revision, manifest, manifest_sha256, reason, created_at) VALUES (?, 2, ?, ?, 'raise capacity', ?)",
+      )
+      .run(PROJECT, raised, raisedDigest, RECEIVED);
+    sqlite
+      .query(
+        "UPDATE projects SET revision = 2, manifest = ?, manifest_sha256 = ? WHERE id = ?",
+      )
+      .run(raised, raisedDigest, PROJECT);
+    // A related-party approval cannot take the slot the earlier receipt
+    // waits for.
+    expect(
+      (await decide(related.id, "fee-rounding", true)).body.case.awardState,
+    ).toBe("pending");
+    const approved = await act(DISPUTE, related.id, {
+      action: "decide-related-party",
+      outcome: "approve",
+      reason: "Approved after independent review.",
+    });
+    expect(approved.status).toBe(200);
+    expect(approved.body.case.awardState).toBe("capacity-exhausted");
+    // A later decision cannot take it either.
+    const laterDecided = await decide(later.id, "bridge-replay");
+    expect(laterDecided.status).toBe(200);
+    expect(laterDecided.body.case.awardState).toBe("capacity-exhausted");
+    const reserve = (id: string) =>
+      act(FINANCE, id, {
+        action: "reserve-award",
+        reason: "Capacity raised by revision; earliest receipt first.",
+      });
+    expect((await reserve(later.id)).body.error).toBe(
+      "earlier_receipt_waiting",
+    );
+    const reserved = await reserve(waiting.id);
+    expect(reserved.status).toBe(200);
+    expect(reserved.body.case.awardState).toBe("reserved");
+    // Capacity 2 is now used; the later findings still wait their turn.
+    expect((await reserve(later.id)).body.error).toBe("capacity_exhausted");
+    expect(
+      sqlite
+        .query(
+          "SELECT case_id FROM security_award_reservations ORDER BY reserved_at, case_id",
+        )
+        .all()
+        .map((row) => (row as { case_id: string }).case_id)
+        .sort(),
+    ).toEqual([funded.id, waiting.id].sort());
   });
 });

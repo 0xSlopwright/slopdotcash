@@ -85,7 +85,11 @@ Capacity is read from the current project revision. When an admin raises
 `capacity.awards` by revision, a financial approver uses `reserve-award` on
 an exhausted case. The earliest received exhausted case is funded first
 (`409 earlier_receipt_waiting` otherwise). If no capacity is free, the request
-returns `409 capacity_exhausted` and writes nothing.
+returns `409 capacity_exhausted` and writes nothing. Every reserving path
+(`decide`, related-party `approve`, and `reserve-award`) uses one guard in the
+reservation insert: while an earlier confirmed case waits for capacity, a
+later decision or approval reserves nothing and its award is
+`capacity-exhausted`, so it waits its turn.
 
 The technical decision records `relatedParty`. The decider declares it, and a
 reporter who is a program approver or the sponsor account is always related.
