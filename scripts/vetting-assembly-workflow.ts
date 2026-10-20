@@ -148,6 +148,8 @@ if (input.dependencyEvidence) {
         dependencyEvidence: { ...supplied, directory: copy },
       }),
     );
+    await rm(copy, { recursive: true });
+    await cp(supplied.directory, copy, { recursive: true });
     inventory.sourceInventorySha256 = "0".repeat(64);
     const altered = Buffer.from(JSON.stringify(inventory));
     await rm(inventoryPath);
