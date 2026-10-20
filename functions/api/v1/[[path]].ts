@@ -19,6 +19,7 @@ import {
   handlePointsApi,
   sessionGithubActor,
 } from "../../../backend/points/handler";
+import { telegramConfiguration } from "../../../backend/points/telegram";
 import {
   CloudflareProjectPersistence,
   type ProjectD1Database,
@@ -77,6 +78,10 @@ type Env = {
   TRACE_AUTH_SECRET: string;
   X_CLIENT_ID?: string;
   X_CLIENT_SECRET?: string;
+  /** Telegram connection bot (PRD SOC-02); all three or none. */
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_BOT_USERNAME?: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
   OPERATOR_GITHUB_IDS?: string;
   /** GitHub numeric actor IDs allowed to review project applications. */
   ADMIN_GITHUB_IDS?: string;
@@ -646,6 +651,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
               clientSecret: context.env.X_CLIENT_SECRET,
             }
           : undefined,
+      telegram: telegramConfiguration(context.env),
     });
   if (new URL(context.request.url).pathname === "/api/v1/slopbot/value-import")
     return handleHistoricalValueImport(context.request, {
