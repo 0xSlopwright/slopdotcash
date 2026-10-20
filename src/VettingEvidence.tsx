@@ -64,7 +64,7 @@ export default function VettingEvidencePage() {
         <a href="/login?next=%2Fvetting-evidence">Sign in with GitHub</a>
       </p>
       <form className="admin-card" onSubmit={load}>
-        <label>
+        <label className="form-field">
           Assessment ID
           <input
             required
@@ -72,7 +72,7 @@ export default function VettingEvidencePage() {
             onChange={(e) => setAssessment(e.target.value)}
           />
         </label>
-        <label>
+        <label className="form-field">
           Run ID
           <input
             required
@@ -93,6 +93,7 @@ export default function VettingEvidencePage() {
           {data.runs.map((run) => (
             <section
               className="admin-card"
+              style={{ overflowWrap: "anywhere" }}
               key={`${run.assessmentId}/${run.runId}`}
             >
               <h2>{run.runId}</h2>
@@ -192,7 +193,7 @@ function EvidenceItem({ run, object }: { run: Run; object: EvidenceObject }) {
       </p>
       <p>SHA-256: {object.sha256}</p>
       <form onSubmit={inspect}>
-        <label>
+        <label className="form-field">
           Reason to inspect {object.label}
           <input
             required
