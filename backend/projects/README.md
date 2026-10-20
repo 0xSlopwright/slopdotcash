@@ -185,8 +185,13 @@ rate limit, and caches each answer for five minutes. The browser never calls
   not place the restriction. Both preview and confirmation require a clean
   scan of the current restricted revision, requested after the latest restriction,
   at the live integration-branch head and current skill template. Missing,
-  stale or incomplete clearance returns `vetting_required`. A recorded malicious
-  scan still blocks clearance; this does not authorize overriding a scanner ban.
+  stale or incomplete clearance returns `vetting_required`. For a confirmed
+  malicious finding, the signed scanner result records a Ban through this same
+  enforcement path. The issuer is the service signing-key digest and standing
+  rule, never a fabricated GitHub account. A clean scan alone never removes that finding. The independent decision
+  stores its exact clean scan and reviewed malicious scan IDs in
+  `project_vetting_reinstatements`, atomically with the reinstatement. Later
+  findings are not covered by that decision and block clearance again.
   It is refused with `revision_pending` while the
   paused, `retired` revision of the restriction is still pending. It appends a paused `community` revision only if
   the project was listed when the restriction began; it never restores

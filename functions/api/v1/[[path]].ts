@@ -326,9 +326,18 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     );
   const projectResponse = await handleProjectApi(context.request, {
     persistence: projectPersistence,
-    vettingClearance: (projectId, manifest, throughRevision) =>
-      vetting.manifestClearance(projectId, manifest, throughRevision, () =>
-        livePin(manifest),
+    vettingClearance: (
+      projectId,
+      manifest,
+      throughRevision,
+      forReinstatement,
+    ) =>
+      vetting.manifestClearance(
+        projectId,
+        manifest,
+        throughRevision,
+        () => livePin(manifest),
+        forReinstatement,
       ),
     adminGithubIds: githubIdSet(context.env.ADMIN_GITHUB_IDS),
     moderatorGithubIds: githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),

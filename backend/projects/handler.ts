@@ -90,6 +90,7 @@ export type ProjectApiDependencies = {
     projectId: string,
     manifest: ProjectDefinition,
     throughRevision: number,
+    forReinstatement?: boolean,
   ) => Promise<VettingClearance>;
   /** Asks GitHub whether the applicant controls the manifest's repository. */
   repositoryControl: (
@@ -1034,11 +1035,13 @@ async function recordEnforcement(
     restriction,
     listedBefore,
   });
+  let vettingReview: ProjectEnforcement["vettingReview"];
   if (action === "reinstate") {
     const vetting = await deps.vettingClearance(
       projectId,
       project.manifest,
       project.revision,
+      true,
     );
     const latestRestriction = restriction.records.findLast(
       (record) => record.action === "quarantine" || record.action === "ban",
@@ -1054,6 +1057,10 @@ async function recordEnforcement(
         "vetting_required",
         "Reinstatement requires a fresh clean scan of the current restricted revision, requested after the latest restriction, at the current integration-branch head and skill template.",
       );
+    vettingReview = {
+      assessmentId: vetting.assessment.id,
+      maliciousAssessmentIds: vetting.reviewedMaliciousAssessmentIds ?? [],
+    };
   }
   const recordId = `enf_${deps.randomId().replaceAll("-", "")}`;
   const at = deps.now().toISOString();
@@ -1092,6 +1099,7 @@ async function recordEnforcement(
         : plan.pendingReason !== null
           ? "revision_pending"
           : "no_revision_needed",
+    ...(vettingReview ? { vettingReview } : {}),
     createdAt: at,
   };
   const preview = {

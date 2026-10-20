@@ -60,7 +60,14 @@ export interface ProjectEnforcementRecord {
   appealAfter: "none" | "requested" | "granted" | "denied";
   reason: string;
   evidenceReference: string;
-  actor: { githubId: string; githubLogin: string };
+  actor: { githubId: string; githubLogin: string } | null;
+  systemIssuer?: {
+    kind: "vetting-service";
+    keySha256: string;
+    assessmentId: string;
+    policyVersion: string;
+    rule: string;
+  };
   actorRole: string;
   decisionSource: string;
   beforeRevision: number;

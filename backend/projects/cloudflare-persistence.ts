@@ -123,8 +123,9 @@ type EnforcementRow = {
   evidence_reference: string;
   repository_github_id: string;
   repository_keys: string;
-  actor_github_id: string;
-  actor_github_login: string;
+  actor_github_id: string | null;
+  actor_github_login: string | null;
+  system_issuer: string | null;
   actor_role: ProjectEnforcement["actorRole"];
   decision_source: ProjectEnforcement["decisionSource"];
   before_revision: number;
@@ -135,8 +136,8 @@ type EnforcementRow = {
   created_at: string;
 };
 
-const ENFORCEMENT_COLUMNS =
-  "id, project_id, sequence, action, state_after, appeal_after, reason, evidence_reference, repository_github_id, repository_keys, actor_github_id, actor_github_login, actor_role, decision_source, before_revision, before_manifest_sha256, after_revision, after_manifest_sha256, result, created_at";
+export const ENFORCEMENT_COLUMNS =
+  "id, project_id, sequence, action, state_after, appeal_after, reason, evidence_reference, repository_github_id, repository_keys, actor_github_id, actor_github_login, actor_role, decision_source, before_revision, before_manifest_sha256, after_revision, after_manifest_sha256, result, created_at, system_issuer";
 
 function enforcementFromRow(row: EnforcementRow): ProjectEnforcement {
   return {
@@ -150,10 +151,20 @@ function enforcementFromRow(row: EnforcementRow): ProjectEnforcement {
     evidenceReference: row.evidence_reference,
     repositoryGithubId: row.repository_github_id,
     repositoryKeys: JSON.parse(row.repository_keys) as string[],
-    actor: {
-      githubId: row.actor_github_id,
-      githubLogin: row.actor_github_login,
-    },
+    actor:
+      row.actor_github_id !== null && row.actor_github_login !== null
+        ? {
+            githubId: row.actor_github_id,
+            githubLogin: row.actor_github_login,
+          }
+        : null,
+    ...(row.system_issuer
+      ? {
+          systemIssuer: JSON.parse(
+            row.system_issuer,
+          ) as ProjectEnforcement["systemIssuer"],
+        }
+      : {}),
     actorRole: row.actor_role,
     decisionSource: row.decision_source,
     beforeRevision: row.before_revision,
@@ -163,6 +174,44 @@ function enforcementFromRow(row: EnforcementRow): ProjectEnforcement {
     result: row.result,
     createdAt: row.created_at,
   };
+}
+
+export function enforcementStatement(
+  db: ProjectD1Database,
+  record: ProjectEnforcement,
+): D1Statement {
+  return db
+    .prepare(
+      `INSERT INTO project_enforcements (${ENFORCEMENT_COLUMNS})
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+       (SELECT revision FROM projects WHERE id = ? AND revision = ? AND manifest_sha256 = ?),
+       ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      record.id,
+      record.projectId,
+      record.sequence,
+      record.action,
+      record.stateAfter,
+      record.appealAfter,
+      record.reason,
+      record.evidenceReference,
+      record.repositoryGithubId,
+      JSON.stringify(record.repositoryKeys),
+      record.actor?.githubId ?? null,
+      record.actor?.githubLogin ?? null,
+      record.actorRole,
+      record.decisionSource,
+      record.projectId,
+      record.beforeRevision,
+      record.beforeManifestSha256,
+      record.beforeManifestSha256,
+      record.afterRevision,
+      record.afterManifestSha256,
+      record.result,
+      record.createdAt,
+      record.systemIssuer ? JSON.stringify(record.systemIssuer) : null,
+    );
 }
 
 /** Constraint failures are expected races; anything else is a real fault. */
@@ -503,7 +552,32 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           ORDER BY project_id, sequence`,
       )
       .all<EnforcementRow>();
-    return (result.results ?? []).map(enforcementFromRow);
+    const reviews = await this.db
+      .prepare(
+        "SELECT enforcement_id, assessment_id, malicious_assessment_ids FROM project_vetting_reinstatements",
+      )
+      .all<{
+        enforcement_id: string;
+        assessment_id: string;
+        malicious_assessment_ids: string;
+      }>();
+    const byEnforcement = new Map(
+      (reviews.results ?? []).map((review) => [
+        review.enforcement_id,
+        {
+          assessmentId: review.assessment_id,
+          maliciousAssessmentIds: JSON.parse(
+            review.malicious_assessment_ids,
+          ) as string[],
+        },
+      ]),
+    );
+    return (result.results ?? []).map((row) => ({
+      ...enforcementFromRow(row),
+      ...(byEnforcement.has(row.id)
+        ? { vettingReview: byEnforcement.get(row.id) }
+        : {}),
+    }));
   }
 
   async enforcementGeneration(): Promise<number> {
@@ -524,40 +598,22 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
     revision: ProjectRevisionInput | null,
     appealReviewers: readonly string[],
   ): Promise<"recorded" | "conflict"> {
-    const current = `EXISTS (SELECT 1 FROM projects WHERE id = ? AND revision = ? AND manifest_sha256 = ?)`;
-    const statements = [
-      this.db
-        .prepare(
-          `INSERT INTO project_enforcements (${ENFORCEMENT_COLUMNS})
-           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            WHERE ${current}`,
-        )
-        .bind(
-          record.id,
-          record.projectId,
-          record.sequence,
-          record.action,
-          record.stateAfter,
-          record.appealAfter,
-          record.reason,
-          record.evidenceReference,
-          record.repositoryGithubId,
-          JSON.stringify(record.repositoryKeys),
-          record.actor.githubId,
-          record.actor.githubLogin,
-          record.actorRole,
-          record.decisionSource,
-          record.beforeRevision,
-          record.beforeManifestSha256,
-          record.afterRevision,
-          record.afterManifestSha256,
-          record.result,
-          record.createdAt,
-          record.projectId,
-          record.beforeRevision,
-          record.beforeManifestSha256,
-        ),
-    ];
+    const statements = [enforcementStatement(this.db, record)];
+    if (record.vettingReview) {
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT INTO project_vetting_reinstatements
+             (enforcement_id, assessment_id, malicious_assessment_ids)
+           VALUES (?, ?, ?)`,
+          )
+          .bind(
+            record.id,
+            record.vettingReview.assessmentId,
+            JSON.stringify(record.vettingReview.maliciousAssessmentIds),
+          ),
+      );
+    }
     if (revision !== null) {
       statements.push(
         this.db
