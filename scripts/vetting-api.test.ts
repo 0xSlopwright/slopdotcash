@@ -248,7 +248,7 @@ describe("community security vetting", () => {
   test("the trusted publisher retains gaps and journals one signed intake attempt", async () => {
     await listPausedProject();
     const id = await queueScan();
-    const observation = await fixture(id, "clean");
+    const observation = await fixture(id, "clean", false);
     const inputManifest = new TextEncoder().encode(
       JSON.stringify({
         items: [],
@@ -274,6 +274,33 @@ describe("community security vetting", () => {
       trace,
       reviews,
     });
+    const retainedBytes = {
+      traceSha256: digest(trace),
+      objects: [
+        ...VETTING_EVIDENCE_OBJECTS.slice(2),
+        ...[
+          {
+            body: new TextDecoder().decode(trace),
+            kind: "trace",
+            contentType: "text/plain",
+          },
+          {
+            body: new TextDecoder().decode(inputManifest),
+            kind: "manifest",
+            contentType: "application/json",
+          },
+        ].map((item) => ({
+          ...item,
+          sha256: digest(new TextEncoder().encode(item.body)),
+          sizeBytes: Buffer.byteLength(item.body),
+          label: "Harmless publisher fixture",
+        })),
+      ],
+    };
+    const preparedResult = parseVettingResult(JSON.parse(prepared.body));
+    expect(await retained.evidence.complete(preparedResult)).toBe(false);
+    await retained.retain(id, observation.environment.runId, retainedBytes);
+    expect(await retained.evidence.complete(preparedResult)).toBe(true);
     expect(prepared.disposition).toBe("incomplete");
     expect(JSON.parse(prepared.body).telemetry.visibilityGaps).toContain(
       "runtime-download-not-reviewed",
@@ -360,6 +387,16 @@ describe("community security vetting", () => {
         trace,
         reviews,
       });
+      await retained.retain(
+        nextId,
+        observation.environment.runId,
+        retainedBytes,
+      );
+      expect(
+        await retained.evidence.complete(
+          parseVettingResult(JSON.parse(next.body)),
+        ),
+      ).toBe(true);
       const uncertain = await publishResult({
         ...options,
         body: next.body,

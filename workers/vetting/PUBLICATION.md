@@ -42,6 +42,9 @@ A rejected attempt also remains recorded; an operator must inspect the cause.
 The journal records safe result identity and status, not keys or raw traces.
 Retain the exact private result, model records, confirmation and trace in the
 separate operator evidence store under its approved retention policy.
+The signed intake checks the retained evidence for the same assessment and run.
+Register the exact inventory and trace digests and upload the actual required
+objects before publication. A local journal is not a replacement for this store.
 
 Readiness failure is not an incomplete scan. The scheduler must not call the
 publisher when the runtime, collector, provider access or evidence store is
@@ -51,7 +54,10 @@ run with its retained evidence and an explicit publication decision.
 ## Evidence
 
 The existing signed API workflow uses an actual local HTTP server, the real
-intake handler, SQLite migrations and an ephemeral Ed25519 key. It proves
+intake handler, SQLite migrations, local workerd R2 storage and an ephemeral
+Ed25519 key. It registers and uploads the exact publisher evidence through the
+signed storage routes, and checks that the evidence is incomplete before those
+uploads. It proves
 inventory-gap retention, model-disagreement quarantine, digest mismatch
 refusal, signed result acceptance and no second submission after a lost
 response. These fixtures verify publication mechanics. They do not establish

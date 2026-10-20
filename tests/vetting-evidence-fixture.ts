@@ -180,16 +180,21 @@ export async function localVettingEvidence(
       body: typeof body === "string" ? body : new Uint8Array(body),
     });
   }
-  async function retain(assessmentId: string, runId: string) {
+  async function retain(
+    assessmentId: string,
+    runId: string,
+    input: {
+      traceSha256: string;
+      objects: typeof VETTING_EVIDENCE_OBJECTS;
+    } = { traceSha256: VETTING_TRACE_SHA, objects: VETTING_EVIDENCE_OBJECTS },
+  ) {
     const path = `/api/v1/vetting/evidence/${assessmentId}/${runId}`;
     const manifest = {
-      traceSha256: VETTING_TRACE_SHA,
-      objects: VETTING_EVIDENCE_OBJECTS.map(
-        ({ body: _body, ...object }) => object,
-      ),
+      traceSha256: input.traceSha256,
+      objects: input.objects.map(({ body: _body, ...object }) => object),
     };
     const requests = [await request("POST", path, JSON.stringify(manifest))];
-    for (const object of VETTING_EVIDENCE_OBJECTS)
+    for (const object of input.objects)
       requests.push(
         await request("PUT", `${path}/${object.sha256}`, object.body),
       );
