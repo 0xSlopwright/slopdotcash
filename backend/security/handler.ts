@@ -1329,6 +1329,7 @@ async function planChange(
           .first<{ case_revision: number; detail: string }>();
         const approved = approval ? JSON.parse(approval.detail) : null;
         if (
+          approval === null ||
           row.disclosure_state !== "redaction-approved" ||
           approved?.disclosureState !== "redaction-approved" ||
           approved?.redactedContentDigest !== redactedContentDigest
@@ -1338,7 +1339,7 @@ async function planChange(
             "disclosure_approval_required",
             "Approve these exact redacted bytes before recording disclosure",
           );
-        approvalRevision = approval!.case_revision;
+        approvalRevision = approval.case_revision;
       }
       return {
         kind: action,

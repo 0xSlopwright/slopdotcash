@@ -1331,9 +1331,7 @@ test("private security bounty programs keep cases restricted from intake to awar
       .getByRole("button", { name: "Save disclosure decision" })
       .focus();
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("status")).toContainText(
-      "Disclosure: saved.",
-    );
+    await expect(page.getByRole("status")).toContainText("Disclosure: saved.");
     await page.getByText(/^History \(/u).click();
     await expect(page.locator(".security-history")).toContainText(digest);
     await expect(page.locator(".security-history")).toContainText(
