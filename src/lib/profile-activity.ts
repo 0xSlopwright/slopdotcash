@@ -1,5 +1,5 @@
 import type { ScoreEvent } from "./leaderboard";
-import { findProjectByRepositoryId } from "./projects.mjs";
+import { findIngestedProjectByRepositoryId } from "./projects.mjs";
 
 /**
  * Slop Score per UTC day for the `days` days that end on `today`. An event
@@ -27,7 +27,7 @@ export function dailySlopScore(
   for (const event of work) {
     const entry = byDay.get(event.occurredAt.slice(0, 10));
     if (!entry) continue;
-    const project = findProjectByRepositoryId(event.repository);
+    const project = findIngestedProjectByRepositoryId(event.repository);
     if (!project)
       throw new TypeError(`Score event ${event.id} has no registered project`);
     if (Date.parse(event.occurredAt) < Date.parse(project.reward.rewardStartAt))

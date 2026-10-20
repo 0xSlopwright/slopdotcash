@@ -265,6 +265,11 @@ export declare function findHistoricalProjectByRepositoryId(
 
 export declare function findProject(value: string): ProjectDefinition | null;
 
+/** Resolves a ledger repository in the snapshot the ledger was collected from. */
+export declare function findIngestedProjectByRepositoryId(
+  repositoryId: string,
+): ProjectDefinition | null;
+
 export declare function findProjectByRepositoryId(
   repositoryId: string,
 ): ProjectDefinition | null;
