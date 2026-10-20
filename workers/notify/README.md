@@ -4,7 +4,7 @@
 submits a new project application. It exists because Pages Functions cannot use
 `send_email` bindings.
 
-## Route
+## Project-application route
 
 The Worker has no public route and `workers_dev` is off. The caller is a
 service binding named `SLOP_NOTIFY` on the production Pages app. That caller
@@ -13,7 +13,7 @@ is the authenticated project-application submit path in
 binding to a Worker that does not exist. The protected production release
 39373511823 deployed this Worker before the binding was added to
 `wrangler.toml`. Without the binding, the
-application is saved and records `adminNotification: "failed"`. The only accepted route
+application is saved and records `adminNotification: "failed"`. The project-application route
 is:
 
 ```http
@@ -88,11 +88,13 @@ time, application id, and the admin review link.
 ## Release and current scope
 
 The protected production job in `.github/workflows/deploy.yml` releases this
-Worker only when `SLOP_NOTIFY_RELEASE` is `enabled`. It requires exactly the
-`ADMIN_EMAILS` secret, uploads a version tagged with the release commit,
-promotes it to 100%, and verifies that the active version carries that tag.
-Staging and preview deployments have no notification Worker or binding. Do not
-use a local deployment to bypass the release workflow.
+Worker only when `SLOP_NOTIFY_RELEASE` is `enabled`. The default profile requires
+exactly `ADMIN_EMAILS`; explicit pilot profiles also require their verified
+recipient secrets. The release uploads the tested commit and verifies the
+selected bindings and active version before applying its schedule. Staging needs
+its distinct opt-in and isolated Worker; preview remains unbound. See the
+protected pilot profiles below. Do not use a local deployment to bypass the
+release workflow.
 
 Run the handler checks with `bun run test:notify`; `bun run verify:code`
 includes them. A deployed version is not proof of a caller, domain readiness or
@@ -106,11 +108,10 @@ security inbox notice, in the same transaction. It does not send old notices
 from before the migration. Case receipt times and award decisions do not
 change when email fails.
 
-This path is **not activated by the project-application binding**. The current
-production release deliberately permits only `ADMIN_EMAILS`. A reviewed pilot
-release must first qualify the separate staging audience and then add the
-private D1 binding and the additional secret to the protected release's explicit
-inventory. No addresses or private verification records belong in git.
+This path is **not activated by the project-application binding**. The default release permits only `ADMIN_EMAILS`. A selected pilot
+release derives its private D1 binding from that environment's checked-in Pages
+configuration and requires the exact extra secret inventory. Qualify the
+separate staging audience before selecting a production pilot. No addresses or private verification records belong in git.
 
 The operator must provision:
 
@@ -127,7 +128,7 @@ The operator must provision:
   role for the case. Mapping an address never grants case access. Record the
   program's approved escalation contact privately before activation.
 
-Missing pilot configuration or D1 binding sends nothing. The checked-in schedule requests a run every five minutes. Wrangler version
+Missing pilot configuration or D1 binding sends nothing. A selected pilot requests a run every five minutes. The default profile has no schedule. Wrangler version
 upload/deploy does not apply cron triggers. The approved pilot release must
 also apply that trigger through the protected workflow and verify the actual
 trigger and a successful scheduled invocation. A secret and binding alone do
@@ -212,3 +213,55 @@ ambiguous. Independent negative evidence can authorize a retry, up to five
 attempts. The private outbox and append-only evidence table retain exhausted,
 suppressed, bounced and ambiguous outcomes for operators. No mail result
 reverses a source notification, award or wallet change.
+
+
+## Protected pilot release profiles
+
+The checked-in workflow can release the admin-only Worker or an explicitly
+selected verified-mail pilot. No pilot is selected by default. The operator
+sets these variables in the selected protected GitHub environment only after
+reviewing its private destination records and isolated delivery evidence:
+
+- `SLOP_NOTIFY_RELEASE=enabled` enables the production Worker release.
+  Staging requires the distinct `SLOP_NOTIFY_STAGING_RELEASE=enabled`; the
+  existing production switch cannot enable a staging Worker.
+- `SLOP_NOTIFY_MAIL_PILOTS` is empty for admin-only, `security`, `activity`, or
+  `security,activity`. All other values fail closed. This selects existing
+  approved mail capabilities; it does not verify recipients or authorize payments.
+  Staging uses `SLOP_NOTIFY_STAGING_MAIL_PILOTS` for this selection; the workflow
+  passes it to the same release script as `SLOP_NOTIFY_MAIL_PILOTS`.
+
+Production uses `slop-notify` and the production Pages D1 contract. Staging uses
+`slop-notify-staging` and the separate staging Pages D1 contract. Staging Pages
+receives its service binding only after the isolated Worker release succeeds;
+preview Pages remains unbound. The runtime rejects a pilot whose secret inbox
+URL does not match the selected environment's exact `/inbox` URL.
+
+The named Worker must already exist with workers.dev and preview URLs disabled,
+no routes and no custom domains. The release reads and verifies these settings
+before any version upload, and refuses an absent or publicly reachable Worker.
+Version APIs do not apply routing settings; applying them after upload can expose
+a private version. Initial private Worker provisioning is a separate operator gate.
+
+`scripts/release-notify.mjs` verifies this boundary and the exact secret inventory, uploads the
+checked-out branch SHA, verifies uploaded D1 and secret bindings, promotes that
+one version, and confirms it is active at 100%. It then applies and reads back
+the selected cron schedule. Admin-only has no D1 binding or cron. Moving back
+to admin-only requires removal of pilot secrets as well as the empty selection;
+an unexpected secret stops the release. Version and schedule checks do not
+prove that a scheduled invocation or a real message succeeded.
+
+Review generated configuration without credentials or remote changes:
+
+```bash
+SLOP_NOTIFY_MAIL_PILOTS=security,activity bun scripts/release-notify.mjs prepare staging /tmp/slop-notify-staging-review
+./node_modules/.bin/wrangler deploy --dry-run --config /tmp/slop-notify-staging-review/wrangler.json
+```
+
+Do not run deployment from a local checkout. The protected workflow supplies
+`deploy`, the target environment and exact SHA after its existing checks.
+Retain the generated `profile.json` and `release.json` in the protected runner
+for release inspection. They contain names, immutable version IDs and public
+configuration only; private recipient secrets remain in Cloudflare. Real
+provider acceptance, inbox receipt, failures, scheduled invocation, and bounty
+acknowledgment/escalation still require controlled acceptance evidence.

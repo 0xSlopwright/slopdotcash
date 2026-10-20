@@ -26,11 +26,13 @@ type Env = {
   SECURITY_MAIL_PILOT?: string;
   ACTIVITY_MAIL_PILOT?: string;
   NOTIFY_FROM_ADDRESS: string;
+  NOTIFY_INBOX_URL?: string;
 };
 
 function securityDependencies(env: Env): SecurityMailDependencies | null {
   const config = parseSecurityMailConfig(env.SECURITY_MAIL_PILOT);
-  if (!config || !env.SLOP_DB) return null;
+  if (!config || !env.SLOP_DB || config.inboxUrl !== env.NOTIFY_INBOX_URL)
+    return null;
   return {
     db: env.SLOP_DB,
     config,
@@ -43,7 +45,8 @@ function securityDependencies(env: Env): SecurityMailDependencies | null {
 
 function activityDependencies(env: Env): ActivityMailDependencies | null {
   const config = parseActivityMailConfig(env.ACTIVITY_MAIL_PILOT);
-  if (!config || !env.SLOP_DB) return null;
+  if (!config || !env.SLOP_DB || config.inboxUrl !== env.NOTIFY_INBOX_URL)
+    return null;
   return {
     db: env.SLOP_DB,
     config,
