@@ -31,6 +31,9 @@ type Reply = {
     submissionState: string;
     receivedAt: string | null;
     awardState: string;
+    receiptState: string;
+    appealState: string;
+    allowedActions: string[];
   };
 };
 
@@ -537,6 +540,153 @@ describe("security cases", () => {
     expect(inbox(DISPUTE, related.id)).toEqual([
       `security-case:${related.id}:2`,
     ]);
+  });
+
+  test("a finding that waits for capacity can still be appealed", async () => {
+    const env = open(OPEN_PROGRAM);
+    const { sqlite } = env;
+    const { act, decide, record, raiseCapacity, inbox } = awardSteps(env);
+    const funded = await record("2026-10-19T09:10:00.000Z");
+    const waiting = await record("2026-10-19T09:20:00.000Z");
+    const laterSameCause = await record("2026-10-19T09:30:00.000Z");
+    expect((await decide(funded.id, "vault-drain")).body.case.awardState).toBe(
+      "reserved",
+    );
+    // Capacity 1 is used, so the finding stays confirmed and waits for money
+    // (SEC-06). The shortage is a financial exception, not a reason to
+    // relabel the finding (SEC-12), so its award can still be disputed.
+    const decided = await decide(waiting.id, "oracle-skew");
+    expect(decided.status).toBe(200);
+    expect(decided.body.case.awardState).toBe("capacity-exhausted");
+    const reporterSees = await env.call(
+      REPORTER,
+      "GET",
+      `security-cases/${waiting.id}`,
+    );
+    expect(reporterSees.body.case.receiptState).toBe("confirmed");
+    expect(reporterSees.body.case.allowedActions).toContain("appeal");
+    const appeal = await act(REPORTER, waiting.id, {
+      action: "appeal",
+      reason: "The award was withheld for capacity without telling me.",
+    });
+    expect(appeal.status).toBe(200);
+    expect(appeal.body.case.receiptState).toBe("disputed");
+    expect(appeal.body.case.appealState).toBe("open");
+    // The appeal reaches both dispute reviewers and the reporter, never the
+    // maintainer who decided (SEC-04).
+    for (const reviewer of [DISPUTE, DISPUTE_2])
+      expect(inbox(reviewer, waiting.id)).toEqual([
+        `security-case:${waiting.id}:3`,
+      ]);
+    expect(inbox(REPORTER, waiting.id)).toEqual([
+      `security-case:${waiting.id}:1`,
+      `security-case:${waiting.id}:2`,
+    ]);
+    expect(inbox(MAINTAINER, waiting.id)).toEqual([]);
+    // The appeal keeps the funding place of the earliest receipt: a later
+    // report on the same root cause reserves nothing while it is disputed, so
+    // it waits for capacity too (SEC-04).
+    raiseCapacity();
+    const laterDecided = await decide(laterSameCause.id, "oracle-skew");
+    expect(laterDecided.status).toBe(200);
+    expect(laterDecided.body.case.awardState).toBe("capacity-exhausted");
+    // The independent reviewer can now open the case and resolve the dispute
+    // (SEC-04, SEC-18).
+    const waitingForReview = await env.call(
+      DISPUTE,
+      "GET",
+      `security-cases/${waiting.id}`,
+    );
+    expect(waitingForReview.body.case.allowedActions).toContain(
+      "decide-appeal",
+    );
+    // Upholding restores the confirmed receipt unchanged, so the reporter
+    // keeps the award its appeal protected (SEC-12).
+    const upheld = await act(DISPUTE, waiting.id, {
+      action: "decide-appeal",
+      outcome: "uphold",
+      reason: "The finding stands; only the funding was disputed.",
+    });
+    expect(upheld.status).toBe(200);
+    expect(
+      sqlite
+        .query(
+          "SELECT receipt_state, award_state, appeal_state FROM security_cases WHERE id = ?",
+        )
+        .get(waiting.id),
+    ).toEqual({
+      receipt_state: "confirmed",
+      award_state: "capacity-exhausted",
+      appeal_state: "upheld",
+    });
+    const reserved = await act(FINANCE, waiting.id, {
+      action: "reserve-award",
+      reason: "Capacity raised by revision; earliest receipt first.",
+    });
+    expect(reserved.status).toBe(200);
+    expect(reserved.body.case.awardState).toBe("reserved");
+    expect(
+      sqlite
+        .query(
+          "SELECT case_id FROM security_award_reservations ORDER BY reserved_at, case_id",
+        )
+        .all()
+        .map((row) => (row as { case_id: string }).case_id)
+        .sort(),
+    ).toEqual([funded.id, waiting.id].sort());
+  });
+
+  test("a returned funding appeal waits for a new decision", async () => {
+    const env = open(OPEN_PROGRAM);
+    const { sqlite } = env;
+    const { act, decide, record, raiseCapacity } = awardSteps(env);
+    const funded = await record("2026-10-19T09:10:00.000Z");
+    const waiting = await record("2026-10-19T09:20:00.000Z");
+    expect((await decide(funded.id, "vault-drain")).body.case.awardState).toBe(
+      "reserved",
+    );
+    expect((await decide(waiting.id, "oracle-skew")).body.case.awardState).toBe(
+      "capacity-exhausted",
+    );
+    expect(
+      (
+        await act(REPORTER, waiting.id, {
+          action: "appeal",
+          reason: "The award was withheld for capacity without telling me.",
+        })
+      ).status,
+    ).toBe(200);
+    // Returning it sends the finding back for a new decision; the award it
+    // waited for is untouched, so nothing is reserved or erased (SEC-12).
+    const returned = await act(DISPUTE, waiting.id, {
+      action: "decide-appeal",
+      outcome: "return",
+      reason:
+        "Funding shortage is a financial exception, not a finding change.",
+    });
+    expect(returned.status).toBe(200);
+    expect(
+      sqlite
+        .query(
+          "SELECT receipt_state, award_state, appeal_state FROM security_cases WHERE id = ?",
+        )
+        .get(waiting.id),
+    ).toEqual({
+      receipt_state: "triaging",
+      award_state: "capacity-exhausted",
+      appeal_state: "returned",
+    });
+    expect(
+      sqlite
+        .query("SELECT COUNT(*) AS n FROM security_award_reservations")
+        .get(),
+    ).toEqual({ n: 1 });
+    // A new decision reserves as soon as the program raises its budget, so
+    // the returned appeal does not strand the money (SEC-06).
+    raiseCapacity();
+    const redecided = await decide(waiting.id, "oracle-skew");
+    expect(redecided.status).toBe(200);
+    expect(redecided.body.case.awardState).toBe("reserved");
   });
 
   test("a returned appeal cannot clear the related-party review", async () => {

@@ -430,10 +430,14 @@ function allowedActions(row: CaseRow, roles: Set<Role>): string[] {
     actions.push("decide-related-party");
   if (roles.has("reporter") && verified) {
     actions.push("recognition");
+    // An award the program withheld for a funding shortage stays appealable:
+    // the shortage is a financial exception, not a finding change (SEC-12),
+    // and a separate reviewer resolves it (SEC-04, SEC-18).
     if (
       row.appeal_state !== "open" &&
       (["duplicate", "out-of-scope", "rejected"].includes(row.receipt_state) ||
-        (row.receipt_state === "confirmed" && row.award_state === "ineligible"))
+        (row.receipt_state === "confirmed" &&
+          ["ineligible", "capacity-exhausted"].includes(row.award_state)))
     )
       actions.push("appeal");
   }
@@ -1649,10 +1653,14 @@ async function assertRootCauseFree(
 /**
  * A confirmed case received before the given one that waits for capacity or
  * for its independent related-party review, and whose root cause holds no
- * reservation. Binds: project id, case id, received at, received at, case id.
+ * reservation. An appeal keeps the place: it carries the confirmed receipt
+ * into `disputed` and `uphold` restores it unchanged, so the receipt is still
+ * confirmed for funding order. While that report is disputed nothing else may
+ * reserve, so a later report cannot take its root cause or its turn (SEC-04).
+ * Binds: project id, case id, received at, received at, case id.
  */
 const EARLIER_RECEIPT_WAITING =
-  "SELECT 1 FROM security_cases c WHERE c.project_id = ? AND c.id <> ? AND (c.award_state = 'capacity-exhausted' OR (c.award_state = 'pending' AND c.related_party_review = 'pending')) AND c.receipt_state = 'confirmed' AND (c.received_at < ? OR (c.received_at = ? AND c.id < ?)) AND NOT EXISTS (SELECT 1 FROM security_award_reservations r WHERE r.project_id = c.project_id AND r.root_cause_key = c.root_cause_key)";
+  "SELECT 1 FROM security_cases c WHERE c.project_id = ? AND c.id <> ? AND (c.award_state = 'capacity-exhausted' OR (c.award_state = 'pending' AND c.related_party_review = 'pending')) AND (c.receipt_state = 'confirmed' OR (c.receipt_state = 'disputed' AND c.appeal_from_state = 'confirmed')) AND (c.received_at < ? OR (c.received_at = ? AND c.id < ?)) AND NOT EXISTS (SELECT 1 FROM security_award_reservations r WHERE r.project_id = c.project_id AND r.root_cause_key = c.root_cause_key)";
 
 /**
  * Reserves the case's frozen gross amount for its root cause when the current

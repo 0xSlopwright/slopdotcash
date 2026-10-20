@@ -91,6 +91,15 @@ reservation insert: while an earlier confirmed case waits for capacity or
 for its related-party review, a later decision or approval reserves nothing
 and its award is `capacity-exhausted`, so it waits its turn.
 
+A reporter may appeal an exhausted award: the shortage is a financial
+exception, not a reason to relabel the finding (SEC-12). The appeal carries the
+receipt into `disputed`, and that case still holds its place in the funding
+order, so no later report can reserve its root cause or its capacity while an
+independent reviewer resolves it. `uphold` restores the confirmed receipt
+unchanged; `return` sends the finding back to a new decision, which reserves as
+soon as capacity exists. Neither outcome erases or duplicates an award, and a
+reserved or approved award is still never redecided.
+
 The technical decision records `relatedParty`. The decider declares it, and a
 reporter who is a program approver or the sponsor account is always related.
 An eligible related-party award stays `pending` with no reservation until a
