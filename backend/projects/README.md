@@ -182,7 +182,12 @@ rate limit, and caches each answer for five minutes. The browser never calls
   (`0027_project_enforcement_owner_appeals.sql`). A moderator may also file
   it at `/admin`. Only a moderator decides it.
 - Reinstatement needs an open reinstatement request and a moderator who did
-  not place the restriction. It is refused with `revision_pending` while the
+  not place the restriction. Both preview and confirmation require a clean
+  scan of the current restricted revision, requested after the latest restriction,
+  at the live integration-branch head and current skill template. Missing,
+  stale or incomplete clearance returns `vetting_required`. A recorded malicious
+  scan still blocks clearance; this does not authorize overriding a scanner ban.
+  It is refused with `revision_pending` while the
   paused, `retired` revision of the restriction is still pending. It appends a paused `community` revision only if
   the project was listed when the restriction began; it never restores
   featuring, activation or money. A denial keeps the restriction.

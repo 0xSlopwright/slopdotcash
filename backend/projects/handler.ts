@@ -1034,6 +1034,27 @@ async function recordEnforcement(
     restriction,
     listedBefore,
   });
+  if (action === "reinstate") {
+    const vetting = await deps.vettingClearance(
+      projectId,
+      project.manifest,
+      project.revision,
+    );
+    const latestRestriction = restriction.records.findLast(
+      (record) => record.action === "quarantine" || record.action === "ban",
+    );
+    if (
+      vetting.state !== "cleared" ||
+      vetting.assessment.revision !== project.revision ||
+      (latestRestriction !== undefined &&
+        vetting.assessment.requestedAt < latestRestriction.createdAt)
+    )
+      fail(
+        409,
+        "vetting_required",
+        "Reinstatement requires a fresh clean scan of the current restricted revision, requested after the latest restriction, at the current integration-branch head and skill template.",
+      );
+  }
   const recordId = `enf_${deps.randomId().replaceAll("-", "")}`;
   const at = deps.now().toISOString();
   const revisionText =
