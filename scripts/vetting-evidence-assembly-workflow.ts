@@ -471,6 +471,28 @@ export async function captureAssemblyConsole(
         await page.evaluate(() => {
           document.documentElement.style.zoom = "2";
         });
+      const originalTypography =
+        name === "mobile"
+          ? await page.evaluate(() => {
+              const items = [
+                ...document.querySelectorAll<HTMLElement>("body *"),
+              ]
+                .filter((element) => element instanceof HTMLElement)
+                .map((element, index) => ({
+                  element,
+                  index,
+                  style: element.getAttribute("style"),
+                  font: getComputedStyle(element).fontSize,
+                  line: getComputedStyle(element).lineHeight,
+                }));
+              for (const { element, font, line } of items) {
+                element.style.fontSize = `${Number.parseFloat(font) * 2}px`;
+                if (line !== "normal")
+                  element.style.lineHeight = `${Number.parseFloat(line) * 2}px`;
+              }
+              return items.map(({ index, style }) => ({ index, style }));
+            })
+          : [];
       assert.ok(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth + 1,
@@ -495,6 +517,16 @@ export async function captureAssemblyConsole(
         document.documentElement.style.zoom = "1";
         window.scrollTo(0, 0);
       });
+      await page.evaluate((original) => {
+        const elements = [
+          ...document.querySelectorAll<HTMLElement>("body *"),
+        ].filter((element) => element instanceof HTMLElement);
+        for (const { index, style } of original) {
+          const element = elements[index];
+          if (style === null) element.removeAttribute("style");
+          else element.setAttribute("style", style);
+        }
+      }, originalTypography);
       await page.screenshot({
         path: join(directory, "assembly.png"),
         fullPage: false,
@@ -650,7 +682,7 @@ if (import.meta.main) {
         cleanHttpStatus: response.status,
         missingObjectRefused: true,
         browser:
-          "desktop/mobile Chromium, actual handler/R2 with isolated operator-session adapter",
+          "desktop200% zoom/mobile320CSSpx200% text, actual handler/R2 with isolated operator-session adapter",
       }),
     );
   } finally {

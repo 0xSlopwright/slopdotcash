@@ -160,6 +160,6 @@ operator-session adapter; the Pages browser suite separately checks routing and
 session behavior. No response data is substituted in the console.
 
 Console evidence checks keyboard access, accessibility, a 320 CSS-pixel mobile
-layout and 200% desktop zoom. A 390-pixel viewport at CSS zoom 2 has only 195 CSS
+layout with 200% text enlargement, and 200% desktop zoom. A 390-pixel viewport at CSS zoom 2 has only 195 CSS
 pixels and exceeds the site's existing 320-pixel minimum; that case is not
 claimed to pass. Captures and raw input bytes stay outside Git.
