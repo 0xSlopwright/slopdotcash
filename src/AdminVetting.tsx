@@ -59,7 +59,10 @@ type AdminAssessment = AssessmentSummary & {
 };
 
 type Overview = {
-  service: { state: "available" } | { state: "unavailable"; reason: string };
+  service: { queueRegistrationAvailable: boolean } & (
+    | { state: "available" }
+    | { state: "unavailable"; reason: string }
+  );
   projects: {
     id: string;
     name: string;
@@ -382,7 +385,7 @@ export function VettingSection() {
                       cannot lift a ban.
                     </p>
                   ) : null}
-                  {state.value.service.state === "available" && !queued ? (
+                  {state.value.service.queueRegistrationAvailable && !queued ? (
                     <QueueScan
                       onQueued={() => {
                         setNote(

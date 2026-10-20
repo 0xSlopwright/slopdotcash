@@ -234,14 +234,17 @@ async function adminOverview(
       ),
     })),
   );
+  const queueRegistrationAvailable = await vettingServiceAvailable(
+    deps.resultPublicKeys,
+  );
   return json(200, {
     projects,
     service:
-      (await vettingServiceAvailable(deps.resultPublicKeys)) &&
-      deps.evidence?.ready()
-        ? { state: "available" }
+      queueRegistrationAvailable && deps.evidence?.ready()
+        ? { state: "available", queueRegistrationAvailable }
         : {
             state: "unavailable",
+            queueRegistrationAvailable,
             reason:
               "The secure-VM service key or private evidence policy and bucket are unavailable. No revision can be cleared, so no project skill can be served or activated.",
           },

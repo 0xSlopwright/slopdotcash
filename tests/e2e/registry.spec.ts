@@ -1178,6 +1178,7 @@ test.describe("private evidence console", () => {
       document.documentElement.style.zoom = "1";
     });
     await expectAccessible(page);
+    await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({
       path: test.info().outputPath("private-evidence.png"),
       fullPage: true,

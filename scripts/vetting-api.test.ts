@@ -704,3 +704,20 @@ test("historical metadata-only clean results have no retained-evidence exemption
   expect((await publicVetting()).state).toBe("unverified");
   expect((await activate()).status).not.toBe(200);
 });
+
+test("missing storage pauses acquisition while harmless queue registration remains available", async () => {
+  retained.evidence.deps.policy = undefined;
+  await listPausedProject();
+  const id = await queueScan();
+  expect((await vetting.getAssessment(id))?.state).toBe("pending");
+  const overview = await vettingApi(
+    sessionRequest("GET", "admin/vetting", "admin"),
+  );
+  expect((await overview.json()).service).toMatchObject({
+    state: "unavailable",
+    queueRegistrationAvailable: true,
+  });
+  expect(
+    (await vettingApi(await signed("GET", "vetting/requests"))).status,
+  ).toBe(503);
+});

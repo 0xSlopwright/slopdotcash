@@ -53,7 +53,10 @@ export default function VettingEvidencePage() {
     }
   }
   return (
-    <main className="admin-page">
+    <main
+      className="shell route-main admin-page"
+      style={{ overflowWrap: "anywhere" }}
+    >
       <h1>Private vetting evidence</h1>
       <p>
         For designated vetting operators. Project membership or an admin role
@@ -80,7 +83,7 @@ export default function VettingEvidencePage() {
             onChange={(e) => setRunId(e.target.value)}
           />
         </label>
-        <button type="submit" disabled={busy}>
+        <button className="button primary-button" type="submit" disabled={busy}>
           {busy ? "Loading evidence…" : "Inspect evidence inventory"}
         </button>
       </form>
@@ -186,13 +189,13 @@ function EvidenceItem({ run, object }: { run: Run; object: EvidenceObject }) {
     }
   }
   return (
-    <article style={{ overflowWrap: "anywhere" }}>
+    <article className="admin-card" style={{ overflowWrap: "anywhere" }}>
       <h3>{object.label}</h3>
       <p>
         {object.kind} · {object.sizeBytes} bytes · {object.state}
       </p>
       <p>SHA-256: {object.sha256}</p>
-      <form onSubmit={inspect}>
+      <form className="admin-section" onSubmit={inspect}>
         <label className="form-field">
           Reason to inspect {object.label}
           <input
@@ -204,6 +207,7 @@ function EvidenceItem({ run, object }: { run: Run; object: EvidenceObject }) {
           />
         </label>
         <button
+          className="button secondary-button"
           type="submit"
           disabled={busy || object.state !== "stored-unverified"}
         >
