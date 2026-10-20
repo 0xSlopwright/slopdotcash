@@ -120,7 +120,9 @@ async function postVettingResult(
       )),
     },
   });
-  expect(posted.status()).toBe(200);
+  expect(posted.status()).toBe(disposition === "clean" ? 422 : 200);
+  if (disposition === "clean")
+    expect((await posted.json()).error).toBe("evidence_incomplete");
 }
 
 /** Queues a scan of the current revision from the admin vetting panel. */
@@ -494,7 +496,7 @@ test("an owner's proof and generated skills reach the admin, who lists and delis
   await adminContext.close();
 });
 
-test("an admin activates a project and its generated skills serve without a rebuild @registry", async ({
+test("an admin cannot activate or publish skills without canonical scan closure @registry", async ({
   browser,
   request,
 }) => {
@@ -557,24 +559,32 @@ test("an admin activates a project and its generated skills serve without a rebu
   ]);
   errors.length = 0;
 
-  // A fresh clean scan of the same revision clears it.
-  vettingCard = await queueScan(admin, project.id, "Rescan after the gap");
+  // A signed clean claim still lacks canonical runtime closure.
+  await queueScan(admin, project.id, "Rescan after the gap");
   await postVettingResult(request, project.id, project.repository, "clean");
   await admin.reload({ waitUntil: "networkidle" });
   await expect(
     admin
       .getByRole("article", { name: `Security vetting for ${project.id}` })
       .locator(".admin-badge"),
-  ).toHaveText("Cleared");
-  const skill = await request.get(`/projects/${project.id}/skill.md`);
-  expect(skill.status()).toBe(200);
-  expect(skill.headers()["content-type"]).toBe("text/markdown; charset=utf-8");
-  expect(await skill.text()).toContain(`name: contribute-to-${project.id}`);
+  ).toHaveText("Quarantined");
+  for (const path of [
+    "skill.md",
+    "SKILL.md",
+    "skill-manifest.json",
+    "review/SKILL.md",
+    `downloads/contribute-to-${project.id}.skill`,
+  ])
+    expect(
+      (await request.get(`/projects/${project.id}/${path}`)).status(),
+    ).toBe(404);
   expect(
-    await (await request.get(`/projects/${project.id}/SKILL.md`)).text(),
-  ).toBe(await skill.text());
-
-  await admin.goto("/admin", { waitUntil: "networkidle" });
+    await (await request.get(`/api/v1/projects/${project.id}`)).json(),
+  ).toMatchObject({
+    revision: 1,
+    skillsPublished: false,
+    project: { status: "paused" },
+  });
   const card = admin.locator(".admin-card", {
     has: admin.getByText(project.id, { exact: true }),
   });
@@ -582,81 +592,34 @@ test("an admin activates a project and its generated skills serve without a rebu
   await card.getByLabel("Project status").selectOption("active");
   await card
     .getByLabel("Reason for this revision (public history)")
-    .fill("Activate with generated skills");
+    .fill("Activation remains blocked without canonical closure");
   await card.getByRole("button", { name: "Save revision 2" }).click();
-  await expect(card).toContainText("active");
+  await expect(card.getByRole("alert")).toContainText(
+    "Security vetting is quarantined",
+  );
+  expect(errors).toEqual([
+    "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)",
+  ]);
+  errors.length = 0;
+  await postVettingResult(
+    request,
+    project.id,
+    project.repository,
+    "incomplete",
+  );
+  // A normal paused manifest edit remains available and produces its own notice.
+  await card.getByLabel("Project status").selectOption("paused");
+  const manifestEditor = card.getByLabel(/^Manifest \(revision 1\)/u);
+  const pausedManifest = JSON.parse(await manifestEditor.inputValue());
+  pausedManifest.headline =
+    "A reviewed paused project awaiting complete security evidence.";
+  await manifestEditor.fill(JSON.stringify(pausedManifest, null, 2));
+  await card
+    .getByLabel("Reason for this revision (public history)")
+    .fill("Clarify paused project description");
+  await card.getByRole("button", { name: "Save revision 2" }).click();
   await expect(card).toContainText("2 · updated");
   await expectAccessible(admin);
-
-  // The edge cache was purged by the write, so revision 2 serves at once.
-  expect(
-    await (await request.get(`/api/v1/projects/${project.id}`)).json(),
-  ).toMatchObject({
-    revision: 2,
-    skillsPublished: true,
-    project: { status: "active" },
-  });
-  const manifest = await (
-    await request.get(`/projects/${project.id}/skill-manifest.json`)
-  ).json();
-  expect(manifest).toMatchObject({
-    name: `contribute-to-${project.id}`,
-    source: { path: "skills/project-contributor-template/SKILL.md" },
-    authority: {
-      canonicalPath: "skills/project-contributor-template",
-      registry: { projectId: project.id, revision: 2 },
-    },
-  });
-  const revision = await (
-    await request.get(`/api/v1/project-revisions/${project.id}/2`)
-  ).json();
-  expect(manifest.authority.registry.manifestSha256).toBe(
-    revision.manifestSha256,
-  );
-  const archive = await request.get(new URL(manifest.archive.url).pathname);
-  expect(archive.status()).toBe(200);
-  expect(archive.headers()["content-disposition"]).toBe("attachment");
-  expect(
-    createHash("sha256")
-      .update(await archive.body())
-      .digest("hex"),
-  ).toBe(manifest.archive.sha256);
-  expect(
-    await (
-      await request.get(new URL(manifest.archive.checksumUrl).pathname)
-    ).text(),
-  ).toBe(`${manifest.archive.sha256}  contribute-to-${project.id}.skill\n`);
-  for (const guide of ["codex.md", "claude.md", "manual.md"]) {
-    const response = await request.get(`/projects/${project.id}/${guide}`);
-    expect(response.status()).toBe(200);
-    expect(await response.text()).toContain(
-      `skills/project-contributor-template`,
-    );
-  }
-  expect(
-    await (await request.get(`/projects/${project.id}/review/SKILL.md`)).text(),
-  ).toContain(`name: review-${project.id}-contributions`);
-  const discovery = await (
-    await request.get("/.well-known/slop/projects.json")
-  ).json();
-  expect(
-    discovery.projects.find(
-      (entry: { project_id: string }) => entry.project_id === project.id,
-    ),
-  ).toMatchObject({
-    repository: project.repository,
-    skill_source: "skills/project-contributor-template",
-  });
-  expect(
-    (await request.get(`/projects/${project.id}/terms.json`)).status(),
-  ).toBe(200);
-  expect((await request.get("/projects/not-a-project/skill.md")).status()).toBe(
-    404,
-  );
-
-  // An active project leads with its headline instead of the paused name.
-  await admin.goto(`/projects/${project.id}`, { waitUntil: "networkidle" });
-  await expect(admin.locator("h1")).not.toHaveText(project.name);
   expect(errors).toEqual([]);
   await adminContext.close();
 });
@@ -683,7 +646,7 @@ test("the applicant's inbox lists each decision and revision once and keeps the 
   await expect(
     approved.getByRole("link", { name: "Open project" }),
   ).toHaveAttribute("href", `/projects/${project.id}`);
-  await expect(revised).toContainText("Activate with generated skills");
+  await expect(revised).toContainText("Clarify paused project description");
   await expectAccessible(page);
 
   await revised.getByRole("button", { name: /^Mark as read/u }).click();
@@ -721,7 +684,7 @@ test("the applicant's inbox lists each decision and revision once and keeps the 
   await context.close();
 });
 
-test("a moderator quarantines and bans a project, and another moderator reinstates it @registry", async ({
+test("moderators restrict a project and refuse reinstatement without canonical scan closure @registry", async ({
   browser,
   request,
 }) => {
@@ -761,7 +724,7 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
     "Confirmed malware in the release script",
   );
   await expect(quarantine).toContainText("2 → 3");
-  await expect(quarantine).toContainText("active, community → paused, retired");
+  await expect(quarantine).toContainText("paused, community → paused, retired");
   await expect(quarantine).toContainText("Appends the matching revision");
   await expectAccessible(admin);
   await quarantine.getByRole("button", { name: "Confirm: Quarantine" }).click();
@@ -889,7 +852,7 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
     .selectOption({ label: "Reinstate after review" });
   await moderatorPanel
     .getByLabel("Reason (private audit record)")
-    .fill("A fresh complete scan found no malware");
+    .fill("Attempt review without complete canonical evidence");
   await moderatorPanel
     .getByLabel("Evidence reference (link or case id)")
     .fill(evidence);
@@ -935,30 +898,26 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
     .selectOption({ label: "Reinstate after review" });
   await moderatorPanel
     .getByLabel("Reason (private audit record)")
-    .fill("A fresh complete scan found no malware");
+    .fill("Attempt review without complete canonical evidence");
   await moderatorPanel
     .getByLabel("Evidence reference (link or case id)")
     .fill(evidence);
   await moderatorPanel.getByRole("button", { name: "Preview action" }).click();
-  const reinstate = moderatorPanel.getByRole("group", {
-    name: "Preview: check it, then confirm",
-  });
-  // Reinstatement lists the project again in the community tier, paused.
-  await expect(reinstate).toContainText("3 → 4");
-  await expect(reinstate).toContainText("paused, retired → paused, community");
-  await expectAccessible(moderator);
-  await reinstate
-    .getByRole("button", { name: "Confirm: Reinstate after review" })
-    .click();
-  await expect(moderatorPanel).toContainText("No restriction");
-  // The admin can queue the new revision immediately, without a page reload.
+  await expect(moderatorPanel.getByRole("alert")).toContainText(
+    "fresh clean scan",
+  );
+  expect(moderatorErrors).toEqual([
+    "Failed to load resource: the server responded with a status of 409 (Conflict)",
+  ]);
+  moderatorErrors.length = 0;
   await expect(
-    moderator
-      .getByRole("article", { name: `Security vetting for ${project.id}` })
-      .getByRole("button", { name: "Queue scan of revision 4" }),
-  ).toBeVisible();
+    moderatorPanel.getByRole("button", {
+      name: "Confirm: Reinstate after review",
+    }),
+  ).toHaveCount(0);
+  await expectAccessible(moderator);
   await moderatorPanel.getByText(/Enforcement history/u).click();
-  await expect(moderatorPanel.locator("li")).toHaveCount(5);
+  await expect(moderatorPanel.locator("li")).toHaveCount(4);
   await expect(moderatorPanel).toContainText(
     "the signed security vetting service",
   );
@@ -966,29 +925,12 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
     path: test.info().outputPath("enforcement-history.png"),
     fullPage: true,
   });
-  expect(
-    await (await request.get(`/api/v1/projects/${project.id}`)).json(),
-  ).toMatchObject({
-    revision: 4,
-    project: { status: "paused", listingTier: "community" },
-  });
-
-  // The reinstated revision is new content. Its skill stays closed until a
-  // fresh clean scan of that revision lands (VET-07).
-  expect((await request.get(`/projects/${project.id}/SKILL.md`)).status()).toBe(
-    404,
+  expect((await request.get(`/api/v1/projects/${project.id}`)).status()).toBe(
+    410,
   );
-  const rescanContext = await browser.newContext();
-  const rescan = await rescanContext.newPage();
-  const rescanErrors = observe(rescan);
-  await signIn(rescan, ADMIN_TOKEN);
-  await queueScan(rescan, project.id, "Scan after reinstatement", 4);
-  await postVettingResult(request, project.id, project.repository, "clean");
   expect((await request.get(`/projects/${project.id}/SKILL.md`)).status()).toBe(
-    200,
+    410,
   );
-  expect(rescanErrors).toEqual([]);
-  await rescanContext.close();
 
   // The independent moderator was asked to review the appeal in the inbox.
   await moderator.goto("/inbox", { waitUntil: "networkidle" });
@@ -1040,7 +982,6 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
     `The ${project.id} project is quarantined.`,
     `The ${project.id} project is banned.`,
     `A reinstatement request for ${project.id} is open for independent review.`,
-    `The ${project.id} project is reinstated.`,
   ])
     await expect(
       applicant.locator(".inbox-item", { hasText: title }),

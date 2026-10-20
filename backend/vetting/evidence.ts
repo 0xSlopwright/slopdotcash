@@ -1,5 +1,10 @@
 /** Separate private vetting evidence. Policy and external controls have no defaults. */
 
+import {
+  assemblyAssessment,
+  assemblyRecord,
+  parseAssemblyManifest,
+} from "../../workers/vetting/assembly-manifest";
 import type { ProjectD1Database } from "../projects/cloudflare-persistence";
 import type { WebSession } from "../projects/contracts";
 import type { R2Bucket } from "../trace/cloudflare-persistence";
@@ -162,6 +167,7 @@ type Run = {
   assessment_id: string;
   run_id: string;
   trace_sha256: string;
+  assembly_sha256: string | null;
   manifest_sha256: string;
   manifest: string;
   policy: string;
@@ -324,13 +330,258 @@ export class VettingEvidence {
       );
     await verifyParts(bucket, row.object_key, chunks, row.sha256);
   }
+  /** Verify retained closure without changing the canonical scan state or authority. */
+  async assemblyClosure(assessment: string, runId: string) {
+    const run = await this.run(assessment, runId);
+    if (!run.assembly_sha256)
+      fail(
+        409,
+        "assembly_missing",
+        "No canonical assembly is bound to this storage run",
+      );
+    const objects =
+      (
+        await this.deps.db
+          .prepare(
+            "SELECT * FROM vetting_evidence_objects WHERE assessment_id=? AND run_id=?",
+          )
+          .bind(assessment, runId)
+          .all<ObjectRow>()
+      ).results ?? [];
+    const inventory = new Map(objects.map((row) => [row.sha256, row]));
+    const required = (digest: unknown, bytes?: unknown) => {
+      const row =
+        typeof digest === "string" ? inventory.get(digest) : undefined;
+      if (!row || (bytes !== undefined && bytes !== row.size_bytes))
+        fail(
+          409,
+          "assembly_incomplete",
+          "A canonical assembly reference is absent or has a different length",
+        );
+      return row;
+    };
+    const read = async (digest: unknown) =>
+      assemblyRecord(
+        JSON.parse(
+          new TextDecoder("utf-8", { fatal: true }).decode(
+            await this.bytes(required(digest), run),
+          ),
+        ),
+      );
+    const assembly = parseAssemblyManifest(await read(run.assembly_sha256));
+    const persisted = await this.deps.db
+      .prepare(
+        "SELECT id AS assessmentId,project_id AS projectId,revision,manifest_sha256 AS manifestSha256,commit_sha AS commitSha,template_sha256 AS templateSha256 FROM vetting_assessments WHERE id=?",
+      )
+      .bind(assessment)
+      .first();
+    const sameAssessment = (value: unknown) =>
+      JSON.stringify(assemblyAssessment(value)) ===
+      JSON.stringify(assembly.assessment);
+    if (
+      !sameAssessment(persisted) ||
+      assembly.assessment.assessmentId !== assessment
+    )
+      fail(
+        409,
+        "assembly_mismatch",
+        "Canonical assembly does not bind the stored assessment",
+      );
+    const roles = new Map(assembly.files.map((file) => [file.role, file]));
+    for (const file of assembly.files) required(file.sha256, file.bytes);
+    const role = (name: string, digest?: unknown) => {
+      const file = roles.get(name);
+      if (!file || (digest !== undefined && file.sha256 !== digest))
+        fail(
+          409,
+          "assembly_incomplete",
+          "A required canonical evidence role is missing or changed",
+        );
+      return file;
+    };
+    role("queue", assembly.queuedInputsSha256);
+    role("runtime-overlay", assembly.runtimeOverlaySha256);
+    const queue = await read(assembly.queuedInputsSha256);
+    if (
+      queue.schema !== "slop-queued-inputs-v1" ||
+      queue.state !== "quarantined" ||
+      !sameAssessment(queue.assessment) ||
+      typeof queue.manifestText !== "string" ||
+      (await sha256Hex(new TextEncoder().encode(queue.manifestText))) !==
+        assembly.assessment.manifestSha256
+    )
+      fail(
+        409,
+        "assembly_mismatch",
+        "Retained queue evidence does not bind the exact assessment manifest",
+      );
+    role("source-inventory", queue.sourceInventorySha256);
+    const source = await read(queue.sourceInventorySha256);
+    if (
+      source.schema !== "slop-source-inventory-v1" ||
+      source.state !== "quarantined" ||
+      source.commitSha !== assembly.assessment.commitSha ||
+      !Array.isArray(source.records) ||
+      !Array.isArray(queue.inputs)
+    )
+      fail(
+        409,
+        "assembly_mismatch",
+        "Retained source inventory does not bind the assessed commit",
+      );
+    for (const item of [...source.records, ...queue.inputs]) {
+      const entry = assemblyRecord(item);
+      if (entry.type === "commit" && entry.sha256 === null) continue;
+      required(entry.sha256, entry.bytes);
+    }
+    const vm = await read(role("offline-vm").sha256);
+    if (
+      vm.schema !== "slop-offline-vm-evidence-v1" ||
+      vm.state !== "incomplete" ||
+      typeof vm.serialSha256 !== "string" ||
+      !HEX.test(vm.serialSha256) ||
+      vm.overlaySha256 !== assembly.runtimeOverlaySha256
+    )
+      fail(
+        409,
+        "assembly_mismatch",
+        "Retained VM receipt does not bind the exact overlay",
+      );
+    role(
+      roles.has("raw-vm-serial") ? "raw-vm-serial" : "untrusted-vm-serial",
+      vm.serialSha256,
+    );
+    if (typeof vm.diskMapSha256 === "string")
+      role("block-allocation-map", vm.diskMapSha256);
+    else if (vm.diskMapSha256 !== null)
+      fail(409, "assembly_mismatch", "VM disk-map reference is invalid");
+    const guestFile = roles.get("guest-receipt");
+    if (guestFile) {
+      const guest = await read(guestFile.sha256);
+      const profileFile = role("approved-fixture-profile");
+      const profile = await read(profileFile.sha256);
+      if (
+        guest.schema !== "slop-guest-syscall-evidence-v1" ||
+        guest.state !== "incomplete" ||
+        guest.fixtureOnly !== true ||
+        guest.providerCallsAuthorized !== false ||
+        guest.publicationAuthorized !== false ||
+        guest.sourceInventorySha256 !== queue.sourceInventorySha256 ||
+        guest.vmEvidenceSha256 !== role("offline-vm").sha256 ||
+        guest.serialSha256 !== vm.serialSha256 ||
+        guest.profileSha256 !== profileFile.sha256 ||
+        guest.seedSha256 !== vm.seedSha256 ||
+        !Array.isArray(guest.sourceSha256) ||
+        profile.schema !== "slop-harmless-guest-profile-v1" ||
+        profile.fixtureOnly !== true ||
+        profile.sourceInventorySha256 !== queue.sourceInventorySha256
+      )
+        fail(
+          409,
+          "assembly_mismatch",
+          "Guest receipt does not bind the captured source, profile and VM",
+        );
+      for (const digest of guest.sourceSha256) required(digest);
+      for (const [name, digest] of [
+        ["untrusted-trace", guest.traceSha256],
+        ["untrusted-output", guest.outputSha256],
+      ] as const) {
+        required(digest);
+        role(name, digest);
+      }
+      if (
+        guest.kernelArtifactGate !== undefined ||
+        profile.kernelPolicySha256 !== undefined
+      ) {
+        const gate = assemblyRecord(guest.kernelArtifactGate);
+        if (gate.policySha256 !== profile.kernelPolicySha256)
+          fail(409, "assembly_mismatch", "Guest kernel profile differs");
+        required(gate.postCollectorOutputSha256);
+        role("untrusted-post-collector-probe", gate.postCollectorOutputSha256);
+      }
+    }
+    const dependency = roles.get("dependency-inventory");
+    if (dependency) {
+      const record = await read(dependency.sha256);
+      if (
+        record.schema !== "slop-dependency-inventory-v1" ||
+        record.state !== "quarantined" ||
+        record.executionAuthorized !== false ||
+        typeof record.profileSha256 !== "string" ||
+        !HEX.test(record.profileSha256) ||
+        record.sourceInventorySha256 !== queue.sourceInventorySha256 ||
+        !Array.isArray(record.records)
+      )
+        fail(
+          409,
+          "assembly_mismatch",
+          "Dependency inventory does not bind the captured source",
+        );
+      role("dependency-profile", record.profileSha256);
+      for (const value of record.records) {
+        const entry = assemblyRecord(value);
+        required(entry.sha256, entry.bytes);
+        required(entry.inspectionSha256);
+      }
+    }
+    for (const file of assembly.files.filter(
+      (file) =>
+        file.role.startsWith("artifact:") ||
+        file.role.startsWith("dependency-artifact:"),
+    )) {
+      const record = await read(file.sha256);
+      if (!Array.isArray(record.records))
+        fail(409, "assembly_incomplete", "Artifact lineage is missing");
+      for (const value of record.records) {
+        const entry = assemblyRecord(value);
+        required(entry.sha256, entry.bytes);
+        if (entry.parentSha256) required(entry.parentSha256);
+      }
+    }
+    const review = await read(assembly.reviewInputSha256);
+    if (
+      !Array.isArray(review.items) ||
+      !Array.isArray(review.visibilityGaps) ||
+      JSON.stringify([...review.visibilityGaps].sort()) !==
+        JSON.stringify([...assembly.visibilityGaps].sort())
+    )
+      fail(
+        409,
+        "assembly_mismatch",
+        "Review input must preserve canonical visibility gaps",
+      );
+    for (const value of review.items) {
+      const item = assemblyRecord(value);
+      if (typeof item.text !== "string")
+        fail(409, "assembly_incomplete", "Review input bytes are missing");
+      const bytes = new TextEncoder().encode(item.text);
+      if ((await sha256Hex(bytes)) !== item.sha256)
+        fail(409, "assembly_mismatch", "Review input digest changed");
+      required(item.sha256, bytes.length);
+    }
+    for (const row of objects) await this.verify(row, run);
+    return {
+      ...assembly,
+      retained: true as const,
+      storageRunId: runId,
+      runtimeRunIdentity: "not-asserted-by-current-vm-format" as const,
+    };
+  }
   async complete(result: VettingResult) {
     const assessment = result.assessmentId,
       runId = result.environment.runId,
       traceSha = result.traceSha256;
     try {
       const run = await this.run(assessment, runId);
-      if (run.trace_sha256 !== traceSha) return false;
+      if (run.trace_sha256 !== traceSha || !run.assembly_sha256) return false;
+      const closure = await this.assemblyClosure(assessment, runId);
+      if (
+        closure.reviewInputSha256 !== result.assessed.inputManifestSha256 ||
+        result.modelReviews.some(
+          (review) => review.inputManifestSha256 !== closure.reviewInputSha256,
+        )
+      )
+        return false;
       const objects =
         (
           await this.deps.db
@@ -352,8 +603,10 @@ export class VettingEvidence {
         ]),
       ];
       if (required.some((digest) => !inventory.has(digest))) return false;
-      for (const row of objects) await this.verify(row, run);
-      return true;
+      // assemblyClosure already rechecked every registered object.
+      // The existing canonical assembler is explicitly incomplete and grants no authority.
+      // Retaining every byte cannot change that contract. Unknown future states are refused.
+      return closure.providerCallsAuthorized && closure.publicationAuthorized;
     } catch {
       return false;
     }
@@ -375,7 +628,17 @@ export class VettingEvidence {
     }
     if (!isRecord(input))
       fail(400, "invalid_request", "Evidence manifest must be an object");
-    exact(input, ["traceSha256", "objects"]);
+    exact(input, [
+      "traceSha256",
+      "objects",
+      ...(Object.hasOwn(input, "assemblySha256") ? ["assemblySha256"] : []),
+    ]);
+    if (
+      Object.hasOwn(input, "assemblySha256") &&
+      (typeof input.assemblySha256 !== "string" ||
+        !HEX.test(input.assemblySha256))
+    )
+      fail(400, "invalid_request", "Invalid canonical assembly digest");
     if (
       typeof input.traceSha256 !== "string" ||
       !HEX.test(input.traceSha256) ||
@@ -464,8 +727,22 @@ export class VettingEvidence {
       !objects.some((o) => o.kind === "trace" && o.sha256 === input.traceSha256)
     )
       fail(400, "invalid_request", "The exact trace object must be declared");
+    if (
+      input.assemblySha256 &&
+      !objects.some(
+        (o) => o.sha256 === input.assemblySha256 && o.kind === "manifest",
+      )
+    )
+      fail(
+        400,
+        "invalid_request",
+        "The exact canonical assembly manifest must be declared",
+      );
     const manifest = JSON.stringify({
         traceSha256: input.traceSha256,
+        ...(input.assemblySha256
+          ? { assemblySha256: input.assemblySha256 }
+          : {}),
         objects,
       }),
       digest = await sha256Hex(new TextEncoder().encode(manifest));
@@ -488,7 +765,7 @@ export class VettingEvidence {
     await this.deps.db.batch([
       this.deps.db
         .prepare(
-          "INSERT INTO vetting_evidence_runs(assessment_id,run_id,trace_sha256,manifest_sha256,manifest,policy,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
+          "INSERT INTO vetting_evidence_runs(assessment_id,run_id,trace_sha256,manifest_sha256,manifest,policy,created_at,expires_at,assembly_sha256) VALUES(?,?,?,?,?,?,?,?,?)",
         )
         .bind(
           assessment,
@@ -501,6 +778,7 @@ export class VettingEvidence {
           new Date(
             at.getTime() + policy.accessDurationSeconds * 1000,
           ).toISOString(),
+          input.assemblySha256 ?? null,
         ),
       ...objects.map((o) =>
         this.deps.db
@@ -730,7 +1008,35 @@ export class VettingEvidence {
           state,
         });
       }
+      let assembly: {
+        retained: boolean;
+        state: string;
+        scanReady: false;
+        reason: string;
+      };
+      try {
+        const closure = await this.assemblyClosure(
+          run.assessment_id,
+          run.run_id,
+        );
+        assembly = {
+          retained: true,
+          state: closure.state,
+          scanReady: false,
+          reason:
+            "Canonical captured-evidence files are retained. Runtime image and toolchain provenance pins are external and are not retained here. The assembly remains incomplete, authorizes no provider calls or publication, and does not independently assert a VM run identity.",
+        };
+      } catch {
+        assembly = {
+          retained: false,
+          state: "unavailable",
+          scanReady: false,
+          reason:
+            "Canonical captured evidence is absent, invalid, mismatched, expired or unavailable. Runtime image and toolchain provenance are separate external inputs.",
+        };
+      }
       result.push({
+        assembly,
         assessmentId: run.assessment_id,
         runId: run.run_id,
         traceSha256: run.trace_sha256,
