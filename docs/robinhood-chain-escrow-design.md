@@ -201,7 +201,7 @@ Each PR cites FND-01, FND-02, PAY-06, PAY-07 and MVP-02, MVP-06, MVP-07 in its d
 
 ## Open decisions for the repository owner
 
-1. Robinhood Chain fee recipient address (reuse the Base account or a new one).
+1. ~~Robinhood Chain fee recipient address.~~ Decided 19 October 2026: reuse the Base fee wallet `0x8f77C37D8650776bFe73c9b12B15209eE15D9b86`.
 2. Robinhood Chain identity authority address, and who holds it, under the #675 bounded-attester design.
 3. Which project is first to carry a `robinhood-mainnet` deployment, and when the hosted executor may accept a mainnet network at all.
 4. Whether the public copy on `/sponsors` and project pages may say "USDG on Robinhood Chain" before a project is activated there. This design adds no such copy.
