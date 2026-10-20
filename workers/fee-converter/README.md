@@ -216,10 +216,11 @@ sweep is a human-signed transfer outside this Worker.
 
 ## Turn on live mode
 
-1. The owner approves MVP-07c and the fee wallet per network. Robinhood Chain
-   and Ethereum fee wallets are still undecided; those networks stay disabled
-   until `FEE_WALLET_ROBINHOOD` / `FEE_WALLET_ETHEREUM` are set by a reviewed
-   pull request.
+1. The owner approves MVP-07c and the fee wallet per network. On 19 October
+   2026 the owner chose the Base fee wallet
+   `0x8f77C37D8650776bFe73c9b12B15209eE15D9b86` for Robinhood Chain and
+   Ethereum too. `FEE_WALLET_ROBINHOOD` and `FEE_WALLET_ETHEREUM` are set in
+   `wrangler.toml`. Each network still runs only when it is enabled.
 2. Create the Worker shell once: `wrangler deploy --config
    workers/fee-converter/wrangler.toml` from a trusted machine with mode `off`.
 3. Set the secrets for each network you will enable (key custodian only).
