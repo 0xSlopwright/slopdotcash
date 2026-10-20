@@ -6,7 +6,6 @@ export interface PaymentStackInput {
   deployments: unknown;
   registry: unknown;
   registryDatabase: { database_name: string; database_id: string };
-  executionEnabled?: (network: string) => boolean;
 }
 export interface PaymentStackConfig {
   name: string;
@@ -20,8 +19,15 @@ export interface PaymentStackConfig {
   }[];
   triggers?: { crons: string[] };
 }
-export declare function paymentStack(input: PaymentStackInput): {
-  names: Record<"attester" | "relayer" | "dispatcher", string>;
-  configs: Record<"attester" | "relayer" | "dispatcher", PaymentStackConfig>;
+export interface PaymentStack<Role extends string> {
+  names: Record<Role, string>;
+  configs: Record<Role, PaymentStackConfig>;
   secret: string;
-};
+}
+/** A production stack has the identity attester only (PRD PAY-04, PAY-05). */
+export declare function paymentStack(
+  input: PaymentStackInput & { stack: "production" },
+): PaymentStack<"attester">;
+export declare function paymentStack(
+  input: PaymentStackInput & { stack?: "test" },
+): PaymentStack<"attester" | "relayer" | "dispatcher">;

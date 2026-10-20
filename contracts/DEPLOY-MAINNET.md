@@ -356,8 +356,11 @@ The code does not enable a mainnet. Every value in
 `workers/payment-executor/mainnet-execution.mjs` is `false`, and the
 executor and the attester refuse a mainnet deployment before they read a
 signer secret. `workers/payment-executor/configure.mjs --stack production`
-generates the production stack for one mainnet. It is disabled by default:
-the dispatcher has no cron until the network's reviewed value is `true`.
+generates the production stack for one mainnet. It is the identity attester
+Worker only (PAY-05). Slop holds no relayer key and runs no dispatcher or
+other scheduled job that starts a payment (PAY-04). The project or a
+permissionless executor holds the relayer key and submits the approved
+payments.
 
 ### 3.1 Preconditions
 
@@ -377,19 +380,18 @@ the dispatcher has no cron until the network's reviewed value is `true`.
    `bun run payments:deployments mainnet <network> > pinned.json`.
 2. Generate the stack:
    `node workers/payment-executor/configure.mjs --stack production --network <network> --deployments pinned.json --output workers/payment-executor/.generated`.
-   The dispatcher gets `PAYMENT_NETWORKS` with only this network and reads
-   the vaults from `REGISTRY_DB` (the registry database, `SLOP_DB` in
-   `wrangler.toml`); do not copy a deployment list into it. The signers get
-   `SIGNER_STACK=production`. Review the configurations and
+   It writes the attester configuration only, with
+   `SIGNER_STACK=production`. Review the configuration and
    `apply-production-stack.sh`.
-3. Put the attester key and the relayer key in the managed secret store of
-   their own Workers only, as `SIGNER_PRIVATE_KEY` (EVM) or
-   `SOLANA_SIGNER_SEED` (Solana, 64 hex digits). One key per role and
-   network. Never reuse the registrar, owner, fee-wallet or a test key.
-4. Set `PAYMENT_RPC_URLS` on each Worker to a private endpoint for this
-   network that serves the finalized tag (EVM) or finalized commitment
-   (Solana). On Solana also set `PAYMENT_SOLANA_GENESIS` to the cluster
-   genesis hash in `src/lib/escrow-policy.mjs`.
+3. Put the attester key in the managed secret store of the attester Worker
+   only, as `SIGNER_PRIVATE_KEY` (EVM) or `SOLANA_SIGNER_SEED` (Solana, 64 hex
+   digits). One key per network. Never reuse the registrar, owner, fee-wallet
+   or a test key. Do not create or store a relayer key: the project or a
+   permissionless executor holds it (PAY-04). The hosted signer refuses the
+   relayer role on a production stack.
+4. Set `PAYMENT_RPC_URLS` on the attester Worker to a private endpoint for
+   this network that serves the finalized tag (EVM) or finalized commitment
+   (Solana).
 5. To let contributors sign the destination binding on the site, add this
    network to the Pages variable `PAYMENT_NETWORKS` in `wrangler.toml`
    through a reviewed pull request. Until then `/wallets/bind-challenge`
@@ -405,17 +407,17 @@ PAYMENT_RPC_URLS="$PRIVATE_RPC_JSON" \
 PAYMENT_SOLANA_GENESIS="$GENESIS_JSON" \
 bun run payments:readiness \
   --registry-origin https://slop.cash \
-  --config "$ATTESTER_CONFIG" --config "$RELAYER_CONFIG" \
-  --config "$DISPATCHER_CONFIG" \
-  --probe --require "$NETWORK"
+  --config "$ATTESTER_CONFIG" \
+  --probe
 ```
 
 For each network the report states `factory`, `attester`, `rpc` and
-`executor`. `executor` is `missing` when the dispatcher's `REGISTRY_DB` is not
-the registry database. `--require` needs `--probe`. `--probe` reads the chain id or genesis hash and the finalized
-head; `rpc=finalized` is the only passing probe result. Before step 3.4 the
-only expected failure for this network is `executor=off-by-review`. Attach
-the report to the release issue.
+`executor`. `--probe` reads the chain id or genesis hash and the finalized
+head; `rpc=finalized` is the only passing probe result. For this network
+`factory`, `attester` and `rpc` must pass. `executor` reports `missing`,
+because Slop runs no relayer or dispatcher on a mainnet (PAY-04); the
+executor of the project or the permissionless executor is verified
+separately. Attach the report to the release issue.
 
 ### 3.4 Enable the executor for this network
 
@@ -423,18 +425,18 @@ the report to the release issue.
    `mainnet-execution.mjs` to `true` and updates
    `mainnet-execution.test.ts` to match. Link the audit, the testnet evidence
    and the readiness report from step 3.3.
-2. The repository owner reviews and merges it (PAY-05). Deploy the signer
-   Workers from that reviewed commit only.
-3. Run the readiness report again. It must print `READY` for this network,
-   and the command must exit with code 0.
-4. Generate the stack again from that commit and deploy the dispatcher. Its
-   cron starts only now.
+2. The repository owner reviews and merges it (PAY-05). Deploy the attester
+   Worker from that reviewed commit only.
+3. Run the readiness report again. `factory`, `attester` and `rpc` must
+   pass for this network.
 
 ### 3.5 First payout and reconciliation
 
 1. Approve one small award on one project of this network through the normal
    review flow. Wait for the contributor's wallet binding and its delay.
-2. Let the dispatcher pay it. Do not send a manual transfer with a signer key.
+2. The executor of the project, or a permissionless executor, submits the
+   payment with its own relayer key. Slop does not submit it, and does not
+   send a manual transfer with any key.
 3. Confirm the finalized `Paid` event, the obligation `state=paid`, the
    contributor net amount and the fee in the explorer, and the new
    `vault_snapshots` row (block, `total_paid`, `total_payout_fees`).
@@ -442,7 +444,7 @@ the report to the release issue.
 5. Record the transaction, the snapshot row and the page screenshot on the
    release issue. Then start the next network at step 3.1.
 
-To stop payouts on a network, change its `mainnet-execution.mjs` value back
-to `false` through a reviewed pull request and redeploy the signer Workers.
-Vault snapshots and the event scan continue, so the public totals stay
-current.
+To stop new Slop attestations on a network, change its
+`mainnet-execution.mjs` value back to `false` through a reviewed pull request
+and redeploy the attester Worker. Slop cannot stop a payment that the project
+or a permissionless executor submits for an approved and funded obligation.

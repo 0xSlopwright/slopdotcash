@@ -56,9 +56,11 @@ it existed) signs for registry test networks only and reads
 `TEST_SIGNER_PRIVATE_KEY` or `TEST_SOLANA_SIGNER_SEED`, with the journal
 `dedicated-test-signer-v1`. A `production` stack signs for registry mainnets
 only and reads `SIGNER_PRIVATE_KEY` or `SOLANA_SIGNER_SEED`, with the journal
-`production-signer-v1`. The wrapper checks the stack and the network, then
-the preflight, before it reads a secret, so a test key never signs for a
-mainnet and a production key never signs while `MAINNET_EXECUTION` is off.
+`production-signer-v1`, and it is the identity attester only: the wrapper
+refuses the relayer role on it (PRD PAY-04). The wrapper checks the stack and
+the network, then the preflight, before it reads a secret, so a test key
+never signs for a mainnet and a production key never signs while
+`MAINNET_EXECUTION` is off.
 Any other `SIGNER_STACK` value stops the signer.
 
 ## Durability and retries
@@ -160,8 +162,9 @@ single release operator to prevent concurrent provisioning races.
 
 ### Production stack definition
 
-`--stack production` generates the stack for one registry mainnet. It is for
-`contracts/DEPLOY-MAINNET.md` section 3.2 and is run by an operator only:
+`--stack production` generates the identity attester Worker for one registry
+mainnet. It is for `contracts/DEPLOY-MAINNET.md` section 3.2 and is run by an
+operator only:
 
 ```sh
 bun run projects:sync
@@ -173,18 +176,20 @@ node workers/payment-executor/configure.mjs --stack production \
 ```
 
 The command does not create resources, read keys or deploy. It refuses a test
-network and any `--database-id` or `--database-name`. The Worker names are
-`slop-payments-NETWORK-attester`, `-relayer` and `-dispatcher`. `PAYMENTS_DB`
-and `REGISTRY_DB` are both the registry database (`SLOP_DB` in
-`wrangler.toml`), because the account API stores wallet claims and binding
-authorizations there; the Pages release migrates it, so this configuration
-has no migrations directory. The signers have `SIGNER_STACK=production` and
-take the production secret names above. The stack is disabled by default: the
-dispatcher has no cron while the network's `MAINNET_EXECUTION` value is
-`false`, and the signers refuse the network. Regenerate and redeploy the
-dispatcher after the reviewed switch change to start its cron. The generated
-`apply-production-stack.sh` lists the dry runs, signer deploys, secret prompts
-and the dispatcher deploy for the operator to review and run.
+network and any `--database-id` or `--database-name`. The production stack
+has no relayer and no dispatcher: under PRD PAY-04 the project or a
+permissionless executor holds the relayer key, and Slop runs no service or
+scheduled job that starts a payment. The PAY-05 attester is the only Slop-held
+payment key. The Worker name is `slop-payments-NETWORK-attester`. Its
+`PAYMENTS_DB` is the registry database (`SLOP_DB` in `wrangler.toml`),
+because the account API stores wallet claims and binding authorizations
+there; the Pages release migrates it, so this configuration has no migrations
+directory. The attester has `SIGNER_STACK=production`, takes the production
+secret name above, and refuses the network while its `MAINNET_EXECUTION`
+value is `false`. The hosted signer refuses `SIGNER_ROLE=relayer` and the
+relayer endpoints on a production stack. The generated
+`apply-production-stack.sh` lists the dry run, the attester deploy and its
+secret prompts for the operator to review and run.
 
 The generated `pages-bindings.json` is an integration fragment for an isolated test
 Pages environment, not permission to change an existing staging deployment. Bind its
@@ -269,4 +274,3 @@ Existing `slop-staging.pages.dev` is owned by another task: coordinate before ch
 its Pages bindings or deploying the isolated artifact. No live OAuth or hosted session
 claim is made until real GitHub sign-in, one-use assertion consumption, same-host cookie,
 wallet control signature, and finalized payout pass there. Use the new login/earnings
-flow; the legacy standalone wallet registration continues to use production identity.

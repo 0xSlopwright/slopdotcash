@@ -9,8 +9,9 @@
  *
  * The account API router (the Pages SLOP_DB is the registry) builds wallet
  * binding consent for the recorded vault only for its served networks. The
- * production stack definition of configure.mjs pins the same deployment,
- * stays disabled while MAINNET_EXECUTION is off, and its signer refuses a
+ * production stack definition of configure.mjs is the identity attester
+ * only (PRD PAY-04): it pins the same deployment, has no relayer and no
+ * dispatcher, and the hosted signer refuses the relayer role on it and a
  * network outside its stack before it reads a signer secret.
  */
 import { Database } from "bun:sqlite";
@@ -474,10 +475,12 @@ try {
     chain_id: "84532",
   });
 
-  // 3c. The production stack definition for one mainnet. It pins the
-  //     registry deployment, uses the registry database and the production
-  //     secret names, and has no dispatcher cron while MAINNET_EXECUTION is
-  //     off. The readiness report then names only the reviewed switch.
+  // 3c. The production stack definition for one mainnet is the identity
+  //     attester only (PRD PAY-04, PAY-05). It pins the registry deployment
+  //     and uses the registry database and the production secret name. Slop
+  //     generates no relayer and no dispatcher, so the readiness report
+  //     names the executor as missing until the project or a permissionless
+  //     executor provides one.
   const mainnetDeployment = {
     ...deployment,
     network: "base-mainnet" as const,
@@ -492,45 +495,38 @@ try {
     database_id: registryDatabaseId,
   };
   const mainnetRecord = paymentDeploymentRecord("eliza", mainnetDeployment);
-  const production = (executionEnabled: (network: string) => boolean) =>
-    paymentStack({
-      stack: "production",
-      network: "base-mainnet",
-      deployments: [mainnetRecord],
-      registry: [mainnetManifest],
-      registryDatabase,
-      executionEnabled,
-    });
-  const disabled = production(() => false);
-  assert.equal(disabled.secret, "SIGNER_PRIVATE_KEY");
-  assert.deepEqual(disabled.names, {
+  const production = paymentStack({
+    stack: "production",
+    network: "base-mainnet",
+    deployments: [mainnetRecord],
+    registry: [mainnetManifest],
+    registryDatabase,
+  });
+  assert.equal(production.secret, "SIGNER_PRIVATE_KEY");
+  assert.deepEqual(production.names, {
     attester: "slop-payments-base-mainnet-attester",
-    relayer: "slop-payments-base-mainnet-relayer",
-    dispatcher: "slop-payments-base-mainnet-dispatcher",
   });
-  for (const role of ["attester", "relayer"] as const) {
-    assert.equal(disabled.configs[role].vars.SIGNER_STACK, "production");
-    assert.deepEqual(disabled.configs[role].d1_databases, [
-      { binding: "PAYMENTS_DB", ...registryDatabase },
-    ]);
-  }
-  assert.deepEqual(disabled.configs.dispatcher.triggers, { crons: [] });
-  assert.deepEqual(production(() => true).configs.dispatcher.triggers, {
-    crons: ["*/5 * * * *"],
-  });
+  assert.deepEqual(Object.keys(production.configs), ["attester"]);
+  assert.equal(production.configs.attester.vars.SIGNER_ROLE, "attester");
+  assert.equal(production.configs.attester.vars.SIGNER_STACK, "production");
+  assert.equal(production.configs.attester.triggers, undefined);
+  assert.equal(production.configs.attester.services, undefined);
+  assert.deepEqual(production.configs.attester.d1_databases, [
+    { binding: "PAYMENTS_DB", ...registryDatabase },
+  ]);
   const mainnetReport = (enabled: boolean) =>
     payoutReadiness({
       registry: [mainnetManifest],
       registryDatabaseId,
-      configs: Object.values(disabled.configs),
+      configs: Object.values(production.configs),
       rpcUrls: { "base-mainnet": "https://base-mainnet.rpc.example" },
       probes: { "base-mainnet": "finalized" },
       executionEnabled: () => enabled,
     }).find((item) => item.network === "base-mainnet");
-  assert.deepEqual(mainnetReport(false)?.reasons, [
-    "MAINNET_EXECUTION is off for this network",
-  ]);
-  assert.equal(mainnetReport(true)?.ready, true);
+  assert.equal(mainnetReport(false)?.attester, "configured");
+  assert.equal(mainnetReport(true)?.attester, "configured");
+  assert.equal(mainnetReport(true)?.executor, "missing");
+  assert.equal(mainnetReport(true)?.ready, false);
   // A production stack never serves a test network or a separate database,
   // and a test stack never serves a mainnet.
   assert.throws(
@@ -587,13 +583,15 @@ try {
     stack: string | undefined,
     network: string,
     deployments: unknown[],
+    role = "attester",
+    path = "/v1/pay",
   ) => {
     const read: string[] = [];
     const env = {
       PAYMENTS_DB: paymentsDb,
       PAYMENT_DEPLOYMENTS: JSON.stringify(deployments),
       PAYMENT_RPC_URLS: JSON.stringify({ [network]: rpcUrl }),
-      SIGNER_ROLE: "attester",
+      SIGNER_ROLE: role,
       CHAIN_FAMILY: "evm",
       ...(stack === undefined ? {} : { SIGNER_STACK: stack }),
     };
@@ -608,7 +606,7 @@ try {
       { storage: {} } as never,
       env as never,
     ).fetch(
-      new Request("https://identity-attester.internal/v1/pay", {
+      new Request(`https://identity-attester.internal${path}`, {
         method: "POST",
         headers: { "idempotency-key": "key" },
         body: JSON.stringify({
@@ -623,37 +621,63 @@ try {
         }),
       }),
     );
-    assert.equal(response.status, 409);
+    return { status: response.status, read };
+  };
+  const secretsRead = async (...args: Parameters<typeof signerRun>) => {
+    const { status, read } = await signerRun(...args);
+    assert.equal(status, 409);
     return read;
   };
   const sepoliaRecord = paymentDeploymentRecord("eliza", deployment);
   // A test stack (with or without SIGNER_STACK) passes the Base Sepolia
   // preflight against the chain and then reads the test secret only.
   assert.deepEqual(
-    await signerRun(undefined, "base-sepolia", [sepoliaRecord]),
+    await secretsRead(undefined, "base-sepolia", [sepoliaRecord]),
     ["TEST_SIGNER_PRIVATE_KEY"],
   );
-  assert.deepEqual(await signerRun("test", "base-sepolia", [sepoliaRecord]), [
+  assert.deepEqual(await secretsRead("test", "base-sepolia", [sepoliaRecord]), [
     "TEST_SIGNER_PRIVATE_KEY",
   ]);
   // A production stack refuses a test network, a test stack refuses a
   // mainnet, MAINNET_EXECUTION refuses the mainnet, and an unknown stack
   // stops: none of them reads a secret.
   assert.deepEqual(
-    await signerRun("production", "base-sepolia", [sepoliaRecord]),
+    await secretsRead("production", "base-sepolia", [sepoliaRecord]),
     [],
   );
   assert.deepEqual(
-    await signerRun("test", "base-mainnet", [mainnetRecord]),
+    await secretsRead("test", "base-mainnet", [mainnetRecord]),
     [],
   );
   assert.deepEqual(
-    await signerRun("production", "base-mainnet", [mainnetRecord]),
+    await secretsRead("production", "base-mainnet", [mainnetRecord]),
     [],
   );
   assert.deepEqual(
-    await signerRun("staging", "base-sepolia", [sepoliaRecord]),
+    await secretsRead("staging", "base-sepolia", [sepoliaRecord]),
     [],
+  );
+  // PRD PAY-04: a production stack has no Slop relayer. The relayer role and
+  // its dispatch endpoints are refused before any secret or journal read,
+  // while a test relayer still reaches its preflight.
+  for (const path of [
+    "/v1/pay",
+    "/v1/attempt-status",
+    "/v1/cancel-unsubmitted",
+  ])
+    assert.deepEqual(
+      await signerRun(
+        "production",
+        "base-mainnet",
+        [mainnetRecord],
+        "relayer",
+        path,
+      ),
+      { status: 404, read: [] },
+    );
+  assert.deepEqual(
+    await secretsRead("test", "base-sepolia", [sepoliaRecord], "relayer"),
+    ["TEST_SIGNER_PRIVATE_KEY"],
   );
 
   // 4. One corrupted manifest is reported and never hides the other vaults.
@@ -760,7 +784,7 @@ try {
     );
   }
   console.log(
-    `registry vault discovery: snapshot block ${row.block_number}, deposited ${row.total_deposited}; readiness ${sepolia?.ready ? "ready" : "not ready"} for base-sepolia; router binding stored for chain ${binding.chain_id}; production base-mainnet stack ${mainnetReport(false)?.executor}`,
+    `registry vault discovery: snapshot block ${row.block_number}, deposited ${row.total_deposited}; readiness ${sepolia?.ready ? "ready" : "not ready"} for base-sepolia; router binding stored for chain ${binding.chain_id}; production base-mainnet attester ${mainnetReport(false)?.attester}, executor ${mainnetReport(false)?.executor}`,
   );
 } finally {
   anvil.kill();

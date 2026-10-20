@@ -81,6 +81,13 @@ export class PaymentSignerJournal {
       )) as Parameters<ReturnType<typeof createEvmExecutor>["submit"]>[0] & {
         transaction?: unknown;
       };
+      // A test stack signs for test networks only and a production stack
+      // for mainnets only, so each key signs only for its own stack.
+      const stack = signerStack(this.env.SIGNER_STACK);
+      // PRD PAY-04: Slop holds no relayer key and runs no payment dispatch on
+      // a mainnet. A production stack is the PAY-05 identity attester only.
+      if (stack === "production" && this.env.SIGNER_ROLE !== "attester")
+        return new Response("Not found", { status: 404 });
       if (["/v1/attempt-status", "/v1/cancel-unsubmitted"].includes(pathname)) {
         if (this.env.SIGNER_ROLE !== "relayer")
           return new Response("Not found", { status: 404 });
@@ -136,9 +143,6 @@ export class PaymentSignerJournal {
         JOURNAL: this.state.storage,
       };
       let engine: PaymentExecutor;
-      // A test stack signs for test networks only and a production stack
-      // for mainnets only, so each key signs only for its own stack.
-      const stack = signerStack(this.env.SIGNER_STACK);
       if (!stackServesNetwork(stack, input.network))
         throw new Error("Signer stack does not serve this network");
       const secrets = SIGNER_STACKS[stack];

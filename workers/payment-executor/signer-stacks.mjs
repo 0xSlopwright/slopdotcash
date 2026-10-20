@@ -5,8 +5,10 @@ import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
  * for registry test networks only, with the dedicated test secrets that the
  * existing test stacks use. A production stack signs for registry mainnets
  * only, with its own secrets and its own journal, so a test key or a test
- * journal is never used for a mainnet payout. A mainnet also needs its
- * reviewed `MAINNET_EXECUTION` value, which the preflight checks first.
+ * journal is never used for a mainnet. A production stack is the PAY-05
+ * identity attester only: the Worker refuses the relayer role on it (PRD
+ * PAY-04). A mainnet also needs its reviewed `MAINNET_EXECUTION` value, which
+ * the preflight checks first.
  */
 export const SIGNER_STACKS = Object.freeze({
   test: Object.freeze({

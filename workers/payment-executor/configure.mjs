@@ -9,13 +9,16 @@ import {
 import { assertProjectRegistry } from "../../src/lib/project-schema.mjs";
 import { HISTORICAL_PROJECTS } from "../../src/lib/projects.mjs";
 import { readRegistryDatabase } from "../payments/registry-database.mjs";
-import { mainnetExecutionEnabled } from "./mainnet-execution.mjs";
 import { SIGNER_STACKS } from "./signer-stacks.mjs";
 
 // Local generation only: no resource creation, signing, secret reads, or deployment.
 const root = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(root, "../..");
 const ROLES = ["attester", "relayer", "dispatcher"];
+// PRD PAY-04: the relayer key is held by the project or a permissionless
+// executor, never by Slop, and Slop runs no scheduled job that starts a
+// payment. The PAY-05 identity attester is the only Slop-held payment key.
+const PRODUCTION_ROLES = ["attester"];
 
 /**
  * Builds the Wrangler configurations of one payment stack for one network.
@@ -25,11 +28,13 @@ const ROLES = ["attester", "relayer", "dispatcher"];
  * payment database is the registry database (`SLOP_DB` in wrangler.toml),
  * because the account API writes wallet claims and binding authorizations
  * there; the Pages release applies its migrations, so no configuration here
- * migrates it. The production signers read only the production secrets and
- * journal of `signer-stacks.mjs`. The production dispatcher has no cron until
- * the network's reviewed `MAINNET_EXECUTION` value is `true`, so a generated
- * production stack is disabled by default. Every deployment must equal its
- * canonical project manifest in `registry`.
+ * migrates it. A production stack has the identity attester only (PRD
+ * PAY-04, PAY-05): no relayer and no dispatcher, because the project or a
+ * permissionless executor holds the relayer key and submits payments. The
+ * attester reads only the production secret and journal of
+ * `signer-stacks.mjs`, and it refuses the mainnet until the network's
+ * reviewed `MAINNET_EXECUTION` value is `true`. Every deployment must equal
+ * its canonical project manifest in `registry`.
  */
 export function paymentStack({
   stack = "test",
@@ -39,7 +44,6 @@ export function paymentStack({
   deployments,
   registry,
   registryDatabase,
-  executionEnabled = mainnetExecutionEnabled,
 }) {
   const policy = Object.hasOwn(ESCROW_NETWORKS, network ?? "")
     ? ESCROW_NETWORKS[network]
@@ -98,9 +102,10 @@ export function paymentStack({
       );
   }
   const production = stack === "production";
+  const roles = production ? PRODUCTION_ROLES : ROLES;
   const prefix = production ? `slop-payments-${network}` : databaseName;
   const names = Object.fromEntries(
-    ROLES.map((role) => [role, `${prefix}-${role}`]),
+    roles.map((role) => [role, `${prefix}-${role}`]),
   );
   const paymentsDatabase = production
     ? // No migrations_dir: the Pages release migrates the registry database.
@@ -120,9 +125,8 @@ export function paymentStack({
     d1_databases: [paymentsDatabase],
   };
   const family = policy.family;
-  const crons = !production || executionEnabled(network) ? ["*/5 * * * *"] : [];
   const configs = {};
-  for (const role of ROLES) {
+  for (const role of roles) {
     const signer = role !== "dispatcher";
     configs[role] = {
       ...common,
@@ -158,7 +162,7 @@ export function paymentStack({
               { tag: "v1", new_sqlite_classes: ["PaymentSignerJournal"] },
             ],
           }
-        : { triggers: { crons } }),
+        : { triggers: { crons: ["*/5 * * * *"] } }),
       ...(role === "attester"
         ? {}
         : {
@@ -226,51 +230,32 @@ async function main() {
   const output = resolve(args.output);
   await mkdir(output, { recursive: true });
   const paths = {};
-  for (const role of ROLES) {
+  for (const role of Object.keys(configs)) {
     paths[role] = resolve(output, `${names[role]}.json`);
     await writeFile(paths[role], `${JSON.stringify(configs[role], null, 2)}\n`);
     console.log(paths[role]);
   }
-  const inactiveDispatcher = resolve(
-    output,
-    `${names.dispatcher}-inactive.json`,
-  );
-  await writeFile(
-    inactiveDispatcher,
-    `${JSON.stringify({ ...configs.dispatcher, triggers: { crons: [] } }, null, 2)}\n`,
-  );
   const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
   const wrangler = quote(resolve(repository, "node_modules/.bin/wrangler"));
   const command = (role, operation) =>
     `${wrangler} ${operation} --config ${quote(paths[role])}`;
-  const solana = ESCROW_NETWORKS[network].family === "solana";
-  const dispatcherSecrets = [
-    command("dispatcher", "secret put PAYMENT_RPC_URLS"),
-    ...(solana
-      ? [command("dispatcher", "secret put PAYMENT_SOLANA_GENESIS")]
-      : []),
-  ];
-  const signers = ["attester", "relayer"].flatMap((role) => [
+  const signerSetup = (role) => [
     command(role, "deploy"),
     command(role, "secret put PAYMENT_RPC_URLS"),
     command(role, `secret put ${secret}`),
-  ]);
-  const dryRuns = ROLES.map((role) => command(role, "deploy --dry-run"));
+  ];
   if (stack === "production") {
-    // Operator-run only (contracts/DEPLOY-MAINNET.md section 3.2). The signers
-    // refuse this network until its reviewed MAINNET_EXECUTION value is true,
-    // and the dispatcher deploys without a cron until then.
+    // Operator-run only (contracts/DEPLOY-MAINNET.md section 3.2). The
+    // attester refuses this network until its reviewed MAINNET_EXECUTION
+    // value is true. Slop deploys no relayer and no dispatcher (PRD PAY-04).
     const plan = [
       "#!/bin/sh",
       "set -eu",
-      `# Production payment stack for ${network}; secrets are entered at Wrangler prompts.`,
+      `# Production identity attester for ${network}; the secret is entered at a Wrangler prompt.`,
       "# The Pages release migrates the registry database; this script never migrates it.",
       `cd ${quote(repository)}`,
-      ...dryRuns,
-      ...signers,
-      `${wrangler} deploy --config ${quote(inactiveDispatcher)}`,
-      ...dispatcherSecrets,
-      command("dispatcher", "deploy"),
+      command("attester", "deploy --dry-run"),
+      ...signerSetup("attester"),
       "",
     ];
     await writeFile(
@@ -280,6 +265,23 @@ async function main() {
     );
     return;
   }
+  const inactiveDispatcher = resolve(
+    output,
+    `${names.dispatcher}-inactive.json`,
+  );
+  await writeFile(
+    inactiveDispatcher,
+    `${JSON.stringify({ ...configs.dispatcher, triggers: { crons: [] } }, null, 2)}\n`,
+  );
+  const solana = ESCROW_NETWORKS[network].family === "solana";
+  const dispatcherSecrets = [
+    command("dispatcher", "secret put PAYMENT_RPC_URLS"),
+    ...(solana
+      ? [command("dispatcher", "secret put PAYMENT_SOLANA_GENESIS")]
+      : []),
+  ];
+  const signers = ["attester", "relayer"].flatMap(signerSetup);
+  const dryRuns = ROLES.map((role) => command(role, "deploy --dry-run"));
   const plan = [
     "#!/bin/sh",
     "set -eu",
