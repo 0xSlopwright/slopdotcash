@@ -434,6 +434,88 @@ describe("idempotent sends", () => {
   });
 });
 
+describe("EVM reconciliation", () => {
+  /**
+   * A node after the recorded swap (nonce 1) landed in a finalized block: the
+   * finalized nonce count is 2. Methods in `failing` answer HTTP 429; the
+   * node knows no receipt and no transaction for the other lookups.
+   */
+  function rpcAfterLandedSwap(failing: string[]): typeof fetch {
+    return (async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      const requests: { id: number; method: string }[] = Array.isArray(body)
+        ? body
+        : [body];
+      if (requests.some((request) => failing.includes(request.method)))
+        return new Response("rate limited", { status: 429 });
+      const replies = requests.map((request) => ({
+        jsonrpc: "2.0",
+        id: request.id,
+        result:
+          request.method === "eth_getTransactionCount"
+            ? "0x2"
+            : request.method === "eth_call"
+              ? `0x${"0".repeat(64)}`
+              : null,
+      }));
+      return Response.json(Array.isArray(body) ? replies : replies[0]);
+    }) as unknown as typeof fetch;
+  }
+
+  async function reconcileThroughEvm(failing: string[]) {
+    const { createEvmClient } = await import("./evm");
+    const h = harness();
+    await runNetwork(h.network, h.deps);
+    expect(h.rows()[0]).toMatchObject({ state: "submitted", evm_nonce: 1 });
+    const since = new Date(
+      h.clock.now.getTime() - 24 * 60 * 60 * 1000,
+    ).toISOString();
+    const counted = await h.deps.store.liveValueSince("base", since);
+    h.deps.client = (network) =>
+      createEvmClient({
+        config: network,
+        limits: h.deps.limits,
+        kyberClientId: "test",
+        fetch: rpcAfterLandedSwap(failing),
+        sleep: async () => {},
+      });
+    await runNetwork(h.network, h.deps);
+    return {
+      h,
+      counted,
+      countedAfter: await h.deps.store.liveValueSince("base", since),
+    };
+  }
+
+  test.each([
+    "eth_getTransactionReceipt",
+    "eth_getTransactionByHash",
+    "eth_getTransactionReceipt,eth_getTransactionByHash",
+  ])("a failed %s lookup leaves the send open", async (methods) => {
+    const { h, counted, countedAfter } = await reconcileThroughEvm(
+      methods.split(","),
+    );
+    // A finalized nonce cannot tell this swap from another transaction. Only
+    // the receipt can, so the row waits for a run whose lookups succeed.
+    const [row] = h.rows();
+    expect([row.state, row.reason]).toEqual(["submitted", null]);
+    expect(countedAfter).toBe(counted);
+    expect(h.events).toContainEqual(
+      expect.objectContaining({ event: "fee_conversion_reconcile_error" }),
+    );
+  });
+
+  test("a send the node does not know fails once its nonce is finalized", async () => {
+    const { h, countedAfter } = await reconcileThroughEvm([]);
+    const [row] = h.rows();
+    expect([row.state, row.reason]).toEqual([
+      "failed",
+      "nonce used by another transaction",
+    ]);
+    expect(countedAfter).toBe(0n);
+  });
+});
+
 describe("D1 contract", () => {
   test("the schema refuses a second open send, a submitted row without bytes, and edits to final rows", async () => {
     const h = harness();

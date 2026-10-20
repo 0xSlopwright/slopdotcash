@@ -125,7 +125,10 @@ decides each unresolved row:
   no pending transaction, the row fails only when another transaction used its
   nonce in a finalized block, or the router deadline (20 minutes) has passed,
   after which the swap reverts even if mined. Otherwise the Worker
-  rebroadcasts the recorded bytes unchanged.
+  rebroadcasts the recorded bytes unchanged. Only the node's "not found"
+  answer counts as no receipt or no transaction. A failed lookup (HTTP 429,
+  timeout or another RPC error) logs `fee_conversion_reconcile_error` and
+  leaves the row open for the next run.
 - **Solana.** A finalized signature status settles the row. With no status,
   the row fails only when the finalized block height is past the recorded
   `lastValidBlockHeight`. Otherwise the Worker rebroadcasts the recorded bytes.
