@@ -16,6 +16,12 @@ type Run = {
   runId: string;
   manifestSha256: string;
   expiresAt: string;
+  assembly?: {
+    retained: boolean;
+    state: string;
+    scanReady: false;
+    reason: string;
+  };
   objects: EvidenceObject[];
   policy: {
     version: string;
@@ -102,6 +108,13 @@ export default function VettingEvidencePage() {
             >
               <h2>{run.runId}</h2>
               <p>Assessment: {run.assessmentId}</p>
+              {run.assembly ? (
+                <p>
+                  Canonical assembly:{" "}
+                  {run.assembly.retained ? "Retained" : "Not verified"}.{" "}
+                  {run.assembly.reason} Clean admission is unavailable.
+                </p>
+              ) : null}
               <p style={{ overflowWrap: "anywhere" }}>
                 Storage inventory SHA-256: {run.manifestSha256}
               </p>

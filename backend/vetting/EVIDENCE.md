@@ -2,7 +2,7 @@
 
 VET-03 uses a separate private `VETTING_EVIDENCE` R2 binding. It does not use
 contributor traces, their permanent storage rule, or contributor read grants.
-D1 migrations 0034 and 0035 store immutable object receipts, run policy snapshots,
+D1 migrations 0034 through 0036 store immutable object receipts, run policy snapshots,
 chunk layouts, completion records, grants and access audit records. Raw bytes remain outside Git and public responses.
 
 The service is inactive without the bucket and `VETTING_EVIDENCE_POLICY` JSON.
@@ -36,26 +36,46 @@ the same inventory is safe; changing it under the same run identity is refused.
 The object write is create-only. The server reads back complete bytes and checks
 the digest and length before it records success.
 
-This inventory is a storage receipt, not another scan or assembly format. Retain
-the existing `slop-evidence-assembly-v1` manifest and its exact input files without
-rewriting them. The service must retain the full packaged source, dependency,
-collector, lineage and artifact evidence that its assembly references. Source Git
-object identities and captured dependency SHA-256 identities remain distinct.
-The current receipt check does not parse the assembly manifest and recursively
-prove that all its referenced source, runtime overlay and nested evidence files
-are stored. That automatic assembly-closure integration is still missing source
-work. A configured store or available service key does not close this gate.
-The actual assembly remains incomplete and authorizes no provider calls or result
-publication. No private source paths or URLs belong in public result summaries.
+This inventory is a storage receipt, not another scan or assembly format. Bind
+`assemblySha256` to the exact existing `slop-evidence-assembly-v1` manifest. The
+manifest must itself be a registered manifest object. This optional field allows
+incomplete raw evidence to be stored before assembly; its absence never permits
+clean admission. Existing receipts remain immutable and receive no inferred
+assembly. A new receipt uses a new run identity.
 
-A clean result requires the exact trace, input manifests used by the result and
-each reviewer, dependency locks, artifacts and named parent artifacts in the
-inventory. Every registered object must exist and pass a complete byte check.
-This check also runs for continuing project clearance, activation and skill
-publication. Historical metadata-only clean results have no exemption. Dynamic
-skills, discovery and public clearance responses use no-store, so an old edge
-cache entry cannot bypass expiry or missing evidence. Unrelated raw registry
-lists and revision caches retain their existing behavior.
+The assembler and store share the canonical manifest parser. Closure verifies
+all declared captured-evidence file digests and lengths, the exact review input,
+source and dependency object references, artifact lineage, and the captured VM
+receipt/overlay/serial/disk-map references. The exact assessment must agree with
+D1 and the retained queue input from authenticated acquisition. Review input must preserve the assembly's
+visibility gaps. Both existing serial variants (with and without the optional
+guest collector) are supported. Missing, changed or unregistered referenced
+bytes prevent verified retention. Every registered object is reread and hashed.
+
+This is closure of canonical captured evidence, not retention of every runtime
+input. VM receipts also pin base disks, seed images, firmware and host toolchain
+executables. Those operator-controlled provenance inputs remain external; their
+large bytes are not implicitly copied into this 64 MiB capture store. The UI
+states this boundary. The storage run immutably binds the assembly and captured
+VM digests; the current VM format does not independently assert a run ID.
+
+Retention and scan readiness are separate. The current canonical assembler is
+explicitly incomplete and authorizes no provider calls or publication. Verified
+retention never changes those flags or removes visibility gaps. A clean result
+requires an authorized complete canonical runtime contract, matching review-input
+digests, all result-named evidence, and current retained closure. No such complete
+canonical runtime contract exists yet. Thus current incomplete assemblies and
+legacy metadata-only clean claims cannot authorize HTTP clean admission,
+activation, executable skills, discovery or reinstatement. Unknown future
+assembly states are refused rather than inferred as complete. Malicious findings
+and incomplete evidence recording continue to work. Low-level enforcement tests
+are not evidence of HTTP clean admission.
+
+Dynamic skills, discovery and public clearance use no-store, so a prior cache
+entry cannot bypass the gate. Unrelated raw registry lists and revision caches
+retain their existing behavior. Public responses never contain captured source,
+private paths or URLs. Parse failures in the private overview return a fixed
+message rather than an excerpt of malformed raw evidence.
 
 Each upload part is at most 8 MiB. A complete object and run are at most 64 MiB,
 and a run has at most 1024 objects. Explicit policy can set lower limits; there

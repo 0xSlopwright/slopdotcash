@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { parseAssemblyManifest } from "./assembly-manifest";
 
 const hash = (bytes: Uint8Array | string) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -516,18 +517,20 @@ export async function assembleEvidence(input: {
       mode: 0o400,
     });
     const manifest = Buffer.from(
-      JSON.stringify({
-        schema: "slop-evidence-assembly-v1",
-        assessment,
-        queuedInputsSha256: input.queuedInputsSha256,
-        reviewInputSha256: hash(review),
-        files,
-        runtimeOverlaySha256: vm.overlaySha256,
-        state: "incomplete",
-        providerCallsAuthorized: false,
-        publicationAuthorized: false,
-        visibilityGaps: [...visibility].sort(),
-      }),
+      JSON.stringify(
+        parseAssemblyManifest({
+          schema: "slop-evidence-assembly-v1",
+          assessment,
+          queuedInputsSha256: input.queuedInputsSha256,
+          reviewInputSha256: hash(review),
+          files,
+          runtimeOverlaySha256: vm.overlaySha256,
+          state: "incomplete",
+          providerCallsAuthorized: false,
+          publicationAuthorized: false,
+          visibilityGaps: [...visibility].sort(),
+        }),
+      ),
     );
     await writeFile(join(directory, "manifest.json"), manifest, {
       flag: "wx",

@@ -405,7 +405,7 @@ async function serviceResult(
     fail(
       422,
       "evidence_incomplete",
-      "Clean results require the exact complete retained evidence inventory",
+      "Clean results require a complete authorized canonical assembly and its exact retained evidence",
     );
   const resultText = JSON.stringify(result);
   const recorded = await deps.vetting.recordResult({

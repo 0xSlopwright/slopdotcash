@@ -511,7 +511,7 @@ export class CloudflareVettingPersistence {
         return {
           state: "unverified",
           reason:
-            "The clean assessment has no current complete private evidence inventory. Its evidence may be unavailable, corrupt, expired, or outside the current operator-attested policy.",
+            "The clean assessment has no current complete authorized canonical assembly and retained evidence. Its assembly may be incomplete or absent, or evidence may be unavailable, corrupt, expired, or outside the current operator-attested policy.",
         };
       return {
         state: "cleared",
