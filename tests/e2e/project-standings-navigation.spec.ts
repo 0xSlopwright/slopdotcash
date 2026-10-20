@@ -96,7 +96,7 @@ test("history navigation keeps contributor standings scoped to the current proje
     .getByRole("link", { name: "Projects", exact: true })
     .click();
   await page.locator('a.project-card[href="/projects/eliza"]').click();
-  await standings.getByRole("button", { name: "Amount", exact: true }).click();
+  await standings.getByRole("combobox", { name: "Sort by" }).selectOption("money");
   await expect(eliza).toContainText("$111.11");
   await page.evaluate(() => history.go(-2));
   await expect(page.locator(".breadcrumb")).toHaveText("Projects/Slop");
@@ -165,12 +165,12 @@ test("global standings still accept project, sort and contributor filters", asyn
     standings.getByRole("row").filter({ hasText: "synthetic-slop" }),
   ).toBeVisible();
   await expect(page).toHaveURL(/q=synthetic-slop/);
-  const amount = standings.getByRole("button", { name: "Amount", exact: true });
-  await amount.focus();
-  await page.keyboard.press("Enter");
-  await expect(
-    standings.getByRole("columnheader", { name: "Amount", exact: true }),
-  ).toHaveAttribute("aria-sort", "descending");
+  const sort = standings.getByRole("combobox", { name: "Sort by" });
+  await sort.selectOption("score");
+  await expect(sort).toHaveValue("score");
+  await sort.selectOption("money");
+  await expect(sort).toHaveValue("money");
+  await expect(page).toHaveURL(/sort=money/);
   expect(
     (
       await new AxeBuilder({ page })
