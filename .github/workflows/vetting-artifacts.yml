@@ -23,7 +23,9 @@ jobs:
       - name: Install the distribution sandbox and namespace policy
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y bubblewrap apparmor-profiles
+          sudo apt-get install -y bubblewrap apparmor-profiles openssl iproute2
           sudo apparmor_parser -r /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
       - name: Run harmless artifact and isolation workflows
         run: python3 workers/vetting/artifacts_workflow_test.py
+      - name: Run private DNS and HTTPS dependency capture workflows
+        run: sudo unshare --mount --net --fork python3 workers/vetting/dependencies_workflow_test.py
