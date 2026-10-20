@@ -419,6 +419,7 @@ export class VettingEvidence {
     const source = await read(queue.sourceInventorySha256);
     if (
       source.schema !== "slop-source-inventory-v1" ||
+      source.state !== "quarantined" ||
       source.commitSha !== assembly.assessment.commitSha ||
       !Array.isArray(source.records) ||
       !Array.isArray(queue.inputs)
@@ -436,6 +437,9 @@ export class VettingEvidence {
     const vm = await read(role("offline-vm").sha256);
     if (
       vm.schema !== "slop-offline-vm-evidence-v1" ||
+      vm.state !== "incomplete" ||
+      typeof vm.serialSha256 !== "string" ||
+      !HEX.test(vm.serialSha256) ||
       vm.overlaySha256 !== assembly.runtimeOverlaySha256
     )
       fail(
@@ -456,6 +460,10 @@ export class VettingEvidence {
       const record = await read(dependency.sha256);
       if (
         record.schema !== "slop-dependency-inventory-v1" ||
+        record.state !== "quarantined" ||
+        record.executionAuthorized !== false ||
+        typeof record.profileSha256 !== "string" ||
+        !HEX.test(record.profileSha256) ||
         record.sourceInventorySha256 !== queue.sourceInventorySha256 ||
         !Array.isArray(record.records)
       )
