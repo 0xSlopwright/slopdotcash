@@ -237,7 +237,7 @@ export function notifyReinstatementReviewers<S>(
   return db
     .prepare(
       `${INSERT}
-       SELECT 'project-enforcement:' || e.id, r.value, 'reinstatement_review',
+       SELECT 'reinstatement-review:' || e.id, r.value, 'reinstatement_review',
               e.project_id, NULL, '/admin', e.created_at, e.created_at
          FROM project_enforcements e, json_each(?2) r
         WHERE e.id = ?1 AND e.action = 'request_reinstatement'

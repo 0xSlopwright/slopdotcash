@@ -237,7 +237,7 @@ describe("notification events", () => {
     expect(keys(recordedBy.githubId)).toEqual([]);
     expect(keys(MODERATOR)).toEqual([
       [
-        "project-enforcement:enf_testrecord2",
+        "reinstatement-review:enf_testrecord2",
         "reinstatement_review",
         null,
         "/admin",
