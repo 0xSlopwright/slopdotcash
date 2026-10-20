@@ -71,6 +71,16 @@ const PROJECTS = CURRENT.listed;
 const INGESTED = buildRegistry(INGESTED_PROJECT_DEFINITIONS);
 const INGESTED_HISTORICAL_PROJECTS = INGESTED.historical;
 const INGESTED_PROJECTS = INGESTED.listed;
+const INGESTED_PROJECTS_BY_REPOSITORY = new Map(
+  INGESTED_HISTORICAL_PROJECTS.flatMap((project) =>
+    project.repositories.flatMap((repository) =>
+      [repository.id, ...(repository.aliases ?? [])].map((repositoryId) => [
+        repositoryId.toLowerCase(),
+        project,
+      ]),
+    ),
+  ),
+);
 
 const PROJECTS_BY_ID = new Map(
   PROJECTS.map((project) => [project.id, project]),
@@ -170,6 +180,18 @@ export function findProject(value) {
     PROJECTS_BY_ID.get(normalized) ??
     PROJECTS.find((project) => project.slug.toLowerCase() === normalized) ??
     null
+  );
+}
+
+/**
+ * Resolves a ledger repository in the registry snapshot the ledger was
+ * collected from, including retired projects. Score events always resolve
+ * here, even when the runtime registry no longer lists their project.
+ */
+export function findIngestedProjectByRepositoryId(repositoryId) {
+  if (typeof repositoryId !== "string") return null;
+  return (
+    INGESTED_PROJECTS_BY_REPOSITORY.get(repositoryId.toLowerCase()) ?? null
   );
 }
 

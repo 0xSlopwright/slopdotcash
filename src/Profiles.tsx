@@ -12,7 +12,10 @@ import {
   profileCounts,
   profileIssueOutcomes,
 } from "./lib/profiles";
-import { findProject, findProjectByRepositoryId } from "./lib/projects.mjs";
+import {
+  findIngestedProjectByRepositoryId,
+  findProject,
+} from "./lib/projects.mjs";
 import { TARGET_REPOSITORIES } from "./lib/repositories.mjs";
 import { useDirectTransfers } from "./lib/use-direct-transfers";
 import { usePublicResource } from "./lib/use-public-resource";
@@ -324,7 +327,7 @@ function ProfileTimeline({
   const unmatchedAwards = new Map(awards.map((award) => [award.key, award]));
   const records = [
     ...work.map((event) => {
-      const project = findProjectByRepositoryId(event.repository);
+      const project = findIngestedProjectByRepositoryId(event.repository);
       if (!project)
         throw new TypeError(
           `Score event ${event.id} has no registered project`,
