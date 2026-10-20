@@ -91,6 +91,15 @@ jobs:
           fi
           printf 'cutoff=%s\n' "$cutoff" >> "$GITHUB_OUTPUT"
 
+      - name: Snapshot the D1 project registry
+        # Projects live only in the production D1 registry. The committed
+        # snapshot can be empty or stale, so the close reads the registry as
+        # it is now. Each cycle archives the exact bytes of the project's
+        # newest D1 revision (scripts/project-revision-policy.mjs).
+        env:
+          SLOP_API_ORIGIN: https://slop.cash
+        run: bun run projects:sync
+
       - name: Validate registry and evaluator awards
         run: |
           bun run projects:check
@@ -125,7 +134,11 @@ jobs:
           git config user.name "elizaOS rewards bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add -- cycles src/lib/project-promotion.generated.json
+          # The synced registry snapshot lets cycles:check on the review PR
+          # resolve every project that the new cycles name.
+          git add -- cycles src/lib/project-promotion.generated.json \
+            src/lib/project-registry.generated.mjs \
+            src/lib/project-revisions.generated.json
           git commit -m "chore: prepare ${CYCLE} reward review"
           git push --set-upstream origin "$branch"
           gh pr create \

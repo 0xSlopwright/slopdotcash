@@ -1043,12 +1043,12 @@ try {
       totalPaid: "98000000",
       totalPayoutFees: "2000000",
       totalGrossWithdrawn: "100000000",
-      totalWithdrawalFees: "5000000",
+      totalWithdrawalFees: "2000000",
       totalServiceFees: "0",
       freeBalance: "0",
       reservedPrincipal: "0",
       reservedFees: "0",
-      accruedFees: "7000000",
+      accruedFees: "4000000",
       reserved: null,
       blockNumber: undefined,
       blockTime: undefined,
@@ -1086,14 +1086,14 @@ try {
     ["call", asset, "balanceOf(address)(uint256)", fee, "--rpc-url", rpcUrl],
     { encoding: "utf8" },
   ).trim();
-  // 2 payout fee and the 5% fee on the 100 withdrawn.
-  assert.equal(feeBalance.split(" ")[0], "7000000");
+  // 2 payout fee and the 2% fee on the 100 withdrawn.
+  assert.equal(feeBalance.split(" ")[0], "4000000");
   const refundBalance = execFileSync(
     "cast",
     ["call", asset, "balanceOf(address)(uint256)", owner, "--rpc-url", rpcUrl],
     { encoding: "utf8" },
   ).trim();
-  assert.equal(refundBalance.split(" ")[0], "95000000");
+  assert.equal(refundBalance.split(" ")[0], "98000000");
   // A later award follows an authenticated successor only after the 24-hour delay.
   const rotationAward = evmAwardId(31337n, vault, `0x${"a".padStart(64, "0")}`);
   await send(asset, "mint(address,uint256)", [owner, "100000000"]);

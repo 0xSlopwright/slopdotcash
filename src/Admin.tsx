@@ -15,6 +15,8 @@ import {
 } from "react";
 import contributorTemplate from "../skills/project-contributor-template/SKILL.md?raw";
 import reviewerTemplate from "../skills/project-reviewer-template/SKILL.md?raw";
+import { ProjectEnforcementPanel } from "./AdminProjectEnforcement";
+import { VettingSection } from "./AdminVetting";
 import { CONTRIBUTION_LABELS } from "./lib/contribution-fields";
 import {
   type AdminProject,
@@ -40,7 +42,7 @@ import {
 } from "./lib/reward-asset.mjs";
 import { loginHref } from "./Points";
 
-function errorMessage(error: unknown): string {
+export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";
 }
 
@@ -75,7 +77,7 @@ export function SignInPanel({
   );
 }
 
-function formatTime(value: string | null): string {
+export function formatTime(value: string | null): string {
   if (value === null) return "—";
   return new Date(value).toLocaleString("en-US", {
     dateStyle: "medium",
@@ -742,7 +744,8 @@ function ProjectEditor({
 }
 
 /** Public reads are edge cached for 30 seconds and purged on each write. */
-const SAVED_NOTE = "Saved. The public site shows the change within a minute.";
+const SAVED_NOTE =
+  "Saved. The public site shows the change within a minute. Leaderboard, points, and profile data follow at the next scheduled release, which runs every 6 hours.";
 
 /** Delisting keeps history: the project becomes paused and retired. */
 function DelistButton({
@@ -834,7 +837,9 @@ function ProjectsSection() {
         Approved projects start paused and collect nothing until an admin makes
         them active. Slop generates each project's skills from its approved
         revision; preview them before activation. The public site shows each
-        saved revision within a minute, without a rebuild.
+        saved revision within a minute, without a rebuild. Collected data for an
+        active project (leaderboard, points, and profiles) follows at the next
+        scheduled release, which runs every 6 hours.
       </p>
       {note ? (
         <p className="admin-status" role="status">
@@ -907,6 +912,13 @@ function ProjectsSection() {
               }}
               project={project}
             />
+            <ProjectEnforcementPanel
+              onDone={(saved) => {
+                setNote(saved);
+                reload();
+              }}
+              project={project}
+            />
           </article>
         ))
       )}
@@ -941,6 +953,7 @@ export function AdminPage() {
           onDecided={() => setRegistryVersion((value) => value + 1)}
         />
         <ProjectsSection key={registryVersion} />
+        <VettingSection key={`vetting-${registryVersion}`} />
       </>
     );
   }

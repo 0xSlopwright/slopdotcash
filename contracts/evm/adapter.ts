@@ -667,7 +667,7 @@ export function buildCancelBindingCalldata(
 export function buildClaimFeesCalldata() {
   return "0xd294f093";
 }
-/** Owner-only: refunds free funds to the refund destination less the 5% fee, floor(gross / 20). */
+/** Owner-only: refunds free funds to the refund destination less the 2% fee, floor(gross / 50). */
 export function buildWithdrawCalldata(grossMicro: string | bigint) {
   return `0x${selector("withdrawUnused(uint128)")}${amountWord(grossMicro)}`;
 }

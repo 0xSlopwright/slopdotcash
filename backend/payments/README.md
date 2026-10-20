@@ -76,16 +76,54 @@ contributor. A Base bind transaction can be retired only after its revert is fin
 and its receipt matches the canonical block. The journal keeps that proof
 before a fresh bind can replace it. Pending and ambiguous results remain held.
 
-Derive `PAYMENT_DEPLOYMENTS` from reviewed project manifests. Resolve private
-RPC URLs through `PAYMENT_RPC_URLS`, keyed by network; do not publish them in
-manifest output. Solana additionally needs `PAYMENT_SOLANA_GENESIS` trust roots.
-The manifest supplies its program, project PDA, token vault, network domain,
-and asset. Both chain adapters fetch actual finalized evidence independently.
+The payments Worker finds its vaults in the D1 project registry. On every
+run it reads the current revision of each project, validates its escrow
+policy with `assertEscrowPolicy`, and keeps the deployments of the networks
+named in `PAYMENT_NETWORKS` (a JSON array of registry network names, for
+example `["base-sepolia"]`). A vault that an admin revision records is read on
+the next run; no Worker variable lists projects or vaults. A paused project
+keeps its vault and funded obligations, so it stays in scope. One invalid
+manifest is reported as a run failure and never hides other vaults. A served
+network with no vault in the registry is also a run failure. A missing,
+empty, unknown or repeated network name stops the run. The Worker reads the
+registry through a separate `REGISTRY_DB` binding to the Pages `SLOP_DB`
+database (`slop-private` in `wrangler.toml`) and only reads it. Its payment
+tables stay in `PAYMENTS_DB`. An isolated payment database has an empty
+`projects` table, so it can never stand in for the registry.
+
+The account API (`functions/api/v1/[[path]].ts`) finds binding vaults the same
+way. For `/wallets/bind-challenge` and `/wallets/bind-authorize` it reads the
+registry deployments of the networks in its own Pages variable
+`PAYMENT_NETWORKS` from `SLOP_DB`. Unset or invalid `PAYMENT_NETWORKS`, or a
+failed registry read, returns `503 payment_deployments_unavailable`. A vault of
+a network that is not served returns `400 unknown_deployment`. Add a network
+to the Pages variable through a reviewed change only when its payment stack is
+configured.
+
+Resolve private RPC URLs through `PAYMENT_RPC_URLS`, keyed by network; do not
+publish them in manifest output. Each endpoint must serve the finalized tag
+(EVM) or the finalized commitment (Solana): the vault counters, the event
+scan and the reconciler read only finalized state. Solana additionally needs
+`PAYMENT_SOLANA_GENESIS` trust roots, which must equal the cluster genesis
+hash in `src/lib/escrow-policy.mjs`. The manifest supplies its program,
+project PDA, token vault, network domain, and asset. Both chain adapters fetch
+actual finalized evidence independently.
+
+The signer roles do not read the registry at run time. Their
+`PAYMENT_DEPLOYMENTS` variable pins the reviewed deployments when the stack is
+configured, so a D1 write alone cannot widen what a key signs for. A vault
+that the dispatcher finds but a signer does not pin is refused by the signer.
 
 Each EVM deployment record also carries `gasCeiling` (executor gas units) and
 `scanPageBlocks` (blocks per `eth_getLogs` page, inclusive), copied from the
-network registry by `scripts/prepare-payment-deployments.ts`. A record missing
-either value is refused; no worker substitutes a default.
+network registry by `paymentDeploymentRecord` in `src/lib/escrow-policy.mjs`,
+which the payments Worker, `scripts/prepare-payment-deployments.ts` and
+`workers/payment-executor/configure.mjs` all use. A record missing either value
+is refused; no worker substitutes a default.
+
+`bun run payments:readiness` reports, for each registry network, whether the
+factory address, the identity attester, the finalized RPC endpoint and the
+executor are configured. See `contracts/DEPLOY-MAINNET.md`, section 3.
 
 `EVM_PAYMENT_EXECUTOR` and `SOLANA_PAYMENT_EXECUTOR` are separate internal
 service bindings, not public URLs. The dispatcher picks one by the

@@ -22,23 +22,43 @@ if (!Number.isInteger(localPort) || localPort < 1024 || localPort > 65535)
 const localOrigin = `http://127.0.0.1:${localPort}`;
 const requestedWorkers = process.env.SLOP_E2E_WORKERS;
 
-// The registry lane gives Pages a fresh local D1 and a test-only admin.
+// The registry lane gives Pages a fresh local D1, test-only admins and
+// test-only project moderators.
 const registryPersistTo = process.env.SLOP_E2E_PERSIST_TO;
 const registryAdmins = process.env.SLOP_E2E_ADMIN_GITHUB_IDS;
-if (registryAdmins !== undefined && !/^[1-9][0-9]*$/u.test(registryAdmins))
-  throw new Error("SLOP_E2E_ADMIN_GITHUB_IDS must be one GitHub actor ID");
+const registryModerators = process.env.SLOP_E2E_MODERATOR_GITHUB_IDS;
+for (const [name, value] of [
+  ["SLOP_E2E_ADMIN_GITHUB_IDS", registryAdmins],
+  ["SLOP_E2E_MODERATOR_GITHUB_IDS", registryModerators],
+])
+  if (value !== undefined && !/^[1-9][0-9]*(?:,[1-9][0-9]*)*$/u.test(value))
+    throw new Error(`${name} must list GitHub actor IDs`);
 const registryGitHub = process.env.SLOP_E2E_GITHUB_API_ORIGIN;
 if (
   registryGitHub !== undefined &&
   !/^http:\/\/127\.0\.0\.1:[0-9]{4,5}$/u.test(registryGitHub)
 )
   throw new Error("SLOP_E2E_GITHUB_API_ORIGIN must be a loopback origin");
+const registryVettingKey = process.env.SLOP_E2E_VETTING_PUBLIC_KEY;
+if (
+  registryVettingKey !== undefined &&
+  !/^[A-Za-z0-9+/]{43}=$/u.test(registryVettingKey)
+)
+  throw new Error("SLOP_E2E_VETTING_PUBLIC_KEY must be a base64 Ed25519 key");
 const registryArguments = registryPersistTo
   ? ` --persist-to ${JSON.stringify(registryPersistTo)}${
       registryAdmins ? ` --binding ADMIN_GITHUB_IDS=${registryAdmins}` : ""
     }${
+      registryModerators
+        ? ` --binding PROJECT_MODERATOR_GITHUB_IDS=${registryModerators}`
+        : ""
+    }${
       registryGitHub
         ? ` --binding SLOP_GITHUB_API_ORIGIN=${registryGitHub}`
+        : ""
+    }${
+      registryVettingKey
+        ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey}`
         : ""
     }`
   : "";

@@ -8,8 +8,10 @@ and private trace APIs.
 
 ## Tables
 
-Migrations `0019_project_registry.sql` and
-`0020_project_application_github_check.sql` create:
+Migrations `0019_project_registry.sql`,
+`0020_project_application_github_check.sql`,
+`0023_project_enforcements.sql` and
+`0027_project_enforcement_owner_appeals.sql` create:
 
 - `project_applications`: submitted manifests, applicant GitHub identity,
   review status, decision, and admin email outcome. One pending application
@@ -19,6 +21,11 @@ Migrations `0019_project_registry.sql` and
 - `projects`: the current pointer to the newest revision. Triggers require a
   matching appended revision for every insert and update, and refuse delete.
 - `project_repositories`: makes each repository unique across the registry.
+- `project_enforcements`: the append-only ADM-06 record of each Quarantine,
+  Ban, reinstatement request and appeal decision, with the ADM-05 audit
+  fields (actor, role, reason, evidence reference, before and after revision,
+  decision source, result). Triggers refuse update, delete and a gap in the
+  per-project sequence.
 
 The registry starts empty. Projects listed before it were removed; their ids
 and repository ids survive only in `src/lib/legacy-projects.json` so contributor
@@ -42,6 +49,13 @@ points and profiles still validate.
 | `POST /api/v1/admin/project-applications/:id/reject` | admin | Rejects with a required `reason` |
 | `GET /api/v1/admin/projects` | admin | Registry with revisions |
 | `PUT /api/v1/admin/projects/:id/manifest` | admin | Appends a revision (`manifest`, `expectedRevision`, `reason`) |
+| `POST /api/v1/admin/projects/:id/enforcement-preview` | moderator | Plans an enforcement action and writes nothing |
+| `POST /api/v1/admin/projects/:id/enforcement` | moderator | Records the previewed action (`action`, `reason`, `evidenceReference`, `expectedRevision`, `expectedSequence`) |
+
+`GET /api/v1/projects` also returns `restrictions`: the project id, state,
+appeal state and start time of every quarantined or banned project. A reader
+treats those projects as paused and retired. `GET /api/v1/projects/:id`
+answers HTTP 410 for a restricted project.
 
 Deeper `/api/v1/projects/:id/...` paths belong to the private trace API.
 
@@ -62,8 +76,14 @@ serves these public artifacts from the current D1 revision:
 
 Public reads and artifacts use the Workers Cache API with a 30 second TTL
 (`edge-cache.ts`). An approval or a revision deletes every key of that project
-in the writing colo; other colos expire within the TTL. Admin and session
-routes are never cached. Page views never read GitHub or a chain.
+in the writing colo; other colos expire within the TTL. Each public project
+request also reads one enforcement generation counter from D1 and keys the
+cache on it, so a Quarantine or a Ban replaces every cached list, skill and
+archive in every colo on the next request. Admin and session routes are never
+cached. Page views never read a chain. For a project with a security scan,
+the public project read, the skill artifacts and discovery read the
+integration-branch head on GitHub once per cache miss, to compare it with the
+scanned commit (`backend/vetting/README.md`).
 
 ## Generated skills
 
@@ -79,7 +99,8 @@ integration branch), and the maintainer text goes only into the generated
 `src/lib/project-skill-publication.mjs` builds the raw skill, mission, guides,
 `skill-manifest.json`, `PROVENANCE.json` and a deterministic stored-ZIP
 archive from that output. The build publishes the template bytes with their
-SHA-256 digests and commit at `/skill-templates/index.json`; the Function
+SHA-256 digests, the renderer source digests, the commit and the
+`templateSha256` input digest at `/skill-templates/index.json`; the Function
 refuses a file whose digest differs.
 
 The trust root is the pair (template revision on `main`, D1 revision digest)
@@ -129,11 +150,47 @@ rate limit, and caches each answer for five minutes. The browser never calls
   and owner must match the manifest, or the application is refused. Whether
   the applicant owns the user repository, or is a public member of the owning
   organization, is stored as `githubCheck` for the admin. Every application
-  waits for an admin (PRD PRJ-02). One account may submit 5 projects per day
-  and keep 3 waiting.
+  waits for an admin (PRD PRJ-02). One account may keep 3 applications
+  waiting.
 - `/admin` previews the exact generated contributor and reviewer skills before
   an admin approves or activates a revision.
+- A revision activates, and its skills and discovery entry are served, only
+  when a secure-VM scan cleared its exact content at the live
+  integration-branch head and skill template input digest. See
+  `backend/vetting/README.md` (PRD VET-01).
 - An admin delists a project by appending a paused, `retired` revision.
+- Quarantine, Ban project and Request reinstatement (PRD ADM-06) need an admin
+  who is also in the `PROJECT_MODERATOR_GITHUB_IDS` Pages variable. While that
+  variable is unset, the actions are closed and `/admin` says so. Each action
+  needs a reason, an evidence reference, the server preview and a
+  confirmation bound to the previewed revision and record sequence.
+- A Quarantine or a Ban records the enforcement and, in the same D1 batch,
+  appends the paused, `retired` revision. When the current manifest cannot
+  pass that revision, the record says `revision_pending`, the restriction
+  still closes every public route, `/admin` shows the pending revision, and
+  `bun run projects:sync` withholds that project and its revisions from the
+  snapshot, with a warning, until an admin appends the paused, `retired`
+  revision. Every other project still syncs.
+- A restriction binds the GitHub repository id and every repository path. A
+  restricted project cannot get a revision that is not paused and retired, and
+  no application for the same repository can be submitted or approved.
+- The project steward named in the manifest, or the applicant whose
+  application listed the project, may file the reinstatement request with
+  `POST /api/v1/project-appeals` (`projectId`, `reason`,
+  `evidenceReference`). The record names the role `project-steward` or
+  `project-applicant` and the source `owner-request`
+  (`0027_project_enforcement_owner_appeals.sql`). A moderator may also file
+  it at `/admin`. Only a moderator decides it.
+- Reinstatement needs an open reinstatement request and a moderator who did
+  not place the restriction. It is refused with `revision_pending` while the
+  paused, `retired` revision of the restriction is still pending. It appends a paused `community` revision only if
+  the project was listed when the restriction began; it never restores
+  featuring, activation or money. A denial keeps the restriction.
+- Each enforcement record adds, in the same D1 batch, one `/inbox` row for the
+  applicant who listed the project and one for its GitHub steward (PRD
+  NOT-01). A reinstatement request also adds a row for each moderator who
+  did not place the restriction. No row carries the reason or the evidence
+  reference.
 - Every revision must pass `assertProjectPolicyTransition`, the review-budget
   rule, and the registry uniqueness checks. A revision that makes a project
   active requires the generated templates and the `contribution` fields. Root

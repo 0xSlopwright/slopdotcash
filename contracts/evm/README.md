@@ -176,11 +176,11 @@ stores `decimals()` once, for display only, and never scales an amount. Each
 award reserves its gross allocation. The payout fee is `floor(gross / 50)` (2%)
 and the recipient receives `gross - fee`. A 100-USDC award costs the project
 100 USDC and sends 98 USDC to the contributor plus 2 USDC of fees. The 2% is
-paid in the vault token. Each unused-fund withdrawal pays 5%:
-`withdrawalFee(gross) = floor(gross / 20)`, rounded down once per withdrawal
-(PRD section 18). Withdrawing 850 USDC of free funds pays 42.5 USDC and sends
-807.5 USDC to the refund destination. A withdrawal under 20 base units pays no
-fee, so a split saves under one base unit per transaction, far less than its
+paid in the vault token. Each unused-fund withdrawal pays the same 2%:
+`withdrawalFee(gross) = payoutFee(gross) = floor(gross / 50)`, rounded down once
+per withdrawal (PRD section 18). Withdrawing 850 USDC of free funds pays 17 USDC
+and sends 833 USDC to the refund destination. A withdrawal under 50 base units
+pays no fee, so a split saves under one base unit per transaction, far less than its
 gas. A one-unit award requires one unit of funding and has a zero fee; tiny
 award rounding is intentional.
 
@@ -233,9 +233,10 @@ like other fees. Each nonzero invoice digest can be charged once. It cannot
 spend reserved principal or reserved fees.
 
 The owner can commit an award to any GitHub actor, including an account the
-owner controls. That moves unused funds out at the 2% payout fee instead of
-the 5% withdrawal fee. This is an accepted, documented risk: maintainer review
-of related-party awards enforces the policy, not the contract.
+owner controls. Because the withdrawal fee equals the payout fee (repository
+owner decision of 19 October 2026, #907), such a self-award costs the same 2%
+as a withdrawal and gives no fee advantage. Maintainer review of related-party
+awards still applies under the eligibility policy.
 
 `reservedPrincipal` records net contributor obligations; `reservedFees`
 records their deducted fees. `totalWithdrawalFees` is included within gross
@@ -264,7 +265,7 @@ ProjectEscrow
   FeesClaimed(address indexed feeRecipient, uint128 amount)
   deposit(uint128) commitAward(bytes32,uint64,uint128,bytes32) withdrawUnused(uint128)
   chargeService(uint128,bytes32) pay(bytes32,uint64) claimFees() totals() decimals()
-  payoutFee(uint128) = gross / 50   withdrawalFee(uint128) = gross / 20
+  payoutFee(uint128) = gross / 50   withdrawalFee(uint128) = payoutFee(gross)
 EscrowFactory
   constructor(address registrar, address feeRecipient, address identityAuthority, uint64 bindingDelay)
   create(bytes32 projectId, address token, address owner, address refundDestination)
@@ -289,7 +290,7 @@ bun contracts/evm/adapter.integration.ts
 
 `forge test` runs the Foundry suites under `test/`. `test/AnyToken.t.sol`
 covers 0-, 2-, 9- and 18-decimal tokens, amounts beyond `uint64`, `uint128`
-overflow, permissionless deposit, the 5% withdrawal fee, fee-on-transfer
+overflow, permissionless deposit, the 2% withdrawal fee, fee-on-transfer
 rejection, tokens without valid decimals, one vault per project and token, and
 `totals()`. The invariant suite runs at 6 and 18 decimals with random
 depositors. The suites also include regression tests for the

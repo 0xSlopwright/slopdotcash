@@ -41,6 +41,66 @@ export interface AdminProject {
   updatedAt: string;
   sourceApplicationId: string | null;
   manifest: ProjectDefinition;
+  enforcement: ProjectEnforcementState;
+}
+
+export type EnforcementAction =
+  | "quarantine"
+  | "ban"
+  | "request_reinstatement"
+  | "reinstate"
+  | "deny_reinstatement";
+
+/** One append-only ADM-06 record with its ADM-05 audit fields. */
+export interface ProjectEnforcementRecord {
+  id: string;
+  sequence: number;
+  action: EnforcementAction;
+  stateAfter: "clear" | "quarantined" | "banned";
+  appealAfter: "none" | "requested" | "granted" | "denied";
+  reason: string;
+  evidenceReference: string;
+  actor: { githubId: string; githubLogin: string };
+  actorRole: string;
+  decisionSource: string;
+  beforeRevision: number;
+  afterRevision: number | null;
+  result: "revision_appended" | "revision_pending" | "no_revision_needed";
+  createdAt: string;
+}
+
+export interface ProjectEnforcementState {
+  state: "clear" | "quarantined" | "banned";
+  appeal: "none" | "requested" | "granted" | "denied";
+  since: string | null;
+  restrictedBy: { githubId: string; githubLogin: string }[];
+  nextSequence: number;
+  /** The restriction holds but its paused, retired revision has not landed. */
+  revisionPending: boolean;
+  moderation: "unconfigured" | "moderator" | "not-moderator";
+  records: ProjectEnforcementRecord[];
+}
+
+/** The server's plan for one action; the confirmed write must match it. */
+export interface EnforcementPreview {
+  projectId: string;
+  projectName: string;
+  action: EnforcementAction;
+  sequence: number;
+  stateBefore: ProjectEnforcementState["state"];
+  stateAfter: ProjectEnforcementState["state"];
+  appealBefore: ProjectEnforcementState["appeal"];
+  appealAfter: ProjectEnforcementState["appeal"];
+  result: ProjectEnforcementRecord["result"];
+  pendingReason: string | null;
+  revision: {
+    before: number;
+    after: number | null;
+    statusBefore: string;
+    statusAfter: string;
+    listingTierBefore: string;
+    listingTierAfter: string;
+  };
 }
 
 export class ProjectApiError extends Error {

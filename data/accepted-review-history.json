@@ -440,6 +440,106 @@
         "sourceSnapshotSha256": "46734cc0e83cb4b6ecc3533e448ca83e0981e406fa2d1273d0df9fd2b14e08a3",
         "decisionUrl": "https://github.com/SlopDotCash/slopdotcash/issues/405"
       }
+    },
+    {
+      "id": "PR_kwDOTqq9Pc8AAAABIV3JXQ:reviewer:MDQ6VXNlcjUzMzkxNzcx",
+      "actor": {
+        "id": "MDQ6VXNlcjUzMzkxNzcx",
+        "login": "powermsn",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/53391771?v=4",
+        "url": "https://github.com/powermsn",
+        "kind": "User"
+      },
+      "category": "substantive-review",
+      "points": 0.3333333333333333,
+      "scoreThirds": 1,
+      "occurredAt": "2026-10-14T10:52:40Z",
+      "repository": "SlopDotCash/slopdotcash",
+      "source": {
+        "id": "PRR_kwDOTqq9Pc8AAAABSNN4Xw",
+        "kind": "review",
+        "number": 730,
+        "title": "fix(settlement): reject Solana settlement transactions that predate their plan",
+        "url": "https://github.com/SlopDotCash/slopdotcash/pull/730#pullrequestreview-5516785759"
+      },
+      "reason": "Latest pre-merge request for changes that the merged code answered; one review award per pull request.",
+      "workUnitId": "wu_slopdotcash_prr_kwdotqq9pc8aaaabsnn4xw",
+      "continuity": {
+        "sourceSnapshotSha256": "508eac423d897963d046e10a48203026c9e7ea8282cafd95d7d10072a58a4391",
+        "decisionUrl": "https://github.com/SlopDotCash/slopdotcash/issues/797"
+      }
+    },
+    {
+      "id": "PR_kwDOTqq9Pc8AAAABIV3MwA:reviewer:MDQ6VXNlcjUzMzkxNzcx",
+      "actor": {
+        "id": "MDQ6VXNlcjUzMzkxNzcx",
+        "login": "powermsn",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/53391771?v=4",
+        "url": "https://github.com/powermsn",
+        "kind": "User"
+      },
+      "category": "substantive-review",
+      "points": 0.3333333333333333,
+      "scoreThirds": 1,
+      "occurredAt": "2026-10-14T11:59:03Z",
+      "repository": "SlopDotCash/slopdotcash",
+      "source": {
+        "id": "PRR_kwDOTqq9Pc8AAAABSN56Vw",
+        "kind": "review",
+        "number": 731,
+        "title": "fix(points): include discussion_r review URLs in the evaluated-review dedup set",
+        "url": "https://github.com/SlopDotCash/slopdotcash/pull/731#pullrequestreview-5517507159"
+      },
+      "reason": "Latest pre-merge request for changes that the merged code answered; one review award per pull request.",
+      "workUnitId": "wu_slopdotcash_prr_kwdotqq9pc8aaaabsn56vw",
+      "reviewHistory": [
+        {
+          "sourceId": "PRR_kwDOTqq9Pc8AAAABSN56Vw",
+          "state": "CHANGES_REQUESTED",
+          "commitId": "39ecd74be6abd1af5dc74b2f23a59fd420d278a6",
+          "submittedAt": "2026-10-14T11:59:03Z",
+          "url": "https://github.com/SlopDotCash/slopdotcash/pull/731#pullrequestreview-5517507159"
+        },
+        {
+          "sourceId": "PRR_kwDOTqq9Pc8AAAABSOEHQA",
+          "state": "APPROVED",
+          "commitId": "e7f1d3c6a436001efc43194bae747ba5dfed166e",
+          "submittedAt": "2026-10-14T12:13:28Z",
+          "url": "https://github.com/SlopDotCash/slopdotcash/pull/731#pullrequestreview-5517674304"
+        }
+      ],
+      "continuity": {
+        "sourceSnapshotSha256": "508eac423d897963d046e10a48203026c9e7ea8282cafd95d7d10072a58a4391",
+        "decisionUrl": "https://github.com/SlopDotCash/slopdotcash/issues/797"
+      }
+    },
+    {
+      "id": "PR_kwDOMT5cIs8AAAABIXJ_BQ:reviewer:U_kgDOCzScNQ",
+      "actor": {
+        "id": "U_kgDOCzScNQ",
+        "login": "mashingaan",
+        "avatarUrl": "https://avatars.githubusercontent.com/u/187997237?v=4",
+        "url": "https://github.com/mashingaan",
+        "kind": "User"
+      },
+      "category": "substantive-review",
+      "points": 0.3333333333333333,
+      "scoreThirds": 1,
+      "occurredAt": "2026-10-14T18:04:23Z",
+      "repository": "elizaOS/eliza",
+      "source": {
+        "id": "PRR_kwDOMT5cIs8AAAABSSj8JA",
+        "kind": "review",
+        "number": 36211,
+        "title": "fix(agent): honor ownership gate in reconcileDirectTextModelSettings",
+        "url": "https://github.com/elizaOS/eliza/pull/36211#pullrequestreview-5522390052"
+      },
+      "reason": "Latest pre-merge request for changes that the merged code answered; one review award per pull request.",
+      "workUnitId": "wu_eliza_prr_kwdomt5cis8aaaabssj8ja",
+      "continuity": {
+        "sourceSnapshotSha256": "508eac423d897963d046e10a48203026c9e7ea8282cafd95d7d10072a58a4391",
+        "decisionUrl": "https://github.com/SlopDotCash/slopdotcash/issues/797"
+      }
     }
   ]
 }

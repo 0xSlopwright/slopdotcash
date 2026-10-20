@@ -137,7 +137,7 @@ export async function readTraceBody(request: Request): Promise<Uint8Array> {
   return bytes;
 }
 
-async function readLimitedBody(
+export async function readLimitedBody(
   request: Request,
   limit: number,
 ): Promise<Uint8Array> {

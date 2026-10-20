@@ -35,47 +35,35 @@ of blocking defects. A merged PR, a local test pass, partial rollout, or an
 agent's statement cannot close the MVP. After that record is approved, humans
 select and approve the next PRD phase before agents implement it.
 
-## Human-responsible outside issues
+## Issues: owners and maintainers only
 
-This rule covers Slop participation issues: issues in this repository, and
-issues on a target project or any other tracker that claim Slop participation
-or carry `Made via @slopdotcash`. Slop decides eligibility for its own score,
-review and listings; it does not govern unrelated activity on third-party
-trackers.
+Only project owners and maintainers open issues. This rule applies to this
+repository and to every target project where contributors work through Slop.
+An issue is a maintainer decision about what work the project wants.
+Contributors do not open issues, and an issue opened by a contributor earns no
+Slop score, review credit, reward or listing.
 
-Banned: unattended generation of issue text, bulk or batch issue creation,
-delegated submission (an agent, bot, script, API call, CLI, browser automation
-or prefilled issue URL opening or submitting the issue), and submitting a
-report the human has not read, verified and understood. A human clicking
-Submit on text they did not review does not satisfy this rule.
+Contributors work from existing open issues and approved PRD requirements.
+To report a defect, open a pull request that fixes it and proves the defect
+with evidence, or comment on an existing related issue. Report security
+vulnerabilities only through the project's private vulnerability reporting.
+Never report them in a public issue.
 
-Allowed under human control: reading existing issues, inspecting the PRD and
-MVP plan, investigating defects, outlining, explaining findings to the
-contributor, translation, grammar and spelling correction, accessibility
-tools, and checking sources. The human chooses the claims, verifies the
-evidence, settles the final text and submits it personally on the website.
-This restriction concerns issue authorship and creation; it does not prohibit
-authorized PR work or review of existing issues. Future private
-security-report automation requires its separately approved phase and is not
-an exception for public issues.
+An agent that works for a contributor must not open, draft for submission, or
+submit an issue by any path: UI, API, CLI, script, browser automation,
+prefilled issue URL or another agent. Owners and maintainers may use tools to
+prepare and file issues. They remain responsible for each issue they file.
 
-Writing style, language fluency, model attribution on other work, or the use
-of editing or translation tools is not evidence of a breach. An adverse
-decision (hold, exclusion, restriction) needs objective evidence of a banned
-act, such as automation records, bulk patterns or delegated submission,
-states that evidence, and carries the appeal path in the eligibility policy.
+Every issue states the affected requirement, the evidence and the expected
+result. An issue that proposes anything new links the existing PRD requirement
+or the proposed PRD addition and its human discussion. An issue is never
+feature approval. Missing requirements must be added to the PRD and approved
+before implementation.
 
-This rule applies to issues opened on or after 2026-10-15T00:00:00Z. Issues
-accepted before that date keep their state and credit.
-
-Before writing an issue, the contributor must review the PRD and MVP plan,
-check for existing work, and state the affected requirement, evidence, and
-expected result. An issue that proposes anything new must link the existing
-PRD requirement or the proposed PRD addition and its human discussion. Missing
-requirements must be added to the PRD and approved before implementation.
-An issue is never feature approval. Include the visible attribution line
-`Made via @slopdotcash` on Slop participation issues and PRs; humans add it to
-their own issue text. Branding is not permission for agents to create issues.
+This rule applies to issues opened on or after 2026-10-19T00:00:00Z. Issues
+opened before that date keep their state and credit. A decision under this
+rule needs objective evidence and carries the appeal path in the eligibility
+policy.
 
 ## Before you start
 
@@ -86,8 +74,8 @@ their own issue text. Branding is not permission for agents to create issues.
    `gh repo fork SlopDotCash/slopdotcash --clone`. Work from your fork.
 2. Read `README.md`, `AGENTS.md`, the linked PRD, and the MVP delivery plan.
 3. Check existing issues and pull requests for overlapping work. Link the relevant
-   issue and exact PRD/MVP references. Only humans may write and submit issues
-   on the website; agents must not create an issue to begin work.
+   issue and exact PRD/MVP references. Do not open an issue to begin work.
+   Only project owners and maintainers open issues.
 4. Fetch the latest `origin/development` and create a scoped branch from it.
 5. Re-read live GitHub before acting; issue assignment, review, and project
    state may have changed.
@@ -275,8 +263,8 @@ Write issues and PRs in ASD-STE100 Simplified Technical English. Use short,
 active sentences and consistent terms. Define technical abbreviations. State
 what the user does, what occurs, and why it matters. Include detailed test steps,
 expected results, actual results, the exact tested revision, and limitations.
-Include `Made via @slopdotcash` without replacing required model attribution.
-Humans remain responsible for independently writing issue text.
+Include `Made via @slopdotcash` on PRs without replacing required model
+attribution. Owners and maintainers write issues; contributors write PRs.
 
 ## Quality gate
 

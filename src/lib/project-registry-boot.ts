@@ -27,14 +27,37 @@ export async function loadProjectRegistry(): Promise<unknown[]> {
     MAX_REGISTRY_BYTES,
     "The project registry",
   );
-  const projects = (value as { schemaVersion?: unknown; projects?: unknown })
-    ?.projects;
+  const body = value as {
+    schemaVersion?: unknown;
+    projects?: unknown;
+    restrictions?: unknown;
+  } | null;
+  const projects = body?.projects;
+  // An API that predates enforcement (PRD ADM-06) sends no restrictions.
+  const restrictions = body?.restrictions ?? [];
   if (
-    (value as { schemaVersion?: unknown })?.schemaVersion !== "1" ||
-    !Array.isArray(projects)
+    body?.schemaVersion !== "1" ||
+    !Array.isArray(projects) ||
+    !Array.isArray(restrictions)
   )
     throw new Error("The project registry returned an unexpected response.");
-  return projects;
+  const restricted = new Set(
+    restrictions.map((entry) => {
+      const projectId = (entry as { projectId?: unknown } | null)?.projectId;
+      if (typeof projectId !== "string")
+        throw new Error(
+          "The project registry returned an unexpected restriction.",
+        );
+      return projectId;
+    }),
+  );
+  // A quarantined or banned project is shown as paused and retired at once,
+  // even while its matching revision is still pending.
+  return projects.map((project) =>
+    restricted.has((project as { id?: unknown } | null)?.id as string)
+      ? { ...(project as object), status: "paused", listingTier: "retired" }
+      : project,
+  );
 }
 
 export function installProjectRegistry(projects: unknown[]): void {

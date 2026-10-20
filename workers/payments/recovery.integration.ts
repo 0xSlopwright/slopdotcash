@@ -268,7 +268,8 @@ try {
   });
   const env = {
     PAYMENTS_DB: db,
-    PAYMENT_DEPLOYMENTS: "[]",
+    REGISTRY_DB: db,
+    PAYMENT_NETWORKS: JSON.stringify(["base-sepolia", "solana-devnet"]),
     PAYMENT_RPC_URLS: "{}",
     EVM_PAYMENT_EXECUTOR: service("base"),
     SOLANA_PAYMENT_EXECUTOR: service("solana"),

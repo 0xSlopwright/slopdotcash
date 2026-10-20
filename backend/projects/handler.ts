@@ -13,13 +13,16 @@ import {
   sameRewardAsset,
 } from "../../src/lib/reward-asset.mjs";
 import { readJsonObject, sha256Hex } from "../trace/validation";
+import type { VettingClearance } from "../vetting/persistence";
 import {
   type ApplicationStatus,
+  type EnforcementAction,
+  type EnforcementActorRole,
   type GithubActor,
-  MAX_DAILY_SUBMISSIONS_PER_APPLICANT,
   MAX_PENDING_APPLICATIONS_PER_APPLICANT,
   PROJECT_API_CONTRACT_VERSION,
   type ProjectApplication,
+  type ProjectEnforcement,
   type ProjectPersistence,
   type ProjectRecord,
   type RepositoryControl,
@@ -31,6 +34,16 @@ import {
   PUBLIC_PROJECT_CACHE_CONTROL,
   purgeProjectCache,
 } from "./edge-cache";
+import {
+  ENFORCEMENT_ACTIONS,
+  enforcedManifest,
+  enforcementRevisionReason,
+  type ProjectRestriction,
+  planEnforcement,
+  projectRestriction,
+  repositoryIdentity,
+  restrictionForRepository,
+} from "./enforcement";
 import {
   type GithubFetch,
   GithubLookupError,
@@ -54,6 +67,8 @@ export type AdminApplicationNotice = {
 export type ProjectApiDependencies = {
   persistence: ProjectPersistence;
   adminGithubIds: ReadonlySet<string>;
+  /** GitHub actor IDs with the project moderation role (PRD ADM-05, ADM-06). */
+  moderatorGithubIds: ReadonlySet<string>;
   now: () => Date;
   randomId: () => string;
   /** Resolves the GitHub account behind the site sign-in session cookie. */
@@ -67,6 +82,15 @@ export type ProjectApiDependencies = {
   /** Edge cache for public reads; absent in tests and local tooling. */
   cache?: EdgeCache;
   waitUntil?: (promise: Promise<unknown>) => void;
+  /**
+   * Security vetting of a manifest's executable content through a revision
+   * (PRD VET-01). Only "cleared" lets a revision activate or serve skills.
+   */
+  vettingClearance: (
+    projectId: string,
+    manifest: ProjectDefinition,
+    throughRevision: number,
+  ) => Promise<VettingClearance>;
   /** Asks GitHub whether the applicant controls the manifest's repository. */
   repositoryControl: (
     manifest: ProjectDefinition,
@@ -203,6 +227,12 @@ function assertApplicationManifest(manifest: ProjectDefinition): void {
       (manifest.funding.addresses ?? []).length === 0 &&
         (manifest.escrow?.deployments ?? []).length === 0,
       "Funding addresses and escrow deployments need admin verification",
+    ],
+    [
+      manifest.securityBounty === undefined ||
+        (manifest.securityBounty.status === "pending-approval" &&
+          manifest.securityBounty.funding.state === "pledged"),
+      "A security bounty program starts pending approval with pledged funding",
     ],
   ];
   for (const [valid, message] of rules) {
@@ -429,6 +459,10 @@ async function submitApplication(
     await verifiedRewardAsset(body.manifest, undefined, deps),
   );
   assertApplicationManifest(manifest);
+  assertRepositoryUnrestricted(
+    manifest,
+    await deps.persistence.listEnforcements(),
+  );
   const actor = {
     githubId: session.githubId,
     githubLogin: session.githubLogin,
@@ -441,19 +475,6 @@ async function submitApplication(
       429,
       "too_many_pending",
       `You already have ${MAX_PENDING_APPLICATIONS_PER_APPLICANT} applications awaiting review`,
-    );
-  }
-  const dayAgo = new Date(deps.now().getTime() - 24 * 60 * 60 * 1000);
-  if (
-    (await deps.persistence.countApplicationsSince(
-      session.githubId,
-      dayAgo.toISOString(),
-    )) >= MAX_DAILY_SUBMISSIONS_PER_APPLICANT
-  ) {
-    fail(
-      429,
-      "too_many_submissions",
-      `You can submit ${MAX_DAILY_SUBMISSIONS_PER_APPLICANT} projects per day`,
     );
   }
   assertRegistryWith(await deps.persistence.listProjects(), manifest);
@@ -592,6 +613,10 @@ async function decideApplication(
     // Re-check against the live registry: another approval may have claimed
     // the id or repository since this application was submitted.
     canonicalManifest(application.manifest);
+    assertRepositoryUnrestricted(
+      application.manifest,
+      await deps.persistence.listEnforcements(),
+    );
     assertRegistryWith(
       await deps.persistence.listProjects(),
       application.manifest,
@@ -614,6 +639,7 @@ async function decideApplication(
       new URL(request.url).origin,
       application.projectId,
       skillNames(application.manifest),
+      await deps.persistence.enforcementGeneration(),
     );
   }
   const updated = await deps.persistence.getApplication(applicationId);
@@ -627,9 +653,27 @@ async function listAdminProjects(
   request: Request,
   deps: ProjectApiDependencies,
 ): Promise<Response> {
-  await requireAdmin(request, deps);
-  const projects = await deps.persistence.listProjects();
-  return json(200, { projects: projects.map(adminProject) });
+  const session = await requireAdmin(request, deps);
+  const [projects, records] = await Promise.all([
+    deps.persistence.listProjects(),
+    deps.persistence.listEnforcements(),
+  ]);
+  const moderation =
+    deps.moderatorGithubIds.size === 0
+      ? "unconfigured"
+      : deps.moderatorGithubIds.has(session.githubId)
+        ? "moderator"
+        : "not-moderator";
+  return json(200, {
+    projects: projects.map((project) => ({
+      ...adminProject(project),
+      enforcement: adminEnforcement(
+        project,
+        projectRestriction(project.id, records),
+        moderation,
+      ),
+    })),
+  });
 }
 
 async function replaceProjectManifest(
@@ -655,6 +699,11 @@ async function replaceProjectManifest(
   if (current.revision !== body.expectedRevision) {
     fail(409, "stale_revision", "The project changed since you loaded it");
   }
+  // Read the generation first: a record that lands after it makes the
+  // guarded append below a conflict, so no write uses stale restrictions.
+  const enforcementGeneration = await deps.persistence.enforcementGeneration();
+  const enforcements = await deps.persistence.listEnforcements();
+  const restriction = projectRestriction(projectId, enforcements);
   const { manifest, text } = canonicalManifest(
     await verifiedRewardAsset(
       body.manifest,
@@ -665,6 +714,20 @@ async function replaceProjectManifest(
   if (manifest.id !== projectId) {
     fail(422, "invalid_manifest", "Project id cannot change");
   }
+  // A new revision cannot lift a Quarantine or a Ban (PRD ADM-06).
+  if (restriction.state !== "clear" && !enforcedManifest(manifest)) {
+    fail(
+      409,
+      "project_restricted",
+      `The project is ${restriction.state}; a revision must keep it paused and retired until reinstatement`,
+    );
+  }
+  // Nor can a revision move a restricted repository, renamed or not, into
+  // another project. The project's own restriction is checked above.
+  assertRepositoryUnrestricted(
+    manifest,
+    enforcements.filter((record) => record.projectId !== projectId),
+  );
   try {
     assertProjectPolicyTransition(current.manifest, manifest);
   } catch (error) {
@@ -688,27 +751,379 @@ async function replaceProjectManifest(
       "Root skill publication is retired; project skills are served at /projects/<id>/SKILL.md",
     );
   }
-  const result = await deps.persistence.appendProjectRevision({
-    projectId,
-    expectedRevision: current.revision,
-    manifest,
-    manifestText: text,
-    manifestSha256: await sha256Hex(new TextEncoder().encode(text)),
-    reason,
-    actor: { githubId: session.githubId, githubLogin: session.githubLogin },
-    at: deps.now().toISOString(),
-  });
+  // VET-01: only content a secure-VM scan cleared can become active.
+  if (manifest.status === "active") {
+    const vetting = await deps.vettingClearance(
+      projectId,
+      manifest,
+      current.revision,
+    );
+    if (vetting.state !== "cleared")
+      fail(
+        422,
+        "vetting_required",
+        `Security vetting is ${vetting.state}. Only a revision whose exact content passed a clean secure-VM scan of the current integration-branch head and skill template can activate; change nothing but the status of the scanned revision.`,
+      );
+  }
+  const result = await deps.persistence.appendProjectRevision(
+    {
+      projectId,
+      expectedRevision: current.revision,
+      manifest,
+      manifestText: text,
+      manifestSha256: await sha256Hex(new TextEncoder().encode(text)),
+      reason,
+      actor: { githubId: session.githubId, githubLogin: session.githubLogin },
+      at: deps.now().toISOString(),
+    },
+    enforcementGeneration,
+  );
   if (result === "conflict") {
     fail(409, "stale_revision", "The project changed since you loaded it");
   }
-  await purgeProjectCache(deps.cache, new URL(request.url).origin, projectId, [
-    ...new Set([...skillNames(current.manifest), ...skillNames(manifest)]),
-  ]);
+  await purgeProjectCache(
+    deps.cache,
+    new URL(request.url).origin,
+    projectId,
+    [...new Set([...skillNames(current.manifest), ...skillNames(manifest)])],
+    await deps.persistence.enforcementGeneration(),
+  );
   const updated = await deps.persistence.getProject(projectId);
   if (updated === null) fail(500, "internal_error", "Project vanished");
   return json(200, {
     project: adminProject(updated),
   });
+}
+
+function publicRestriction(
+  restriction: ProjectRestriction,
+): Record<string, unknown> {
+  return {
+    projectId: restriction.projectId,
+    state: restriction.state,
+    appeal: restriction.appeal,
+    since: restriction.since,
+  };
+}
+
+function activePublicRestrictions(
+  records: ProjectEnforcement[],
+): Record<string, unknown>[] {
+  return [...new Set(records.map((record) => record.projectId))]
+    .map((projectId) => projectRestriction(projectId, records))
+    .filter((restriction) => restriction.state !== "clear")
+    .map(publicRestriction);
+}
+
+/**
+ * Refuses an application, approval or revision that claims a repository of
+ * a restricted project.
+ */
+function assertRepositoryUnrestricted(
+  manifest: ProjectDefinition,
+  enforcements: ProjectEnforcement[],
+): void {
+  const restriction = restrictionForRepository(manifest, enforcements);
+  if (restriction !== null)
+    fail(
+      403,
+      "repository_restricted",
+      `This repository belongs to a ${restriction.state} project; only reinstatement can list it again`,
+    );
+}
+
+function adminEnforcement(
+  project: ProjectRecord,
+  restriction: ProjectRestriction,
+  moderation: "unconfigured" | "moderator" | "not-moderator",
+): Record<string, unknown> {
+  return {
+    state: restriction.state,
+    appeal: restriction.appeal,
+    since: restriction.since,
+    restrictedBy: restriction.restrictedBy,
+    nextSequence: restriction.nextSequence,
+    // The matching revision has not landed while a restricted manifest is
+    // still listed or active; public routes stay closed meanwhile.
+    revisionPending:
+      restriction.state !== "clear" && !enforcedManifest(project.manifest),
+    moderation,
+    records: restriction.records,
+  };
+}
+
+async function requireModerator(
+  request: Request,
+  deps: ProjectApiDependencies,
+): Promise<WebSession> {
+  const session = await requireAdmin(request, deps);
+  if (deps.moderatorGithubIds.size === 0)
+    fail(
+      403,
+      "moderation_unavailable",
+      "No project moderator is configured. Set PROJECT_MODERATOR_GITHUB_IDS to enable Quarantine, Ban and reinstatement.",
+    );
+  if (!deps.moderatorGithubIds.has(session.githubId))
+    fail(403, "forbidden", "The project moderator role is required");
+  return session;
+}
+
+function positiveInteger(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
+    fail(400, "invalid_request", `Invalid ${name}`);
+  return value;
+}
+
+/** Reason and evidence fields every enforcement request carries. */
+function enforcementText(body: Record<string, unknown>): {
+  reason: string;
+  evidenceReference: string;
+} {
+  return {
+    reason: boundedText(body.reason, "reason", 1, 1000),
+    evidenceReference: boundedText(
+      body.evidenceReference,
+      "evidenceReference",
+      1,
+      500,
+    ),
+  };
+}
+
+/**
+ * Previews or applies one ADM-06 action. The preview and the write run the
+ * same plan against the same expected revision and record sequence, so the
+ * confirmed write is exactly what the moderator saw, or it fails with 409.
+ */
+async function enforceProject(
+  request: Request,
+  deps: ProjectApiDependencies,
+  projectId: string,
+  mode: "preview" | "apply",
+): Promise<Response> {
+  const session = await requireModerator(request, deps);
+  if (!PROJECT_ID.test(projectId)) fail(404, "not_found", "Project not found");
+  const body = await readJsonObject(request);
+  exactKeys(body, [
+    "action",
+    "reason",
+    "evidenceReference",
+    "expectedRevision",
+    "expectedSequence",
+  ]);
+  if (!ENFORCEMENT_ACTIONS.includes(body.action as EnforcementAction))
+    fail(400, "invalid_request", "Invalid enforcement action");
+  return await recordEnforcement(deps, {
+    projectId,
+    action: body.action as EnforcementAction,
+    ...enforcementText(body),
+    expectedRevision: positiveInteger(
+      body.expectedRevision,
+      "expectedRevision",
+    ),
+    expectedSequence: positiveInteger(
+      body.expectedSequence,
+      "expectedSequence",
+    ),
+    actor: { githubId: session.githubId, githubLogin: session.githubLogin },
+    actorRole: () => "project-moderator",
+    decisionSource: "admin-panel",
+    mode,
+  });
+}
+
+/**
+ * ELG-02 appeal path: the project steward named in the manifest, or the
+ * applicant whose application listed the project, records a reinstatement
+ * request. A moderator who did not place the restriction still decides it.
+ */
+async function requestReinstatement(
+  request: Request,
+  deps: ProjectApiDependencies,
+): Promise<Response> {
+  const session = await requireSession(request, deps);
+  const body = await readJsonObject(request);
+  exactKeys(body, ["projectId", "reason", "evidenceReference"]);
+  if (typeof body.projectId !== "string" || !PROJECT_ID.test(body.projectId))
+    fail(404, "not_found", "Project not found");
+  return await recordEnforcement(deps, {
+    projectId: body.projectId,
+    action: "request_reinstatement",
+    ...enforcementText(body),
+    // An appeal changes no revision and has no preview; an open appeal or a
+    // concurrent record refuses it with 409.
+    expectedRevision: null,
+    expectedSequence: null,
+    actor: { githubId: session.githubId, githubLogin: session.githubLogin },
+    actorRole: async (project) => {
+      if (String(project.manifest.steward.github.actorId) === session.githubId)
+        return "project-steward";
+      const application =
+        project.sourceApplicationId === null
+          ? null
+          : await deps.persistence.getApplication(project.sourceApplicationId);
+      if (application?.applicant.githubId === session.githubId)
+        return "project-applicant";
+      return fail(
+        403,
+        "forbidden",
+        "Only the project steward or the applicant who listed the project can request reinstatement",
+      );
+    },
+    decisionSource: "owner-request",
+    mode: "apply",
+  });
+}
+
+async function recordEnforcement(
+  deps: ProjectApiDependencies,
+  input: {
+    projectId: string;
+    action: EnforcementAction;
+    reason: string;
+    evidenceReference: string;
+    /** Null for an owner appeal, which has no preview to confirm. */
+    expectedRevision: number | null;
+    expectedSequence: number | null;
+    actor: GithubActor;
+    actorRole: (
+      project: ProjectRecord,
+    ) => EnforcementActorRole | Promise<EnforcementActorRole>;
+    decisionSource: ProjectEnforcement["decisionSource"];
+    mode: "preview" | "apply";
+  },
+): Promise<Response> {
+  const {
+    projectId,
+    action,
+    reason,
+    evidenceReference,
+    expectedRevision,
+    expectedSequence,
+    actor,
+    mode,
+  } = input;
+  const project = await deps.persistence.getProject(projectId);
+  if (project === null) fail(404, "not_found", "Project not found");
+  const actorRole = await input.actorRole(project);
+  const restriction = projectRestriction(
+    projectId,
+    await deps.persistence.listEnforcements(),
+  );
+  if (
+    (expectedRevision !== null && project.revision !== expectedRevision) ||
+    (expectedSequence !== null && restriction.nextSequence !== expectedSequence)
+  )
+    fail(409, "stale_enforcement", "The project changed since you loaded it");
+  let listedBefore = false;
+  if (action === "reinstate" && restriction.openedAtRevision !== null) {
+    const opened = await deps.persistence.getRevisionText(
+      projectId,
+      restriction.openedAtRevision,
+    );
+    if (opened === null)
+      fail(500, "internal_error", "The restricted revision is missing");
+    listedBefore =
+      (JSON.parse(opened.manifestText) as ProjectDefinition).listingTier !==
+      "retired";
+  }
+  const plan = planEnforcement({
+    action,
+    actor,
+    project,
+    restriction,
+    listedBefore,
+  });
+  const recordId = `enf_${deps.randomId().replaceAll("-", "")}`;
+  const at = deps.now().toISOString();
+  const revisionText =
+    plan.manifest === null ? null : JSON.stringify(plan.manifest);
+  const revisionSha256 =
+    revisionText === null
+      ? null
+      : await sha256Hex(new TextEncoder().encode(revisionText));
+  // A restriction keeps the repository identity it found, so a later rename
+  // or application for the same repository stays restricted.
+  const identity = repositoryIdentity(project.manifest);
+  const record: ProjectEnforcement = {
+    id: recordId,
+    projectId,
+    sequence: restriction.nextSequence,
+    action,
+    stateAfter: plan.stateAfter,
+    appealAfter: plan.appealAfter,
+    reason,
+    evidenceReference,
+    repositoryGithubId: restriction.repositoryGithubId ?? identity.githubId,
+    repositoryKeys: [
+      ...new Set([...restriction.repositoryKeys, ...identity.keys]),
+    ],
+    actor,
+    actorRole,
+    decisionSource: input.decisionSource,
+    beforeRevision: project.revision,
+    beforeManifestSha256: project.manifestSha256,
+    afterRevision: revisionText === null ? null : project.revision + 1,
+    afterManifestSha256: revisionSha256,
+    result:
+      revisionText !== null
+        ? "revision_appended"
+        : plan.pendingReason !== null
+          ? "revision_pending"
+          : "no_revision_needed",
+    createdAt: at,
+  };
+  const preview = {
+    projectId,
+    projectName: project.manifest.name,
+    action,
+    sequence: record.sequence,
+    stateBefore: restriction.state,
+    stateAfter: record.stateAfter,
+    appealBefore: restriction.appeal,
+    appealAfter: record.appealAfter,
+    result: record.result,
+    pendingReason: plan.pendingReason,
+    revision: {
+      before: project.revision,
+      after: record.afterRevision,
+      statusBefore: project.manifest.status,
+      statusAfter: plan.manifest?.status ?? project.manifest.status,
+      listingTierBefore: project.manifest.listingTier,
+      listingTierAfter:
+        plan.manifest?.listingTier ?? project.manifest.listingTier,
+    },
+  };
+  if (mode === "preview") return json(200, { preview });
+  const outcome = await deps.persistence.appendEnforcement(
+    record,
+    plan.manifest === null || revisionText === null || revisionSha256 === null
+      ? null
+      : {
+          projectId,
+          expectedRevision: project.revision,
+          manifest: plan.manifest,
+          manifestText: revisionText,
+          manifestSha256: revisionSha256,
+          reason: enforcementRevisionReason(action, recordId),
+          actor,
+          at,
+        },
+    // Only a moderator who did not place the restriction may decide it.
+    action === "request_reinstatement"
+      ? [...deps.moderatorGithubIds].filter(
+          (githubId) =>
+            !restriction.restrictedBy.some(
+              (placed) => placed.githubId === githubId,
+            ),
+        )
+      : [],
+  );
+  if (outcome === "conflict")
+    fail(409, "stale_enforcement", "The project changed since you loaded it");
+  // The new record changes the enforcement generation, so every public
+  // cache key in every colo is replaced on its next request.
+  return json(200, { preview, record });
 }
 
 function publicJson(body: Record<string, unknown>): Response {
@@ -720,10 +1135,16 @@ function publicJson(body: Record<string, unknown>): Response {
 async function listPublicProjects(
   deps: ProjectApiDependencies,
 ): Promise<Response> {
-  const projects = await deps.persistence.listProjects();
+  const [projects, records] = await Promise.all([
+    deps.persistence.listProjects(),
+    deps.persistence.listEnforcements(),
+  ]);
   return publicJson({
     schemaVersion: "1",
     projects: projects.map((project) => project.manifest),
+    // Restricted projects stay in the list for history; every reader must
+    // treat them as paused and retired, even before the revision lands.
+    restrictions: activePublicRestrictions(records),
   });
 }
 
@@ -733,15 +1154,33 @@ async function readPublicProject(
 ): Promise<Response> {
   if (!PROJECT_ID.test(projectId)) fail(404, "not_found", "Project not found");
   const project = await deps.persistence.getProject(projectId);
-  if (project === null || project.manifest.listingTier === "retired")
+  if (project === null) fail(404, "not_found", "Project not found");
+  const restriction = projectRestriction(
+    projectId,
+    await deps.persistence.listEnforcements(),
+  );
+  if (restriction.state !== "clear")
+    return json(410, {
+      error: "project_restricted",
+      message: `This project is ${restriction.state}. Its history stays public; its skills and participation are closed. The project steward or applicant may request reinstatement with POST /api/v1/project-appeals.`,
+      restriction: publicRestriction(restriction),
+    });
+  if (project.manifest.listingTier === "retired")
     fail(404, "not_found", "Project not found");
+  const vetting = await deps.vettingClearance(
+    project.id,
+    project.manifest,
+    project.revision,
+  );
   return publicJson({
     schemaVersion: "1",
     project: project.manifest,
     revision: project.revision,
     manifestSha256: project.manifestSha256,
     updatedAt: project.updatedAt,
-    skillsPublished: publishesGeneratedSkills(project.manifest),
+    skillsPublished:
+      publishesGeneratedSkills(project.manifest) && vetting.state === "cleared",
+    vetting,
   });
 }
 
@@ -854,6 +1293,7 @@ function isProjectRoute(parts: string[]): boolean {
     parts[0] === "project-revisions" ||
     parts[0] === "project-session" ||
     parts[0] === "project-applications" ||
+    parts[0] === "project-appeals" ||
     (parts[0] === "admin" &&
       (parts[1] === "projects" || parts[1] === "project-applications"))
   );
@@ -909,6 +1349,7 @@ export async function handleProjectApi(
           request,
           () => listPublicProjects(deps),
           deps.waitUntil,
+          await deps.persistence.enforcementGeneration(),
         );
       case "GET project-revisions":
         return await cachedPublicResponse(
@@ -916,6 +1357,7 @@ export async function handleProjectApi(
           request,
           () => listPublicRevisions(deps),
           deps.waitUntil,
+          await deps.persistence.enforcementGeneration(),
         );
       case "GET projects/:id":
         return await cachedPublicResponse(
@@ -923,6 +1365,7 @@ export async function handleProjectApi(
           request,
           () => readPublicProject(deps, parts[1]),
           deps.waitUntil,
+          await deps.persistence.enforcementGeneration(),
         );
       case "GET project-github/owned-repositories":
       case "GET project-github/repositories/:name/:name":
@@ -948,6 +1391,12 @@ export async function handleProjectApi(
         return await listAdminProjects(request, deps);
       case "PUT admin/projects/:id/manifest":
         return await replaceProjectManifest(request, deps, parts[2]);
+      case "POST admin/projects/:id/enforcement-preview":
+        return await enforceProject(request, deps, parts[2], "preview");
+      case "POST admin/projects/:id/enforcement":
+        return await enforceProject(request, deps, parts[2], "apply");
+      case "POST project-appeals":
+        return await requestReinstatement(request, deps);
     }
     if (isProjectRoute(parts)) return json(404, { error: "not_found" });
     return null;

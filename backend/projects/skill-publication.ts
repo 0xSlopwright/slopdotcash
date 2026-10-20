@@ -1,8 +1,9 @@
 /**
  * Serves each project's generated skills, guides, routing manifests,
  * archives, terms, and the project discovery index from the current D1
- * revision and the canonical templates. Nothing here reads GitHub or a
- * chain; responses are edge cached and purged on admin writes.
+ * revision and the canonical templates. Only the security-vetting clearance
+ * reads GitHub, to compare the cleared commit with the live integration-branch
+ * head; responses are edge cached and purged on admin writes.
  */
 
 import { publishesGeneratedSkills } from "../../src/lib/project-skill.mjs";
@@ -10,18 +11,27 @@ import {
   buildProjectPublication,
   PUBLIC_SITE_ORIGIN,
 } from "../../src/lib/project-skill-publication.mjs";
-import type { ProjectRecord } from "./contracts";
+import type { VettingClearance } from "../vetting/persistence";
+import type { ProjectEnforcement, ProjectRecord } from "./contracts";
 import {
   cachedPublicResponse,
   type EdgeCache,
   PUBLIC_PROJECT_CACHE_CONTROL,
 } from "./edge-cache";
+import { projectRestriction } from "./enforcement";
 
 /** The build's /skill-templates/index.json. */
 export type SkillTemplateIndex = {
   schemaVersion: "1";
   repository: string;
   commit: string;
+  /**
+   * SHA-256 of the canonical JSON of the contributor and reviewer template
+   * files, the renderer sources and the accepted revisions: every input of
+   * the generated skill bytes except the provenance commit. Vetting binds
+   * this digest (VET-07).
+   */
+  templateSha256: string;
   revisionStatus: "committed" | "working-tree";
   contributor: {
     sourcePath: string;
@@ -31,7 +41,11 @@ export type SkillTemplateIndex = {
     sourcePath: string;
     files: { path: string; sha256: string }[];
   };
-  renderer: { paths: string[]; revisionStatus: "committed" | "working-tree" };
+  renderer: {
+    paths: string[];
+    sources: { path: string; sha256: string }[];
+    revisionStatus: "committed" | "working-tree";
+  };
   acceptedRevisions: string[];
 };
 
@@ -40,10 +54,49 @@ export type SkillTemplateSource = {
   readFile(path: string): Promise<Uint8Array>;
 };
 
+const MAX_TEMPLATE_FILE_BYTES = 1024 * 1024;
+
+/** Reads the build's published template bytes through the static assets. */
+export function assetTemplateSource(
+  assets: { fetch(request: Request): Promise<Response> } | undefined,
+  origin: string,
+): () => Promise<SkillTemplateSource> {
+  return async () => {
+    if (!assets) throw new Error("Static assets are unavailable");
+    const read = async (path: string) => {
+      const response = await assets.fetch(
+        new Request(`${origin}/skill-templates/${path}`),
+      );
+      if (!response.ok) throw new Error(`Skill template ${path} is missing`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.length > MAX_TEMPLATE_FILE_BYTES)
+        throw new Error(`Skill template ${path} is too large`);
+      return bytes;
+    };
+    const index = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(
+        await read("index.json"),
+      ),
+    ) as SkillTemplateIndex;
+    return { index, readFile: read };
+  };
+}
+
 export type SkillPublicationDependencies = {
   getProject(id: string): Promise<ProjectRecord | null>;
   listProjects(): Promise<ProjectRecord[]>;
+  listEnforcements(): Promise<ProjectEnforcement[]>;
+  enforcementGeneration(): Promise<number>;
   loadTemplate(): Promise<SkillTemplateSource>;
+  /**
+   * Security vetting of the revision's exact content, integration-branch head
+   * and the digest of the template inputs the skills render from (VET-01,
+   * VET-07). Only "cleared" serves a skill or lists the project.
+   */
+  vettingClearance(
+    project: ProjectRecord,
+    templateSha256: string,
+  ): Promise<VettingClearance>;
   cache?: EdgeCache;
   waitUntil?: (promise: Promise<unknown>) => void;
 };
@@ -116,16 +169,38 @@ function jsonResponse(value: unknown): Response {
   );
 }
 
-function listed(project: ProjectRecord | null): project is ProjectRecord {
-  return project !== null && project.manifest.listingTier !== "retired";
+/** A retired or restricted project serves no skill, guide or archive. */
+function listed(
+  project: ProjectRecord | null,
+  records: ProjectEnforcement[],
+): project is ProjectRecord {
+  return (
+    project !== null &&
+    project.manifest.listingTier !== "retired" &&
+    projectRestriction(project.id, records).state === "clear"
+  );
 }
 
 /** The routing index the bootstrap skill matches a repository origin against. */
 async function discovery(
   deps: SkillPublicationDependencies,
 ): Promise<Response> {
-  const projects = (await deps.listProjects()).filter(
-    (project) => listed(project) && publishesGeneratedSkills(project.manifest),
+  const [all, records] = await Promise.all([
+    deps.listProjects(),
+    deps.listEnforcements(),
+  ]);
+  const template = await deps.loadTemplate();
+  const candidates = all.filter(
+    (project) =>
+      listed(project, records) && publishesGeneratedSkills(project.manifest),
+  );
+  const clearances = await Promise.all(
+    candidates.map((project) =>
+      deps.vettingClearance(project, template.index.templateSha256),
+    ),
+  );
+  const projects = candidates.filter(
+    (_, index) => clearances[index].state === "cleared",
   );
   return jsonResponse({
     schemaVersion: "1",
@@ -147,8 +222,17 @@ async function artifact(
   target: { projectId: string; path: string },
   deps: SkillPublicationDependencies,
 ): Promise<Response> {
-  const project = await deps.getProject(target.projectId);
-  if (!listed(project)) return text(404, "Project not found.\n");
+  const [project, records] = await Promise.all([
+    deps.getProject(target.projectId),
+    deps.listEnforcements(),
+  ]);
+  const restriction = projectRestriction(target.projectId, records);
+  if (project !== null && restriction.state !== "clear")
+    return text(
+      410,
+      `This project is ${restriction.state}. Its skills, guides and archives are not available.\n`,
+    );
+  if (!listed(project, records)) return text(404, "Project not found.\n");
   if (target.path === "terms.json") {
     const manifest = project.manifest;
     return jsonResponse({
@@ -158,6 +242,8 @@ async function artifact(
       steward: manifest.steward,
       authority: manifest.authority,
       terms: manifest.terms,
+      // Public program terms only; cases never leave the restricted tables.
+      securityBounty: manifest.securityBounty ?? null,
     });
   }
   if (!publishesGeneratedSkills(project.manifest))
@@ -166,6 +252,20 @@ async function artifact(
       "This project has not published its skills yet. Its maintainers must complete the contribution fields first.\n",
     );
   const template = await deps.loadTemplate();
+  const vetting = await deps.vettingClearance(
+    project,
+    template.index.templateSha256,
+  );
+  if (vetting.state === "unverified")
+    return text(
+      503,
+      "Slop cannot confirm that this project's current commit passed security vetting. Try again.\n",
+    );
+  if (vetting.state !== "cleared")
+    return text(
+      404,
+      "This project revision has not passed security vetting. Slop serves no skill for an unscanned, queued, quarantined, stale or banned revision, or for a branch head or skill template that no clean scan covered.\n",
+    );
   const files = await buildProjectPublication({
     template: template.index,
     readFile: template.readFile,
@@ -194,6 +294,7 @@ export async function handleProjectArtifactRequest(
       request,
       () => (target === "discovery" ? discovery(deps) : artifact(target, deps)),
       deps.waitUntil,
+      await deps.enforcementGeneration(),
     );
   } catch {
     console.error("project artifact failure");

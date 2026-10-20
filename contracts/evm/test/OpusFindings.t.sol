@@ -104,17 +104,17 @@ contract OpusFindingsTest is OpusBase {
         check(logs.length == 1, "one BindingCancelled event for one binding");
     }
 
-    /// Info: the 5% withdrawal fee rounds down once per withdrawal, so a withdrawal under 20 base units pays
+    /// Info: the 2% withdrawal fee rounds down once per withdrawal, so a withdrawal under 50 base units pays
     /// no fee and a split saves under one base unit per transaction.
     function test_withdrawFeeRoundsDownPerWithdrawal() public {
         vm.startPrank(OWNER);
         uint256 before = usdc.balanceOf(OWNER);
-        escrow.withdrawUnused(19);
-        check(usdc.balanceOf(OWNER) - before == 19 && escrow.totalWithdrawalFees() == 0, "19 pays no fee");
-        escrow.withdrawUnused(20);
+        escrow.withdrawUnused(49);
+        check(usdc.balanceOf(OWNER) - before == 49 && escrow.totalWithdrawalFees() == 0, "49 pays no fee");
+        escrow.withdrawUnused(50);
         vm.stopPrank();
-        check(usdc.balanceOf(OWNER) - before == 19 + 19, "20 refunds 19");
-        check(escrow.totalWithdrawalFees() == 1, "fee 1 on gross 20");
+        check(usdc.balanceOf(OWNER) - before == 49 + 49, "50 refunds 49");
+        check(escrow.totalWithdrawalFees() == 1, "fee 1 on gross 50");
     }
 
     /// Sound: a cancelled binding never pays, even far in the future, and a rotation after it pays only

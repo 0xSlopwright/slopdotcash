@@ -44,7 +44,7 @@ function manifest() {
       effectiveCycle: "2026-11",
       chain: "robinhood",
       feeBasisPoints: 200,
-      withdrawalFeeBasisPoints: 500,
+      withdrawalFeeBasisPoints: 200,
       feeMode: "deduct-from-gross",
       deployments: [deployment],
     },

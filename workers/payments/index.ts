@@ -21,6 +21,10 @@ import {
   solanaPaymentAdapter,
 } from "../../contracts/solana/adapter";
 import { chainFamily, type EscrowChain } from "../../src/lib/escrow-policy.mjs";
+import {
+  loadRegistryPaymentDeployments,
+  parsePaymentNetworks,
+} from "./deployments";
 import { reconcileFailedAttempts } from "./reconcile";
 import { scanEvmPayments, scanSolanaPayments } from "./scanner";
 
@@ -52,13 +56,30 @@ export interface PaymentDeployment {
 }
 export interface PaymentsWorkerEnvironment {
   PAYMENTS_DB: D1Database;
-  /** Generated only from reviewed project settlement manifests, not a second inventory. */
-  PAYMENT_DEPLOYMENTS: string;
+  /**
+   * The D1 project registry (the Pages `SLOP_DB`, `slop-private`), bound
+   * separately from PAYMENTS_DB. The Worker only reads it.
+   */
+  REGISTRY_DB: D1Database;
+  /**
+   * JSON array of the registry networks this Worker serves. Their vaults come
+   * from REGISTRY_DB on every run; no deployment list is copied into the
+   * Worker configuration.
+   */
+  PAYMENT_NETWORKS: string;
+  /** Private JSON map of network name to a finalized-capable RPC endpoint. */
   PAYMENT_RPC_URLS: string;
   PAYMENT_SOLANA_GENESIS?: string;
   /** A separate restricted execution service; no signer secrets in this worker. */
   EVM_PAYMENT_EXECUTOR?: { fetch(request: Request): Promise<Response> };
   SOLANA_PAYMENT_EXECUTOR?: { fetch(request: Request): Promise<Response> };
+}
+/** The served networks' reviewed vaults, read from the D1 project registry. */
+export function registryDeployments(env: PaymentsWorkerEnvironment) {
+  return loadRegistryPaymentDeployments(
+    env.REGISTRY_DB,
+    parsePaymentNetworks(env.PAYMENT_NETWORKS),
+  );
 }
 export async function recoverUncertainAttempts(
   env: PaymentsWorkerEnvironment,
@@ -158,9 +179,7 @@ export async function recoverUncertainAttempts(
 function executor(env: PaymentsWorkerEnvironment): PaymentExecutor {
   return {
     async submit(input) {
-      const deployments = JSON.parse(
-        env.PAYMENT_DEPLOYMENTS,
-      ) as PaymentDeployment[];
+      const { deployments } = await registryDeployments(env);
       const matched = deployments.filter(
         (d) => d.network === input.network && d.vault === input.vault,
       );
@@ -224,6 +243,7 @@ export async function ingestPaymentEvent(
   env: PaymentsWorkerEnvironment,
   message: PaymentEventMessage,
   now = new Date(),
+  reviewed?: readonly PaymentDeployment[],
 ): Promise<void> {
   if (
     !message ||
@@ -235,9 +255,7 @@ export async function ingestPaymentEvent(
     (message.kind !== "reserved" && message.kind !== "paid")
   )
     throw new Error("Invalid chain event request");
-  const deployments = JSON.parse(
-    env.PAYMENT_DEPLOYMENTS,
-  ) as PaymentDeployment[];
+  const deployments = reviewed ?? (await registryDeployments(env)).deployments;
   const matches = deployments.filter(
     (d) =>
       d.projectId === message.projectId &&
@@ -340,46 +358,57 @@ export async function readDeploymentVaultTotals(
     projectPda: deployment.projectPda,
   });
 }
-export default {
-  async scheduled(_controller: unknown, env: PaymentsWorkerEnvironment) {
-    const deployments = JSON.parse(
-      env.PAYMENT_DEPLOYMENTS,
-    ) as PaymentDeployment[];
-    const rpcUrls = JSON.parse(env.PAYMENT_RPC_URLS) as Record<string, string>;
-    // One failing deployment or step must not stop scanning or payouts elsewhere.
-    const failures: unknown[] = [];
-    // The ledger takes each award's asset and decimals from this snapshot,
-    // so it runs before the event scan.
+/**
+ * The cron's chain read: discover the served networks' vaults in the D1
+ * registry, store each vault's finalized counters in vault_snapshots, then
+ * scan its finalized payment events. Failures are returned, not thrown, so
+ * one vault never stops the others or the payout steps.
+ */
+export async function syncRegistryVaults(env: PaymentsWorkerEnvironment) {
+  const registry = await registryDeployments(env);
+  const deployments = registry.deployments;
+  const rpcUrls = JSON.parse(env.PAYMENT_RPC_URLS) as Record<string, string>;
+  const failures: unknown[] = [...registry.failures];
+  // The ledger takes each award's asset and decimals from this snapshot,
+  // so it runs before the event scan.
+  try {
+    await refreshVaultSnapshots(
+      env.PAYMENTS_DB,
+      deployments,
+      rpcUrls,
+      readDeploymentVaultTotals,
+    );
+  } catch (error) {
+    failures.push(error);
+  }
+  for (const deployment of deployments) {
     try {
-      await refreshVaultSnapshots(
-        env.PAYMENTS_DB,
-        deployments,
-        rpcUrls,
-        readDeploymentVaultTotals,
-      );
+      const index = (event: PaymentEventMessage) =>
+        ingestPaymentEvent(env, event, new Date(), deployments);
+      if (chainFamily(deployment.chain) === "evm")
+        await scanEvmPayments(
+          env.PAYMENTS_DB,
+          deployment,
+          rpcUrls[deployment.network],
+          index,
+        );
+      else
+        await scanSolanaPayments(
+          env.PAYMENTS_DB,
+          deployment,
+          rpcUrls[deployment.network],
+          index,
+        );
     } catch (error) {
       failures.push(error);
     }
-    for (const deployment of deployments) {
-      try {
-        if (chainFamily(deployment.chain) === "evm")
-          await scanEvmPayments(
-            env.PAYMENTS_DB,
-            deployment,
-            rpcUrls[deployment.network],
-            (event) => ingestPaymentEvent(env, event),
-          );
-        else
-          await scanSolanaPayments(
-            env.PAYMENTS_DB,
-            deployment,
-            rpcUrls[deployment.network],
-            (event) => ingestPaymentEvent(env, event),
-          );
-      } catch (error) {
-        failures.push(error);
-      }
-    }
+  }
+  return { deployments, rpcUrls, failures };
+}
+export default {
+  async scheduled(_controller: unknown, env: PaymentsWorkerEnvironment) {
+    // One failing deployment or step must not stop scanning or payouts elsewhere.
+    const { deployments, rpcUrls, failures } = await syncRegistryVaults(env);
     for (const step of [
       () => recoverUncertainAttempts(env),
       () =>

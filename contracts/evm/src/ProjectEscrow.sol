@@ -26,9 +26,9 @@ uint64 constant MAX_BINDING_DELAY = 30 days;
 /// can delay a payout by a bounded number of delays but never retract it. Fees accrue in the vault and are pulled separately, so a blocked fee recipient cannot
 /// stop payouts or refunds.
 /// Anyone may deposit; deposits join one free balance that only the owner commits or refunds to its refund
-/// destination. The payout fee is 2% (floor(gross / 50)); the unused-fund withdrawal fee is 5% (floor(gross / 20)),
-/// rounded down once per withdrawal. Tokens must have exact
-/// transfers: a fee-on-transfer deposit or payout reverts. Decimals are stored for display only; amounts are
+/// destination. The payout fee and the unused-fund withdrawal fee are both 2% (floor(gross / 50)), so awarding
+/// free funds to oneself costs the same as withdrawing them (#907); each fee rounds down once per award or
+/// withdrawal. Tokens must have exact transfers: a fee-on-transfer deposit or payout reverts. Decimals are stored for display only; amounts are
 /// token base units. No upgrade or reserve rescue exists.
 contract ProjectEscrow {
     struct Award {
@@ -217,9 +217,10 @@ contract ProjectEscrow {
         return gross / 50;
     }
 
-    /// @notice The 5% fee on one unused-fund withdrawal, rounded down once per withdrawal (PRD section 18).
+    /// @notice The fee on one unused-fund withdrawal: the same 2% as payoutFee, rounded down once per withdrawal
+    /// (PRD section 18, #907).
     function withdrawalFee(uint128 gross) public pure returns (uint128) {
-        return gross / 20;
+        return payoutFee(gross);
     }
 
     /// @notice Every counter in one call, so a reader gets one consistent block. Equal to the public getters.
@@ -367,8 +368,8 @@ contract ProjectEscrow {
         emit Paid(id, award.actorId, destination, version, award.gross, net, award.fee);
     }
 
-    /// @notice Refunds free funds to the refund destination less withdrawalFee(gross), 5% rounded down. A
-    /// withdrawal under 20 base units pays no fee; splitting saves under one base unit per transaction.
+    /// @notice Refunds free funds to the refund destination less withdrawalFee(gross), 2% rounded down. A
+    /// withdrawal under 50 base units pays no fee; splitting saves under one base unit per transaction.
     function withdrawUnused(uint128 gross) external onlyOwner nonReentrant {
         if (gross == 0) revert InvalidInput();
         if (gross > freeBalance) revert InsufficientFreeBalance();

@@ -14,6 +14,7 @@
     "tests/fixture-checkout.ts",
     "tests/project-application-manifest.ts",
     "tests/sqlite-d1.ts",
+    "tests/vetting-fixtures.ts",
     "src/lib/payments/**/*.ts",
     "contracts/evm/adapter.ts",
     "contracts/solana/adapter.ts",
@@ -25,6 +26,7 @@
     "src/lib/funding-review-data.ts",
     "src/lib/contribution-quality.ts",
     "src/lib/browser-json.ts",
+    "src/lib/notifications.ts",
     "src/lib/github-actor.ts",
     "vite.config.ts",
     "playwright.config.ts",
@@ -56,6 +58,7 @@
     "src/lib/run-receipts.ts",
     "src/lib/wallets.ts",
     "src/lib/leaderboard-types.ts",
+    "src/lib/reviewer-leaders.ts",
     "src/lib/profiles.ts",
     "src/lib/deployment.ts"
   ]

@@ -3,8 +3,10 @@
  * Generator-level tests for the retained review history batch in
  * generate-points.ts: corrections, removals, replay, and rejection.
  */
+import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import {
   createLeaderboardSnapshot,
   type LeaderboardSnapshot,
@@ -26,6 +28,7 @@ import {
 import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
 import {
   applyRetainedHistoryBatch,
+  pointsSql,
   retainedHistoryAwards,
   retainedHistoryCorrections,
 } from "./generate-points";
@@ -34,6 +37,52 @@ const DIGEST = "a".repeat(64);
 const T0 = "2026-10-01T00:00:00.000Z";
 const T1 = "2026-10-02T00:00:00.000Z";
 const T2 = "2026-10-03T00:00:00.000Z";
+
+it("replays an already completed older import without rolling back newer points", () => {
+  const db = new Database(":memory:");
+  for (const path of readdirSync("migrations")
+    .filter((path) => path.endsWith(".sql"))
+    .sort())
+    db.exec(readFileSync(`migrations/${path}`, "utf8"));
+  const before = seedJournal(awardForScore(reviewEvent(3)));
+  const after = appendPointAwards(
+    before,
+    [awardForScore(reviewEvent(1))],
+    DIGEST,
+    "slop-score-v2",
+    T1,
+  );
+  const apply = (journal: PointsJournal) => {
+    db.transaction(() => {
+      for (const statement of pointsSql(journal).trim().split("\n"))
+        db.exec(statement);
+    })();
+  };
+  const rows = () =>
+    db.query("SELECT id,payload FROM points_revisions ORDER BY rowid").all();
+  try {
+    apply(before);
+    apply(after);
+    const permanent = rows();
+    expect(permanent).toHaveLength(2);
+    expect(() => apply(before)).not.toThrow();
+    expect(() => apply(after)).not.toThrow();
+    expect(rows()).toEqual(permanent);
+    expect(db.query("SELECT COUNT(*) AS n FROM points_batches").get()).toEqual({
+      n: 2,
+    });
+    expect(db.query("SELECT COUNT(*) AS n FROM points_staging").get()).toEqual({
+      n: 0,
+    });
+    // A previously unseen shorter batch must still fail the full-history gate.
+    expect(() => apply({ ...before, generatedAt: T2 })).toThrow(
+      "divergent points batch",
+    );
+    expect(rows()).toEqual(permanent);
+  } finally {
+    db.close();
+  }
+});
 
 function reviewEvent(scoreThirds: number): ScoreEvent {
   return {
@@ -477,5 +526,58 @@ describe("evaluator awards across snapshot refreshes", () => {
     }
     expect(counts).toEqual([2, 2, 2]);
     expect(pointMembers(journal)[0]?.total).toBe(120);
+  });
+});
+
+describe("snapshots never rewrite batch-owned retained awards", () => {
+  /** The same refresh, but its ledger omits the evaluator award (for
+   * example, a repeat work unit that the v2 ledger path drops). */
+  function omittingSnapshot(generatedAt: string): LeaderboardSnapshot {
+    const snapshot = refreshedSnapshot(generatedAt);
+    return {
+      ...snapshot,
+      ledger: snapshot.ledger.filter(
+        (event) => event.category !== "evaluated-contribution",
+      ),
+    };
+  }
+
+  it("appends no revision when a snapshot omits a batch-owned award inside its window", () => {
+    const awards = retainedHistoryAwards([evaluatorEvent()]);
+    let journal = applyRetainedHistoryBatch(
+      emptyPointsJournal(T0),
+      awards,
+      DIGEST,
+      T0,
+    );
+    const settled = journal.revisions.length;
+    const counts: number[] = [];
+    for (const at of [T1, T2, T3]) {
+      const snapshot = omittingSnapshot(at);
+      journal = applyPointsSnapshot(journal, snapshot, digestOf(snapshot), at);
+      journal = applyRetainedHistoryBatch(journal, awards, DIGEST, at);
+      counts.push(journal.revisions.length);
+    }
+    expect(counts).toEqual([settled, settled, settled]);
+    expect(pointMembers(journal)[0]?.total).toBe(120);
+  });
+
+  it("lets a snapshot take over an award after the retained batch zeroes it", () => {
+    const awards = retainedHistoryAwards([evaluatorEvent()]);
+    let journal = applyRetainedHistoryBatch(
+      emptyPointsJournal(T0),
+      awards,
+      DIGEST,
+      T0,
+    );
+    journal = applyRetainedHistoryBatch(journal, [], DIGEST, T1);
+    const award = awards[0] as PointAward;
+    expect(latestPoints(journal).get(award.key)?.award.amount).toBe(0);
+    const snapshot = refreshedSnapshot(T2);
+    const digest = digestOf(snapshot);
+    journal = applyPointsSnapshot(journal, snapshot, digest, T2);
+    const latest = latestPoints(journal).get(award.key);
+    expect(latest?.award.amount).toBe(120);
+    expect(latest?.sourceDigest).toBe(digest);
   });
 });
