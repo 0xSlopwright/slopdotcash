@@ -220,10 +220,14 @@ selected verified-mail pilot. No pilot is selected by default. The operator
 sets these variables in the selected protected GitHub environment only after
 reviewing its private destination records and isolated delivery evidence:
 
-- `SLOP_NOTIFY_RELEASE=enabled` enables that environment's Worker release.
+- `SLOP_NOTIFY_RELEASE=enabled` enables the production Worker release.
+  Staging requires the distinct `SLOP_NOTIFY_STAGING_RELEASE=enabled`; the
+  existing production switch cannot enable a staging Worker.
 - `SLOP_NOTIFY_MAIL_PILOTS` is empty for admin-only, `security`, `activity`, or
   `security,activity`. All other values fail closed. This selects existing
   approved mail capabilities; it does not verify recipients or authorize payments.
+  Staging uses `SLOP_NOTIFY_STAGING_MAIL_PILOTS` for this selection; the workflow
+  passes it to the same release script as `SLOP_NOTIFY_MAIL_PILOTS`.
 
 Production uses `slop-notify` and the production Pages D1 contract. Staging uses
 `slop-notify-staging` and the separate staging Pages D1 contract. Staging Pages

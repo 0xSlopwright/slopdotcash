@@ -371,8 +371,8 @@ jobs:
           test "$HAS_KEYS" = true
       - name: Publish and verify isolated staging
         env:
-          SLOP_NOTIFY_RELEASE: ${{ vars.SLOP_NOTIFY_RELEASE }}
-          SLOP_NOTIFY_MAIL_PILOTS: ${{ vars.SLOP_NOTIFY_MAIL_PILOTS }}
+          SLOP_NOTIFY_RELEASE: ${{ vars.SLOP_NOTIFY_STAGING_RELEASE }}
+          SLOP_NOTIFY_MAIL_PILOTS: ${{ vars.SLOP_NOTIFY_STAGING_MAIL_PILOTS }}
           GH_TOKEN: ${{ github.token }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
