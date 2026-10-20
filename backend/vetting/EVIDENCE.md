@@ -134,3 +134,28 @@ applications and queue registration remain available without storage; signed
 queue acquisition fails closed before work starts if storage policy is absent.
 Production binding, policy approval, external controls, actual collector/provider
 integration and live acceptance are not performed by this source change.
+
+The local retained-assembly workflow accepts real retained acquisition,
+analyzer, VM, guest-profile and dependency outputs:
+
+```sh
+bun run build
+bun scripts/vetting-evidence-assembly-workflow.ts \
+  SOURCE REPORTS VM PROFILE DEPENDENCIES PRIVATE_OUTPUT
+```
+
+It creates a new application, approval and queue through the actual handlers
+and SQLite adapter, then reads the signed queue and acquires the recorded Git
+bytes. Local session and repository-authority adapters are synthetic. It checks
+source-inventory byte equality before reuse of the retained analyzer and VM
+outputs. This is no new VM execution or independent runtime run-identity proof.
+The actual R2 workflow proves captured closure, missing-reference and
+assessment-mismatch refusal, signed false-clean rejection, and loss of retained
+bytes. The built console uses that same handler and store with an isolated
+operator-session adapter; the Pages browser suite separately checks routing and
+session behavior. No response data is substituted in the console.
+
+Console evidence checks keyboard access, accessibility, a 320 CSS-pixel mobile
+layout and 200% desktop zoom. A 390-pixel viewport at CSS zoom 2 has only 195 CSS
+pixels and exceeds the site's existing 320-pixel minimum; that case is not
+claimed to pass. Captures and raw input bytes stay outside Git.

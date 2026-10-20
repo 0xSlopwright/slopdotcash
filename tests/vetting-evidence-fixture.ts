@@ -37,6 +37,7 @@ export function localEvidencePolicy(now: Date): EvidencePolicy {
 export async function localVettingEvidence(
   db: ProjectD1Database,
   now: () => Date,
+  policy: EvidencePolicy = localEvidencePolicy(now()),
 ) {
   const child = Bun.spawn(
     [
@@ -144,7 +145,7 @@ export async function localVettingEvidence(
           : null;
       },
     } as R2Bucket,
-    policy: JSON.stringify(localEvidencePolicy(now())),
+    policy: JSON.stringify(policy),
     now,
     randomId: () => crypto.randomUUID(),
     session: async (request) => {
@@ -158,7 +159,11 @@ export async function localVettingEvidence(
         maximum,
       ),
   });
-  async function request(method: string, path: string, body: string) {
+  async function request(
+    method: string,
+    path: string,
+    body: string | Uint8Array,
+  ) {
     return new Request(`https://slop.cash${path}`, {
       method,
       headers: {
@@ -172,7 +177,7 @@ export async function localVettingEvidence(
           now(),
         )),
       },
-      body,
+      body: typeof body === "string" ? body : new Uint8Array(body),
     });
   }
   async function retain(assessmentId: string, runId: string) {
