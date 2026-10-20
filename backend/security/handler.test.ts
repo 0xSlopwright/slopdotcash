@@ -738,4 +738,56 @@ describe("security cases", () => {
         .get(),
     ).toEqual({ n: 0 });
   });
+
+  test("an appealed related-party refusal cannot be re-reviewed by the same reviewer", async () => {
+    const env = open(OPEN_PROGRAM);
+    const { act, decide, record } = awardSteps(env);
+    const related = await record("2026-10-19T09:10:00.000Z");
+    expect(
+      (await decide(related.id, "insider-cause", true)).body.case.awardState,
+    ).toBe("pending");
+    const refused = await act(DISPUTE, related.id, {
+      action: "decide-related-party",
+      outcome: "refuse",
+      reason: "Refused after independent review.",
+    });
+    expect(refused.body.case.awardState).toBe("ineligible");
+    expect(
+      (
+        await act(REPORTER, related.id, {
+          action: "appeal",
+          reason: "The related-party refusal used the wrong facts.",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await act(DISPUTE_2, related.id, {
+          action: "decide-appeal",
+          outcome: "return",
+          reason: "Return for a new technical decision.",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (await decide(related.id, "insider-cause", false)).body.case.awardState,
+    ).toBe("pending");
+    // The reviewer whose refusal the reporter appealed is not independent of
+    // the re-decided case, exactly as `decide-appeal` already treats them.
+    const again = await act(DISPUTE, related.id, {
+      action: "decide-related-party",
+      outcome: "approve",
+      reason: "Approved after independent review.",
+    });
+    expect(again.status).toBe(403);
+    expect(again.body.error).toBe("conflicted");
+    // A reviewer with no part in the earlier refusal can still approve it.
+    const approved = await act(DISPUTE_2, related.id, {
+      action: "decide-related-party",
+      outcome: "approve",
+      reason: "Approved after independent review.",
+    });
+    expect(approved.status).toBe(200);
+    expect(approved.body.case.awardState).toBe("reserved");
+  });
 });

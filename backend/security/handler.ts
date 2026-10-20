@@ -1423,9 +1423,18 @@ async function planChange(
     case "decide-related-party": {
       exactKeys(body, [...common, "outcome", "reason"]);
       requireAction(row, roles, action);
-      // The reviewer is independent of the technical decision (SEC-12).
-      if (row.technical_decider_github_id === actor.githubId)
-        fail(403, "conflicted", "You decided this case; another reviewer must");
+      // The reviewer is independent of the technical decision, and of any
+      // earlier related-party review of this case: a refusal the reporter
+      // appealed cannot be reversed by the reviewer who made it (SEC-12).
+      if (
+        row.technical_decider_github_id === actor.githubId ||
+        row.related_party_reviewer_github_id === actor.githubId
+      )
+        fail(
+          403,
+          "conflicted",
+          "You already reviewed this case; another reviewer must",
+        );
       const outcome = choice(body, "outcome", ["approve", "refuse"] as const);
       const reason = textField(body, "reason", 8, 2000);
       const reviewed = {
