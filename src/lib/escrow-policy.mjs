@@ -1,13 +1,13 @@
 import { isFundingAddress, isSolanaTransactionId } from "./funding-address.mjs";
 
 /**
- * Technical network definitions only. Projects and deployments live in
- * project.json. `family` selects the adapter, executor and scanner
- * implementation; `chain` is the wallet-claim and consent identity. EVM
- * networks also carry the executor gas ceiling (gas units) and the scanner
- * window (blocks per eth_getLogs page, inclusive), which the generated
- * deployment record copies so hosted workers never assume a value. Solana
- * clusters carry their genesis hash, the RPC identity every check compares.
+ * Technical network definitions only. Projects and their deployments live in
+ * the D1 project registry, one revision per manifest change. `family` selects
+ * the adapter, executor and scanner implementation; `chain` is the wallet-claim
+ * and consent identity. EVM networks also carry the executor gas ceiling (gas
+ * units) and the scanner window (blocks per eth_getLogs page, inclusive), which
+ * the generated deployment record copies so hosted workers never assume a value.
+ * Solana clusters carry their genesis hash, the RPC identity every check compares.
  *
  * Escrow v2 vaults accept any standard ERC-20 or classic SPL mint with any
  * decimals; a deployment's asset is not limited to the list here. `assets`

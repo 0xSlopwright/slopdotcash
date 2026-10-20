@@ -6,17 +6,23 @@ new cycle is an escrow cycle.
 
 ## Escrow cycles
 
-The trusted first-of-month workflow runs `rewards:close-month`. For every
-active, verified project whose escrow policy is effective for the closed month,
-it writes `cycles/<project-id>/<YYYY-MM>/escrow-v2/` and opens a review PR. A
-project without an effective escrow policy has no payable cycle and is skipped.
+The trusted first-of-month workflow first runs `projects:sync` against
+`https://slop.cash`, because projects live only in the D1 registry. It then
+runs `rewards:close-month`. For every active, verified project whose escrow
+policy is effective for the closed month, it writes
+`cycles/<project-id>/<YYYY-MM>/escrow-v2/` and opens a review PR that also
+carries the synced registry snapshot. A project without an effective escrow
+policy has no payable cycle and is skipped.
 Existing complete cycles are left untouched; a directory that holds only one of
 the proposal and the source snapshot is refused as partial.
 
 An escrow cycle directory holds only these files:
 
 - `source-snapshot.json`: the exact validated leaderboard bytes;
-- `project.json`: the exact project policy used for the proposal;
+- `project.json`: the exact bytes of the project's newest D1 revision when
+  the cycle was prepared. Its SHA-256 is the proposal's `projectPolicySha256`
+  and the revision's public `manifestSha256` at
+  `/api/v1/project-revisions/<project-id>/<revision>`;
 - `github-identities.json`: the numeric GitHub identities of the leaders;
 - `proposal.json`: the deterministic gross proposal;
 - `decisions.json` (optional): the owner's per-row decisions, each with a
@@ -52,8 +58,8 @@ trial; cycle validation uses the cap recorded in that artifact.
 `bun run cycles:sync` also generates `src/lib/project-promotion.generated.json`
 from the validated cycle index. This compact funding history ships with the
 application so homepage project cards never wait for the ledger or cycle fetch.
-`cycles:check` rejects a stale copy; refresh timestamps are excluded so scheduled
-data refreshes preserve application asset bytes.
+`cycles:check` rejects a stale copy; refresh timestamps are excluded so
+unchanged history keeps the application asset bytes stable.
 The monthly close workflow includes the regenerated history in its review PR.
 Existing immutable cycle files stay unchanged.
 
