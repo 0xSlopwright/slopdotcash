@@ -38,7 +38,6 @@ export async function prepareEscrowCommitments(
     projectId,
     currentProject: project,
     archiveDirectory: resolve("cycles", projectId, cycleId, "escrow-v2"),
-    token,
   });
   const review = await verifyEscrowReview({
     directory: resolve("cycles", projectId, cycleId, "escrow-v2"),

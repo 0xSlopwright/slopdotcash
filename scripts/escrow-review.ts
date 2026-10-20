@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { assertProjectDefinition } from "../src/lib/project-schema.mjs";
+import { currentProjectPolicy } from "./project-revision-policy.mjs";
 
 export interface EscrowReviewProposal {
   projectId: string;
@@ -176,13 +177,13 @@ async function publication(
 ): Promise<Publication> {
   const commits = await github<{ sha: string }[]>(
     repo,
-    `commits?sha=develop&path=${encodeURIComponent(path)}&per_page=1`,
+    `commits?sha=development&path=${encodeURIComponent(path)}&per_page=1`,
     token,
   );
   if (commits.length !== 1 || !/^[a-f0-9]{40}$/.test(commits[0].sha))
     throw new Error("Publication commit unavailable");
   const commit = commits[0].sha;
-  for (const ref of ["develop", commit]) {
+  for (const ref of ["development", commit]) {
     if (!(await publicBytes(repo, path, ref, token)).equals(bytes))
       throw new Error("Archive differs from public canonical bytes");
   }
@@ -199,7 +200,7 @@ async function publication(
   const candidates = pulls.filter(
     (p) =>
       p.merged_at &&
-      p.base.ref === "develop" &&
+      p.base.ref === "development" &&
       p.base.repo.full_name.toLowerCase() === repo.toLowerCase(),
   );
   if (candidates.length !== 1)
@@ -349,11 +350,11 @@ export async function verifyEscrowReview(input: {
       }>(repo, `pulls/${approval.pullRequest}`, input.token);
       if (
         !pull.merged_at ||
-        pull.base.ref !== "develop" ||
+        pull.base.ref !== "development" ||
         pull.base.repo.full_name.toLowerCase() !== repo.toLowerCase()
       )
         throw new Error(
-          "Platform approval PR must be merged into canonical develop",
+          "Platform approval PR must be merged into canonical development",
         );
       // Approval PR must itself publish the exact decisions, preventing unrelated review reuse.
       if (
@@ -420,11 +421,14 @@ export async function verifyCurrentEscrowDeployment(input: {
   projectId: string;
   currentProject: unknown;
   archiveDirectory: string;
-  token?: string;
-}): Promise<Publication> {
-  const path = `projects/${input.projectId}/project.json`;
-  const bytes = await readFile(resolve(path));
-  const current = assertProjectDefinition(JSON.parse(bytes.toString("utf8")));
+  root?: string;
+}): Promise<{ url: string; revision: number; sha256: string }> {
+  const {
+    project: current,
+    revision,
+    manifestSha256,
+    bytes,
+  } = await currentProjectPolicy(input.root ?? process.cwd(), input.projectId);
   if (
     current.id !== input.projectId ||
     !isDeepStrictEqual(current, input.currentProject)
@@ -455,5 +459,40 @@ export async function verifyCurrentEscrowDeployment(input: {
     throw new Error(
       "Current escrow financial policy differs from the reviewed archive",
     );
-  return publication(repository(), path, bytes, input.token);
+  // The registry is the policy authority. An immutable revision alone does
+  // not prove it is still current, so also compare the live project pointer.
+  const projectUrl = `https://slop.cash/api/v1/projects/${encodeURIComponent(input.projectId)}`;
+  const url = `https://slop.cash/api/v1/project-revisions/${encodeURIComponent(input.projectId)}/${revision}`;
+  const readRegistry = async (endpoint: string) => {
+    const response = await fetch(endpoint, {
+      headers: { accept: "application/json", "cache-control": "no-cache" },
+      redirect: "error",
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!response.ok)
+      throw new Error(
+        `Current project evidence unavailable (${response.status})`,
+      );
+    return response.json();
+  };
+  const [live, immutable] = await Promise.all([
+    readRegistry(projectUrl),
+    readRegistry(url),
+  ]);
+  if (
+    live.schemaVersion !== "1" ||
+    live.revision !== revision ||
+    live.manifestSha256 !== manifestSha256 ||
+    !isDeepStrictEqual(live.project, current) ||
+    immutable.schemaVersion !== "1" ||
+    immutable.projectId !== input.projectId ||
+    immutable.revision !== revision ||
+    immutable.manifestSha256 !== manifestSha256 ||
+    typeof immutable.manifestText !== "string" ||
+    !Buffer.from(immutable.manifestText, "utf8").equals(bytes)
+  )
+    throw new Error(
+      "Current D1 project revision differs from the synced policy",
+    );
+  return { url, revision, sha256: manifestSha256 };
 }

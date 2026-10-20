@@ -894,6 +894,9 @@ try {
     `bind:${bindingAttempt.id}`,
   );
   assert(rejectedBinding);
+  // A send response can precede Anvil mining. Include the revert in one
+  // block before reading its receipt; it must still be below finality.
+  await rpc("anvil_mine", ["0x1"]);
   const rejectedReceipt = (await rpc("eth_getTransactionReceipt", [
     rejectedBinding.transactionId,
   ])) as { status: string };
