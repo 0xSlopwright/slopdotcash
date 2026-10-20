@@ -4,11 +4,19 @@ import type { ProjectD1Database } from "../projects/cloudflare-persistence";
 import type { WebSession } from "../projects/contracts";
 import type { R2Bucket } from "../trace/cloudflare-persistence";
 import { isRecord, readJsonObject, sha256Hex } from "../trace/validation";
+import {
+  chunkKey,
+  chunkLayout,
+  EVIDENCE_CHUNK_BYTES,
+  EVIDENCE_RUN_BYTES,
+  type EvidenceChunk,
+  verifiedPart,
+  verifyParts,
+} from "./evidence-chunks";
 import type { VettingResult } from "./result";
 
-// A bounded complete object fits the existing Workers memory/read contract.
-// Larger objects remain uninspectable; they must never count as retained evidence.
-export const MAX_EVIDENCE_OBJECT_BYTES = 8 * 1024 * 1024;
+// Whole objects stay within the run ceiling; each read/upload part stays bounded.
+export const MAX_EVIDENCE_OBJECT_BYTES = EVIDENCE_RUN_BYTES;
 const HEX = /^[a-f0-9]{64}$/u;
 const ID = /^[a-zA-Z0-9_-]{1,100}$/u;
 const KINDS = new Set([
@@ -169,6 +177,7 @@ type ObjectRow = {
   label: string;
   content_type: string;
   object_key: string;
+  chunks: string | null;
 };
 const headers = {
   "cache-control": "private, no-store",
@@ -261,7 +270,7 @@ export class VettingEvidence {
     if (!row) fail(404, "evidence_missing", "Evidence object is missing");
     return row;
   }
-  async bytes(row: ObjectRow, run: Run): Promise<Uint8Array> {
+  private readable(row: ObjectRow, run: Run) {
     const { policy, bucket } = this.configuration();
     if (Date.parse(run.expires_at) <= this.deps.now().getTime())
       fail(
@@ -275,44 +284,45 @@ export class VettingEvidence {
         "evidence_oversize",
         "Complete evidence exceeds the current inspection limit",
       );
-    const value = await bucket.get(row.object_key);
-    if (!value)
-      fail(404, "evidence_missing", "Declared evidence bytes are missing");
+    return bucket;
+  }
+  private layout(row: ObjectRow): EvidenceChunk[] | null {
+    return row.chunks === null
+      ? null
+      : chunkLayout(JSON.parse(row.chunks), row.size_bytes);
+  }
+  async bytes(row: ObjectRow, run: Run): Promise<Uint8Array> {
+    const bucket = this.readable(row, run);
+    if (row.size_bytes > EVIDENCE_CHUNK_BYTES)
+      fail(
+        413,
+        "evidence_oversize",
+        "Large evidence requires a streamed download",
+      );
+    return verifiedPart(bucket, row.object_key, row.sha256, row.size_bytes);
+  }
+  async verify(row: ObjectRow, run: Run, requireComplete = true) {
+    const bucket = this.readable(row, run),
+      chunks = this.layout(row);
+    if (!chunks) {
+      await this.bytes(row, run);
+      return;
+    }
     if (
-      value.size !== row.size_bytes ||
-      value.customMetadata?.sha256 !== row.sha256
+      requireComplete &&
+      !(await this.deps.db
+        .prepare(
+          "SELECT completed_at FROM vetting_evidence_completions WHERE assessment_id=? AND run_id=? AND sha256=?",
+        )
+        .bind(row.assessment_id, row.run_id, row.sha256)
+        .first())
     )
       fail(
         409,
-        "evidence_corrupt",
-        "Evidence metadata does not match its immutable receipt",
+        "evidence_pending",
+        "Chunked evidence has not completed whole-file verification",
       );
-    const reader = value.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    try {
-      for (;;) {
-        const { done, value: chunk } = await reader.read();
-        if (done) break;
-        size += chunk.byteLength;
-        if (size > row.size_bytes) {
-          await reader.cancel();
-          fail(409, "evidence_corrupt", "Evidence length changed");
-        }
-        chunks.push(chunk);
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    const bytes = new Uint8Array(size);
-    let at = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, at);
-      at += chunk.byteLength;
-    }
-    if (size !== row.size_bytes || (await sha256Hex(bytes)) !== row.sha256)
-      fail(409, "evidence_corrupt", "Evidence digest changed");
-    return bytes;
+    await verifyParts(bucket, row.object_key, chunks, row.sha256);
   }
   async complete(result: VettingResult) {
     const assessment = result.assessmentId,
@@ -342,7 +352,7 @@ export class VettingEvidence {
         ]),
       ];
       if (required.some((digest) => !inventory.has(digest))) return false;
-      for (const row of objects) await this.bytes(row, run);
+      for (const row of objects) await this.verify(row, run);
       return true;
     } catch {
       return false;
@@ -385,7 +395,14 @@ export class VettingEvidence {
       .map((value) => {
         if (!isRecord(value))
           fail(400, "invalid_request", "Invalid evidence object");
-        exact(value, ["sha256", "sizeBytes", "kind", "label", "contentType"]);
+        exact(value, [
+          "sha256",
+          "sizeBytes",
+          "kind",
+          "label",
+          "contentType",
+          ...(Object.hasOwn(value, "chunks") ? ["chunks"] : []),
+        ]);
         const sha = text(value.sha256, 64),
           kind = text(value.kind, 20),
           label = text(value.label, 200),
@@ -410,6 +427,21 @@ export class VettingEvidence {
             "evidence_oversize",
             "Complete object exceeds the configured limit; the run is not inspectable",
           );
+        let chunks: EvidenceChunk[] | undefined;
+        if (
+          Number(value.sizeBytes) > EVIDENCE_CHUNK_BYTES ||
+          Object.hasOwn(value, "chunks")
+        ) {
+          try {
+            chunks = chunkLayout(value.chunks, Number(value.sizeBytes));
+          } catch {
+            fail(
+              400,
+              "invalid_request",
+              "Large evidence requires an exact ordered bounded chunk layout",
+            );
+          }
+        }
         total += Number(value.sizeBytes);
         seen.add(sha);
         return {
@@ -418,6 +450,7 @@ export class VettingEvidence {
           kind,
           label,
           contentType,
+          ...(chunks ? { chunks } : {}),
         };
       })
       .sort((a, b) => a.sha256.localeCompare(b.sha256));
@@ -472,7 +505,7 @@ export class VettingEvidence {
       ...objects.map((o) =>
         this.deps.db
           .prepare(
-            "INSERT INTO vetting_evidence_objects(assessment_id,run_id,sha256,size_bytes,kind,label,content_type,object_key) VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO vetting_evidence_objects(assessment_id,run_id,sha256,size_bytes,kind,label,content_type,object_key,chunks) VALUES(?,?,?,?,?,?,?,?,?)",
           )
           .bind(
             assessment,
@@ -483,6 +516,7 @@ export class VettingEvidence {
             o.label,
             o.contentType,
             `vetting/${assessment}/${runId}/${o.sha256}`,
+            o.chunks ? JSON.stringify(o.chunks) : null,
           ),
       ),
       this.deps.db
@@ -509,7 +543,7 @@ export class VettingEvidence {
     const { policy, bucket } = this.configuration();
     const { body, keySha256 } = await this.signed(
       request,
-      policy.maxObjectBytes,
+      Math.min(policy.maxObjectBytes, EVIDENCE_CHUNK_BYTES),
     );
     const run = await this.run(assessment, runId),
       object = await this.object(assessment, runId, sha);
@@ -532,6 +566,102 @@ export class VettingEvidence {
     await this.bytes(object, run);
     await this.audit(`service:${keySha256}`, "upload", assessment, runId, sha);
     return json(200, { sha256: sha, sizeBytes: body.byteLength });
+  }
+  async uploadChunk(
+    request: Request,
+    assessment: string,
+    runId: string,
+    sha: string,
+    index: number,
+  ) {
+    const { bucket } = this.configuration();
+    const { body, keySha256 } = await this.signed(
+      request,
+      EVIDENCE_CHUNK_BYTES,
+    );
+    const run = await this.run(assessment, runId),
+      object = await this.object(assessment, runId, sha);
+    this.readable(object, run);
+    const chunk = this.layout(object)?.[index];
+    if (!chunk) fail(404, "not_found", "Declared chunk not found");
+    if (
+      body.byteLength !== chunk.sizeBytes ||
+      (await sha256Hex(body)) !== chunk.sha256
+    )
+      fail(
+        422,
+        "digest_mismatch",
+        "Upload must match the exact declared chunk bytes",
+      );
+    const key = chunkKey(object.object_key, chunk);
+    await bucket.put(key, body, {
+      onlyIf: { etagDoesNotMatch: "*" },
+      httpMetadata: { contentType: "application/octet-stream" },
+      customMetadata: { sha256: chunk.sha256 },
+    });
+    await verifiedPart(bucket, key, chunk.sha256, chunk.sizeBytes);
+    await this.audit(
+      `service:${keySha256}`,
+      "upload-chunk",
+      assessment,
+      runId,
+      sha,
+      `Chunk ${index}`,
+    );
+    return json(200, {
+      sha256: chunk.sha256,
+      index,
+      sizeBytes: body.byteLength,
+    });
+  }
+  async finalize(
+    request: Request,
+    assessment: string,
+    runId: string,
+    sha: string,
+  ) {
+    const { body, keySha256 } = await this.signed(request, 2);
+    if (new TextDecoder().decode(body) !== "{}")
+      fail(
+        400,
+        "invalid_request",
+        "Finalization requires an empty JSON object",
+      );
+    const run = await this.run(assessment, runId),
+      object = await this.object(assessment, runId, sha);
+    if (!this.layout(object))
+      fail(
+        400,
+        "invalid_request",
+        "Only chunked evidence requires finalization",
+      );
+    await this.verify(object, run, false);
+    // No partial completion state: concurrent/repeated finalization has one immutable receipt.
+    const at = this.deps.now().toISOString();
+    const [recorded] = await this.deps.db.batch([
+      this.deps.db
+        .prepare(
+          "INSERT OR IGNORE INTO vetting_evidence_completions(assessment_id,run_id,sha256,completed_at) VALUES(?,?,?,?)",
+        )
+        .bind(assessment, runId, sha, at),
+      this.deps.db
+        .prepare(
+          "INSERT INTO vetting_evidence_audit(id,actor,action,assessment_id,run_id,sha256,created_at) SELECT ?,?,'finalize',?,?,?,? WHERE changes()=1",
+        )
+        .bind(
+          this.deps.randomId(),
+          `service:${keySha256}`,
+          assessment,
+          runId,
+          sha,
+          at,
+        ),
+    ]);
+    return json(200, {
+      sha256: sha,
+      sizeBytes: object.size_bytes,
+      replayed: recorded.meta?.changes !== 1,
+    });
   }
   async overview(request: Request) {
     const actor = await this.operator(request);
@@ -562,16 +692,32 @@ export class VettingEvidence {
         ).results ?? [];
       const objects = [];
       for (const row of rows) {
-        const head = await bucket.head(row.object_key);
+        const chunks = this.layout(row);
+        const head = chunks
+          ? await this.deps.db
+              .prepare(
+                "SELECT completed_at FROM vetting_evidence_completions WHERE assessment_id=? AND run_id=? AND sha256=?",
+              )
+              .bind(run.assessment_id, run.run_id, row.sha256)
+              .first<{ completed_at: string }>()
+          : await bucket.head(row.object_key);
         const state =
           Date.parse(run.expires_at) <= this.deps.now().getTime()
             ? "expired"
             : row.size_bytes > policy.maxObjectBytes
               ? "oversize"
               : !head
-                ? "missing"
-                : head.size !== row.size_bytes ||
-                    head.customMetadata?.sha256 !== row.sha256
+                ? chunks
+                  ? "pending"
+                  : "missing"
+                : !chunks &&
+                    (("size" in head && head.size !== row.size_bytes) ||
+                      ("customMetadata" in head &&
+                        (
+                          head.customMetadata as
+                            | Record<string, string>
+                            | undefined
+                        )?.sha256 !== row.sha256))
                   ? "corrupt"
                   : "stored-unverified";
         objects.push({
@@ -580,6 +726,7 @@ export class VettingEvidence {
           kind: row.kind,
           label: row.label,
           contentType: row.content_type,
+          streamed: row.size_bytes > EVIDENCE_CHUNK_BYTES,
           state,
         });
       }
@@ -614,6 +761,7 @@ export class VettingEvidence {
     assessment: string,
     runId: string,
     sha: string,
+    download = false,
   ) {
     const actor = await this.operator(request),
       body = await readJsonObject(request);
@@ -627,8 +775,14 @@ export class VettingEvidence {
       );
     const run = await this.run(assessment, runId),
       object = await this.object(assessment, runId, sha);
+    if (!download && object.size_bytes > EVIDENCE_CHUNK_BYTES)
+      fail(
+        413,
+        "evidence_oversize",
+        "Large evidence requires a native streamed download grant",
+      );
     // Do not grant access to absent, expired, oversized or changed evidence.
-    await this.bytes(object, run);
+    await this.verify(object, run);
     const token = crypto.randomUUID() + crypto.randomUUID(),
       hash = await sha256Hex(new TextEncoder().encode(token));
     await this.deps.db.batch([
@@ -660,11 +814,24 @@ export class VettingEvidence {
           this.deps.now().toISOString(),
         ),
     ]);
+    if (download) {
+      const response = json(201, { expiresInSeconds: 60 });
+      response.headers.set(
+        "set-cookie",
+        this.downloadCookie(assessment, runId, sha, token),
+      );
+      return response;
+    }
     return json(201, { grant: token, expiresInSeconds: 60 });
   }
-  async read(request: Request, assessment: string, runId: string, sha: string) {
-    const actor = await this.operator(request),
-      token = request.headers.get("x-vetting-read-grant") ?? "";
+  private async consume(
+    request: Request,
+    assessment: string,
+    runId: string,
+    sha: string,
+    token: string,
+  ) {
+    const actor = await this.operator(request);
     if (token.length > 100) fail(403, "grant_invalid", "Invalid read grant");
     const hash = await sha256Hex(new TextEncoder().encode(token)),
       at = this.deps.now().toISOString();
@@ -688,17 +855,20 @@ export class VettingEvidence {
       sha,
       grant.reason,
     );
-    const run = await this.run(assessment, runId),
-      object = await this.object(assessment, runId, sha),
-      bytes = await this.bytes(object, run);
-    await this.audit(
-      actor.githubId,
-      "read",
+    return { actor, reason: grant.reason };
+  }
+  async read(request: Request, assessment: string, runId: string, sha: string) {
+    const { actor, reason } = await this.consume(
+      request,
       assessment,
       runId,
       sha,
-      grant.reason,
+      request.headers.get("x-vetting-read-grant") ?? "",
     );
+    const run = await this.run(assessment, runId),
+      object = await this.object(assessment, runId, sha),
+      bytes = await this.bytes(object, run);
+    await this.audit(actor.githubId, "read", assessment, runId, sha, reason);
     return new Response(bytes as Uint8Array<ArrayBuffer>, {
       headers: {
         ...headers,
@@ -706,6 +876,123 @@ export class VettingEvidence {
         "content-length": String(bytes.byteLength),
         "content-disposition": `attachment; filename="${sha}.bin"`,
         "content-security-policy": "default-src 'none'; sandbox",
+      },
+    });
+  }
+  private downloadCookie(
+    assessment: string,
+    runId: string,
+    sha: string,
+    token = "",
+  ) {
+    const path = `/api/v1/operator/vetting-evidence/${assessment}/${runId}/${sha}/download`;
+    return `__Secure-vetting-read-grant=${token}; Path=${path}; Max-Age=${token ? 60 : 0}; Secure; HttpOnly; SameSite=Strict`;
+  }
+  async download(
+    request: Request,
+    assessment: string,
+    runId: string,
+    sha: string,
+  ) {
+    if (
+      request.headers.get("sec-fetch-site") !== "same-origin" ||
+      request.headers.has("range")
+    )
+      fail(
+        403,
+        "origin_forbidden",
+        "Downloads require a fresh same-origin browser request without ranges",
+      );
+    const cookies = (request.headers.get("cookie") ?? "")
+      .split(";")
+      .map((part) => part.trim())
+      .filter((part) => part.startsWith("__Secure-vetting-read-grant="));
+    if (cookies.length !== 1)
+      fail(403, "grant_invalid", "Exactly one download grant is required");
+    const token = cookies[0].slice("__Secure-vetting-read-grant=".length);
+    const { actor, reason } = await this.consume(
+      request,
+      assessment,
+      runId,
+      sha,
+      token,
+    );
+    const run = await this.run(assessment, runId),
+      object = await this.object(assessment, runId, sha);
+    this.readable(object, run);
+    const chunks = this.layout(object);
+    if (
+      chunks &&
+      !(await this.deps.db
+        .prepare(
+          "SELECT completed_at FROM vetting_evidence_completions WHERE assessment_id=? AND run_id=? AND sha256=?",
+        )
+        .bind(assessment, runId, sha)
+        .first())
+    )
+      fail(409, "evidence_pending", "Whole-file verification is incomplete");
+    let index = 0,
+      started = false,
+      ended = false;
+    const audit = (action: string) =>
+      this.audit(actor.githubId, action, assessment, runId, sha, reason);
+    await audit("download-authorized");
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull: async (controller) => {
+          try {
+            const bucket = this.readable(object, run);
+            if (index >= (chunks?.length ?? 1)) {
+              await audit("download-finished");
+              if (ended) return;
+              ended = true;
+              controller.close();
+              return;
+            }
+            const part = chunks?.[index];
+            const bytes = part
+              ? await verifiedPart(
+                  bucket,
+                  chunkKey(object.object_key, part),
+                  part.sha256,
+                  part.sizeBytes,
+                )
+              : await this.bytes(object, run);
+            if (ended) return;
+            if (!started) {
+              await audit("download-started");
+              started = true;
+            }
+            if (ended) return;
+            index++;
+            controller.enqueue(bytes);
+          } catch (error) {
+            if (ended) return;
+            ended = true;
+            try {
+              await audit("download-failed");
+            } finally {
+              controller.error(error);
+            }
+          }
+        },
+        cancel: async () => {
+          if (!ended) {
+            ended = true;
+            await audit("download-cancelled");
+          }
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    return new Response(stream, {
+      headers: {
+        ...headers,
+        "content-type": "application/octet-stream",
+        "content-length": String(object.size_bytes),
+        "content-disposition": `attachment; filename="${sha}.bin"`,
+        "content-security-policy": "default-src 'none'; sandbox",
+        "accept-ranges": "none",
       },
     });
   }
@@ -737,6 +1024,52 @@ export class VettingEvidence {
         fail(404, "not_found", "Evidence route not found");
       if (service && path.length === 5 && request.method === "PUT")
         return await this.upload(request, assessment, run, sha);
+      if (
+        service &&
+        path.length === 7 &&
+        action === "chunks" &&
+        /^[0-7]$/u.test(path[6]) &&
+        request.method === "PUT"
+      )
+        return await this.uploadChunk(
+          request,
+          assessment,
+          run,
+          sha,
+          Number(path[6]),
+        );
+      if (
+        service &&
+        path.length === 6 &&
+        action === "finalize" &&
+        request.method === "POST"
+      )
+        return await this.finalize(request, assessment, run, sha);
+      if (
+        operator &&
+        path.length === 6 &&
+        action === "download-grant" &&
+        request.method === "POST"
+      )
+        return await this.grant(request, assessment, run, sha, true);
+      if (operator && path.length === 6 && action === "download") {
+        let response: Response;
+        try {
+          if (request.method !== "GET")
+            fail(405, "method_not_allowed", "Native downloads require GET");
+          response = await this.download(request, assessment, run, sha);
+        } catch (error) {
+          const e = error as { status?: number; code?: string };
+          response = json(e.status ?? 500, {
+            error: e.status ? e.code : "evidence_failure",
+          });
+        }
+        response.headers.set(
+          "set-cookie",
+          this.downloadCookie(assessment, run, sha),
+        );
+        return response;
+      }
       if (
         operator &&
         path.length === 6 &&

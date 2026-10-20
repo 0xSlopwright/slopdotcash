@@ -9,6 +9,7 @@ type EvidenceObject = {
   label: string;
   contentType: string;
   state: string;
+  streamed?: boolean;
 };
 type Run = {
   assessmentId: string;
@@ -138,6 +139,17 @@ function EvidenceItem({ run, object }: { run: Run; object: EvidenceObject }) {
     setStatus("");
     try {
       const base = `operator/vetting-evidence/${encodeURIComponent(run.assessmentId)}/${encodeURIComponent(run.runId)}/${object.sha256}`;
+      if (object.streamed) {
+        await projectApiRequest("POST", `${base}/download-grant`, { reason });
+        const link = document.createElement("a");
+        link.href = `/api/v1/${base}/download`;
+        link.download = `${object.sha256}.bin`;
+        link.click();
+        setStatus(
+          "Download requested. Check your browser downloads; an interrupted transfer requires a new reasoned grant. Do not execute the file.",
+        );
+        return;
+      }
       const granted = await projectApiRequest<{ grant: string }>(
         "POST",
         `${base}/grant`,
@@ -213,7 +225,8 @@ function EvidenceItem({ run, object }: { run: Run; object: EvidenceObject }) {
         >
           {busy
             ? "Verifying evidence…"
-            : object.contentType === "application/octet-stream"
+            : object.streamed ||
+                object.contentType === "application/octet-stream"
               ? `Download ${object.label}`
               : `Read ${object.label}`}
         </button>

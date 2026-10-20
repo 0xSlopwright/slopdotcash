@@ -66,7 +66,7 @@ const registryArguments = registryPersistTo
         : ""
     }${
       registryVettingKey
-        ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey} --r2 VETTING_EVIDENCE --binding 'VETTING_EVIDENCE_POLICY=${JSON.stringify(localEvidencePolicy(new Date())).replaceAll("'", "'\\''")}'`
+        ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey} --r2 VETTING_EVIDENCE --binding 'VETTING_EVIDENCE_POLICY=${JSON.stringify({ ...localEvidencePolicy(new Date()), maxObjectBytes: 32 * 1024 * 1024 }).replaceAll("'", "'\\''")}'`
         : ""
     }${registryNotify ? ` --service SLOP_NOTIFY=${registryNotify}` : ""}`
   : "";
@@ -137,6 +137,14 @@ export default defineConfig({
         stderr: "pipe",
       },
   projects: [
+    {
+      name: "evidence-firefox",
+      testMatch: "**/evidence-download.spec.ts",
+      use: {
+        ...devices["Desktop Firefox"],
+        viewport: { width: 1440, height: 1000 },
+      },
+    },
     // Observed no-store stream EOF + ERR_ABORTED matches this Chromium report:
     // https://github.com/microsoft/playwright/issues/42742
     // Keep the bounded private reader and strict failure assertions. Exercise

@@ -3,10 +3,15 @@
 // dispositions from harmless fixtures, the activation and skill gates, and
 // the fail-closed state when no vetting service is configured.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import { handleProjectApi } from "../backend/projects/handler";
-import { handleVettingApi } from "../backend/vetting/handler";
+import { EVIDENCE_CHUNK_BYTES } from "../backend/vetting/evidence-chunks";
+import {
+  handleVettingApi,
+  signedVettingRequest,
+} from "../backend/vetting/handler";
 import {
   CloudflareVettingPersistence,
   type VettingPin,
@@ -721,3 +726,255 @@ test("missing storage pauses acquisition while harmless queue registration remai
     (await vettingApi(await signed("GET", "vetting/requests"))).status,
   ).toBe(503);
 });
+
+test("large retained evidence uses bounded chunks, immutable completion and actor-bound native downloads", async () => {
+  await listPausedProject();
+  const id = await queueScan(),
+    runId = "large-retention";
+  const bytes = process.env.SLOP_VETTING_OVERLAY_PATH
+    ? readFileSync(process.env.SLOP_VETTING_OVERLAY_PATH)
+    : Buffer.alloc(23_592_960, 71);
+  const hash = (value: Uint8Array) =>
+    createHash("sha256").update(value).digest("hex");
+  const digest = hash(bytes),
+    chunks = [];
+  for (let offset = 0; offset < bytes.length; offset += EVIDENCE_CHUNK_BYTES) {
+    const part = bytes.subarray(offset, offset + EVIDENCE_CHUNK_BYTES);
+    chunks.push({
+      index: chunks.length,
+      sha256: hash(part),
+      sizeBytes: part.length,
+    });
+  }
+  const policy = JSON.parse(retained.evidence.deps.policy!);
+  policy.maxObjectBytes = 32 * 1024 * 1024;
+  retained.evidence.deps.policy = JSON.stringify(policy);
+  retained.evidence.deps.signed = (request, maximum) =>
+    signedVettingRequest(
+      request,
+      { resultPublicKeys: keys.publicKey, now: () => NOW },
+      maximum,
+    );
+  const servicePath = `/api/v1/vetting/evidence/${id}/${runId}`;
+  // Preserve an unexpected local-workerd cause instead of losing it behind
+  // the production route's deliberately generic private-error response.
+  let unexpectedUploadError: unknown;
+  const uploadChunk = retained.evidence.uploadChunk.bind(retained.evidence);
+  retained.evidence.uploadChunk = async (...args) => {
+    try {
+      return await uploadChunk(...args);
+    } catch (error) {
+      if (!(error instanceof Error && "status" in error))
+        unexpectedUploadError = error;
+      throw error;
+    }
+  };
+  const send = async (
+    method: string,
+    path: string,
+    body: string | Uint8Array,
+  ) => {
+    const response = (await retained.evidence.handle(
+      new Request(`${ORIGIN}${path}`, {
+        method,
+        headers: await signedVettingHeaders(
+          keys.privateKey,
+          keys.raw,
+          method,
+          path,
+          body,
+          NOW,
+        ),
+        body: body as BodyInit,
+      }),
+    ))!;
+    if (response.status === 500 && unexpectedUploadError)
+      throw unexpectedUploadError;
+    return response;
+  };
+  const manifest = JSON.stringify({
+    traceSha256: digest,
+    objects: [
+      {
+        sha256: digest,
+        sizeBytes: bytes.length,
+        kind: "trace",
+        label: "Retained synthetic VM overlay",
+        contentType: "application/octet-stream",
+        chunks,
+      },
+    ],
+  });
+  expect((await send("POST", servicePath, manifest)).status).toBe(201);
+  expect((await send("POST", servicePath, manifest)).status).toBe(200);
+  const changed = JSON.parse(manifest);
+  changed.objects[0].chunks[0].sha256 = "a".repeat(64);
+  expect(
+    (await send("POST", servicePath, JSON.stringify(changed))).status,
+  ).toBe(409);
+  expect(
+    (await send("POST", `${servicePath}/${digest}/finalize`, "{}")).status,
+  ).toBe(404);
+  for (const part of chunks) {
+    const path = `${servicePath}/${digest}/chunks/${part.index}`;
+    expect(
+      (
+        await send(
+          "PUT",
+          path,
+          bytes.subarray(
+            part.index * EVIDENCE_CHUNK_BYTES,
+            part.index * EVIDENCE_CHUNK_BYTES + part.sizeBytes,
+          ),
+        )
+      ).status,
+    ).toBe(200);
+  }
+  expect(
+    (await send("PUT", `${servicePath}/${digest}/chunks/0`, new Uint8Array(20)))
+      .status,
+  ).toBe(422);
+  sqlite.exec(
+    "CREATE TRIGGER reject_finalize BEFORE INSERT ON vetting_evidence_audit WHEN NEW.action='finalize' BEGIN SELECT RAISE(ABORT,'audit unavailable'); END",
+  );
+  expect(
+    (await send("POST", `${servicePath}/${digest}/finalize`, "{}")).status,
+  ).toBe(500);
+  expect(
+    sqlite
+      .query(
+        "SELECT count(*) AS n FROM vetting_evidence_completions WHERE run_id=?",
+      )
+      .get(runId),
+  ).toEqual({ n: 0 });
+  sqlite.exec("DROP TRIGGER reject_finalize");
+  expect(
+    (await send("POST", `${servicePath}/${digest}/finalize`, "{}")).status,
+  ).toBe(200);
+  const replay = await send("POST", `${servicePath}/${digest}/finalize`, "{}");
+  expect((await replay.json()).replayed).toBe(true);
+  const base = `/api/v1/operator/vetting-evidence/${id}/${runId}/${digest}`;
+  const grant = async () =>
+    (await retained.evidence.handle(
+      new Request(`${ORIGIN}${base}/download-grant`, {
+        method: "POST",
+        headers: {
+          "x-test-operator": "900000003",
+          origin: ORIGIN,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          reason: "Inspect complete synthetic VM overlay bytes",
+        }),
+      }),
+    ))!;
+  const request = async (
+    cookie: string,
+    actor = "900000003",
+    extra: Record<string, string> = {},
+  ) =>
+    (await retained.evidence.handle(
+      new Request(`${ORIGIN}${base}/download`, {
+        headers: {
+          "x-test-operator": actor,
+          "sec-fetch-site": "same-origin",
+          cookie,
+          ...extra,
+        },
+      }),
+    ))!;
+  const granted = await grant();
+  expect(granted.status).toBe(201);
+  expect(await granted.text()).not.toContain("grant");
+  const cookie = granted.headers.get("set-cookie")!;
+  expect(cookie).toContain("HttpOnly; SameSite=Strict");
+  expect(cookie).toContain(`Path=${base}/download;`);
+  const token = cookie.split(";")[0];
+  expect((await request(token, "900000001")).status).toBe(403);
+  expect((await request(`${token}; ${token}`)).status).toBe(403);
+  expect(
+    (await request(token, undefined, { "sec-fetch-site": "same-site" })).status,
+  ).toBe(403);
+  const replies = await Promise.all([request(token), request(token)]);
+  expect(replies.map((r) => r.status).sort()).toEqual([200, 403]);
+  const accepted = replies.find((r) => r.status === 200)!;
+  expect(accepted.headers.get("set-cookie")).toContain("Max-Age=0");
+  const reader = accepted.body!.getReader(),
+    streamed = createHash("sha256");
+  let size = 0,
+    maximum = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    maximum = Math.max(maximum, value.length);
+    size += value.length;
+    streamed.update(value);
+  }
+  expect(size).toBe(bytes.length);
+  expect(maximum).toBeLessThanOrEqual(EVIDENCE_CHUNK_BYTES);
+  expect(streamed.digest("hex")).toBe(digest);
+  const cancellation = await request(
+    (await grant()).headers.get("set-cookie")!.split(";")[0],
+  );
+  const cancelled = cancellation.body!.getReader();
+  await cancelled.read();
+  await cancelled.cancel();
+  const audit = sqlite
+    .query("SELECT action FROM vetting_evidence_audit WHERE run_id=?")
+    .all(runId) as { action: string }[];
+  expect(audit.filter((r) => r.action === "download-finished")).toHaveLength(1);
+  expect(audit.filter((r) => r.action === "download-cancelled")).toHaveLength(
+    1,
+  );
+  const wrongPath = `/api/v1/vetting/evidence/${id}/wrong-whole-digest`;
+  const wrong = JSON.parse(manifest);
+  wrong.traceSha256 = "a".repeat(64);
+  wrong.objects[0].sha256 = wrong.traceSha256;
+  expect((await send("POST", wrongPath, JSON.stringify(wrong))).status).toBe(
+    201,
+  );
+  for (const part of chunks)
+    expect(
+      (
+        await send(
+          "PUT",
+          `${wrongPath}/${wrong.traceSha256}/chunks/${part.index}`,
+          bytes.subarray(
+            part.index * EVIDENCE_CHUNK_BYTES,
+            part.index * EVIDENCE_CHUNK_BYTES + part.sizeBytes,
+          ),
+        )
+      ).status,
+    ).toBe(200);
+  expect(
+    (await send("POST", `${wrongPath}/${wrong.traceSha256}/finalize`, "{}"))
+      .status,
+  ).toBe(409);
+  expect(
+    sqlite
+      .query(
+        "SELECT count(*) AS n FROM vetting_evidence_completions WHERE run_id='wrong-whole-digest'",
+      )
+      .get(),
+  ).toEqual({ n: 0 });
+  const finishing = await request(
+    (await grant()).headers.get("set-cookie")!.split(";")[0],
+  );
+  sqlite.exec(
+    "CREATE TRIGGER reject_download_audit BEFORE INSERT ON vetting_evidence_audit WHEN NEW.action IN ('download-finished','download-failed') BEGIN SELECT RAISE(ABORT,'audit unavailable'); END",
+  );
+  await expect(finishing.arrayBuffer()).rejects.toThrow("audit unavailable");
+  sqlite.exec("DROP TRIGGER reject_download_audit");
+  const interrupted = await request(
+    (await grant()).headers.get("set-cookie")!.split(";")[0],
+  );
+  const interruptedReader = interrupted.body!.getReader();
+  await interruptedReader.read();
+  await retained.bucket.delete(
+    `vetting/${id}/${runId}/${digest}/chunks/1/${chunks[1].sha256}`,
+  );
+  await expect(interruptedReader.read()).rejects.toThrow(
+    "Declared evidence bytes are missing",
+  );
+  expect((await grant()).status).toBe(404);
+}, 60_000);

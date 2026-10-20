@@ -1,5 +1,5 @@
 /** Real local workerd R2 for the connected vetting workflows; no live policy. */
-import { convertV4MiniflareOptions, Miniflare } from "miniflare";
+import { fileURLToPath } from "node:url";
 import type { ProjectD1Database } from "../backend/projects/cloudflare-persistence";
 import type { R2Bucket } from "../backend/trace/cloudflare-persistence";
 import {
@@ -38,25 +38,93 @@ export async function localVettingEvidence(
   db: ProjectD1Database,
   now: () => Date,
 ) {
-  const runtime = new Miniflare(
-    convertV4MiniflareOptions({
-      name: "evidence",
-      modules: true,
-      script: "export default {fetch(){return new Response()}}",
-      compatibilityDate: "2026-07-30",
-      r2Buckets: ["E"],
-    }),
+  const child = Bun.spawn(
+    [
+      "node",
+      fileURLToPath(new URL("./vetting-evidence-r2.mjs", import.meta.url)),
+    ],
+    { stdin: "pipe", stdout: "pipe", stderr: "inherit" },
   );
-  const bucket = (await runtime.getR2Bucket(
-    "E",
-    "evidence",
-  )) as unknown as Omit<R2Bucket, "get"> & {
-    get(key: string): Promise<{
-      size: number;
-      customMetadata?: Record<string, string>;
-      arrayBuffer(): Promise<ArrayBuffer>;
-    } | null>;
-    delete(key: string): Promise<void>;
+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  let origin: string;
+  try {
+    const reader = child.stdout.getReader();
+    origin = await Promise.race([
+      (async () => {
+        let line = "";
+        while (!line.includes("\n")) {
+          const chunk = await reader.read();
+          if (chunk.done) throw new Error("Local R2 startup failed");
+          line += new TextDecoder().decode(chunk.value);
+          if (line.length > 256)
+            throw new Error("Invalid local R2 startup line");
+        }
+        return line.trim();
+      })(),
+      new Promise<never>((_, reject) => {
+        startupTimer = setTimeout(
+          () => reject(new Error("Local R2 startup timed out")),
+          4000,
+        );
+      }),
+    ]);
+    reader.releaseLock();
+    const parsed = new URL(origin);
+    if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1")
+      throw new Error("Invalid local R2 origin");
+  } catch (error) {
+    child.kill();
+    await child.exited;
+    throw error;
+  } finally {
+    clearTimeout(startupTimer);
+  }
+  async function dispose() {
+    child.stdin.end();
+    const timer = setTimeout(() => child.kill(), 4000);
+    try {
+      if ((await child.exited) !== 0)
+        throw new Error("Local R2 shutdown failed");
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  // Use asynchronous HTTP to real workerd R2. Miniflare's synchronous RPC
+  // property getters can fail under Bun before object metadata is returned.
+  const url = (key: string) => `${origin}${encodeURIComponent(key)}`;
+  async function read(key: string, method: "GET" | "HEAD") {
+    const response = await fetch(url(key), { method });
+    if (response.status === 404) return null;
+    if (!response.ok)
+      throw new Error(`Local R2 read failed: ${response.status}`);
+    return {
+      size: Number(response.headers.get("x-r2-size")),
+      customMetadata: JSON.parse(response.headers.get("x-r2-metadata")!),
+      body: response.body,
+      arrayBuffer: () => response.arrayBuffer(),
+    };
+  }
+  const bucket = {
+    head: (key: string) => read(key, "HEAD"),
+    get: (key: string) => read(key, "GET"),
+    put: async (...[key, bytes, options]: Parameters<R2Bucket["put"]>) => {
+      const response = await fetch(url(key), {
+        method: "PUT",
+        headers: { "x-r2-options": JSON.stringify(options) },
+        body: new Uint8Array(bytes),
+      });
+      if (!response.ok)
+        throw new Error(`Local R2 write failed: ${response.status}`);
+      const result = (await response.json()) as { stored: boolean };
+      return result.stored ? {} : null;
+    },
+    delete: async (key: string) => {
+      const response = await fetch(url(key), {
+        method: "DELETE",
+      });
+      if (response.status !== 204)
+        throw new Error(`Local R2 delete failed: ${response.status}`);
+    },
   };
   const keys = await vettingKeyPair();
   const evidence = new VettingEvidence({
@@ -64,15 +132,14 @@ export async function localVettingEvidence(
     bucket: {
       head: (key) => bucket.head(key),
       put: (key, bytes, options) => bucket.put(key, bytes, options),
-      // Miniflare's RPC stream proxy cannot transfer getReader() through Bun.
-      // Read the actual workerd object bytes, then expose a native stream.
+      // Forward the asynchronous workerd HTTP response stream directly.
       get: async (key) => {
         const value = await bucket.get(key);
         return value
           ? {
               size: value.size,
               customMetadata: value.customMetadata,
-              body: new Response(await value.arrayBuffer()).body!,
+              body: value.body!,
             }
           : null;
       },
@@ -134,6 +201,6 @@ export async function localVettingEvidence(
     bucket,
     request,
     retain,
-    dispose: () => runtime.dispose(),
+    dispose,
   };
 }
