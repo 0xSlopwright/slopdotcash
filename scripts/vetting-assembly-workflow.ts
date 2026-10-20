@@ -229,6 +229,7 @@ if (input.guestEvidence) {
 for (const item of review.items)
   assert.equal(digest(Buffer.from(item.text)), item.sha256);
 const before = (await readdir(outputDirectory)).sort();
+let filesystemRefusals = 0;
 if (input.dependencyEvidence) {
   assert(
     review.visibilityGaps.includes(
@@ -317,6 +318,99 @@ await assert.rejects(
   assembleEvidence({ ...input, queuedInputsSha256: "0".repeat(64) }),
 );
 if (input.guestEvidence) {
+  const receipt = JSON.parse(
+    await readFile(join(vmDirectory, "guest-source-evidence.json"), "utf8"),
+  );
+  if (receipt.filesystemSha256) {
+    assert(
+      review.visibilityGaps.includes(
+        "captured-filesystem-artifacts-not-inspected-or-released",
+      ),
+    );
+    assert(
+      manifest.files.some(
+        (file: { role: string }) => file.role === "captured-filesystem-object",
+      ),
+    );
+    const negative = await mkdtemp(
+      join(outputDirectory, "filesystem-negative-"),
+    );
+    try {
+      const copy = join(negative, "vm");
+      await cp(vmDirectory, copy, { recursive: true });
+      const capture = JSON.parse(
+        await readFile(join(copy, "guest-filesystem.json"), "utf8"),
+      );
+      const sha = Object.keys(capture.objects)[0];
+      await rm(join(copy, `filesystem-object-${sha}`));
+      await assert.rejects(
+        assembleEvidence({
+          ...input,
+          vmEvidence: { ...input.vmEvidence, directory: copy },
+        }),
+      );
+      await cp(
+        join(vmDirectory, `filesystem-object-${sha}`),
+        join(copy, `filesystem-object-${sha}`),
+      );
+      // Change a declared phase reference while retaining actual object bytes.
+      // Rebind outer hashes so this specifically tests content-reference closure.
+      capture.phases[1].entries[0].sha256 = "0".repeat(64);
+      const captureBytes = Buffer.from(JSON.stringify(capture));
+      const serial = await readFile(join(copy, "serial.log"), "utf8");
+      const prefix = "SLOP_GUEST_EVIDENCE_V1:";
+      const frameLine = serial
+        .split("\n")
+        .find((line) => line.startsWith(prefix));
+      assert(frameLine);
+      const frame = JSON.parse(
+        Buffer.from(frameLine.slice(prefix.length).trim(), "base64").toString(),
+      );
+      frame.filesystem = captureBytes.toString();
+      frame.filesystemSha256 = digest(captureBytes);
+      const changedSerial = Buffer.from(
+        serial.replace(
+          frameLine,
+          prefix + Buffer.from(JSON.stringify(frame)).toString("base64"),
+        ),
+      );
+      const vm = JSON.parse(
+        await readFile(join(copy, "evidence.json"), "utf8"),
+      );
+      vm.serialSha256 = digest(changedSerial);
+      const vmBytes = Buffer.from(JSON.stringify(vm));
+      const changedReceipt = {
+        ...receipt,
+        filesystemSha256: frame.filesystemSha256,
+        serialSha256: vm.serialSha256,
+        vmEvidenceSha256: digest(vmBytes),
+      };
+      const receiptBytes = Buffer.from(JSON.stringify(changedReceipt));
+      for (const [name, body] of [
+        ["guest-filesystem.json", captureBytes],
+        ["serial.log", changedSerial],
+        ["evidence.json", vmBytes],
+        ["guest-source-evidence.json", receiptBytes],
+      ] as const) {
+        await rm(join(copy, name));
+        await writeFile(join(copy, name), body);
+      }
+      await assert.rejects(
+        assembleEvidence({
+          ...input,
+          vmEvidence: { directory: copy, sha256: digest(vmBytes) },
+          guestEvidence: {
+            ...input.guestEvidence,
+            receiptSha256: digest(receiptBytes),
+          },
+        }),
+        /Filesystem entry refers to missing content/,
+      );
+      filesystemRefusals = 2;
+    } finally {
+      await rm(negative, { recursive: true, force: true });
+    }
+  }
   for (const key of [
     "profileSha256",
     "collectorSha256",
@@ -363,6 +457,7 @@ console.log(
     providerCalls: 0,
     publications: 0,
     rejectedCorruptOrMissingInputs:
+      filesystemRefusals +
       (input.guestEvidence ? 7 : 4) +
       (dependencyDirectory
         ? 5 + Number(Boolean(dependencyFailureDirectory))

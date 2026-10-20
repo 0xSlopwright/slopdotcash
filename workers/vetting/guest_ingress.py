@@ -64,7 +64,8 @@ def build_seed(*, acquisition_directory, source_inventory_sha256, profile, profi
             return {'seedSha256': sha256(destination), 'collectorSha256': digest(collector),
                     'profileSha256': profile_sha256, 'sourceInventorySha256': source_inventory_sha256,
                     'seedBuilderSha256': xorriso_sha256, 'fixtureOnly': True,
-                    'kernelPolicySha256': approved.get('kernelPolicySha256')}
+                    'kernelPolicySha256': approved.get('kernelPolicySha256'),
+                    'filesystemCapture': 'kernelPolicySha256' in approved}
         except BaseException:
             destination.unlink(missing_ok=True)
             raise
@@ -128,6 +129,56 @@ def collect_guest(*, directory, profile, profile_sha256, source_inventory_sha256
     else:
         after = None
     files = {}
+    if seed_binding.get('filesystemCapture') and 'filesystem' not in receipt:
+        raise ValueError('Required filesystem capture is absent')
+    if 'filesystem' in receipt:
+        if receipt.get('filesystemEncoding') != 'json-utf8':
+            raise ValueError('Unsupported filesystem encoding')
+        capture = receipt.pop('filesystem').encode('utf8')
+        if len(capture) > 2 * 1024 * 1024 or digest(capture) != receipt.get('filesystemSha256'):
+            raise ValueError('Filesystem capture changed or exceeded bound')
+        document = json.loads(capture)
+        if (document.get('schema') != 'slop-filesystem-capture-v1'
+                or document.get('state') != 'incomplete'
+                or document.get('executionAuthorized') is not False
+                or document.get('root') != '/tmp/slop-quarantine'
+                or not isinstance(document.get('objects'), dict)
+                or len(document['objects']) > 256):
+            raise ValueError('Invalid filesystem capture')
+        total = 0
+        for sha, encoded in document['objects'].items():
+            data = base64.b64decode(encoded, validate=True)
+            total += len(data)
+            if digest(data) != sha or total > 672 * 1024:
+                raise ValueError('Filesystem content changed or exceeded bound')
+            files['filesystem-object-' + sha] = data
+        phases = document.get('phases')
+        if (not isinstance(phases, list) or [phase.get('phase') for phase in phases] !=
+                ['before-command', 'after-traced-command', 'after-post-collector-probe']):
+            raise ValueError('Missing filesystem observation phases')
+        for phase in phases:
+            if not isinstance(phase.get('entries'), list) or len(phase['entries']) > 256:
+                raise ValueError('Invalid filesystem inventory')
+            for entry in phase['entries']:
+                safe = entry.get('path')
+                from guest import safe_path
+                safe_path(safe)
+                if 'sha256' in entry:
+                    data = files.get('filesystem-object-' + entry['sha256'])
+                    if data is None or len(data) != entry.get('capturedBytes'):
+                        raise ValueError('Missing filesystem content')
+        coverage = document.get('visibilityGaps')
+        if not isinstance(coverage, list) or len(coverage) > 32 or any(not isinstance(gap, str) or not gap or len(gap) > 512 for gap in coverage):
+            raise ValueError('Invalid filesystem coverage')
+        receipt['visibilityGaps'] = sorted(set(receipt['visibilityGaps']) | set(coverage))
+        files['guest-filesystem.json'] = capture
+        receipt['visibilityGaps'] = sorted(set(receipt['visibilityGaps']) | {
+            'captured-filesystem-artifacts-not-inspected-or-released',
+            'filesystem-observation-not-atomic-or-independent-host-proof',
+            'filesystem-writes-between-observations-may-be-unseen',
+            'filesystem-paths-outside-declared-root-not-observed',
+            'filesystem-hardlinks-may-alias-paths-outside-root',
+        })
     if after is not None:
         files['guest-after-collector.log'] = after
     for key, filename, maximum in [('trace', 'guest-events.log', 1024 * 1024),
