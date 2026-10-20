@@ -58,7 +58,7 @@ queue a scan, and Slop serves no skill for it.
 | `queued` | A scan of the live pin waits for a result | Blocked |
 | `quarantined` | The newest finished scan of the live pin is `incomplete` | Blocked |
 | `cleared` | The newest finished scan of the live pin is `clean` | Allowed |
-| `banned` | Any scan of the project is `malicious` | Blocked; a new scan or commit cannot lift it |
+| `banned` | A malicious scan has no independent reinstatement decision covering it | Blocked; a new scan or commit alone cannot lift it |
 
 Merging to the integration branch therefore pauses skills and discovery for
 the project until an admin queues a scan of the new head and its clean result
@@ -66,8 +66,8 @@ lands. Slop keeps each branch head in the edge cache for 30 seconds, and edge
 copies of public skill responses expire within another 30 seconds.
 
 A queued rescan keeps the last finished decision until its result lands.
-Reinstatement after a ban belongs to the ADM-06 path (issue #911) and is not
-in this module.
+Reinstatement after a ban uses the ADM-06 path and the exact reviewed scan
+records described in [Independent reinstatement](#independent-reinstatement).
 
 ## Routes
 
