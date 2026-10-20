@@ -257,10 +257,10 @@ export function assertEscrowPolicy(value) {
     !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(value.effectiveCycle) ||
     !isEscrowChain(value.chain) ||
     value.feeBasisPoints !== 200 ||
-    // Escrow v2 (PRD section 18): the unused-fund withdrawal fee is 5%,
-    // floor(gross / 20) per withdrawal; the payout fee stays 2%. The
-    // contracts enforce both.
-    value.withdrawalFeeBasisPoints !== 500 ||
+    // Escrow v2 (PRD section 18): the unused-fund withdrawal fee equals the
+    // 2% payout fee, floor(gross / 50) per withdrawal (#907). The contracts
+    // enforce both.
+    value.withdrawalFeeBasisPoints !== 200 ||
     value.feeMode !== "deduct-from-gross" ||
     !Array.isArray(value.deployments)
   )

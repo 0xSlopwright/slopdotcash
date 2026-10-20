@@ -1138,7 +1138,7 @@ export async function runSolana(
       await persist();
     }
 
-    // 7. Withdraw the 850 free units: 5% to the fee account, the rest to the owner.
+    // 7. Withdraw the 850 free units: 2% to the fee account, the rest to the owner.
     const withdrawal = await send(
       "withdraw-unused",
       [keys.owner],
@@ -1158,7 +1158,7 @@ export async function runSolana(
         ownerDelta !== amounts.withdrawGross - amounts.withdrawFee ||
         feeDelta !== amounts.withdrawFee
       )
-        throw new Error("Withdrawal did not pay floor(gross / 20) as the fee");
+        throw new Error("Withdrawal did not pay floor(gross / 50) as the fee");
       await persist();
     }
     if (!entry.checks.overWithdrawal)

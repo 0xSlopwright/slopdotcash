@@ -440,8 +440,8 @@ try {
     ["call", token, "balanceOf(address)(uint256)", owner, "--rpc-url", rpcUrl],
     { encoding: "utf8" },
   ).trim();
-  // 5% unused-fund withdrawal fee, floor(gross / 20): 10 gross returns 9.5.
-  assert.equal(refunded.split(" ")[0], "9500000");
+  // 2% unused-fund withdrawal fee, floor(gross / 50): 10 gross returns 9.8.
+  assert.equal(refunded.split(" ")[0], "9800000");
   const payment = await verifyPayment(config, paymentTx, 0, id);
   assert.equal(payment.destination, recipient.toLowerCase());
   assert.equal(payment.bindingVersion, "2");
@@ -476,8 +476,8 @@ try {
     ["call", token, "balanceOf(address)(uint256)", fee, "--rpc-url", rpcUrl],
     { encoding: "utf8" },
   ).trim();
-  // 2 payout fee, 0.5 withdrawal fee and the 5 service charge.
-  assert.equal(feeBalance.split(" ")[0], "7500000");
+  // 2 payout fee, 0.2 withdrawal fee and the 5 service charge.
+  assert.equal(feeBalance.split(" ")[0], "7200000");
   await rpc("anvil_mine", ["0x40"]);
   const totals = await readVaultTotals({
     rpcUrl,
@@ -498,7 +498,7 @@ try {
       totalPaid: "98000000",
       totalPayoutFees: "2000000",
       totalGrossWithdrawn: "10000000",
-      totalWithdrawalFees: "500000",
+      totalWithdrawalFees: "200000",
       totalServiceFees: "5000000",
       freeBalance: "0",
       reservedPrincipal: "0",
@@ -636,7 +636,7 @@ try {
     "a payment made before the rotation still verifies after it",
   );
   console.log(
-    "EVM adapter integration passed: real factory deployment, permissionless deposit, 18-decimal vault beyond uint64, readVaultTotals, 5% withdrawal fee, vault-bound award, wallet-accepted delayed and cancellable binding, payment, fee claim, exactly-once service charge, finalized gating, wrong chain/vault/award/index/delay rejection, timelocked authority rotation.",
+    "EVM adapter integration passed: real factory deployment, permissionless deposit, 18-decimal vault beyond uint64, readVaultTotals, 2% withdrawal fee, vault-bound award, wallet-accepted delayed and cancellable binding, payment, fee claim, exactly-once service charge, finalized gating, wrong chain/vault/award/index/delay rejection, timelocked authority rotation.",
   );
 } finally {
   anvil.kill("SIGTERM");

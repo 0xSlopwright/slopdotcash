@@ -748,7 +748,7 @@ export async function runEvm(
     // 6. Replay dispatch: no second attempt, no second transfer.
     await replay(awards, actors, vault);
 
-    // 7. Withdraw the 850 free units: 5% to fees, the rest to the owner.
+    // 7. Withdraw the 850 free units: 2% to fees, the rest to the owner.
     if (!entry.checks.withdrawal) {
       const before = await chain.balance(asset, keys.owner.address);
       const receipt = await send(
@@ -793,7 +793,7 @@ export async function runEvm(
           keys.owner.address.toLowerCase() ||
         after - beforeAtParent !== amounts.withdrawGross - amounts.withdrawFee
       )
-        throw new Error("Withdrawal did not pay floor(gross / 20) as the fee");
+        throw new Error("Withdrawal did not pay floor(gross / 50) as the fee");
       await persist();
     }
     if (!entry.checks.overWithdrawal)
