@@ -385,16 +385,8 @@ async function send(
   if (attempt && attempt.fingerprint !== fingerprint)
     throw new Error("Idempotency collision");
   if (attempt) {
-    const response = (await solanaRpc(ctx.config, "getSignatureStatuses", [
-      [attempt.transactionId],
-      { searchTransactionHistory: true },
-    ])) as { value: ({ err: unknown; confirmationStatus: string } | null)[] };
-    const status = response.value[0];
-    if (status) {
-      if (status.err)
-        throw new Error("Existing transaction failed; reconcile before retry");
+    if (await observedTransaction(ctx, attempt))
       return { transactionId: attempt.transactionId };
-    }
     const height = await solanaRpc(ctx.config, "getBlockHeight", [
       { commitment: "finalized" },
     ]);
@@ -484,19 +476,58 @@ async function send(
     return { transactionId: attempt.transactionId, transaction: attempt.raw };
   return broadcast(ctx, attempt);
 }
+/** An observed signature is submission evidence, never proof of payment finality. */
+async function observedTransaction(
+  ctx: Context,
+  attempt: Attempt,
+): Promise<boolean> {
+  const response = (await solanaRpc(ctx.config, "getSignatureStatuses", [
+    [attempt.transactionId],
+    { searchTransactionHistory: true },
+  ])) as { value?: unknown };
+  if (
+    !response ||
+    !Array.isArray(response.value) ||
+    response.value.length !== 1
+  )
+    throw new Error("Invalid signature status response");
+  const status = response.value[0];
+  if (status === null) return false;
+  if (
+    typeof status !== "object" ||
+    Array.isArray(status) ||
+    !Object.hasOwn(status, "err") ||
+    !["processed", "confirmed", "finalized"].includes(status.confirmationStatus)
+  )
+    throw new Error("Invalid signature status response");
+  if (status.err !== null)
+    throw new Error("Existing transaction failed; reconcile before retry");
+  return true;
+}
 async function broadcast(
   ctx: Context,
   attempt: Attempt,
 ): Promise<{ transactionId: string }> {
-  const result = await solanaRpc(ctx.config, "sendTransaction", [
-    attempt.raw,
-    {
-      encoding: "base64",
-      skipPreflight: false,
-      preflightCommitment: "confirmed",
-      maxRetries: 3,
-    },
-  ]);
+  if (await observedTransaction(ctx, attempt))
+    return { transactionId: attempt.transactionId };
+  let result: unknown;
+  try {
+    result = await solanaRpc(ctx.config, "sendTransaction", [
+      attempt.raw,
+      {
+        encoding: "base64",
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+        maxRetries: 3,
+      },
+    ]);
+  } catch (error) {
+    // The exact bytes may have landed between the status read and preflight,
+    // or the response may have been lost. Reconcile without signing or resending.
+    if (await observedTransaction(ctx, attempt))
+      return { transactionId: attempt.transactionId };
+    throw error;
+  }
   if (result !== attempt.transactionId)
     throw new Error("Broadcast signature mismatch");
   return { transactionId: attempt.transactionId };
