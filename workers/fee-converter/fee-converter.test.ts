@@ -317,6 +317,50 @@ describe("conversion policy", () => {
 });
 
 describe("idempotent sends", () => {
+  test("an approval is recorded before it can be broadcast", async () => {
+    const h = harness();
+    h.chain.prepare = async (_token, quote, recordApproval) => {
+      await recordApproval({ txId: `0x${"a".repeat(64)}`, evmNonce: 7 });
+      expect(h.rows()[0]).toMatchObject({
+        state: "quoted",
+        approval_tx_id: `0x${"a".repeat(64)}`,
+        raw_tx: null,
+        evm_nonce: 7,
+      });
+      throw new Error(`approval broadcast failed for ${quote.amountIn}`);
+    };
+
+    await runNetwork(h.network, h.deps);
+
+    expect(h.rows()[0]).toMatchObject({
+      state: "failed",
+      approval_tx_id: `0x${"a".repeat(64)}`,
+      raw_tx: null,
+      evm_nonce: 7,
+      reason: "prepare: approval broadcast failed for 20000000",
+    });
+  });
+
+  test("a recorded approval does not block the swap that follows", async () => {
+    const h = harness();
+    const prepareSwap = h.chain.prepare;
+    h.chain.prepare = async (token, quote, recordApproval) => {
+      await recordApproval({ txId: `0x${"a".repeat(64)}`, evmNonce: 6 });
+      const swap = await prepareSwap(token, quote, recordApproval);
+      return { ...swap, approvalTxId: `0x${"a".repeat(64)}` };
+    };
+
+    await runNetwork(h.network, h.deps);
+
+    expect(h.chain.sent).toEqual(["0xraw1"]);
+    expect(h.rows()[0]).toMatchObject({
+      state: "submitted",
+      approval_tx_id: `0x${"a".repeat(64)}`,
+      raw_tx: "0xraw1",
+      evm_nonce: 1,
+    });
+  });
+
   test("an unknown send blocks a new attempt until it is reconciled", async () => {
     const h = harness();
     h.chain.broadcastError = new Error(

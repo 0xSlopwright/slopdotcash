@@ -26,6 +26,7 @@ import type { Limits, NetworkConfig } from "./config";
 import type {
   ChainClient,
   ConversionRow,
+  PreparedApproval,
   PreparedSend,
   Quote,
   QuoteResult,
@@ -325,7 +326,11 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
       };
     },
 
-    async prepare(token, quote: Quote): Promise<PreparedSend> {
+    async prepare(
+      token,
+      quote: Quote,
+      recordApproval: (approval: PreparedApproval) => Promise<void>,
+    ): Promise<PreparedSend> {
       if (!account)
         throw new Error("Signing is disabled without a fee-wallet key");
       // Approve exactly the order amount to the pinned router, never more.
@@ -350,6 +355,10 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
           }),
           nonce,
         );
+        await recordApproval({
+          txId: approval.hash,
+          evmNonce: nonce,
+        });
         await sendRaw(approval.raw);
         approvalTxId = approval.hash;
         const receipt = await waitForReceipt(approval.hash);

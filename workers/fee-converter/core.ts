@@ -73,6 +73,15 @@ export interface PreparedSend {
   minAmountOut: bigint;
 }
 
+/**
+ * An ERC-20 approval that must be durable before it is broadcast. Only its
+ * hash and nonce are kept: `raw_tx` is immutable once set and holds the swap.
+ */
+export interface PreparedApproval {
+  txId: string;
+  evmNonce: number;
+}
+
 export type SendStatus =
   | { kind: "pending" }
   | { kind: "finalized"; amountOut: bigint }
@@ -83,8 +92,12 @@ export type SendStatus =
 export interface ChainClient {
   balance(token: string): Promise<bigint>;
   quote(token: string, amount: bigint): Promise<QuoteResult>;
-  /** Approves if needed, builds, simulates and signs. Never broadcasts. */
-  prepare(token: string, quote: Quote): Promise<PreparedSend>;
+  /** Records and sends any approval, then builds, simulates and signs the swap. */
+  prepare(
+    token: string,
+    quote: Quote,
+    recordApproval: (approval: PreparedApproval) => Promise<void>,
+  ): Promise<PreparedSend>;
   broadcast(rawTx: string): Promise<void>;
   status(row: ConversionRow): Promise<SendStatus>;
 }
@@ -475,7 +488,13 @@ async function convert(
   await deps.store.insert(row);
   let prepared: PreparedSend;
   try {
-    prepared = await client.prepare(token, quote);
+    prepared = await client.prepare(token, quote, async (approval) => {
+      await deps.store.update(row.id, {
+        approvalTxId: approval.txId,
+        evmNonce: approval.evmNonce,
+        updatedAt: at(),
+      });
+    });
   } catch (error) {
     await deps.store.update(row.id, {
       state: "failed",
