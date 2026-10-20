@@ -43,6 +43,16 @@ def main():
     with tempfile.TemporaryDirectory(prefix='slop-dependency-workflow-') as temporary:
         root = Path(temporary)
         root.chmod(0o777)
+        # The runner checkout may have private ancestors. Copy exact trusted
+        # sources for the unprivileged process; never relax checkout permissions.
+        runtime = root / 'runtime'
+        runtime.mkdir(mode=0o755)
+        for name in ('dependencies.py', 'artifacts.py'):
+            source_bytes = (ROOT / name).read_bytes()
+            copied = runtime / name
+            copied.write_bytes(source_bytes)
+            copied.chmod(0o444)
+            assert sha(copied.read_bytes()) == sha(source_bytes)
         resolv = root / 'resolv.conf'
         resolv.write_text('nameserver 127.0.0.1\noptions timeout:1 attempts:1\n')
         call('mount', '--bind', str(resolv), '/etc/resolv.conf')
@@ -158,13 +168,13 @@ def main():
             profile = root / ('profile-' + str(counter) + '.json')
             profile.write_text(json.dumps(policy))
             output = root / ('run-' + str(counter))
-            command = [sys.executable, '-I', str(ROOT / 'dependencies.py'), str(profile),
+            command = [sys.executable, '-I', str(runtime / 'dependencies.py'), str(profile),
                        sha(profile.read_bytes()), str(source), str(cert), str(output)]
             if not root_analyzer:
                 command = ['setpriv', '--reuid=65534', '--regid=65534', '--clear-groups', '--', *command]
             result = subprocess.run(command, capture_output=True, timeout=40, env={})
             if success:
-                assert result.returncode == 0, result.stdout.decode()
+                assert result.returncode == 0, result.stdout.decode() + result.stderr.decode()
                 inventory = json.loads((output / 'inventory.json').read_text())
                 record = inventory['records'][0]
                 assert inventory['executionAuthorized'] is False and inventory['state'] == 'quarantined'
