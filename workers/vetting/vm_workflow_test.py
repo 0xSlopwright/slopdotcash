@@ -1,8 +1,10 @@
 """Actual harmless VM boot, offline execution and timeout evidence; no live repository."""
 import argparse
+import base64
 import json
 from pathlib import Path
 import subprocess
+import shutil
 import tempfile
 from vm import run_vm, sha256, tool, assert_standalone
 
@@ -11,6 +13,8 @@ def main():
     parser = argparse.ArgumentParser()
     for key in ("qemu", "qemu-sha256", "image-tool", "image-tool-sha256"):
         parser.add_argument("--" + key, required=True)
+    for key in ("acquisition-directory", "inventory-sha256", "profile", "profile-sha256", "xorriso", "xorriso-sha256"):
+        parser.add_argument("--" + key)
     parser.add_argument("--base", required=True)
     parser.add_argument("--base-sha256", required=True)
     parser.add_argument("--firmware", required=True)
@@ -38,6 +42,14 @@ runcmd:
                         "-joliet", "-rock", "-o", str(seed),
                         str(root / "user-data"), str(root / "meta-data"),
                         str(root / "network-config")], check=True)
+        binding = None
+        if args.acquisition_directory:
+            from guest_ingress import build_seed
+            seed.unlink()
+            binding = build_seed(acquisition_directory=args.acquisition_directory,
+                                 source_inventory_sha256=args.inventory_sha256,
+                                 profile=args.profile, profile_sha256=args.profile_sha256,
+                                 output=seed, xorriso=args.xorriso, xorriso_sha256=args.xorriso_sha256)
         inputs = dict(qemu=args.qemu, qemu_sha256=args.qemu_sha256,
                       image_tool=args.image_tool, image_tool_sha256=args.image_tool_sha256, base=args.base, base_sha256=args.base_sha256,
                       firmware=args.firmware, firmware_sha256=args.firmware_sha256,
@@ -48,9 +60,84 @@ runcmd:
         result = json.loads((completed / "evidence.json").read_text())
         serial = (completed / "serial.log").read_text(errors="replace")
         assert result["exitCode"] == 0, "Guest failed; inspect private evidence"
-        assert "SLOP_FIXTURE_DONE" in serial, "Guest fixture did not complete"
-        assert "uid=65534(nobody)" in serial, "Unprivileged guest command was not observed"
-        assert "harmless-fixture" in serial
+        if binding:
+            from guest_ingress import collect_guest
+            collected = collect_guest(directory=completed, profile=args.profile,
+                                      profile_sha256=args.profile_sha256,
+                                      source_inventory_sha256=args.inventory_sha256,
+                                      acquisition_directory=args.acquisition_directory, seed_binding=binding)
+            receipt = json.loads(Path(collected["path"]).read_text())
+            assert receipt["exitCode"] == 0 and receipt["state"] == "incomplete"
+            output = json.loads((completed / "guest-output.log").read_text())
+            assert output["uid"] == 65534 and output["sourceReadOnly"] is True and output["childExit"] == 0
+            # Alter the actual captured serial bytes: collection must fail before
+            # a completion receipt is written, even when the guest previously succeeded.
+            changed = root / "changed-vm"
+            changed.mkdir()
+            (changed / "evidence.json").write_bytes((completed / "evidence.json").read_bytes())
+            (changed / "serial.log").write_bytes((completed / "serial.log").read_bytes() + b"changed")
+            try:
+                collect_guest(directory=changed, profile=args.profile,
+                              profile_sha256=args.profile_sha256,
+                              source_inventory_sha256=args.inventory_sha256,
+                              acquisition_directory=args.acquisition_directory, seed_binding=binding)
+                raise AssertionError("Changed VM evidence accepted")
+            except ValueError:
+                assert not (changed / "guest-source-evidence.json").exists()
+            # A guest can lie about coverage. Keep required gaps even when its
+            # otherwise content-bound receipt claims a different coverage list.
+            from guest import REQUIRED_GAPS
+            forged = root / "guest-coverage-claim"
+            forged.mkdir()
+            captured = (completed / "serial.log").read_bytes()
+            prefix = b"SLOP_GUEST_EVIDENCE_V1:"
+            frame = next(line for line in captured.splitlines() if line.startswith(prefix))
+            claim = json.loads(base64.b64decode(frame[len(prefix):]))
+            claim["visibilityGaps"] = ["guest-claims-coverage"]
+            replacement = prefix + base64.b64encode(json.dumps(claim).encode())
+            (forged / "serial.log").write_bytes(captured.replace(frame, replacement))
+            altered_vm = json.loads((completed / "evidence.json").read_text())
+            altered_vm["serialSha256"] = sha256(forged / "serial.log")
+            (forged / "evidence.json").write_text(json.dumps(altered_vm))
+            collected_claim = collect_guest(directory=forged, profile=args.profile,
+                                           profile_sha256=args.profile_sha256,
+                                           source_inventory_sha256=args.inventory_sha256,
+                                           acquisition_directory=args.acquisition_directory, seed_binding=binding)
+            retained = json.loads(Path(collected_claim["path"]).read_text())
+            assert set(REQUIRED_GAPS).issubset(retained["visibilityGaps"])
+            altered_profile = root / "changed-profile.json"
+            altered_profile.write_bytes(Path(args.profile).read_bytes() + b" ")
+            try:
+                build_seed(acquisition_directory=args.acquisition_directory,
+                           source_inventory_sha256=args.inventory_sha256,
+                           profile=altered_profile, profile_sha256=args.profile_sha256,
+                           output=root / "must-not-build.iso", xorriso=args.xorriso,
+                           xorriso_sha256=args.xorriso_sha256)
+                raise AssertionError("Changed approved command accepted")
+            except ValueError:
+                assert not (root / "must-not-build.iso").exists()
+            altered_source = root / "changed-source"
+            shutil.copytree(args.acquisition_directory, altered_source)
+            object_path = next((altered_source / "objects").iterdir())
+            object_path.chmod(0o600)
+            object_path.write_bytes(object_path.read_bytes() + b"changed")
+            try:
+                build_seed(acquisition_directory=altered_source,
+                           source_inventory_sha256=args.inventory_sha256,
+                           profile=args.profile, profile_sha256=args.profile_sha256,
+                           output=root / "must-not-build-source.iso", xorriso=args.xorriso,
+                           xorriso_sha256=args.xorriso_sha256)
+                raise AssertionError("Changed acquired source accepted")
+            except ValueError:
+                assert not (root / "must-not-build-source.iso").exists()
+            trace = (completed / "guest-events.log").read_text()
+            for observed in ("execve(", "clone", "openat(", "renameat(", "unlinkat(", "connect(",
+                             "wallet-test.txt", "slop-child-file", "169.254.169.254", "/dev/vda", "EROFS", "EACCES"):
+                assert observed in trace, "Missing actual syscall observation: " + observed
+        else:
+            assert "SLOP_FIXTURE_DONE" in serial, "Guest fixture did not complete"
+            assert "uid=65534(nobody)" in serial, "Unprivileged guest command was not observed"
+            assert "harmless-fixture" in serial
         assert result["network"] == "no-network-device"
         assert result["state"] == "incomplete", "A boot cannot clear a repository"
         assert sha256(args.base) == args.base_sha256

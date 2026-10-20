@@ -48,3 +48,52 @@ private retention limits to completed run directories.
 off. A separate run verifies the wall-time cutoff. This is actual fixture
 execution evidence, not approval to execute a live repository and not proof of
 complete interception.
+
+## Reviewed source fixture and syscall evidence
+
+`guest_ingress.py` adds a private source-to-guest fixture path using the existing
+acquisition `inventory.json` and digest-named objects. Its `build_seed` function
+requires an independently approved source-inventory digest and command-profile
+digest. The profile is operator input; repository instructions cannot supply
+approval. It binds the exact Python command and the guest Python, strace and
+setpriv executable hashes. Only the explicit harmless-fixture profile is
+supported. This is not a general repository execution service.
+
+The builder checks every object and rejects links, submodules, unsafe paths,
+file/directory collisions, changed bytes and oversized input. It copies only
+regular files into a read-only seed image. The guest repeats input and baseline
+checks, writes a root-owned source tree, and mounts that tree read-only with
+noexec, nosuid and nodev. A reviewed interpreter can read the approved fixture;
+noexec is not a defense against new interpreted payloads. Source execution must
+remain disabled for arbitrary projects until the VET-04 interception gate exists.
+
+The root collector runs strace outside the unprivileged command and follows its
+children. The command receives no real credentials, no supplementary groups,
+no new privileges and no capabilities. It has a synthetic, worthless canary and
+no network device. The collector bounds time, output and trace size. It retains
+process, file and socket syscall evidence with timestamps. String arguments
+are limited to 256 bytes; that limitation is an explicit visibility gap. Guest
+ptrace evidence is not an independent kernel monitor, does not prove resistance
+to a compromised guest root, and is not complete HTTP or memory-content evidence.
+
+`collect_guest` binds the receipt to the actual source inventory, approved
+profile, seed, VM evidence and serial digests. It saves private
+`guest-events.log`, `guest-output.log` and `guest-source-evidence.json` alongside
+the original VM evidence. Missing, ambiguous, changed or oversized evidence
+fails. The receipt always remains incomplete and grants neither model spend nor
+publication. The guest's own success report cannot grant security clearance.
+
+Both functions have a JSON CLI: `python3 workers/vetting/guest_ingress.py --config
+<private-file>` builds the seed; add `--collect` for receipt collection. The
+JSON keys match the named function arguments. Seed builder identity is pinned
+too. Keep the approved profile and all generated evidence private.
+
+The existing `vm_workflow_test.py` accepts `--acquisition-directory`,
+`--inventory-sha256`, `--profile`, `--profile-sha256`, `--xorriso` and
+`--xorriso-sha256` to run the source path instead of the basic boot fixture.
+Use acquisition of the checked-in harmless `fixtures/syscall_probe.py` as
+`fixture.py`. The real guest proves read-only source, an unprivileged child
+creating/reading/renaming/deleting a file, a child metadata connection attempt,
+a synthetic canary read and denied raw-device access. It retains the original
+VM timeout and external-data image checks. These are tested observations, not
+complete VET-03 or VET-08 acceptance.
