@@ -46,7 +46,8 @@ export type VettingApiDependencies = {
   resultPublicKeys: string | undefined;
   /**
    * Reads the live pin of a project: its integration-branch head on GitHub
-   * and the deployed skill template commit. Throws when either is unreadable.
+   * and the deployed skill template digest. Throws when either is unreadable
+   * or the project has more than one repository.
    */
   livePin: (manifest: ProjectDefinition) => Promise<VettingPin>;
   /** Resolves the site session; null when signed out. */
@@ -273,11 +274,11 @@ async function requestAssessment(
   let pin: VettingPin;
   try {
     pin = await deps.livePin(project.manifest);
-  } catch {
+  } catch (error) {
     fail(
       503,
       "pin_unavailable",
-      "Slop could not read the integration-branch head or the skill template commit, so a scan cannot be queued",
+      `Slop could not read the integration-branch head or the skill template digest, so a scan cannot be queued. ${error instanceof Error ? error.message : ""}`.trim(),
     );
   }
   const assessment = {
@@ -287,7 +288,7 @@ async function requestAssessment(
     manifestSha256: project.manifestSha256,
     contentSha256: await vettedContentSha256(project.manifest),
     commitSha: pin.commitSha,
-    templateCommit: pin.templateCommit,
+    templateSha256: pin.templateSha256,
     requestedBy: {
       githubId: session.githubId,
       githubLogin: session.githubLogin,
@@ -306,7 +307,7 @@ async function requestAssessment(
 
 /**
  * The service's work queue: exact revisions waiting for a scan, each with the
- * repository commit and skill template commit the service must scan.
+ * repository commit and skill template digest the service must scan.
  */
 async function serviceQueue(
   request: Request,
@@ -323,7 +324,7 @@ async function serviceQueue(
       revision: assessment.revision,
       manifestSha256: assessment.manifestSha256,
       commitSha: assessment.commitSha,
-      templateCommit: assessment.templateCommit,
+      templateSha256: assessment.templateSha256,
       manifestUrl: `${origin}/api/v1/project-revisions/${assessment.projectId}/${assessment.revision}`,
       templateIndexUrl: `${origin}/skill-templates/index.json`,
       requestedAt: assessment.requestedAt,
@@ -373,12 +374,12 @@ async function serviceResult(
     fail(422, "revision_mismatch", "The result scanned another repository");
   if (
     result.assessed.commitSha !== assessment.commitSha ||
-    result.assessed.templateCommit !== assessment.templateCommit
+    result.assessed.templateSha256 !== assessment.templateSha256
   )
     fail(
       422,
       "commit_mismatch",
-      `The result must scan commit ${assessment.commitSha} with skill template ${assessment.templateCommit}, which the queue assigned`,
+      `The result must scan commit ${assessment.commitSha} with skill template ${assessment.templateSha256}, which the queue assigned`,
     );
   const resultText = JSON.stringify(result);
   const recorded = await deps.vetting.recordResult({

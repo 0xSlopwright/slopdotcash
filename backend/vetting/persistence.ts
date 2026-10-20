@@ -24,8 +24,8 @@ export type VettingAssessment = {
   contentSha256: string;
   /** The integration-branch commit the queue assigned to the scan. */
   commitSha: string;
-  /** The skill template commit the queue assigned to the scan. */
-  templateCommit: string;
+  /** The skill template input digest the queue assigned to the scan. */
+  templateSha256: string;
   requestedBy: GithubActor;
   requestedAt: string;
   requestReason: string;
@@ -43,7 +43,7 @@ export type AssessmentSummary = {
   revision: number;
   state: AssessmentState;
   commitSha: string;
-  templateCommit: string;
+  templateSha256: string;
   policyVersion: string | null;
   requestedAt: string;
   completedAt: string | null;
@@ -54,10 +54,10 @@ export type AssessmentSummary = {
 
 /**
  * The exact code a clearance binds (PRD VET-07): the head commit of the
- * project's integration branch and the commit of the skill template that
- * Slop renders the project skills from.
+ * project's integration branch and the content digest of the skill template
+ * inputs Slop renders the project skills from.
  */
-export type VettingPin = { commitSha: string; templateCommit: string };
+export type VettingPin = { commitSha: string; templateSha256: string };
 
 /** Reads the live pin; throws when GitHub or the template cannot be read. */
 export type VettingPinReader = () => Promise<VettingPin>;
@@ -65,7 +65,7 @@ export type VettingPinReader = () => Promise<VettingPin>;
 /**
  * What a revision may do. Only "cleared" lets Slop serve skills, list the
  * project for discovery, or activate the revision. "stale" means a scan of
- * this content exists, but for another branch head or template commit;
+ * this content exists, but for another branch head or template digest;
  * "unverified" means Slop could not read the live pin to compare.
  */
 export type VettingClearance =
@@ -84,7 +84,7 @@ type AssessmentRow = {
   manifest_sha256: string;
   content_sha256: string;
   commit_sha: string;
-  template_commit: string;
+  template_sha256: string;
   requested_by_github_id: string;
   requested_by_github_login: string;
   requested_at: string;
@@ -98,7 +98,7 @@ type AssessmentRow = {
 };
 
 const COLUMNS =
-  "id, project_id, revision, manifest_sha256, content_sha256, commit_sha, template_commit, requested_by_github_id, requested_by_github_login, requested_at, request_reason, state, policy_version, result, result_sha256, signing_key_sha256, completed_at";
+  "id, project_id, revision, manifest_sha256, content_sha256, commit_sha, template_sha256, requested_by_github_id, requested_by_github_login, requested_at, request_reason, state, policy_version, result, result_sha256, signing_key_sha256, completed_at";
 
 function fromRow(row: AssessmentRow): VettingAssessment {
   return {
@@ -108,7 +108,7 @@ function fromRow(row: AssessmentRow): VettingAssessment {
     manifestSha256: row.manifest_sha256,
     contentSha256: row.content_sha256,
     commitSha: row.commit_sha,
-    templateCommit: row.template_commit,
+    templateSha256: row.template_sha256,
     requestedBy: {
       githubId: row.requested_by_github_id,
       githubLogin: row.requested_by_github_login,
@@ -144,7 +144,7 @@ export function summarize(assessment: VettingAssessment): AssessmentSummary {
     revision: assessment.revision,
     state: assessment.state,
     commitSha: assessment.commitSha,
-    templateCommit: assessment.templateCommit,
+    templateSha256: assessment.templateSha256,
     policyVersion: assessment.policyVersion,
     requestedAt: assessment.requestedAt,
     completedAt: assessment.completedAt,
@@ -237,7 +237,7 @@ export class CloudflareVettingPersistence {
     try {
       await this.db
         .prepare(
-          `INSERT INTO vetting_assessments (id, project_id, revision, manifest_sha256, content_sha256, commit_sha, template_commit, requested_by_github_id, requested_by_github_login, requested_at, request_reason, state)
+          `INSERT INTO vetting_assessments (id, project_id, revision, manifest_sha256, content_sha256, commit_sha, template_sha256, requested_by_github_id, requested_by_github_login, requested_at, request_reason, state)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
         )
         .bind(
@@ -247,7 +247,7 @@ export class CloudflareVettingPersistence {
           assessment.manifestSha256,
           assessment.contentSha256,
           assessment.commitSha,
-          assessment.templateCommit,
+          assessment.templateSha256,
           assessment.requestedBy.githubId,
           assessment.requestedBy.githubLogin,
           assessment.requestedAt,
@@ -346,7 +346,7 @@ export class CloudflareVettingPersistence {
    * separate reinstatement path (ADM-06) exists; a new commit or a later
    * clean scan cannot lift it. Otherwise only scans of the unbroken run of
    * revisions with the same content count, and of those only scans of the
-   * live pin: the current integration-branch head and template commit. The
+   * live pin: the current integration-branch head and template digest. The
    * newest finished one decides (VET-07). A scan of another commit or
    * template is stale, so a moved branch or a new template is never served
    * on an old clearance.
@@ -385,13 +385,13 @@ export class CloudflareVettingPersistence {
       return {
         state: "unverified",
         reason:
-          `Slop could not read the live integration-branch head or skill template commit. ${error instanceof Error ? error.message : ""}`.trim(),
+          `Slop could not read the live integration-branch head or skill template digest. ${error instanceof Error ? error.message : ""}`.trim(),
       };
     }
     const pinned = relevant.filter(
       (assessment) =>
         assessment.commitSha === live.commitSha &&
-        assessment.templateCommit === live.templateCommit,
+        assessment.templateSha256 === live.templateSha256,
     );
     const finished = newest(
       pinned,

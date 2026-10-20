@@ -8,7 +8,10 @@ import {
   assetTemplateSource,
   handleProjectArtifactRequest,
 } from "../backend/projects/skill-publication";
-import { readVettingPin } from "../backend/vetting/live-pin";
+import {
+  readVettingPin,
+  vettingBranchCache,
+} from "../backend/vetting/live-pin";
 import { CloudflareVettingPersistence } from "../backend/vetting/persistence";
 import { onRequest as socialMetadata } from "./index";
 
@@ -37,6 +40,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       fetch: (url: string, init: RequestInit) => fetch(url, init),
       token: context.env.SLOP_GITHUB_READ_TOKEN,
       apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
+      cache: vettingBranchCache(context.request),
     };
     const artifact = await handleProjectArtifactRequest(context.request, {
       getProject: (id) => persistence.getProject(id),
@@ -47,12 +51,12 @@ export async function onRequest(context: PagesContext): Promise<Response> {
         context.env.ASSETS,
         new URL(context.request.url).origin,
       ),
-      vettingClearance: (project, templateCommit) =>
+      vettingClearance: (project, templateSha256) =>
         vetting.manifestClearance(
           project.id,
           project.manifest,
           project.revision,
-          () => readVettingPin(github, project.manifest, templateCommit),
+          () => readVettingPin(github, project.manifest, templateSha256),
         ),
       cache: edgeCache(),
       waitUntil: context.waitUntil?.bind(context),

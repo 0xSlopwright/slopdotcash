@@ -325,6 +325,32 @@ const templateGroups = {
   contributor: templateGroup(PROJECT_SKILL_TEMPLATES.contributor),
   reviewer: templateGroup(PROJECT_SKILL_TEMPLATES.reviewer),
 };
+/**
+ * The Functions render every project skill from these sources. With the
+ * template trees and the accepted revisions they decide the generated skill
+ * bytes, apart from the provenance commit label. A vetting clearance binds
+ * their digest, not the site commit, so an unrelated deploy keeps it and
+ * staging and production share it (VET-07).
+ */
+const rendererSources = [
+  ...GUIDE_RENDERER_PATHS,
+  "src/lib/project-skill-publication.mjs",
+  "src/lib/project-skill.mjs",
+  "src/lib/project-schema.mjs",
+].map((path) => ({
+  path,
+  sha256: sha256(readFileSync(join(repositoryRoot, path))),
+}));
+const templateInputs = {
+  ...Object.fromEntries(
+    Object.entries(templateGroups).map(([key, { sourcePath, files }]) => [
+      key,
+      { sourcePath, files },
+    ]),
+  ),
+  rendererSources,
+  acceptedRevisions: ACCEPTED_SKILL_REVISIONS,
+};
 writeFileSync(
   join(publicRoot, "skill-templates", "index.json"),
   `${JSON.stringify(
@@ -332,19 +358,17 @@ writeFileSync(
       schemaVersion: "1",
       repository: sourceRepository,
       commit,
+      templateSha256: sha256(JSON.stringify(templateInputs)),
       revisionStatus: Object.values(templateGroups).every(
         (group) => group.committed,
       )
         ? "committed"
         : "working-tree",
-      ...Object.fromEntries(
-        Object.entries(templateGroups).map(([key, { sourcePath, files }]) => [
-          key,
-          { sourcePath, files },
-        ]),
-      ),
+      contributor: templateInputs.contributor,
+      reviewer: templateInputs.reviewer,
       renderer: {
         paths: GUIDE_RENDERER_PATHS,
+        sources: rendererSources,
         revisionStatus: rendererMatchesCommit ? "committed" : "working-tree",
       },
       acceptedRevisions: ACCEPTED_SKILL_REVISIONS,

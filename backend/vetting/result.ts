@@ -97,7 +97,7 @@ export type VettingResult = {
   assessed: {
     repository: string;
     commitSha: string;
-    templateCommit: string;
+    templateSha256: string;
     inputManifestSha256: string;
     dependencyLocks: { path: string; sha256: string }[];
   };
@@ -254,7 +254,7 @@ export function parseVettingResult(value: unknown): VettingResult {
   const assessed = object(body.assessed, "assessed", [
     "repository",
     "commitSha",
-    "templateCommit",
+    "templateSha256",
     "inputManifestSha256",
     "dependencyLocks",
   ]);
@@ -364,9 +364,9 @@ export function parseVettingResult(value: unknown): VettingResult {
     assessed: {
       repository: text(assessed.repository, "assessed.repository", 201),
       commitSha: gitSha(assessed.commitSha, "assessed.commitSha"),
-      templateCommit: gitSha(
-        assessed.templateCommit,
-        "assessed.templateCommit",
+      templateSha256: digest(
+        assessed.templateSha256,
+        "assessed.templateSha256",
       ),
       inputManifestSha256: digest(
         assessed.inputManifestSha256,

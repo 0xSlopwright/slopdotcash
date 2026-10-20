@@ -36,7 +36,10 @@ import {
 } from "../../../backend/trace/cloudflare-persistence";
 import { handleTraceApi } from "../../../backend/trace/handler";
 import { handleVettingApi } from "../../../backend/vetting/handler";
-import { readVettingPin } from "../../../backend/vetting/live-pin";
+import {
+  readVettingPin,
+  vettingBranchCache,
+} from "../../../backend/vetting/live-pin";
 import { CloudflareVettingPersistence } from "../../../backend/vetting/persistence";
 import { deploymentTier } from "../../../src/lib/deployment";
 import type { ProjectDefinition } from "../../../src/lib/projects.mjs";
@@ -298,6 +301,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     fetch: (url: string, init: RequestInit) => fetch(url, init),
     token: context.env.SLOP_GITHUB_READ_TOKEN,
     apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
+    cache: vettingBranchCache(context.request),
   };
   const loadTemplate = assetTemplateSource(
     context.env.ASSETS,
@@ -305,7 +309,11 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   );
   // A clearance counts only for the live branch head and template (VET-07).
   const livePin = async (manifest: ProjectDefinition) =>
-    readVettingPin(github, manifest, (await loadTemplate()).index.commit);
+    readVettingPin(
+      github,
+      manifest,
+      (await loadTemplate()).index.templateSha256,
+    );
   const projectResponse = await handleProjectApi(context.request, {
     persistence: projectPersistence,
     vettingClearance: (projectId, manifest, throughRevision) =>

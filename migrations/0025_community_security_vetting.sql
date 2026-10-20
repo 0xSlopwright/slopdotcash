@@ -13,11 +13,12 @@ CREATE TABLE vetting_assessments (
   -- SHA-256 of the manifest with its status set to paused. An activation
   -- revision that changes only the status keeps this digest.
   content_sha256 TEXT NOT NULL CHECK (length(content_sha256) = 64),
-  -- The queue assigns the exact integration-branch commit and skill template
-  -- commit to scan. The result must report these commits, and a clearance
-  -- counts only while they are still the live branch head and template.
+  -- The queue assigns the exact integration-branch commit and the content
+  -- digest of the skill template inputs to scan. The result must report both,
+  -- and a clearance counts only while they are still the live branch head and
+  -- template digest.
   commit_sha TEXT NOT NULL CHECK (length(commit_sha) = 40 AND commit_sha NOT GLOB '*[^0-9a-f]*'),
-  template_commit TEXT NOT NULL CHECK (length(template_commit) = 40 AND template_commit NOT GLOB '*[^0-9a-f]*'),
+  template_sha256 TEXT NOT NULL CHECK (length(template_sha256) = 64 AND template_sha256 NOT GLOB '*[^0-9a-f]*'),
   requested_by_github_id TEXT NOT NULL CHECK (requested_by_github_id GLOB '[1-9]*'),
   requested_by_github_login TEXT NOT NULL,
   requested_at TEXT NOT NULL,
@@ -39,7 +40,7 @@ CREATE TABLE vetting_assessments (
       json_extract(result, '$.assessmentId') = id AND
       json_extract(result, '$.disposition') = state AND
       json_extract(result, '$.assessed.commitSha') = commit_sha AND
-      json_extract(result, '$.assessed.templateCommit') = template_commit)
+      json_extract(result, '$.assessed.templateSha256') = template_sha256)
   )
 ) STRICT;
 
@@ -64,7 +65,7 @@ WHEN OLD.state <> 'pending' OR NEW.state = 'pending' OR
   NEW.id <> OLD.id OR NEW.project_id <> OLD.project_id OR
   NEW.revision <> OLD.revision OR NEW.manifest_sha256 <> OLD.manifest_sha256 OR
   NEW.content_sha256 <> OLD.content_sha256 OR
-  NEW.commit_sha <> OLD.commit_sha OR NEW.template_commit <> OLD.template_commit OR
+  NEW.commit_sha <> OLD.commit_sha OR NEW.template_sha256 <> OLD.template_sha256 OR
   NEW.requested_by_github_id <> OLD.requested_by_github_id OR
   NEW.requested_by_github_login <> OLD.requested_by_github_login OR
   NEW.requested_at <> OLD.requested_at OR NEW.request_reason <> OLD.request_reason

@@ -25,6 +25,13 @@ export type SkillTemplateIndex = {
   schemaVersion: "1";
   repository: string;
   commit: string;
+  /**
+   * SHA-256 of the canonical JSON of the contributor and reviewer template
+   * files, the renderer sources and the accepted revisions: every input of
+   * the generated skill bytes except the provenance commit. Vetting binds
+   * this digest (VET-07).
+   */
+  templateSha256: string;
   revisionStatus: "committed" | "working-tree";
   contributor: {
     sourcePath: string;
@@ -34,7 +41,11 @@ export type SkillTemplateIndex = {
     sourcePath: string;
     files: { path: string; sha256: string }[];
   };
-  renderer: { paths: string[]; revisionStatus: "committed" | "working-tree" };
+  renderer: {
+    paths: string[];
+    sources: { path: string; sha256: string }[];
+    revisionStatus: "committed" | "working-tree";
+  };
   acceptedRevisions: string[];
 };
 
@@ -79,12 +90,12 @@ export type SkillPublicationDependencies = {
   loadTemplate(): Promise<SkillTemplateSource>;
   /**
    * Security vetting of the revision's exact content, integration-branch head
-   * and the template commit the skills render from (VET-01, VET-07). Only
-   * "cleared" serves a skill or lists the project.
+   * and the digest of the template inputs the skills render from (VET-01,
+   * VET-07). Only "cleared" serves a skill or lists the project.
    */
   vettingClearance(
     project: ProjectRecord,
-    templateCommit: string,
+    templateSha256: string,
   ): Promise<VettingClearance>;
   cache?: EdgeCache;
   waitUntil?: (promise: Promise<unknown>) => void;
@@ -178,16 +189,19 @@ async function discovery(
     deps.listProjects(),
     deps.listEnforcements(),
   ]);
-  const projects: ProjectRecord[] = [];
   const template = await deps.loadTemplate();
-  for (const project of all)
-    if (
-      listed(project, records) &&
-      publishesGeneratedSkills(project.manifest) &&
-      (await deps.vettingClearance(project, template.index.commit)).state ===
-        "cleared"
-    )
-      projects.push(project);
+  const candidates = all.filter(
+    (project) =>
+      listed(project, records) && publishesGeneratedSkills(project.manifest),
+  );
+  const clearances = await Promise.all(
+    candidates.map((project) =>
+      deps.vettingClearance(project, template.index.templateSha256),
+    ),
+  );
+  const projects = candidates.filter(
+    (_, index) => clearances[index].state === "cleared",
+  );
   return jsonResponse({
     schemaVersion: "1",
     projects: projects.flatMap((project) =>
@@ -238,7 +252,10 @@ async function artifact(
       "This project has not published its skills yet. Its maintainers must complete the contribution fields first.\n",
     );
   const template = await deps.loadTemplate();
-  const vetting = await deps.vettingClearance(project, template.index.commit);
+  const vetting = await deps.vettingClearance(
+    project,
+    template.index.templateSha256,
+  );
   if (vetting.state === "unverified")
     return text(
       503,

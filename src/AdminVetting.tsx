@@ -17,7 +17,7 @@ type AssessmentSummary = {
   revision: number;
   state: AssessmentState;
   commitSha: string;
-  templateCommit: string;
+  templateSha256: string;
   policyVersion: string | null;
   requestedAt: string;
   completedAt: string | null;
@@ -32,7 +32,7 @@ type Clearance =
   | {
       state: "stale";
       assessment: AssessmentSummary;
-      live: { commitSha: string; templateCommit: string };
+      live: { commitSha: string; templateSha256: string };
     }
   | {
       state: "queued" | "quarantined" | "cleared" | "banned";
@@ -174,8 +174,8 @@ function AssessmentDetails({ assessment }: { assessment: AdminAssessment }) {
           <dd>{assessment.commitSha}</dd>
         </div>
         <div>
-          <dt>Skill template commit</dt>
-          <dd>{assessment.templateCommit}</dd>
+          <dt>Skill template digest</dt>
+          <dd>{assessment.templateSha256}</dd>
         </div>
         <div>
           <dt>Policy version</dt>
@@ -347,7 +347,7 @@ export function VettingSection() {
                           : clearance.state === "unverified"
                             ? clearance.reason
                             : clearance.state === "stale"
-                              ? `No scan of the live branch head ${clearance.live.commitSha} with skill template ${clearance.live.templateCommit}. The last scan covered ${clearance.assessment.commitSha}.`
+                              ? `No scan of the live branch head ${clearance.live.commitSha} with skill template ${clearance.live.templateSha256}. The last scan covered ${clearance.assessment.commitSha}.`
                               : `Scan of revision ${clearance.assessment.revision} · ${STATE_TEXT[clearance.assessment.state]}`}
                       </dd>
                     </div>

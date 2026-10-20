@@ -27,10 +27,10 @@ let projects: CloudflareProjectPersistence;
 let vetting: CloudflareVettingPersistence;
 let keys: Awaited<ReturnType<typeof vettingKeyPair>>;
 let configuredKeys: string | undefined;
-/** The live integration-branch head and template commit; null is unreadable. */
+/** The live integration-branch head and template digest; null is unreadable. */
 let livePin: VettingPin | null;
 const HEAD = "a".repeat(40);
-const TEMPLATE = "b".repeat(40);
+const TEMPLATE = "b".repeat(64);
 
 async function readLivePin(): Promise<VettingPin> {
   if (livePin === null) throw new Error("GitHub returned 502.");
@@ -51,7 +51,7 @@ beforeEach(async () => {
   vetting = new CloudflareVettingPersistence(db);
   keys = await vettingKeyPair();
   configuredKeys = keys.publicKey;
-  livePin = { commitSha: HEAD, templateCommit: TEMPLATE };
+  livePin = { commitSha: HEAD, templateSha256: TEMPLATE };
 });
 
 const actorOf = (request: Request) =>
@@ -188,7 +188,7 @@ async function fixture(
       manifestSha256: project.manifestSha256,
       repository: "example/open-registry",
       commitSha: assessment.commitSha,
-      templateCommit: assessment.templateCommit,
+      templateSha256: assessment.templateSha256,
     },
     disposition,
   );
@@ -230,7 +230,7 @@ describe("community security vetting", () => {
         projectId: "open-registry",
         revision: 1,
         commitSha: HEAD,
-        templateCommit: TEMPLATE,
+        templateSha256: TEMPLATE,
         manifestUrl: `${ORIGIN}/api/v1/project-revisions/open-registry/1`,
       },
     ]);
@@ -265,7 +265,7 @@ describe("community security vetting", () => {
     // The service cannot choose the commit or template it reports (VET-07).
     for (const assessed of [
       { ...result.assessed, commitSha: "c".repeat(40) },
-      { ...result.assessed, templateCommit: "c".repeat(40) },
+      { ...result.assessed, templateSha256: "c".repeat(64) },
     ]) {
       const refused = await postResult({ ...result, assessed });
       expect(refused.status).toBe(422);
@@ -275,10 +275,10 @@ describe("community security vetting", () => {
     expect((await publicVetting()).state).toBe("cleared");
 
     // New commits on the integration branch lose the clearance.
-    livePin = { commitSha: "e".repeat(40), templateCommit: TEMPLATE };
+    livePin = { commitSha: "e".repeat(40), templateSha256: TEMPLATE };
     expect(await publicVetting()).toMatchObject({
       state: "stale",
-      assessment: { commitSha: HEAD, templateCommit: TEMPLATE },
+      assessment: { commitSha: HEAD, templateSha256: TEMPLATE },
       live: { commitSha: "e".repeat(40) },
     });
     const refused = await activate();
@@ -296,7 +296,7 @@ describe("community security vetting", () => {
     expect((await publicVetting()).state).toBe("cleared");
 
     // A new skill template loses the clearance too.
-    livePin = { commitSha: "e".repeat(40), templateCommit: "f".repeat(40) };
+    livePin = { commitSha: "e".repeat(40), templateSha256: "f".repeat(64) };
     expect((await publicVetting()).state).toBe("stale");
     // An unreadable head never counts as cleared, and no scan can be queued.
     livePin = null;

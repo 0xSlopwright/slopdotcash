@@ -56,7 +56,7 @@ let persistence: CloudflareProjectPersistence;
 let sqlite: Database;
 let vetting: CloudflareVettingPersistence;
 let scans = 0;
-/** The live integration-branch head and template commit vetting compares. */
+/** The live integration-branch head and template digest vetting compares. */
 let livePin: VettingPin;
 let cache: MemoryCache;
 let tokenReads: string[];
@@ -77,7 +77,7 @@ beforeEach(() => {
   sqlite = database.sqlite;
   persistence = new CloudflareProjectPersistence(database.db);
   vetting = new CloudflareVettingPersistence(database.db);
-  livePin = { commitSha: "a".repeat(40), templateCommit: "d".repeat(40) };
+  livePin = { commitSha: "a".repeat(40), templateSha256: "d".repeat(64) };
   cache = new MemoryCache();
   tokenReads = [];
   githubReads = [];
@@ -172,7 +172,7 @@ async function clearCurrentRevision(projectId: string) {
     manifestSha256: project.manifestSha256,
     contentSha256: await vettedContentSha256(project.manifest),
     commitSha: livePin.commitSha,
-    templateCommit: livePin.templateCommit,
+    templateSha256: livePin.templateSha256,
     requestedBy: ADMIN,
     requestedAt: `2026-10-18T12:00:${String(scans).padStart(2, "0")}.000Z`,
     requestReason: "Fixture scan",
@@ -186,7 +186,7 @@ async function clearCurrentRevision(projectId: string) {
         manifestSha256: project.manifestSha256,
         repository: project.manifest.repositories[0].id,
         commitSha: livePin.commitSha,
-        templateCommit: livePin.templateCommit,
+        templateSha256: livePin.templateSha256,
       },
       "clean",
     ),
@@ -492,6 +492,7 @@ async function publicationRequests() {
     schemaVersion: "1",
     repository: "SlopDotCash/slopdotcash",
     commit: "d".repeat(40),
+    templateSha256: "d".repeat(64),
     revisionStatus: "committed",
     contributor: await group(
       PROJECT_SKILL_TEMPLATES.contributor,
@@ -503,6 +504,7 @@ async function publicationRequests() {
     ),
     renderer: {
       paths: ["scripts/render-install-guide.mjs"],
+      sources: [],
       revisionStatus: "committed",
     },
     acceptedRevisions: ["current main head"],
@@ -519,7 +521,7 @@ async function publicationRequests() {
     }),
     vettingClearance: (
       project: { id: string; manifest: object; revision: number },
-      templateCommit: string,
+      templateSha256: string,
     ) =>
       vetting.manifestClearance(
         project.id,
@@ -528,7 +530,7 @@ async function publicationRequests() {
         async () => {
           if (livePin.commitSha === "unreadable")
             throw new Error("GitHub returned 502.");
-          return { commitSha: livePin.commitSha, templateCommit };
+          return { commitSha: livePin.commitSha, templateSha256 };
         },
       ),
     cache,
@@ -601,12 +603,17 @@ describe("generated skill publication", () => {
     expect(
       (await (await get("/.well-known/slop/projects.json")).json()).projects,
     ).toEqual([]);
-    // A deploy with a new skill template renders other skill bytes.
+    // An unrelated site deploy keeps the clearance: it binds the template
+    // input digest, not the site commit.
     livePin = cleared;
-    index.commit = "f".repeat(40);
+    index.commit = "e".repeat(40);
+    cache.entries.clear();
+    expect((await get("/projects/open-registry/skill.md")).status).toBe(200);
+    // A deploy with a new skill template renders other skill bytes.
+    index.templateSha256 = "f".repeat(64);
     cache.entries.clear();
     expect((await get("/projects/open-registry/skill.md")).status).toBe(404);
-    index.commit = cleared.templateCommit;
+    index.templateSha256 = cleared.templateSha256;
     livePin = { ...cleared, commitSha: "unreadable" };
     cache.entries.clear();
     // An unreadable branch head fails closed and says so.
