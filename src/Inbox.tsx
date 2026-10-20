@@ -53,6 +53,26 @@ async function markRead(eventKeys: string[]): Promise<"ok" | "signed-out"> {
   return "ok";
 }
 
+async function acknowledgeSecurity(
+  notification: Notification,
+): Promise<"ok" | "signed-out"> {
+  const response = await fetchWithDeadline(
+    `/api/v1/security-cases/${encodeURIComponent(notification.subject)}/acknowledge`,
+    {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ eventKey: notification.eventKey }),
+    },
+  );
+  if (response.status === 401) return "signed-out";
+  if (!response.ok)
+    throw new Error("Could not acknowledge the security notice. Please retry.");
+  return "ok";
+}
+
 export function InboxPage() {
   const [state, setState] = useState<InboxState>({ status: "loading" });
   const [busy, setBusy] = useState(false);
@@ -76,12 +96,12 @@ export function InboxPage() {
   }, []);
   useEffect(() => load(), [load]);
 
-  async function mark(eventKeys: string[], done: string) {
+  async function act(action: () => Promise<"ok" | "signed-out">, done: string) {
     setBusy(true);
     setActionError("");
     setMessage("");
     try {
-      if ((await markRead(eventKeys)) === "signed-out") {
+      if ((await action()) === "signed-out") {
         setState({ status: "signed-out" });
         return;
       }
@@ -132,7 +152,13 @@ export function InboxPage() {
         <InboxList
           busy={busy}
           response={state.value}
-          onMark={(keys, done) => void mark(keys, done)}
+          onMark={(keys, done) => void act(() => markRead(keys), done)}
+          onAcknowledge={(notification) =>
+            void act(
+              () => acknowledgeSecurity(notification),
+              "Security notice acknowledged.",
+            )
+          }
         />
       ) : null}
       {message ? <p role="status">{message}</p> : null}
@@ -149,10 +175,12 @@ function InboxList({
   response,
   busy,
   onMark,
+  onAcknowledge,
 }: {
   response: NotificationsResponse;
   busy: boolean;
   onMark(eventKeys: string[], done: string): void;
+  onAcknowledge(notification: Notification): void;
 }) {
   const unreadKeys = response.notifications
     .filter((n) => n.readAt === null)
@@ -188,6 +216,7 @@ function InboxList({
             key={n.eventKey}
             notification={n}
             onMark={onMark}
+            onAcknowledge={onAcknowledge}
           />
         ))}
       </ol>
@@ -199,10 +228,12 @@ function InboxItem({
   notification: n,
   busy,
   onMark,
+  onAcknowledge,
 }: {
   notification: Notification;
   busy: boolean;
   onMark(eventKeys: string[], done: string): void;
+  onAcknowledge(notification: Notification): void;
 }) {
   const unread = n.readAt === null;
   const title = notificationTitle(n);
@@ -216,6 +247,21 @@ function InboxItem({
       </p>
       <div className="inbox-actions">
         <a href={n.actionPath}>{notificationAction(n)}</a>
+        {n.kind === "security_case" ? (
+          n.acknowledgedAt ? (
+            <p>Acknowledged</p>
+          ) : (
+            <button
+              className="button secondary-button"
+              type="button"
+              disabled={busy}
+              aria-label={`Acknowledge: ${title}`}
+              onClick={() => onAcknowledge(n)}
+            >
+              Acknowledge
+            </button>
+          )
+        ) : null}
         {unread ? (
           <button
             className="button secondary-button"
