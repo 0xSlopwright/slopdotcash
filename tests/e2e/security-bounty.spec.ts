@@ -1343,7 +1343,7 @@ test("private security bounty programs keep cases restricted from intake to awar
       fullPage: true,
     });
     await page.evaluate(() => {
-      document.documentElement.style.fontSize = "200%";
+      document.documentElement.style.zoom = "2";
     });
     await expectAccessible(page);
     await page.screenshot({
