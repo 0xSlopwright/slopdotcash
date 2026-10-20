@@ -42,21 +42,68 @@ export async function localVettingEvidence(
     convertV4MiniflareOptions({
       name: "evidence",
       modules: true,
-      script: "export default {fetch(){return new Response()}}",
+      script: `export default { async fetch(request, env) {
+        const key = decodeURIComponent(new URL(request.url).pathname.slice(1));
+        if (request.method === "PUT") {
+          const options = JSON.parse(request.headers.get("x-r2-options"));
+          const value = await env.E.put(key, await request.arrayBuffer(), options);
+          return Response.json({ stored: value !== null });
+        }
+        if (request.method === "DELETE") {
+          await env.E.delete(key);
+          return new Response(null, { status: 204 });
+        }
+        const value = request.method === "HEAD"
+          ? await env.E.head(key) : await env.E.get(key);
+        if (!value) return new Response(null, { status: 404 });
+        return new Response(request.method === "HEAD" ? null : value.body, {
+          headers: {
+            "x-r2-size": String(value.size),
+            "x-r2-metadata": JSON.stringify(value.customMetadata ?? {}),
+          },
+        });
+      }} `,
       compatibilityDate: "2026-07-30",
       r2Buckets: ["E"],
     }),
   );
-  const bucket = (await runtime.getR2Bucket(
-    "E",
-    "evidence",
-  )) as unknown as Omit<R2Bucket, "get"> & {
-    get(key: string): Promise<{
-      size: number;
-      customMetadata?: Record<string, string>;
-      arrayBuffer(): Promise<ArrayBuffer>;
-    } | null>;
-    delete(key: string): Promise<void>;
+  await runtime.ready;
+  // Use asynchronous HTTP to real workerd R2. Miniflare's synchronous RPC
+  // property getters can fail under Bun before object metadata is returned.
+  const url = (key: string) => `http://evidence/${encodeURIComponent(key)}`;
+  async function read(key: string, method: "GET" | "HEAD") {
+    const response = await runtime.dispatchFetch(url(key), { method });
+    if (response.status === 404) return null;
+    if (!response.ok)
+      throw new Error(`Local R2 read failed: ${response.status}`);
+    return {
+      size: Number(response.headers.get("x-r2-size")),
+      customMetadata: JSON.parse(response.headers.get("x-r2-metadata")!),
+      body: response.body,
+      arrayBuffer: () => response.arrayBuffer(),
+    };
+  }
+  const bucket = {
+    head: (key: string) => read(key, "HEAD"),
+    get: (key: string) => read(key, "GET"),
+    put: async (...[key, bytes, options]: Parameters<R2Bucket["put"]>) => {
+      const response = await runtime.dispatchFetch(url(key), {
+        method: "PUT",
+        headers: { "x-r2-options": JSON.stringify(options) },
+        body: new Uint8Array(bytes),
+      });
+      if (!response.ok)
+        throw new Error(`Local R2 write failed: ${response.status}`);
+      const result = (await response.json()) as { stored: boolean };
+      return result.stored ? {} : null;
+    },
+    delete: async (key: string) => {
+      const response = await runtime.dispatchFetch(url(key), {
+        method: "DELETE",
+      });
+      if (response.status !== 204)
+        throw new Error(`Local R2 delete failed: ${response.status}`);
+    },
   };
   const keys = await vettingKeyPair();
   const evidence = new VettingEvidence({
@@ -64,15 +111,14 @@ export async function localVettingEvidence(
     bucket: {
       head: (key) => bucket.head(key),
       put: (key, bytes, options) => bucket.put(key, bytes, options),
-      // Miniflare's RPC stream proxy cannot transfer getReader() through Bun.
-      // Read the actual workerd object bytes, then expose a native stream.
+      // Forward the asynchronous workerd HTTP response stream directly.
       get: async (key) => {
         const value = await bucket.get(key);
         return value
           ? {
               size: value.size,
               customMetadata: value.customMetadata,
-              body: new Response(await value.arrayBuffer()).body!,
+              body: value.body!,
             }
           : null;
       },
