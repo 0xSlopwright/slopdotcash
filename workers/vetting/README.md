@@ -73,9 +73,14 @@ The remaining work is not only configuration:
 | --- | --- | --- |
 | VET-02 host | The Linux KVM adapter needs actual acceptance on the intended isolated host. Darwin evidence covers harmless fixtures only. | Designate a patched, dedicated Linux host, unprivileged account, reviewed executable/image pins, resource limits and private retention location. |
 | VET-02 project commands | General install, build, test and skill execution is disabled. The present profile runs a fixed harmless command. | Approve the immutable command/runtime profile and adequate resource and coverage limits for each assessed revision. Repository instructions cannot grant that approval. |
-| VET-03 observation | Complete structured event collection, loss/tamper detection, independent host/proxy evidence, controlled runtime DNS/HTTP/TLS routing, safe filesystem differences, environment/wallet canaries and the restricted trace console remain source gaps. | Select the reviewed Linux collector, network, storage, operator-access and retention contracts. A dependency prefetch is not a runtime proxy. |
+| VET-03 observation | Complete structured event collection, loss/tamper detection, independent host/proxy evidence, controlled runtime DNS/HTTP/TLS routing, safe filesystem differences, environment/wallet canaries and full captured-evidence integration remain source gaps. | Select the reviewed Linux collector, network, storage, operator-access and retention contracts. A dependency prefetch is not a runtime proxy. |
 | VET-04 artifact review | Format-aware static analysis, provenance/upstream comparison, full artifact lineage and durable release decisions remain source gaps. Existing inspection and denial do not release an artifact. | Name the release authority and exact-digest baseline/review policy. A model label cannot supply authority. |
 | VET-04 runtime coverage | The materialized-file gate does not establish complete native, interpreter, bytecode, WASM, JIT or memory-only interception. | Approve supported runtime coverage and the policy for unsupported behavior. Missing coverage must stay incomplete; do not enable arbitrary source on that basis. |
+
+The [restricted store and console](../../backend/vetting/EVIDENCE.md) verify
+bounded retained objects. They do not prove complete assembly retention or
+external deletion, legal-hold and backup controls. Configuration and live
+acceptance remain required.
 
 QEMU was considered for the execution adapter. Its [security
 contract](https://www.qemu.org/docs/master/system/security.html) requires a
