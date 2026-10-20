@@ -293,6 +293,7 @@ export async function retainedAssemblyFixture(input: {
       keys,
       now,
       vettingApi,
+      projectApi,
       retained,
       dispose,
     };
