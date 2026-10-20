@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { fixtureRepository } from "../github-api-fixture.mjs";
 import { applicationManifest } from "../project-application-manifest";
 import { signedVettingHeaders } from "../vetting-fixtures";
 
@@ -34,8 +35,25 @@ test("large private evidence downloads with a single-use browser grant @registry
       },
       data: body,
     });
+  const repository = `example/open-registry-${suffix}`;
+  const facts = fixtureRepository(repository);
+  const projectManifest = applicationManifest(project, repository);
+  const steward = projectManifest.steward as Record<string, unknown>;
+  projectManifest.steward = {
+    ...steward,
+    github: {
+      ...(steward.github as Record<string, unknown>),
+      actorId: String(facts.owner.id),
+      nodeId: facts.owner.node_id,
+    },
+  };
+  projectManifest.authority = {
+    ...(projectManifest.authority as Record<string, unknown>),
+    repositoryId: String(facts.id),
+    repositoryNodeId: facts.node_id,
+  };
   const submitted = await api("project-applications", {
-    manifest: applicationManifest(project, `example/open-registry-${suffix}`),
+    manifest: projectManifest,
   });
   expect(submitted.status()).toBe(201);
   const application = (await submitted.json()).application;
@@ -148,14 +166,12 @@ test("large private evidence downloads with a single-use browser grant @registry
   await page
     .getByRole("button", { name: "Inspect evidence inventory" })
     .click();
-  const item = page
-    .getByRole("article")
-    .filter({
-      has: page.getByRole("heading", {
-        name: "Synthetic VM disk overlay",
-        exact: true,
-      }),
-    });
+  const item = page.getByRole("article").filter({
+    has: page.getByRole("heading", {
+      name: "Synthetic VM disk overlay",
+      exact: true,
+    }),
+  });
   await item
     .getByRole("textbox")
     .fill("Inspect the complete synthetic disk overlay without execution");

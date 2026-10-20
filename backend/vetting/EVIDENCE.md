@@ -2,8 +2,8 @@
 
 VET-03 uses a separate private `VETTING_EVIDENCE` R2 binding. It does not use
 contributor traces, their permanent storage rule, or contributor read grants.
-D1 migration 0034 stores immutable object receipts, run policy snapshots, grants
-and access audit records. Raw bytes remain outside Git and public responses.
+D1 migrations 0034 and 0035 store immutable object receipts, run policy snapshots,
+chunk layouts, completion records, grants and access audit records. Raw bytes remain outside Git and public responses.
 
 The service is inactive without the bucket and `VETTING_EVIDENCE_POLICY` JSON.
 The deployment authority must supply all policy fields: `version`,
@@ -57,11 +57,30 @@ skills, discovery and public clearance responses use no-store, so an old edge
 cache entry cannot bypass expiry or missing evidence. Unrelated raw registry
 lists and revision caches retain their existing behavior.
 
-Each complete object is at most 8 MiB; policy may set a lower limit. A run is at
-most 64 MiB and 1024 objects. These are bounded inspection limits, not retention
-policy defaults. Oversize evidence cannot be shortened or silently omitted to
-obtain a clean result. Large VM disk overlays exceed this first console contract;
-their complete remote retention remains a separate integration requirement.
+Each upload part is at most 8 MiB. A complete object and run are at most 64 MiB,
+and a run has at most 1024 objects. Explicit policy can set lower limits; there
+are no live policy defaults. The current transport can retain the actual 23.6 MB
+fixture overlay. It does not claim support for the assembler's 2 GiB ceiling.
+Oversize evidence cannot be shortened or silently omitted to obtain clearance.
+
+Objects above 8 MiB declare `chunks` in their immutable object receipt. Each entry
+has `index`, `sha256` and `sizeBytes`. Indices start at zero, parts are exactly
+8 MiB except the final remainder, and the total equals the original object size.
+This is a transport layout, not a new evidence format. The original whole-file
+SHA-256 remains authoritative. Upload each part with a signed PUT to
+`/:sha256/chunks/:index`; retrying exact bytes is safe. An existing conflicting
+part is never overwritten. POST the signed exact body `{}` to
+`/:sha256/finalize`. Finalization reads parts sequentially, verifies each, and
+hashes their original bytes in order with the pinned incremental SHA-256 code.
+It never substitutes a hash of hashes or an R2 ETag. The completion record and
+its audit commit in one D1 transaction. An interrupted upload or a missing,
+changed or wrong-whole-digest part cannot produce completion. Retry the same
+immutable upload/finalization; a different layout requires a new run.
+
+Verification and download hold at most one 8 MiB part buffer at a time. Download
+backpressure controls part reads. Current authorization and access expiry are
+checked again as each part is read. Complete clearance rechecks retained bytes;
+a completion receipt alone is not evidence that R2 objects still exist.
 
 Only an authenticated WebSession whose immutable GitHub actor ID appears in the
 current operator allowlist may inspect `/vetting-evidence`. Admin, applicant and
@@ -72,6 +91,22 @@ Operator authorization, policy currency, expiry and complete bytes are checked
 again at read time. Audit rows retain the actor, reason and action. Grants and
 bodies use no-store; bodies use attachment, nosniff and a restrictive CSP. Text
 is escaped. Binary downloads never execute.
+
+Large downloads use a dedicated JSON POST `/:sha256/download-grant`. It returns
+no token in JSON or a URL. The server sets `__Secure-vetting-read-grant` as a
+Secure, HttpOnly, SameSite=Strict, host-only cookie with the exact native download
+path and a 60-second lifetime. The browser follows `/:sha256/download` as an
+attachment. GET requires `Sec-Fetch-Site: same-origin`, current session/operator
+policy and the actor/object-bound single-use grant. Duplicate grant cookies,
+ranges and HEAD are refused. The cookie is cleared on a native download attempt.
+The site's CSP stays unchanged. Small text inspection keeps the existing header
+grant and bounded client digest check.
+
+Audit distinguishes download authorization, start, server stream finish,
+cancellation and failure. Server finish does not prove the browser saved the
+file. Failure to record the final audit errors the stream; it never hangs or
+silently succeeds. A cancelled or failed transfer needs a new reason and grant.
+The UI reports that a download was requested, not that the browser saved it.
 
 The registration and operator console work with incomplete assessments. Missing,
 corrupt, oversize and expired bodies remain explicit failures. Harmless paused
