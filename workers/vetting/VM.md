@@ -2,9 +2,10 @@
 
 This component runs one operator-reviewed boot image and seed in an offline
 hardware VM. It records private evidence. It cannot approve a project or produce
-a complete vetting result. Acquired project source is not yet passed into the
-VM. Kernel interception, preload interception, controlled dependency fetching,
-filesystem comparison, and trusted collector coverage are not implemented.
+a complete vetting result. An optional profile passes only reviewed harmless
+acquired fixture source into the VM. General project execution, complete
+interpreter/JIT/memory interception, controlled runtime networking, filesystem
+comparison, and independent collector coverage remain incomplete.
 
 Use a dedicated unprivileged Linux aarch64 host with KVM and the maintained
 Bubblewrap policy for further integration. QEMU runs with the `virt` machine,

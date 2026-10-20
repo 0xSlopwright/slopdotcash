@@ -23,13 +23,24 @@ contents are not converted to source text; their absence from model input is an
 explicit visibility gap. Artifact records remain quarantined. All acquisition,
 artifact and VM gaps remain in the review input.
 
-The current VM profile boots a pinned operator seed. It does not execute the
-acquired project. Assembly therefore adds `acquired-source-not-executed` and
-`complete-collector-not-attached` regardless of the supplied VM metadata. Its
-manifest is always incomplete and authorizes neither provider calls nor
-publication. It cannot turn a harmless fixture boot into a security scan.
+Without a guest receipt, assembly adds `acquired-source-not-executed`. An
+optional `guestEvidence` input can bind an actual harmless-source run. Supply
+the approved profile path and digest, reviewed collector digest, and retained
+guest receipt digest. The assembler checks the queue source inventory, exact
+source digest set, profile, collector, VM, seed and serial bindings. It verifies
+the retained syscall and output files against both their digests and the actual
+serial frame. An optional post-collector probe is bound in the same way.
 
-The next runtime integration must bind the acquired content and approved commands
+The raw serial remains in the private manifest. The review input gets the
+decoded trace and outputs once, plus the console with that one encoded frame
+removed. A missing or ambiguous frame fails. Nothing is shortened to fit.
+The receipt replaces the source-not-executed gap with an explicit statement that
+only the approved harmless fixture command ran. Complete collector,
+interpreter/JIT/memory/proxy and independent-observation gaps remain required
+host policy, regardless of guest claims. The manifest stays incomplete and
+authorizes neither provider calls nor publication.
+
+General project execution must bind acquired content and approved commands
 to execution and collect the required telemetry before a reviewed scheduler may
 authorize provider spend or publication. The trusted reconciliation module can
 consume the resulting review input once actual model records and collector
@@ -47,12 +58,18 @@ output directory. A failed or timed-out VM run is valid incomplete evidence;
 it is not proof that the guest or project ran.
 
 ```sh
-bun scripts/vetting-assembly-workflow.ts ACQUISITION ARTIFACT_REPORTS VM_OUTPUT PRIVATE_OUTPUT_PARENT
+bun scripts/vetting-assembly-workflow.ts ACQUISITION ARTIFACT_REPORTS VM_OUTPUT PRIVATE_OUTPUT_PARENT [APPROVED_GUEST_PROFILE]
 ```
 
 This workflow consumes those actual component files. It verifies the complete
 assembly digests and the retained missing-coverage markers, then rejects missing
 artifact inspection and corrupted queue, artifact or VM pins. Failed assembly
 must create no completed manifest. No provider or service publication occurs.
-Operator-console access, approved content-bound execution, complete collectors,
-and the private evidence retention service remain separate unfinished work.
+Set `SLOP_VETTING_GUEST_FIXTURE=syscall` or `artifact` in the existing queue
+workflow to acquire the corresponding checked-in harmless source. Use that
+retained inventory digest in the separately approved guest profile, then run
+the existing VM workflow. Never construct queue metadata to match a different
+VM run. The signed queue and actual acquisition must produce the input bytes.
+
+Operator-console access, general project execution, complete collectors, and
+the private evidence retention service remain separate unfinished work.

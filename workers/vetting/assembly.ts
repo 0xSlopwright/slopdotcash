@@ -81,6 +81,12 @@ export async function assembleEvidence(input: {
   queuedInputsSha256: string;
   artifactInventories: { sourceSha256: string; path: string; sha256: string }[];
   vmEvidence: { directory: string; sha256: string };
+  guestEvidence?: {
+    profilePath: string;
+    profileSha256: string;
+    collectorSha256: string;
+    receiptSha256: string;
+  };
   outputDirectory: string;
 }) {
   const queueBytes = await bytes(
@@ -225,8 +231,125 @@ export async function assembleEvidence(input: {
     String(vm.serialSha256),
     4 * 1024 * 1024,
   );
-  // Serial is hostile text. Invalid UTF-8 fails rather than silently changing evidence.
-  add("untrusted-vm-serial", serial);
+  // Serial is hostile text. Invalid UTF-8 fails rather than changing evidence.
+  if (input.guestEvidence) {
+    const expected = input.guestEvidence;
+    const profileBytes = await bytes(
+      expected.profilePath,
+      expected.profileSha256,
+      65536,
+    );
+    const profile = record(JSON.parse(profileBytes.toString("utf8")));
+    const receiptBytes = await bytes(
+      join(input.vmEvidence.directory, "guest-source-evidence.json"),
+      expected.receiptSha256,
+      1024 * 1024,
+    );
+    const receipt = record(JSON.parse(receiptBytes.toString("utf8")));
+    const sourceDigests = [
+      ...new Set(source.records.map((row) => String(record(row).sha256))),
+    ].sort();
+    if (
+      profile.schema !== "slop-harmless-guest-profile-v1" ||
+      profile.fixtureOnly !== true ||
+      profile.sourceInventorySha256 !== queue.sourceInventorySha256 ||
+      receipt.schema !== "slop-guest-syscall-evidence-v1" ||
+      receipt.state !== "incomplete" ||
+      receipt.fixtureOnly !== true ||
+      receipt.profileSha256 !== expected.profileSha256 ||
+      receipt.sourceInventorySha256 !== queue.sourceInventorySha256 ||
+      JSON.stringify(receipt.sourceSha256) !== JSON.stringify(sourceDigests) ||
+      receipt.vmEvidenceSha256 !== input.vmEvidence.sha256 ||
+      vm.exitCode !== 0 ||
+      receipt.serialSha256 !== vm.serialSha256 ||
+      receipt.seedSha256 !== vm.seedSha256 ||
+      !HEX.test(expected.collectorSha256) ||
+      receipt.collectorSha256 !== expected.collectorSha256 ||
+      receipt.providerCallsAuthorized !== false ||
+      receipt.publicationAuthorized !== false
+    )
+      throw new Error(
+        "Guest receipt does not bind this approved source and VM",
+      );
+    const serialText = new TextDecoder("utf-8", { fatal: true }).decode(serial);
+    const prefix = "SLOP_GUEST_EVIDENCE_V1:";
+    const lines = serialText.split("\n");
+    const frames = lines.filter((line) => line.startsWith(prefix));
+    if (frames.length !== 1)
+      throw new Error("Missing or ambiguous guest serial frame");
+    const encoded = frames[0].slice(prefix.length).replace(/\r$/u, "");
+    const decoded = Buffer.from(encoded, "base64");
+    if (decoded.toString("base64") !== encoded)
+      throw new Error("Invalid guest frame encoding");
+    const frame = record(JSON.parse(decoded.toString("utf8")));
+    if (
+      frame.schema !== receipt.schema ||
+      frame.state !== "incomplete" ||
+      frame.fixtureOnly !== true ||
+      frame.exitCode !== receipt.exitCode ||
+      JSON.stringify(frame.sourceSha256) !== JSON.stringify(sourceDigests) ||
+      frame.profileSha256 !== receipt.profileSha256 ||
+      frame.sourceInventorySha256 !== receipt.sourceInventorySha256 ||
+      frame.traceSha256 !== receipt.traceSha256 ||
+      frame.outputSha256 !== receipt.outputSha256
+    )
+      throw new Error("Guest frame and retained receipt differ");
+    for (const [field, name] of [
+      ["trace", "guest-events.log"],
+      ["output", "guest-output.log"],
+    ] as const) {
+      const content = await bytes(
+        join(input.vmEvidence.directory, name),
+        String(receipt[`${field}Sha256`]),
+        field === "trace" ? 1024 * 1024 : 65536,
+      );
+      if (
+        typeof frame[field] !== "string" ||
+        !Buffer.from(frame[field], "base64").equals(content)
+      )
+        throw new Error("Retained guest output differs from actual serial");
+      add(`untrusted-${field}`, content);
+    }
+    if (profile.kernelPolicySha256 !== undefined) {
+      const kernel = record(receipt.kernelArtifactGate);
+      const rawKernel = record(frame.kernelArtifactGate);
+      if (
+        kernel.policySha256 !== profile.kernelPolicySha256 ||
+        rawKernel.policySha256 !== profile.kernelPolicySha256 ||
+        typeof rawKernel.postCollectorOutput !== "string"
+      )
+        throw new Error("Kernel fixture profile mismatch");
+      const after = await bytes(
+        join(input.vmEvidence.directory, "guest-after-collector.log"),
+        String(kernel.postCollectorOutputSha256),
+        65536,
+      );
+      if (!Buffer.from(rawKernel.postCollectorOutput, "base64").equals(after))
+        throw new Error("Post-collector evidence differs from actual serial");
+      add("untrusted-post-collector-probe", after);
+    }
+    // Preserve the complete raw serial digest while avoiding a second encoded
+    // copy of the same private trace in the bounded model input.
+    files.push({
+      role: "raw-vm-serial",
+      sha256: hash(serial),
+      bytes: serial.length,
+    });
+    add(
+      "untrusted-vm-console",
+      Buffer.from(lines.filter((line) => line !== frames[0]).join("\n")),
+    );
+    add("approved-fixture-profile", profileBytes);
+    add("guest-receipt", receiptBytes);
+    for (const gap of gaps(receipt.visibilityGaps)) visibility.add(gap);
+    visibility.delete("acquired-source-not-executed");
+    for (const gap of [
+      "only-approved-harmless-fixture-command-executed",
+      "guest-receipt-not-independent-kernel-or-host-proof",
+      "complete-interpreter-jit-memory-and-proxy-interception-not-proven",
+    ])
+      visibility.add(gap);
+  } else add("untrusted-vm-serial", serial);
   for (const [name, digest] of [
     ["overlay.qcow2", vm.overlaySha256],
     ["disk-map.json", vm.diskMapSha256],
