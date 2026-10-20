@@ -54,11 +54,6 @@ test("verified activity email preference persists and can be withdrawn @registry
   await expect(preferences.getByRole("status")).toContainText(
     "Optional activity email is on.",
   );
-  await page.waitForLoadState("networkidle");
-  await page.reload({ waitUntil: "networkidle" });
-  await expect(
-    preferences.getByRole("button", { name: "Turn off activity email" }),
-  ).toBeVisible();
   await page.screenshot({
     path: test.info().outputPath("optional-email-enabled.png"),
     fullPage: true,
@@ -70,6 +65,10 @@ test("verified activity email preference persists and can be withdrawn @registry
         .analyze()
     ).violations,
   ).toEqual([]);
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(
+    preferences.getByRole("button", { name: "Turn off activity email" }),
+  ).toBeVisible();
   await page.evaluate(() => {
     document.documentElement.style.zoom = "2";
   });
@@ -92,7 +91,17 @@ test("verified activity email preference persists and can be withdrawn @registry
   await expect(preferences.getByRole("status")).toContainText(
     "Optional activity email is off.",
   );
-  await page.waitForLoadState("networkidle");
+  await page.screenshot({
+    path: test.info().outputPath("optional-email-disabled.png"),
+    fullPage: true,
+  });
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
   await page.reload({ waitUntil: "networkidle" });
   await expect(
     preferences.getByRole("button", { name: "Turn on activity email" }),
