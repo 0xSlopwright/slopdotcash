@@ -43,6 +43,10 @@ import {
 import { CloudflareVettingPersistence } from "../../../backend/vetting/persistence";
 import { deploymentTier } from "../../../src/lib/deployment";
 import type { ProjectDefinition } from "../../../src/lib/projects.mjs";
+import {
+  loadRegistryPaymentDeployments,
+  parsePaymentNetworks,
+} from "../../../workers/payments/deployments";
 
 type Env = {
   SLOP_ENVIRONMENT?: "production" | "staging";
@@ -51,6 +55,12 @@ type Env = {
     FeeConversionsDependencies["db"] &
     NotificationsDependencies["db"];
   PAYMENTS_ALLOWED_ORIGIN?: string;
+  /**
+   * JSON array of the registry networks whose escrow vaults accept wallet
+   * bindings here, as the payments Worker reads it. Unset or invalid keeps
+   * every binding closed.
+   */
+  PAYMENT_NETWORKS?: string;
   PRIVATE_TRACES: R2Bucket;
   TRACE_AUTH_SECRET: string;
   X_CLIENT_ID?: string;
@@ -428,6 +438,15 @@ export async function onRequest(context: PagesContext): Promise<Response> {
         .split(",")
         .map((id) => id.trim())
         .filter((id) => /^[1-9][0-9]*$/.test(id)),
+      // Binding consent names a vault recorded in the D1 project registry for
+      // a served network; a vault of any other network is unknown.
+      paymentDeployments: async () =>
+        (
+          await loadRegistryPaymentDeployments(
+            context.env.SLOP_DB,
+            parsePaymentNetworks(context.env.PAYMENT_NETWORKS),
+          )
+        ).deployments,
       ...([
         "https://staging.slop.cash",
         "https://slop-staging.pages.dev",

@@ -48,8 +48,20 @@ Chain, Solana) is accepted only when its value in `mainnet-execution.mjs` is
 `true`. Every value is `false`. Only a reviewed pull request that records that
 network's production activation can change one. The local integration
 override exists only in the core APIs and is not forwarded by the hosted
-wrapper. `configure.mjs` and `assert-fresh-test-stack.mjs` accept only registry
-test networks.
+wrapper. `assert-fresh-test-stack.mjs` accepts only registry test networks.
+
+Each signer belongs to one stack (`SIGNER_STACK`, see `signer-stacks.mjs`). A
+`test` stack (also when the variable is absent, as in stacks generated before
+it existed) signs for registry test networks only and reads
+`TEST_SIGNER_PRIVATE_KEY` or `TEST_SOLANA_SIGNER_SEED`, with the journal
+`dedicated-test-signer-v1`. A `production` stack signs for registry mainnets
+only and reads `SIGNER_PRIVATE_KEY` or `SOLANA_SIGNER_SEED`, with the journal
+`production-signer-v1`, and it is the identity attester only: the wrapper
+refuses the relayer role on it (PRD PAY-04). The wrapper checks the stack and
+the network, then the preflight, before it reads a secret, so a test key
+never signs for a mainnet and a production key never signs while
+`MAINNET_EXECUTION` is off.
+Any other `SIGNER_STACK` value stops the signer.
 
 ## Durability and retries
 
@@ -148,6 +160,37 @@ must be reconciled explicitly: rerunning will fail closed once a Worker exists.
 This is a fresh-stack installer, not an updater or journal reset tool. Coordinate a
 single release operator to prevent concurrent provisioning races.
 
+### Production stack definition
+
+`--stack production` generates the identity attester Worker for one registry
+mainnet. It is for `contracts/DEPLOY-MAINNET.md` section 3.2 and is run by an
+operator only:
+
+```sh
+bun run projects:sync
+bun run payments:deployments mainnet "$NETWORK" > "$PINNED_DEPLOYMENTS_FILE"
+node workers/payment-executor/configure.mjs --stack production \
+  --network "$NETWORK" \
+  --deployments "$PINNED_DEPLOYMENTS_FILE" \
+  --output workers/payment-executor/.generated
+```
+
+The command does not create resources, read keys or deploy. It refuses a test
+network and any `--database-id` or `--database-name`. The production stack
+has no relayer and no dispatcher: under PRD PAY-04 the project or a
+permissionless executor holds the relayer key, and Slop runs no service or
+scheduled job that starts a payment. The PAY-05 attester is the only Slop-held
+payment key. The Worker name is `slop-payments-NETWORK-attester`. Its
+`PAYMENTS_DB` is the registry database (`SLOP_DB` in `wrangler.toml`),
+because the account API stores wallet claims and binding authorizations
+there; the Pages release migrates it, so this configuration has no migrations
+directory. The attester has `SIGNER_STACK=production`, takes the production
+secret name above, and refuses the network while its `MAINNET_EXECUTION`
+value is `false`. The hosted signer refuses `SIGNER_ROLE=relayer` and the
+relayer endpoints on a production stack. The generated
+`apply-production-stack.sh` lists the dry run, the attester deploy and its
+secret prompts for the operator to review and run.
+
 The generated `pages-bindings.json` is an integration fragment for an isolated test
 Pages environment, not permission to change an existing staging deployment. Bind its
 `SLOP_DB` to the exact same test D1 as the dispatcher; only one network/database may
@@ -231,4 +274,3 @@ Existing `slop-staging.pages.dev` is owned by another task: coordinate before ch
 its Pages bindings or deploying the isolated artifact. No live OAuth or hosted session
 claim is made until real GitHub sign-in, one-use assertion consumption, same-host cookie,
 wallet control signature, and finalized payout pass there. Use the new login/earnings
-flow; the legacy standalone wallet registration continues to use production identity.

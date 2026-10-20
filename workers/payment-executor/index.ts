@@ -14,6 +14,11 @@ import {
   type Signer,
 } from "./core";
 import {
+  SIGNER_STACKS,
+  signerStack,
+  stackServesNetwork,
+} from "./signer-stacks.mjs";
+import {
   completeSolanaBinding,
   createSolanaAttester,
   createSolanaExecutor,
@@ -35,9 +40,14 @@ interface Environment {
   PAYMENT_RPC_URLS: string;
   SIGNER_ROLE: "attester" | "relayer";
   CHAIN_FAMILY: "evm" | "solana";
+  /** `test` (or absent) or `production`; selects the signer secret and journal names. */
+  SIGNER_STACK?: string;
   /** Dedicated test-only key; each independently deployed role has a different secret. */
   TEST_SIGNER_PRIVATE_KEY?: `0x${string}`;
   TEST_SOLANA_SIGNER_SEED?: string;
+  /** Production stack key for one role and one mainnet; never a test key. */
+  SIGNER_PRIVATE_KEY?: `0x${string}`;
+  SOLANA_SIGNER_SEED?: string;
   JOURNAL: Namespace;
   IDENTITY_ATTESTER?: Fetcher;
 }
@@ -71,6 +81,13 @@ export class PaymentSignerJournal {
       )) as Parameters<ReturnType<typeof createEvmExecutor>["submit"]>[0] & {
         transaction?: unknown;
       };
+      // A test stack signs for test networks only and a production stack
+      // for mainnets only, so each key signs only for its own stack.
+      const stack = signerStack(this.env.SIGNER_STACK);
+      // PRD PAY-04: Slop holds no relayer key and runs no payment dispatch on
+      // a mainnet. A production stack is the PAY-05 identity attester only.
+      if (stack === "production" && this.env.SIGNER_ROLE !== "attester")
+        return new Response("Not found", { status: 404 });
       if (["/v1/attempt-status", "/v1/cancel-unsubmitted"].includes(pathname)) {
         if (this.env.SIGNER_ROLE !== "relayer")
           return new Response("Not found", { status: 404 });
@@ -126,6 +143,9 @@ export class PaymentSignerJournal {
         JOURNAL: this.state.storage,
       };
       let engine: PaymentExecutor;
+      if (!stackServesNetwork(stack, input.network))
+        throw new Error("Signer stack does not serve this network");
+      const secrets = SIGNER_STACKS[stack];
       if (
         pathname === "/v1/complete-bind" &&
         (this.env.SIGNER_ROLE !== "attester" ||
@@ -134,9 +154,9 @@ export class PaymentSignerJournal {
         return new Response("Not found", { status: 404 });
       if (this.env.CHAIN_FAMILY === "evm") {
         await preflightEvmDeployment(this.env, input);
-        if (!this.env.TEST_SIGNER_PRIVATE_KEY)
-          throw new Error("Test signer unavailable");
-        const account = privateKeyToAccount(this.env.TEST_SIGNER_PRIVATE_KEY);
+        const key = this.env[secrets.evmSecret];
+        if (!key) throw new Error("Signer unavailable");
+        const account = privateKeyToAccount(key);
         const signer: Signer = {
           address: account.address,
           signTransaction: (transaction) =>
@@ -152,9 +172,9 @@ export class PaymentSignerJournal {
               });
       } else if (this.env.CHAIN_FAMILY === "solana") {
         await preflightSolanaDeployment(this.env, input);
-        const encodedSeed = this.env.TEST_SOLANA_SIGNER_SEED;
+        const encodedSeed = this.env[secrets.solanaSecret];
         if (!encodedSeed || !/^[0-9a-f]{64}$/.test(encodedSeed))
-          throw new Error("Test signer unavailable");
+          throw new Error("Signer unavailable");
         const seed = Uint8Array.from(encodedSeed.match(/../g) ?? [], (byte) =>
           Number.parseInt(byte, 16),
         );
@@ -199,7 +219,9 @@ export class PaymentSignerJournal {
 export default {
   async fetch(request: Request, env: Environment) {
     return env.JOURNAL.get(
-      env.JOURNAL.idFromName("dedicated-test-signer-v1"),
+      env.JOURNAL.idFromName(
+        SIGNER_STACKS[signerStack(env.SIGNER_STACK)].journal,
+      ),
     ).fetch(request);
   },
 };

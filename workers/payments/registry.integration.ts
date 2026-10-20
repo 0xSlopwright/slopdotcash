@@ -6,6 +6,13 @@
  * registry and the isolated payment database are two separate databases, as
  * configure.mjs binds them (REGISTRY_DB and PAYMENTS_DB). The readiness
  * report then reads the same registry and probes the same RPC.
+ *
+ * The account API router (the Pages SLOP_DB is the registry) builds wallet
+ * binding consent for the recorded vault only for its served networks. The
+ * production stack definition of configure.mjs is the identity attester
+ * only (PRD PAY-04): it pins the same deployment, has no relayer and no
+ * dispatcher, and the hosted signer refuses the relayer role on it and a
+ * network outside its stack before it reads a signer secret.
  */
 import { Database } from "bun:sqlite";
 import assert from "node:assert/strict";
@@ -13,13 +20,19 @@ import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { privateKeyToAccount } from "viem/accounts";
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
+import type { evmBindingTypedData } from "../../contracts/evm/adapter";
+import { onRequest } from "../../functions/api/v1/[[path]]";
 import {
   payoutReadiness,
   probeRpc,
 } from "../../scripts/check-payout-readiness";
 import { paymentDeploymentRecord } from "../../src/lib/escrow-policy.mjs";
 import { assertProjectDefinition } from "../../src/lib/project-schema.mjs";
+import { sha256Hex } from "../identity/crypto";
+import { paymentStack } from "../payment-executor/configure.mjs";
+import { PaymentSignerJournal } from "../payment-executor/index";
 import { registryDeployments, syncRegistryVaults } from "./index";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -345,6 +358,328 @@ try {
       /PAYMENT_NETWORKS/,
     );
 
+  // 3b. The account API router finds the recorded vault in the same registry
+  //     (on Pages, SLOP_DB holds the registry and the account tables) and
+  //     builds binding consent only for a network it serves.
+  //     Public deterministic test key 1 controls the wallet; no user key.
+  const wallet = privateKeyToAccount(`0x${"0".repeat(63)}1`);
+  const session = "s".repeat(43);
+  const at = new Date().toISOString();
+  sql
+    .prepare(
+      "INSERT INTO points_members(actor_id,github_id,login,joined_at,public) VALUES('node','123','alice',?,0)",
+    )
+    .run(at);
+  sql
+    .prepare("INSERT INTO points_sessions VALUES(?,?,?)")
+    .run(
+      await sha256Hex(session),
+      "node",
+      new Date(Date.now() + 3600000).toISOString(),
+    );
+  sql
+    .prepare(
+      "INSERT INTO wallet_claims(id,github_user_id,github_login,wallet_address,source,source_body_sha256,observed_at,record_sha256,created_at,chain) VALUES('claim','123','alice',?,'d1_registry',?,?,?,?,'base')",
+    )
+    .run(wallet.address.toLowerCase(), "a".repeat(64), at, "c".repeat(64), at);
+  const account = (
+    paymentNetworks: string | undefined,
+    path: string,
+    body: Record<string, string>,
+  ) =>
+    onRequest({
+      request: new Request(`https://slop.cash/api/v1/payments${path}`, {
+        method: "POST",
+        headers: {
+          cookie: `__Host-slop_points=${session}`,
+          origin: "https://slop.cash",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }),
+      env: {
+        SLOP_DB: registryDb,
+        ...(paymentNetworks === undefined
+          ? {}
+          : { PAYMENT_NETWORKS: paymentNetworks }),
+      },
+    } as never);
+  // The wallet first proves control of the claimed address (personal_sign).
+  const walletChallenge = (await (
+    await account(undefined, "/wallets/challenge", { claimId: "claim" })
+  ).json()) as { message: string; challengeId: string };
+  const walletAuthorized = await account(undefined, "/wallets/authorize", {
+    claimId: "claim",
+    challengeId: walletChallenge.challengeId,
+    signature: await wallet.signMessage({ message: walletChallenge.message }),
+  });
+  assert.equal(walletAuthorized.status, 200, await walletAuthorized.text());
+  const consent = {
+    claimId: "claim",
+    network: "base-sepolia",
+    vault,
+    expectedVersion: "0",
+  };
+  for (const [served, status, error] of [
+    [undefined, 503, "payment_deployments_unavailable"],
+    ['["anvil"]', 503, "payment_deployments_unavailable"],
+    ['["base-mainnet"]', 400, "unknown_deployment"],
+  ] as const) {
+    const refused = await account(served, "/wallets/bind-challenge", consent);
+    assert.equal(refused.status, status, `PAYMENT_NETWORKS=${served}`);
+    assert.deepEqual(await refused.json(), { error });
+  }
+  const served = JSON.stringify(["base-sepolia"]);
+  const challenge = await account(served, "/wallets/bind-challenge", consent);
+  assert.equal(challenge.status, 200, await challenge.clone().text());
+  const { typedData } = (await challenge.json()) as {
+    typedData: ReturnType<typeof evmBindingTypedData>;
+  };
+  assert.equal(String(typedData.domain.chainId), "84532");
+  assert.equal(typedData.domain.verifyingContract.toLowerCase(), vault);
+  assert.equal(
+    typedData.message.destination.toLowerCase(),
+    wallet.address.toLowerCase(),
+  );
+  const { EIP712Domain: _domain, ...types } = typedData.types;
+  const signature = await wallet.signTypedData({
+    domain: {
+      ...typedData.domain,
+      chainId: Number(typedData.domain.chainId),
+      verifyingContract: typedData.domain.verifyingContract as `0x${string}`,
+    },
+    types,
+    primaryType: typedData.primaryType,
+    message: {
+      actorId: BigInt(typedData.message.actorId),
+      destination: typedData.message.destination as `0x${string}`,
+      expectedVersion: BigInt(typedData.message.expectedVersion),
+      claimDigest: typedData.message.claimDigest as `0x${string}`,
+      expiresAt: BigInt(typedData.message.expiresAt),
+    },
+  } as never);
+  const authorized = await account(served, "/wallets/bind-authorize", {
+    ...consent,
+    expiresAt: typedData.message.expiresAt,
+    signature,
+  });
+  assert.equal(authorized.status, 200, await authorized.clone().text());
+  const binding = sql
+    .query(
+      "SELECT network,vault,chain_id FROM payment_binding_authorizations WHERE claim_id='claim'",
+    )
+    .get() as Record<string, string>;
+  assert.deepEqual(binding, {
+    network: "base-sepolia",
+    vault,
+    chain_id: "84532",
+  });
+
+  // 3c. The production stack definition for one mainnet is the identity
+  //     attester only (PRD PAY-04, PAY-05). It pins the registry deployment
+  //     and uses the registry database and the production secret name. Slop
+  //     generates no relayer and no dispatcher, so the readiness report
+  //     names the executor as missing until the project or a permissionless
+  //     executor provides one.
+  const mainnetDeployment = {
+    ...deployment,
+    network: "base-mainnet" as const,
+    bindingDelaySeconds: "172800",
+  };
+  const mainnetManifest = assertProjectDefinition({
+    ...withEscrow,
+    escrow: { ...withEscrow.escrow, deployments: [mainnetDeployment] },
+  });
+  const registryDatabase = {
+    database_name: "slop-private",
+    database_id: registryDatabaseId,
+  };
+  const mainnetRecord = paymentDeploymentRecord("eliza", mainnetDeployment);
+  const production = paymentStack({
+    stack: "production",
+    network: "base-mainnet",
+    deployments: [mainnetRecord],
+    registry: [mainnetManifest],
+    registryDatabase,
+  });
+  assert.equal(production.secret, "SIGNER_PRIVATE_KEY");
+  assert.deepEqual(production.names, {
+    attester: "slop-payments-base-mainnet-attester",
+  });
+  assert.deepEqual(Object.keys(production.configs), ["attester"]);
+  assert.equal(production.configs.attester.vars.SIGNER_ROLE, "attester");
+  assert.equal(production.configs.attester.vars.SIGNER_STACK, "production");
+  assert.equal(production.configs.attester.triggers, undefined);
+  assert.equal(production.configs.attester.services, undefined);
+  assert.deepEqual(production.configs.attester.d1_databases, [
+    { binding: "PAYMENTS_DB", ...registryDatabase },
+  ]);
+  const mainnetReport = (enabled: boolean) =>
+    payoutReadiness({
+      registry: [mainnetManifest],
+      registryDatabaseId,
+      configs: Object.values(production.configs),
+      rpcUrls: { "base-mainnet": "https://base-mainnet.rpc.example" },
+      probes: { "base-mainnet": "finalized" },
+      executionEnabled: () => enabled,
+    }).find((item) => item.network === "base-mainnet");
+  assert.equal(mainnetReport(false)?.attester, "configured");
+  assert.equal(mainnetReport(true)?.attester, "configured");
+  assert.equal(mainnetReport(true)?.executor, "missing");
+  assert.equal(mainnetReport(true)?.ready, false);
+  // A production stack never serves a test network or a separate database,
+  // and a test stack never serves a mainnet.
+  assert.throws(
+    () =>
+      paymentStack({
+        stack: "production",
+        network: "base-sepolia",
+        deployments: [paymentDeploymentRecord("eliza", deployment)],
+        registry: [withEscrow],
+        registryDatabase,
+      }),
+    /registry mainnet/,
+  );
+  assert.throws(
+    () =>
+      paymentStack({
+        stack: "production",
+        network: "base-mainnet",
+        databaseId: "00000000-0000-4000-8000-000000000001",
+        databaseName: "slop-payments-base-mainnet",
+        deployments: [mainnetRecord],
+        registry: [mainnetManifest],
+        registryDatabase,
+      }),
+    /registry database/,
+  );
+  assert.throws(
+    () =>
+      paymentStack({
+        network: "base-mainnet",
+        databaseId: "00000000-0000-4000-8000-000000000001",
+        databaseName: "slop-payments-base-mainnet",
+        deployments: [mainnetRecord],
+        registry: [mainnetManifest],
+        registryDatabase,
+      }),
+    /Explicit test network/,
+  );
+  const testStack = paymentStack({
+    network: "base-sepolia",
+    databaseId: "00000000-0000-4000-8000-000000000001",
+    databaseName: "slop-payments-base-sepolia",
+    deployments: [paymentDeploymentRecord("eliza", deployment)],
+    registry: [withEscrow],
+    registryDatabase,
+  });
+  assert.equal(testStack.secret, "TEST_SIGNER_PRIVATE_KEY");
+  assert.equal(testStack.configs.attester.vars.SIGNER_STACK, "test");
+
+  // 3d. The hosted signer reads only its own stack's secret, and only after
+  //     the stack, network and preflight checks pass. Each secret is a
+  //     getter that records a read; no value is a usable key.
+  const signerRun = async (
+    stack: string | undefined,
+    network: string,
+    deployments: unknown[],
+    role = "attester",
+    path = "/v1/pay",
+  ) => {
+    const read: string[] = [];
+    const env = {
+      PAYMENTS_DB: paymentsDb,
+      PAYMENT_DEPLOYMENTS: JSON.stringify(deployments),
+      PAYMENT_RPC_URLS: JSON.stringify({ [network]: rpcUrl }),
+      SIGNER_ROLE: role,
+      CHAIN_FAMILY: "evm",
+      ...(stack === undefined ? {} : { SIGNER_STACK: stack }),
+    };
+    for (const name of ["TEST_SIGNER_PRIVATE_KEY", "SIGNER_PRIVATE_KEY"])
+      Object.defineProperty(env, name, {
+        get() {
+          read.push(name);
+          return undefined;
+        },
+      });
+    const response = await new PaymentSignerJournal(
+      { storage: {} } as never,
+      env as never,
+    ).fetch(
+      new Request(`https://identity-attester.internal${path}`, {
+        method: "POST",
+        headers: { "idempotency-key": "key" },
+        body: JSON.stringify({
+          idempotencyKey: "key",
+          obligationId: "award",
+          network,
+          vault,
+          githubUserId: "123",
+          claimId: "claim",
+          claimDigest: `0x${"c".repeat(64)}`,
+          destination: wallet.address,
+        }),
+      }),
+    );
+    return { status: response.status, read };
+  };
+  const secretsRead = async (...args: Parameters<typeof signerRun>) => {
+    const { status, read } = await signerRun(...args);
+    assert.equal(status, 409);
+    return read;
+  };
+  const sepoliaRecord = paymentDeploymentRecord("eliza", deployment);
+  // A test stack (with or without SIGNER_STACK) passes the Base Sepolia
+  // preflight against the chain and then reads the test secret only.
+  assert.deepEqual(
+    await secretsRead(undefined, "base-sepolia", [sepoliaRecord]),
+    ["TEST_SIGNER_PRIVATE_KEY"],
+  );
+  assert.deepEqual(await secretsRead("test", "base-sepolia", [sepoliaRecord]), [
+    "TEST_SIGNER_PRIVATE_KEY",
+  ]);
+  // A production stack refuses a test network, a test stack refuses a
+  // mainnet, MAINNET_EXECUTION refuses the mainnet, and an unknown stack
+  // stops: none of them reads a secret.
+  assert.deepEqual(
+    await secretsRead("production", "base-sepolia", [sepoliaRecord]),
+    [],
+  );
+  assert.deepEqual(
+    await secretsRead("test", "base-mainnet", [mainnetRecord]),
+    [],
+  );
+  assert.deepEqual(
+    await secretsRead("production", "base-mainnet", [mainnetRecord]),
+    [],
+  );
+  assert.deepEqual(
+    await secretsRead("staging", "base-sepolia", [sepoliaRecord]),
+    [],
+  );
+  // PRD PAY-04: a production stack has no Slop relayer. The relayer role and
+  // its dispatch endpoints are refused before any secret or journal read,
+  // while a test relayer still reaches its preflight.
+  for (const path of [
+    "/v1/pay",
+    "/v1/attempt-status",
+    "/v1/cancel-unsubmitted",
+  ])
+    assert.deepEqual(
+      await signerRun(
+        "production",
+        "base-mainnet",
+        [mainnetRecord],
+        "relayer",
+        path,
+      ),
+      { status: 404, read: [] },
+    );
+  assert.deepEqual(
+    await secretsRead("test", "base-sepolia", [sepoliaRecord], "relayer"),
+    ["TEST_SIGNER_PRIVATE_KEY"],
+  );
+
   // 4. One corrupted manifest is reported and never hides the other vaults.
   sql.exec("DROP TRIGGER projects_match_revision_insert");
   sql
@@ -449,7 +784,7 @@ try {
     );
   }
   console.log(
-    `registry vault discovery: snapshot block ${row.block_number}, deposited ${row.total_deposited}; readiness ${sepolia?.ready ? "ready" : "not ready"} for base-sepolia`,
+    `registry vault discovery: snapshot block ${row.block_number}, deposited ${row.total_deposited}; readiness ${sepolia?.ready ? "ready" : "not ready"} for base-sepolia; router binding stored for chain ${binding.chain_id}; production base-mainnet attester ${mainnetReport(false)?.attester}, executor ${mainnetReport(false)?.executor}`,
   );
 } finally {
   anvil.kill();
