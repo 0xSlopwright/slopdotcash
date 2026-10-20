@@ -744,7 +744,8 @@ function ProjectEditor({
 }
 
 /** Public reads are edge cached for 30 seconds and purged on each write. */
-const SAVED_NOTE = "Saved. The public site shows the change within a minute.";
+const SAVED_NOTE =
+  "Saved. The public site shows the change within a minute. Leaderboard, points, and profile data follow at the next scheduled release, which runs every 6 hours.";
 
 /** Delisting keeps history: the project becomes paused and retired. */
 function DelistButton({
@@ -836,7 +837,9 @@ function ProjectsSection() {
         Approved projects start paused and collect nothing until an admin makes
         them active. Slop generates each project's skills from its approved
         revision; preview them before activation. The public site shows each
-        saved revision within a minute, without a rebuild.
+        saved revision within a minute, without a rebuild. Collected data for an
+        active project (leaderboard, points, and profiles) follows at the next
+        scheduled release, which runs every 6 hours.
       </p>
       {note ? (
         <p className="admin-status" role="status">

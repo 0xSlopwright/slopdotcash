@@ -80,7 +80,12 @@ finding stays confirmed. A reserved or approved award cannot be redecided.
 
 - Payment: no private settlement rail is approved. An approved award has
   `paymentState: "rail-unavailable"` and nothing can mark it paid.
-- Email: no bounty notification sender exists. Case changes appear only in the
-  signed-in `/security` inbox.
+- Email: no bounty notification sender exists. A case change adds a row to
+  the signed-in `/inbox` of the people it concerns (SEC-09): the reporter for
+  events their view shows, security maintainers for a new claim, dispute
+  reviewers for an appeal, an assigned triager, and financial approvers when
+  a decision reserves an award. The row holds only the private case id and a
+  link to `/security`; never the project, advisory, severity, amount or
+  reason. The actor is never notified of their own action.
 - GitHub advisory content is never fetched. Maintainers verify claims by
   hand on GitHub.

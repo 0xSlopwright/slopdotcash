@@ -1,3 +1,4 @@
+import { notifyWalletChanged } from "../notifications/events";
 import type {
   AttachTraceInput,
   AuditInput,
@@ -953,7 +954,15 @@ export class CloudflareTracePersistence implements TracePersistence {
         claim.id,
       );
     try {
-      const results = await this.db.batch([claimInsert, auditInsert]);
+      // The inbox row is a no-op on replay, so only the claim and its audit
+      // are checked.
+      const results = (
+        await this.db.batch([
+          claimInsert,
+          auditInsert,
+          notifyWalletChanged(this.db, claim.id, claim.createdAt),
+        ])
+      ).slice(0, 2);
       if (
         results.length !== 2 ||
         results.some((result) => !result.success) ||

@@ -9,8 +9,9 @@ and private trace APIs.
 ## Tables
 
 Migrations `0019_project_registry.sql`,
-`0020_project_application_github_check.sql` and
-`0023_project_enforcements.sql` create:
+`0020_project_application_github_check.sql`,
+`0023_project_enforcements.sql` and
+`0027_project_enforcement_owner_appeals.sql` create:
 
 - `project_applications`: submitted manifests, applicant GitHub identity,
   review status, decision, and admin email outcome. One pending application
@@ -149,8 +150,8 @@ rate limit, and caches each answer for five minutes. The browser never calls
   and owner must match the manifest, or the application is refused. Whether
   the applicant owns the user repository, or is a public member of the owning
   organization, is stored as `githubCheck` for the admin. Every application
-  waits for an admin (PRD PRJ-02). One account may submit 5 projects per day
-  and keep 3 waiting.
+  waits for an admin (PRD PRJ-02). One account may keep 3 applications
+  waiting.
 - `/admin` previews the exact generated contributor and reviewer skills before
   an admin approves or activates a revision.
 - A revision activates, and its skills and discovery entry are served, only
@@ -167,15 +168,29 @@ rate limit, and caches each answer for five minutes. The browser never calls
   appends the paused, `retired` revision. When the current manifest cannot
   pass that revision, the record says `revision_pending`, the restriction
   still closes every public route, `/admin` shows the pending revision, and
-  `bun run projects:sync` refuses to build until an admin delists the
-  project.
+  `bun run projects:sync` withholds that project and its revisions from the
+  snapshot, with a warning, until an admin appends the paused, `retired`
+  revision. Every other project still syncs.
 - A restriction binds the GitHub repository id and every repository path. A
   restricted project cannot get a revision that is not paused and retired, and
   no application for the same repository can be submitted or approved.
+- The project steward named in the manifest, or the applicant whose
+  application listed the project, may file the reinstatement request with
+  `POST /api/v1/project-appeals` (`projectId`, `reason`,
+  `evidenceReference`). The record names the role `project-steward` or
+  `project-applicant` and the source `owner-request`
+  (`0027_project_enforcement_owner_appeals.sql`). A moderator may also file
+  it at `/admin`. Only a moderator decides it.
 - Reinstatement needs an open reinstatement request and a moderator who did
-  not place the restriction. It appends a paused `community` revision only if
+  not place the restriction. It is refused with `revision_pending` while the
+  paused, `retired` revision of the restriction is still pending. It appends a paused `community` revision only if
   the project was listed when the restriction began; it never restores
   featuring, activation or money. A denial keeps the restriction.
+- Each enforcement record adds, in the same D1 batch, one `/inbox` row for the
+  applicant who listed the project and one for its GitHub steward (PRD
+  NOT-01). A reinstatement request also adds a row for each moderator who
+  did not place the restriction. No row carries the reason or the evidence
+  reference.
 - Every revision must pass `assertProjectPolicyTransition`, the review-budget
   rule, and the registry uniqueness checks. A revision that makes a project
   active requires the generated templates and the `contribution` fields. Root

@@ -4,7 +4,9 @@
  * revision is appended in the same write when the manifest allows it, and is
  * shown as pending when it does not. A restriction can only restrict: it never
  * creates a project, grants featuring, or enables money. Reinstatement needs
- * an appeal and a moderator who did not place the restriction (ELG-02).
+ * an appeal and a moderator who did not place the restriction (ELG-02). The
+ * project steward or the applicant who listed the project may file the
+ * appeal; only a moderator decides it.
  */
 
 import { assertProjectPolicyTransition } from "../../src/lib/project-policy.mjs";
@@ -258,6 +260,13 @@ export function planEnforcement(input: {
           manifest: null,
           pendingReason: null,
         };
+      // A restriction whose paused, retired revision is still pending must
+      // not clear: clearing it would restore the listed or active manifest.
+      if (!enforcedManifest(manifest))
+        refuse(
+          "revision_pending",
+          "Append the paused, retired revision of this restriction before reinstatement",
+        );
       // Reinstatement lists the project again only if the restriction found
       // it listed, never above the community tier, and always paused.
       return {

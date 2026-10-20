@@ -381,17 +381,19 @@ administrator bypass. Successful protected merges deploy automatically. Reposito
 require a pull request, resolved threads, and non-fast-forward history with no
 bypass actors.
 
-Code releases use the main-only `eliza-army-production` environment. Scheduled
-refreshes use `slop-data-refresh`. No separate manual release approval is
-required. Publication credentials must never be exposed to pull-request runs.
-Both release paths use the shared publication lock.
+Production releases use the main-only `eliza-army-production` environment.
+No separate manual release approval is required. Publication credentials must
+never be exposed to pull-request runs. Every production release uses the
+shared publication lock.
 
-Scheduled refreshes build the currently published GitHub-approved ancestor of
-`main`, compare the complete bundle against a successful retained baseline,
-and may change only allowlisted data. Recheck the deployed revision under the
-shared publication lock before publishing; discard superseded refreshes.
-Code releases still require current main equivalence. Every Pages deployment
-is bound to its actual tested source SHA, not the schedule event SHA.
+GitHub runs schedules only on the default branch, so
+`.github/workflows/scheduled-release.yml` dispatches the full release workflow
+on `main` and `development` every 6 hours. Each dispatched run snapshots the
+current D1 registry, ingests live GitHub data, passes the full quality gate,
+and publishes through its branch's normal release job. A newly activated
+project thus gets its collected data without a commit. Every production release
+requires current main equivalence. Every deployment is bound to its actual
+tested source SHA.
 
 The separate hourly health workflow authenticates GitHub private-reporting
 status and renews a D1 observation. It never publishes code or holds the site

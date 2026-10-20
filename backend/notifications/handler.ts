@@ -1,6 +1,6 @@
 /**
  * Authenticated in-app inbox (PRD NOT-01). Rows are written only by the
- * migration 0024 triggers, in the same transaction as the source change; this
+ * statements in ./events.ts, in the same D1 batch as the source change; this
  * route lists the signed-in recipient's own rows and marks them read. It never
  * sends email and never reads another account's rows.
  */
