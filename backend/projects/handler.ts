@@ -997,6 +997,15 @@ async function enforceProject(
           actor,
           at,
         },
+    // Only a moderator who did not place the restriction may decide it.
+    action === "request_reinstatement"
+      ? [...deps.moderatorGithubIds].filter(
+          (githubId) =>
+            !restriction.restrictedBy.some(
+              (placed) => placed.githubId === githubId,
+            ),
+        )
+      : [],
   );
   if (outcome === "conflict")
     fail(409, "stale_enforcement", "The project changed since you loaded it");

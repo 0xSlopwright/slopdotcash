@@ -1,4 +1,7 @@
-import { notifyPayoutHeld } from "../notifications/events";
+import {
+  notifyPayoutException,
+  notifyPayoutHeld,
+} from "../notifications/events";
 import type { D1Database } from "../trace/cloudflare-persistence";
 
 export interface DispatchPayment {
@@ -54,6 +57,7 @@ export async function dispatchPayment(
         )
         .bind(timestamp, obligationId, lease),
       notifyPayoutHeld(db, obligationId, timestamp),
+      notifyPayoutException(db, obligationId, timestamp),
     ]);
     return "unavailable";
   }
@@ -72,6 +76,7 @@ export async function dispatchPayment(
         )
         .bind(timestamp, obligationId, lease),
       notifyPayoutHeld(db, obligationId, timestamp),
+      notifyPayoutException(db, obligationId, timestamp),
     ]);
     return "unavailable";
   }

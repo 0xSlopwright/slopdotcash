@@ -168,6 +168,11 @@ rate limit, and caches each answer for five minutes. The browser never calls
   not place the restriction. It appends a paused `community` revision only if
   the project was listed when the restriction began; it never restores
   featuring, activation or money. A denial keeps the restriction.
+- Each enforcement record adds, in the same D1 batch, one `/inbox` row for the
+  applicant who listed the project and one for its GitHub steward (PRD
+  NOT-01). A reinstatement request also adds a row for each moderator who
+  did not place the restriction. No row carries the reason or the evidence
+  reference.
 - Every revision must pass `assertProjectPolicyTransition`, the review-budget
   rule, and the registry uniqueness checks. A revision that makes a project
   active requires the generated templates and the `contribution` fields. Root

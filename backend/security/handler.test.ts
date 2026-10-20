@@ -98,10 +98,18 @@ function open() {
     keys += 1;
     return `test-key-${String(keys).padStart(8, "0")}`;
   };
+  // Inbox rows (NOT-01, SEC-09): event key, kind, subject, detail and link.
+  const inbox = (recipient: { githubId: string }) =>
+    sqlite
+      .query(
+        "SELECT event_key, kind, subject, detail, action_path FROM notifications WHERE recipient_github_id = ? ORDER BY event_key",
+      )
+      .all(recipient.githubId) as Record<string, string | null>[];
   return {
     sqlite,
     call,
     key,
+    inbox,
     setBeforeBatch: (hook: () => void) => {
       beforeBatch = hook;
     },
@@ -110,7 +118,7 @@ function open() {
 
 describe("security cases", () => {
   test("a rejected link can be corrected by a new claim or a record", async () => {
-    const { call, key } = open();
+    const { call, key, inbox } = open();
     const claim = () =>
       call(REPORTER, "POST", "security-cases", {
         mode: "claim",
@@ -181,10 +189,34 @@ describe("security cases", () => {
     const other = await record();
     expect(other.status).toBe(409);
     expect(other.body.error).toBe("advisory_already_recorded");
+    // The inbox holds one row per event and recipient, with only the private
+    // case reference and the sign-in link (SEC-09). A replay adds nothing,
+    // and nobody is told about their own action.
+    const row = (id: string, revision: number) => ({
+      event_key: `security-case:${id}:${revision}`,
+      kind: "security_case",
+      subject: id,
+      detail: null,
+      action_path: "/security",
+    });
+    const ids = [first, again, recorded].map(
+      (reply) => reply.body.case.id as string,
+    );
+    expect(inbox(MAINTAINER)).toEqual(
+      [row(ids[0], 1), row(ids[1], 1)].sort((a, b) =>
+        a.event_key.localeCompare(b.event_key),
+      ),
+    );
+    expect(inbox(REPORTER)).toEqual(
+      [row(ids[0], 2), row(ids[1], 2), row(ids[2], 1)].sort((a, b) =>
+        a.event_key.localeCompare(b.event_key),
+      ),
+    );
+    expect(inbox(TRIAGER)).toEqual([]);
   });
 
   test("a stale triager change grants or revokes nothing", async () => {
-    const { call, key, sqlite, setBeforeBatch } = open();
+    const { call, key, sqlite, setBeforeBatch, inbox } = open();
     const recorded = await call(MAINTAINER, "POST", "security-cases", {
       mode: "record",
       projectId: PROJECT,
@@ -234,6 +266,7 @@ describe("security cases", () => {
     expect(stale.status).toBe(409);
     expect(stale.body.error).toBe("stale_revision");
     expect(members()).toEqual([]);
+    expect(inbox(TRIAGER)).toEqual([]);
     expect((await call(TRIAGER, "GET", `security-cases/${id}`)).status).toBe(
       404,
     );
@@ -252,6 +285,10 @@ describe("security cases", () => {
     expect(assigned.status).toBe(200);
     expect(members()).toEqual([
       { github_id: TRIAGER.githubId, revoked_at: null },
+    ]);
+    // Only the assignment that landed reaches the triager.
+    expect(inbox(TRIAGER).map((n) => n.event_key)).toEqual([
+      `security-case:${id}:4`,
     ]);
 
     setBeforeBatch(() => {

@@ -1,7 +1,9 @@
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
 import {
   notifyApplicationDecision,
+  notifyProjectEnforcement,
   notifyProjectRevision,
+  notifyReinstatementReviewers,
 } from "../notifications/events";
 import type {
   AdminNotification,
@@ -520,6 +522,7 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
   async appendEnforcement(
     record: ProjectEnforcement,
     revision: ProjectRevisionInput | null,
+    appealReviewers: readonly string[],
   ): Promise<"recorded" | "conflict"> {
     const current = `EXISTS (SELECT 1 FROM projects WHERE id = ? AND revision = ? AND manifest_sha256 = ?)`;
     const statements = [
@@ -595,9 +598,18 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           ),
       );
     }
+    // The inbox rows are no-ops on replay, so only the source writes are
+    // checked.
+    const checked = statements.length;
+    statements.push(
+      notifyProjectEnforcement(this.db, record.id),
+      notifyReinstatementReviewers(this.db, record.id, appealReviewers),
+    );
     try {
       const results = await this.db.batch(statements);
-      return results.every((entry) => entry.meta?.changes === 1)
+      return results
+        .slice(0, checked)
+        .every((entry) => entry.meta?.changes === 1)
         ? "recorded"
         : "conflict";
     } catch (error) {

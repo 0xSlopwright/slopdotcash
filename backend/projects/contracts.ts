@@ -158,10 +158,13 @@ export interface ProjectPersistence {
   enforcementGeneration(): Promise<number>;
   /**
    * Atomically appends the record and, when given, the matching revision.
-   * Both apply only while the project is still at `beforeRevision`.
+   * Both apply only while the project is still at `beforeRevision`. The
+   * same write adds the inbox rows for the project's applicant and steward,
+   * and for `appealReviewers` when the record requests reinstatement.
    */
   appendEnforcement(
     record: ProjectEnforcement,
     revision: ProjectRevisionInput | null,
+    appealReviewers: readonly string[],
   ): Promise<"recorded" | "conflict">;
 }
