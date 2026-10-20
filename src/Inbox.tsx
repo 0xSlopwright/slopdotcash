@@ -247,7 +247,7 @@ function InboxItem({
       </p>
       <div className="inbox-actions">
         <a href={n.actionPath}>{notificationAction(n)}</a>
-        {n.kind === "security_case" ? (
+        {n.kind === "security_case" && n.acknowledgedAt !== undefined ? (
           n.acknowledgedAt ? (
             <p>Acknowledged</p>
           ) : (

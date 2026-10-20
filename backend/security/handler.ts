@@ -272,7 +272,7 @@ async function requireActor(
 }
 
 async function currentProgram(
-  deps: SecurityApiDependencies,
+  deps: Pick<SecurityApiDependencies, "db">,
   projectId: string,
 ): Promise<{ manifest: ProjectDefinition; revision: number } | null> {
   const row = await deps.db
@@ -319,7 +319,7 @@ function programRoles(
 }
 
 async function activeTriager(
-  deps: SecurityApiDependencies,
+  deps: Pick<SecurityApiDependencies, "db">,
   caseId: string,
   githubId: string,
 ): Promise<boolean> {
@@ -335,7 +335,7 @@ async function activeTriager(
 
 /** Current roles; recomputed on every request so revocation is immediate. */
 async function caseRoles(
-  deps: SecurityApiDependencies,
+  deps: Pick<SecurityApiDependencies, "db">,
   row: CaseRow,
   actor: Actor,
   terms: SecurityBountyTerms | undefined,
@@ -359,6 +359,28 @@ async function caseRoles(
     roles.add("triager");
   }
   return roles;
+}
+
+/** Shared live authorization for the private mail dispatcher (SEC-16). */
+export async function securityNotificationAccess(
+  db: SecurityD1Database,
+  caseId: string,
+  githubId: string,
+): Promise<{ allowed: boolean; acknowledgeHours: number }> {
+  const row = await loadCase({ db }, caseId);
+  if (row === null) return { allowed: false, acknowledgeHours: 0 };
+  const program = await currentProgram({ db }, row.project_id);
+  const roles = await caseRoles(
+    { db },
+    row,
+    { githubId, githubLogin: "" },
+    program?.manifest.securityBounty,
+  );
+  return {
+    allowed: roles.size > 0,
+    acknowledgeHours:
+      program?.manifest.securityBounty?.responseTargets?.acknowledgeHours ?? 0,
+  };
 }
 
 function frozenTerms(row: CaseRow): FrozenTerms | null {
@@ -612,7 +634,7 @@ const CASE_COLUMNS =
   "id, project_id, advisory_repository, advisory_ghsa, reporter_github_id, reporter_github_login, submission_state, received_at, verified_at, verified_by_github_id, policy_revision, terms, evidence_digest, receipt_state, remediation_state, award_state, payment_state, disclosure_state, recognition, severity, loss_finding, root_cause_key, duplicate_of, technical_decider_github_id, appeal_state, appeal_from_state, owner_github_id, next_action, next_action_due_at, payment_deadline, related_party, related_party_review, related_party_reviewer_github_id, revision, created_at, updated_at";
 
 async function loadCase(
-  deps: SecurityApiDependencies,
+  deps: Pick<SecurityApiDependencies, "db">,
   caseId: string,
 ): Promise<CaseRow | null> {
   if (!CASE_ID.test(caseId)) return null;
@@ -1960,6 +1982,47 @@ function pathParts(request: Request): string[] {
 }
 
 /** Returns null when the path belongs to another API module. */
+async function acknowledgeNotice(
+  request: Request,
+  deps: SecurityApiDependencies,
+  caseId: string,
+): Promise<Response> {
+  const actor = await requireActor(request, deps);
+  const access = await securityNotificationAccess(
+    deps.db,
+    caseId,
+    actor.githubId,
+  );
+  if (!access.allowed) notFound();
+  const body = await readJsonObject(request);
+  exactKeys(body, ["eventKey"]);
+  if (typeof body.eventKey !== "string")
+    fail(400, "invalid_request", "An inbox event key is required");
+  const at = deps.now().toISOString();
+  const results = await deps.db.batch([
+    deps.db
+      .prepare(`UPDATE security_notification_outbox SET acknowledged_at = ?, updated_at = ?
+      WHERE case_id = ? AND event_key = ? AND recipient_github_id = ? AND acknowledged_at IS NULL`)
+      .bind(at, at, caseId, body.eventKey, actor.githubId),
+    deps.db
+      .prepare(`INSERT INTO security_notification_delivery_events(delivery_id, state, at)
+      SELECT id, 'acknowledged', ? FROM security_notification_outbox
+      WHERE case_id = ? AND event_key = ? AND recipient_github_id = ? AND acknowledged_at = ?
+      AND NOT EXISTS (SELECT 1 FROM security_notification_delivery_events e WHERE e.delivery_id = security_notification_outbox.id AND e.state = 'acknowledged')`)
+      .bind(at, caseId, body.eventKey, actor.githubId, at),
+  ]);
+  if (!results[0].meta?.changes) {
+    const existing = await deps.db
+      .prepare(
+        `SELECT acknowledged_at FROM security_notification_outbox WHERE case_id = ? AND event_key = ? AND recipient_github_id = ?`,
+      )
+      .bind(caseId, body.eventKey, actor.githubId)
+      .first<{ acknowledged_at: string | null }>();
+    if (existing === null) notFound();
+  }
+  return json(200, { acknowledged: true });
+}
+
 export async function handleSecurityApi(
   request: Request,
   deps: SecurityApiDependencies,
@@ -1988,6 +2051,12 @@ export async function handleSecurityApi(
         deps.waitUntil,
       );
     if (parts[0] === "security-cases") {
+      if (
+        request.method === "POST" &&
+        parts.length === 3 &&
+        parts[2] === "acknowledge"
+      )
+        return await acknowledgeNotice(request, deps, parts[1]);
       if (request.method === "GET" && parts.length === 1)
         return await listCases(request, deps);
       if (request.method === "POST" && parts.length === 1)

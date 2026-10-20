@@ -1,0 +1,336 @@
+/** SEC-16 restricted pilot. No public route, caller-supplied destination or case content. */
+import {
+  type SecurityD1Database,
+  securityNotificationAccess,
+} from "../../backend/security/handler";
+import { encodeQuotedPrintable } from "./handler";
+
+type Destination = {
+  email: string;
+  verifiedAt: string;
+  evidenceReference: string;
+  backupGithubId: string;
+};
+export type SecurityMailConfig = {
+  /** Operators attest Cloudflare verified-destination eligibility AND actor control. */
+  recipients: Record<string, Destination>;
+  inboxUrl: string;
+};
+export type SecurityMailDependencies = {
+  db: SecurityD1Database;
+  config: SecurityMailConfig;
+  fromAddress: string;
+  now(): Date;
+  sendEmail(from: string, to: string, mime: string): Promise<void>;
+};
+
+type Delivery = {
+  id: string;
+  event_key: string;
+  recipient_github_id: string;
+  case_id: string;
+  template_version: string;
+  state: string;
+  attempts: number;
+  created_at: string;
+  acknowledged_at: string | null;
+  escalation_of: string | null;
+};
+const EMAIL =
+  /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/u;
+const ID = /^[1-9]\d{0,19}$/u;
+const MAX_ATTEMPTS = 5;
+
+/** A secret, never a manifest or browser input. Missing/invalid config sends nothing. */
+export function parseSecurityMailConfig(
+  raw: string | undefined,
+): SecurityMailConfig | null {
+  if (!raw) return null;
+  try {
+    const config = JSON.parse(raw) as SecurityMailConfig;
+    if (Object.keys(config).sort().join() !== "inboxUrl,recipients")
+      return null;
+    const url = new URL(config.inboxUrl);
+    if (
+      url.protocol !== "https:" ||
+      url.pathname !== "/inbox" ||
+      url.search ||
+      url.hash ||
+      url.username ||
+      url.password
+    )
+      return null;
+    if (
+      !config.recipients ||
+      typeof config.recipients !== "object" ||
+      Array.isArray(config.recipients)
+    )
+      return null;
+    for (const [id, value] of Object.entries(config.recipients)) {
+      if (
+        !ID.test(id) ||
+        !value ||
+        Object.keys(value).sort().join() !==
+          "backupGithubId,email,evidenceReference,verifiedAt"
+      )
+        return null;
+      if (
+        typeof value.email !== "string" ||
+        !EMAIL.test(value.email) ||
+        !ID.test(value.backupGithubId) ||
+        value.backupGithubId === id
+      )
+        return null;
+      if (
+        typeof value.verifiedAt !== "string" ||
+        !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/u.test(value.verifiedAt) ||
+        new Date(value.verifiedAt).toISOString() !== value.verifiedAt
+      )
+        return null;
+      if (
+        typeof value.evidenceReference !== "string" ||
+        value.evidenceReference.trim().length === 0
+      )
+        return null;
+    }
+    return config;
+  } catch {
+    return null;
+  }
+}
+
+async function record(
+  deps: SecurityMailDependencies,
+  row: Delivery,
+  state: string,
+  evidence: string | null = null,
+) {
+  const at = deps.now().toISOString();
+  await deps.db.batch([
+    deps.db
+      .prepare(
+        "UPDATE security_notification_outbox SET state = ?, updated_at = ? WHERE id = ? AND state = 'sending' AND attempts = ?",
+      )
+      .bind(state, at, row.id, row.attempts + 1),
+    deps.db
+      .prepare(
+        "INSERT INTO security_notification_delivery_events(delivery_id, state, evidence_reference, at) SELECT id, ?, ?, ? FROM security_notification_outbox WHERE id = ? AND state = ? AND attempts = ? AND updated_at = ?",
+      )
+      .bind(state, evidence, at, row.id, state, row.attempts + 1, at),
+  ]);
+}
+
+async function destinationDigest(value: Destination): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  return Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+function mime(
+  deps: SecurityMailDependencies,
+  row: Delivery,
+  email: string,
+): string {
+  // Stable opaque per-delivery Message-ID: no case id, project, actor or amount.
+  return [
+    `From: ${deps.fromAddress}`,
+    `To: ${email}`,
+    "Subject: Slop private inbox notice",
+    `Date: ${deps.now().toUTCString()}`,
+    `Message-ID: <slop-notice-${row.id}@slop.cash>`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: quoted-printable",
+    "",
+    encodeQuotedPrintable(
+      `Your private Slop inbox needs attention.\n\nSign in: ${deps.config.inboxUrl}\n\nAcknowledge the notice in Slop. Do not reply with evidence, approvals or payment details.\n`,
+    ),
+  ].join("\r\n");
+}
+
+/** A backup gets only a generic notice and must currently have access to this case. */
+async function escalate(deps: SecurityMailDependencies, row: Delivery) {
+  if (row.escalation_of || row.acknowledged_at) return;
+  const backupId =
+    deps.config.recipients[row.recipient_github_id]?.backupGithubId;
+  if (!backupId || !deps.config.recipients[backupId]) return;
+  if (
+    !(await securityNotificationAccess(deps.db, row.case_id, backupId)).allowed
+  )
+    return;
+  const at = deps.now().toISOString();
+  const eventKey = `security-escalation:${row.id}`;
+  await deps.db.batch([
+    deps.db
+      .prepare(`INSERT INTO notifications(event_key, recipient_github_id, kind, subject, detail, action_path, source_at, created_at)
+      VALUES (?, ?, 'security_case', ?, NULL, '/security', ?, ?)
+      ON CONFLICT(event_key, recipient_github_id) DO NOTHING`)
+      .bind(eventKey, backupId, row.case_id, at, at),
+    deps.db
+      .prepare(`UPDATE security_notification_outbox SET escalation_of = ?
+      WHERE event_key = ? AND recipient_github_id = ? AND escalation_of IS NULL`)
+      .bind(row.id, eventKey, backupId),
+  ]);
+}
+
+/** One bounded drain. Concurrent workers claim once before any network operation. */
+export async function dispatchSecurityMail(
+  deps: SecurityMailDependencies,
+): Promise<void> {
+  if (!/^[a-z0-9][a-z0-9._-]*@slop\.cash$/u.test(deps.fromAddress))
+    throw new Error("Invalid mail sender");
+  const now = deps.now();
+  const at = now.toISOString();
+  // A process can stop after the provider accepted. Never automatically resend.
+  await deps.db
+    .prepare(`UPDATE security_notification_outbox SET state = 'ambiguous', updated_at = ?
+    WHERE state = 'sending' AND claimed_at < ?`)
+    .bind(at, new Date(now.getTime() - 5 * 60_000).toISOString())
+    .run();
+  const pending = await deps.db
+    .prepare(
+      `SELECT * FROM security_notification_outbox WHERE state IN ('queued','retrying') AND next_attempt_at <= ? ORDER BY created_at, id LIMIT 25`,
+    )
+    .bind(at)
+    .all<Delivery>();
+  for (const row of pending.results ?? []) {
+    const claim = await deps.db
+      .prepare(`UPDATE security_notification_outbox SET state = 'sending', claimed_at = ?, updated_at = ?, attempts = attempts + 1
+      WHERE id = ? AND state IN ('queued','retrying') AND next_attempt_at <= ?`)
+      .bind(at, at, row.id, at)
+      .run();
+    if (claim.meta?.changes !== 1) continue;
+    const access = await securityNotificationAccess(
+      deps.db,
+      row.case_id,
+      row.recipient_github_id,
+    );
+    if (!access.allowed) {
+      await record(deps, row, "suppressed");
+      continue;
+    }
+    const destination = deps.config.recipients[row.recipient_github_id];
+    if (!destination || Date.parse(destination.verifiedAt) > now.getTime()) {
+      // No provider call occurred: retry is safe and bounded.
+      const state = row.attempts + 1 >= MAX_ATTEMPTS ? "exhausted" : "retrying";
+      await deps.db
+        .prepare(
+          "UPDATE security_notification_outbox SET next_attempt_at = ? WHERE id = ?",
+        )
+        .bind(
+          new Date(
+            now.getTime() + Math.min(3600, 60 * 2 ** row.attempts) * 1000,
+          ).toISOString(),
+          row.id,
+        )
+        .run();
+      await record(deps, row, state);
+      if (state === "exhausted") await escalate(deps, row);
+      continue;
+    }
+    await deps.db
+      .prepare(
+        "UPDATE security_notification_outbox SET destination_digest = ? WHERE id = ?",
+      )
+      .bind(await destinationDigest(destination), row.id)
+      .run();
+    try {
+      await deps.sendEmail(
+        deps.fromAddress,
+        destination.email,
+        mime(deps, row, destination.email),
+      );
+    } catch {
+      // The binding has no definitive non-acceptance receipt. A thrown send is ambiguous.
+      await record(deps, row, "ambiguous");
+      await escalate(deps, row);
+      continue;
+    }
+    await record(deps, row, "provider-accepted");
+  }
+  const waiting = await deps.db
+    .prepare(`SELECT * FROM security_notification_outbox
+    WHERE acknowledged_at IS NULL AND escalation_of IS NULL AND state NOT IN ('queued','retrying','sending','suppressed')
+    AND NOT EXISTS (SELECT 1 FROM security_notification_outbox escalation WHERE escalation.escalation_of = security_notification_outbox.id)
+    ORDER BY COALESCE(escalation_checked_at, created_at), id LIMIT 100`)
+    .all<Delivery>();
+  for (const row of waiting.results ?? []) {
+    await deps.db
+      .prepare(
+        "UPDATE security_notification_outbox SET escalation_checked_at = ? WHERE id = ?",
+      )
+      .bind(at, row.id)
+      .run();
+    const access = await securityNotificationAccess(
+      deps.db,
+      row.case_id,
+      row.recipient_github_id,
+    );
+    if (!access.allowed) continue;
+    const overdue =
+      access.acknowledgeHours > 0 &&
+      now.getTime() >=
+        Date.parse(row.created_at) + access.acknowledgeHours * 3600_000;
+    if (overdue || ["bounced", "exhausted", "ambiguous"].includes(row.state))
+      await escalate(deps, row);
+  }
+}
+
+/** Separate operator path: independent provider evidence, never email text or an open pixel. */
+export async function reconcileSecurityMail(
+  deps: SecurityMailDependencies,
+  body: Record<string, unknown>,
+): Promise<boolean> {
+  if (
+    Object.keys(body).sort().join() !== "deliveryId,evidenceReference,outcome"
+  )
+    return false;
+  const { deliveryId, evidenceReference, outcome } = body;
+  if (
+    typeof deliveryId !== "string" ||
+    !/^[a-f0-9]{32}$/u.test(deliveryId) ||
+    typeof evidenceReference !== "string" ||
+    evidenceReference.trim().length < 1 ||
+    evidenceReference.length > 500
+  )
+    return false;
+  if (
+    !["delivered", "bounced", "suppressed", "not-accepted"].includes(
+      String(outcome),
+    )
+  )
+    return false;
+  const row = await deps.db
+    .prepare("SELECT * FROM security_notification_outbox WHERE id = ?")
+    .bind(deliveryId)
+    .first<Delivery>();
+  if (!row || !["provider-accepted", "ambiguous"].includes(row.state))
+    return false;
+  const next =
+    outcome === "not-accepted"
+      ? row.attempts >= MAX_ATTEMPTS
+        ? "exhausted"
+        : "retrying"
+      : String(outcome);
+  const at = deps.now().toISOString();
+  const results = await deps.db.batch([
+    deps.db
+      .prepare(
+        `UPDATE security_notification_outbox SET state = ?, updated_at = ?, next_attempt_at = ? WHERE id = ? AND state = ?`,
+      )
+      .bind(
+        next,
+        at,
+        new Date(deps.now().getTime() + 60_000).toISOString(),
+        row.id,
+        row.state,
+      ),
+    deps.db
+      .prepare(`INSERT INTO security_notification_delivery_events(delivery_id, state, evidence_reference, at)
+      SELECT id, ?, ?, ? FROM security_notification_outbox WHERE id = ? AND state = ? AND updated_at = ?`)
+      .bind(next, evidenceReference, at, row.id, next, at),
+  ]);
+  return results[0].meta?.changes === 1;
+}

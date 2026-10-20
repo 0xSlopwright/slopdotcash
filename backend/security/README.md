@@ -115,13 +115,13 @@ and the earlier reviewer stays recorded.
 
 - Payment: no private settlement rail is approved. An approved award has
   `paymentState: "rail-unavailable"` and nothing can mark it paid.
-- Email: no bounty notification sender exists. A case change adds a row to
-  the signed-in `/inbox` of the people it concerns (SEC-09): the reporter for
-  events their view shows, security maintainers for a new claim, dispute
-  reviewers for an appeal or a pending related-party review, an assigned
-  triager, and financial approvers when a decision, a related-party
-  approval or `reserve-award` reserves an award. The row holds only the private case id and a
-  link to `/security`; never the project, advisory, severity, amount or
-  reason. The actor is never notified of their own action.
+- Email: the restricted verified-destination pilot is implemented in
+  `workers/notify/security.ts`; deployment and inbox delivery remain launch
+  gates. See `workers/notify/README.md`. Every case inbox insert also queues
+  one private outbox row in the same transaction. Only current case roles
+  with operator-verified destinations receive generic notices. An email
+  never contains a case identifier, amount, project or advisory. The inbox
+  action **Acknowledge** records the recipient's authenticated response;
+  **Mark read** is a separate state and never acknowledges a notice.
 - GitHub advisory content is never fetched. Maintainers verify claims by
   hand on GitHub.

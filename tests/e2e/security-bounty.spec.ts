@@ -1209,6 +1209,63 @@ test("private security bounty programs keep cases restricted from intake to awar
     });
   });
 
+  await test.step("a security inbox notice requires explicit acknowledgment, separately from read", async () => {
+    const context = await browser.newContext({
+      viewport: test.info().project.use.viewport,
+      recordVideo: { dir: test.info().outputPath("acknowledgment-video") },
+    });
+    const page = await context.newPage();
+    const errors = observe(page);
+    await signIn(page, TOKENS["reporter-a"]);
+    await page.goto("/inbox", { waitUntil: "networkidle" });
+    const notice = page
+      .getByRole("listitem")
+      .filter({
+        has: page.getByRole("button", {
+          name: /^Acknowledge: Private security case /u,
+        }),
+      })
+      .first();
+    await expect(notice).toBeVisible();
+    await page.screenshot({
+      path: test.info().outputPath("security-notice-before.png"),
+      fullPage: true,
+    });
+    const acknowledge = notice.getByRole("button", {
+      name: /^Acknowledge: Private security case /u,
+    });
+    await acknowledge.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("status")).toHaveText(
+      "Security notice acknowledged.",
+    );
+    await expect(
+      page.getByText("Acknowledged", { exact: true }).first(),
+    ).toBeVisible();
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(
+      page.getByText("Acknowledged", { exact: true }).first(),
+    ).toBeVisible();
+    await expectAccessible(page);
+    await page.screenshot({
+      path: test.info().outputPath("security-notice-acknowledged.png"),
+      fullPage: true,
+    });
+    await page.evaluate(() => {
+      document.documentElement.style.zoom = "2";
+    });
+    await expect(
+      page.getByText("Acknowledged", { exact: true }).first(),
+    ).toBeVisible();
+    await expectAccessible(page);
+    await page.screenshot({
+      path: test.info().outputPath("security-notice-zoom.png"),
+      fullPage: true,
+    });
+    expect(errors).toEqual([]);
+    await context.close();
+  });
+
   await test.step("the reporter sees the case in the inbox UI", async () => {
     const context = await browser.newContext();
     const page = await context.newPage();
