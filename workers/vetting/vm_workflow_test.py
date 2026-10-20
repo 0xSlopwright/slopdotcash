@@ -147,7 +147,10 @@ runcmd:
                 assert not (root / "must-not-build.iso").exists()
             altered_source = root / "changed-source"
             shutil.copytree(args.acquisition_directory, altered_source)
-            object_path = next((altered_source / "objects").iterdir())
+            # A signed queue bundle also stores template objects. Change an
+            # actual Git source object, not an arbitrary directory entry.
+            source_inventory = json.loads((altered_source / "inventory.json").read_text())
+            object_path = altered_source / "objects" / source_inventory["records"][0]["sha256"]
             object_path.chmod(0o600)
             object_path.write_bytes(object_path.read_bytes() + b"changed")
             try:

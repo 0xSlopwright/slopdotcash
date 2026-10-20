@@ -55,7 +55,19 @@ let server: ReturnType<typeof Bun.serve>;
 let connection: QueueConnection;
 let mode: "normal" | "manifest" | "template" | "identity" = "normal";
 const methods: string[] = [];
-const source = "Harmless source, never executed.";
+const fixture = process.env.SLOP_VETTING_GUEST_FIXTURE;
+if (fixture && !["syscall", "artifact"].includes(fixture))
+  throw new Error("Only checked-in harmless guest fixtures are supported");
+const source = fixture
+  ? await readFile(
+      new URL(
+        `../workers/vetting/fixtures/${fixture}_probe.py`,
+        import.meta.url,
+      ),
+      "utf8",
+    )
+  : "Harmless source, never executed.";
+const sourcePath = fixture ? "fixture.py" : "README.txt";
 
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "slop-queue-workflow-"));
@@ -71,7 +83,7 @@ beforeAll(async () => {
     return output.stdout.toString().trim();
   };
   git("init", "-q");
-  await writeFile(join(repository, "README.txt"), source);
+  await writeFile(join(repository, sourcePath), source);
   git("add", ".");
   git(
     "-c",
@@ -85,7 +97,7 @@ beforeAll(async () => {
   );
   commitSha = git("rev-parse", "HEAD");
   treeSha = git("rev-parse", "HEAD^{tree}");
-  blobSha = git("rev-parse", "HEAD:README.txt");
+  blobSha = git("rev-parse", `HEAD:${sourcePath}`);
   const { db, sqlite } = sqliteD1([
     "0019_project_registry.sql",
     "0020_project_application_github_check.sql",
@@ -227,7 +239,7 @@ beforeAll(async () => {
           sha: treeSha,
           truncated: false,
           tree: [
-            { path: "README.txt", mode: "100644", type: "blob", sha: blobSha },
+            { path: sourcePath, mode: "100644", type: "blob", sha: blobSha },
           ],
         });
       if (path.endsWith(`/blobs/${blobSha}`))

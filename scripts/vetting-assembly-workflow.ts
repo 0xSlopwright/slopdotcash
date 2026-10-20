@@ -6,8 +6,13 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { assembleEvidence } from "../workers/vetting/assembly";
 
-const [acquisitionDirectory, artifactDirectory, vmDirectory, outputDirectory] =
-  process.argv.slice(2);
+const [
+  acquisitionDirectory,
+  artifactDirectory,
+  vmDirectory,
+  outputDirectory,
+  guestProfile,
+] = process.argv.slice(2);
 if (
   !acquisitionDirectory ||
   !artifactDirectory ||
@@ -15,7 +20,7 @@ if (
   !outputDirectory
 )
   throw new Error(
-    "usage: bun scripts/vetting-assembly-workflow.ts ACQUISITION ARTIFACT_REPORTS VM_OUTPUT PRIVATE_OUTPUT_PARENT",
+    "usage: bun scripts/vetting-assembly-workflow.ts ACQUISITION ARTIFACT_REPORTS VM_OUTPUT PRIVATE_OUTPUT_PARENT [APPROVED_GUEST_PROFILE]",
   );
 const digest = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -38,6 +43,20 @@ const input = {
     sha256: digest(await readFile(join(vmDirectory, "evidence.json"))),
   },
   outputDirectory,
+  guestEvidence: guestProfile
+    ? {
+        profilePath: guestProfile,
+        profileSha256: digest(await readFile(guestProfile)),
+        collectorSha256: digest(
+          await readFile(
+            new URL("../workers/vetting/guest.py", import.meta.url),
+          ),
+        ),
+        receiptSha256: digest(
+          await readFile(join(vmDirectory, "guest-source-evidence.json")),
+        ),
+      }
+    : undefined,
 };
 const result = await assembleEvidence(input);
 const manifestBytes = await readFile(join(result.directory, "manifest.json"));
@@ -49,7 +68,13 @@ const review = JSON.parse(reviewBytes.toString());
 assert.equal(manifest.state, "incomplete");
 assert.equal(manifest.providerCallsAuthorized, false);
 assert.equal(manifest.publicationAuthorized, false);
-assert(review.visibilityGaps.includes("acquired-source-not-executed"));
+assert(
+  review.visibilityGaps.includes(
+    guestProfile
+      ? "only-approved-harmless-fixture-command-executed"
+      : "acquired-source-not-executed",
+  ),
+);
 assert(review.visibilityGaps.includes("complete-collector-not-attached"));
 for (const item of review.items)
   assert.equal(digest(Buffer.from(item.text)), item.sha256);
@@ -57,6 +82,30 @@ const before = (await readdir(outputDirectory)).sort();
 await assert.rejects(
   assembleEvidence({ ...input, queuedInputsSha256: "0".repeat(64) }),
 );
+if (input.guestEvidence) {
+  for (const key of [
+    "profileSha256",
+    "collectorSha256",
+    "receiptSha256",
+  ] as const) {
+    await assert.rejects(
+      assembleEvidence({
+        ...input,
+        guestEvidence: { ...input.guestEvidence, [key]: "0".repeat(64) },
+      }),
+    );
+  }
+  assert(
+    review.visibilityGaps.includes(
+      "guest-receipt-not-independent-kernel-or-host-proof",
+    ),
+  );
+  assert(
+    review.visibilityGaps.includes(
+      "complete-interpreter-jit-memory-and-proxy-interception-not-proven",
+    ),
+  );
+}
 await assert.rejects(assembleEvidence({ ...input, artifactInventories: [] }));
 await assert.rejects(
   assembleEvidence({
@@ -79,6 +128,6 @@ console.log(
     state: "incomplete",
     providerCalls: 0,
     publications: 0,
-    rejectedCorruptOrMissingInputs: 4,
+    rejectedCorruptOrMissingInputs: guestProfile ? 7 : 4,
   }),
 );

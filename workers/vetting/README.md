@@ -58,22 +58,40 @@ native loading or a second-stage download inside a project VM.
 
 ## Work still required for issue 909
 
-The current repository still needs the immutable acquisition and queue runner,
-a disposable execution VM with host resource confinement, pre-execution
-interception, all required guest/host/proxy collectors, network proxy policy,
-artifact provenance and release decisions, actual independent Astra and Opus
-clients, the trusted result publisher, and the restricted trace console.
-Configuration and deployment follow source completion. Do not submit an
-incomplete assessment merely because those services are absent: check service
-readiness before starting a queued scan.
+The source now includes signed queue acquisition, immutable Git and template
+inputs, this isolated analyzer, an offline VM fixture, and private evidence
+assembly. These components do not establish a
+ready vetting service. General project execution, complete pre-execution and
+guest/host/proxy observation, artifact release decisions, actual configured
+provider acceptance, trusted publication and operational access still need
+their own evidence. Check service readiness before starting a queued scan.
+Do not consume a pending assessment merely because some components can run.
+
+The remaining work is not only configuration:
+
+| Requirement | Remaining source or acceptance work | Required operator decision |
+| --- | --- | --- |
+| VET-02 host | The Linux KVM adapter needs actual acceptance on the intended isolated host. Darwin evidence covers harmless fixtures only. | Designate a patched, dedicated Linux host, unprivileged account, reviewed executable/image pins, resource limits and private retention location. |
+| VET-02 project commands | General install, build, test and skill execution is disabled. The present profile runs a fixed harmless command. | Approve the immutable command/runtime profile and adequate resource and coverage limits for each assessed revision. Repository instructions cannot grant that approval. |
+| VET-03 observation | Complete structured event collection, loss/tamper detection, independent host/proxy evidence, controlled runtime DNS/HTTP/TLS routing, safe filesystem differences, environment/wallet canaries and the restricted trace console remain source gaps. | Select the reviewed Linux collector, network, storage, operator-access and retention contracts. A dependency prefetch is not a runtime proxy. |
+| VET-04 artifact review | Format-aware static analysis, provenance/upstream comparison, full artifact lineage and durable release decisions remain source gaps. Existing inspection and denial do not release an artifact. | Name the release authority and exact-digest baseline/review policy. A model label cannot supply authority. |
+| VET-04 runtime coverage | The materialized-file gate does not establish complete native, interpreter, bytecode, WASM, JIT or memory-only interception. | Approve supported runtime coverage and the policy for unsupported behavior. Missing coverage must stay incomplete; do not enable arbitrary source on that basis. |
 
 QEMU was considered for the execution adapter. Its [security
 contract](https://www.qemu.org/docs/master/system/security.html) requires a
 hardware accelerator and a supported machine. It also requires host privilege
 and resource confinement. Software emulation cannot establish guest isolation.
 The bounded [offline VM component](VM.md) records actual private boot and
-timeout evidence. It does not execute acquired source or implement the required
-interception collectors, and it does not claim VET-02 acceptance.
+timeout evidence. Its optional profile executes only a privately approved,
+content-bound harmless acquired fixture. Its materialized-file gate is not
+complete interpreter, JIT or memory interception, and it does not claim VET-02
+acceptance on Darwin.
+
+The [assembler](ASSEMBLY.md) can bind that guest receipt to the same signed queue,
+source inventory, approved command profile, collector, VM and serial bytes. It
+supplies decoded syscall and output bytes once, while retaining the complete raw
+serial digest. It keeps trusted coverage gaps even if guest JSON claims success.
+It neither invokes providers nor publishes a decision.
 
 The [Bubblewrap project](https://github.com/containers/bubblewrap) explains that
 its security depends on the caller's namespace and filesystem configuration.
