@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from guest import MAX_SOURCE, REQUIRED_GAPS, bounded, digest, inspect_inventory, inspect_profile, bind_command
+from guest import MAX_SOURCE, REQUIRED_GAPS, KERNEL_GAPS, bounded, digest, inspect_inventory, inspect_profile, bind_command
 from vm import copy_pinned, sha256
 
 
@@ -36,6 +36,9 @@ def build_seed(*, acquisition_directory, source_inventory_sha256, profile, profi
                 raise ValueError('Acquired object size changed')
         (root / 'profile.json').write_bytes(profile_data)
         (root / 'inventory.json').write_bytes(inventory)
+        if 'kernelPolicySha256' in approved:
+            policy = Path(__file__).parent / 'fixtures' / 'artifact-gate.apparmor'
+            copy_pinned(policy, approved['kernelPolicySha256'], root / 'artifact-policy', 65536)
         collector = Path(__file__).with_name('guest.py').read_bytes()
         config = {
             'ssh_pwauth': False, 'disable_root': True, 'package_update': False,
@@ -60,7 +63,8 @@ def build_seed(*, acquisition_directory, source_inventory_sha256, profile, profi
             destination.chmod(0o400)
             return {'seedSha256': sha256(destination), 'collectorSha256': digest(collector),
                     'profileSha256': profile_sha256, 'sourceInventorySha256': source_inventory_sha256,
-                    'seedBuilderSha256': xorriso_sha256, 'fixtureOnly': True}
+                    'seedBuilderSha256': xorriso_sha256, 'fixtureOnly': True,
+                    'kernelPolicySha256': approved.get('kernelPolicySha256')}
         except BaseException:
             destination.unlink(missing_ok=True)
             raise
@@ -101,7 +105,31 @@ def collect_guest(*, directory, profile, profile_sha256, source_inventory_sha256
         raise ValueError('Invalid guest coverage data')
     # Required coverage is host policy, never authority delegated to guest JSON.
     receipt['visibilityGaps'] = sorted(set(receipt['visibilityGaps']) | set(REQUIRED_GAPS))
+    if 'kernelPolicySha256' in approved:
+        gate = receipt.get('kernelArtifactGate', {})
+        if (gate.get('policySha256') != approved['kernelPolicySha256']
+                or seed_binding.get('kernelPolicySha256') != approved['kernelPolicySha256']
+                or any(gate.get(key) != 'slop-artifact-fixture (enforce)'
+                       for key in ('before', 'afterCollectorDeath', 'afterProbe'))
+                or gate.get('collectorExitCode') != -9 or gate.get('postCollectorExitCode') != 0):
+            raise ValueError('Kernel fixture did not retain bound enforce-mode evidence')
+        negative = gate.get('failedLoadProbe', {})
+        if (type(negative.get('invalidPolicyExitCode')) is not int
+                or negative['invalidPolicyExitCode'] == 0
+                or type(negative.get('missingPolicyExitCode')) is not int
+                or negative['missingPolicyExitCode'] == 0
+                or negative.get('executionMarkerAbsent') is not True):
+            raise ValueError('Missing actual failed-load execution refusal')
+        after = base64.b64decode(gate.pop('postCollectorOutput'), validate=True)
+        if len(after) > 65536:
+            raise ValueError('Post-collector evidence exceeds bound')
+        gate['postCollectorOutputSha256'] = digest(after)
+        receipt['visibilityGaps'] = sorted(set(receipt['visibilityGaps']) | set(KERNEL_GAPS))
+    else:
+        after = None
     files = {}
+    if after is not None:
+        files['guest-after-collector.log'] = after
     for key, filename, maximum in [('trace', 'guest-events.log', 1024 * 1024),
                                    ('output', 'guest-output.log', 65536)]:
         value = base64.b64decode(receipt.pop(key), validate=True)

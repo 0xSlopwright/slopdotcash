@@ -67,9 +67,36 @@ runcmd:
                                       source_inventory_sha256=args.inventory_sha256,
                                       acquisition_directory=args.acquisition_directory, seed_binding=binding)
             receipt = json.loads(Path(collected["path"]).read_text())
-            assert receipt["exitCode"] == 0 and receipt["state"] == "incomplete"
+            kernel = receipt.get("kernelArtifactGate")
+            assert receipt["state"] == "incomplete"
             output = json.loads((completed / "guest-output.log").read_text())
-            assert output["uid"] == 65534 and output["sourceReadOnly"] is True and output["childExit"] == 0
+            if kernel:
+                assert receipt["exitCode"] == -9 and kernel["postCollectorExitCode"] == 0
+                after = json.loads((completed / "guest-after-collector.log").read_text())
+                for observed, phase in [(output, "traced"), (after, "after-collector")]:
+                    assert observed["uid"] == 65534 and observed["phase"] == phase
+                    assert observed["context"] == "slop-artifact-fixture (enforce)"
+                    for kind in ("native", "script", "wasm", "library"):
+                        assert observed["artifacts"][kind]["readErrno"] == 13
+                    assert observed["artifacts"]["native"]["executeErrno"] == 13
+                    assert observed["artifacts"]["library"]["loadDenied"] is True
+                    assert observed["artifacts"]["script"]["interpreterExit"] != 0
+                wrong_policy = json.loads(Path(args.profile).read_text())
+                wrong_policy["kernelPolicySha256"] = "0" * 64
+                wrong_profile = root / "wrong-policy-profile.json"
+                wrong_profile.write_text(json.dumps(wrong_policy))
+                try:
+                    build_seed(acquisition_directory=args.acquisition_directory,
+                               source_inventory_sha256=args.inventory_sha256,
+                               profile=wrong_profile, profile_sha256=sha256(wrong_profile),
+                               output=root / "must-not-build-policy.iso",
+                               xorriso=args.xorriso, xorriso_sha256=args.xorriso_sha256)
+                    raise AssertionError("Changed policy pin accepted")
+                except ValueError:
+                    assert not (root / "must-not-build-policy.iso").exists()
+            else:
+                assert receipt["exitCode"] == 0
+                assert output["uid"] == 65534 and output["sourceReadOnly"] is True and output["childExit"] == 0
             # Alter the actual captured serial bytes: collection must fail before
             # a completion receipt is written, even when the guest previously succeeded.
             changed = root / "changed-vm"
@@ -86,7 +113,7 @@ runcmd:
                 assert not (changed / "guest-source-evidence.json").exists()
             # A guest can lie about coverage. Keep required gaps even when its
             # otherwise content-bound receipt claims a different coverage list.
-            from guest import REQUIRED_GAPS
+            from guest import REQUIRED_GAPS, KERNEL_GAPS
             forged = root / "guest-coverage-claim"
             forged.mkdir()
             captured = (completed / "serial.log").read_bytes()
@@ -105,6 +132,8 @@ runcmd:
                                            acquisition_directory=args.acquisition_directory, seed_binding=binding)
             retained = json.loads(Path(collected_claim["path"]).read_text())
             assert set(REQUIRED_GAPS).issubset(retained["visibilityGaps"])
+            if kernel:
+                assert set(KERNEL_GAPS).issubset(retained["visibilityGaps"])
             altered_profile = root / "changed-profile.json"
             altered_profile.write_bytes(Path(args.profile).read_bytes() + b" ")
             try:
@@ -131,8 +160,10 @@ runcmd:
             except ValueError:
                 assert not (root / "must-not-build-source.iso").exists()
             trace = (completed / "guest-events.log").read_text()
-            for observed in ("execve(", "clone", "openat(", "renameat(", "unlinkat(", "connect(",
-                             "wallet-test.txt", "slop-child-file", "169.254.169.254", "/dev/vda", "EROFS", "EACCES"):
+            observations = ("execve(", "openat(", "slop-quarantine", "EACCES") if kernel else (
+                "execve(", "clone", "openat(", "renameat(", "unlinkat(", "connect(",
+                "wallet-test.txt", "slop-child-file", "169.254.169.254", "/dev/vda", "EROFS", "EACCES")
+            for observed in observations:
                 assert observed in trace, "Missing actual syscall observation: " + observed
         else:
             assert "SLOP_FIXTURE_DONE" in serial, "Guest fixture did not complete"
