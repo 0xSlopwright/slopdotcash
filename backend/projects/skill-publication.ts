@@ -14,7 +14,7 @@ import {
 import type { VettingClearance } from "../vetting/persistence";
 import type { ProjectEnforcement, ProjectRecord } from "./contracts";
 import { type EdgeCache, PUBLIC_PROJECT_CACHE_CONTROL } from "./edge-cache";
-import { projectRestriction } from "./enforcement";
+import { publicRestrictionOf } from "./enforcement";
 
 /** The build's /skill-templates/index.json. */
 export type SkillTemplateIndex = {
@@ -173,7 +173,7 @@ function listed(
   return (
     project !== null &&
     project.manifest.listingTier !== "retired" &&
-    projectRestriction(project.id, records).state === "clear"
+    publicRestrictionOf(project, records).state === "clear"
   );
 }
 
@@ -222,8 +222,8 @@ async function artifact(
     deps.getProject(target.projectId),
     deps.listEnforcements(),
   ]);
-  const restriction = projectRestriction(target.projectId, records);
-  if (project !== null && restriction.state !== "clear")
+  const restriction = project && publicRestrictionOf(project, records);
+  if (restriction && restriction.state !== "clear")
     return text(
       410,
       `This project is ${restriction.state}. Its skills, guides and archives are not available.\n`,

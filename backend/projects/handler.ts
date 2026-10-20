@@ -41,6 +41,7 @@ import {
   type ProjectRestriction,
   planEnforcement,
   projectRestriction,
+  publicRestrictionOf,
   repositoryIdentity,
   restrictionForRepository,
 } from "./enforcement";
@@ -808,12 +809,21 @@ function publicRestriction(
 }
 
 function activePublicRestrictions(
+  projects: ProjectRecord[],
   records: ProjectEnforcement[],
 ): Record<string, unknown>[] {
-  return [...new Set(records.map((record) => record.projectId))]
+  const restricted = [...new Set(records.map((record) => record.projectId))]
     .map((projectId) => projectRestriction(projectId, records))
-    .filter((restriction) => restriction.state !== "clear")
-    .map(publicRestriction);
+    .filter((restriction) => restriction.state !== "clear");
+  // A project listed for a restricted repository is closed with it.
+  const shared = projects
+    .filter(
+      (project) =>
+        !restricted.some((restriction) => restriction.projectId === project.id),
+    )
+    .map((project) => publicRestrictionOf(project, records))
+    .filter((restriction) => restriction.state !== "clear");
+  return [...restricted, ...shared].map(publicRestriction);
 }
 
 /**
@@ -1173,7 +1183,7 @@ async function listPublicProjects(
     projects: projects.map((project) => project.manifest),
     // Restricted projects stay in the list for history; every reader must
     // treat them as paused and retired, even before the revision lands.
-    restrictions: activePublicRestrictions(records),
+    restrictions: activePublicRestrictions(projects, records),
   });
 }
 
@@ -1184,8 +1194,8 @@ async function readPublicProject(
   if (!PROJECT_ID.test(projectId)) fail(404, "not_found", "Project not found");
   const project = await deps.persistence.getProject(projectId);
   if (project === null) fail(404, "not_found", "Project not found");
-  const restriction = projectRestriction(
-    projectId,
+  const restriction = publicRestrictionOf(
+    project,
     await deps.persistence.listEnforcements(),
   );
   if (restriction.state !== "clear")

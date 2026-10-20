@@ -987,6 +987,67 @@ describe("project enforcement (ADM-06)", () => {
     }));
   });
 
+  test("a ban closes the public routes of another project listed for the repository", async () => {
+    const { publication } = await publicationRequests();
+    // Vetting is a separate gate; a clean scan lets this test reach the
+    // restriction gate on every artifact route.
+    const get = (path: string) =>
+      handleProjectArtifactRequest(new Request(`${ORIGIN}${path}`), {
+        ...publication,
+        vettingClearance: async () => ({
+          state: "cleared",
+          assessment: {
+            id: `vet_${"0".repeat(32)}`,
+            revision: 1,
+            state: "clean",
+            commitSha: livePin.commitSha,
+            templateSha256: livePin.templateSha256,
+            policyVersion: null,
+            requestedAt: "2026-10-18T12:00:00.000Z",
+            completedAt: "2026-10-18T12:00:01.000Z",
+            modelRuns: [],
+            artifacts: 0,
+            heldArtifacts: 0,
+          },
+        }),
+      }) as Promise<Response>;
+    const routes = [
+      "/projects/renamed-registry/skill.md",
+      "/projects/renamed-registry/downloads/contribute-to-renamed-registry.skill",
+    ];
+    await listProject();
+    // Listed before the ban: the renamed repository, same GitHub id.
+    await listProject(
+      applicationManifest("renamed-registry", "example/renamed-registry"),
+    );
+    for (const route of routes) expect((await get(route)).status).toBe(200);
+    expect((await enforce("admin", "quarantine")).status).toBe(200);
+    expect((await enforce("admin", "ban")).status).toBe(200);
+
+    for (const route of routes) expect((await get(route)).status).toBe(410);
+    expect(
+      (await (await get("/.well-known/slop/projects.json")).json()).projects,
+    ).toEqual([]);
+    const single = await call("GET", "projects/renamed-registry");
+    expect(single.status).toBe(410);
+    expect((await single.json()).restriction).toMatchObject({
+      projectId: "renamed-registry",
+      state: "banned",
+    });
+    expect((await (await call("GET", "projects")).json()).restrictions).toEqual(
+      [
+        expect.objectContaining({
+          projectId: "open-registry",
+          state: "banned",
+        }),
+        expect.objectContaining({
+          projectId: "renamed-registry",
+          state: "banned",
+        }),
+      ],
+    );
+  });
+
   test("reinstatement is refused while the restriction revision is pending", async () => {
     await listProject();
     const listed = await persistence.getProject("open-registry");

@@ -149,6 +149,21 @@ export function restrictionForRepository(
   );
 }
 
+/**
+ * The restriction a project's public routes obey: its own, else one in force
+ * on a repository it claims. A restriction binds the repository, so another
+ * project listed for it earlier closes with it (PRD ADM-06).
+ */
+export function publicRestrictionOf(
+  project: { id: string; manifest: ProjectDefinition },
+  records: ProjectEnforcement[],
+): ProjectRestriction {
+  const own = projectRestriction(project.id, records);
+  if (own.state !== "clear") return own;
+  const shared = restrictionForRepository(project.manifest, records);
+  return shared === null ? own : { ...shared, projectId: project.id };
+}
+
 /** A restricted project must stay paused and out of every listing. */
 export function enforcedManifest(manifest: ProjectDefinition): boolean {
   return manifest.status === "paused" && manifest.listingTier === "retired";
