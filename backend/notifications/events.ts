@@ -226,6 +226,50 @@ export function notifyProjectEnforcement<S>(
 }
 
 /**
+ * VET-06 bans reach configured operators and known affected contributors.
+ * Membership resolves immutable contribution actor IDs to inbox identities.
+ * Payment records also reach contributors who have no points membership.
+ * Superseded and zero-credit outcomes do not select an affected contributor.
+ * This reads no private trace records and copies no security evidence.
+ */
+export function notifyVettingBanAudience<S>(
+  db: Preparer<S>,
+  recordId: string,
+  operatorGithubIds: readonly string[],
+): S {
+  return db
+    .prepare(
+      `${INSERT}
+    SELECT 'project-enforcement:' || e.id, audience.recipient,
+           'project_banned', e.project_id, NULL,
+           CASE WHEN audience.recipient IN (SELECT value FROM json_each(?2))
+                THEN '/admin' ELSE '/projects/' || e.project_id END,
+           e.created_at, e.created_at
+      FROM project_enforcements e
+      JOIN (
+        SELECT value AS recipient FROM json_each(?2)
+        UNION
+        SELECT m.github_id FROM points_revisions r
+          JOIN points_members m ON m.actor_id = json_extract(r.payload, '$.award.actor.id')
+         WHERE json_extract(r.payload, '$.award.projectId') =
+               (SELECT project_id FROM project_enforcements WHERE id = ?1)
+           AND json_extract(r.payload, '$.award.amount') > 0
+           AND NOT EXISTS (SELECT 1 FROM points_revisions successor WHERE successor.previous = r.id)
+        UNION
+        SELECT github_user_id FROM payment_obligations
+         WHERE project_id = (SELECT project_id FROM project_enforcements WHERE id = ?1)
+        UNION
+        SELECT github_user_id FROM payment_direct_transfers
+         WHERE project_id = (SELECT project_id FROM project_enforcements WHERE id = ?1)
+      ) audience
+     WHERE e.id = ?1 AND e.action = 'ban' AND e.actor_role = 'vetting-service'
+       AND ${GITHUB_ID("audience.recipient")}
+    ${ONCE}`,
+    )
+    .bind(recordId, JSON.stringify(operatorGithubIds));
+}
+
+/**
  * A reinstatement request reaches the moderators who may decide it: the
  * caller passes only those who did not place the restriction (ELG-02).
  */

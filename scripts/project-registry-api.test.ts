@@ -74,18 +74,11 @@ let deps: ProjectApiDependencies;
 let control: (repository: string) => RepositoryControl;
 
 beforeEach(() => {
-  const database = sqliteD1([
-    "0019_project_registry.sql",
-    "0020_project_application_github_check.sql",
-    "0023_project_enforcements.sql",
-    "0024_notifications.sql",
-    "0025_community_security_vetting.sql",
-    "0026_private_security_cases.sql",
-    "0027_project_enforcement_owner_appeals.sql",
-    "0029_notification_event_kinds.sql",
-    "0031_project_vetting_reinstatements.sql",
-    "0032_project_system_enforcement.sql",
-  ]);
+  const database = sqliteD1(
+    readdirSync(new URL("../migrations", import.meta.url))
+      .filter((name) => name.endsWith(".sql"))
+      .sort(),
+  );
   sqlite = database.sqlite;
   persistence = new CloudflareProjectPersistence(database.db);
   vetting = new CloudflareVettingPersistence(database.db);

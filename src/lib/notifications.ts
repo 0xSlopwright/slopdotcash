@@ -137,10 +137,11 @@ export function notificationTitle(n: Notification): string {
 /** The label of the link that opens the details. */
 export function notificationAction(n: Notification): string {
   switch (n.kind) {
+    case "project_banned":
+      return n.actionPath === "/admin" ? "Open admin" : "Open project";
     case "application_approved":
     case "project_revision":
     case "project_quarantined":
-    case "project_banned":
     case "reinstatement_requested":
     case "project_reinstated":
     case "reinstatement_denied":

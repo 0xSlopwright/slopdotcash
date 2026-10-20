@@ -5,7 +5,10 @@
  */
 
 import { canonicalJson } from "../../scripts/readme-proof-binding";
-import { notifyProjectEnforcement } from "../notifications/events";
+import {
+  notifyProjectEnforcement,
+  notifyVettingBanAudience,
+} from "../notifications/events";
 import {
   CloudflareProjectPersistence,
   enforcementStatement,
@@ -287,6 +290,7 @@ export class CloudflareVettingPersistence {
     resultText: string;
     resultSha256: string;
     signingKeySha256: string;
+    operatorGithubIds?: readonly string[];
     at: string;
   }): Promise<"recorded" | "conflict"> {
     const { result } = input;
@@ -358,6 +362,11 @@ export class CloudflareVettingPersistence {
           ? [
               enforcementStatement(this.db, enforcement),
               notifyProjectEnforcement(this.db, enforcement.id),
+              notifyVettingBanAudience(
+                this.db,
+                enforcement.id,
+                input.operatorGithubIds ?? [],
+              ),
             ]
           : []),
         ...result.artifacts.map((artifact, ordinal) =>
