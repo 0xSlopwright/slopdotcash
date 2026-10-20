@@ -146,6 +146,7 @@ export function WalletRegistration({
     solana: "Solana",
     base: "Base",
     robinhood: "Robinhood Chain",
+    ethereum: "Ethereum",
   }[chain];
   const [canResume, setCanResume] = useState(false);
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
@@ -362,6 +363,7 @@ export function WalletRegistration({
           <option value="solana">Solana</option>
           <option value="base">Base</option>
           <option value="robinhood">Robinhood Chain</option>
+          <option value="ethereum">Ethereum</option>
         </select>
         {owner && (
           <CurrentWalletRegistration

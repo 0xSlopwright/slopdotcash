@@ -32,10 +32,6 @@ describe("funding address primitives", () => {
     );
   });
   test("every wallet chain is an escrow chain", () => {
-    // Ethereum escrow networks exist for factory deployment; Ethereum wallet
-    // claims are not enabled yet, so no Ethereum payout can be bound.
-    expect(new Set(WALLET_CHAINS)).toEqual(
-      new Set(ESCROW_CHAINS.filter((chain) => chain !== "ethereum")),
-    );
+    expect(new Set(WALLET_CHAINS)).toEqual(new Set(ESCROW_CHAINS));
   });
 });

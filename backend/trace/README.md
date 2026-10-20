@@ -105,10 +105,10 @@ current predecessor, unique lineage indexes reject forks, and SQLite triggers
 reject updates and deletes.
 
 A contributor holds one lineage per chain. `POST` accepts an optional `chain`
-of `solana` (the default) or `base`, and both `current` reads accept
-`?chain=`. A Base address is its lowercase `0x` form only. A successor must
+of `solana` (the default), `base`, `robinhood` or `ethereum`, and both
+`current` reads accept `?chain=`. An EVM address is its lowercase `0x` form only. A successor must
 stay on its predecessor's chain, so a Base claim can never retire a Solana
-address. Solana records keep their original digest layout; only Base records
+address. Solana records keep their original digest layout; all EVM records
 name a chain in the digested bytes. Registering a wallet does not make a row
 payable: escrow payment needs a destination binding under PAY-05.
 
