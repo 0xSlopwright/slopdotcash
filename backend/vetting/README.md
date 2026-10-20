@@ -118,10 +118,17 @@ The API never upgrades a result:
   label alone is refused (VET-06).
 - `incomplete` records anything else, without a confirmation.
 
-## What the operator must provide
+## Remaining service implementation and operation
 
-The repository cannot provide these. Until they exist, no community project
-can be cleared, so no project skill is served.
+The result intake does not implement the external execution service. These
+are source and integration requirements, not only missing credentials or
+deployment settings. Until the complete service exists and passes acceptance,
+no community project can be cleared, so no project skill is served.
+
+The [isolated artifact inventory](../../workers/vetting/README.md) implements
+bounded recursive inspection of a supplied file. It keeps every file in
+quarantine. It does not intercept guest execution, release artifacts, or
+replace the remaining requirements below.
 
 1. A hardware-isolated VM or microVM service that meets VET-02 and VET-03:
    fresh disposable guest, no host mounts or credentials, default-deny egress
