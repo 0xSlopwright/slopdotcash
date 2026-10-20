@@ -5,6 +5,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import { handleProjectApi } from "../backend/projects/handler";
 import { EVIDENCE_CHUNK_BYTES } from "../backend/vetting/evidence-chunks";
@@ -27,6 +30,11 @@ import {
   vettingKeyPair,
   vettingResult,
 } from "../tests/vetting-fixtures";
+import { publishResult, reconcileResult } from "../workers/vetting/publication";
+import {
+  REVIEW_AREAS,
+  type ScannerEvidence,
+} from "../workers/vetting/scanners";
 
 let retained: Awaited<ReturnType<typeof localVettingEvidence>>;
 afterEach(async () => {
@@ -237,6 +245,146 @@ async function publicVetting() {
 }
 
 describe("community security vetting", () => {
+  test("the trusted publisher retains gaps and journals one signed intake attempt", async () => {
+    await listPausedProject();
+    const id = await queueScan();
+    const observation = await fixture(id, "clean");
+    const inputManifest = new TextEncoder().encode(
+      JSON.stringify({
+        items: [],
+        visibilityGaps: ["runtime-download-not-reviewed"],
+      }),
+    );
+    const trace = new TextEncoder().encode("harmless isolated fixture trace");
+    const digest = (bytes: Uint8Array) =>
+      createHash("sha256").update(bytes).digest("hex");
+    observation.assessed.inputManifestSha256 = digest(inputManifest);
+    observation.traceSha256 = digest(trace);
+    const reviews = observation.modelReviews.map((review) => ({
+      review: { ...review, inputManifestSha256: digest(inputManifest) },
+      findings: [],
+      visibilityGaps: [],
+      coverage: Object.fromEntries(
+        REVIEW_AREAS.map((area) => [area, "complete"]),
+      ),
+    })) as unknown as [ScannerEvidence, ScannerEvidence];
+    const prepared = reconcileResult({
+      observation,
+      inputManifest,
+      trace,
+      reviews,
+    });
+    expect(prepared.disposition).toBe("incomplete");
+    expect(JSON.parse(prepared.body).telemetry.visibilityGaps).toContain(
+      "runtime-download-not-reviewed",
+    );
+    const disputed = structuredClone(reviews);
+    disputed[0].review.verdict = "malicious-suspected";
+    disputed[0].review.findingCount = 1;
+    disputed[0].findings = [
+      {
+        severity: "critical",
+        summary: "Synthetic suspicion",
+        evidenceIds: ["fixture"],
+      },
+    ];
+    const conflict = reconcileResult({
+      observation,
+      inputManifest,
+      trace,
+      reviews: disputed,
+    });
+    expect(conflict.disposition).toBe("incomplete");
+    expect(JSON.parse(conflict.body).confirmation).toBeNull();
+    expect(JSON.parse(conflict.body).telemetry.visibilityGaps).toContain(
+      "independent-model-disagreement",
+    );
+    expect(() =>
+      reconcileResult({
+        observation,
+        inputManifest,
+        trace: new Uint8Array([1]),
+        reviews,
+      }),
+    ).toThrow("Collected evidence");
+    const journalDirectory = await mkdtemp(
+      join(tmpdir(), "vetting-publisher-"),
+    );
+    let requests = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        requests += 1;
+        return vettingApi(request);
+      },
+    });
+    try {
+      const signer = {
+        privateKey: keys.privateKey,
+        publicKey: await crypto.subtle.importKey(
+          "raw",
+          keys.raw,
+          "Ed25519",
+          true,
+          ["verify"],
+        ),
+      };
+      const options = {
+        origin: ORIGIN,
+        body: prepared.body,
+        approvedSha256: prepared.resultSha256,
+        signer,
+        journalDirectory,
+        at: NOW,
+        fetch: ((_url: unknown, init: RequestInit) =>
+          fetch(`${server.url}api/v1/vetting/results`, init)) as typeof fetch,
+      };
+      const receipt = await publishResult(options);
+      expect(receipt.outcome).toBe("accepted");
+      expect((await publicVetting()).state).toBe("quarantined");
+      expect(
+        JSON.parse(
+          await readFile(join(journalDirectory, id, "receipt.json"), "utf8"),
+        ),
+      ).toEqual(receipt);
+      await expect(publishResult(options)).rejects.toThrow();
+      expect(requests).toBe(1);
+
+      // A lost response after a committed write must stay unknown, and the
+      // journal must prevent a second attempt even though no receipt arrived.
+      const nextId = await queueScan();
+      const next = reconcileResult({
+        observation: { ...observation, assessmentId: nextId },
+        inputManifest,
+        trace,
+        reviews,
+      });
+      const uncertain = await publishResult({
+        ...options,
+        body: next.body,
+        approvedSha256: next.resultSha256,
+        fetch: (async (_url: unknown, init: RequestInit) => {
+          await fetch(`${server.url}api/v1/vetting/results`, init);
+          throw new Error("Response lost after commit");
+        }) as unknown as typeof fetch,
+      });
+      expect(uncertain.outcome).toBe("unknown");
+      expect((await vetting.getAssessment(nextId))?.state).toBe("incomplete");
+      await expect(
+        publishResult({
+          ...options,
+          body: next.body,
+          approvedSha256: next.resultSha256,
+        }),
+      ).rejects.toThrow();
+      expect(requests).toBe(2);
+    } finally {
+      await server.stop(true);
+      await rm(journalDirectory, { recursive: true });
+    }
+  });
+
   test("a signed clean claim without canonical closure cannot activate the revision", async () => {
     await listPausedProject();
     expect(await publicVetting()).toEqual({ state: "unscanned" });
