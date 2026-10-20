@@ -1,5 +1,6 @@
 /** Signed-in inbox for account, project and payment events (PRD NOT-01). */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { InboxEmail } from "./InboxEmail";
 import { fetchWithDeadline, readBoundedJson } from "./lib/browser-json";
 import {
   MAX_NOTIFICATION_MARK,
@@ -123,7 +124,7 @@ export function InboxPage() {
       <h1>Inbox</h1>
       <p>
         Decisions on your project applications, changes to your projects,
-        awards, payments and payout wallets. Slop does not send these by email.
+        awards, payments and payout wallets.
       </p>
       {state.status === "loading" ? (
         <p role="status">Loading your inbox…</p>
@@ -148,6 +149,7 @@ export function InboxPage() {
           </button>
         </div>
       ) : null}
+      {state.status === "ready" ? <InboxEmail /> : null}
       {state.status === "ready" ? (
         <InboxList
           busy={busy}
