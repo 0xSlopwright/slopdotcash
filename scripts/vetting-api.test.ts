@@ -1,6 +1,6 @@
 // Community security vetting (PRD VET-01 to VET-08) on the real migrations:
-// the signed service contract, the clean, incomplete and malicious
-// dispositions from harmless fixtures, the activation and skill gates, and
+// the signed service contract, refusal of unsupported clean claims, truthful
+// incomplete and malicious fixtures, the activation and skill gates, and
 // the fail-closed state when no vetting service is configured.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -237,7 +237,7 @@ async function publicVetting() {
 }
 
 describe("community security vetting", () => {
-  test("a clean signed result clears the exact revision for activation", async () => {
+  test("a signed clean claim without canonical closure cannot activate the revision", async () => {
     await listPausedProject();
     expect(await publicVetting()).toEqual({ state: "unscanned" });
     expect((await activate()).status).toBe(422);
@@ -259,29 +259,16 @@ describe("community security vetting", () => {
     ]);
 
     const recorded = await postResult(await fixture(id, "clean"));
-    expect(recorded.status).toBe(200);
-    expect((await recorded.json()).assessment).toMatchObject({
-      state: "clean",
-      commitSha: "a".repeat(40),
-      policyVersion: "vet-policy-1",
-      artifacts: 1,
-      heldArtifacts: 0,
-    });
-    // A replay of the same result cannot record twice.
-    expect((await postResult(await fixture(id, "clean"))).status).toBe(409);
-    expect((await publicVetting()).state).toBe("cleared");
-
-    const activated = await activate();
-    expect(activated.status).toBe(200);
-    expect((await projects.getProject("open-registry"))?.status).toBe("active");
-    // Revision 2 differs only by status, so the revision 1 scan still covers it.
-    expect(await publicVetting()).toMatchObject({
-      state: "cleared",
-      assessment: { revision: 1 },
-    });
+    expect(recorded.status).toBe(422);
+    expect((await recorded.json()).error).toBe("evidence_incomplete");
+    expect((await postResult(await fixture(id, "clean"))).status).toBe(422);
+    expect((await publicVetting()).state).toBe("queued");
+    expect((await vetting.getAssessment(id))?.state).toBe("pending");
+    expect((await activate()).status).toBe(422);
+    expect((await projects.getProject("open-registry"))?.status).toBe("paused");
   });
 
-  test("a clearance binds the assigned commit and template; a moved head is stale", async () => {
+  test("the queue binds commits and templates without accepting an unsupported clean claim", async () => {
     await listPausedProject();
     const id = await queueScan();
     const result = await fixture(id, "clean");
@@ -294,33 +281,22 @@ describe("community security vetting", () => {
       expect(refused.status).toBe(422);
       expect((await refused.json()).error).toBe("commit_mismatch");
     }
-    expect((await postResult(result)).status).toBe(200);
-    expect((await publicVetting()).state).toBe("cleared");
-
-    // New commits on the integration branch lose the clearance.
-    livePin = { commitSha: "e".repeat(40), templateSha256: TEMPLATE };
-    expect(await publicVetting()).toMatchObject({
-      state: "stale",
-      assessment: { commitSha: HEAD, templateSha256: TEMPLATE },
-      live: { commitSha: "e".repeat(40) },
-    });
-    const refused = await activate();
-    expect(refused.status).toBe(422);
-    expect((await refused.json()).message).toContain(
-      "Security vetting is stale",
+    expect((await postResult(result)).status).toBe(422);
+    expect((await publicVetting()).state).toBe("queued");
+    // Finish the first pending scan truthfully before requesting another.
+    expect((await postResult(await fixture(id, "incomplete"))).status).toBe(
+      200,
     );
-    // A rescan is assigned the new head, and its clean result clears it.
+    livePin = { commitSha: "e".repeat(40), templateSha256: TEMPLATE };
+    expect((await activate()).status).toBe(422);
     const rescan = await queueScan();
     expect((await vetting.getAssessment(rescan))?.commitSha).toBe(
       "e".repeat(40),
     );
+    expect((await postResult(await fixture(rescan, "clean"))).status).toBe(422);
     expect((await publicVetting()).state).toBe("queued");
-    expect((await postResult(await fixture(rescan, "clean"))).status).toBe(200);
-    expect((await publicVetting()).state).toBe("cleared");
-
-    // A new skill template loses the clearance too.
     livePin = { commitSha: "e".repeat(40), templateSha256: "f".repeat(64) };
-    expect((await publicVetting()).state).toBe("stale");
+    expect((await activate()).status).toBe(422);
     // An unreadable head never counts as cleared, and no scan can be queued.
     livePin = null;
     expect((await publicVetting()).state).toBe("unverified");
@@ -465,7 +441,7 @@ describe("community security vetting", () => {
     ).toBe(410);
     // A later clean scan cannot lift the ban (VET-06).
     const rescan = await queueScan();
-    expect((await postResult(await fixture(rescan, "clean"))).status).toBe(200);
+    expect((await postResult(await fixture(rescan, "clean"))).status).toBe(422);
     expect(
       (await projectApi(new Request(`${ORIGIN}/api/v1/projects/open-registry`)))
         .status,
@@ -537,7 +513,7 @@ describe("community security vetting", () => {
   });
 });
 
-test("private retained bytes control inspection and continuing clean clearance", async () => {
+test("private retained bytes remain inspectable without granting clean clearance", async () => {
   await listPausedProject();
   const id = await queueScan();
   const result = await fixture(id, "clean");
@@ -598,8 +574,8 @@ test("private retained bytes control inspection and continuing clean clearance",
     (await operator(`${base}/body`, undefined, undefined, revokeGrant)).status,
   ).toBe(403);
   retained.evidence.deps.policy = policy;
-  expect((await postResult(result)).status).toBe(200);
-  expect((await publicVetting()).state).toBe("cleared");
+  expect((await postResult(result)).status).toBe(422);
+  expect((await publicVetting()).state).toBe("queued");
   await retained.bucket.delete(key);
   expect(
     (
@@ -608,7 +584,7 @@ test("private retained bytes control inspection and continuing clean clearance",
       })
     ).status,
   ).toBe(404);
-  expect((await publicVetting()).state).toBe("unverified");
+  expect((await publicVetting()).state).toBe("queued");
   expect((await activate()).status).not.toBe(200);
   await retained.bucket.put(
     key,
@@ -628,10 +604,10 @@ test("private retained bytes control inspection and continuing clean clearance",
       })
     ).status,
   ).toBe(409);
-  expect((await publicVetting()).state).toBe("unverified");
+  expect((await publicVetting()).state).toBe("queued");
   await retained.bucket.delete(key);
   await retained.retain(id, run);
-  expect((await publicVetting()).state).toBe("cleared");
+  expect((await publicVetting()).state).toBe("queued");
   retained.evidence.deps.policy = JSON.stringify({
     ...JSON.parse(policy),
     maxObjectBytes: 1,
@@ -652,7 +628,7 @@ test("private retained bytes control inspection and continuing clean clearance",
       })
     ).status,
   ).toBe(410);
-  expect((await publicVetting()).state).toBe("unverified");
+  expect((await publicVetting()).state).toBe("queued");
   retained.evidence.deps.now = () => new Date(NOW.getTime() + 7200_001);
   expect(retained.evidence.ready()).toBe(false);
   expect((await operator(overview)).status).toBe(503);
@@ -680,7 +656,8 @@ test("a clean result cannot omit a referenced retained artifact or replace an im
   expect((await postResult(result)).status).toBe(422);
   expect((await publicVetting()).state).toBe("queued");
   await retained.retain(id, run);
-  expect((await postResult(result)).status).toBe(200);
+  expect((await postResult(result)).status).toBe(422);
+  expect((await publicVetting()).state).toBe("queued");
   const audits = await retained.evidence.deps.db
     .prepare(
       "SELECT action,reason FROM vetting_evidence_audit WHERE assessment_id=?",
