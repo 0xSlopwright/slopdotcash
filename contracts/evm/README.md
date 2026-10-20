@@ -74,7 +74,13 @@ already paid. A cancelled binding never pays; only a new binding (the next
 version, with a new delay and a new wallet signature) can follow. Between two
 payments to an actor, the owner can cancel at most `MAX_CANCELS_BETWEEN_PAYMENTS`
 (3) times; the next binding cannot be cancelled and pays after its delay. A
-payment resets the count. The owner can therefore delay a
+payment resets the count. The cap does not apply while the factory has a
+pending identity authority rotation (`pendingIdentityAuthority` set): then
+every cancel is allowed and none is counted, because only the registrar can
+open that public 7-day window and the owner needs an unbounded number of
+cancels to outlast a stolen key's notice period. Once the rotation executes or
+the registrar withdraws it, the cap applies again with the count unchanged.
+The owner can therefore delay a
 contributor's payout by a bounded number of delays, but can never take an
 approved award back or redirect it. The constructor rejects a delay below one
 hour or above 30 days; production deployments use at least 48 hours
@@ -125,15 +131,20 @@ exposure window is 7 days. During it the attacker can submit only bindings
 that a wallet co-signs, each activating after `bindingDelay`. Every project
 owner watches `DestinationBound` and cancels any binding it did not expect
 with `cancelBinding`, which costs the contributor a delay and nothing else.
-The owner cancels late in each binding's delay, so three cancels and the
-fourth binding's own delay cover at least four delays: 8 days at the 48-hour
-production minimum, longer than the 7-day notice. After execution the old key
-cannot bind, and the new authority binds the contributor's wallet as the next
-version before the attacker's last binding activates; only the latest binding
-pays. `test_H1_stolenAuthorityCannotTakeAnAward` in `test/BoundedAttester.t.sol`
-runs this sequence and asserts that the attacker receives nothing. Rotation
-never cancels or re-points a binding by itself, so review every binding made
-during the window.
+While the proposal is pending, `MAX_CANCELS_BETWEEN_PAYMENTS` does not apply
+and cancels are not counted, so the owner's cover does not depend on how many
+cancels it had spent on that actor before the compromise. The owner cancels
+late in each binding's delay; each cancel forces the attacker to bind again
+with a fresh delay, so the attacker's last binding, made before execution,
+activates at least `bindingDelay` after it was made, and the new authority
+binds the contributor's wallet as the next version at execution, before that
+binding activates. The old key cannot bind after execution, and only the
+latest binding pays. `test_H1_stolenAuthorityCannotTakeAnAward` and
+`test_H1_stolenAuthorityCannotTakeAnAwardAfterPriorCancel` in
+`test/BoundedAttester.t.sol` run this sequence, the second starting with one
+earlier cancel on the actor, and assert that the attacker receives nothing.
+Rotation never cancels or re-points a binding by itself, so review every
+binding made during the window.
 
 Registrar key lost or compromised: there is no second rotation path; the
 registrar is the recovery authority, so choose it at factory deployment and
@@ -295,7 +306,8 @@ rejection, tokens without valid decimals, one vault per project and token, and
 `totals()`. The invariant suite runs at 6 and 18 decimals with random
 depositors. The suites also include regression tests for the
 binding lifecycle (commit delay, payment frozen during a rotation and after its
-cancel, cancel cap between payments, delay bounds, one-shot cancel), token and
+cancel, cancel cap between payments and its waiver during a pending rotation,
+delay bounds, one-shot cancel), token and
 accounting checks, and invariant runs over random owner, authority and payer
 sequences. These suites are regression evidence, not a security review. The
 `base` job in `.github/workflows/escrow-tests.yml` runs the format check, build

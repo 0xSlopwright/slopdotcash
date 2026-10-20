@@ -941,6 +941,76 @@ test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay
   );
 });
 
+// Outside report (20 October 2026): the veto cap must not apply while a confirmed
+// authority rotation is pending, or a stolen identity key could outlast the owner's
+// remaining vetoes. The owner alone cannot lift the cap: a proposal without the fee
+// recipient's confirmation keeps it. Waived vetoes do not count.
+test("veto cap is waived during a confirmed authority rotation and resumes after it", async () => {
+  const attacker = Keypair.generate(),
+    contributor = Keypair.generate(),
+    thirdAuthority = Keypair.generate();
+  const [attackerAta, contributorAta] = await Promise.all(
+    [attacker, contributor].map((k) =>
+      createAccount(provider.connection, payer, mint, k.publicKey),
+    ),
+  );
+  await mintTo(provider.connection, payer, mint, source, payer, 10_000_000n);
+  await program.methods
+    .deposit(bn(10_000_000))
+    .accountsStrict({
+      depositor: payer.publicKey,
+      project,
+      mint,
+      source,
+      vault,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .rpc();
+  await commit("k1", 206, 10_000_000);
+  // One ordinary veto before the compromise: the contributor's own binding.
+  await bind(206, contributor, 0);
+  await vetoBinding(206, 1);
+  const vetoCount = async () =>
+    (await program.account.walletBinding.fetch(binding(206))).vetoCount;
+  assert.equal(await vetoCount(), 1);
+  // The key is stolen and binds the attacker's wallet; the owner proposes a rotation.
+  // Until the fee recipient confirms, the cap still applies: two vetoes left.
+  await rotation.propose(thirdAuthority.publicKey);
+  await bind(206, attacker, 1);
+  await vetoBinding(206, 2);
+  await bind(206, attacker, 2);
+  await vetoBinding(206, 3);
+  await bind(206, attacker, 3);
+  await assert.rejects(vetoBinding(206, 4), /VetoLimit/);
+  assert.equal(await vetoCount(), 3);
+  // Confirmed: the owner vetoes every attacker binding and none is counted.
+  await rotation.confirm();
+  await vetoBinding(206, 4);
+  await bind(206, attacker, 4);
+  await vetoBinding(206, 5);
+  await bind(206, attacker, 5);
+  assert.equal(await vetoCount(), 3);
+  // The rotation executes before the last attacker binding activates; the new
+  // authority binds the contributor as the next version, so the attacker never pays.
+  await sleep((ROTATION_DELAY + 2) * 1000);
+  await rotation.execute();
+  currentAuthority = thirdAuthority;
+  await assert.rejects(
+    bind(206, attacker, 6, network, { signer: nextAuthority }),
+    /ConstraintHasOne/,
+  );
+  await bind(206, contributor, 6);
+  // No rotation pending: the cap is back with the count the owner had before.
+  await assert.rejects(vetoBinding(206, 7), /VetoLimit/);
+  assert.equal(await vetoCount(), 3);
+  await activate();
+  await assert.rejects(pay("k1", 206, attackerAta, 6), /StaleBinding/);
+  await pay("k1", 206, contributorAta, 7);
+  assert.equal(await balance(attackerAta), 0n);
+  assert.equal(await balance(contributorAta), 9_800_000n);
+  assert.equal(await vetoCount(), 0);
+});
+
 // Owner decisions of 18 October 2026: permissionless deposit, any classic SPL mint and
 // decimals, and the withdrawal fee, 2% since the owner decision of 19 October 2026
 // (#907). Token-2022 stays rejected.

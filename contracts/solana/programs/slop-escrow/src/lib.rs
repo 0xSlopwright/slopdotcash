@@ -21,7 +21,9 @@ const MAX_ROTATION_DELAY: i64 = 90 * 86400;
 pub const LEGACY_PROJECT_SIZE: usize = 265;
 /// Vetoes a project owner may record for an actor between two payments to that actor in
 /// the project. Each veto can only delay the actor by one more binding delay, so this
-/// bounds the owner's delay power.
+/// bounds the owner's delay power. The cap is waived, and the count untouched, while the
+/// project has a confirmed pending authority rotation, so an earlier veto never shortens
+/// the cover the owner can give during a key compromise.
 const MAX_VETOES_BETWEEN_PAYMENTS: u8 = 3;
 /// Each award and each unused-funds withdrawal pays 1/50 (2%) of its gross to the fee
 /// recipient, rounded down once per award or withdrawal (PRD section 18). One rate for both
@@ -347,7 +349,10 @@ pub mod slop_escrow {
     // out its own delay, or while an unpaid award to the actor (passed as `obligation`) is
     // still inside its commit delay. A binding that has paid cannot be vetoed, and the
     // owner can veto at most MAX_VETOES_BETWEEN_PAYMENTS times between two payments to the
-    // actor. A new authority binding (next version) is required afterwards.
+    // actor, except while a pending authority rotation has the fee recipient's confirmation:
+    // then every veto is allowed and none is counted, because the owner cannot open that
+    // window alone and needs an unbounded number of vetoes to outlast a stolen key's notice
+    // period. A new authority binding (next version) is required afterwards.
     pub fn veto_binding(ctx: Context<VetoBinding>, actor_id: u64, version: u64) -> Result<()> {
         let p = &ctx.accounts.project;
         let b = &ctx.accounts.binding;
@@ -365,11 +370,15 @@ pub mod slop_escrow {
             now < activates_at(b, p)? || commit_window,
             EscrowError::BindingActive
         );
-        require!(
-            b.veto_count < MAX_VETOES_BETWEEN_PAYMENTS,
-            EscrowError::VetoLimit
-        );
-        ctx.accounts.binding.veto_count += 1;
+        let rotation_pending =
+            p.pending_identity_authority != Pubkey::default() && p.rotation_confirmed;
+        if !rotation_pending {
+            require!(
+                b.veto_count < MAX_VETOES_BETWEEN_PAYMENTS,
+                EscrowError::VetoLimit
+            );
+            ctx.accounts.binding.veto_count += 1;
+        }
         emit!(BindingVetoed {
             project: ctx.accounts.project.key(),
             actor_id,
