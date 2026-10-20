@@ -31,8 +31,12 @@ import {
   vettedContentSha256,
 } from "../backend/vetting/persistence";
 import { parseVettingResult } from "../backend/vetting/result";
+import { slugify } from "../src/lib/project-proposal";
 import { PROJECT_SKILL_TEMPLATES } from "../src/lib/project-schema.mjs";
-import { sha256Hex } from "../src/lib/project-skill-publication.mjs";
+import {
+  buildProjectPublication,
+  sha256Hex,
+} from "../src/lib/project-skill-publication.mjs";
 import type { ProjectDefinition } from "../src/lib/projects.mjs";
 import {
   applicationManifest,
@@ -363,6 +367,20 @@ describe("project registry API", () => {
     expect(await persistence.listApplications("pending")).toEqual([]);
   });
 
+  test("refuses a project id too long for its reviewer skill name", async () => {
+    const id = "reproducible-research-toolkit-for-everyone-x";
+    expect(`review-${id}-contributions`).toHaveLength(65);
+    const response = await call("POST", "project-applications", "applicant", {
+      manifest: applicationManifest(id, "example/open-registry"),
+    });
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      error: "invalid_manifest",
+      message: "project.id is invalid",
+    });
+    expect(await persistence.listApplications("pending")).toEqual([]);
+  });
+
   test("refuses activation when historical clean metadata lacks canonical closure", async () => {
     await listProject();
     const current = await persistence.getProject("open-registry");
@@ -553,6 +571,31 @@ async function publicationRequests() {
 }
 
 describe("generated skill publication", () => {
+  test("an id derived from a long project name renders the reviewer skill", async () => {
+    // /projects/new derives the id from the name. The reviewer skill is
+    // `review-<id>-contributions`, and a skill name has at most 64 characters.
+    const id = slugify(
+      "Reproducible Research Toolkit for Everyone, Everywhere",
+    );
+    await listProject(applicationManifest(id, "example/open-registry"));
+    const project = await persistence.getProject(id);
+    if (project === null) throw new Error("project was not listed");
+    const { index } = await publicationRequests();
+    const root = resolve(import.meta.dir, "..");
+    const files = await buildProjectPublication({
+      template: index,
+      readFile: async (path: string) =>
+        new Uint8Array(readFileSync(join(root, path))),
+      project: project.manifest,
+      revision: project.revision,
+      manifestSha256: project.manifestSha256,
+      generatedAt: project.updatedAt,
+    });
+    const reviewer = `review-${id}-contributions`;
+    expect(reviewer.length).toBeLessThanOrEqual(64);
+    expect(Object.keys(files ?? {})).toContain(`downloads/${reviewer}.skill`);
+  });
+
   test("historical clean metadata cannot publish skills without canonical closure", async () => {
     const { publication, get } = await publicationRequests();
     expect(

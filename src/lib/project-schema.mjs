@@ -24,6 +24,14 @@ export const PROJECT_SKILL_TEMPLATES = Object.freeze({
   reviewer: "skills/project-reviewer-template",
 });
 
+/**
+ * The longest project id. The generated reviewer skill is named
+ * `review-<id>-contributions`, and a skill name has at most 64 characters
+ * (`scripts/skill-validation/quick_validate.py`).
+ */
+export const MAX_PROJECT_ID_LENGTH = 43;
+const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,41}[a-z0-9])?$/u;
+
 /** Maintainer-authored fields, in render order, that generate project skills. */
 export const CONTRIBUTION_FIELDS = Object.freeze([
   "approvedScope",
@@ -1114,8 +1122,8 @@ function validateProjectDefinition(
   if (project.schemaVersion !== "1")
     throw new TypeError("project schemaVersion is unsupported");
   const id = text(project.id, "project.id", {
-    max: 48,
-    pattern: /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u,
+    max: MAX_PROJECT_ID_LENGTH,
+    pattern: PROJECT_ID,
   });
   if (project.slug !== id)
     throw new TypeError("project.slug must equal project.id");
@@ -1154,10 +1162,7 @@ function validateProjectDefinition(
       text(
         participation.successorProjectId,
         "project.participation.successorProjectId",
-        {
-          max: 48,
-          pattern: /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u,
-        },
+        { max: MAX_PROJECT_ID_LENGTH, pattern: PROJECT_ID },
       );
       if (participation.successorProjectId === id)
         throw new TypeError("archived project cannot be its own successor");
