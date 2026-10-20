@@ -831,6 +831,17 @@ describe("project enforcement (ADM-06)", () => {
     const self = await enforce("admin", "reinstate");
     expect(self.status).toBe(403);
     expect((await self.json()).error).toBe("independent_review_required");
+    const unscannedAppeal = await enforce("moderator", "reinstate");
+    expect(unscannedAppeal.status).toBe(409);
+    expect((await unscannedAppeal.json()).error).toBe("vetting_required");
+    expect((await call("GET", "projects/open-registry")).status).toBe(410);
+    await clearCurrentRevision("open-registry");
+    const scannedPin = livePin;
+    livePin = { ...livePin, commitSha: "b".repeat(40) };
+    const staleScan = await enforce("moderator", "reinstate");
+    expect(staleScan.status).toBe(409);
+    expect((await staleScan.json()).error).toBe("vetting_required");
+    livePin = scannedPin;
     const reinstated = await enforce("moderator", "reinstate");
     expect(reinstated.status).toBe(200);
     expect((await reinstated.json()).record).toMatchObject({

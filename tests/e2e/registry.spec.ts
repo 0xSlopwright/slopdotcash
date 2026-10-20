@@ -854,6 +854,46 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
   await moderatorPanel
     .getByLabel("Evidence reference (link or case id)")
     .fill(evidence);
+  // Both preview and confirmation must refuse an unscanned appeal. Use the
+  // API for the expected refusal so it does not create a console error.
+  const unscannedAppeal = await moderator.request.post(
+    `/api/v1/admin/projects/${project.id}/enforcement-preview`,
+    {
+      headers: {
+        origin: new URL(moderator.url()).origin,
+        cookie: `__Host-slop_points=${MODERATOR_TOKEN}`,
+      },
+      data: {
+        action: "reinstate",
+        reason: "Review without a fresh scan",
+        evidenceReference: evidence,
+        expectedRevision: 3,
+        expectedSequence: 4,
+      },
+    },
+  );
+  expect(unscannedAppeal.status()).toBe(409);
+  expect((await unscannedAppeal.json()).error).toBe("vetting_required");
+  expect((await request.get(`/api/v1/projects/${project.id}`)).status()).toBe(
+    410,
+  );
+  await queueScan(
+    moderator,
+    project.id,
+    "Fresh scan for independent appeal",
+    3,
+  );
+  await postVettingResult(request, project.id, project.repository, "clean");
+  await moderator.reload({ waitUntil: "networkidle" });
+  await moderatorPanel
+    .getByLabel("Action")
+    .selectOption({ label: "Reinstate after review" });
+  await moderatorPanel
+    .getByLabel("Reason (private audit record)")
+    .fill("A fresh complete scan found no malware");
+  await moderatorPanel
+    .getByLabel("Evidence reference (link or case id)")
+    .fill(evidence);
   await moderatorPanel.getByRole("button", { name: "Preview action" }).click();
   const reinstate = moderatorPanel.getByRole("group", {
     name: "Preview: check it, then confirm",
