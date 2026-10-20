@@ -94,7 +94,7 @@ Load keys from a secret store into the environment of one shell.
 | `ESCROW_ACCEPTANCE_PROGRAM_CODE_SHA256` | Solana | `deployed_code_sha256`. |
 | `ESCROW_ACCEPTANCE_PROGRAM_UPGRADE_AUTHORITY` | Solana | Upgrade authority, or `none`. |
 | `ESCROW_ACCEPTANCE_BINDING_DELAY_SECONDS` | Solana, optional | Default 3600. |
-| `ESCROW_ACCEPTANCE_ROTATION_DELAY_SECONDS` | Solana, optional | Default 604800. |
+| `ESCROW_ACCEPTANCE_ROTATION_DELAY_SECONDS` | Solana, optional | Default 7200. Must be shorter than four binding delays, as the project registry requires. |
 | `ESCROW_ACCEPTANCE_UNIT_DIVISOR` | optional | Power of ten. Scales every figure down when a faucet cannot supply 1,000 units. The evidence records a deviation. |
 | `ESCROW_ACCEPTANCE_MAX_WAIT_SECONDS` | optional | Time to wait in one run. Default 600. |
 | `ESCROW_ACCEPTANCE_POLL_SECONDS` | optional | Default 15. |
@@ -117,8 +117,11 @@ transaction for the same step. Exit code 1 means the run failed; the
 evidence file lists the error.
 
 Attach `evidence.json` to the issue. Do not commit it: `evidence/` is ignored.
-The directory also holds `projection.sqlite` and the signer journals; they
-contain signed transactions but no key.
+The directory also holds `projection.sqlite`, the signer journals, and
+`registry.sqlite`. The journals contain signed transactions but no key.
+`registry.sqlite` is the project registry that the payments Worker reads as
+`REGISTRY_DB`: each vault is one paused test project whose manifest records
+that vault as its escrow deployment.
 
 ## Evidence file
 
@@ -144,9 +147,17 @@ mint, generates throwaway keys, and runs the same command until it passes. It
 moves time forward on the forks when the runner waits. Nothing reaches a
 public network except the read-only fork requests.
 
-## Known blocker
+## Known blockers
 
 The account API accepts payout wallets only for `solana`, `base` and
 `robinhood` (`WALLET_CHAINS` in `src/lib/wallets.ts`). On
 `ethereum-sepolia` the runner therefore stops before it signs, with that
 reason. The Ethereum run needs Ethereum payout wallets first.
+
+The payments Worker finds vaults only in the project registry, and the
+registry names registry networks only. The executor admits a local Solana
+validator only as `solana-localnet` and compares that name with the
+obligation. Thus no `solana-localnet` vault can reach dispatch, and on
+`solana-localnet` the runner stops before it signs, with that reason. The
+local proof therefore covers the EVM forks only, until a maintainer decides
+how a local Solana validator enters the registry.
