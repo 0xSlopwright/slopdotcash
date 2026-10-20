@@ -44,6 +44,8 @@ export type VettingApiDependencies = {
   >;
   /** Raw 32-byte Ed25519 public keys of the vetting service, base64. */
   resultPublicKeys: string | undefined;
+  /** Configured administrators and project moderators; never inferred from scan content. */
+  operatorGithubIds?: readonly string[];
   /**
    * Reads the live pin of a project: its integration-branch head on GitHub
    * and the deployed skill template digest. Throws when either is unreadable
@@ -387,6 +389,7 @@ async function serviceResult(
     resultText,
     resultSha256: await sha256Hex(new TextEncoder().encode(resultText)),
     signingKeySha256: keySha256,
+    operatorGithubIds: deps.operatorGithubIds,
     at: deps.now().toISOString(),
   });
   if (recorded === "conflict") {

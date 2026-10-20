@@ -962,6 +962,32 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
   await expect(
     review.getByRole("link", { name: "Open admin" }),
   ).toHaveAttribute("href", "/admin");
+  const banNotice = moderator.locator(".inbox-item", {
+    hasText: `The ${project.id} project is banned.`,
+  });
+  await expect(banNotice).toHaveCount(1);
+  await expect(
+    banNotice.getByRole("link", { name: "Open admin" }),
+  ).toHaveAttribute("href", "/admin");
+  await expect(moderator.locator("main")).not.toContainText(evidence);
+  await moderator.screenshot({
+    path: test.info().outputPath("operator-ban-notice.png"),
+    fullPage: true,
+  });
+  await moderator.evaluate(() => {
+    document.documentElement.style.zoom = "2";
+  });
+  await expectAccessible(moderator);
+  await moderator.screenshot({
+    path: test.info().outputPath("operator-ban-notice-zoom200.png"),
+    fullPage: true,
+  });
+  await banNotice.getByRole("link", { name: "Open admin" }).focus();
+  await moderator.keyboard.press("Enter");
+  await expect(
+    moderator.getByRole("heading", { name: "Admin", exact: true }),
+  ).toBeVisible();
+
   await expectAccessible(moderator);
   expect(moderatorErrors).toEqual([]);
   await moderatorContext.close();

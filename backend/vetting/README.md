@@ -71,13 +71,13 @@ records described in [Independent reinstatement](#independent-reinstatement).
 
 ## Routes
 
-| Route | Access | Purpose |
-|---|---|---|
-| `GET /api/v1/admin/vetting` | admin | Service state, clearance of every project, full results |
-| `POST /api/v1/admin/vetting/assessments` | admin | Queues a scan of the current revision (`projectId`, `revision`, `reason`) at the live branch head and template digest; HTTP 503 `pin_unavailable` when either cannot be read |
-| `GET /api/v1/vetting/requests` | signed service | Queued scans with the assigned `commitSha` and `templateSha256`, the revision URL and the template index URL |
-| `POST /api/v1/vetting/results` | signed service | Records one `slop-vetting-result-v1` result |
-| `GET /api/v1/projects/:id` | public | Adds the safe `vetting` summary; `skillsPublished` needs `cleared` |
+| Route                                    | Access         | Purpose                                                                                                                                                                      |
+| ---------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/v1/admin/vetting`              | admin          | Service state, clearance of every project, full results                                                                                                                      |
+| `POST /api/v1/admin/vetting/assessments` | admin          | Queues a scan of the current revision (`projectId`, `revision`, `reason`) at the live branch head and template digest; HTTP 503 `pin_unavailable` when either cannot be read |
+| `GET /api/v1/vetting/requests`           | signed service | Queued scans with the assigned `commitSha` and `templateSha256`, the revision URL and the template index URL                                                                 |
+| `POST /api/v1/vetting/results`           | signed service | Records one `slop-vetting-result-v1` result                                                                                                                                  |
+| `GET /api/v1/projects/:id`               | public         | Adds the safe `vetting` summary; `skillsPublished` needs `cleared`                                                                                                           |
 
 ## Service signature
 
@@ -173,3 +173,5 @@ Every later malicious assessment remains a new ban; no old decision covers it.
 The changed listing revision still needs clearance before its skills can publish.
 Migration 0032 preserves human enforcement history and admits the signed service
 issuer only for standing-rule Ban records.
+
+Confirmed-malicious bans notify the configured administrators and project moderators, the applicant and steward, and known affected contributors. Contributor recipients come from current positive contribution records resolved through immutable membership IDs, plus project payment obligations and imported transfers. Reversed awards and unrelated projects do not select recipients. People without a resolvable inbox identity cannot receive a direct notice. The private inbox notice contains no security reason, trace, or evidence reference. The result, ban, and notices commit together; a repeated signed result cannot duplicate them.

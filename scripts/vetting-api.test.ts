@@ -3,6 +3,7 @@
 // dispositions from harmless fixtures, the activation and skill gates, and
 // the fail-closed state when no vetting service is configured.
 import { beforeEach, describe, expect, test } from "bun:test";
+import { readdirSync } from "node:fs";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import { handleProjectApi } from "../backend/projects/handler";
 import { handleVettingApi } from "../backend/vetting/handler";
@@ -23,6 +24,7 @@ const ADMIN = { githubId: "900000001", githubLogin: "e2e-admin" };
 const APPLICANT = { githubId: "900000002", githubLogin: "e2e-applicant" };
 const NOW = new Date("2026-10-18T12:00:00.000Z");
 
+let sqlite: ReturnType<typeof sqliteD1>["sqlite"];
 let projects: CloudflareProjectPersistence;
 let vetting: CloudflareVettingPersistence;
 let keys: Awaited<ReturnType<typeof vettingKeyPair>>;
@@ -39,17 +41,13 @@ async function readLivePin(): Promise<VettingPin> {
 let ids = 0;
 
 beforeEach(async () => {
-  const { db } = sqliteD1([
-    "0019_project_registry.sql",
-    "0020_project_application_github_check.sql",
-    "0023_project_enforcements.sql",
-    "0024_notifications.sql",
-    "0025_community_security_vetting.sql",
-    "0031_project_vetting_reinstatements.sql",
-    "0032_project_system_enforcement.sql",
-    "0026_private_security_cases.sql",
-    "0029_notification_event_kinds.sql",
-  ]);
+  const database = sqliteD1(
+    readdirSync(new URL("../migrations", import.meta.url))
+      .filter((name) => name.endsWith(".sql"))
+      .sort(),
+  );
+  const { db } = database;
+  sqlite = database.sqlite;
   projects = new CloudflareProjectPersistence(db);
   vetting = new CloudflareVettingPersistence(db);
   keys = await vettingKeyPair();
@@ -89,6 +87,7 @@ function vettingApi(request: Request) {
     vetting,
     projects,
     resultPublicKeys: configuredKeys,
+    operatorGithubIds: [ADMIN.githubId, "900000004", ADMIN.githubId],
     livePin: readLivePin,
     session: async (value) => {
       const actor = actorOf(value);
@@ -360,10 +359,75 @@ describe("community security vetting", () => {
     await listPausedProject();
     const id = await queueScan();
     const result = await fixture(id, "malicious");
+    // Current contribution identity, reversed credit, unrelated project and
+    // unresolved identities exercise the actual recipient selection boundary.
+    for (const [actor, githubId] of [
+      ["known", "900000010"],
+      ["reversed", "900000011"],
+      ["other", "900000012"],
+    ]) {
+      sqlite
+        .prepare(
+          "INSERT INTO points_members(actor_id,github_id,login,joined_at,public) VALUES(?,?,?,?,0)",
+        )
+        .run(actor, githubId, actor, NOW.toISOString());
+    }
+    for (const [key, actor, project, amount, previous] of [
+      ["known", "known", "open-registry", 10, null],
+      ["reversed", "reversed", "open-registry", 10, null],
+      ["reversed-next", "reversed", "open-registry", 0, "reversed"],
+      ["other", "other", "another-project", 10, null],
+      ["unresolved", "unresolved", "open-registry", 10, null],
+    ] as const) {
+      sqlite
+        .prepare(
+          "INSERT INTO points_revisions(id,source_key,previous,recorded_at,payload) VALUES(?,?,?,?,?)",
+        )
+        .run(
+          key,
+          previous ?? key,
+          previous,
+          NOW.toISOString(),
+          JSON.stringify({
+            award: { actor: { id: actor }, projectId: project, amount },
+          }),
+        );
+    }
+    sqlite
+      .prepare(
+        `INSERT INTO payment_direct_transfers(network,transaction_id,project_id,contribution_month,github_user_id,github_node_id,github_login,chain,recipient,amount_micro,block_time,block_id,source_path,imported_at)
+      VALUES('base-mainnet','fixture-transfer','open-registry','2026-10','900000013','financial','financial','base','fixture-wallet','1',?,'fixture-block','fixture',?)`,
+      )
+      .run(NOW.toISOString(), NOW.toISOString());
     const unconfirmed = await postResult({ ...result, confirmation: null });
     expect(unconfirmed.status).toBe(422);
     expect(await projects.listEnforcements()).toEqual([]);
     expect((await postResult(result)).status).toBe(200);
+    const notices = sqlite
+      .prepare(
+        "SELECT recipient_github_id AS recipient, action_path AS path, detail FROM notifications WHERE event_key LIKE 'project-enforcement:%' ORDER BY recipient_github_id",
+      )
+      .all() as { recipient: string; path: string; detail: null }[];
+    expect(notices.map((notice) => notice.recipient)).toEqual([
+      "900000001",
+      "900000002",
+      "900000004",
+      "900000010",
+      "900000013",
+      "987654321",
+    ]);
+    expect(notices.every((notice) => notice.detail === null)).toBe(true);
+    expect(
+      notices.find((notice) => notice.recipient === ADMIN.githubId)?.path,
+    ).toBe("/admin");
+    expect((await postResult(result)).status).toBe(409);
+    expect(
+      sqlite
+        .prepare(
+          "SELECT COUNT(*) AS n FROM notifications WHERE event_key LIKE 'project-enforcement:%'",
+        )
+        .get(),
+    ).toEqual({ n: 6 });
     expect(await projects.listEnforcements()).toMatchObject([
       {
         action: "ban",

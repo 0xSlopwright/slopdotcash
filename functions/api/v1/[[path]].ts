@@ -390,6 +390,12 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     vetting,
     projects: projectPersistence,
     resultPublicKeys: context.env.VETTING_RESULT_PUBLIC_KEYS,
+    operatorGithubIds: [
+      ...new Set([
+        ...githubIdSet(context.env.ADMIN_GITHUB_IDS),
+        ...githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),
+      ]),
+    ],
     livePin,
     session: async (request) => {
       const actor = await sessionGithubActor(
