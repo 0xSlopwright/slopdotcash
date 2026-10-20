@@ -182,7 +182,19 @@ test("large private evidence downloads with a single-use browser grant @registry
   const file = info.outputPath("retained-overlay.qcow2");
   await downloaded.saveAs(file);
   expect(await downloaded.failure()).toBeNull();
-  expect(digest(await readFile(file))).toBe(sha);
+  const saved = await readFile(file);
+  expect(saved.byteLength).toBe(bytes.byteLength);
+  expect(digest(saved)).toBe(sha);
+  await info.attach("saved-evidence-integrity", {
+    body: JSON.stringify({
+      source: process.env.SLOP_VETTING_OVERLAY_PATH
+        ? "operator-supplied-local-overlay"
+        : "generated-transport-fixture",
+      bytes: saved.byteLength,
+      sha256: digest(saved),
+    }),
+    contentType: "application/json",
+  });
   await expect(item.getByRole("status")).toContainText("Download requested.");
   const cookies = await page.context().cookies();
   expect(
