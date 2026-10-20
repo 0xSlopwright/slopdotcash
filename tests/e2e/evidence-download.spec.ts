@@ -35,7 +35,7 @@ test("large private evidence downloads with a single-use browser grant @registry
       },
       data: body,
     });
-  const repository = `example/open-registry-${suffix}`;
+  const repository = `example/large-evidence-${suffix}`;
   const facts = fixtureRepository(repository);
   const projectManifest = applicationManifest(project, repository);
   const steward = projectManifest.steward as Record<string, unknown>;
