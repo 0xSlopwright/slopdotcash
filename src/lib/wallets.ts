@@ -12,7 +12,12 @@ export const WALLET_CLAIM_REPOSITORY = "SlopDotCash/slopdotcash" as const;
 export const WALLET_CLAIM_TITLE = "Slop wallet claim" as const;
 
 /** Networks a contributor may publish a payout wallet for, one claim each. */
-export const WALLET_CHAINS = ["solana", "base", "robinhood"] as const;
+export const WALLET_CHAINS = [
+  "solana",
+  "base",
+  "robinhood",
+  "ethereum",
+] as const;
 export type WalletChain = (typeof WALLET_CHAINS)[number];
 
 export interface PublishedWallet<Chain extends WalletChain = WalletChain> {
@@ -86,7 +91,7 @@ export function solanaAddressBytes(value: string): Uint8Array {
 }
 
 /**
- * Returns true only for a canonical lowercase 20-byte EVM account (Base or Robinhood Chain). One
+ * Returns true only for a canonical lowercase 20-byte EVM account (Base, Robinhood Chain or Ethereum). One
  * spelling per account keeps record digests and duplicate checks exact, and
  * the zero address is refused because a transfer to it burns the funds.
  */
@@ -167,7 +172,7 @@ export function parsePublishedWallets(
     }
     if (!isWalletChain(marker.chain)) {
       throw new TypeError(
-        "GitHub profile wallet marker must use Solana, Base or Robinhood Chain",
+        "GitHub profile wallet marker must use Solana, Base, Robinhood Chain or Ethereum",
       );
     }
     if (wallets[marker.chain]) {

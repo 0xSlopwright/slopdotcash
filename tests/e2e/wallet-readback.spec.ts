@@ -14,6 +14,7 @@ const addresses = {
   solana: "11111111111111111111111111111111",
   base: "0x1111111111111111111111111111111111111111",
   robinhood: "0x2222222222222222222222222222222222222222",
+  ethereum: "0x3333333333333333333333333333333333333333",
 };
 
 function savedClaim(chain: WalletChain, githubActorId = owner.githubActorId) {
@@ -76,6 +77,9 @@ async function accountFixture(
           : new URL(route.request().url()).pathname,
       ),
     }),
+  );
+  await page.route(`${deployment.site}/api/v1/projects`, (route) =>
+    route.fulfill({ json: { schemaVersion: "1", projects: [] } }),
   );
   await page.route(`${deployment.site}/api/v1/points/**`, async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -142,6 +146,14 @@ test("Account Wallets restores saved registrations by immutable identity after r
   const base = page.getByRole("region", { name: "Current Base registration" });
   await expect(base.getByText(addresses.base, { exact: true })).toBeVisible();
   await expect(current).toHaveCount(0);
+  await page.getByLabel("Payout network").selectOption("ethereum");
+  const ethereum = page.getByRole("region", {
+    name: "Current Ethereum registration",
+  });
+  await expect(
+    ethereum.getByText(addresses.ethereum, { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Ethereum public address")).toBeEmpty();
   await page.getByLabel("Payout network").selectOption("robinhood");
   await expect(
     page.getByText("No Robinhood Chain receiving address registered."),
@@ -174,6 +186,7 @@ test("Account Wallets restores saved registrations by immutable identity after r
     "solana",
     "solana",
     "base",
+    "ethereum",
     "robinhood",
     "solana",
   ]);
