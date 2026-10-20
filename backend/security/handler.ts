@@ -88,6 +88,9 @@ type CaseRow = {
   next_action: string | null;
   next_action_due_at: string | null;
   payment_deadline: string | null;
+  related_party: "not-assessed" | "unrelated" | "related";
+  related_party_review: "not-applicable" | "pending" | "approved" | "refused";
+  related_party_reviewer_github_id: string | null;
   revision: number;
   created_at: string;
   updated_at: string;
@@ -142,6 +145,11 @@ const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,80}$/u;
 const ROOT_CAUSE = /^[a-z0-9][a-z0-9-]{1,78}[a-z0-9]$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+/**
+ * Slop does not read private advisories, so the receipt time is the time a
+ * security maintainer reads on GitHub and enters by hand (SEC-07, SEC-17).
+ */
+const RECEIVED_AT_SOURCE = "maintainer-attested";
 /** A browser that kept an older readiness answer must check again. */
 export const INTAKE_READINESS_TTL_SECONDS = 30;
 
@@ -333,8 +341,13 @@ async function caseRoles(
   terms: SecurityBountyTerms | undefined,
 ): Promise<Set<Role>> {
   const roles = programRoles(terms, actor.githubId);
-  // A dispute reviewer reads only cases with an appeal.
-  if (row.appeal_state === "none") roles.delete("dispute");
+  // A dispute reviewer reads only cases with an appeal or a related-party
+  // award review.
+  if (
+    row.appeal_state === "none" &&
+    row.related_party_review === "not-applicable"
+  )
+    roles.delete("dispute");
   // Finance needs nothing before an award exists.
   if (!["reserved", "capacity-exhausted", "approved"].includes(row.award_state))
     roles.delete("financial");
@@ -367,6 +380,8 @@ const REPORTER_EVENT_KINDS = new Set([
   "approve-award",
   "appeal",
   "decide-appeal",
+  "decide-related-party",
+  "reserve-award",
   "disclosure",
   "recognition",
 ]);
@@ -396,8 +411,23 @@ function allowedActions(row: CaseRow, roles: Set<Role>): string[] {
     row.technical_decider_github_id !== null
   )
     actions.push("approve-award");
+  // Raised capacity can fund a confirmed finding that found none (SEC-06).
+  if (
+    roles.has("financial") &&
+    verified &&
+    row.receipt_state === "confirmed" &&
+    row.award_state === "capacity-exhausted"
+  )
+    actions.push("reserve-award");
   if (roles.has("dispute") && row.appeal_state === "open")
     actions.push("decide-appeal");
+  if (
+    roles.has("dispute") &&
+    row.related_party_review === "pending" &&
+    row.receipt_state === "confirmed" &&
+    row.award_state === "pending"
+  )
+    actions.push("decide-related-party");
   if (roles.has("reporter") && verified) {
     actions.push("recognition");
     if (
@@ -438,9 +468,12 @@ async function caseView(
     allowedActions: allowedActions(row, roles),
     submissionState: row.submission_state,
     receivedAt: row.received_at,
+    receivedAtSource: row.received_at === null ? null : RECEIVED_AT_SOURCE,
     policyRevision: row.policy_revision,
     terms,
     awardState: row.award_state,
+    relatedParty: row.related_party,
+    relatedPartyReview: row.related_party_review,
     paymentState: row.payment_state,
     paymentRail: "unavailable",
     paymentDeadline: row.payment_deadline,
@@ -540,6 +573,7 @@ async function caseView(
     duplicateOf: row.duplicate_of,
     technicalDeciderGithubId: row.technical_decider_github_id,
     appealFromState: row.appeal_from_state,
+    relatedPartyReviewerGithubId: row.related_party_reviewer_github_id,
     ownerGithubId: row.owner_github_id,
     reservation:
       reservation === null
@@ -571,7 +605,7 @@ async function caseView(
 }
 
 const CASE_COLUMNS =
-  "id, project_id, advisory_repository, advisory_ghsa, reporter_github_id, reporter_github_login, submission_state, received_at, verified_at, verified_by_github_id, policy_revision, terms, evidence_digest, receipt_state, remediation_state, award_state, payment_state, disclosure_state, recognition, severity, loss_finding, root_cause_key, duplicate_of, technical_decider_github_id, appeal_state, appeal_from_state, owner_github_id, next_action, next_action_due_at, payment_deadline, revision, created_at, updated_at";
+  "id, project_id, advisory_repository, advisory_ghsa, reporter_github_id, reporter_github_login, submission_state, received_at, verified_at, verified_by_github_id, policy_revision, terms, evidence_digest, receipt_state, remediation_state, award_state, payment_state, disclosure_state, recognition, severity, loss_finding, root_cause_key, duplicate_of, technical_decider_github_id, appeal_state, appeal_from_state, owner_github_id, next_action, next_action_due_at, payment_deadline, related_party, related_party_review, related_party_reviewer_github_id, revision, created_at, updated_at";
 
 async function loadCase(
   deps: SecurityApiDependencies,
@@ -736,12 +770,20 @@ function eventStatement(
         .bind(...values);
 }
 
+/** Case events that can reserve an award in their batch. */
+const RESERVING_KINDS = new Set([
+  "decide",
+  "decide-related-party",
+  "reserve-award",
+]);
+
 /**
  * Inbox rows for one case event (NOT-01, SEC-09): the reporter for every
  * event their own view shows, the security maintainers for a new claim to
- * verify, the dispute reviewers for an appeal, the assigned triager, and the
- * financial approvers when a decision reserved an award. The actor is never
- * notified of their own action.
+ * verify, the dispute reviewers for an appeal or for a decision that leaves
+ * a related-party review pending, the assigned triager, and the financial
+ * approvers when a decision, a related-party approval or `reserve-award`
+ * reserved an award. The actor is never notified of their own action.
  */
 function inboxStatements(
   deps: SecurityApiDependencies,
@@ -773,12 +815,23 @@ function inboxStatements(
   ];
   return [
     notifySecurityCase(deps.db, { ...event, recipients }),
-    ...(input.kind === "decide"
+    ...(RESERVING_KINDS.has(input.kind)
       ? [
           notifySecurityCase(deps.db, {
             ...event,
             recipients: ids("financial"),
             awardState: "reserved",
+          }),
+        ]
+      : []),
+    // After a decision, `pending` means only an eligible related-party award
+    // that waits for its independent review.
+    ...(input.kind === "decide"
+      ? [
+          notifySecurityCase(deps.db, {
+            ...event,
+            recipients: ids("dispute"),
+            awardState: "pending",
           }),
         ]
       : []),
@@ -892,7 +945,13 @@ async function createCase(
         idempotencyKey,
         reason: null,
         evidenceReference: null,
-        detail: { advisory },
+        detail: verified
+          ? {
+              advisory,
+              receivedAt: verified.receivedAt,
+              receivedAtSource: RECEIVED_AT_SOURCE,
+            }
+          : { advisory },
         at,
         guard: false,
       }),
@@ -968,6 +1027,12 @@ type Change = {
   before?: D1Statement[];
   /** Runs after the event; each must be guarded by {@link triagerEvent}. */
   after?: D1Statement[];
+  /**
+   * An extra SQL condition on the case update. When the revision still
+   * matches but this condition fails, the request returns `unmet`.
+   */
+  requireSql?: string;
+  unmet?: { code: string; message: string };
 };
 
 /**
@@ -1037,7 +1102,11 @@ async function planChange(
         role: "security-maintainer",
         reason: null,
         evidenceReference: null,
-        detail: { receivedAt, policyRevision: frozen.revision },
+        detail: {
+          receivedAt,
+          receivedAtSource: RECEIVED_AT_SOURCE,
+          policyRevision: frozen.revision,
+        },
         set: {
           submission_state: "verified",
           received_at: receivedAt,
@@ -1255,7 +1324,10 @@ async function planChange(
       exactKeys(body, [...common, "outcome", "reason"]);
       requireAction(row, roles, action);
       // The independent reviewer never decided the original outcome.
-      if (row.technical_decider_github_id === actor.githubId)
+      if (
+        row.technical_decider_github_id === actor.githubId ||
+        row.related_party_reviewer_github_id === actor.githubId
+      )
         fail(403, "conflicted", "You decided this case; another reviewer must");
       const outcome = choice(body, "outcome", ["uphold", "return"] as const);
       return {
@@ -1279,6 +1351,67 @@ async function planChange(
                     ? "pending"
                     : row.award_state,
               },
+      };
+    }
+    case "decide-related-party": {
+      exactKeys(body, [...common, "outcome", "reason"]);
+      requireAction(row, roles, action);
+      // The reviewer is independent of the technical decision (SEC-12).
+      if (row.technical_decider_github_id === actor.githubId)
+        fail(403, "conflicted", "You decided this case; another reviewer must");
+      const outcome = choice(body, "outcome", ["approve", "refuse"] as const);
+      const reason = textField(body, "reason", 8, 2000);
+      const reviewed = {
+        related_party_review: outcome === "approve" ? "approved" : "refused",
+        related_party_reviewer_github_id: actor.githubId,
+      };
+      if (outcome === "refuse")
+        return {
+          kind: action,
+          role: "dispute",
+          reason,
+          evidenceReference: null,
+          detail: { outcome },
+          set: { ...reviewed, award_state: "ineligible" },
+        };
+      return {
+        kind: action,
+        role: "dispute",
+        reason,
+        evidenceReference: null,
+        detail: { outcome },
+        set: reviewed,
+        ...(await reservationChange(deps, row, at)).change,
+      };
+    }
+    case "reserve-award": {
+      exactKeys(body, [...common, "reason"]);
+      requireAction(row, roles, action);
+      const reason = textField(body, "reason", 8, 2000);
+      const { earlierWaiting, change } = await reservationChange(deps, row, at);
+      if (earlierWaiting)
+        fail(
+          409,
+          "earlier_receipt_waiting",
+          "A report received earlier waits for capacity; reserve that one first",
+        );
+      return {
+        kind: action,
+        role: "financial",
+        reason,
+        evidenceReference: null,
+        detail: {},
+        set: {},
+        ...change,
+        // Without capacity nothing is written; the case stays as it was.
+        awardStateSql: "'reserved'",
+        requireSql:
+          "EXISTS (SELECT 1 FROM security_award_reservations WHERE case_id = security_cases.id)",
+        unmet: {
+          code: "capacity_exhausted",
+          message:
+            "The program has no unreserved capacity. Raise capacity by a project revision first",
+        },
       };
     }
     case "approve-award": {
@@ -1341,6 +1474,7 @@ async function planDecision(
       "inScope",
       "reason",
       "evidenceReference",
+      "relatedParty",
     ],
     ["rootCauseKey", "duplicateOf", "evidenceDigest"],
   );
@@ -1376,6 +1510,18 @@ async function planDecision(
   if (typeof body.inScope !== "boolean")
     fail(400, "invalid_request", "Invalid inScope");
   const inScope = body.inScope;
+  // The decider declares a related party; program approvers and the sponsor
+  // account always are one (SEC-04, SEC-12). Once related, a case stays
+  // related, so a redecision after an appeal cannot skip the review.
+  if (typeof body.relatedParty !== "boolean")
+    fail(400, "invalid_request", "Invalid relatedParty");
+  const program = (await currentProgram(deps, row.project_id))?.manifest
+    .securityBounty;
+  const relatedParty =
+    body.relatedParty ||
+    row.related_party === "related" ||
+    programRoles(program, row.reporter_github_id).size > 0 ||
+    program?.sponsor.githubId === row.reporter_github_id;
   const reason = textField(body, "reason", 8, 2000);
   const evidenceReference = textField(body, "evidenceReference", 3, 500);
   const rootCauseKey =
@@ -1423,13 +1569,17 @@ async function planDecision(
     duplicate_of: duplicateOf,
     evidence_digest: evidenceDigest,
     technical_decider_github_id: actor.githubId,
+    related_party: relatedParty ? "related" : "unrelated",
+    related_party_review: "not-applicable",
+    // The earlier reviewer stays recorded; it cannot decide a later appeal.
+    related_party_reviewer_github_id: row.related_party_reviewer_github_id,
   };
   const change: Change = {
     kind: "decide",
     role: "security-maintainer",
     reason,
     evidenceReference,
-    detail: { outcome, severity, loss, inScope, eligible },
+    detail: { outcome, severity, loss, inScope, eligible, relatedParty },
     set,
   };
   if (terms === null) {
@@ -1440,29 +1590,115 @@ async function planDecision(
     set.award_state = "ineligible";
     return change;
   }
-  // One root cause reserves once; the unique index also stops a race.
+  if (relatedParty) {
+    // Nothing is reserved until an independent reviewer approves it.
+    await assertRootCauseFree(
+      deps,
+      row.project_id,
+      row.id,
+      rootCauseKey as string,
+    );
+    set.award_state = "pending";
+    set.related_party_review = "pending";
+    return change;
+  }
+  return {
+    ...change,
+    ...(
+      await reservationChange(
+        deps,
+        { ...row, root_cause_key: rootCauseKey },
+        at,
+      )
+    ).change,
+  };
+}
+
+/**
+ * Another case of the same project and root cause that waits for its
+ * independent related-party review. It holds the root cause, so a later
+ * report cannot reserve it first (SEC-04, SEC-12). Binds: project id, case
+ * id, root cause key.
+ */
+const ROOT_CAUSE_PENDING_REVIEW =
+  "SELECT 1 FROM security_cases o WHERE o.project_id = ? AND o.id <> ? AND o.root_cause_key = ? AND o.receipt_state = 'confirmed' AND o.award_state = 'pending' AND o.related_party_review = 'pending'";
+
+async function assertRootCauseFree(
+  deps: SecurityApiDependencies,
+  projectId: string,
+  caseId: string,
+  rootCauseKey: string,
+): Promise<void> {
+  // One root cause reserves once; the unique index and the reservation
+  // insert guard also stop a race.
   if (
     (await deps.db
       .prepare(
-        "SELECT 1 AS taken FROM security_award_reservations WHERE project_id = ? AND root_cause_key = ?",
+        `SELECT 1 AS taken FROM security_award_reservations WHERE project_id = ? AND root_cause_key = ? UNION ALL ${ROOT_CAUSE_PENDING_REVIEW} LIMIT 1`,
       )
-      .bind(row.project_id, rootCauseKey)
+      .bind(projectId, rootCauseKey, projectId, caseId, rootCauseKey)
       .first<{ taken: number }>()) !== null
   )
     fail(
       409,
       "root_cause_reserved",
-      "This root cause already reserved an award; record a duplicate instead",
+      "This root cause already holds an award or a pending review; record a duplicate instead",
     );
-  // Capacity comes from the current program revision; an exhausted program
-  // keeps the confirmed finding and records a financial exception.
+}
+
+/**
+ * A confirmed case received before the given one that waits for capacity or
+ * for its independent related-party review, and whose root cause holds no
+ * reservation. Binds: project id, case id, received at, received at, case id.
+ */
+const EARLIER_RECEIPT_WAITING =
+  "SELECT 1 FROM security_cases c WHERE c.project_id = ? AND c.id <> ? AND (c.award_state = 'capacity-exhausted' OR (c.award_state = 'pending' AND c.related_party_review = 'pending')) AND c.receipt_state = 'confirmed' AND (c.received_at < ? OR (c.received_at = ? AND c.id < ?)) AND NOT EXISTS (SELECT 1 FROM security_award_reservations r WHERE r.project_id = c.project_id AND r.root_cause_key = c.root_cause_key)";
+
+/**
+ * Reserves the case's frozen gross amount for its root cause when the current
+ * program revision still has capacity, in the same batch as the revision-
+ * checked case update. Every reserving path (decide, related-party approval,
+ * reserve-award) uses it. Capacity goes to the earliest receipt first: while
+ * an earlier confirmed case waits for capacity, nothing is reserved, so the
+ * order of requests never chooses who is funded (SEC-04, SEC-06). Without a
+ * reservation the award is `capacity-exhausted`; the finding stays confirmed
+ * (SEC-06, SEC-10). `earlierWaiting` reports the ordering state at read time
+ * for a clear refusal; the insert guard decides it again in the batch.
+ */
+async function reservationChange(
+  deps: SecurityApiDependencies,
+  row: CaseRow,
+  at: string,
+): Promise<{
+  earlierWaiting: boolean;
+  change: Pick<Change, "before" | "awardStateSql">;
+}> {
+  const terms = frozenTerms(row);
+  const rootCauseKey = row.root_cause_key;
+  if (terms === null || rootCauseKey === null)
+    fail(409, "action_not_allowed", "The case has no paid terms to reserve");
+  await assertRootCauseFree(deps, row.project_id, row.id, rootCauseKey);
+  // Capacity comes from the current program revision, so an owner can raise
+  // it by revision; the frozen terms keep the receipt-time amount.
   const program = await currentProgram(deps, row.project_id);
   const capacity =
     program?.manifest.securityBounty?.capacity.awards ?? terms.capacityAwards;
-  change.before = [
+  const order = [
+    row.project_id,
+    row.id,
+    row.received_at,
+    row.received_at,
+    row.id,
+  ];
+  const earlierWaiting =
+    (await deps.db
+      .prepare(`${EARLIER_RECEIPT_WAITING} LIMIT 1`)
+      .bind(...order)
+      .first()) !== null;
+  const before = [
     deps.db
       .prepare(
-        "INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM security_award_reservations WHERE project_id = ?) < ? AND (SELECT revision FROM security_cases WHERE id = ?) = ?",
+        `INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT COUNT(*) FROM security_award_reservations WHERE project_id = ?) < ? AND (SELECT revision FROM security_cases WHERE id = ?) = ? AND NOT EXISTS (${EARLIER_RECEIPT_WAITING}) AND NOT EXISTS (${ROOT_CAUSE_PENDING_REVIEW})`,
       )
       .bind(
         row.id,
@@ -1476,11 +1712,20 @@ async function planDecision(
         capacity,
         row.id,
         row.revision,
+        ...order,
+        row.project_id,
+        row.id,
+        rootCauseKey,
       ),
   ];
-  change.awardStateSql =
-    "CASE WHEN EXISTS (SELECT 1 FROM security_award_reservations WHERE case_id = security_cases.id) THEN 'reserved' ELSE 'capacity-exhausted' END";
-  return change;
+  return {
+    earlierWaiting,
+    change: {
+      before,
+      awardStateSql:
+        "CASE WHEN EXISTS (SELECT 1 FROM security_award_reservations WHERE case_id = security_cases.id) THEN 'reserved' ELSE 'capacity-exhausted' END",
+    },
+  };
 }
 
 async function actOnCase(
@@ -1548,7 +1793,9 @@ async function actOnCase(
   ];
   const update = deps.db
     .prepare(
-      `UPDATE security_cases SET ${assignments.join(", ")} WHERE id = ? AND revision = ?`,
+      `UPDATE security_cases SET ${assignments.join(", ")} WHERE id = ? AND revision = ?${
+        change.requireSql ? ` AND ${change.requireSql}` : ""
+      }`,
     )
     .bind(
       ...columns.map((column) => change.set[column]),
@@ -1607,8 +1854,12 @@ async function actOnCase(
     throw error;
   }
   const updateResult = results[(change.before ?? []).length];
-  if ((updateResult?.meta?.changes ?? 0) !== 1)
+  if ((updateResult?.meta?.changes ?? 0) !== 1) {
+    const current = await loadCase(deps, row.id);
+    if (change.unmet && current?.revision === row.revision)
+      fail(409, change.unmet.code, change.unmet.message);
     fail(409, "stale_revision", "The case changed since you loaded it");
+  }
   const updated = (await loadCase(deps, row.id)) as CaseRow;
   const nextRoles = await caseRoles(
     deps,

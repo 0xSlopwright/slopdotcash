@@ -279,6 +279,7 @@ const decision = (overrides: Record<string, unknown> = {}) => ({
   severity: "critical",
   loss: "verified-potential",
   inScope: true,
+  relatedParty: false,
   rootCauseKey: "vault-share-rounding",
   evidenceReference: "private-advisory-comment-1",
   evidenceDigest: DIGEST,
@@ -869,6 +870,244 @@ test("private security bounty programs keep cases restricted from intake to awar
         awardState: expected,
       });
     }
+  });
+
+  await test.step("raised capacity reserves an exhausted award, earliest receipt first", async () => {
+    const cases = (
+      (await api(request, "GET", "security-cases", TOKENS.finance)).body
+        .cases as { id: string; projectId: string; awardState: string }[]
+    ).filter(
+      (entry) =>
+        entry.projectId === a.id && entry.awardState === "capacity-exhausted",
+    );
+    expect(cases).toHaveLength(1);
+    const third = cases[0].id;
+    // A later valid finding also waits for capacity.
+    const fourth = await recordCase(
+      request,
+      a.id,
+      "GHSA-7c8f-9g2h-4j5m",
+      "reporter-b",
+      new Date(Date.now() - 1000).toISOString(),
+    );
+    expect(
+      (
+        await act(
+          request,
+          "security",
+          fourth,
+          "decide",
+          decision({ rootCauseKey: "bridge-replay" }),
+        )
+      ).body.case,
+    ).toMatchObject({ awardState: "capacity-exhausted" });
+    const reserve = (id: string) =>
+      act(request, "finance", id, "reserve-award", {
+        reason: "Capacity raised by revision; published exhaustion rule.",
+      });
+    // Without new capacity nothing changes and no event is written.
+    const refused = await reserve(third);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe("capacity_exhausted");
+    // The technical maintainer cannot reserve money.
+    expect(
+      (
+        await act(request, "security", third, "reserve-award", {
+          reason: "Capacity raised by revision; published exhaustion rule.",
+        })
+      ).status,
+    ).toBe(409);
+    const raised = await revise(request, a.id, (m) => ({
+      ...m,
+      securityBounty: {
+        ...(m.securityBounty as Record<string, unknown>),
+        capacity: {
+          ...((m.securityBounty as Record<string, unknown>).capacity as object),
+          awards: 2,
+        },
+      },
+    }));
+    expect(raised.status).toBe(200);
+    // A later decision cannot take the slot the earlier receipt waits for.
+    const fifth = await recordCase(
+      request,
+      a.id,
+      "GHSA-8c9f-2g3h-5j6m",
+      "reporter-b",
+      new Date(Date.now() - 500).toISOString(),
+    );
+    expect(
+      (
+        await act(
+          request,
+          "security",
+          fifth,
+          "decide",
+          decision({ rootCauseKey: "price-feed-replay" }),
+        )
+      ).body.case,
+    ).toMatchObject({ awardState: "capacity-exhausted", reservation: null });
+    // The earlier receipt is funded first, whatever the request order.
+    expect((await reserve(fourth)).body.error).toBe("earlier_receipt_waiting");
+    expect((await reserve(fifth)).body.error).toBe("earlier_receipt_waiting");
+    const reserved = await reserve(third);
+    expect(reserved.status, JSON.stringify(reserved.body)).toBe(200);
+    expect(reserved.body.case).toMatchObject({
+      awardState: "reserved",
+      receivedAtSource: "maintainer-attested",
+      reservation: { grossMinor: "1000000", policyRevision: 2 },
+      allowedActions: ["approve-award"],
+    });
+    // Capacity 2 is now used; the later findings still wait in receipt order.
+    expect((await reserve(fourth)).body.error).toBe("capacity_exhausted");
+    expect((await reserve(fifth)).body.error).toBe("earlier_receipt_waiting");
+    const history = await api(
+      request,
+      "GET",
+      `security-cases/${third}`,
+      TOKENS["reporter-a"],
+    );
+    expect(
+      (history.body.case as { events: { kind: string }[] }).events.map(
+        (event) => event.kind,
+      ),
+    ).toEqual(["record", "decide", "reserve-award"]);
+  });
+
+  await test.step("a related-party award needs an independent reviewer", async () => {
+    // Declared by the technical decider.
+    const declared = await recordCase(
+      request,
+      b.id,
+      "GHSA-8c9f-2g3h-4j5m",
+      "reporter-b",
+      new Date(Date.now() - 1000).toISOString(),
+      "security-b",
+    );
+    const pending = await act(
+      request,
+      "security-b",
+      declared,
+      "decide",
+      decision({ rootCauseKey: "related-declared", relatedParty: true }),
+    );
+    expect(pending.body.case).toMatchObject({
+      receiptState: "confirmed",
+      awardState: "pending",
+      relatedParty: "related",
+      relatedPartyReview: "pending",
+      reservation: null,
+    });
+    // Finance sees nothing before an award is reserved.
+    expect(
+      (await api(request, "GET", `security-cases/${declared}`, TOKENS.finance))
+        .status,
+    ).toBe(404);
+    // The technical decider cannot review its own related-party case.
+    expect(
+      (
+        await act(request, "security-b", declared, "decide-related-party", {
+          outcome: "approve",
+          reason: "Approved after independent review.",
+        })
+      ).status,
+    ).toBe(409);
+    // A program approver as reporter is always a related party.
+    const approverReport = await recordCase(
+      request,
+      b.id,
+      "GHSA-9c2f-3g4h-5j6m",
+      "finance",
+      new Date(Date.now() - 1000).toISOString(),
+      "security-b",
+    );
+    const automatic = await act(
+      request,
+      "security-b",
+      approverReport,
+      "decide",
+      decision({ rootCauseKey: "related-approver" }),
+    );
+    expect(automatic.body.case).toMatchObject({
+      relatedParty: "related",
+      relatedPartyReview: "pending",
+      awardState: "pending",
+    });
+
+    // The dispute reviewer approves in the real UI.
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const errors = observe(page);
+    await signIn(page, TOKENS.dispute);
+    await page.goto("/security", { waitUntil: "networkidle" });
+    await page
+      .getByRole("button", {
+        name: new RegExp(`${b.id} · GHSA-8c9f-2g3h-4j5m`, "u"),
+      })
+      .click();
+    const detail = page.locator(".security-case");
+    await expect(detail).toContainText("Waiting for an independent reviewer");
+    await expect(detail).toContainText(
+      "entered by a security maintainer from GitHub, not read from GitHub by Slop",
+    );
+    const form = detail.getByRole("form", {
+      name: "Related-party award review",
+    });
+    await form.getByLabel("Outcome").selectOption("approve");
+    await form
+      .getByLabel("Private reason")
+      .fill("The reporter has no control over the payer or the decision.");
+    await form.getByRole("button", { name: "Record review" }).click();
+    await expect(detail.getByRole("status")).toContainText(
+      "Related-party award review: saved.",
+    );
+    await expect(detail).toContainText("Approved by an independent reviewer");
+    await expectAccessible(page);
+    await page.screenshot({
+      path: test.info().outputPath("related-party-review.png"),
+      fullPage: true,
+    });
+    expect(errors).toEqual([]);
+    await context.close();
+    expect(
+      (await api(request, "GET", `security-cases/${declared}`, TOKENS.finance))
+        .body.case,
+    ).toMatchObject({
+      awardState: "reserved",
+      relatedPartyReview: "approved",
+      allowedActions: ["approve-award"],
+    });
+
+    // A refusal makes the award ineligible; the refuser cannot hear the appeal.
+    const refused = await act(
+      request,
+      "dispute",
+      approverReport,
+      "decide-related-party",
+      {
+        outcome: "refuse",
+        reason: "The approver controls payment for this program.",
+      },
+    );
+    expect(refused.body.case).toMatchObject({
+      awardState: "ineligible",
+      relatedPartyReview: "refused",
+    });
+    expect(
+      (
+        await act(request, "finance", approverReport, "appeal", {
+          reason: "I had no part in the decision or the payment for this case.",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await act(request, "dispute", approverReport, "decide-appeal", {
+          outcome: "uphold",
+          reason: "The refusal stands.",
+        })
+      ).status,
+    ).toBe(403);
   });
 
   await test.step("appeal goes to an independent reviewer", async () => {
