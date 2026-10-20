@@ -31,7 +31,15 @@ An escrow cycle directory holds only these files:
   proposal and decisions digests.
 
 `bun run rewards:plan-escrow` produces unsigned owner requests from a
-review-complete proposal. The escrow contract enforces reserved awards, the 2%
+review-complete proposal. Run `projects:sync` first. The planner checks that
+its local policy matches both the live D1 project and the exact immutable
+revision bytes. It records the revision URL, number, and digest in
+`currentDeploymentPublication`. A changed or unavailable registry record stops
+the plan. The financial policy must still match the reviewed cycle archive.
+Proposal, decision, and separate approval records require exact-byte merged
+PR evidence on `development`; the existing review period still applies.
+
+The escrow contract enforces reserved awards, the 2%
 fee, and exact-once payment. No command in this repository reads a private key,
 signs, or broadcasts.
 
