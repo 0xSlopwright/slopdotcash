@@ -1,3 +1,4 @@
+import { startNotifyWorkerFixture } from "../tests/notify-worker-fixture.mjs";
 /**
  * Runs the complete browser matrix against the stable built-site preview and,
  * at the same time, checks redirects, artifacts, and contributor API access
@@ -178,6 +179,11 @@ async function runRegistryPhase() {
   const database = prepareRegistryDatabase();
   const githubPort = basePort + 3;
   const github = await startGitHubApiFixture(githubPort);
+  const notify = await startNotifyWorkerFixture(
+    packageRoot,
+    database.persistTo,
+    basePort + 4,
+  );
   try {
     return await runPhase(
       "registry",
@@ -188,10 +194,12 @@ async function runRegistryPhase() {
         ...database.env,
         SLOP_E2E_GITHUB_API_ORIGIN: `http://127.0.0.1:${githubPort}`,
         SLOP_E2E_OUTPUT: "registry",
+        SLOP_E2E_NOTIFY_SERVICE: notify.name,
       },
     );
   } finally {
     github.close();
+    notify.close();
     rmSync(database.persistTo, { force: true, recursive: true });
   }
 }

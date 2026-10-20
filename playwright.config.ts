@@ -24,6 +24,12 @@ const requestedWorkers = process.env.SLOP_E2E_WORKERS;
 
 // The registry lane gives Pages a fresh local D1, test-only admins and
 // test-only project moderators.
+const registryNotify = process.env.SLOP_E2E_NOTIFY_SERVICE;
+if (
+  registryNotify !== undefined &&
+  !/^slop-notify-e2e-[0-9]{4,5}$/u.test(registryNotify)
+)
+  throw new Error("Invalid local notification Worker name");
 const registryPersistTo = process.env.SLOP_E2E_PERSIST_TO;
 const registryAdmins = process.env.SLOP_E2E_ADMIN_GITHUB_IDS;
 const registryModerators = process.env.SLOP_E2E_MODERATOR_GITHUB_IDS;
@@ -60,7 +66,7 @@ const registryArguments = registryPersistTo
       registryVettingKey
         ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey}`
         : ""
-    }`
+    }${registryNotify ? ` --service SLOP_NOTIFY=${registryNotify}` : ""}`
   : "";
 const outputName = process.env.SLOP_E2E_OUTPUT ?? localServer;
 
@@ -129,8 +135,26 @@ export default defineConfig({
         stderr: "pipe",
       },
   projects: [
+    // Observed no-store stream EOF + ERR_ABORTED matches this Chromium report:
+    // https://github.com/microsoft/playwright/issues/42742
+    // Keep the bounded private reader and strict failure assertions. Exercise
+    // the new email workflow in Firefox; existing Chromium coverage is unchanged.
+    ...[
+      ["wide-desktop", 1440, 1000],
+      ["desktop", 1024, 768],
+      ["tablet", 768, 1024],
+      ["narrow-mobile", 320, 800],
+    ].map(([name, width, height]) => ({
+      name: `${name}-email-firefox`,
+      testMatch: "**/email-preferences.spec.ts",
+      use: {
+        ...devices["Desktop Firefox"],
+        viewport: { width: Number(width), height: Number(height) },
+      },
+    })),
     {
       name: "wide-desktop-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 1440, height: 1000 },
@@ -138,6 +162,7 @@ export default defineConfig({
     },
     {
       name: "desktop-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 1024, height: 768 },
@@ -145,6 +170,7 @@ export default defineConfig({
     },
     {
       name: "tablet-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 768, height: 1024 },
@@ -152,6 +178,7 @@ export default defineConfig({
     },
     {
       name: "narrow-mobile-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 320, height: 800 },

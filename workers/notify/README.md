@@ -172,3 +172,43 @@ quota, actual receipt, bounce/suppression, ambiguity recovery, backup escalation
 and environment isolation. Local tests substitute the transport and do not
 prove provider acceptance or inbox delivery. This code neither activates a
 bounty nor selects a private payment rail.
+
+## Optional activity email (NOT-01)
+
+The activity pilot is separate from the private bounty pilot. Its
+`ACTIVITY_MAIL_PILOT` secret contains the same `inboxUrl` and actor-keyed
+`recipients` shape, but each recipient has only `email`, `verifiedAt` and
+`evidenceReference`. The operator must verify account control and Cloudflare
+recipient eligibility; public GitHub email is not proof. No browser route
+accepts or changes an address. These private settings still need an explicit
+protected release inventory, isolated database and provider qualification.
+
+`GET /api/v1/notifications/email` reads the signed-in person's current
+eligibility from the private Worker. The inbox shows the verified address
+before consent. `POST` with `enabled: true` and its `destinationVersion`
+records explicit consent to that exact verified destination. A change requires
+fresh consent. `POST` with only `enabled: false` withdraws consent even during
+a mail-service outage and suppresses queued activity mail. No old inbox history
+is mailed after opt-in. A send already in flight cannot be recalled.
+
+Migration 0033 queues each new ordinary event atomically only for an enabled
+preference. Before dispatch, the Worker checks both the saved preference and
+its destination version again. Wallet-change account-security notices use a
+separate essential flag and require a verified destination, but do not use
+the optional activity preference. Private bounty notices remain in their own
+SEC-16 queue and are unaffected by this switch.
+
+All activity messages are generic and link to `/inbox`. They contain no
+wallet address, amount, project, event identifier or case data. The scheduled
+handler dispatches both queues independently. The private service routes under
+`/v1/activity-notifications/dispatch` and `/reconcile` use the same empty drain
+request and exact-attempt provider-evidence contract as the security path.
+`/eligibility` accepts only a server-derived GitHub actor ID and returns that
+actor's verified destination to the authenticated preference API. Do not proxy
+these internal routes to a public client.
+
+Provider acceptance remains separate from delivery. Exceptions remain
+ambiguous. Independent negative evidence can authorize a retry, up to five
+attempts. The private outbox and append-only evidence table retain exhausted,
+suppressed, bounced and ambiguous outcomes for operators. No mail result
+reverses a source notification, award or wallet change.
