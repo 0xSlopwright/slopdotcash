@@ -200,9 +200,43 @@ test("large private evidence downloads with a single-use browser grant @registry
   expect(
     cookies.some((cookie) => cookie.name === "__Secure-vetting-read-grant"),
   ).toBe(false);
-  await page.evaluate(() => {
-    document.documentElement.style.zoom = "2";
-  });
+  // Keep mobile reflow at the existing 320 CSS-pixel minimum. Use the
+  // repository's 200% text enlargement check there, and CSS zoom elsewhere.
+  const mobile = (page.viewportSize()?.width ?? 0) < 640;
+  const originalTypography = mobile
+    ? await page.evaluate(() => {
+        const items = [...document.querySelectorAll<HTMLElement>("body *")]
+          .filter((element) => element instanceof HTMLElement)
+          .map((element, index) => ({
+            element,
+            index,
+            inlineFont: element.style.fontSize,
+            inlineLine: element.style.lineHeight,
+            font: getComputedStyle(element).fontSize,
+            line: getComputedStyle(element).lineHeight,
+          }));
+        for (const { element, font, line } of items) {
+          element.style.fontSize = `${Number.parseFloat(font) * 2}px`;
+          if (line !== "normal")
+            element.style.lineHeight = `${Number.parseFloat(line) * 2}px`;
+        }
+        return items.map(({ index, inlineFont, inlineLine }) => ({
+          index,
+          inlineFont,
+          inlineLine,
+        }));
+      })
+    : [];
+  if (!mobile)
+    await page.evaluate(() => {
+      document.documentElement.style.zoom = "2";
+    });
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth + 1,
@@ -217,15 +251,35 @@ test("large private evidence downloads with a single-use browser grant @registry
   ).toEqual([]);
   await page.screenshot({
     path: info.outputPath("large-evidence-zoom.png"),
-    fullPage: true,
+    fullPage: false,
   });
   await page.evaluate(() => {
     document.documentElement.style.zoom = "1";
     scrollTo(0, 0);
   });
+  await page.evaluate((original) => {
+    const elements = [
+      ...document.querySelectorAll<HTMLElement>("body *"),
+    ].filter((element) => element instanceof HTMLElement);
+    for (const { index, inlineFont, inlineLine } of original) {
+      elements[index].style.fontSize = inlineFont;
+      elements[index].style.lineHeight = inlineLine;
+    }
+  }, originalTypography);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth + 1,
+    ),
+  ).toBe(true);
   await page.screenshot({
     path: info.outputPath("large-evidence.png"),
-    fullPage: true,
+    fullPage: false,
   });
   expect(errors).toEqual([]);
   expect(failures).toEqual([]);
