@@ -24,6 +24,12 @@ const requestedWorkers = process.env.SLOP_E2E_WORKERS;
 
 // The registry lane gives Pages a fresh local D1, test-only admins and
 // test-only project moderators.
+const registryNotify = process.env.SLOP_E2E_NOTIFY_SERVICE;
+if (
+  registryNotify !== undefined &&
+  !/^slop-notify-e2e-[0-9]{4,5}$/u.test(registryNotify)
+)
+  throw new Error("Invalid local notification Worker name");
 const registryPersistTo = process.env.SLOP_E2E_PERSIST_TO;
 const registryAdmins = process.env.SLOP_E2E_ADMIN_GITHUB_IDS;
 const registryModerators = process.env.SLOP_E2E_MODERATOR_GITHUB_IDS;
@@ -60,7 +66,7 @@ const registryArguments = registryPersistTo
       registryVettingKey
         ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey}`
         : ""
-    }`
+    }${registryNotify ? ` --service SLOP_NOTIFY=${registryNotify}` : ""}`
   : "";
 const outputName = process.env.SLOP_E2E_OUTPUT ?? localServer;
 

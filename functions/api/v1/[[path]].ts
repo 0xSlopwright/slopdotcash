@@ -3,6 +3,10 @@ import {
   handleFeeConversionsApi,
 } from "../../../backend/fee-conversions/handler";
 import {
+  handleEmailPreferences,
+  verifiedEmailEligibility,
+} from "../../../backend/notifications/email";
+import {
   handleNotificationsApi,
   type NotificationsDependencies,
 } from "../../../backend/notifications/handler";
@@ -412,6 +416,22 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     },
   );
   if (feeConversionsResponse !== null) return feeConversionsResponse;
+  const emailPreferencesResponse = await handleEmailPreferences(
+    context.request,
+    {
+      db: context.env.SLOP_DB,
+      sessionActor: (request) =>
+        sessionGithubActor(
+          request,
+          context.env.SLOP_DB,
+          new Date().toISOString(),
+        ),
+      now: () => new Date(),
+      eligibility: (githubId) =>
+        verifiedEmailEligibility(context.env.SLOP_NOTIFY, githubId),
+    },
+  );
+  if (emailPreferencesResponse !== null) return emailPreferencesResponse;
   const notificationsResponse = await handleNotificationsApi(context.request, {
     db: context.env.SLOP_DB,
     sessionActor: (request) =>

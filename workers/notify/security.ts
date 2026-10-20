@@ -100,28 +100,29 @@ export function parseSecurityMailConfig(
   }
 }
 
-async function record(
-  deps: SecurityMailDependencies,
-  row: Delivery,
+export async function recordDelivery(
+  deps: Pick<SecurityMailDependencies, "db" | "now">,
+  row: Pick<Delivery, "id" | "attempts">,
   state: string,
   evidence: string | null = null,
+  channel: "security" | "activity" = "security",
 ) {
   const at = deps.now().toISOString();
   await deps.db.batch([
     deps.db
       .prepare(
-        "UPDATE security_notification_outbox SET state = ?, updated_at = ? WHERE id = ? AND state = 'sending' AND attempts = ?",
+        `UPDATE ${channel}_notification_outbox SET state = ?, updated_at = ? WHERE id = ? AND state = 'sending' AND attempts = ?`,
       )
       .bind(state, at, row.id, row.attempts + 1),
     deps.db
       .prepare(
-        "INSERT INTO security_notification_delivery_events(delivery_id, state, evidence_reference, at, attempt, destination_digest) SELECT id, ?, ?, ?, attempts, destination_digest FROM security_notification_outbox WHERE id = ? AND state = ? AND attempts = ? AND updated_at = ?",
+        `INSERT INTO ${channel}_notification_delivery_events(delivery_id, state, evidence_reference, at, attempt, destination_digest) SELECT id, ?, ?, ?, attempts, destination_digest FROM ${channel}_notification_outbox WHERE id = ? AND state = ? AND attempts = ? AND updated_at = ?`,
       )
       .bind(state, evidence, at, row.id, state, row.attempts + 1, at),
   ]);
 }
 
-export async function destinationDigest(value: Destination): Promise<string> {
+export async function destinationDigest(value: object): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify(value));
   return Array.from(
     new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
@@ -209,7 +210,7 @@ export async function dispatchSecurityMail(
       row.recipient_github_id,
     );
     if (!access.allowed) {
-      await record(deps, row, "suppressed");
+      await recordDelivery(deps, row, "suppressed");
       continue;
     }
     const destination = deps.config.recipients[row.recipient_github_id];
@@ -227,7 +228,7 @@ export async function dispatchSecurityMail(
           row.id,
         )
         .run();
-      await record(deps, row, state);
+      await recordDelivery(deps, row, state);
       if (state === "exhausted") await escalate(deps, row);
       continue;
     }
@@ -245,11 +246,11 @@ export async function dispatchSecurityMail(
       );
     } catch {
       // The binding has no definitive non-acceptance receipt. A thrown send is ambiguous.
-      await record(deps, row, "ambiguous");
+      await recordDelivery(deps, row, "ambiguous");
       await escalate(deps, row);
       continue;
     }
-    await record(deps, row, "provider-accepted");
+    await recordDelivery(deps, row, "provider-accepted");
   }
   const waiting = await deps.db
     .prepare(`SELECT * FROM security_notification_outbox
@@ -281,8 +282,9 @@ export async function dispatchSecurityMail(
 
 /** Separate operator path: independent provider evidence, never email text or an open pixel. */
 export async function reconcileSecurityMail(
-  deps: SecurityMailDependencies,
+  deps: Pick<SecurityMailDependencies, "db" | "now">,
   body: Record<string, unknown>,
+  channel: "security" | "activity" = "security",
 ): Promise<boolean> {
   if (
     Object.keys(body).sort().join() !==
@@ -310,7 +312,7 @@ export async function reconcileSecurityMail(
   )
     return false;
   const row = await deps.db
-    .prepare("SELECT * FROM security_notification_outbox WHERE id = ?")
+    .prepare(`SELECT * FROM ${channel}_notification_outbox WHERE id = ?`)
     .bind(deliveryId)
     .first<Delivery>();
   if (
@@ -329,9 +331,9 @@ export async function reconcileSecurityMail(
   const at = deps.now().toISOString();
   const results = await deps.db.batch([
     deps.db
-      .prepare(`UPDATE security_notification_outbox SET state = ?, updated_at = ?, next_attempt_at = ?, provider_reference = ?
+      .prepare(`UPDATE ${channel}_notification_outbox SET state = ?, updated_at = ?, next_attempt_at = ?, provider_reference = ?
       WHERE id = ? AND state = ? AND attempts = ? AND destination_digest = ?
-      AND NOT EXISTS (SELECT 1 FROM security_notification_delivery_events WHERE evidence_reference = ?)`)
+      AND NOT EXISTS (SELECT 1 FROM ${channel}_notification_delivery_events WHERE evidence_reference = ?)`)
       .bind(
         next,
         at,
@@ -344,10 +346,10 @@ export async function reconcileSecurityMail(
         evidenceReference,
       ),
     deps.db
-      .prepare(`INSERT INTO security_notification_delivery_events(delivery_id, state, evidence_reference, at, attempt, destination_digest)
-      SELECT id, ?, ?, ?, attempts, destination_digest FROM security_notification_outbox
+      .prepare(`INSERT INTO ${channel}_notification_delivery_events(delivery_id, state, evidence_reference, at, attempt, destination_digest)
+      SELECT id, ?, ?, ?, attempts, destination_digest FROM ${channel}_notification_outbox
       WHERE id = ? AND state = ? AND updated_at = ? AND attempts = ? AND destination_digest = ? AND provider_reference = ?
-      AND NOT EXISTS (SELECT 1 FROM security_notification_delivery_events WHERE evidence_reference = ?)`)
+      AND NOT EXISTS (SELECT 1 FROM ${channel}_notification_delivery_events WHERE evidence_reference = ?)`)
       .bind(
         next,
         evidenceReference,
