@@ -135,7 +135,7 @@ export default defineConfig({
         stderr: "pipe",
       },
   projects: [
-    // Chromium 151 reports ERR_ABORTED after a no-store stream reaches EOF:
+    // Observed no-store stream EOF + ERR_ABORTED matches this Chromium report:
     // https://github.com/microsoft/playwright/issues/42742
     // Keep the bounded private reader and strict failure assertions. Exercise
     // the new email workflow in Firefox; existing Chromium coverage is unchanged.
