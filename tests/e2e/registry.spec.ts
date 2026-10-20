@@ -726,8 +726,44 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
   expect((await request.get(`/projects/${project.id}/SKILL.md`)).status()).toBe(
     200,
   );
+  // The independent moderator was asked to review the appeal in the inbox.
+  await moderator.goto("/inbox", { waitUntil: "networkidle" });
+  const review = moderator.locator(".inbox-item", {
+    hasText: `A reinstatement request for ${project.id} needs your independent review.`,
+  });
+  await expect(review).toHaveCount(1);
+  await expect(
+    review.getByRole("link", { name: "Open admin" }),
+  ).toHaveAttribute("href", "/admin");
+  await expectAccessible(moderator);
   expect(moderatorErrors).toEqual([]);
   await moderatorContext.close();
+
+  // The applicant who listed the project sees each enforcement record once,
+  // without the private reason or evidence reference.
+  const applicantContext = await browser.newContext();
+  const applicant = await applicantContext.newPage();
+  const applicantErrors = observe(applicant);
+  await signIn(applicant, APPLICANT_TOKEN);
+  await applicant.goto("/inbox", { waitUntil: "networkidle" });
+  for (const title of [
+    `The ${project.id} project is quarantined.`,
+    `The ${project.id} project is banned.`,
+    `A reinstatement request for ${project.id} is open for independent review.`,
+    `The ${project.id} project is reinstated.`,
+  ])
+    await expect(
+      applicant.locator(".inbox-item", { hasText: title }),
+    ).toHaveCount(1);
+  await expect(applicant.locator("main")).not.toContainText("malware");
+  await expect(applicant.locator("main")).not.toContainText(evidence);
+  // Only moderators are asked to decide the appeal.
+  await expect(applicant.locator("main")).not.toContainText(
+    "needs your independent review",
+  );
+  await expectAccessible(applicant);
+  expect(applicantErrors).toEqual([]);
+  await applicantContext.close();
 });
 
 test("an unavailable registry shows an error, never an empty list @registry", async ({

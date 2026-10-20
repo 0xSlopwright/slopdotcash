@@ -65,6 +65,7 @@ beforeEach(() => {
     "0023_project_enforcements.sql",
     "0024_notifications.sql",
     "0027_project_enforcement_owner_appeals.sql",
+    "0029_notification_event_kinds.sql",
   ]);
   sqlite = database.sqlite;
   persistence = new CloudflareProjectPersistence(database.db);
@@ -325,31 +326,6 @@ describe("project registry API", () => {
       githubCheck: "Proven: @e2e-applicant owns example/open-registry",
       status: "pending",
     });
-  });
-
-  test("limits one account to five submissions a day", async () => {
-    for (let index = 0; index < 5; index += 1) {
-      const response = await call("POST", "project-applications", "applicant", {
-        manifest: applicationManifest(
-          `daily-${index}`,
-          `example/daily-${index}`,
-        ),
-      });
-      expect(response.status).toBe(201);
-      // Rejections keep the pending queue small; the daily count stays.
-      const { application } = await response.json();
-      await call(
-        "POST",
-        `admin/project-applications/${application.id}/reject`,
-        "admin",
-        { reason: "Test rejection" },
-      );
-    }
-    const sixth = await call("POST", "project-applications", "applicant", {
-      manifest: applicationManifest("daily-5", "example/daily-5"),
-    });
-    expect(sixth.status).toBe(429);
-    expect((await sixth.json()).error).toBe("too_many_submissions");
   });
 
   test("serves the exact approved bytes of a revision", async () => {

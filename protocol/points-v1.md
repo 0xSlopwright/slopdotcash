@@ -73,9 +73,9 @@ existing deployment database. This avoids a new credential or provisioning
 boundary; the points handler never constructs trace persistence or reads trace
 records. Journal rows reject updates/deletions and branching successors. A batch
 is publishable only when its full revision count reconciles. Trusted Actions
-checkpoints the tested journal into D1 during protected code releases under the
-existing publication lock. Pages-only scheduled refreshes retain the complete
-previous published shard journal. Every online build verifies that the published
+checkpoints the tested journal into D1 during every protected production
+release, including the scheduled ones, under the existing publication lock.
+Every online build verifies that the published
 journal and D1 checkpoint share the exact same history prefix, then retains the
 longer journal; divergent or unavailable history blocks publication. Public journal
 reads are bounded, paginated and pinned to one completed batch. A failed import

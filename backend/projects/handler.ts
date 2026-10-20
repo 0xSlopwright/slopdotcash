@@ -18,7 +18,6 @@ import {
   type EnforcementAction,
   type EnforcementActorRole,
   type GithubActor,
-  MAX_DAILY_SUBMISSIONS_PER_APPLICANT,
   MAX_PENDING_APPLICATIONS_PER_APPLICANT,
   PROJECT_API_CONTRACT_VERSION,
   type ProjectApplication,
@@ -466,19 +465,6 @@ async function submitApplication(
       429,
       "too_many_pending",
       `You already have ${MAX_PENDING_APPLICATIONS_PER_APPLICANT} applications awaiting review`,
-    );
-  }
-  const dayAgo = new Date(deps.now().getTime() - 24 * 60 * 60 * 1000);
-  if (
-    (await deps.persistence.countApplicationsSince(
-      session.githubId,
-      dayAgo.toISOString(),
-    )) >= MAX_DAILY_SUBMISSIONS_PER_APPLICANT
-  ) {
-    fail(
-      429,
-      "too_many_submissions",
-      `You can submit ${MAX_DAILY_SUBMISSIONS_PER_APPLICANT} projects per day`,
     );
   }
   assertRegistryWith(await deps.persistence.listProjects(), manifest);
@@ -1099,6 +1085,15 @@ async function recordEnforcement(
           actor,
           at,
         },
+    // Only a moderator who did not place the restriction may decide it.
+    action === "request_reinstatement"
+      ? [...deps.moderatorGithubIds].filter(
+          (githubId) =>
+            !restriction.restrictedBy.some(
+              (placed) => placed.githubId === githubId,
+            ),
+        )
+      : [],
   );
   if (outcome === "conflict")
     fail(409, "stale_enforcement", "The project changed since you loaded it");

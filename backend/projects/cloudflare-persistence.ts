@@ -1,7 +1,9 @@
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
 import {
   notifyApplicationDecision,
+  notifyProjectEnforcement,
   notifyProjectRevision,
+  notifyReinstatementReviewers,
 } from "../notifications/events";
 import type {
   AdminNotification,
@@ -278,20 +280,6 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
     return row?.count ?? 0;
   }
 
-  async countApplicationsSince(
-    githubId: string,
-    since: string,
-  ): Promise<number> {
-    const row = await this.db
-      .prepare(
-        `SELECT COUNT(*) AS count FROM project_applications
-          WHERE applicant_github_id = ? AND submitted_at >= ?`,
-      )
-      .bind(githubId, since)
-      .first<{ count: number }>();
-    return row?.count ?? 0;
-  }
-
   async createApplication(
     application: ProjectApplication & { manifestText: string },
   ): Promise<"created" | "conflict"> {
@@ -534,6 +522,7 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
   async appendEnforcement(
     record: ProjectEnforcement,
     revision: ProjectRevisionInput | null,
+    appealReviewers: readonly string[],
   ): Promise<"recorded" | "conflict"> {
     const current = `EXISTS (SELECT 1 FROM projects WHERE id = ? AND revision = ? AND manifest_sha256 = ?)`;
     const statements = [
@@ -609,9 +598,18 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           ),
       );
     }
+    // The inbox rows are no-ops on replay, so only the source writes are
+    // checked.
+    const checked = statements.length;
+    statements.push(
+      notifyProjectEnforcement(this.db, record.id),
+      notifyReinstatementReviewers(this.db, record.id, appealReviewers),
+    );
     try {
       const results = await this.db.batch(statements);
-      return results.every((entry) => entry.meta?.changes === 1)
+      return results
+        .slice(0, checked)
+        .every((entry) => entry.meta?.changes === 1)
         ? "recorded"
         : "conflict";
     } catch (error) {

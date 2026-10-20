@@ -13,7 +13,11 @@ import {
 } from "../payments/ledger";
 import { registerPaymentWallet } from "../payments/wallet-registration";
 import { CloudflareProjectPersistence } from "../projects/cloudflare-persistence";
-import type { D1Database } from "../trace/cloudflare-persistence";
+import type { ProjectEnforcement } from "../projects/contracts";
+import {
+  CloudflareTracePersistence,
+  type D1Database,
+} from "../trace/cloudflare-persistence";
 import { handleNotificationsApi } from "./handler";
 
 const migrations = readdirSync("migrations")
@@ -21,9 +25,11 @@ const migrations = readdirSync("migrations")
   .sort();
 const T = "2026-10-19T10:00:00.000Z";
 const R = "2026-10-19T10:30:00.000Z";
+const EARLY = "2026-10-19T09:00:00.000Z";
 const APPLICANT = "900000002";
 const STEWARD = "900000003";
 const OTHER = "900000004";
+const MODERATOR = "900000005";
 const ADDRESS = "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86";
 const NEXT_ADDRESS = "0x2222222222222222222222222222222222222222";
 const VAULT = "0x1111111111111111111111111111111111111111";
@@ -143,10 +149,157 @@ describe("notification events", () => {
     ]);
   });
 
+  test("project enforcement records notify the project and independent reviewers once", async () => {
+    const { db, sqlite, rows } = open();
+    const persistence = new CloudflareProjectPersistence(db);
+    const manifest = {
+      id: "alpha",
+      status: "paused",
+      repositories: [{ id: "example/alpha" }],
+      steward: { github: { actorId: STEWARD } },
+    };
+    const text = JSON.stringify(manifest);
+    sqlite.exec(
+      `INSERT INTO project_applications (id,project_id,repository_key,manifest,manifest_sha256,acceptance_criteria,applicant_github_id,applicant_github_login,submitted_at,status,admin_notification,admin_notification_at,decided_at,decided_by_github_id,decided_by_github_login)
+         VALUES ('application-alpha','alpha','example/alpha','${text}','${"a".repeat(64)}','Merged pull requests','${APPLICANT}','e2e-applicant','${T}','approved','sent','${T}','${T}','1','admin');
+       INSERT INTO project_revisions (project_id,revision,manifest,manifest_sha256,reason,created_at)
+         VALUES ('alpha',1,'${text}','${"a".repeat(64)}','Approved','${T}');
+       INSERT INTO projects (id,status,revision,manifest,manifest_sha256,created_at,updated_at,source_application_id)
+         VALUES ('alpha','paused',1,'${text}','${"a".repeat(64)}','${T}','${T}','application-alpha');`,
+    );
+    const placedBy = { githubId: OTHER, githubLogin: "moderator-a" };
+    const recordedBy = { githubId: "900000006", githubLogin: "moderator-b" };
+    const record = (
+      sequence: number,
+      action: ProjectEnforcement["action"],
+      appealAfter: ProjectEnforcement["appealAfter"],
+      createdAt: string,
+    ): ProjectEnforcement => ({
+      id: `enf_testrecord${sequence}`,
+      projectId: "alpha",
+      sequence,
+      action,
+      stateAfter: "quarantined",
+      appealAfter,
+      reason: "Private moderation reason",
+      evidenceReference: "private-evidence-1",
+      repositoryGithubId: "123",
+      repositoryKeys: ["example/alpha"],
+      actor: sequence === 1 ? placedBy : recordedBy,
+      actorRole: "project-moderator",
+      decisionSource: "admin-panel",
+      beforeRevision: 1,
+      beforeManifestSha256: "a".repeat(64),
+      afterRevision: null,
+      afterManifestSha256: null,
+      result: "no_revision_needed",
+      createdAt,
+    });
+    const quarantine = record(1, "quarantine", "none", T);
+    const appeal = record(2, "request_reinstatement", "requested", R);
+    expect(await persistence.appendEnforcement(quarantine, null, [])).toBe(
+      "recorded",
+    );
+    // A replayed record breaks the gapless sequence and writes nothing.
+    expect(await persistence.appendEnforcement(quarantine, null, [])).toBe(
+      "conflict",
+    );
+    expect(
+      await persistence.appendEnforcement(appeal, null, [
+        MODERATOR,
+        recordedBy.githubId,
+        "x1",
+      ]),
+    ).toBe("recorded");
+    const keys = (recipient: string) =>
+      rows(recipient).map((row) => [
+        row.event_key,
+        row.kind,
+        row.detail,
+        row.action_path,
+      ]);
+    expect(keys(APPLICANT)).toEqual([
+      [
+        "project-enforcement:enf_testrecord1",
+        "project_quarantined",
+        null,
+        "/projects/alpha",
+      ],
+      [
+        "project-enforcement:enf_testrecord2",
+        "reinstatement_requested",
+        null,
+        "/projects/alpha",
+      ],
+    ]);
+    expect(keys(STEWARD)).toEqual(keys(APPLICANT));
+    // The moderator who recorded the request is not asked to review it.
+    expect(keys(recordedBy.githubId)).toEqual([]);
+    expect(keys(MODERATOR)).toEqual([
+      [
+        "reinstatement-review:enf_testrecord2",
+        "reinstatement_review",
+        null,
+        "/admin",
+      ],
+    ]);
+    // The private reason and evidence reference never reach a row.
+    expect(
+      sqlite
+        .query(
+          "SELECT count(*) AS n FROM notifications WHERE detail IS NOT NULL OR subject <> 'alpha'",
+        )
+        .get(),
+    ).toEqual({ n: 0 });
+  });
+
   test("wallet changes and finalized payment events notify the contributor once", async () => {
     const { db, sqlite, rows } = open();
     const d1 = db as unknown as D1Database;
     const member = { github_id: APPLICANT, login: "e2e-applicant" };
+    const stewarded = JSON.stringify({
+      id: "alpha",
+      status: "paused",
+      steward: { github: { actorId: STEWARD } },
+    });
+    sqlite.exec(
+      `INSERT INTO project_revisions (project_id,revision,manifest,manifest_sha256,reason,created_at)
+         VALUES ('alpha',1,'${stewarded}','${"a".repeat(64)}','Approved','${T}');
+       INSERT INTO projects (id,status,revision,manifest,manifest_sha256,created_at,updated_at)
+         VALUES ('alpha','paused',1,'${stewarded}','${"a".repeat(64)}','${T}','${T}');`,
+    );
+    // A wallet claim imported from a GitHub issue notifies like a site
+    // registration, once.
+    const issueClaim = {
+      id: "claim-issue-1",
+      githubId: APPLICANT,
+      githubLogin: "e2e-applicant",
+      walletAddress: "So11111111111111111111111111111111111111112",
+      chain: "solana" as const,
+      source: "github_issue" as const,
+      issueRepository: "example/alpha",
+      issueNumber: 7,
+      sourceBodySha256: "c".repeat(64),
+      observedAt: EARLY,
+      recordSha256: "d".repeat(64),
+      supersedesClaimId: null,
+      createdAt: EARLY,
+    };
+    const trace = new CloudflareTracePersistence(d1, {} as never);
+    for (const n of [1, 2])
+      expect(
+        (
+          await trace.createWalletClaim(issueClaim, {
+            id: `audit-${n}`,
+            actorGithubId: APPLICANT,
+            action: "wallet_claim.created",
+            target: "wallet-claim:claim-issue-1",
+            requestId: `request-${n}`,
+            createdAt: EARLY,
+            details: {},
+          })
+        ).status,
+      ).toBe(n === 1 ? "created" : "existing");
     const authorize = (claimId: string, n: number) =>
       sqlite.exec(
         `INSERT INTO payment_wallet_challenges VALUES ('challenge-${n}','${claimId}','${APPLICANT}','message','2026-10-20T00:00:00.000Z','${T}');
@@ -227,6 +380,13 @@ describe("notification events", () => {
       ]),
     ).toEqual([
       [
+        "wallet-claim:claim-issue-1",
+        "wallet_changed",
+        "solana",
+        "/account#wallets",
+        EARLY,
+      ],
+      [
         `wallet-claim:${first.claimId}`,
         "wallet_changed",
         "base",
@@ -263,6 +423,18 @@ describe("notification events", () => {
       ],
     ]);
     expect(rows(OTHER)).toEqual([]);
+    // The steward gets one payout exception, with no contributor or wallet.
+    expect(rows(STEWARD)).toEqual([
+      {
+        event_key: `payout-exception:obligation-1:${heldAt.toISOString()}`,
+        kind: "payout_exception",
+        subject: "alpha",
+        detail: null,
+        action_path: "/projects/alpha",
+        source_at: heldAt.toISOString(),
+        read_at: null,
+      },
+    ]);
   });
 
   test("a notification changes only from unread to read and is never deleted", () => {
