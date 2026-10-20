@@ -756,12 +756,25 @@ test("large retained evidence uses bounded chunks, immutable completion and acto
       maximum,
     );
   const servicePath = `/api/v1/vetting/evidence/${id}/${runId}`;
+  // Preserve an unexpected local-workerd cause instead of losing it behind
+  // the production route's deliberately generic private-error response.
+  let unexpectedUploadError: unknown;
+  const uploadChunk = retained.evidence.uploadChunk.bind(retained.evidence);
+  retained.evidence.uploadChunk = async (...args) => {
+    try {
+      return await uploadChunk(...args);
+    } catch (error) {
+      if (!(error instanceof Error && "status" in error))
+        unexpectedUploadError = error;
+      throw error;
+    }
+  };
   const send = async (
     method: string,
     path: string,
     body: string | Uint8Array,
-  ) =>
-    (await retained.evidence.handle(
+  ) => {
+    const response = (await retained.evidence.handle(
       new Request(`${ORIGIN}${path}`, {
         method,
         headers: await signedVettingHeaders(
@@ -775,6 +788,10 @@ test("large retained evidence uses bounded chunks, immutable completion and acto
         body: body as BodyInit,
       }),
     ))!;
+    if (response.status === 500 && unexpectedUploadError)
+      throw unexpectedUploadError;
+    return response;
+  };
   const manifest = JSON.stringify({
     traceSha256: digest,
     objects: [
