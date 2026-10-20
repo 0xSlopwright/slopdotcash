@@ -1,7 +1,8 @@
 // The D1 project registry API on the real migrations: cached public reads,
 // purge on admin writes, server-verified reward assets, the GitHub ownership
 // check, submission limits, exact revision bytes, the generated-skill
-// activation gate, same-origin GitHub lookups, and ADM-06 enforcement.
+// activation gate, the security-vetting gate, same-origin GitHub lookups,
+// and ADM-06 enforcement.
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -21,6 +22,12 @@ import {
 import type { SkillTemplateIndex } from "../backend/projects/skill-publication";
 import { handleProjectArtifactRequest } from "../backend/projects/skill-publication";
 import { TokenMetadataError } from "../backend/projects/token-metadata";
+import {
+  CloudflareVettingPersistence,
+  type VettingPin,
+  vettedContentSha256,
+} from "../backend/vetting/persistence";
+import { parseVettingResult } from "../backend/vetting/result";
 import { PROJECT_SKILL_TEMPLATES } from "../src/lib/project-schema.mjs";
 import { sha256Hex } from "../src/lib/project-skill-publication.mjs";
 import type { ProjectDefinition } from "../src/lib/projects.mjs";
@@ -29,6 +36,7 @@ import {
   CONTRIBUTION,
 } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
+import { vettingResult } from "../tests/vetting-fixtures";
 
 const ORIGIN = "https://slop.cash";
 const ADMIN = { githubId: "900000001", githubLogin: "e2e-admin" };
@@ -51,6 +59,10 @@ class MemoryCache implements EdgeCache {
 
 let persistence: CloudflareProjectPersistence;
 let sqlite: Database;
+let vetting: CloudflareVettingPersistence;
+let scans = 0;
+/** The live integration-branch head and template digest vetting compares. */
+let livePin: VettingPin;
 let cache: MemoryCache;
 let tokenReads: string[];
 let githubReads: string[];
@@ -64,11 +76,15 @@ beforeEach(() => {
     "0020_project_application_github_check.sql",
     "0023_project_enforcements.sql",
     "0024_notifications.sql",
+    "0025_community_security_vetting.sql",
+    "0026_private_security_cases.sql",
     "0027_project_enforcement_owner_appeals.sql",
     "0029_notification_event_kinds.sql",
   ]);
   sqlite = database.sqlite;
   persistence = new CloudflareProjectPersistence(database.db);
+  vetting = new CloudflareVettingPersistence(database.db);
+  livePin = { commitSha: "a".repeat(40), templateSha256: "d".repeat(64) };
   cache = new MemoryCache();
   tokenReads = [];
   githubReads = [];
@@ -93,6 +109,13 @@ beforeEach(() => {
             : null,
     notifyAdmins: async () => true,
     repositoryControl: async (manifest) => control(manifest.repositories[0].id),
+    vettingClearance: (projectId, manifest, throughRevision) =>
+      vetting.manifestClearance(
+        projectId,
+        manifest,
+        throughRevision,
+        async () => livePin,
+      ),
     readTokenMetadata: async (network, address) => {
       tokenReads.push(`${network}:${address}`);
       if (address === TOKEN) return { decimals: 18, symbol: "OPEN" };
@@ -144,6 +167,48 @@ function call(
   ) as Promise<Response>;
 }
 
+/** Records a clean secure-VM result for the project's current revision. */
+async function clearCurrentRevision(projectId: string) {
+  const project = await persistence.getProject(projectId);
+  if (project === null) throw new Error("project was not listed");
+  const id = `vet_${String(++scans).padStart(32, "0")}`;
+  await vetting.createAssessment({
+    id,
+    projectId,
+    revision: project.revision,
+    manifestSha256: project.manifestSha256,
+    contentSha256: await vettedContentSha256(project.manifest),
+    commitSha: livePin.commitSha,
+    templateSha256: livePin.templateSha256,
+    requestedBy: ADMIN,
+    requestedAt: `2026-10-18T12:00:${String(scans).padStart(2, "0")}.000Z`,
+    requestReason: "Fixture scan",
+  });
+  const result = parseVettingResult(
+    vettingResult(
+      {
+        assessmentId: id,
+        projectId,
+        revision: project.revision,
+        manifestSha256: project.manifestSha256,
+        repository: project.manifest.repositories[0].id,
+        commitSha: livePin.commitSha,
+        templateSha256: livePin.templateSha256,
+      },
+      "clean",
+    ),
+  );
+  expect(
+    await vetting.recordResult({
+      result,
+      resultText: JSON.stringify(result),
+      resultSha256: "0".repeat(64),
+      signingKeySha256: "1".repeat(64),
+      at: "2026-10-18T12:30:00.000Z",
+    }),
+  ).toBe("recorded");
+}
+
 async function listProject(
   manifest = applicationManifest("open-registry", "example/open-registry"),
 ) {
@@ -187,9 +252,11 @@ describe("project registry API", () => {
     expect(body.restrictions).toEqual([]);
     const single = await call("GET", "projects/open-registry");
     expect(single.status).toBe(200);
+    // Skills publish only after a clean scan of the exact revision.
     expect(await single.json()).toMatchObject({
       revision: 1,
-      skillsPublished: true,
+      skillsPublished: false,
+      vetting: { state: "unscanned" },
       project: { id: "open-registry", status: "paused" },
     });
     expect((await call("GET", "projects/missing")).status).toBe(404);
@@ -285,6 +352,11 @@ describe("project registry API", () => {
       current.manifest as unknown as Record<string, unknown>;
     const refused = await activate({ ...withoutFields, status: "active" });
     expect(refused.status).toBe(422);
+    // An unscanned revision cannot activate either (VET-01).
+    const unscanned = await activate({ ...current.manifest, status: "active" });
+    expect(unscanned.status).toBe(422);
+    expect((await unscanned.json()).error).toBe("vetting_required");
+    await clearCurrentRevision("open-registry");
     expect((await persistence.getProject("open-registry"))?.status).toBe(
       "paused",
     );
@@ -402,6 +474,7 @@ async function publicationRequests() {
     schemaVersion: "1",
     repository: "SlopDotCash/slopdotcash",
     commit: "d".repeat(40),
+    templateSha256: "d".repeat(64),
     revisionStatus: "committed",
     contributor: await group(
       PROJECT_SKILL_TEMPLATES.contributor,
@@ -413,6 +486,7 @@ async function publicationRequests() {
     ),
     renderer: {
       paths: ["scripts/render-install-guide.mjs"],
+      sources: [],
       revisionStatus: "committed",
     },
     acceptedRevisions: ["current main head"],
@@ -427,6 +501,20 @@ async function publicationRequests() {
       readFile: async (path: string) =>
         new Uint8Array(readFileSync(join(root, path))),
     }),
+    vettingClearance: (
+      project: { id: string; manifest: object; revision: number },
+      templateSha256: string,
+    ) =>
+      vetting.manifestClearance(
+        project.id,
+        project.manifest,
+        project.revision,
+        async () => {
+          if (livePin.commitSha === "unreadable")
+            throw new Error("GitHub returned 502.");
+          return { commitSha: livePin.commitSha, templateSha256 };
+        },
+      ),
     cache,
   };
   const get = (path: string) =>
@@ -434,12 +522,12 @@ async function publicationRequests() {
       new Request(`${ORIGIN}${path}`),
       publication,
     ) as Promise<Response>;
-  return { publication, get };
+  return { publication, get, index };
 }
 
 describe("generated skill publication", () => {
   test("serves skills from the current revision and refuses unpublished ones", async () => {
-    const { publication, get } = await publicationRequests();
+    const { publication, get, index } = await publicationRequests();
     expect(
       await handleProjectArtifactRequest(
         new Request(`${ORIGIN}/projects/open-registry`),
@@ -449,6 +537,15 @@ describe("generated skill publication", () => {
     expect((await get("/projects/open-registry/skill.md")).status).toBe(404);
 
     await listProject();
+    // A listed but unscanned revision serves no executable skill (VET-01).
+    const unscanned = await get("/projects/open-registry/skill.md");
+    expect(unscanned.status).toBe(404);
+    expect(await unscanned.text()).toContain("security vetting");
+    expect(
+      (await (await get("/.well-known/slop/projects.json")).json()).projects,
+    ).toEqual([]);
+    cache.entries.clear();
+    await clearCurrentRevision("open-registry");
     const skill = await get("/projects/open-registry/skill.md");
     expect(skill.status).toBe(200);
     expect(skill.headers.get("content-type")).toBe(
@@ -477,6 +574,36 @@ describe("generated skill publication", () => {
     expect(await sha256Hex(new Uint8Array(await archive.arrayBuffer()))).toBe(
       manifest.archive.sha256,
     );
+    // A clearance binds the scanned commit and template (VET-07). A new
+    // integration-branch head or a new skill template is not served on it.
+    const cleared = livePin;
+    livePin = { ...cleared, commitSha: "e".repeat(40) };
+    cache.entries.clear();
+    const moved = await get("/projects/open-registry/skill.md");
+    expect(moved.status).toBe(404);
+    expect(await moved.text()).toContain("branch head or skill template");
+    expect(
+      (await (await get("/.well-known/slop/projects.json")).json()).projects,
+    ).toEqual([]);
+    // An unrelated site deploy keeps the clearance: it binds the template
+    // input digest, not the site commit.
+    livePin = cleared;
+    index.commit = "e".repeat(40);
+    cache.entries.clear();
+    expect((await get("/projects/open-registry/skill.md")).status).toBe(200);
+    // A deploy with a new skill template renders other skill bytes.
+    index.templateSha256 = "f".repeat(64);
+    cache.entries.clear();
+    expect((await get("/projects/open-registry/skill.md")).status).toBe(404);
+    index.templateSha256 = cleared.templateSha256;
+    livePin = { ...cleared, commitSha: "unreadable" };
+    cache.entries.clear();
+    // An unreadable branch head fails closed and says so.
+    const unreadable = await get("/projects/open-registry/skill.md");
+    expect(unreadable.status).toBe(503);
+    expect(await unreadable.text()).toContain("cannot confirm");
+    livePin = cleared;
+    cache.entries.clear();
     const discovery = await (
       await get("/.well-known/slop/projects.json")
     ).json();
@@ -508,6 +635,10 @@ describe("generated skill publication", () => {
       },
     );
     expect(revised.status).toBe(200);
+    // Changed content needs a fresh scan before Slop serves it (VET-07).
+    expect((await get("/projects/open-registry/skill.md")).status).toBe(404);
+    cache.entries.clear();
+    await clearCurrentRevision("open-registry");
     expect(
       (await (await get("/projects/open-registry/skill-manifest.json")).json())
         .authority.registry.revision,
@@ -542,6 +673,8 @@ describe("project enforcement (ADM-06)", () => {
   test("quarantines, bans and reinstates through independent review", async () => {
     const { get } = await publicationRequests();
     await listProject();
+    // Activation needs a clean security scan of this revision (VET-01).
+    await clearCurrentRevision("open-registry");
     const listed = await persistence.getProject("open-registry");
     const activated = await call(
       "PUT",
@@ -551,10 +684,9 @@ describe("project enforcement (ADM-06)", () => {
         manifest: {
           ...listed?.manifest,
           status: "active",
-          listingTier: "featured",
         },
         expectedRevision: 1,
-        reason: "Activate and feature",
+        reason: "Activate the scanned revision",
       },
     );
     expect(activated.status).toBe(200);
@@ -587,7 +719,7 @@ describe("project enforcement (ADM-06)", () => {
         after: 3,
         statusBefore: "active",
         statusAfter: "paused",
-        listingTierBefore: "featured",
+        listingTierBefore: "community",
         listingTierAfter: "retired",
       },
     });
@@ -715,6 +847,11 @@ describe("project enforcement (ADM-06)", () => {
     expect((await (await call("GET", "projects")).json()).restrictions).toEqual(
       [],
     );
+    // The reinstated revision is new content, so it needs a fresh clean
+    // scan before Slop serves its skill again (VET-07).
+    expect((await get("/projects/open-registry/SKILL.md")).status).toBe(404);
+    await clearCurrentRevision("open-registry");
+    cache.entries.clear();
     expect((await get("/projects/open-registry/SKILL.md")).status).toBe(200);
 
     // A stale preview cannot be confirmed, and history is append-only.

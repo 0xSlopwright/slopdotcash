@@ -80,7 +80,10 @@ in the writing colo; other colos expire within the TTL. Each public project
 request also reads one enforcement generation counter from D1 and keys the
 cache on it, so a Quarantine or a Ban replaces every cached list, skill and
 archive in every colo on the next request. Admin and session routes are never
-cached. Page views never read GitHub or a chain.
+cached. Page views never read a chain. For a project with a security scan,
+the public project read, the skill artifacts and discovery read the
+integration-branch head on GitHub once per cache miss, to compare it with the
+scanned commit (`backend/vetting/README.md`).
 
 ## Generated skills
 
@@ -96,7 +99,8 @@ integration branch), and the maintainer text goes only into the generated
 `src/lib/project-skill-publication.mjs` builds the raw skill, mission, guides,
 `skill-manifest.json`, `PROVENANCE.json` and a deterministic stored-ZIP
 archive from that output. The build publishes the template bytes with their
-SHA-256 digests and commit at `/skill-templates/index.json`; the Function
+SHA-256 digests, the renderer source digests, the commit and the
+`templateSha256` input digest at `/skill-templates/index.json`; the Function
 refuses a file whose digest differs.
 
 The trust root is the pair (template revision on `main`, D1 revision digest)
@@ -150,6 +154,10 @@ rate limit, and caches each answer for five minutes. The browser never calls
   waiting.
 - `/admin` previews the exact generated contributor and reviewer skills before
   an admin approves or activates a revision.
+- A revision activates, and its skills and discovery entry are served, only
+  when a secure-VM scan cleared its exact content at the live
+  integration-branch head and skill template input digest. See
+  `backend/vetting/README.md` (PRD VET-01).
 - An admin delists a project by appending a paused, `retired` revision.
 - Quarantine, Ban project and Request reinstatement (PRD ADM-06) need an admin
   who is also in the `PROJECT_MODERATOR_GITHUB_IDS` Pages variable. While that

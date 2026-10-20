@@ -1,9 +1,12 @@
 /**
  * A loopback stand-in for the public GitHub API reads the project registry
- * and the security intake readiness check make, so the registry browser lane is deterministic and never
+ * makes (repository facts, organization membership, the integration-branch
+ * head that security vetting pins, and the security intake readiness check),
+ * so the registry browser lane is deterministic and never
  * spends GitHub's rate limit. The browser's own repository lookup is mocked
  * from the same facts.
  */
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 
 /** The site session that owns its user repositories. */
@@ -47,6 +50,11 @@ export function fixtureRepository(fullName) {
   };
 }
 
+/** The deterministic head commit of a fixture repository branch. */
+export function fixtureBranchHead(fullName, branch) {
+  return createHash("sha1").update(`${fullName}#${branch}`).digest("hex");
+}
+
 export function startGitHubApiFixture(port) {
   // Private vulnerability reporting per repository; on unless a test sets it.
   const intake = new Map();
@@ -78,6 +86,19 @@ export function startGitHubApiFixture(port) {
       return;
     }
     const repository = /^\/repos\/([^/]+\/[^/]+)$/u.exec(path);
+    const branch = /^\/repos\/([^/]+\/[^/]+)\/branches\/([^/]+)$/u.exec(path);
+    // A stable integration-branch head, which security vetting pins.
+    if (request.method === "GET" && branch) {
+      const name = decodeURIComponent(branch[2]);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          name,
+          commit: { sha: fixtureBranchHead(branch[1], name) },
+        }),
+      );
+      return;
+    }
     if (request.method === "GET" && repository) {
       const [owner] = repository[1].split("/");
       if (owner === E2E_OWNER.login || owner === E2E_ORGANIZATION.login) {

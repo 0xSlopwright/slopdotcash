@@ -5,15 +5,111 @@
  * loopback GitHub API fixture, which both the ownership check and the
  * same-origin setup lookups read, so the run never depends on GitHub's rate
  * limit. Project pages, skills and archives come from D1 with no rebuild.
+ * A throwaway Ed25519 key stands in for the external secure-VM vetting
+ * service, so the lane signs harmless scan results the way the service must.
  */
 import { createHash } from "node:crypto";
 import AxeBuilder from "@axe-core/playwright";
-import { expect, type Page, test } from "@playwright/test";
+import {
+  type APIRequestContext,
+  expect,
+  type Page,
+  test,
+} from "@playwright/test";
+import { signedVettingHeaders, vettingResult } from "../vetting-fixtures";
 
 const APPLICANT_TOKEN = process.env.SLOP_E2E_APPLICANT_TOKEN ?? "";
 const ADMIN_TOKEN = process.env.SLOP_E2E_ADMIN_TOKEN ?? "";
 const OWNER_TOKEN = process.env.SLOP_E2E_OWNER_TOKEN ?? "";
 const MODERATOR_TOKEN = process.env.SLOP_E2E_MODERATOR_TOKEN ?? "";
+const VETTING_PUBLIC_KEY = process.env.SLOP_E2E_VETTING_PUBLIC_KEY ?? "";
+const VETTING_PRIVATE_KEY = process.env.SLOP_E2E_VETTING_PRIVATE_KEY ?? "";
+
+/** Posts a harmless signed scan result for the project's queued scan. */
+async function postVettingResult(
+  request: APIRequestContext,
+  projectId: string,
+  repository: string,
+  disposition: "clean" | "incomplete",
+) {
+  if (!VETTING_PUBLIC_KEY || !VETTING_PRIVATE_KEY)
+    throw new Error("Missing E2E vetting key");
+  const decode = (value: string) =>
+    Uint8Array.from(Buffer.from(value, "base64"));
+  const publicKey = decode(VETTING_PUBLIC_KEY);
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    decode(VETTING_PRIVATE_KEY),
+    { name: "Ed25519" },
+    false,
+    ["sign"],
+  );
+  const queue = await request.get("/api/v1/vetting/requests", {
+    headers: await signedVettingHeaders(
+      privateKey,
+      publicKey,
+      "GET",
+      "/api/v1/vetting/requests",
+      "",
+    ),
+  });
+  expect(queue.status()).toBe(200);
+  const queued = (
+    (await queue.json()) as {
+      assessments: {
+        assessmentId: string;
+        projectId: string;
+        revision: number;
+        manifestSha256: string;
+        commitSha: string;
+        templateSha256: string;
+      }[];
+    }
+  ).assessments.find((entry) => entry.projectId === projectId);
+  if (queued === undefined) throw new Error("No queued scan for the project");
+  const body = JSON.stringify(
+    vettingResult({ ...queued, repository }, disposition),
+  );
+  const posted = await request.post("/api/v1/vetting/results", {
+    data: body,
+    headers: {
+      "content-type": "application/json",
+      ...(await signedVettingHeaders(
+        privateKey,
+        publicKey,
+        "POST",
+        "/api/v1/vetting/results",
+        body,
+      )),
+    },
+  });
+  expect(posted.status()).toBe(200);
+}
+
+/** Queues a scan of the current revision from the admin vetting panel. */
+async function queueScan(
+  admin: Page,
+  projectId: string,
+  reason: string,
+  revision = 1,
+) {
+  await admin.goto("/admin", { waitUntil: "networkidle" });
+  const card = admin.getByRole("article", {
+    name: `Security vetting for ${projectId}`,
+  });
+  await card.getByLabel("Reason for the scan").fill(reason);
+  await card
+    .getByRole("button", { name: `Queue scan of revision ${revision}` })
+    .click();
+  await expect(
+    admin.getByRole("region", { name: "Security vetting" }).getByRole("status"),
+  ).toContainText(`Queued a scan of ${projectId} revision ${revision}.`);
+  // A queued rescan keeps the last finished decision until its result lands.
+  await expect(
+    card.getByText(new RegExp(`Revision ${revision} · Queued`, "u")),
+  ).toBeVisible();
+  return card;
+}
 
 test.describe.configure({ mode: "serial" });
 
@@ -378,6 +474,61 @@ test("an admin activates a project and its generated skills serve without a rebu
   await expect(admin.locator(".project-hero")).toContainText(
     "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
   );
+  // An unscanned revision serves no executable skill (PRD VET-01).
+  const unscanned = await request.get(`/projects/${project.id}/skill.md`);
+  expect(unscanned.status()).toBe(404);
+  expect(await unscanned.text()).toContain("security vetting");
+  expect(
+    await (await request.get(`/api/v1/projects/${project.id}`)).json(),
+  ).toMatchObject({ skillsPublished: false, vetting: { state: "unscanned" } });
+
+  // An incomplete scan quarantines the revision, and it cannot activate.
+  let vettingCard = await queueScan(admin, project.id, "Admission scan");
+  await expect(vettingCard.locator(".admin-badge")).toHaveText("Queued");
+  await postVettingResult(
+    request,
+    project.id,
+    project.repository,
+    "incomplete",
+  );
+  await admin.reload({ waitUntil: "networkidle" });
+  vettingCard = admin.getByRole("article", {
+    name: `Security vetting for ${project.id}`,
+  });
+  await expect(vettingCard.locator(".admin-badge")).toHaveText("Quarantined");
+  await vettingCard.getByText(/Revision 1 · Incomplete/u).click();
+  await expect(vettingCard).toContainText("vendor/addon.node (native-module)");
+  await expect(vettingCard).toContainText(
+    "A pinned TLS client hid HTTP bodies",
+  );
+  await expectAccessible(admin);
+  const refusedCard = admin.locator(".admin-card", {
+    has: admin.getByText(project.id, { exact: true }),
+  });
+  await refusedCard.getByRole("button", { name: "Edit manifest" }).click();
+  await refusedCard.getByLabel("Project status").selectOption("active");
+  await refusedCard
+    .getByLabel("Reason for this revision (public history)")
+    .fill("Activate before a clean scan");
+  await refusedCard.getByRole("button", { name: "Save revision 2" }).click();
+  await expect(refusedCard.getByRole("alert")).toContainText(
+    "Security vetting is quarantined",
+  );
+  // The refused write is the only failed request the browser saw.
+  expect(errors).toEqual([
+    "Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)",
+  ]);
+  errors.length = 0;
+
+  // A fresh clean scan of the same revision clears it.
+  vettingCard = await queueScan(admin, project.id, "Rescan after the gap");
+  await postVettingResult(request, project.id, project.repository, "clean");
+  await admin.reload({ waitUntil: "networkidle" });
+  await expect(
+    admin
+      .getByRole("article", { name: `Security vetting for ${project.id}` })
+      .locator(".admin-badge"),
+  ).toHaveText("Cleared");
   const skill = await request.get(`/projects/${project.id}/skill.md`);
   expect(skill.status()).toBe(200);
   expect(skill.headers()["content-type"]).toBe("text/markdown; charset=utf-8");
@@ -723,9 +874,24 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
     revision: 4,
     project: { status: "paused", listingTier: "community" },
   });
+
+  // The reinstated revision is new content. Its skill stays closed until a
+  // fresh clean scan of that revision lands (VET-07).
+  expect((await request.get(`/projects/${project.id}/SKILL.md`)).status()).toBe(
+    404,
+  );
+  const rescanContext = await browser.newContext();
+  const rescan = await rescanContext.newPage();
+  const rescanErrors = observe(rescan);
+  await signIn(rescan, ADMIN_TOKEN);
+  await queueScan(rescan, project.id, "Scan after reinstatement", 4);
+  await postVettingResult(request, project.id, project.repository, "clean");
   expect((await request.get(`/projects/${project.id}/SKILL.md`)).status()).toBe(
     200,
   );
+  expect(rescanErrors).toEqual([]);
+  await rescanContext.close();
+
   // The independent moderator was asked to review the appeal in the inbox.
   await moderator.goto("/inbox", { waitUntil: "networkidle" });
   const review = moderator.locator(".inbox-item", {

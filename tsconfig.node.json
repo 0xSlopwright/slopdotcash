@@ -14,6 +14,7 @@
     "tests/fixture-checkout.ts",
     "tests/project-application-manifest.ts",
     "tests/sqlite-d1.ts",
+    "tests/vetting-fixtures.ts",
     "src/lib/payments/**/*.ts",
     "contracts/evm/adapter.ts",
     "contracts/solana/adapter.ts",
