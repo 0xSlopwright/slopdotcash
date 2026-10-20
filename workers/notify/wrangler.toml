@@ -21,3 +21,8 @@ enabled = true
 
   [observability.logs]
   invocation_logs = false
+
+# The private bounty pilot is inert unless the operator also provisions its
+# separate verified-recipient secret and private SLOP_DB binding.
+[triggers]
+crons = ["*/5 * * * *"]

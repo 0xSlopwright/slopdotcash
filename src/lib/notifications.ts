@@ -36,6 +36,8 @@ export interface Notification {
   sourceAt: string;
   createdAt: string;
   readAt: string | null;
+  /** Security-event acknowledgment is separate from the inbox read state. */
+  acknowledgedAt?: string | null;
 }
 
 export interface NotificationsResponse {
@@ -72,7 +74,10 @@ function isNotification(value: unknown): value is Notification {
     !n.actionPath.startsWith("//") &&
     isTimestamp(n.sourceAt) &&
     isTimestamp(n.createdAt) &&
-    (n.readAt === null || isTimestamp(n.readAt))
+    (n.readAt === null || isTimestamp(n.readAt)) &&
+    (n.acknowledgedAt === undefined ||
+      n.acknowledgedAt === null ||
+      isTimestamp(n.acknowledgedAt))
   );
 }
 

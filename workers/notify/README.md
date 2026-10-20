@@ -98,8 +98,77 @@ Run the handler checks with `bun run test:notify`; `bun run verify:code`
 includes them. A deployed version is not proof of a caller, domain readiness or
 inbox delivery.
 
-This service implements project-application notices only. Private bounty
-notifications require a separate approved event contract, restricted case
-links and server-resolved recipient authorization under PRD SEC-16. Do not send
-exploit details through the project-application template. No report is
-submitted and no bounty award is approved by an email send.
+## Restricted private bounty pilot (SEC-16)
+
+The Worker also implements a separate private bounty delivery path. Migration
+`0030_security_notification_outbox.sql` inserts one outbox row with each new
+security inbox notice, in the same transaction. It does not send old notices
+from before the migration. Case receipt times and award decisions do not
+change when email fails.
+
+This path is **not activated by the project-application binding**. The current
+production release deliberately permits only `ADMIN_EMAILS`. A reviewed pilot
+release must first qualify the separate staging audience and then add the
+private D1 binding and the additional secret to the protected release's explicit
+inventory. No addresses or private verification records belong in git.
+
+The operator must provision:
+
+- `SLOP_DB`: the isolated pilot D1 database with migration 0030. Use separate
+  staging and production bindings. Do not attach production cases to a staging
+  Worker.
+- `SECURITY_MAIL_PILOT`: a JSON secret with `inboxUrl` (the exact HTTPS
+  `/inbox` page on that environment) and `recipients`, keyed by immutable
+  GitHub actor ID. Each entry contains `email`, ISO UTC `verifiedAt`, private
+  `evidenceReference`, and `backupGithubId`. The operator verifies both control
+  by that GitHub actor and Cloudflare's verified-destination eligibility.
+  A GitHub public email, a caller's address or `ADMIN_EMAILS` is not this proof.
+- A verified backup for each participant. The backup must also have a current
+  role for the case. Mapping an address never grants case access. Record the
+  program's approved escalation contact privately before activation.
+
+Missing pilot configuration or D1 binding sends nothing. The checked-in schedule requests a run every five minutes. Wrangler version
+upload/deploy does not apply cron triggers. The approved pilot release must
+also apply that trigger through the protected workflow and verify the actual
+trigger and a successful scheduled invocation. A secret and binding alone do
+not establish scheduling. It reads current case roles again before each send.
+Revoked roles are suppressed. A missing verified destination retries at one,
+two, four and eight minutes, then exhausts after five attempts. The per-event,
+recipient and template key prevents duplicate queue insertion; an atomic claim
+prevents concurrent dispatch. Each message has one recipient and a stable
+opaque per-attempt Message-ID, a generic subject and body, and the authenticated inbox
+link. It has no tracking pixel, case identifier, project, advisory or amount.
+
+A successful Cloudflare send is `provider-accepted`, never `delivered`. A thrown
+send or an expired in-flight claim is `ambiguous`; neither is resent. A backup
+notice is queued for a failed delivery or a missed acknowledgment, using the
+program's existing `responseTargets.acknowledgeHours`. Backups are not escalated
+recursively. A missing or unauthorized backup remains an operator readiness
+gap, not a successful escalation.
+
+Private operator service routes (no public routes or `workers.dev` endpoint):
+
+- `POST https://notify.internal/v1/security-notifications/dispatch`, body `{}`,
+  drains up to 25 due notices. The scheduler uses the same dispatcher.
+- `POST https://notify.internal/v1/security-notifications/reconcile`, body with
+  `deliveryId`, `attempt`, `destinationDigest`, `outcome` and `evidenceReference`, records independent provider
+  evidence. Outcomes are `delivered`, `bounced`, `suppressed`, or `not-accepted`.
+  Only the exact accepted or ambiguous attempt and destination can be reconciled.
+  Each immutable provider evidence reference is accepted once; an old receipt
+  cannot authorize another retry. `not-accepted`
+  permits a bounded retry; it requires proof that the provider did not accept
+  the attempt. Do not infer this from an exception. Do not expose this route
+  through a browser or public proxy. Delivery evidence is append-only.
+
+The signed-in recipient uses **Acknowledge** in `/inbox`. The page posts the
+inbox event key to `/api/v1/security-cases/:id/acknowledge`; the server rechecks
+session, current case role and exact recipient. The inbox returns the recorded
+`acknowledgedAt`. Reading the notice, a delivery receipt or an email-open pixel
+cannot set this value.
+
+Before activation, run the isolated browser matrix and controlled mail sends
+to the approved maintainer and reporter inboxes. Verify sender authentication,
+quota, actual receipt, bounce/suppression, ambiguity recovery, backup escalation
+and environment isolation. Local tests substitute the transport and do not
+prove provider acceptance or inbox delivery. This code neither activates a
+bounty nor selects a private payment rail.
