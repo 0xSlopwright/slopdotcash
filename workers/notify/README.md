@@ -237,7 +237,13 @@ receives its service binding only after the isolated Worker release succeeds;
 preview Pages remains unbound. The runtime rejects a pilot whose secret inbox
 URL does not match the selected environment's exact `/inbox` URL.
 
-`scripts/release-notify.mjs` verifies the exact secret inventory, uploads the
+The named Worker must already exist with workers.dev and preview URLs disabled,
+no routes and no custom domains. The release reads and verifies these settings
+before any version upload, and refuses an absent or publicly reachable Worker.
+Version APIs do not apply routing settings; applying them after upload can expose
+a private version. Initial private Worker provisioning is a separate operator gate.
+
+`scripts/release-notify.mjs` verifies this boundary and the exact secret inventory, uploads the
 checked-out branch SHA, verifies uploaded D1 and secret bindings, promotes that
 one version, and confirms it is active at 100%. It then applies and reads back
 the selected cron schedule. Admin-only has no D1 binding or cron. Moving back

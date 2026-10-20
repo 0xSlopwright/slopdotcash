@@ -147,6 +147,48 @@ const account = process.env.CLOUDFLARE_ACCOUNT_ID;
 const token = process.env.CLOUDFLARE_API_TOKEN;
 if (!/^[0-9a-f]{32}$/u.test(account ?? "") || !token)
   throw new TypeError("Protected Cloudflare credentials are missing");
+// Version upload can expose preview URLs before triggers are applied. The private
+// service must already have no public ingress; this release never creates it.
+async function cloudflareRead(path) {
+  const response = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${account}${path}`,
+    {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(30_000),
+    },
+  );
+  if (!response.ok)
+    throw new Error(
+      `Notification boundary verification failed (${response.status})`,
+    );
+  const data = await response.json();
+  if (data.success !== true)
+    throw new TypeError("Notification boundary could not be verified");
+  return data.result;
+}
+const service = await cloudflareRead(`/workers/services/${name}`);
+const environment = service?.default_environment?.environment;
+if (typeof environment !== "string" || !/^[a-zA-Z0-9_-]+$/u.test(environment))
+  throw new TypeError("Notification service environment could not be verified");
+const boundary = `/workers/services/${name}/environments/${environment}`;
+const [subdomain, routes, domains] = await Promise.all([
+  cloudflareRead(`${boundary}/subdomain`),
+  cloudflareRead(`${boundary}/routes?show_zonename=true`),
+  cloudflareRead(
+    `/workers/domains/records?page=0&per_page=5&service=${name}&environment=${environment}`,
+  ),
+]);
+if (
+  subdomain?.enabled !== false ||
+  subdomain?.previews_enabled !== false ||
+  !Array.isArray(routes) ||
+  routes.length !== 0 ||
+  !Array.isArray(domains) ||
+  domains.length !== 0
+)
+  throw new TypeError(
+    "Notification Worker must already have no public routes, domains, workers.dev or preview URLs",
+  );
 const inventory = JSON.parse(cli(["secret", "list"]));
 const names = Array.isArray(inventory)
   ? inventory.map((entry) => entry.name).sort()
