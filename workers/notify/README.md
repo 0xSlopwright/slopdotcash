@@ -106,11 +106,10 @@ security inbox notice, in the same transaction. It does not send old notices
 from before the migration. Case receipt times and award decisions do not
 change when email fails.
 
-This path is **not activated by the project-application binding**. The current
-production release deliberately permits only `ADMIN_EMAILS`. A reviewed pilot
-release must first qualify the separate staging audience and then add the
-private D1 binding and the additional secret to the protected release's explicit
-inventory. No addresses or private verification records belong in git.
+This path is **not activated by the project-application binding**. The default release permits only `ADMIN_EMAILS`. A selected pilot
+release derives its private D1 binding from that environment's checked-in Pages
+configuration and requires the exact extra secret inventory. Qualify the
+separate staging audience before selecting a production pilot. No addresses or private verification records belong in git.
 
 The operator must provision:
 
@@ -127,7 +126,7 @@ The operator must provision:
   role for the case. Mapping an address never grants case access. Record the
   program's approved escalation contact privately before activation.
 
-Missing pilot configuration or D1 binding sends nothing. The checked-in schedule requests a run every five minutes. Wrangler version
+Missing pilot configuration or D1 binding sends nothing. A selected pilot requests a run every five minutes. The default profile has no schedule. Wrangler version
 upload/deploy does not apply cron triggers. The approved pilot release must
 also apply that trigger through the protected workflow and verify the actual
 trigger and a successful scheduled invocation. A secret and binding alone do
@@ -212,3 +211,45 @@ ambiguous. Independent negative evidence can authorize a retry, up to five
 attempts. The private outbox and append-only evidence table retain exhausted,
 suppressed, bounced and ambiguous outcomes for operators. No mail result
 reverses a source notification, award or wallet change.
+
+
+## Protected pilot release profiles
+
+The checked-in workflow can release the admin-only Worker or an explicitly
+selected verified-mail pilot. No pilot is selected by default. The operator
+sets these variables in the selected protected GitHub environment only after
+reviewing its private destination records and isolated delivery evidence:
+
+- `SLOP_NOTIFY_RELEASE=enabled` enables that environment's Worker release.
+- `SLOP_NOTIFY_MAIL_PILOTS` is empty for admin-only, `security`, `activity`, or
+  `security,activity`. All other values fail closed. This selects existing
+  approved mail capabilities; it does not verify recipients or authorize payments.
+
+Production uses `slop-notify` and the production Pages D1 contract. Staging uses
+`slop-notify-staging` and the separate staging Pages D1 contract. Staging Pages
+receives its service binding only after the isolated Worker release succeeds;
+preview Pages remains unbound. The runtime rejects a pilot whose secret inbox
+URL does not match the selected environment's exact `/inbox` URL.
+
+`scripts/release-notify.mjs` verifies the exact secret inventory, uploads the
+checked-out branch SHA, verifies uploaded D1 and secret bindings, promotes that
+one version, and confirms it is active at 100%. It then applies and reads back
+the selected cron schedule. Admin-only has no D1 binding or cron. Moving back
+to admin-only requires removal of pilot secrets as well as the empty selection;
+an unexpected secret stops the release. Version and schedule checks do not
+prove that a scheduled invocation or a real message succeeded.
+
+Review generated configuration without credentials or remote changes:
+
+```bash
+SLOP_NOTIFY_MAIL_PILOTS=security,activity bun scripts/release-notify.mjs prepare staging /tmp/slop-notify-staging-review
+./node_modules/.bin/wrangler deploy --dry-run --config /tmp/slop-notify-staging-review/wrangler.json
+```
+
+Do not run deployment from a local checkout. The protected workflow supplies
+`deploy`, the target environment and exact SHA after its existing checks.
+Retain the generated `profile.json` and `release.json` in the protected runner
+for release inspection. They contain names, immutable version IDs and public
+configuration only; private recipient secrets remain in Cloudflare. Real
+provider acceptance, inbox receipt, failures, scheduled invocation, and bounty
+acknowledgment/escalation still require controlled acceptance evidence.

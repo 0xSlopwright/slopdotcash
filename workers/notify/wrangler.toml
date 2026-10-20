@@ -22,7 +22,7 @@ enabled = true
   [observability.logs]
   invocation_logs = false
 
-# The private bounty pilot is inert unless the operator also provisions its
-# separate verified-recipient secret and private SLOP_DB binding.
+# Default releases have no pilot schedule. scripts/release-notify.mjs adds
+# the selected environment D1 binding and schedule only for an explicit pilot.
 [triggers]
-crons = ["*/5 * * * *"]
+crons = []

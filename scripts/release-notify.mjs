@@ -1,0 +1,254 @@
+/** Protected-release notification profile. Preparation never changes remote state. */
+import { spawnSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = fileURLToPath(new URL("../", import.meta.url));
+const [mode, target, output] = process.argv.slice(2);
+if (
+  !["prepare", "deploy"].includes(mode) ||
+  !["production", "staging"].includes(target) ||
+  !output
+)
+  throw new TypeError(
+    "Use: bun scripts/release-notify.mjs prepare|deploy production|staging OUTPUT_DIRECTORY",
+  );
+const selected = process.env.SLOP_NOTIFY_MAIL_PILOTS ?? "";
+if (!["", "security", "activity", "security,activity"].includes(selected))
+  throw new TypeError(
+    "SLOP_NOTIFY_MAIL_PILOTS must be empty, security, activity, or security,activity",
+  );
+const pilots = selected ? selected.split(",") : [];
+const pages = Bun.TOML.parse(
+  readFileSync(
+    resolve(
+      root,
+      target === "production" ? "wrangler.toml" : "wrangler.staging.toml",
+    ),
+    "utf8",
+  ),
+);
+const base = Bun.TOML.parse(
+  readFileSync(resolve(root, "workers/notify/wrangler.toml"), "utf8"),
+);
+const database = pages.d1_databases?.filter(
+  (item) => item.binding === "SLOP_DB",
+);
+if (
+  database?.length !== 1 ||
+  !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(
+    database[0].database_id,
+  )
+)
+  throw new TypeError(
+    "Selected Pages profile must bind exactly one reviewed private D1 database",
+  );
+const expectedOrigin =
+  target === "production" ? "https://slop.cash" : "https://staging.slop.cash";
+if (
+  pages.vars?.PUBLIC_SITE_URL !== expectedOrigin ||
+  base.name !== "slop-notify" ||
+  base.workers_dev !== false ||
+  base.preview_urls !== false ||
+  base.routes?.length
+)
+  throw new TypeError("Unexpected notification or Pages release boundary");
+const name = target === "production" ? base.name : `${base.name}-staging`;
+const directory = resolve(output);
+mkdirSync(directory, { recursive: true });
+const config = {
+  ...base,
+  name,
+  main: resolve(root, "workers/notify/index.ts"),
+  vars: { ...base.vars, NOTIFY_INBOX_URL: `${expectedOrigin}/inbox` },
+  d1_databases: pilots.length
+    ? [{ ...database[0], migrations_dir: resolve(root, "migrations") }]
+    : [],
+  triggers: { crons: pilots.length ? ["*/5 * * * *"] : [] },
+};
+if (target === "staging") {
+  const source = readFileSync(resolve(root, "wrangler.staging.toml"), "utf8");
+  if (
+    (source.match(/^\[env\.preview\]$/gmu) ?? []).length !== 1 ||
+    pages.services?.some((item) => item.binding === "SLOP_NOTIFY")
+  )
+    throw new TypeError(
+      "Staging service insertion requires one preview boundary and no existing notify binding",
+    );
+  const published = source.replace(
+    "[env.preview]",
+    `[[services]]\nbinding = "SLOP_NOTIFY"\nservice = "${name}"\n\n[env.preview]`,
+  );
+  const checked = Bun.TOML.parse(published);
+  const service = checked.services?.filter(
+    (item) => item.binding === "SLOP_NOTIFY",
+  );
+  if (
+    service?.length !== 1 ||
+    service[0].service !== name ||
+    checked.env?.preview?.services?.length !== 0
+  )
+    throw new TypeError(
+      "Staging notification binding or preview isolation is invalid",
+    );
+  writeFileSync(resolve(directory, "pages.toml"), published);
+}
+const configPath = resolve(directory, "wrangler.json");
+writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
+const expectedSecrets = [
+  "ADMIN_EMAILS",
+  ...pilots.map((pilot) => `${pilot.toUpperCase()}_MAIL_PILOT`),
+].sort();
+writeFileSync(
+  resolve(directory, "profile.json"),
+  `${JSON.stringify({ target, name, pilots, expectedSecrets, databaseId: pilots.length ? database[0].database_id : null, inboxUrl: `${expectedOrigin}/inbox` }, null, 2)}\n`,
+);
+if (mode === "prepare") process.exit(0);
+if (process.env.SLOP_NOTIFY_RELEASE !== "enabled")
+  throw new TypeError("Notification release is not enabled");
+const sha = process.env.GITHUB_SHA;
+const ref =
+  target === "production" ? "refs/heads/main" : "refs/heads/development";
+if (
+  !/^[0-9a-f]{40}$/u.test(sha ?? "") ||
+  process.env.GITHUB_REF !== ref ||
+  process.env.GITHUB_EVENT_NAME === "pull_request"
+)
+  throw new TypeError(
+    "Notification deployment requires the selected protected branch",
+  );
+function command(binary, args) {
+  const result = spawnSync(binary, args, {
+    cwd: root,
+    env: process.env,
+    encoding: "utf8",
+    timeout: 180_000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) {
+    writeFileSync(
+      resolve(directory, "command-failure.log"),
+      result.stderr ?? String(result.error),
+    );
+    throw new Error(
+      `Release command failed: ${binary} ${args[0]} (details retained by the protected runner)`,
+    );
+  }
+  return result.stdout;
+}
+if (command("git", ["rev-parse", "HEAD"]).trim() !== sha)
+  throw new TypeError("Release checkout does not match GITHUB_SHA");
+const wrangler = resolve(root, "node_modules/.bin/wrangler");
+function cli(args) {
+  return command(wrangler, [...args, "--config", configPath]);
+}
+const account = process.env.CLOUDFLARE_ACCOUNT_ID;
+const token = process.env.CLOUDFLARE_API_TOKEN;
+if (!/^[0-9a-f]{32}$/u.test(account ?? "") || !token)
+  throw new TypeError("Protected Cloudflare credentials are missing");
+const inventory = JSON.parse(cli(["secret", "list"]));
+const names = Array.isArray(inventory)
+  ? inventory.map((entry) => entry.name).sort()
+  : null;
+if (JSON.stringify(names) !== JSON.stringify(expectedSecrets))
+  throw new TypeError(
+    "Notification secret inventory does not match the selected reviewed profile",
+  );
+const upload = cli([
+  "versions",
+  "upload",
+  `--tag=${sha}`,
+  `--message=slop.cash release ${sha}`,
+]);
+const matches = [
+  ...upload.matchAll(/^Worker Version ID:\s*([0-9a-f-]+)\s*$/gmu),
+];
+if (
+  matches.length !== 1 ||
+  !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(matches[0][1])
+)
+  throw new TypeError("Upload did not return exactly one Worker version");
+const versionId = matches[0][1];
+const version = JSON.parse(cli(["versions", "view", versionId, "--json"]));
+const bindings = version.resources?.bindings;
+if (version.annotations?.["workers/tag"] !== sha || !Array.isArray(bindings))
+  throw new TypeError("Uploaded version does not match the release SHA");
+const inboxBinding = bindings.filter(
+  (entry) => entry.name === "NOTIFY_INBOX_URL",
+);
+const emailBinding = bindings.filter((entry) => entry.type === "send_email");
+if (
+  inboxBinding.length !== 1 ||
+  inboxBinding[0].type !== "plain_text" ||
+  inboxBinding[0].text !== config.vars.NOTIFY_INBOX_URL ||
+  emailBinding.length !== 1 ||
+  emailBinding[0].name !== "ADMIN_EMAIL" ||
+  emailBinding[0].destination_address ||
+  emailBinding[0].allowed_destination_addresses?.length
+)
+  throw new TypeError(
+    "Uploaded inbox URL or email binding does not match the selected profile",
+  );
+const deployedSecrets = bindings
+  .filter((entry) => entry.type === "secret_text")
+  .map((entry) => entry.name)
+  .sort();
+const deployedDatabase = bindings.filter((entry) => entry.type === "d1");
+if (
+  JSON.stringify(deployedSecrets) !== JSON.stringify(expectedSecrets) ||
+  (pilots.length
+    ? deployedDatabase.length !== 1 ||
+      deployedDatabase[0].name !== "SLOP_DB" ||
+      deployedDatabase[0].id !== database[0].database_id
+    : deployedDatabase.length !== 0)
+)
+  throw new TypeError(
+    "Uploaded notification bindings do not match the selected profile",
+  );
+cli([
+  "versions",
+  "deploy",
+  `--version-id=${versionId}`,
+  "--percentage=100",
+  `--message=slop.cash release ${sha}`,
+  "--yes",
+]);
+const deployment = JSON.parse(cli(["deployments", "status", "--json"]));
+if (
+  deployment.versions?.length !== 1 ||
+  deployment.versions[0].version_id !== versionId ||
+  deployment.versions[0].percentage !== 100
+)
+  throw new TypeError(
+    "Notification deployment is not pinned to the verified version",
+  );
+// Versions do not apply triggers. Only apply them after the exact version is active.
+cli(["triggers", "deploy"]);
+const response = await fetch(
+  `https://api.cloudflare.com/client/v4/accounts/${account}/workers/scripts/${name}/schedules`,
+  {
+    headers: { authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(30_000),
+  },
+);
+if (!response.ok)
+  throw new Error(
+    `Notification schedule verification failed (${response.status})`,
+  );
+const schedules = await response.json();
+const actual = schedules.result?.schedules?.map((item) => item.cron).sort();
+if (
+  schedules.success !== true ||
+  JSON.stringify(actual) !== JSON.stringify(config.triggers.crons)
+)
+  throw new TypeError(
+    "Notification schedules do not match the selected profile",
+  );
+writeFileSync(
+  resolve(directory, "release.json"),
+  `${JSON.stringify({ target, name, sha, versionId, pilots, schedules: actual }, null, 2)}\n`,
+);
+console.log(
+  `Verified ${name} version ${versionId} at ${sha}; scheduled delivery acceptance remains separate.`,
+);

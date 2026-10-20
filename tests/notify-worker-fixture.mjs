@@ -20,6 +20,7 @@ export async function startNotifyWorkerFixture(root, persistTo, port) {
       compatibility_date: "2026-07-30",
       vars: {
         NOTIFY_FROM_ADDRESS: "notifications@slop.cash",
+        NOTIFY_INBOX_URL: "https://staging.slop.cash/inbox",
         ACTIVITY_MAIL_PILOT: JSON.stringify({
           inboxUrl: "https://staging.slop.cash/inbox",
           recipients: {

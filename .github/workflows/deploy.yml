@@ -371,6 +371,8 @@ jobs:
           test "$HAS_KEYS" = true
       - name: Publish and verify isolated staging
         env:
+          SLOP_NOTIFY_RELEASE: ${{ vars.SLOP_NOTIFY_RELEASE }}
+          SLOP_NOTIFY_MAIL_PILOTS: ${{ vars.SLOP_NOTIFY_MAIL_PILOTS }}
           GH_TOKEN: ${{ github.token }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -396,12 +398,20 @@ jobs:
           fi
           ./node_modules/.bin/wrangler deploy --config workers/identity/wrangler.staging.toml
           node scripts/configure-staging-secrets.mjs
+          if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
+            bun scripts/release-notify.mjs deploy staging "$RUNNER_TEMP/slop-notify-staging-release"
+          else
+            test -z "$SLOP_NOTIFY_MAIL_PILOTS"
+          fi
           # Pages requires the standard config filename in its working directory.
           # Keep the production config untouched and publish the verified bundle
           # with the staging config from this exact source revision.
           publish_dir="$(mktemp -d "$RUNNER_TEMP/slop-staging-pages.XXXXXX")"
           git archive "$GITHUB_SHA" | tar -x -C "$publish_dir"
           cp wrangler.staging.toml "$publish_dir/wrangler.toml"
+          if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
+            cp "$RUNNER_TEMP/slop-notify-staging-release/pages.toml" "$publish_dir/wrangler.toml"
+          fi
           cp -R dist "$publish_dir/dist"
           ln -s "$GITHUB_WORKSPACE/node_modules" "$publish_dir/node_modules"
           (
@@ -414,6 +424,17 @@ jobs:
           )
           node scripts/verify-staging-deployment.mjs "$GITHUB_SHA" "$started_at"
           node scripts/verify-staging-backend.mjs
+
+      - name: Retain notification release evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: slop-notify-staging-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/slop-notify-staging-release/profile.json
+            ${{ runner.temp }}/slop-notify-staging-release/release.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   deploy:
     name: Deploy trusted production bundle
@@ -603,6 +624,7 @@ jobs:
           X_CLIENT_SECRET: ${{ secrets.X_CLIENT_SECRET }}
           SLOPBOT_RELEASE: ${{ vars.SLOPBOT_RELEASE }}
           SLOP_NOTIFY_RELEASE: ${{ vars.SLOP_NOTIFY_RELEASE }}
+          SLOP_NOTIFY_MAIL_PILOTS: ${{ vars.SLOP_NOTIFY_MAIL_PILOTS }}
           SLOP_FEE_CONVERTER_RELEASE: ${{ vars.SLOP_FEE_CONVERTER_RELEASE }}
         # wrangler.toml owns pages_build_output_dir. A positional directory
         # bypasses that deployment contract and must not be added here.
@@ -1092,66 +1114,13 @@ jobs:
             echo "::notice::Slopbot release is not enabled (SLOPBOT_RELEASE repository variable)."
           fi
 
-          # Admin notification Worker (workers/notify). The owner creates the
-          # Worker shell and its ADMIN_EMAILS secret once, then sets the
-          # SLOP_NOTIFY_RELEASE repository variable to "enabled". Releases only
-          # upload and promote versions. Pages binds it only after the first release.
+          # The selected profile is prepared from the checked-in Pages D1 contract.
+          # No pilot is selected unless the protected environment opts in.
           if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
-          notify_secrets="$RUNNER_TEMP/slop-notify-secrets.json"
-          ./node_modules/.bin/wrangler secret list \
-            --config workers/notify/wrangler.toml > "$notify_secrets"
-          node - "$notify_secrets" <<'NODE'
-          const { readFileSync } = require("node:fs");
-          const value = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          if (!Array.isArray(value)) throw new TypeError("notify secret inventory must be an array");
-          const names = value.map((entry) => entry?.name).sort();
-          if (JSON.stringify(names) !== JSON.stringify(["ADMIN_EMAILS"])) {
-            throw new TypeError("notify Worker secret inventory must contain exactly ADMIN_EMAILS");
-          }
-          NODE
-
-          notify_upload="$RUNNER_TEMP/slop-notify-upload.log"
-          ./node_modules/.bin/wrangler versions upload \
-            --config workers/notify/wrangler.toml \
-            --tag="$GITHUB_SHA" \
-            --message="slop.cash release $GITHUB_SHA" 2>&1 | tee "$notify_upload"
-          notify_version_id="$(node - "$notify_upload" <<'NODE'
-          const { readFileSync } = require("node:fs");
-          const contents = readFileSync(process.argv[2], "utf8");
-          const matches = [...contents.matchAll(/^Worker Version ID:\s*([0-9a-f-]+)\s*$/gmu)];
-          if (matches.length !== 1 || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(matches[0][1])) {
-            throw new TypeError("notify upload did not return exactly one Worker version id");
-          }
-          process.stdout.write(matches[0][1]);
-          NODE
-          )"
-          ./node_modules/.bin/wrangler versions deploy \
-            --name slop-notify \
-            --version-id="$notify_version_id" \
-            --percentage=100 \
-            --message="slop.cash release $GITHUB_SHA" \
-            --yes
-
-          notify_versions="$RUNNER_TEMP/slop-notify-versions.json"
-          notify_deployment="$RUNNER_TEMP/slop-notify-deployment.json"
-          ./node_modules/.bin/wrangler versions list --name slop-notify --json > "$notify_versions"
-          ./node_modules/.bin/wrangler deployments status --name slop-notify --json > "$notify_deployment"
-          node - "$notify_versions" "$notify_deployment" "$GITHUB_SHA" <<'NODE'
-          const { readFileSync } = require("node:fs");
-          const versions = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          const deployment = JSON.parse(readFileSync(process.argv[3], "utf8"));
-          const sha = process.argv[4];
-          const active = Array.isArray(deployment?.versions) && deployment.versions.length === 1 ? deployment.versions[0] : null;
-          if (active?.percentage !== 100 || typeof active?.version_id !== "string") {
-            throw new TypeError("notify Worker deployment is not pinned 100% to one version");
-          }
-          const version = Array.isArray(versions) ? versions.find((candidate) => candidate?.id === active.version_id) : undefined;
-          if (version?.annotations?.["workers/tag"] !== sha) {
-            throw new TypeError("notify Worker deployment is not bound to the tested commit");
-          }
-          NODE
+            bun scripts/release-notify.mjs deploy production "$RUNNER_TEMP/slop-notify-release"
           else
-            echo "::notice::Notification Worker release is not enabled (SLOP_NOTIFY_RELEASE repository variable)."
+            test -z "$SLOP_NOTIFY_MAIL_PILOTS"
+            echo "::notice::Notification release is disabled."
           fi
 
           # Fee-wallet converter (workers/fee-converter, PRD MVP-07c). The owner
@@ -1277,6 +1246,17 @@ jobs:
             echo "::warning::Cloudflare Pages deploy attempt ${attempt} failed; retrying."
             sleep $((attempt * 10))
           done
+
+      - name: Retain notification release evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: slop-notify-production-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/slop-notify-release/profile.json
+            ${{ runner.temp }}/slop-notify-release/release.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Verify Cloudflare deployment commit metadata
         id: deployment-metadata
