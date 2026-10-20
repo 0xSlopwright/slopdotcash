@@ -914,6 +914,12 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
     .getByRole("button", { name: "Confirm: Reinstate after review" })
     .click();
   await expect(moderatorPanel).toContainText("No restriction");
+  // The admin can queue the new revision immediately, without a page reload.
+  await expect(
+    moderator
+      .getByRole("article", { name: `Security vetting for ${project.id}` })
+      .getByRole("button", { name: "Queue scan of revision 4" }),
+  ).toBeVisible();
   await moderatorPanel.getByText(/Enforcement history/u).click();
   await expect(moderatorPanel.locator("li")).toHaveCount(5);
   await expect(moderatorPanel).toContainText(
