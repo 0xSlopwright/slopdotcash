@@ -26,7 +26,10 @@ import {
   type evmBindingTypedData,
   readVaultTotals,
 } from "../../contracts/evm/adapter";
-import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
+import {
+  ESCROW_NETWORKS,
+  type EscrowDeployment,
+} from "../../src/lib/escrow-policy.mjs";
 import { isWalletChain } from "../../src/lib/wallets";
 import { PaymentSignerJournal } from "../../workers/payment-executor/index";
 import type {
@@ -35,6 +38,7 @@ import type {
 } from "../../workers/payments/index";
 import {
   type AcceptanceNetwork,
+  AcceptanceRegistry,
   type AssetEvidence,
   amountsText,
   assertEvmTestChain,
@@ -404,16 +408,27 @@ export async function runEvm(
   run.waiting = null;
 
   const projection = new Projection(directory);
-  const deploymentOf = (entry: AssetEvidence): PaymentDeployment =>
-    entry.deployment as unknown as PaymentDeployment;
-  const env: PaymentsWorkerEnvironment & { PAYMENT_DEPLOYMENTS: string } = {
+  // The dispatcher finds each vault in the project registry, as in
+  // production; only the signer roles keep a pinned deployment list.
+  const registry = new AcceptanceRegistry(directory);
+  const env: PaymentsWorkerEnvironment = {
     PAYMENTS_DB: projection.db,
-    PAYMENT_DEPLOYMENTS: "[]",
+    REGISTRY_DB: registry.db,
+    PAYMENT_NETWORKS: JSON.stringify([network]),
     PAYMENT_RPC_URLS: JSON.stringify({ [network]: rpcUrl }),
   };
+  let pinnedDeployments = "[]";
   const refreshDeployments = () => {
-    env.PAYMENT_DEPLOYMENTS = JSON.stringify(
-      run.assets.filter((a) => a.vault).map(deploymentOf),
+    pinnedDeployments = JSON.stringify(
+      registry.record(
+        run.assets
+          .filter((a) => a.vault)
+          .map((a) => ({
+            projectId: a.projectId,
+            effectiveCycle: run.startedAt.slice(0, 7),
+            deployment: a.deployment as unknown as EscrowDeployment,
+          })),
+      ),
     );
   };
   // The production executor roles, each with its own durable journal and key.
@@ -437,7 +452,7 @@ export async function runEvm(
           return env.PAYMENTS_DB;
         },
         get PAYMENT_DEPLOYMENTS() {
-          return env.PAYMENT_DEPLOYMENTS;
+          return pinnedDeployments;
         },
         get PAYMENT_RPC_URLS() {
           return env.PAYMENT_RPC_URLS;
@@ -584,26 +599,28 @@ export async function runEvm(
       throw new Error("Vault exists without a recorded creation transaction");
     if (!entry.vault) {
       entry.vault = vault;
-      entry.deployment = {
-        projectId: entry.projectId,
-        network,
-        chain: policy.chain,
+      // The escrow deployment an admin revision records in project.json.
+      const deployment: EscrowDeployment = {
+        network: network as EscrowDeployment["network"],
         vault,
+        programId: null,
+        upgradeAuthority: null,
+        projectPda: null,
+        networkDomain: null,
         asset,
         owner: keys.owner.address.toLowerCase(),
         identityAuthority: identity.address.toLowerCase(),
         feeRecipient: feeRecipient.toLowerCase(),
+        deploymentTransaction: steps["create-vault"].transactionId,
+        sourceCommit: run.sourceCommit,
         codeSha256: await codeSha256(chain, vault),
         bindingDelaySeconds: bindingDelay.toString(),
+        rotationDelaySeconds: null,
         factory,
         factoryCodeSha256,
         registrar: keys.registrar.address.toLowerCase(),
-        upgradeAuthority: null,
-        chainId,
-        gasCeiling: policy.gasCeiling ?? null,
-        scanPageBlocks: policy.scanPageBlocks ?? null,
-        deploymentTransaction: steps["create-vault"].transactionId,
       };
+      entry.deployment = { ...deployment };
       await persist();
     }
     refreshDeployments();
