@@ -130,6 +130,15 @@ bounded recursive inspection of a supplied file. It keeps every file in
 quarantine. It does not intercept guest execution, release artifacts, or
 replace the remaining requirements below.
 
+[Source acquisition](../../workers/vetting/ACQUISITION.md) verifies immutable
+Git objects without checkout or execution. The [signed queue reader and template
+acquisition](../../workers/vetting/QUEUE.md) bind those objects to the assigned
+manifest and template inputs. Both retain visibility gaps and leave assessments
+pending. Independent provider transports are under review in
+[PR #953](https://github.com/SlopDotCash/slopdotcash/pull/953); actual provider
+acceptance is still required. These components do not complete execution,
+telemetry, artifact release or trusted publication.
+
 1. A hardware-isolated VM or microVM service that meets VET-02 and VET-03:
    fresh disposable guest, no host mounts or credentials, default-deny egress
    through an instrumented proxy, the eleven telemetry channels, canary
