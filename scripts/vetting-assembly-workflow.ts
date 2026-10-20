@@ -328,8 +328,8 @@ if (input.guestEvidence) {
       ),
     );
     assert(
-      manifest.files.some(
-        (file: { role: string }) => file.role === "captured-filesystem-object",
+      manifest.files.some((file: { role: string }) =>
+        file.role.startsWith("captured-filesystem-object:"),
       ),
     );
     const negative = await mkdtemp(

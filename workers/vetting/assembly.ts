@@ -508,7 +508,7 @@ export async function assembleEvidence(input: {
           throw new Error("Filesystem content mismatch or limit");
         descriptors.push({ sha256: sha, bytes: content.length });
         files.push({
-          role: "captured-filesystem-object",
+          role: `captured-filesystem-object:${sha}`,
           sha256: sha,
           bytes: content.length,
         });
