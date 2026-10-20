@@ -455,6 +455,51 @@ export class VettingEvidence {
       role("block-allocation-map", vm.diskMapSha256);
     else if (vm.diskMapSha256 !== null)
       fail(409, "assembly_mismatch", "VM disk-map reference is invalid");
+    const guestFile = roles.get("guest-receipt");
+    if (guestFile) {
+      const guest = await read(guestFile.sha256);
+      const profileFile = role("approved-fixture-profile");
+      const profile = await read(profileFile.sha256);
+      if (
+        guest.schema !== "slop-guest-syscall-evidence-v1" ||
+        guest.state !== "incomplete" ||
+        guest.fixtureOnly !== true ||
+        guest.providerCallsAuthorized !== false ||
+        guest.publicationAuthorized !== false ||
+        guest.sourceInventorySha256 !== queue.sourceInventorySha256 ||
+        guest.vmEvidenceSha256 !== role("offline-vm").sha256 ||
+        guest.serialSha256 !== vm.serialSha256 ||
+        guest.profileSha256 !== profileFile.sha256 ||
+        guest.seedSha256 !== vm.seedSha256 ||
+        !Array.isArray(guest.sourceSha256) ||
+        profile.schema !== "slop-harmless-guest-profile-v1" ||
+        profile.fixtureOnly !== true ||
+        profile.sourceInventorySha256 !== queue.sourceInventorySha256
+      )
+        fail(
+          409,
+          "assembly_mismatch",
+          "Guest receipt does not bind the captured source, profile and VM",
+        );
+      for (const digest of guest.sourceSha256) required(digest);
+      for (const [name, digest] of [
+        ["untrusted-trace", guest.traceSha256],
+        ["untrusted-output", guest.outputSha256],
+      ] as const) {
+        required(digest);
+        role(name, digest);
+      }
+      if (
+        guest.kernelArtifactGate !== undefined ||
+        profile.kernelPolicySha256 !== undefined
+      ) {
+        const gate = assemblyRecord(guest.kernelArtifactGate);
+        if (gate.policySha256 !== profile.kernelPolicySha256)
+          fail(409, "assembly_mismatch", "Guest kernel profile differs");
+        required(gate.postCollectorOutputSha256);
+        role("untrusted-post-collector-probe", gate.postCollectorOutputSha256);
+      }
+    }
     const dependency = roles.get("dependency-inventory");
     if (dependency) {
       const record = await read(dependency.sha256);

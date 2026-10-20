@@ -261,6 +261,84 @@ export async function retainActualAssembly(input: {
     retained.evidence.assemblyClosure(assessmentId, "wrong-assessment"),
     /does not bind the stored assessment/,
   );
+  // Keep the actual guest receipt unchanged while trying to omit its output
+  // from both the declared file list and review inputs. Retention must refuse.
+  const outputSha = manifest.files.find(
+    (file) => file.role === "untrusted-output",
+  )!.sha256;
+  const truncatedReview = Buffer.from(
+    JSON.stringify({
+      ...review,
+      items: review.items.filter(
+        (item: { sha256: string }) => item.sha256 !== outputSha,
+      ),
+    }),
+  );
+  const truncatedReviewSha = digest(truncatedReview);
+  const truncatedManifest = Buffer.from(
+    JSON.stringify({
+      ...manifest,
+      reviewInputSha256: truncatedReviewSha,
+      files: manifest.files.filter((file) => file.sha256 !== outputSha),
+    }),
+  );
+  const truncatedManifestSha = digest(truncatedManifest);
+  const omittedOutputPath = `/api/v1/vetting/evidence/${assessmentId}/omitted-guest-output`;
+  const omittedObjects = objects.filter(
+    (object) =>
+      ![
+        outputSha,
+        assembled.manifestSha256,
+        manifest.reviewInputSha256,
+      ].includes(object.sha256),
+  );
+  const replacementObjects = [
+    [truncatedManifestSha, truncatedManifest, "manifest"],
+    [truncatedReviewSha, truncatedReview, "artifact"],
+  ] as const;
+  await send(
+    "POST",
+    omittedOutputPath,
+    JSON.stringify({
+      assemblySha256: truncatedManifestSha,
+      traceSha256,
+      objects: [
+        ...omittedObjects,
+        ...replacementObjects.map(([sha256, bytes, kind]) => ({
+          sha256,
+          sizeBytes: bytes.length,
+          kind,
+          label: "Deliberately incomplete captured inventory",
+          contentType: "application/json",
+        })),
+      ],
+    }),
+  );
+  for (const object of omittedObjects) {
+    const bytes = candidates.get(object.sha256)!;
+    if (object.chunks) {
+      for (const chunk of object.chunks)
+        await send(
+          "PUT",
+          `${omittedOutputPath}/${object.sha256}/chunks/${chunk.index}`,
+          bytes.subarray(
+            chunk.index * EVIDENCE_CHUNK_BYTES,
+            chunk.index * EVIDENCE_CHUNK_BYTES + chunk.sizeBytes,
+          ),
+        );
+      await send(
+        "POST",
+        `${omittedOutputPath}/${object.sha256}/finalize`,
+        "{}",
+      );
+    } else await send("PUT", `${omittedOutputPath}/${object.sha256}`, bytes);
+  }
+  for (const [sha256, bytes] of replacementObjects)
+    await send("PUT", `${omittedOutputPath}/${sha256}`, bytes);
+  await assert.rejects(
+    retained.evidence.assemblyClosure(assessmentId, "omitted-guest-output"),
+    /canonical assembly reference is absent/i,
+  );
   const overview = await retained.evidence.handle(
     new Request(
       `https://slop.cash/api/v1/operator/vetting-evidence?assessmentId=${assessmentId}&runId=${runId}`,

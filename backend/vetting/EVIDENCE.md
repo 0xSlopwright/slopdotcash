@@ -46,15 +46,19 @@ assembly. A new receipt uses a new run identity.
 The assembler and store share the canonical manifest parser. Closure verifies
 all declared captured-evidence file digests and lengths, the exact review input,
 source and dependency object references, artifact lineage, and the captured VM
-receipt/overlay/serial/disk-map references. The exact assessment must agree with
-D1 and the retained queue input from authenticated acquisition. Review input must preserve the assembly's
+receipt/overlay/serial/disk-map references. An optional guest receipt must bind
+the captured source, profile and VM, and its trace, output and post-collector
+output must remain retained even if a submitted file list tries to omit them.
+The exact assessment must agree with D1 and the retained queue input from
+authenticated acquisition. Review input must preserve the assembly's
 visibility gaps. Both existing serial variants (with and without the optional
 guest collector) are supported. Missing, changed or unregistered referenced
 bytes prevent verified retention. Every registered object is reread and hashed.
 
 This is closure of canonical captured evidence, not retention of every runtime
-input. VM receipts also pin base disks, seed images, firmware and host toolchain
-executables. Those operator-controlled provenance inputs remain external; their
+input. Receipts also pin base disks, seed images, firmware, host toolchain
+executables, the guest collector and kernel policy. Those operator-controlled
+provenance inputs remain external; their
 large bytes are not implicitly copied into this 64 MiB capture store. The UI
 states this boundary. The storage run immutably binds the assembly and captured
 VM digests; the current VM format does not independently assert a run ID.
