@@ -97,3 +97,36 @@ creating/reading/renaming/deleting a file, a child metadata connection attempt,
 a synthetic canary read and denied raw-device access. It retains the original
 VM timeout and external-data image checks. These are tested observations, not
 complete VET-03 or VET-08 acceptance.
+
+### Optional materialized-artifact fixture gate
+
+A separately approved harmless profile can bind `kernelPolicySha256` to the
+checked-in `fixtures/artifact-gate.apparmor` bytes. It must also pin the guest
+`apparmor_parser` and `aa-exec` executables. The seed binds the policy, collector,
+source inventory and object bytes. The guest verifies these inputs before it
+loads the policy. A parser failure or missing enforce-mode profile stops source
+execution. No fallback command runs without that profile.
+
+The fixture policy permits reads from the root-owned baseline and read-only
+source tree. It permits writes to a quarantine directory but denies reads,
+executable mappings and execution there. It grants no profile change, mount or
+capability permissions. This is a conservative gate for materialized files:
+new native, script, WASM and library files cannot be reopened for use. The policy
+does not inspect file contents or authorize their release.
+
+The real workflow copies harmless native and library bytes and generates a
+script and minimal WASM bytes. It records denied reads, native execution,
+interpreter input and library loading. The trusted fixture controller then
+kills its actual strace process. The kernel policy must remain in enforce mode.
+A separate trusted probe repeats the same denied accesses after that death. No
+unobserved repository workflow is resumed. A malformed-policy and missing-profile
+probe must also fail without creating its execution marker.
+
+The private receipt binds the policy digest, enforce-mode observations, killed
+collector exit, post-loss output and VM bytes. Required gaps are added by the
+host collector, regardless of guest claims. This remains guest evidence and an
+incomplete fixture result. It does not establish independent kernel telemetry,
+root-tamper resistance, arbitrary interpreter/JIT or memory-only interception,
+full project execution or a controlled network pass. Provider calls and result
+publication remain disabled. The Darwin option still authorizes only the pinned
+harmless fixture, never live untrusted repository execution.

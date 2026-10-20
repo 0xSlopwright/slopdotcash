@@ -24,6 +24,11 @@ REQUIRED_GAPS = (
     'syscall-string-values-bounded-to-256-bytes',
     'controlled-proxy-and-filesystem-diff-not-implemented',
 )
+KERNEL_GAPS = (
+    'materialized-file-gate-only-not-interpreter-jit-or-memory-interception',
+    'collector-deliberately-terminated-no-complete-runtime-observation',
+    'kernel-policy-observation-is-guest-evidence-not-independent-host-proof',
+)
 
 
 def digest(data):
@@ -92,9 +97,50 @@ def inspect_profile(data, expected):
             or not argv[1].startswith(str(ROOT) + '/')):
         raise ValueError('This fixture profile supports the pinned Python runtime only')
     safe_path(argv[1][len(str(ROOT)) + 1:])
-    if set(profile['baseline']) != {'/usr/bin/strace', '/usr/bin/python3', '/usr/bin/setpriv'}:
+    baseline = {'/usr/bin/strace', '/usr/bin/python3', '/usr/bin/setpriv'}
+    if 'kernelPolicySha256' in profile:
+        baseline |= {'/usr/sbin/apparmor_parser', '/usr/bin/aa-exec'}
+        if len(profile['argv']) != 2:
+            raise ValueError('Kernel fixture phases are selected by the trusted collector')
+    if set(profile['baseline']) != baseline:
         raise ValueError('Exact fixture baseline identities required')
     return profile
+
+
+def enforced_policy():
+    expected = 'slop-artifact-fixture (enforce)'
+    profiles = bounded('/sys/kernel/security/apparmor/profiles', 1024 * 1024).decode().splitlines()
+    if expected not in profiles:
+        raise ValueError('Required kernel policy is not enforced; source execution refused')
+    return expected
+
+
+def load_policy(profile):
+    data = bounded(MEDIA / 'artifact-policy', 65536)
+    if digest(data) != profile['kernelPolicySha256']:
+        raise ValueError('Kernel policy changed; source execution refused')
+    subprocess.run(['/usr/sbin/apparmor_parser', '--replace', '--skip-cache',
+                    str(MEDIA / 'artifact-policy')], check=True, timeout=10)
+    return enforced_policy()
+
+
+def failed_policy_probe():
+    """Actual harmless negative fixture; never a fallback for source execution."""
+    invalid = Path('/root/slop-invalid-policy')
+    invalid.write_text('profile slop-fixture-must-not-load { INVALID_POLICY }\n')
+    parsed = subprocess.run(['/usr/sbin/apparmor_parser', '--replace', '--skip-cache', str(invalid)],
+                            capture_output=True, timeout=10)
+    if parsed.returncode == 0:
+        raise ValueError('Invalid policy was unexpectedly accepted')
+    marker = Path('/tmp/slop-missing-policy-executed')
+    entered = subprocess.run(
+        ['/usr/bin/aa-exec', '-p', 'slop-fixture-must-not-load', '--', '/usr/bin/python3',
+         '-c', "open('/tmp/slop-missing-policy-executed','w').write('unexpected')"],
+        capture_output=True, timeout=10)
+    if entered.returncode == 0 or marker.exists():
+        raise ValueError('Missing kernel policy did not stop execution')
+    return {'invalidPolicyExitCode': parsed.returncode, 'missingPolicyExitCode': entered.returncode,
+            'executionMarkerAbsent': True}
 
 
 def bind_command(profile, records):
@@ -140,25 +186,65 @@ def main(expected_profile):
     canary.mkdir(mode=0o755)
     (canary / 'wallet-test.txt').write_text('SLOP_SYNTHETIC_CANARY_NO_REAL_ACCESS\n')
     (canary / 'wallet-test.txt').chmod(0o444)
+    kernel = None
+    argv = profile['argv']
+    if 'kernelPolicySha256' in profile:
+        negative = failed_policy_probe()
+        kernel = {'policySha256': profile['kernelPolicySha256'], 'before': load_policy(profile),
+                  'failedLoadProbe': negative}
+        quarantine = Path('/tmp/slop-quarantine')
+        quarantine.mkdir(mode=0o700)
+        os.chown(quarantine, 65534, 65534)
+        argv = ['/usr/bin/aa-exec', '-p', 'slop-artifact-fixture', '--', *argv, 'traced']
     trace_path, output_path = Path('/root/slop-events.log'), Path('/root/slop-output.log')
     started = time.time()
     termination = 'command-exit'
     command = ['/usr/bin/strace', '--kill-on-exit', '-f', '-ttt', '-yy', '-s', '256',
                '-o', str(trace_path), '--', '/usr/bin/setpriv', '--reuid=65534',
                '--regid=65534', '--clear-groups', '--no-new-privs',
-               '--bounding-set=-all', '--inh-caps=-all', *profile['argv']]
+               '--bounding-set=-all', '--inh-caps=-all', *argv]
     with output_path.open('xb') as output:
         process = subprocess.Popen(command, cwd=ROOT, env={'PATH': '/usr/bin:/bin', 'HOME': str(canary)},
                                    stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True, preexec_fn=child_limits)
         try:
-            process.wait(timeout=20)
+            if kernel:
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline and process.poll() is None:
+                    if b'"phase": "traced"' in bounded(output_path, 65536):
+                        break
+                    time.sleep(0.05)
+                if process.poll() is not None or b'"phase": "traced"' not in bounded(output_path, 65536):
+                    raise ValueError('Traced kernel-denial fixture did not reach its checkpoint')
+                # Kill the actual ptrace collector, not a mock. --kill-on-exit
+                # kills its tracees; no repository workflow is resumed.
+                os.kill(process.pid, signal.SIGKILL)
+                process.wait(timeout=5)
+                termination = 'fixture-collector-killed'
+                kernel['collectorExitCode'] = process.returncode
+                kernel['afterCollectorDeath'] = enforced_policy()
+            else:
+                process.wait(timeout=20)
         except subprocess.TimeoutExpired:
             termination = 'command-wall-time-limit'
         finally:
             if process.poll() is None:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
+    if kernel:
+        after_path = Path('/root/slop-after-collector.log')
+        with after_path.open('xb') as output:
+            after = subprocess.run(
+                ['/usr/bin/setpriv', '--reuid=65534', '--regid=65534', '--clear-groups',
+                 '--no-new-privs', '--bounding-set=-all', '--inh-caps=-all',
+                 '/usr/bin/aa-exec', '-p', 'slop-artifact-fixture', '--',
+                 *profile['argv'], 'after-collector'],
+                cwd=ROOT, env={'PATH': '/usr/bin:/bin', 'HOME': str(canary)},
+                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                timeout=15, preexec_fn=child_limits)
+        kernel['postCollectorExitCode'] = after.returncode
+        kernel['afterProbe'] = enforced_policy()
+        kernel['postCollectorOutput'] = base64.b64encode(bounded(after_path, 65536)).decode()
     trace = bounded(trace_path, MAX_TRACE)
     output = bounded(output_path, 65536)
     receipt = {
@@ -170,6 +256,9 @@ def main(expected_profile):
         'trace': base64.b64encode(trace).decode(), 'output': base64.b64encode(output).decode(),
         'visibilityGaps': list(REQUIRED_GAPS),
     }
+    if kernel:
+        receipt['kernelArtifactGate'] = kernel
+        receipt['visibilityGaps'].extend(KERNEL_GAPS)
     if process.returncode != 0 or termination != 'command-exit':
         receipt['visibilityGaps'].append('fixture-command-did-not-complete')
     if len(trace) >= MAX_TRACE:
