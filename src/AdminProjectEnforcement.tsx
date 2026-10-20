@@ -162,10 +162,13 @@ export function ProjectEnforcementPanel({
           <ol className="admin-enforcement-history">
             {enforcement.records.map((record) => (
               <li key={record.id}>
-                <strong>{ACTION_LABELS[record.action]}</strong> by @
-                {record.actor.githubLogin} ({record.actorRole},{" "}
-                {record.decisionSource}) on {formatTime(record.createdAt)} UTC.
-                Revision {record.beforeRevision}
+                <strong>{ACTION_LABELS[record.action]}</strong> by{" "}
+                {record.actor
+                  ? `@${record.actor.githubLogin}`
+                  : "the signed security vetting service"}{" "}
+                ({record.actorRole}, {record.decisionSource}) on{" "}
+                {formatTime(record.createdAt)} UTC. Revision{" "}
+                {record.beforeRevision}
                 {record.afterRevision === null
                   ? ""
                   : ` → ${record.afterRevision}`}

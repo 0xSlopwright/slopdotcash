@@ -389,8 +389,16 @@ async function serviceResult(
     signingKeySha256: keySha256,
     at: deps.now().toISOString(),
   });
-  if (recorded === "conflict")
+  if (recorded === "conflict") {
+    const current = await deps.vetting.getAssessment(result.assessmentId);
+    if (current?.state === "pending")
+      fail(
+        409,
+        "stale_project",
+        "The project changed while the result was recorded. Read the queued scan and retry.",
+      );
     fail(409, "already_recorded", "This assessment already has a result");
+  }
   // Skills and discovery change with the clearance, so drop cached copies.
   // Cache keys carry the enforcement generation (ADM-06), so purge that scope.
   await purgeProjectCache(

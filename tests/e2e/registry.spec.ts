@@ -30,7 +30,7 @@ async function postVettingResult(
   request: APIRequestContext,
   projectId: string,
   repository: string,
-  disposition: "clean" | "incomplete",
+  disposition: "clean" | "incomplete" | "malicious",
 ) {
   if (!VETTING_PUBLIC_KEY || !VETTING_PRIVATE_KEY)
     throw new Error("Missing E2E vetting key");
@@ -834,7 +834,9 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
   expect(adminErrors).toEqual([]);
   await adminContext.close();
 
-  const moderatorContext = await browser.newContext();
+  const moderatorContext = await browser.newContext({
+    recordVideo: { dir: test.info().outputPath("enforcement-video") },
+  });
   const moderator = await moderatorContext.newPage();
   const moderatorErrors = observe(moderator);
   await signIn(moderator, MODERATOR_TOKEN);
@@ -877,6 +879,12 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
   expect((await request.get(`/api/v1/projects/${project.id}`)).status()).toBe(
     410,
   );
+  await moderator.screenshot({
+    path: test.info().outputPath("enforcement-before-scan.png"),
+    fullPage: true,
+  });
+  await queueScan(moderator, project.id, "Confirm the reported finding", 3);
+  await postVettingResult(request, project.id, project.repository, "malicious");
   await queueScan(
     moderator,
     project.id,
@@ -906,8 +914,21 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
     .getByRole("button", { name: "Confirm: Reinstate after review" })
     .click();
   await expect(moderatorPanel).toContainText("No restriction");
+  // The admin can queue the new revision immediately, without a page reload.
+  await expect(
+    moderator
+      .getByRole("article", { name: `Security vetting for ${project.id}` })
+      .getByRole("button", { name: "Queue scan of revision 4" }),
+  ).toBeVisible();
   await moderatorPanel.getByText(/Enforcement history/u).click();
-  await expect(moderatorPanel.locator("li")).toHaveCount(4);
+  await expect(moderatorPanel.locator("li")).toHaveCount(5);
+  await expect(moderatorPanel).toContainText(
+    "the signed security vetting service",
+  );
+  await moderator.screenshot({
+    path: test.info().outputPath("enforcement-history.png"),
+    fullPage: true,
+  });
   expect(
     await (await request.get(`/api/v1/projects/${project.id}`)).json(),
   ).toMatchObject({
@@ -960,7 +981,7 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
   ])
     await expect(
       applicant.locator(".inbox-item", { hasText: title }),
-    ).toHaveCount(1);
+    ).toHaveCount(title === `The ${project.id} project is banned.` ? 2 : 1);
   await expect(applicant.locator("main")).not.toContainText("malware");
   await expect(applicant.locator("main")).not.toContainText(evidence);
   // Only moderators are asked to decide the appeal.

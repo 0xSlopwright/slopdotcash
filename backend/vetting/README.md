@@ -58,7 +58,7 @@ queue a scan, and Slop serves no skill for it.
 | `queued` | A scan of the live pin waits for a result | Blocked |
 | `quarantined` | The newest finished scan of the live pin is `incomplete` | Blocked |
 | `cleared` | The newest finished scan of the live pin is `clean` | Allowed |
-| `banned` | Any scan of the project is `malicious` | Blocked; a new scan or commit cannot lift it |
+| `banned` | A malicious scan has no independent reinstatement decision covering it | Blocked; a new scan or commit alone cannot lift it |
 
 Merging to the integration branch therefore pauses skills and discovery for
 the project until an admin queues a scan of the new head and its clean result
@@ -66,8 +66,8 @@ lands. Slop keeps each branch head in the edge cache for 30 seconds, and edge
 copies of public skill responses expire within another 30 seconds.
 
 A queued rescan keeps the last finished decision until its result lands.
-Reinstatement after a ban belongs to the ADM-06 path (issue #911) and is not
-in this module.
+Reinstatement after a ban uses the ADM-06 path and the exact reviewed scan
+records described in [Independent reinstatement](#independent-reinstatement).
 
 ## Routes
 
@@ -138,3 +138,22 @@ can be cleared, so no project skill is served.
    evidence, with published retention, access and size limits (VET-03).
 7. The VET-08 acceptance run of the harmless fixture classes on that
    infrastructure, with its coverage and blind-spot report.
+
+## Independent reinstatement
+
+A confirmed malicious signed result atomically records the result, a repository-bound
+Ban and the owner inbox event. The issuer is the signing-key digest, assessment,
+policy version and confirmation rule. A model label alone cannot create this record.
+The record immediately closes cached lists, direct skills and repository aliases.
+If the manifest is not already paused and retired, the record says `revision_pending`;
+an admin must append that canonical revision before reinstatement. No GitHub actor
+or revision author is invented for the service.
+
+A clean scan alone does not clear a confirmed malicious finding. An owner or
+moderator files an appeal. An independent human moderator may decide it only after
+a fresh complete scan of the restricted revision. Migration 0031 stores the exact
+clean scan and reviewed malicious assessment IDs with that append-only decision.
+Every later malicious assessment remains a new ban; no old decision covers it.
+The changed listing revision still needs clearance before its skills can publish.
+Migration 0032 preserves human enforcement history and admits the signed service
+issuer only for standing-rule Ban records.

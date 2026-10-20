@@ -86,8 +86,9 @@ export function projectRestriction(
     }
     if (record.action === "quarantine" || record.action === "ban") {
       if (
+        record.actor &&
         !restriction.restrictedBy.some(
-          (actor) => actor.githubId === record.actor.githubId,
+          (actor) => actor.githubId === record.actor?.githubId,
         )
       )
         restriction.restrictedBy.push(record.actor);

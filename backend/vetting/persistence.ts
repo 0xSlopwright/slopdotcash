@@ -5,8 +5,18 @@
  */
 
 import { canonicalJson } from "../../scripts/readme-proof-binding";
-import type { ProjectD1Database } from "../projects/cloudflare-persistence";
-import type { GithubActor } from "../projects/contracts";
+import { notifyProjectEnforcement } from "../notifications/events";
+import {
+  CloudflareProjectPersistence,
+  enforcementStatement,
+  type ProjectD1Database,
+} from "../projects/cloudflare-persistence";
+import type { GithubActor, ProjectEnforcement } from "../projects/contracts";
+import {
+  enforcedManifest,
+  projectRestriction,
+  repositoryIdentity,
+} from "../projects/enforcement";
 import { sha256Hex } from "../trace/validation";
 import type {
   VettingArtifact,
@@ -74,7 +84,11 @@ export type VettingClearance =
   | { state: "queued"; assessment: AssessmentSummary }
   | { state: "quarantined"; assessment: AssessmentSummary }
   | { state: "stale"; assessment: AssessmentSummary; live: VettingPin }
-  | { state: "cleared"; assessment: AssessmentSummary }
+  | {
+      state: "cleared";
+      assessment: AssessmentSummary;
+      reviewedMaliciousAssessmentIds?: string[];
+    }
   | { state: "banned"; assessment: AssessmentSummary };
 
 type AssessmentRow = {
@@ -276,6 +290,52 @@ export class CloudflareVettingPersistence {
     at: string;
   }): Promise<"recorded" | "conflict"> {
     const { result } = input;
+    let enforcement: ProjectEnforcement | null = null;
+    if (result.disposition === "malicious") {
+      if (!result.confirmation)
+        throw new Error("Confirmed malicious evidence is required");
+      const projects = new CloudflareProjectPersistence(this.db);
+      const project = await projects.getProject(result.projectId);
+      if (!project) throw new Error("The assessed project is missing");
+      const restriction = projectRestriction(
+        project.id,
+        await projects.listEnforcements(),
+      );
+      const identity = repositoryIdentity(project.manifest);
+      enforcement = {
+        id: `enf_${result.assessmentId}`,
+        projectId: project.id,
+        sequence: restriction.nextSequence,
+        action: "ban",
+        stateAfter: "banned",
+        appealAfter: restriction.appeal === "requested" ? "requested" : "none",
+        reason:
+          "Confirmed malicious evidence under the reviewed security vetting rule",
+        evidenceReference: result.assessmentId,
+        repositoryGithubId: restriction.repositoryGithubId ?? identity.githubId,
+        repositoryKeys: [
+          ...new Set([...restriction.repositoryKeys, ...identity.keys]),
+        ],
+        actor: null,
+        actorRole: "vetting-service",
+        decisionSource: "standing-rule",
+        systemIssuer: {
+          kind: "vetting-service",
+          keySha256: input.signingKeySha256,
+          assessmentId: result.assessmentId,
+          policyVersion: result.policyVersion,
+          rule: result.confirmation.rule,
+        },
+        beforeRevision: project.revision,
+        beforeManifestSha256: project.manifestSha256,
+        afterRevision: null,
+        afterManifestSha256: null,
+        result: enforcedManifest(project.manifest)
+          ? "no_revision_needed"
+          : "revision_pending",
+        createdAt: input.at,
+      };
+    }
     try {
       await this.db.batch([
         this.db
@@ -294,6 +354,12 @@ export class CloudflareVettingPersistence {
             input.at,
             result.assessmentId,
           ),
+        ...(enforcement
+          ? [
+              enforcementStatement(this.db, enforcement),
+              notifyProjectEnforcement(this.db, enforcement.id),
+            ]
+          : []),
         ...result.artifacts.map((artifact, ordinal) =>
           this.db
             .prepare(
@@ -318,7 +384,9 @@ export class CloudflareVettingPersistence {
     } catch (error) {
       if (
         error instanceof Error &&
-        /a vetting result is recorded once/u.test(error.message)
+        /a vetting result is recorded once|enforcement sequence|NOT NULL constraint|UNIQUE constraint/u.test(
+          error.message,
+        )
       )
         return "conflict";
       throw error;
@@ -331,20 +399,22 @@ export class CloudflareVettingPersistence {
     manifest: object,
     throughRevision: number,
     readPin: VettingPinReader,
+    forReinstatement = false,
   ): Promise<VettingClearance> {
     return this.clearance(
       projectId,
       await vettedContentSha256(manifest),
       throughRevision,
       readPin,
+      forReinstatement,
     );
   }
 
   /**
    * The clearance of a project's content digest through a revision. A
-   * confirmed-malicious result at any revision bans the project until the
-   * separate reinstatement path (ADM-06) exists; a new commit or a later
-   * clean scan cannot lift it. Otherwise only scans of the unbroken run of
+   * confirmed-malicious result bans the project until an independent ADM-06
+   * decision explicitly covers that exact finding with a later clean scan.
+   * A clean scan alone cannot lift it. Otherwise only scans of the unbroken run of
    * revisions with the same content count, and of those only scans of the
    * live pin: the current integration-branch head and template digest. The
    * newest finished one decides (VET-07). A scan of another commit or
@@ -356,13 +426,29 @@ export class CloudflareVettingPersistence {
     contentSha256: string,
     throughRevision: number,
     readPin: VettingPinReader,
+    forReinstatement = false,
   ): Promise<VettingClearance> {
     const assessments = await this.projectAssessments(projectId);
-    const malicious = newest(
-      assessments,
-      (assessment) => assessment.state === "malicious",
+    const reviewed = await this.db
+      .prepare(
+        `SELECT reviewed.value AS assessment_id
+       FROM project_vetting_reinstatements r
+       JOIN project_enforcements e ON e.id = r.enforcement_id,
+       json_each(r.malicious_assessment_ids) reviewed
+       WHERE e.project_id = ? AND e.action = 'reinstate'`,
+      )
+      .bind(projectId)
+      .all<{ assessment_id: string }>();
+    const waived = new Set(
+      (reviewed.results ?? []).map((row) => row.assessment_id),
     );
-    if (malicious) return { state: "banned", assessment: summarize(malicious) };
+    const findings = assessments.filter(
+      (assessment) =>
+        assessment.state === "malicious" && !waived.has(assessment.id),
+    );
+    const malicious = findings.at(-1);
+    if (malicious && !forReinstatement)
+      return { state: "banned", assessment: summarize(malicious) };
     const window = new Set<number>();
     const revisions = await this.revisionContents(projectId);
     for (let index = revisions.length - 1; index >= 0; index -= 1) {
@@ -397,8 +483,28 @@ export class CloudflareVettingPersistence {
       pinned,
       (assessment) => assessment.state !== "pending",
     );
-    if (finished?.state === "clean")
-      return { state: "cleared", assessment: summarize(finished) };
+    if (finished?.state === "clean") {
+      if (
+        malicious &&
+        findings.some(
+          (finding) =>
+            finding.completedAt === null ||
+            finished.requestedAt <= finding.completedAt,
+        )
+      )
+        return { state: "banned", assessment: summarize(malicious) };
+      return {
+        state: "cleared",
+        assessment: summarize(finished),
+        ...(forReinstatement
+          ? {
+              reviewedMaliciousAssessmentIds: findings.map(
+                (finding) => finding.id,
+              ),
+            }
+          : {}),
+      };
+    }
     if (finished !== undefined)
       return { state: "quarantined", assessment: summarize(finished) };
     const queued = newest(

@@ -7,7 +7,10 @@ import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
+import {
+  CloudflareProjectPersistence,
+  ENFORCEMENT_COLUMNS,
+} from "../backend/projects/cloudflare-persistence";
 import type { RepositoryControl } from "../backend/projects/contracts";
 import type { EdgeCache } from "../backend/projects/edge-cache";
 import {
@@ -80,6 +83,8 @@ beforeEach(() => {
     "0026_private_security_cases.sql",
     "0027_project_enforcement_owner_appeals.sql",
     "0029_notification_event_kinds.sql",
+    "0031_project_vetting_reinstatements.sql",
+    "0032_project_system_enforcement.sql",
   ]);
   sqlite = database.sqlite;
   persistence = new CloudflareProjectPersistence(database.db);
@@ -109,12 +114,18 @@ beforeEach(() => {
             : null,
     notifyAdmins: async () => true,
     repositoryControl: async (manifest) => control(manifest.repositories[0].id),
-    vettingClearance: (projectId, manifest, throughRevision) =>
+    vettingClearance: (
+      projectId,
+      manifest,
+      throughRevision,
+      forReinstatement,
+    ) =>
       vetting.manifestClearance(
         projectId,
         manifest,
         throughRevision,
         async () => livePin,
+        forReinstatement,
       ),
     readTokenMetadata: async (network, address) => {
       tokenReads.push(`${network}:${address}`);
@@ -168,10 +179,16 @@ function call(
 }
 
 /** Records a clean secure-VM result for the project's current revision. */
-async function clearCurrentRevision(projectId: string) {
+async function clearCurrentRevision(
+  projectId: string,
+  disposition: "clean" | "malicious" = "clean",
+) {
   const project = await persistence.getProject(projectId);
   if (project === null) throw new Error("project was not listed");
   const id = `vet_${String(++scans).padStart(32, "0")}`;
+  const requestedAt = new Date(
+    Date.parse("2026-10-18T12:00:00.000Z") + scans * 2000,
+  ).toISOString();
   await vetting.createAssessment({
     id,
     projectId,
@@ -181,7 +198,7 @@ async function clearCurrentRevision(projectId: string) {
     commitSha: livePin.commitSha,
     templateSha256: livePin.templateSha256,
     requestedBy: ADMIN,
-    requestedAt: `2026-10-18T12:00:${String(scans).padStart(2, "0")}.000Z`,
+    requestedAt,
     requestReason: "Fixture scan",
   });
   const result = parseVettingResult(
@@ -195,7 +212,7 @@ async function clearCurrentRevision(projectId: string) {
         commitSha: livePin.commitSha,
         templateSha256: livePin.templateSha256,
       },
-      "clean",
+      disposition,
     ),
   );
   expect(
@@ -204,9 +221,10 @@ async function clearCurrentRevision(projectId: string) {
       resultText: JSON.stringify(result),
       resultSha256: "0".repeat(64),
       signingKeySha256: "1".repeat(64),
-      at: "2026-10-18T12:30:00.000Z",
+      at: new Date(Date.parse(requestedAt) + 1000).toISOString(),
     }),
   ).toBe("recorded");
+  return id;
 }
 
 async function listProject(
@@ -824,7 +842,7 @@ describe("project enforcement (ADM-06)", () => {
     // An owner record can only be an appeal.
     expect(() =>
       sqlite.exec(
-        `INSERT INTO project_enforcements SELECT 'enf_owner_forged', project_id, 4, 'reinstate', 'clear', 'granted', reason, evidence_reference, repository_github_id, repository_keys, actor_github_id, actor_github_login, actor_role, decision_source, before_revision, before_manifest_sha256, NULL, NULL, 'no_revision_needed', created_at FROM project_enforcements WHERE sequence = 3`,
+        `INSERT INTO project_enforcements (${ENFORCEMENT_COLUMNS}) SELECT 'enf_owner_forged', project_id, 4, 'reinstate', 'clear', 'granted', reason, evidence_reference, repository_github_id, repository_keys, actor_github_id, actor_github_login, actor_role, decision_source, before_revision, before_manifest_sha256, NULL, NULL, 'no_revision_needed', created_at, NULL FROM project_enforcements WHERE sequence = 3`,
       ),
     ).toThrow("CHECK constraint failed");
     // The moderator who banned cannot decide the appeal.
@@ -835,7 +853,21 @@ describe("project enforcement (ADM-06)", () => {
     expect(unscannedAppeal.status).toBe(409);
     expect((await unscannedAppeal.json()).error).toBe("vetting_required");
     expect((await call("GET", "projects/open-registry")).status).toBe(410);
-    await clearCurrentRevision("open-registry");
+    const maliciousId = await clearCurrentRevision(
+      "open-registry",
+      "malicious",
+    );
+    const cleanId = await clearCurrentRevision("open-registry");
+    // A clean scan alone cannot waive a confirmed malicious finding.
+    const restrictedProject = await persistence.getProject("open-registry");
+    if (!restrictedProject) throw new Error("Missing restricted project");
+    const bannedClearance = await vetting.manifestClearance(
+      "open-registry",
+      restrictedProject.manifest,
+      3,
+      async () => livePin,
+    );
+    expect(bannedClearance.state).toBe("banned");
     const scannedPin = livePin;
     livePin = { ...livePin, commitSha: "b".repeat(40) };
     const staleScan = await enforce("moderator", "reinstate");
@@ -849,10 +881,23 @@ describe("project enforcement (ADM-06)", () => {
       stateAfter: "clear",
       appealAfter: "granted",
       afterRevision: 4,
+      vettingReview: {
+        assessmentId: cleanId,
+        maliciousAssessmentIds: [maliciousId],
+      },
     });
+    const bridge = sqlite
+      .query("SELECT * FROM project_vetting_reinstatements")
+      .get() as { assessment_id: string; malicious_assessment_ids: string };
+    expect(bridge.assessment_id).toBe(cleanId);
+    expect(JSON.parse(bridge.malicious_assessment_ids)).toEqual([maliciousId]);
+    expect(() =>
+      sqlite.exec("DELETE FROM project_vetting_reinstatements"),
+    ).toThrow("permanent");
     // Reinstatement restores the community tier only, still paused.
     const restored = await persistence.getProject("open-registry");
     expect(restored).toMatchObject({ revision: 4, status: "paused" });
+    if (!restored) throw new Error("Missing reinstated project");
     expect(restored?.manifest.listingTier).toBe("community");
     expect((await call("GET", "projects/open-registry")).status).toBe(200);
     expect((await (await call("GET", "projects")).json()).restrictions).toEqual(
@@ -864,7 +909,39 @@ describe("project enforcement (ADM-06)", () => {
     await clearCurrentRevision("open-registry");
     cache.entries.clear();
     expect((await get("/projects/open-registry/SKILL.md")).status).toBe(200);
+    // The decision covered exact findings; later malice is banned again.
+    await clearCurrentRevision("open-registry", "malicious");
+    cache.entries.clear();
+    expect((await get("/projects/open-registry/SKILL.md")).status).toBe(410);
+    expect(
+      (
+        await vetting.manifestClearance(
+          "open-registry",
+          restored.manifest,
+          restored.revision,
+          async () => livePin,
+        )
+      ).state,
+    ).toBe("banned");
 
+    // A concurrent revision must abort the database write, not leave a
+    // scanner result or appeal pointing at an enforcement that did not land.
+    const records = await persistence.listEnforcements();
+    const latestRecord = records.at(-1);
+    if (!latestRecord) throw new Error("Missing enforcement record");
+    expect(
+      await persistence.appendEnforcement(
+        {
+          ...latestRecord,
+          id: "enf_stale_database_revision",
+          sequence: latestRecord.sequence + 1,
+          beforeRevision: 999,
+        },
+        null,
+        [],
+      ),
+    ).toBe("conflict");
+    expect(await persistence.listEnforcements()).toHaveLength(records.length);
     // A stale preview cannot be confirmed, and history is append-only.
     const stale = await call(
       "POST",
@@ -890,7 +967,14 @@ describe("project enforcement (ADM-06)", () => {
       (await history.json()).projects[0].enforcement.records.map(
         (record: { action: string }) => record.action,
       ),
-    ).toEqual(["quarantine", "ban", "request_reinstatement", "reinstate"]);
+    ).toEqual([
+      "quarantine",
+      "ban",
+      "request_reinstatement",
+      "ban",
+      "reinstate",
+      "ban",
+    ]);
   });
 
   test("a revision of another project cannot claim a banned repository", async () => {

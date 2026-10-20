@@ -87,7 +87,8 @@ export type EnforcementAction =
 export type EnforcementActorRole =
   | "project-moderator"
   | "project-steward"
-  | "project-applicant";
+  | "project-applicant"
+  | "vetting-service";
 export type RestrictionState = "clear" | "quarantined" | "banned";
 export type AppealState = "none" | "requested" | "granted" | "denied";
 export type EnforcementResult =
@@ -109,15 +110,24 @@ export type ProjectEnforcement = {
   repositoryGithubId: string;
   /** Lowercase repository paths, including transfer aliases. */
   repositoryKeys: string[];
-  actor: GithubActor;
+  actor: GithubActor | null;
+  systemIssuer?: {
+    kind: "vetting-service";
+    keySha256: string;
+    assessmentId: string;
+    policyVersion: string;
+    rule: string;
+  };
   /** A steward or applicant may only file a reinstatement request (ELG-02). */
   actorRole: EnforcementActorRole;
-  decisionSource: "admin-panel" | "owner-request";
+  decisionSource: "admin-panel" | "owner-request" | "standing-rule";
   beforeRevision: number;
   beforeManifestSha256: string;
   afterRevision: number | null;
   afterManifestSha256: string | null;
   result: EnforcementResult;
+  /** Exact scan and malicious findings covered by this independent decision. */
+  vettingReview?: { assessmentId: string; maliciousAssessmentIds: string[] };
   createdAt: string;
 };
 

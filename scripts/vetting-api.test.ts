@@ -45,7 +45,10 @@ beforeEach(async () => {
     "0023_project_enforcements.sql",
     "0024_notifications.sql",
     "0025_community_security_vetting.sql",
+    "0031_project_vetting_reinstatements.sql",
+    "0032_project_system_enforcement.sql",
     "0026_private_security_cases.sql",
+    "0029_notification_event_kinds.sql",
   ]);
   projects = new CloudflareProjectPersistence(db);
   vetting = new CloudflareVettingPersistence(db);
@@ -359,13 +362,30 @@ describe("community security vetting", () => {
     const result = await fixture(id, "malicious");
     const unconfirmed = await postResult({ ...result, confirmation: null });
     expect(unconfirmed.status).toBe(422);
+    expect(await projects.listEnforcements()).toEqual([]);
     expect((await postResult(result)).status).toBe(200);
-    expect((await publicVetting()).state).toBe("banned");
+    expect(await projects.listEnforcements()).toMatchObject([
+      {
+        action: "ban",
+        actor: null,
+        actorRole: "vetting-service",
+        decisionSource: "standing-rule",
+        result: "revision_pending",
+        systemIssuer: { kind: "vetting-service", assessmentId: id },
+      },
+    ]);
+    expect(
+      (await projectApi(new Request(`${ORIGIN}/api/v1/projects/open-registry`)))
+        .status,
+    ).toBe(410);
     // A later clean scan cannot lift the ban (VET-06).
     const rescan = await queueScan();
     expect((await postResult(await fixture(rescan, "clean"))).status).toBe(200);
-    expect((await publicVetting()).state).toBe("banned");
-    expect((await activate()).status).toBe(422);
+    expect(
+      (await projectApi(new Request(`${ORIGIN}/api/v1/projects/open-registry`)))
+        .status,
+    ).toBe(410);
+    expect((await activate()).status).toBe(409);
   });
 
   test("forged, stale, mismatched and unconfigured requests fail closed", async () => {

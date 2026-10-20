@@ -824,7 +824,7 @@ function DelistButton({
   );
 }
 
-function ProjectsSection() {
+function ProjectsSection({ onChanged }: { onChanged: () => void }) {
   const [state, reload] = useAdminData("admin/projects", selectProjects);
   const [editing, setEditing] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -893,6 +893,7 @@ function ProjectsSection() {
                   setEditing(null);
                   setNote(saved);
                   reload();
+                  onChanged();
                 }}
                 project={project}
               />
@@ -909,6 +910,7 @@ function ProjectsSection() {
               onDone={(saved) => {
                 setNote(saved);
                 reload();
+                onChanged();
               }}
               project={project}
             />
@@ -916,6 +918,7 @@ function ProjectsSection() {
               onDone={(saved) => {
                 setNote(saved);
                 reload();
+                onChanged();
               }}
               project={project}
             />
@@ -930,6 +933,7 @@ export function AdminPage() {
   const state = useProjectSession();
   // An approval adds a project, so the registry list reloads after decisions.
   const [registryVersion, setRegistryVersion] = useState(0);
+  const [vettingVersion, setVettingVersion] = useState(0);
   let body: ReactNode;
   if (state.status !== "signed-in") {
     body = (
@@ -952,8 +956,11 @@ export function AdminPage() {
         <ApplicationsSection
           onDecided={() => setRegistryVersion((value) => value + 1)}
         />
-        <ProjectsSection key={registryVersion} />
-        <VettingSection key={`vetting-${registryVersion}`} />
+        <ProjectsSection
+          key={registryVersion}
+          onChanged={() => setVettingVersion((value) => value + 1)}
+        />
+        <VettingSection key={`vetting-${registryVersion}-${vettingVersion}`} />
       </>
     );
   }
