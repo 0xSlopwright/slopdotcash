@@ -27,6 +27,7 @@ import {
 } from "@solana/web3.js";
 import {
   type AcceptanceNetwork,
+  AcceptanceRegistry,
   type AssetEvidence,
   amountsText,
   assertSolanaTestCluster,
@@ -52,6 +53,7 @@ import {
   Waiting,
   waitPolicy,
 } from "../../../scripts/escrow-acceptance/shared";
+import type { EscrowDeployment } from "../../../src/lib/escrow-policy.mjs";
 import { lookupAttempt } from "../../../workers/payment-executor/core";
 import { PaymentSignerJournal } from "../../../workers/payment-executor/index";
 import {
@@ -557,8 +559,14 @@ export async function runSolana(
     process.env.ESCROW_ACCEPTANCE_BINDING_DELAY_SECONDS ?? "3600",
   );
   const rotationDelay = BigInt(
-    process.env.ESCROW_ACCEPTANCE_ROTATION_DELAY_SECONDS ?? "604800",
+    process.env.ESCROW_ACCEPTANCE_ROTATION_DELAY_SECONDS ?? "7200",
   );
+  // The project registry refuses a Solana deployment whose rotation notice
+  // reaches four binding delays (assertEscrowPolicy), so stop before signing.
+  if (rotationDelay >= 4n * bindingDelay)
+    throw new Error(
+      "ESCROW_ACCEPTANCE_ROTATION_DELAY_SECONDS must be shorter than four binding delays",
+    );
   const divisor = unitDivisor();
 
   // Cluster identity first: nothing signs before the genesis hash is a test cluster.
@@ -632,15 +640,28 @@ export async function runSolana(
   }
 
   const projection = new Projection(directory);
-  const env: PaymentsWorkerEnvironment & { PAYMENT_DEPLOYMENTS: string } = {
+  // The dispatcher finds each vault in the project registry, as in
+  // production; only the signer roles keep a pinned deployment list.
+  const registry = new AcceptanceRegistry(directory);
+  const env: PaymentsWorkerEnvironment = {
     PAYMENTS_DB: projection.db,
-    PAYMENT_DEPLOYMENTS: "[]",
+    REGISTRY_DB: registry.db,
+    PAYMENT_NETWORKS: JSON.stringify([network]),
     PAYMENT_RPC_URLS: JSON.stringify({ [network]: rpcUrl }),
     PAYMENT_SOLANA_GENESIS: JSON.stringify({ [network]: genesisHash }),
   };
+  let pinnedDeployments = "[]";
   const refreshDeployments = () => {
-    env.PAYMENT_DEPLOYMENTS = JSON.stringify(
-      run.assets.filter((a) => a.vault).map((a) => a.deployment),
+    pinnedDeployments = JSON.stringify(
+      registry.record(
+        run.assets
+          .filter((a) => a.vault)
+          .map((a) => ({
+            projectId: a.projectId,
+            effectiveCycle: run.startedAt.slice(0, 7),
+            deployment: a.deployment as unknown as EscrowDeployment,
+          })),
+      ),
     );
   };
   const attesterJournal = projection.journal("attester");
@@ -665,7 +686,7 @@ export async function runSolana(
             return env.PAYMENTS_DB;
           },
           get PAYMENT_DEPLOYMENTS() {
-            return env.PAYMENT_DEPLOYMENTS;
+            return pinnedDeployments;
           },
           get PAYMENT_RPC_URLS() {
             return env.PAYMENT_RPC_URLS;
@@ -694,7 +715,7 @@ export async function runSolana(
         return env.PAYMENTS_DB;
       },
       get PAYMENT_DEPLOYMENTS() {
-        return env.PAYMENT_DEPLOYMENTS;
+        return pinnedDeployments;
       },
       get PAYMENT_RPC_URLS() {
         return env.PAYMENT_RPC_URLS;
@@ -758,6 +779,14 @@ export async function runSolana(
     untilReady(step, policyWait, deadline, report);
 
   try {
+    // The payments Worker finds vaults only in the project registry, which
+    // names registry networks only. The executor admits a loopback validator
+    // only as solana-localnet and checks that name against the obligation,
+    // so no solana-localnet vault can reach dispatch. Stop before signing.
+    if (network === "solana-localnet")
+      throw new Error(
+        "The project registry has no solana-localnet network, so the payments Worker cannot dispatch a solana-localnet vault",
+      );
     for (const [index, mint] of mints.entries()) {
       // Classic SPL Token mints only; the adapter refuses other owners.
       const decimals = await solanaMintDecimals({ rpcUrl }, mint.toBase58());
@@ -778,22 +807,27 @@ export async function runSolana(
           projectId: `acceptance-${run.runId.slice(0, 8)}-${index}`,
           onchainProjectId: projectIdBytes.toString("hex"),
           vault: null,
+          // The escrow deployment an admin revision records in project.json;
+          // the initialize-project transaction fills deploymentTransaction.
           deployment: {
-            projectId: `acceptance-${run.runId.slice(0, 8)}-${index}`,
             network,
-            chain: "solana",
             vault: program.vault(project).toBase58(),
             programId: programId.toBase58(),
+            upgradeAuthority,
             projectPda: project.toBase58(),
+            networkDomain,
             asset: mint.toBase58(),
             owner: keys.owner.publicKey.toBase58(),
             identityAuthority: identity.publicKey.toBase58(),
             feeRecipient: feeRecipient.toBase58(),
+            deploymentTransaction: null,
+            sourceCommit: run.sourceCommit,
             codeSha256,
-            upgradeAuthority,
             bindingDelaySeconds: bindingDelay.toString(),
             rotationDelaySeconds: rotationDelay.toString(),
-            networkDomain,
+            factory: null,
+            factoryCodeSha256: null,
+            registrar: null,
           },
           steps: {},
           checks: {},
@@ -882,6 +916,8 @@ export async function runSolana(
     );
     if (!entry.vault) {
       entry.vault = vault.toBase58();
+      entry.deployment.deploymentTransaction =
+        steps["initialize-project"].transactionId;
       await persist();
     }
     refreshDeployments();
