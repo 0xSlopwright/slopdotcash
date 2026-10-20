@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  cp,
   mkdir,
   mkdtemp,
   readdir,
@@ -293,6 +294,19 @@ test("signed real queue and SQLite revision acquire exact Git and template bytes
   );
   expect((await vetting.getAssessment(assessmentId))?.state).toBe("pending");
   expect(new Set(methods)).toEqual(new Set(["GET"]));
+  // Optional private capture lets the real analyzer/VM assembly workflow consume
+  // these handler-produced bytes. No keys or database are copied.
+  if (process.env.SLOP_VETTING_ACQUISITION_EVIDENCE) {
+    await cp(
+      acquired.directory,
+      process.env.SLOP_VETTING_ACQUISITION_EVIDENCE,
+      {
+        recursive: true,
+        errorOnExist: true,
+        force: false,
+      },
+    );
+  }
 });
 
 test("changed revision/template bytes and wrong signer leave queue pending and no completed bundle", async () => {
