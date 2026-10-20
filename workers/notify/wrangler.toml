@@ -10,9 +10,9 @@ preview_urls = false
 [vars]
 NOTIFY_FROM_ADDRESS = "notifications@slop.cash"
 
-# Recipients come only from the ADMIN_EMAILS secret, set outside the
-# repository with `wrangler secret put ADMIN_EMAILS`. Callers cannot supply a
-# recipient, so this binding sends only to that configured list.
+# Admin recipients come from ADMIN_EMAILS. Explicit mail pilots use their
+# separate operator-verified recipient secrets. All addresses stay outside git;
+# callers cannot supply a destination. The default profile has no mail pilot.
 [[send_email]]
 name = "ADMIN_EMAIL"
 

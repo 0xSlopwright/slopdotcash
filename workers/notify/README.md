@@ -4,7 +4,7 @@
 submits a new project application. It exists because Pages Functions cannot use
 `send_email` bindings.
 
-## Route
+## Project-application route
 
 The Worker has no public route and `workers_dev` is off. The caller is a
 service binding named `SLOP_NOTIFY` on the production Pages app. That caller
@@ -13,7 +13,7 @@ is the authenticated project-application submit path in
 binding to a Worker that does not exist. The protected production release
 39373511823 deployed this Worker before the binding was added to
 `wrangler.toml`. Without the binding, the
-application is saved and records `adminNotification: "failed"`. The only accepted route
+application is saved and records `adminNotification: "failed"`. The project-application route
 is:
 
 ```http
@@ -88,11 +88,13 @@ time, application id, and the admin review link.
 ## Release and current scope
 
 The protected production job in `.github/workflows/deploy.yml` releases this
-Worker only when `SLOP_NOTIFY_RELEASE` is `enabled`. It requires exactly the
-`ADMIN_EMAILS` secret, uploads a version tagged with the release commit,
-promotes it to 100%, and verifies that the active version carries that tag.
-Staging and preview deployments have no notification Worker or binding. Do not
-use a local deployment to bypass the release workflow.
+Worker only when `SLOP_NOTIFY_RELEASE` is `enabled`. The default profile requires
+exactly `ADMIN_EMAILS`; explicit pilot profiles also require their verified
+recipient secrets. The release uploads the tested commit and verifies the
+selected bindings and active version before applying its schedule. Staging needs
+its distinct opt-in and isolated Worker; preview remains unbound. See the
+protected pilot profiles below. Do not use a local deployment to bypass the
+release workflow.
 
 Run the handler checks with `bun run test:notify`; `bun run verify:code`
 includes them. A deployed version is not proof of a caller, domain readiness or
