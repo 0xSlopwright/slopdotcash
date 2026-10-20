@@ -212,6 +212,22 @@ function ApplicationCard({
           </dd>
         </div>
         <div>
+          <dt>Referred by</dt>
+          <dd>
+            {application.referrer ? (
+              <a
+                href={`https://github.com/${application.referrer.githubLogin}`}
+                rel="noreferrer"
+                target="_blank"
+              >
+                @{application.referrer.githubLogin}
+              </a>
+            ) : (
+              "Nobody named"
+            )}
+          </dd>
+        </div>
+        <div>
           <dt>Monthly pool</dt>
           <dd>{manifest.reward.monthlyCapDisplay} pledged</dd>
         </div>

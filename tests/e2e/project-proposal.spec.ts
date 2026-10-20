@@ -159,7 +159,10 @@ test("drafts a project through the setup steps and submits it for review", async
   await routeGitHub(page);
   // The registry API itself runs in the @registry lane; here it is a fixture
   // so the wizard's submission can be checked byte for byte.
-  let submitted: { manifest: Record<string, unknown> } | null = null;
+  let submitted: {
+    manifest: Record<string, unknown>;
+    referrer?: string;
+  } | null = null;
   await page.route("**/api/v1/project-session", (route) =>
     route.fulfill({
       json: {
@@ -193,11 +196,16 @@ test("drafts a project through the setup steps and submits it for review", async
           decisionReason: null,
           githubCheck:
             "Not proven: @example-maintainer is not a public member of example",
+          referrer: { githubId: "4343", githubLogin: "example-referrer" },
         },
       },
     });
   });
-  await page.goto("/projects/new", { waitUntil: "networkidle" });
+  // A referral link names the referrer; the draft keeps it across reloads
+  // and the applicant can clear it before submitting (PRJ-05).
+  await page.goto("/projects/new?ref=example-referrer", {
+    waitUntil: "networkidle",
+  });
   const steps = page.getByRole("navigation", { name: "Setup steps" });
   for (const label of ["Repository", "Contribution rules", "Rewards", "Review"])
     await expect(steps.getByRole("button", { name: label })).toBeVisible();
@@ -271,6 +279,11 @@ test("drafts a project through the setup steps and submits it for review", async
   await expect(preview).toContainText("$2,500 · unfunded pledge");
   await expect(preview).toContainText("Solana · payments disabled");
   await expect(preview).toContainText("MIT");
+  await expect(preview).toContainText("Referred by");
+  await expect(preview).toContainText("@example-referrer");
+  await expect(
+    preview.getByRole("button", { name: "Clear referral" }),
+  ).toBeVisible();
   const manifestDetails = page.locator("details.manifest-preview");
   await expect(manifestDetails).not.toHaveAttribute("open", "");
   const handoff = page.getByRole("button", { name: /Submit for review/u });
@@ -336,9 +349,10 @@ test("drafts a project through the setup steps and submits it for review", async
   await expect(
     page.getByRole("status").filter({ hasText: "Application submitted" }),
   ).toContainText(
-    "Application app_fixture0001 · submitted by @example-maintainer",
+    "Application app_fixture0001 · submitted by @example-maintainer · referred by @example-referrer",
   );
   expect(submitted).toMatchObject({
+    referrer: "example-referrer",
     manifest: {
       id: "open-protein",
       status: "paused",

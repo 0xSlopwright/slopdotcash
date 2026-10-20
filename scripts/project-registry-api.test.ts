@@ -1493,3 +1493,108 @@ test.each(["production", "staging"] as const)(
     ).toBe("sent");
   },
 );
+describe("referral attribution (PRJ-05)", () => {
+  const REFERRER = { githubId: "900000010", githubLogin: "e2e-referrer" };
+  /** A signed-in slop.cash account, as the points sign-in records one. */
+  function joinMember(actor: { githubId: string; githubLogin: string }) {
+    sqlite
+      .prepare(
+        "INSERT INTO points_members(actor_id,github_id,login,joined_at,public) VALUES(?,?,?,?,1)",
+      )
+      .run(
+        actor.githubId,
+        actor.githubId,
+        actor.githubLogin,
+        "2026-10-01T00:00:00.000Z",
+      );
+  }
+
+  test("records the referrer once and copies it to the approved project", async () => {
+    joinMember(REFERRER);
+    const manifest = applicationManifest("referred", "example/referred");
+    const submitted = await call("POST", "project-applications", "applicant", {
+      manifest,
+      referrer: "E2E-Referrer",
+    });
+    expect(submitted.status).toBe(201);
+    const { application } = await submitted.json();
+    // The login is stored as the account last used it, not as typed.
+    expect(application.referrer).toEqual(REFERRER);
+    expect(
+      (
+        await call(
+          "POST",
+          `admin/project-applications/${application.id}/approve`,
+          "admin",
+          {},
+        )
+      ).status,
+    ).toBe(200);
+    expect((await persistence.getProject("referred"))?.referrer).toEqual(
+      REFERRER,
+    );
+    const admin = await call("GET", "admin/projects", "admin");
+    expect(
+      (await admin.json()).projects.find(
+        (entry: { id: string }) => entry.id === "referred",
+      ).referrer,
+    ).toEqual(REFERRER);
+    // Neither row can change or drop the referrer afterwards.
+    expect(() =>
+      sqlite.exec(
+        "UPDATE projects SET referrer_github_login = 'other' WHERE id = 'referred'",
+      ),
+    ).toThrow(/project referrer is immutable/u);
+    expect(() =>
+      sqlite.exec(
+        "UPDATE project_applications SET referrer_github_id = NULL, referrer_github_login = NULL",
+      ),
+    ).toThrow(/application referrer is immutable/u);
+    expect(() =>
+      sqlite.exec(
+        "UPDATE projects SET referrer_github_id = NULL WHERE id = 'referred'",
+      ),
+    ).toThrow(/project referrer is immutable/u);
+  });
+
+  test("an application that names nobody records no referrer", async () => {
+    const application = await listProject();
+    expect(application.referrer).toBeNull();
+    expect(
+      (await persistence.getProject("open-registry"))?.referrer,
+    ).toBeNull();
+  });
+
+  test("refuses the applicant, the steward, team accounts and unknown logins", async () => {
+    joinMember(APPLICANT);
+    joinMember(ADMIN);
+    joinMember({ githubId: "987654321", githubLogin: "example" });
+    const manifest = applicationManifest("refused", "example/refused");
+    const cases: [unknown, RegExp][] = [
+      ["e2e-applicant", /cannot refer your own project/u],
+      ["example", /steward cannot be recorded/u],
+      ["e2e-admin", /team accounts cannot be recorded/u],
+      ["nobody-here", /has not signed in to slop\.cash/u],
+      ["not a login!", /must be a GitHub login/u],
+      [42, /must be a GitHub login/u],
+    ];
+    for (const [referrer, message] of cases) {
+      const response = await call("POST", "project-applications", "applicant", {
+        manifest,
+        referrer,
+      });
+      expect(response.status).toBe(422);
+      const body = await response.json();
+      expect(body.error).toBe("invalid_referrer");
+      expect(body.message).toMatch(message);
+    }
+    // A refused referral stores nothing, so the applicant can resubmit.
+    expect(await persistence.listApplications("pending")).toEqual([]);
+    const accepted = await call("POST", "project-applications", "applicant", {
+      manifest,
+      referrer: null,
+    });
+    expect(accepted.status).toBe(201);
+    expect((await accepted.json()).application.referrer).toBeNull();
+  });
+});
