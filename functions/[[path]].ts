@@ -8,6 +8,8 @@ import {
   assetTemplateSource,
   handleProjectArtifactRequest,
 } from "../backend/projects/skill-publication";
+import type { R2Bucket } from "../backend/trace/cloudflare-persistence";
+import { VettingEvidence } from "../backend/vetting/evidence";
 import {
   readVettingPin,
   vettingBranchCache,
@@ -17,6 +19,8 @@ import { onRequest as socialMetadata } from "./index";
 
 type Env = {
   SLOP_DB?: ProjectD1Database;
+  VETTING_EVIDENCE?: R2Bucket;
+  VETTING_EVIDENCE_POLICY?: string;
   ASSETS?: { fetch(request: Request): Promise<Response> };
   /** Local browser tests only: a loopback GitHub API fixture origin. */
   SLOP_GITHUB_API_ORIGIN?: string;
@@ -35,7 +39,18 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   const db = context.env.SLOP_DB;
   if (db !== undefined) {
     const persistence = new CloudflareProjectPersistence(db);
-    const vetting = new CloudflareVettingPersistence(db);
+    const evidence = new VettingEvidence({
+      db,
+      bucket: context.env.VETTING_EVIDENCE,
+      policy: context.env.VETTING_EVIDENCE_POLICY,
+      now: () => new Date(),
+      randomId: () => crypto.randomUUID(),
+    });
+    const vetting = new CloudflareVettingPersistence(
+      db,
+      async (assessment) =>
+        assessment.result !== null && evidence.complete(assessment.result),
+    );
     const github = {
       fetch: (url: string, init: RequestInit) => fetch(url, init),
       token: context.env.SLOP_GITHUB_READ_TOKEN,

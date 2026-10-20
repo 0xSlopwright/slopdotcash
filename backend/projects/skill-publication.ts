@@ -3,7 +3,7 @@
  * archives, terms, and the project discovery index from the current D1
  * revision and the canonical templates. Only the security-vetting clearance
  * reads GitHub, to compare the cleared commit with the live integration-branch
- * head; responses are edge cached and purged on admin writes.
+ * head; each skill request also verifies its retained private evidence.
  */
 
 import { publishesGeneratedSkills } from "../../src/lib/project-skill.mjs";
@@ -13,11 +13,7 @@ import {
 } from "../../src/lib/project-skill-publication.mjs";
 import type { VettingClearance } from "../vetting/persistence";
 import type { ProjectEnforcement, ProjectRecord } from "./contracts";
-import {
-  cachedPublicResponse,
-  type EdgeCache,
-  PUBLIC_PROJECT_CACHE_CONTROL,
-} from "./edge-cache";
+import { type EdgeCache, PUBLIC_PROJECT_CACHE_CONTROL } from "./edge-cache";
 import { projectRestriction } from "./enforcement";
 
 /** The build's /skill-templates/index.json. */
@@ -289,13 +285,17 @@ export async function handleProjectArtifactRequest(
   const target = route(new URL(request.url).pathname);
   if (target === null) return null;
   try {
-    return await cachedPublicResponse(
-      deps.cache,
-      request,
-      () => (target === "discovery" ? discovery(deps) : artifact(target, deps)),
-      deps.waitUntil,
-      await deps.enforcementGeneration(),
-    );
+    // Clearance includes current private-evidence availability and expiry. A
+    // cached whole response would bypass that check after access expires.
+    const response = await (target === "discovery"
+      ? discovery(deps)
+      : artifact(target, deps));
+    const headers = new Headers(response.headers);
+    headers.set("cache-control", "no-store");
+    return new Response(request.method === "HEAD" ? null : response.body, {
+      status: response.status,
+      headers,
+    });
   } catch {
     console.error("project artifact failure");
     return text(503, "Project artifacts are unavailable. Try again.\n");

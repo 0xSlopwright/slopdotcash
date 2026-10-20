@@ -1201,7 +1201,7 @@ async function readPublicProject(
     project.manifest,
     project.revision,
   );
-  return publicJson({
+  const response = json(200, {
     schemaVersion: "1",
     project: project.manifest,
     revision: project.revision,
@@ -1211,6 +1211,8 @@ async function readPublicProject(
       publishesGeneratedSkills(project.manifest) && vetting.state === "cleared",
     vetting,
   });
+  response.headers.set("access-control-allow-origin", "*");
+  return response;
 }
 
 /**
@@ -1389,13 +1391,7 @@ export async function handleProjectApi(
           await deps.persistence.enforcementGeneration(),
         );
       case "GET projects/:id":
-        return await cachedPublicResponse(
-          deps.cache,
-          request,
-          () => readPublicProject(deps, parts[1]),
-          deps.waitUntil,
-          await deps.persistence.enforcementGeneration(),
-        );
+        return await readPublicProject(deps, parts[1]);
       case "GET project-github/owned-repositories":
       case "GET project-github/repositories/:name/:name":
         return await githubLookup(request, deps, parts);

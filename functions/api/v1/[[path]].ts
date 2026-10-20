@@ -39,7 +39,11 @@ import {
   type R2Bucket,
 } from "../../../backend/trace/cloudflare-persistence";
 import { handleTraceApi } from "../../../backend/trace/handler";
-import { handleVettingApi } from "../../../backend/vetting/handler";
+import { VettingEvidence } from "../../../backend/vetting/evidence";
+import {
+  handleVettingApi,
+  signedVettingRequest,
+} from "../../../backend/vetting/handler";
 import {
   readVettingPin,
   vettingBranchCache,
@@ -87,6 +91,8 @@ type Env = {
   ASSETS?: { fetch(request: Request): Promise<Response> };
   /** Secure-VM vetting service Ed25519 public keys (base64, comma separated). */
   VETTING_RESULT_PUBLIC_KEYS?: string;
+  VETTING_EVIDENCE?: R2Bucket;
+  VETTING_EVIDENCE_POLICY?: string;
   /** Optional RPC overrides for reward token decimals verification. */
   REWARD_RPC_BASE?: string;
   REWARD_RPC_ETHEREUM?: string;
@@ -310,7 +316,35 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   const projectPersistence = new CloudflareProjectPersistence(
     context.env.SLOP_DB,
   );
-  const vetting = new CloudflareVettingPersistence(context.env.SLOP_DB);
+  const evidence = new VettingEvidence({
+    db: context.env.SLOP_DB,
+    bucket: context.env.VETTING_EVIDENCE,
+    policy: context.env.VETTING_EVIDENCE_POLICY,
+    session: async (request) => {
+      const actor = await sessionGithubActor(
+        request,
+        context.env.SLOP_DB,
+        new Date().toISOString(),
+      );
+      return actor ? { ...actor, admin: false } : null;
+    },
+    now: () => new Date(),
+    randomId: () => crypto.randomUUID(),
+    signed: (request, maximum) =>
+      signedVettingRequest(
+        request,
+        {
+          resultPublicKeys: context.env.VETTING_RESULT_PUBLIC_KEYS,
+          now: () => new Date(),
+        },
+        maximum,
+      ),
+  });
+  const vetting = new CloudflareVettingPersistence(
+    context.env.SLOP_DB,
+    async (assessment) =>
+      assessment.result !== null && evidence.complete(assessment.result),
+  );
   const github = {
     fetch: (url: string, init: RequestInit) => fetch(url, init),
     token: context.env.SLOP_GITHUB_READ_TOKEN,
@@ -386,7 +420,10 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     waitUntil: context.waitUntil?.bind(context),
   });
   if (securityResponse !== null) return securityResponse;
+  const evidenceResponse = await evidence.handle(context.request);
+  if (evidenceResponse !== null) return evidenceResponse;
   const vettingResponse = await handleVettingApi(context.request, {
+    evidence,
     vetting,
     projects: projectPersistence,
     resultPublicKeys: context.env.VETTING_RESULT_PUBLIC_KEYS,

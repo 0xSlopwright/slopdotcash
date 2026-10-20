@@ -183,7 +183,12 @@ function newest<T>(items: T[], match: (item: T) => boolean): T | undefined {
 }
 
 export class CloudflareVettingPersistence {
-  constructor(private readonly db: ProjectD1Database) {}
+  constructor(
+    private readonly db: ProjectD1Database,
+    private readonly retainedEvidence?: (
+      assessment: VettingAssessment,
+    ) => Promise<boolean>,
+  ) {}
 
   async listAssessments(): Promise<VettingAssessment[]> {
     const rows = await this.db
@@ -502,6 +507,12 @@ export class CloudflareVettingPersistence {
         )
       )
         return { state: "banned", assessment: summarize(malicious) };
+      if (!(await this.retainedEvidence?.(finished)))
+        return {
+          state: "unverified",
+          reason:
+            "The clean assessment has no current complete private evidence inventory. Its evidence may be unavailable, corrupt, expired, or outside the current operator-attested policy.",
+        };
       return {
         state: "cleared",
         assessment: summarize(finished),

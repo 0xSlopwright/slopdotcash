@@ -96,6 +96,7 @@ export { readBoundedJson } from "./lib/browser-json";
 const ProjectProposalPage = lazy(() => import("./ProjectProposalPage"));
 const AdminPage = lazy(() => import("./Admin"));
 const InboxPage = lazy(() => import("./Inbox"));
+const VettingEvidencePage = lazy(() => import("./VettingEvidence"));
 const SecurityCasesPage = lazy(() => import("./SecurityBounty"));
 const SecurityProgramPage = lazy(() =>
   import("./SecurityBounty").then((module) => ({
@@ -149,6 +150,7 @@ interface Route {
     | "login"
     | "earnings"
     | "inbox"
+    | "vetting-evidence"
     | "security-cases"
     | "security-program";
   projectId?: string;
@@ -170,6 +172,8 @@ function internalRoute(pathname: string): Route {
     return { kind: "login" };
   if (segments.length === 1 && segments[0] === "inbox")
     return { kind: "inbox" };
+  if (segments.length === 1 && segments[0] === "vetting-evidence")
+    return { kind: "vetting-evidence" };
   if (segments.length === 1 && segments[0] === "security")
     return { kind: "security-cases" };
   // The admin email deep-links one application at /admin/applications/<id>.
@@ -277,6 +281,7 @@ const PRIVATE_PAGE_TITLES = new Map<Route["kind"], string>([
   ["earnings", "Your payouts"],
   ["inbox", "Inbox"],
   ["security-cases", "Security cases"],
+  ["vetting-evidence", "Private vetting evidence"],
 ]);
 
 /** The title and canonical path of a route; a missing page has no canonical. */
@@ -2847,6 +2852,7 @@ function AppContent({ route }: { route: Route }) {
     "new-project",
     "manage-project",
     "security-cases",
+    "vetting-evidence",
     "security-program",
     "unknown",
     "cycle-archive",
@@ -2872,6 +2878,7 @@ function AppContent({ route }: { route: Route }) {
   else if (route.kind === "cycle-archive")
     content = <CycleArchivePage retry={retryArchive} state={archive} />;
   else if (route.kind === "new-project") content = <ProjectProposalPage />;
+  else if (route.kind === "vetting-evidence") content = <VettingEvidencePage />;
   else if (route.kind === "security-cases") content = <SecurityCasesPage />;
   else if (route.kind === "security-program") {
     const project = findProject(route.projectId ?? "");
