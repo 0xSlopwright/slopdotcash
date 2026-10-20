@@ -542,19 +542,41 @@ test("durable executor verifies SQLite consent, binds, creates ATAs, pays and re
     ).status,
     409,
   );
-  const completed = await account("/wallets/solana-bind/complete", {
-    obligationId: input.obligationId,
-    transaction: await cosign(recipient),
-  });
+  // Lose the response only after the actual validator finalized these exact
+  // signed bytes. Completion must reconcile the journaled signature, not resend.
+  const bindingFetch = globalThis.fetch;
+  let bindingSends = 0;
+  globalThis.fetch = async (url, options) => {
+    const body = JSON.parse(options?.body ?? "{}");
+    const response = await bindingFetch(url, options);
+    if (body.method === "sendTransaction") {
+      bindingSends += 1;
+      const accepted = await response.clone().json();
+      assert.equal(accepted.result, prepared.transactionId);
+      await finalized(accepted.result);
+      throw new Error("Injected lost binding response after real finalization");
+    }
+    return response;
+  };
+  let completed;
+  try {
+    completed = await account("/wallets/solana-bind/complete", {
+      obligationId: input.obligationId,
+      transaction: await cosign(recipient),
+    });
+  } finally {
+    globalThis.fetch = bindingFetch;
+  }
+  assert.equal(bindingSends, 1);
   assert.equal(completed.status, 200);
   const bound = await completed.json();
   assert.equal(bound.transactionId, prepared.transactionId);
-  // Completing again re-broadcasts the same signed bytes.
+  // A retry after finalization must return the original transaction identity.
+  await finalized(bound.transactionId);
   assert.deepEqual(
     await completeSolanaBinding(identityEnvironment, input, await cosign(fee)),
     bound,
   );
-  await finalized(bound.transactionId);
   // Persist real signed bytes, then interrupt the transport before broadcast.
   const originalFetch = globalThis.fetch;
   let latestRequests = 0,
