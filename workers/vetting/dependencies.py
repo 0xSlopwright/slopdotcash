@@ -130,7 +130,17 @@ def download(request):
                            contentEncoding=response.headers.get_all('Content-Encoding', []),
                            transferEncoding=response.headers.get_all('Transfer-Encoding', []),
                            redirects=response.headers.get_all('Location', []))
-        observation_path.write_text(json.dumps(observation))
+        metadata = json.dumps(observation, separators=(',', ':')).encode()
+        if len(metadata) > 65536:
+            # Retain the digest/size of the observed metadata without overflowing
+            # failure evidence or presenting omitted headers as full coverage.
+            observation = {'status': response.status, 'connectedAddress': str(addresses[0]),
+                           'tlsVersion': tls_version, 'startedAt': started,
+                           'responseMetadataSha256': sha(metadata), 'responseMetadataBytes': len(metadata),
+                           'visibilityGaps': ['response-header-metadata-not-retained']}
+            observation_path.write_text(json.dumps(observation))
+            raise ValueError('response-metadata-limit')
+        observation_path.write_bytes(metadata)
         if (response.status != 200 or response.getheader('Location') is not None
                 or response.getheader('Content-Encoding', 'identity') != 'identity'
                 or response.getheader('Transfer-Encoding') is not None):
@@ -289,7 +299,7 @@ def failure_reason(error):
     if isinstance(error, ssl.SSLCertVerificationError):
         return 'tls-authentication-failed'
     allowed = {'non-public-address', 'dns-answer-limit', 'unsupported-response',
-               'exact-content-length-required', 'response-limit', 'content-mismatch',
+               'exact-content-length-required', 'response-limit', 'content-mismatch', 'response-metadata-limit',
                'captured-object-changed', 'tls-authentication-failed', 'transport-failed', 'network-timeout'}
     if type(error) is ValueError and str(error) in allowed:
         return str(error)

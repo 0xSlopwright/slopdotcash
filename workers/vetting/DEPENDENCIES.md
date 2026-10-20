@@ -50,7 +50,9 @@ security controls to make the workflow pass.
 source/profile/CA digests, `executionAuthorized: false`, records and visibility
 gaps. Each record binds the exact object and isolated inspection report by
 path and digest. It also records the URL, DNS answers, actual destination,
-TLS version, HTTP status, byte count and timestamps. Objects use
+TLS version, HTTP status, byte count and timestamps. Selected response metadata
+is limited to 64 KiB. Overflow retains its digest and size with an explicit
+missing-header gap, then fails; it never truncates metadata into a successful run. Objects use
 `objects/<sha256>`; reports use `inspections/<sha256>.json`. Dependency provenance
 is separate from Git blob provenance. These records must not be inserted into
 the Git source inventory.

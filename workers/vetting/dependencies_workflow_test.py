@@ -123,6 +123,9 @@ def main():
                 data = b'changed dependency' if self.path == '/changed' else PAYLOAD
                 self.send_response(200)
                 self.send_header('Content-Length', str(9 * 1024 * 1024 if self.path == '/large' else len(data)))
+                if self.path == '/headers':
+                    for _ in range(9):
+                        self.send_header('Content-Encoding', 'x' * 8192)
                 if self.path == '/chunked':
                     self.send_header('Transfer-Encoding', 'chunked')
                 if self.path == '/compressed':
@@ -185,6 +188,13 @@ def main():
                         assert any(row['sha256'] == sha(expected) for row in retained)
                         assert any(row['dependencyIndex'] == (1 if multiple else 0)
                                    and row['sha256'] == sha(expected) for row in failure['lineage'])
+                    if url.endswith('/headers'):
+                        assert failure['reason'] == 'response-metadata-limit'
+                        observed = failure['observations'][0]
+                        assert observed['responseMetadataBytes'] > 65536
+                        assert len(observed['responseMetadataSha256']) == 64
+                        assert observed['visibilityGaps'] == ['response-header-metadata-not-retained']
+                        assert (output / 'failure.json').stat().st_size < 65536
                     if multiple:
                         assert failure['failedIndex'] == 1
                         assert {row['dependencyIndex'] for row in failure['lineage']} == {0, 1}
@@ -201,7 +211,7 @@ def main():
                     'https://user:secret@good.fixture.example/good',
                     'https://good.fixture.example/good?token=secret', 'https://wrong.other.example/good'):
             run(url)
-        for path in ('redirect', 'changed', 'large', 'chunked', 'compressed', 'slow', 'partial'):
+        for path in ('redirect', 'changed', 'large', 'chunked', 'compressed', 'headers', 'slow', 'partial'):
             run('https://good.fixture.example/' + path)
         run('https://good.fixture.example/changed', multiple=True)
         run('https://good.fixture.example/good', bad_digest=True)
