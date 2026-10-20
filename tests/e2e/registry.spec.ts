@@ -835,9 +835,7 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
   await adminContext.close();
 
   const moderatorContext = await browser.newContext({
-    ...(process.env.SLOP_E2E_RECORD_ENFORCEMENT === "1"
-      ? { recordVideo: { dir: test.info().outputPath("enforcement-video") } }
-      : {}),
+    recordVideo: { dir: test.info().outputPath("enforcement-video") },
   });
   const moderator = await moderatorContext.newPage();
   const moderatorErrors = observe(moderator);
@@ -881,11 +879,10 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
   expect((await request.get(`/api/v1/projects/${project.id}`)).status()).toBe(
     410,
   );
-  if (process.env.SLOP_E2E_RECORD_ENFORCEMENT === "1")
-    await moderator.screenshot({
-      path: test.info().outputPath("enforcement-before-scan.png"),
-      fullPage: true,
-    });
+  await moderator.screenshot({
+    path: test.info().outputPath("enforcement-before-scan.png"),
+    fullPage: true,
+  });
   await queueScan(moderator, project.id, "Confirm the reported finding", 3);
   await postVettingResult(request, project.id, project.repository, "malicious");
   await queueScan(
@@ -922,11 +919,10 @@ test("a moderator quarantines and bans a project, and another moderator reinstat
   await expect(moderatorPanel).toContainText(
     "the signed security vetting service",
   );
-  if (process.env.SLOP_E2E_RECORD_ENFORCEMENT === "1")
-    await moderator.screenshot({
-      path: test.info().outputPath("enforcement-history.png"),
-      fullPage: true,
-    });
+  await moderator.screenshot({
+    path: test.info().outputPath("enforcement-history.png"),
+    fullPage: true,
+  });
   expect(
     await (await request.get(`/api/v1/projects/${project.id}`)).json(),
   ).toMatchObject({
