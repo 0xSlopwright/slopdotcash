@@ -218,7 +218,7 @@ export function enforcementStatement(
 function isConstraintConflict(error: unknown): boolean {
   return (
     error instanceof Error &&
-    /UNIQUE constraint failed|PRIMARY KEY|project (?:row|update) requires|enforcement sequence/u.test(
+    /UNIQUE constraint failed|PRIMARY KEY|project (?:row|update) requires|enforcement sequence|NOT NULL constraint failed: project_enforcements.before_revision/u.test(
       error.message,
     )
   );

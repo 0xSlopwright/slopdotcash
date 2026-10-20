@@ -924,6 +924,24 @@ describe("project enforcement (ADM-06)", () => {
       ).state,
     ).toBe("banned");
 
+    // A concurrent revision must abort the database write, not leave a
+    // scanner result or appeal pointing at an enforcement that did not land.
+    const records = await persistence.listEnforcements();
+    const latestRecord = records.at(-1);
+    if (!latestRecord) throw new Error("Missing enforcement record");
+    expect(
+      await persistence.appendEnforcement(
+        {
+          ...latestRecord,
+          id: "enf_stale_database_revision",
+          sequence: latestRecord.sequence + 1,
+          beforeRevision: 999,
+        },
+        null,
+        [],
+      ),
+    ).toBe("conflict");
+    expect(await persistence.listEnforcements()).toHaveLength(records.length);
     // A stale preview cannot be confirmed, and history is append-only.
     const stale = await call(
       "POST",
