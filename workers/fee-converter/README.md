@@ -27,7 +27,13 @@ The Worker has no HTTP route. A cron trigger runs it every 15 minutes. For each
 enabled network:
 
 1. Take the network lock in D1 (`fee_converter_locks`). A second run on the
-   same network exits, so two runs never sign with one nonce.
+   same network exits, so two runs never sign with one nonce. The lease lasts
+   14 minutes and a run renews it at a chunk boundary every 7 minutes, so a
+   run that needs longer than one lease keeps the lock instead of losing it to
+   the next cron tick. A renewal that fails means the lease lapsed or another
+   run took it over: that run starts no further send and logs
+   `fee_conversion_lock_lost`. Releasing a lease that already lapsed leaves the
+   row for `acquireLock` to reclaim, so a late run never disturbs a successor.
 2. Reconcile every unresolved live send (`submitted`, `unknown`) before
    anything new. See [Idempotency](#idempotency).
 3. List candidate tokens from D1 project manifests: a `rewardAsset` of kind

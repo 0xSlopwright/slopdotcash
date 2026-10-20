@@ -119,6 +119,10 @@ function harness(
     sqlite
       .query("SELECT * FROM fee_conversions ORDER BY rowid")
       .all() as Record<string, string | number | null>[];
+  const locks = () =>
+    sqlite
+      .query("SELECT run_id, expires_at FROM fee_converter_locks")
+      .all() as { run_id: string; expires_at: string }[];
   return {
     db,
     sqlite,
@@ -126,6 +130,7 @@ function harness(
     deps,
     network: parsed.networks[0],
     rows,
+    locks,
     clock,
     events,
   };
@@ -431,6 +436,137 @@ describe("idempotent sends", () => {
     expect(h.rows()).toHaveLength(0);
     h.clock.now = new Date(h.clock.now.getTime() + 15 * 60 * 1000);
     expect((await runNetwork(h.network, h.deps)).status).toBe("ran");
+  });
+
+  test("a run that lost its lease never deletes the successor's lock", async () => {
+    const h = harness();
+    const at = (minutes: number) =>
+      new Date(h.clock.now.getTime() + minutes * 60 * 1000);
+    // Run A takes the lease (expires at +14 minutes).
+    expect(await h.deps.store.acquireLock("base", "run-a", at(0))).toBe(true);
+    // The next cron tick legitimately takes the lease A let lapse.
+    expect(await h.deps.store.acquireLock("base", "run-c", at(15))).toBe(true);
+    expect(h.locks()).toEqual([
+      { run_id: "run-c", expires_at: at(29).toISOString() },
+    ]);
+    // A returns after its lease expired: it must not delete C's row.
+    await h.deps.store.releaseLock("base", "run-a", at(22));
+    expect(h.locks()).toEqual([
+      { run_id: "run-c", expires_at: at(29).toISOString() },
+    ]);
+    // So a third run is still locked out while C is signing.
+    expect(await h.deps.store.acquireLock("base", "run-d", at(28))).toBe(false);
+  });
+
+  test("a stale run cannot release a lease it already let lapse", async () => {
+    const h = harness();
+    const at = (minutes: number) =>
+      new Date(h.clock.now.getTime() + minutes * 60 * 1000);
+    // A lease A took at t=0 lapses at t=14 while the run is still working.
+    expect(await h.deps.store.acquireLock("base", "run-a", at(0))).toBe(true);
+    // A releases at t=22 with no successor: the row is A's but expired, so
+    // the release leaves it for acquireLock to reclaim on expiry.
+    await h.deps.store.releaseLock("base", "run-a", at(22));
+    expect(h.locks()).toEqual([
+      { run_id: "run-a", expires_at: at(14).toISOString() },
+    ]);
+    // Release of the same row while it is still live does delete it.
+    await h.deps.store.releaseLock("base", "run-a", at(10));
+    expect(h.locks()).toEqual([]);
+  });
+
+  test("a run that still owns an unexpired lease releases it", async () => {
+    const h = harness();
+    const at = (minutes: number) =>
+      new Date(h.clock.now.getTime() + minutes * 60 * 1000);
+    expect(await h.deps.store.acquireLock("base", "run-a", at(0))).toBe(true);
+    await h.deps.store.releaseLock("base", "run-a", at(5));
+    expect(h.locks()).toEqual([]);
+    // The network is free for the next tick.
+    expect(await h.deps.store.acquireLock("base", "run-b", at(5))).toBe(true);
+  });
+
+  test("a run renews its lease so a long run keeps the lock", async () => {
+    const h = harness();
+    const at = (minutes: number) =>
+      new Date(h.clock.now.getTime() + minutes * 60 * 1000);
+    // A lease taken at t=0 lapses at t=14 without renewal.
+    expect(await h.deps.store.acquireLock("base", "run-a", at(0))).toBe(true);
+    expect(await h.deps.store.acquireLock("base", "run-b", at(15))).toBe(true);
+
+    // A run that renews inside its lease still owns it past the old expiry.
+    expect(await h.deps.store.acquireLock("base", "run-x", at(100))).toBe(true);
+    expect(await h.deps.store.renewLock("base", "run-x", at(107))).toBe(true);
+    expect(await h.deps.store.acquireLock("base", "run-y", at(115))).toBe(
+      false,
+    );
+    // A lapsed lease cannot be renewed, and renewal never claims another run.
+    expect(await h.deps.store.renewLock("base", "run-x", at(122))).toBe(false);
+    expect(await h.deps.store.renewLock("base", "run-other", at(110))).toBe(
+      false,
+    );
+  });
+
+  test("a run renews the lease before starting a later chunk", async () => {
+    // Three tokens, one send each. A send takes 8 simulated minutes, which is
+    // more than RUN_BUDGET_MS (7 minutes): the second chunk starts with the
+    // lease due for renewal, and the third chunk proves the lease was really
+    // extended rather than merely left in place.
+    const THIRD = "0x3333333333333333333333333333333333333333";
+    const h = harness({ projectTokens: [OTHER, THIRD] });
+    h.chain.balances.set(TOKEN, 20_000_000n);
+    h.chain.balances.set(OTHER, 20_000_000n);
+    h.chain.balances.set(THIRD, 20_000_000n);
+    const prepare = h.chain.prepare;
+    // The lease this run holds at the moment each chunk starts to sign.
+    const leaseAtSign: string[] = [];
+    h.chain.prepare = async (token, quote, recordApproval) => {
+      leaseAtSign.push(h.locks()[0]?.expires_at ?? "none");
+      h.clock.now = new Date(h.clock.now.getTime() + 8 * 60 * 1000);
+      return prepare(token, quote, recordApproval);
+    };
+    h.chain.statusFor = () => ({ kind: "finalized", amountOut: 1n });
+    const startedAt = h.clock.now.getTime();
+    const minute = (n: number) =>
+      new Date(startedAt + n * 60 * 1000).toISOString();
+
+    await runNetwork(h.network, h.deps);
+
+    expect(h.chain.prepared).toBe(3);
+    // Chunks sign at minutes 0, 8 and 16. The third one signs under a lease
+    // that expires at minute 30, past the original 14-minute lease, so only
+    // the renewal that ran before it can keep this run's lease alive.
+    expect(leaseAtSign).toEqual([minute(14), minute(22), minute(30)]);
+    // The lease was still this run's at the end, so releasing it left no row.
+    expect(h.locks()).toEqual([]);
+    expect(h.events).not.toContainEqual(
+      expect.objectContaining({ event: "fee_conversion_lock_lost" }),
+    );
+  });
+
+  test("a run stops starting new chunks once it loses its lease", async () => {
+    // Two tokens: the first signs and the clock jumps past the lease, so the
+    // second chunk must not start once renewal fails.
+    const h = harness({ projectTokens: [OTHER] });
+    h.chain.balances.set(TOKEN, 20_000_000n);
+    h.chain.balances.set(OTHER, 20_000_000n);
+    const prepare = h.chain.prepare;
+    h.chain.prepare = async (token, quote, recordApproval) => {
+      // A send waits for receipts; this one outlives the lease and the
+      // successor run takes it before the next chunk.
+      h.clock.now = new Date(h.clock.now.getTime() + 15 * 60 * 1000);
+      await h.deps.store.acquireLock("base", "successor", h.clock.now);
+      return prepare(token, quote, recordApproval);
+    };
+
+    const result = await runNetwork(h.network, h.deps);
+
+    // The first chunk signed; the loop stopped instead of signing a second.
+    expect(h.chain.prepared).toBe(1);
+    expect(result.records.submitted).toBe(1);
+    expect(h.events).toContainEqual(
+      expect.objectContaining({ event: "fee_conversion_lock_lost" }),
+    );
   });
 });
 
