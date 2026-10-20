@@ -3,9 +3,6 @@ import type { ProjectDefinition } from "../../src/lib/projects.mjs";
 export const PROJECT_API_CONTRACT_VERSION = "project-registry-v1";
 /** Bounds open applications so one account cannot flood the review queue. */
 export const MAX_PENDING_APPLICATIONS_PER_APPLICANT = 3;
-/** Bounds submissions so one account cannot flood the review queue. */
-export const MAX_DAILY_SUBMISSIONS_PER_APPLICANT = 5;
-
 /**
  * GitHub's answer on whether the applicant controls the repository. It is
  * shown to the admin who decides; a mismatch means the manifest misstates the
@@ -87,6 +84,10 @@ export type EnforcementAction =
   | "request_reinstatement"
   | "reinstate"
   | "deny_reinstatement";
+export type EnforcementActorRole =
+  | "project-moderator"
+  | "project-steward"
+  | "project-applicant";
 export type RestrictionState = "clear" | "quarantined" | "banned";
 export type AppealState = "none" | "requested" | "granted" | "denied";
 export type EnforcementResult =
@@ -109,8 +110,9 @@ export type ProjectEnforcement = {
   /** Lowercase repository paths, including transfer aliases. */
   repositoryKeys: string[];
   actor: GithubActor;
-  actorRole: "project-moderator";
-  decisionSource: "admin-panel";
+  /** A steward or applicant may only file a reinstatement request (ELG-02). */
+  actorRole: EnforcementActorRole;
+  decisionSource: "admin-panel" | "owner-request";
   beforeRevision: number;
   beforeManifestSha256: string;
   afterRevision: number | null;
@@ -133,8 +135,6 @@ export interface ProjectPersistence {
   listApplications(status: ApplicationStatus): Promise<ProjectApplication[]>;
   listApplicantApplications(githubId: string): Promise<ProjectApplication[]>;
   countPendingApplications(githubId: string): Promise<number>;
-  /** Applications the account submitted at or after `since`, in any state. */
-  countApplicationsSince(githubId: string, since: string): Promise<number>;
   /** Returns "conflict" when the project or repository already has an open application. */
   createApplication(
     application: ProjectApplication & { manifestText: string },
@@ -163,10 +163,13 @@ export interface ProjectPersistence {
   enforcementGeneration(): Promise<number>;
   /**
    * Atomically appends the record and, when given, the matching revision.
-   * Both apply only while the project is still at `beforeRevision`.
+   * Both apply only while the project is still at `beforeRevision`. The
+   * same write adds the inbox rows for the project's applicant and steward,
+   * and for `appealReviewers` when the record requests reinstatement.
    */
   appendEnforcement(
     record: ProjectEnforcement,
     revision: ProjectRevisionInput | null,
+    appealReviewers: readonly string[],
   ): Promise<"recorded" | "conflict">;
 }

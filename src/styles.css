@@ -4539,6 +4539,17 @@ small {
   font-weight: 400;
 }
 
+.admin-badge-vetting-cleared {
+  background: rgba(31, 157, 99, 0.14);
+  color: var(--green);
+}
+
+.admin-badge-vetting-quarantined,
+.admin-badge-vetting-banned {
+  background: rgba(173, 53, 12, 0.12);
+  color: var(--orange-dark);
+}
+
 .admin-facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

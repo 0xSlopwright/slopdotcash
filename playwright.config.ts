@@ -39,6 +39,12 @@ if (
   !/^http:\/\/127\.0\.0\.1:[0-9]{4,5}$/u.test(registryGitHub)
 )
   throw new Error("SLOP_E2E_GITHUB_API_ORIGIN must be a loopback origin");
+const registryVettingKey = process.env.SLOP_E2E_VETTING_PUBLIC_KEY;
+if (
+  registryVettingKey !== undefined &&
+  !/^[A-Za-z0-9+/]{43}=$/u.test(registryVettingKey)
+)
+  throw new Error("SLOP_E2E_VETTING_PUBLIC_KEY must be a base64 Ed25519 key");
 const registryArguments = registryPersistTo
   ? ` --persist-to ${JSON.stringify(registryPersistTo)}${
       registryAdmins ? ` --binding ADMIN_GITHUB_IDS=${registryAdmins}` : ""
@@ -49,6 +55,10 @@ const registryArguments = registryPersistTo
     }${
       registryGitHub
         ? ` --binding SLOP_GITHUB_API_ORIGIN=${registryGitHub}`
+        : ""
+    }${
+      registryVettingKey
+        ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey}`
         : ""
     }`
   : "";

@@ -341,3 +341,46 @@ export async function lookupGitHubRepository(
     );
   }
 }
+
+const BRANCH = /^[A-Za-z0-9._/-]{1,255}$/u;
+
+/**
+ * Reads the current head commit of one branch. Security vetting binds a
+ * clearance to this exact commit (PRD VET-07), so every failure throws and
+ * never returns a guessed commit.
+ */
+export async function readBranchHead(
+  fetcher: GithubFetch,
+  token: string | undefined,
+  repository: string,
+  branch: string,
+  apiOrigin = GITHUB_API,
+): Promise<string> {
+  if (!validRepositoryPath(repository) || !BRANCH.test(branch))
+    throw new GithubLookupError(
+      400,
+      "invalid_request",
+      "The repository or integration branch is not valid.",
+    );
+  const value = await githubJson(
+    fetcher,
+    token,
+    `/repos/${repository}/branches/${encodeURIComponent(branch)}`,
+    apiOrigin,
+  );
+  const commitSha = (value?.commit as Record<string, unknown> | undefined)?.sha;
+  if (typeof commitSha !== "string" || !/^[0-9a-f]{40}$/u.test(commitSha))
+    throw new GithubLookupError(
+      502,
+      "github_unavailable",
+      `GitHub returned no head commit for ${repository} ${branch}.`,
+    );
+  return commitSha;
+}
+
+/** The GitHub API origin: a loopback fixture in local browser tests only. */
+export function githubApiOrigin(value: string | undefined): string {
+  return value && /^http:\/\/127\.0\.0\.1:[1-9][0-9]{3,4}$/u.test(value)
+    ? value
+    : GITHUB_API;
+}

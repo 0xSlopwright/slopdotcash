@@ -9,9 +9,10 @@ on:
     branches: [develop, development, main]
   push:
     branches: [develop, development, main]
-  schedule:
-    # Offset from the hour so this refresh does not join the top-of-hour surge.
-    - cron: "17 */6 * * *"
+  # scheduled-release.yml dispatches this workflow on main and development
+  # every six hours, so registry changes and new GitHub activity publish
+  # without a commit. A schedule trigger here runs only on the default branch
+  # and cannot publish production.
   workflow_dispatch:
     inputs:
       bootstrap_staging_profiles:
@@ -42,29 +43,11 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      actions: read
     outputs:
       sha: ${{ steps.source.outputs.sha }}
-      baseline: ${{ steps.source.outputs.baseline }}
-      baseline_name: ${{ steps.source.outputs.baseline_name }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: "24.15.0"
       - id: source
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
-            node scripts/released-source.mjs
-          else
-            echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
-          fi
+        run: echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   prepare:
     name: Prepare checked browser bundle
@@ -188,11 +171,6 @@ jobs:
             fi
             echo "::warning::Profile census did not reconcile; retrying once."
           done
-          # An older approved source still serves its legacy intake format.
-          # Renew it during the transition; new sources have no such builder.
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ -f scripts/prepare-private-intake-attestation.ts ]; then
-            GITHUB_SHA="$RELEASE_SHA" bun scripts/prepare-private-intake-attestation.ts
-          fi
 
       - name: Load deployed public ledger for pull-request checks
         if: github.event_name == 'pull_request'
@@ -224,7 +202,7 @@ jobs:
           # Trusted refreshes use the census produced above; PR builds use the captured seed.
           SLOP_PROFILES_INPUT: ${{ github.event_name == 'pull_request' && 'data/profiles/seed.json' || 'public/data/profiles.json' }}
           SLOP_POINTS_ONLINE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
-          SLOP_POINTS_BOOTSTRAP: ${{ github.event_name != 'schedule' && '1' || '0' }}
+          SLOP_POINTS_BOOTSTRAP: "1"
         run: bun run build
 
       - name: Run installer lifecycle end-to-end checks
@@ -442,14 +420,12 @@ jobs:
     if: >-
       needs.quality.result == 'success' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'schedule' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     needs: [source, quality]
     env:
       RELEASE_SHA: ${{ needs.source.outputs.sha }}
     permissions:
       contents: read
-      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     concurrency:
@@ -458,9 +434,9 @@ jobs:
       group: slop-production
       cancel-in-progress: false
     environment:
-      # Code releases need the Workers-scoped production credentials for the
-      # identity Worker; unattended refreshes get only the Pages-scoped token.
-      name: ${{ github.event_name == 'schedule' && 'slop-data-refresh' || 'eliza-army-production' }}
+      # Every release, scheduled or not, publishes the tested main head and
+      # needs the Workers-scoped production credentials for the identity Worker.
+      name: eliza-army-production
       url: https://slop.cash
     steps:
       - name: Checkout exact deployment tooling
@@ -484,7 +460,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$GITHUB_EVENT_NAME" in
-            push|schedule|workflow_dispatch) ;;
+            push|workflow_dispatch) ;;
             *)
               echo "::error::$GITHUB_EVENT_NAME is not authorized to deploy slop.cash."
               exit 1
@@ -517,28 +493,11 @@ jobs:
       - name: Verify downloaded Pages bundle
         run: node scripts/dist-manifest.mjs verify-local dist
 
-      - name: Require already released source and data-only artifact changes
-        if: github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          approved_run="${{ needs.source.outputs.baseline }}"
-          approved_bundle="$RUNNER_TEMP/slop-approved-$approved_run"
-          mkdir "$approved_bundle"
-          gh run download "$approved_run" --repo "$GITHUB_REPOSITORY" \
-            --name "${{ needs.source.outputs.baseline_name }}" --dir "$approved_bundle"
-          node scripts/dist-manifest.mjs verify-local "$approved_bundle"
-          node scripts/check-data-refresh-bundle.mjs "$approved_bundle" dist
-
       - name: Require live release-input equivalence
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
-            node scripts/released-source.mjs --check
-          else
           live_main="$(
             git -C "$GITHUB_WORKSPACE" ls-remote --exit-code --refs \
               https://github.com/SlopDotCash/slopdotcash.git refs/heads/main |
@@ -553,7 +512,6 @@ jobs:
           if ! git -C "$GITHUB_WORKSPACE" diff --quiet "$GITHUB_SHA" "$live_main" -- .; then
             echo "::error::Live main changed a slop.cash release input after $GITHUB_SHA was tested."
             exit 1
-          fi
           fi
 
       - name: Require scoped Cloudflare credentials
@@ -650,9 +608,6 @@ jobs:
         # bypasses that deployment contract and must not be added here.
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
-            node scripts/released-source.mjs --check
-          else
           live_main="$(
             git -C "$GITHUB_WORKSPACE" ls-remote --exit-code --refs \
               https://github.com/SlopDotCash/slopdotcash.git refs/heads/main |
@@ -669,10 +624,6 @@ jobs:
             exit 1
           fi
 
-          fi
-
-          # Scheduled publication never mutates identity, D1, or cleanup schedules.
-          if [ "$GITHUB_EVENT_NAME" != "schedule" ]; then
           # Restore only absent cleanup triggers; reject nonempty provisioning drift.
           bun scripts/verify-identity-schedules.mjs --restore-missing
 
@@ -739,7 +690,7 @@ jobs:
           # importing anything". A failed import rolls back, and every
           # statement is idempotent and keyed by the batch digest, so retry
           # and accept a failed attempt only when the batch is recorded.
-          points_digest="$(sed -n "s/^INSERT INTO points_batches(digest,[^)]*) VALUES('\([0-9a-f]\{64\}\)'.*/\1/p" "$RUNNER_TEMP/points-import.sql")"
+          points_digest="$(sed -n "s/^INSERT INTO points_batches(digest,[^)]*) SELECT '\([0-9a-f]\{64\}\)'.*/\1/p" "$RUNNER_TEMP/points-import.sql")"
           points_revisions="$(grep -c '^INSERT INTO points_staging(' "$RUNNER_TEMP/points-import.sql")"
           [ "${#points_digest}" -eq 64 ] || exit 1
           points_recorded() {
@@ -1294,11 +1245,6 @@ jobs:
             echo "::notice::Fee-converter Worker release is not enabled (SLOP_FEE_CONVERTER_RELEASE repository variable)."
           fi
 
-          fi
-
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
-            node scripts/released-source.mjs --check
-          else
           live_main="$(
             git -C "$GITHUB_WORKSPACE" ls-remote --exit-code --refs \
               https://github.com/SlopDotCash/slopdotcash.git refs/heads/main |
@@ -1313,8 +1259,6 @@ jobs:
           if ! git -C "$GITHUB_WORKSPACE" diff --quiet "$GITHUB_SHA" "$live_main" -- .; then
             echo "::error::Live main changed a slop.cash release input immediately before the Pages deployment."
             exit 1
-          fi
-
           fi
 
           printf '%s\n' "started_at=$(node -e 'process.stdout.write(Date.now().toString())')" >> "$GITHUB_OUTPUT"
@@ -1560,7 +1504,6 @@ jobs:
           fi
 
       - name: Require public identity OAuth app
-        if: github.event_name != 'schedule'
         env:
           GITHUB_CLIENT_ID: ${{ steps.pages-deploy.outputs.github_client_id }}
         run: |
