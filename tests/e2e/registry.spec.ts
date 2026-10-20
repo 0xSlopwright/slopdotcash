@@ -9,6 +9,7 @@
  * service, so the lane signs harmless scan results the way the service must.
  */
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 import {
   type APIRequestContext,
@@ -89,7 +90,7 @@ async function postVettingResult(
   ]) {
     const response = await request.fetch(path, {
       method,
-      data,
+      data: Buffer.from(data),
       headers: {
         "content-type": "application/json",
         ...(await signedVettingHeaders(
@@ -1097,6 +1098,13 @@ test.describe("private evidence console", () => {
     const path = `/vetting-evidence?assessmentId=${assessment.id}&runId=${assessment.result.environment.runId}`;
     const privatePath = `/api/v1/operator/vetting-evidence?assessmentId=${assessment.id}&runId=${assessment.result.environment.runId}`;
     expect((await page.request.get(privatePath)).status()).toBe(403);
+    await page.goto("/admin", { waitUntil: "networkidle" });
+    const consoleLink = page.locator(`a[href="${path}"]`);
+    await consoleLink
+      .locator("xpath=ancestor::details")
+      .locator("summary")
+      .click();
+    await expect(consoleLink).toHaveText("Open restricted evidence console");
     await signIn(page, OWNER_TOKEN);
     await page.goto(path, { waitUntil: "networkidle" });
     await expect(
@@ -1129,6 +1137,20 @@ test.describe("private evidence console", () => {
     );
     await expect(trace.locator("pre")).toHaveText(
       VETTING_EVIDENCE_OBJECTS[0].body.trim(),
+    );
+    const binary = page
+      .getByRole("article")
+      .filter({ hasText: VETTING_EVIDENCE_OBJECTS[2].sha256 });
+    await binary
+      .getByRole("textbox")
+      .fill("Inspect exact binary artifact without executing it");
+    const downloaded = page.waitForEvent("download");
+    await binary.getByRole("button").click();
+    const download = await downloaded;
+    const saved = test.info().outputPath("harmless-artifact.bin");
+    await download.saveAs(saved);
+    expect(await readFile(saved, "utf8")).toBe(
+      VETTING_EVIDENCE_OBJECTS[2].body,
     );
     await page.evaluate(() => {
       document.documentElement.style.zoom = "2";
