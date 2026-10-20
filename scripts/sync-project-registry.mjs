@@ -100,7 +100,10 @@ export function renderProjectRevisions(revisions, definitions) {
   });
   for (const definition of definitions) {
     const newest = rows.findLast((row) => row.projectId === definition.id);
-    if (newest?.manifestSha256 !== sha256(JSON.stringify(definition))) {
+    if (
+      newest?.manifestSha256 !== sha256(JSON.stringify(definition)) &&
+      !restrictionOf(newest?.manifest, definition)
+    ) {
       throw new TypeError(
         `project ${definition.id} does not match its newest revision`,
       );
@@ -168,22 +171,41 @@ export async function fetchProjectRegistry(origin = DEFAULT_API_ORIGIN) {
   }
   const withheld = restrictionsPending(registry.projects, restrictions);
   return {
-    projects: registry.projects.filter(
-      (project) => !withheld.includes(project.id),
+    projects: registry.projects.map((project) =>
+      withheld.includes(project.id) ? restricted(project) : project,
     ),
-    revisions: history.revisions.filter(
-      (revision) => !withheld.includes(revision?.projectId),
-    ),
+    revisions: history.revisions,
     withheld,
   };
+}
+
+/** The manifest with the paused, retired restriction applied. */
+function restricted(project) {
+  return { ...project, status: "paused", listingTier: "retired" };
+}
+
+/**
+ * True when the definition is the newest revision with only the paused,
+ * retired restriction applied. That snapshot is stricter than the registry,
+ * never looser, so check mode accepts it without the restriction list.
+ */
+function restrictionOf(manifest, definition) {
+  return (
+    manifest !== undefined &&
+    definition.status === "paused" &&
+    definition.listingTier === "retired" &&
+    JSON.stringify(restricted(manifest)) === JSON.stringify(definition)
+  );
 }
 
 /**
  * A quarantined or banned project must already be paused and retired in its
  * newest revision; otherwise ingestion could still collect it. A project whose
- * paused, retired revision is still pending is withheld from the snapshot with
- * its revisions, so every other project still syncs. The admin appends the
- * pending revision at /admin, and the next sync includes the project again.
+ * paused, retired revision is still pending keeps its manifest and revisions
+ * in the snapshot, because history lookups resolve through it, but the
+ * snapshot applies the restriction at once, as the browser does. No
+ * collection, listing, or skill step serves it. The admin appends the pending
+ * revision at /admin, and the next sync stores that revision unchanged.
  */
 function restrictionsPending(projects, restrictions) {
   const withheld = [];
@@ -242,7 +264,7 @@ export async function syncProjectRegistry(checkOnly = false) {
   const { projects, revisions, withheld } = registry;
   for (const projectId of withheld)
     process.stdout.write(
-      `::warning::Project ${projectId} is restricted but its paused, retired revision is pending; it is withheld from the snapshot until an admin appends that revision at /admin\n`,
+      `::warning::Project ${projectId} is restricted but its paused, retired revision is pending; the snapshot stores it paused and retired until an admin appends that revision at /admin\n`,
     );
   const rendered = await renderProjectRegistry(projects);
   const renderedRevisions = renderProjectRevisions(
