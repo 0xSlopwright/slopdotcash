@@ -12,7 +12,8 @@ test("verified activity email preference persists and can be withdrawn @registry
   const page = await context.newPage();
   const errors: string[] = [];
   const failures: string[] = [];
-  await page.goto("/how-it-works");
+  await page.goto("/how-it-works", { waitUntil: "networkidle" });
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
   await page.evaluate((token) => {
     document.cookie = `__Host-slop_points=${token}; Path=/; Secure; SameSite=Strict`;
   }, process.env.SLOP_E2E_APPLICANT_TOKEN ?? "");
