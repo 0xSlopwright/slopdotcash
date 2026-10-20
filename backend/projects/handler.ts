@@ -17,7 +17,6 @@ import {
   type ApplicationStatus,
   type EnforcementAction,
   type GithubActor,
-  MAX_DAILY_SUBMISSIONS_PER_APPLICANT,
   MAX_PENDING_APPLICATIONS_PER_APPLICANT,
   PROJECT_API_CONTRACT_VERSION,
   type ProjectApplication,
@@ -465,19 +464,6 @@ async function submitApplication(
       429,
       "too_many_pending",
       `You already have ${MAX_PENDING_APPLICATIONS_PER_APPLICANT} applications awaiting review`,
-    );
-  }
-  const dayAgo = new Date(deps.now().getTime() - 24 * 60 * 60 * 1000);
-  if (
-    (await deps.persistence.countApplicationsSince(
-      session.githubId,
-      dayAgo.toISOString(),
-    )) >= MAX_DAILY_SUBMISSIONS_PER_APPLICANT
-  ) {
-    fail(
-      429,
-      "too_many_submissions",
-      `You can submit ${MAX_DAILY_SUBMISSIONS_PER_APPLICANT} projects per day`,
     );
   }
   assertRegistryWith(await deps.persistence.listProjects(), manifest);

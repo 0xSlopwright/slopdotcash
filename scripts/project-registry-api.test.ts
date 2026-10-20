@@ -321,31 +321,6 @@ describe("project registry API", () => {
     });
   });
 
-  test("limits one account to five submissions a day", async () => {
-    for (let index = 0; index < 5; index += 1) {
-      const response = await call("POST", "project-applications", "applicant", {
-        manifest: applicationManifest(
-          `daily-${index}`,
-          `example/daily-${index}`,
-        ),
-      });
-      expect(response.status).toBe(201);
-      // Rejections keep the pending queue small; the daily count stays.
-      const { application } = await response.json();
-      await call(
-        "POST",
-        `admin/project-applications/${application.id}/reject`,
-        "admin",
-        { reason: "Test rejection" },
-      );
-    }
-    const sixth = await call("POST", "project-applications", "applicant", {
-      manifest: applicationManifest("daily-5", "example/daily-5"),
-    });
-    expect(sixth.status).toBe(429);
-    expect((await sixth.json()).error).toBe("too_many_submissions");
-  });
-
   test("serves the exact approved bytes of a revision", async () => {
     await listProject();
     const response = await call("GET", "project-revisions/open-registry/1");

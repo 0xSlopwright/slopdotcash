@@ -278,20 +278,6 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
     return row?.count ?? 0;
   }
 
-  async countApplicationsSince(
-    githubId: string,
-    since: string,
-  ): Promise<number> {
-    const row = await this.db
-      .prepare(
-        `SELECT COUNT(*) AS count FROM project_applications
-          WHERE applicant_github_id = ? AND submitted_at >= ?`,
-      )
-      .bind(githubId, since)
-      .first<{ count: number }>();
-    return row?.count ?? 0;
-  }
-
   async createApplication(
     application: ProjectApplication & { manifestText: string },
   ): Promise<"created" | "conflict"> {

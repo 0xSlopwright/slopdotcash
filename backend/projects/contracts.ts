@@ -4,7 +4,6 @@ export const PROJECT_API_CONTRACT_VERSION = "project-registry-v1";
 /** Bounds open applications so one account cannot flood the review queue. */
 export const MAX_PENDING_APPLICATIONS_PER_APPLICANT = 3;
 /** Bounds submissions so one account cannot flood the review queue. */
-export const MAX_DAILY_SUBMISSIONS_PER_APPLICANT = 5;
 
 /**
  * GitHub's answer on whether the applicant controls the repository. It is
@@ -134,7 +133,6 @@ export interface ProjectPersistence {
   listApplicantApplications(githubId: string): Promise<ProjectApplication[]>;
   countPendingApplications(githubId: string): Promise<number>;
   /** Applications the account submitted at or after `since`, in any state. */
-  countApplicationsSince(githubId: string, since: string): Promise<number>;
   /** Returns "conflict" when the project or repository already has an open application. */
   createApplication(
     application: ProjectApplication & { manifestText: string },
