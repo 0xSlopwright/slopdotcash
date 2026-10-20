@@ -26,8 +26,11 @@ CREATE TABLE security_notification_delivery_events (
   delivery_id TEXT NOT NULL REFERENCES security_notification_outbox(id),
   state TEXT NOT NULL,
   evidence_reference TEXT,
+  attempt INTEGER,
+  destination_digest TEXT,
   at TEXT NOT NULL
 );
+CREATE UNIQUE INDEX security_notification_evidence_once ON security_notification_delivery_events(evidence_reference) WHERE evidence_reference IS NOT NULL;
 CREATE TRIGGER security_notification_event_no_update BEFORE UPDATE ON security_notification_delivery_events
 BEGIN SELECT RAISE(ABORT, 'delivery evidence is append-only'); END;
 CREATE TRIGGER security_notification_event_no_delete BEFORE DELETE ON security_notification_delivery_events

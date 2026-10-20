@@ -32,6 +32,7 @@ type Delivery = {
   template_version: string;
   state: string;
   attempts: number;
+  destination_digest: string | null;
   created_at: string;
   acknowledged_at: string | null;
   escalation_of: string | null;
@@ -114,13 +115,13 @@ async function record(
       .bind(state, at, row.id, row.attempts + 1),
     deps.db
       .prepare(
-        "INSERT INTO security_notification_delivery_events(delivery_id, state, evidence_reference, at) SELECT id, ?, ?, ? FROM security_notification_outbox WHERE id = ? AND state = ? AND attempts = ? AND updated_at = ?",
+        "INSERT INTO security_notification_delivery_events(delivery_id, state, evidence_reference, at, attempt, destination_digest) SELECT id, ?, ?, ?, attempts, destination_digest FROM security_notification_outbox WHERE id = ? AND state = ? AND attempts = ? AND updated_at = ?",
       )
       .bind(state, evidence, at, row.id, state, row.attempts + 1, at),
   ]);
 }
 
-async function destinationDigest(value: Destination): Promise<string> {
+export async function destinationDigest(value: Destination): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify(value));
   return Array.from(
     new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
@@ -139,7 +140,7 @@ function mime(
     `To: ${email}`,
     "Subject: Slop private inbox notice",
     `Date: ${deps.now().toUTCString()}`,
-    `Message-ID: <slop-notice-${row.id}@slop.cash>`,
+    `Message-ID: <slop-notice-${row.id}-${row.attempts + 1}@slop.cash>`,
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=utf-8",
     "Content-Transfer-Encoding: quoted-printable",
@@ -284,11 +285,17 @@ export async function reconcileSecurityMail(
   body: Record<string, unknown>,
 ): Promise<boolean> {
   if (
-    Object.keys(body).sort().join() !== "deliveryId,evidenceReference,outcome"
+    Object.keys(body).sort().join() !==
+    "attempt,deliveryId,destinationDigest,evidenceReference,outcome"
   )
     return false;
-  const { deliveryId, evidenceReference, outcome } = body;
+  const { attempt, deliveryId, destinationDigest, evidenceReference, outcome } =
+    body;
   if (
+    !Number.isSafeInteger(attempt) ||
+    Number(attempt) < 1 ||
+    typeof destinationDigest !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(destinationDigest) ||
     typeof deliveryId !== "string" ||
     !/^[a-f0-9]{32}$/u.test(deliveryId) ||
     typeof evidenceReference !== "string" ||
@@ -306,7 +313,12 @@ export async function reconcileSecurityMail(
     .prepare("SELECT * FROM security_notification_outbox WHERE id = ?")
     .bind(deliveryId)
     .first<Delivery>();
-  if (!row || !["provider-accepted", "ambiguous"].includes(row.state))
+  if (
+    !row ||
+    !["provider-accepted", "ambiguous"].includes(row.state) ||
+    row.attempts !== attempt ||
+    row.destination_digest !== destinationDigest
+  )
     return false;
   const next =
     outcome === "not-accepted"
@@ -317,20 +329,37 @@ export async function reconcileSecurityMail(
   const at = deps.now().toISOString();
   const results = await deps.db.batch([
     deps.db
-      .prepare(
-        `UPDATE security_notification_outbox SET state = ?, updated_at = ?, next_attempt_at = ? WHERE id = ? AND state = ?`,
-      )
+      .prepare(`UPDATE security_notification_outbox SET state = ?, updated_at = ?, next_attempt_at = ?, provider_reference = ?
+      WHERE id = ? AND state = ? AND attempts = ? AND destination_digest = ?
+      AND NOT EXISTS (SELECT 1 FROM security_notification_delivery_events WHERE evidence_reference = ?)`)
       .bind(
         next,
         at,
         new Date(deps.now().getTime() + 60_000).toISOString(),
+        evidenceReference,
         row.id,
         row.state,
+        attempt,
+        destinationDigest,
+        evidenceReference,
       ),
     deps.db
-      .prepare(`INSERT INTO security_notification_delivery_events(delivery_id, state, evidence_reference, at)
-      SELECT id, ?, ?, ? FROM security_notification_outbox WHERE id = ? AND state = ? AND updated_at = ?`)
-      .bind(next, evidenceReference, at, row.id, next, at),
+      .prepare(`INSERT INTO security_notification_delivery_events(delivery_id, state, evidence_reference, at, attempt, destination_digest)
+      SELECT id, ?, ?, ?, attempts, destination_digest FROM security_notification_outbox
+      WHERE id = ? AND state = ? AND updated_at = ? AND attempts = ? AND destination_digest = ? AND provider_reference = ?
+      AND NOT EXISTS (SELECT 1 FROM security_notification_delivery_events WHERE evidence_reference = ?)`)
+      .bind(
+        next,
+        evidenceReference,
+        at,
+        row.id,
+        next,
+        at,
+        attempt,
+        destinationDigest,
+        evidenceReference,
+        evidenceReference,
+      ),
   ]);
   return results[0].meta?.changes === 1;
 }

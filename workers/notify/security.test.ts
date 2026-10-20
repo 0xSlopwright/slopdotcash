@@ -11,6 +11,7 @@ import {
 } from "../../backend/security/handler";
 import { sqliteD1 } from "../../tests/sqlite-d1";
 import {
+  destinationDigest,
   dispatchSecurityMail,
   parseSecurityMailConfig,
   reconcileSecurityMail,
@@ -194,6 +195,10 @@ test("a case change queues once, sends generic per-role mail once, and needs exp
   expect(
     await reconcileSecurityMail(h.deps, {
       deliveryId: notice.id,
+      attempt: notice.attempts,
+      destinationDigest: await destinationDigest(
+        h.deps.config.recipients[notice.recipient_github_id],
+      ),
       outcome: "delivered",
       evidenceReference: "private-provider-delivery-receipt",
     }),
@@ -227,6 +232,10 @@ test("ambiguous transport never resends until independent non-acceptance evidenc
   expect(
     await reconcileSecurityMail(h.deps, {
       deliveryId: first.id,
+      attempt: first.attempts,
+      destinationDigest: await destinationDigest(
+        h.deps.config.recipients[first.recipient_github_id],
+      ),
       outcome: "not-accepted",
       evidenceReference: "private-provider-negative-receipt",
     }),
@@ -346,5 +355,82 @@ test("pre-pilot inbox history is not mailed and does not expose a dead acknowled
   };
   expect(body.notifications).toHaveLength(1);
   expect(Object.hasOwn(body.notifications[0], "acknowledgedAt")).toBe(false);
+  h.sqlite.close();
+});
+
+test("a negative receipt cannot reconcile a later attempt or append duplicate evidence", async () => {
+  const h = await setup();
+  h.deps.sendEmail = async () => {
+    throw new Error("ambiguous send");
+  };
+  await dispatchSecurityMail(h.deps);
+  const first = h
+    .rows()
+    .find((r) => !r.escalation_of && r.recipient_github_id === owner.githubId);
+  if (!first) throw new Error("Original notice missing");
+  const oldEvidence = {
+    deliveryId: first.id,
+    attempt: 1,
+    destinationDigest: await destinationDigest(
+      h.deps.config.recipients[owner.githubId],
+    ),
+    outcome: "not-accepted",
+    evidenceReference: "provider-attempt-one-negative-receipt",
+  };
+  expect(await reconcileSecurityMail(h.deps, oldEvidence)).toBe(true);
+  expect(await reconcileSecurityMail(h.deps, oldEvidence)).toBe(false);
+  h.advance(60_000);
+  h.deps.sendEmail = async () => {};
+  await dispatchSecurityMail(h.deps);
+  expect(h.rows().find((r) => r.id === first.id)?.state).toBe(
+    "provider-accepted",
+  );
+  expect(await reconcileSecurityMail(h.deps, oldEvidence)).toBe(false);
+  // Merely changing the asserted attempt cannot recycle evidence either.
+  expect(
+    await reconcileSecurityMail(h.deps, { ...oldEvidence, attempt: 2 }),
+  ).toBe(false);
+  expect(
+    h.sqlite
+      .query(
+        "SELECT count(*) AS n FROM security_notification_delivery_events WHERE evidence_reference=?",
+      )
+      .get(oldEvidence.evidenceReference),
+  ).toEqual({ n: 1 });
+  expect(h.rows().find((r) => r.id === first.id)?.state).toBe(
+    "provider-accepted",
+  );
+  h.sqlite.close();
+});
+
+test("concurrent copies of one provider receipt append one delivery event", async () => {
+  const h = await setup();
+  await dispatchSecurityMail(h.deps);
+  const first = h.rows().find((r) => r.recipient_github_id === owner.githubId);
+  if (!first) throw new Error("Original notice missing");
+  const receipt = {
+    deliveryId: first.id,
+    attempt: 1,
+    destinationDigest: await destinationDigest(
+      h.deps.config.recipients[owner.githubId],
+    ),
+    outcome: "delivered",
+    evidenceReference: "provider-delivery-receipt",
+  };
+  expect(
+    (
+      await Promise.all([
+        reconcileSecurityMail(h.deps, receipt),
+        reconcileSecurityMail(h.deps, receipt),
+      ])
+    ).sort(),
+  ).toEqual([false, true]);
+  expect(
+    h.sqlite
+      .query(
+        "SELECT count(*) AS n FROM security_notification_delivery_events WHERE evidence_reference=?",
+      )
+      .get(receipt.evidenceReference),
+  ).toEqual({ n: 1 });
   h.sqlite.close();
 });

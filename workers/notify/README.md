@@ -136,7 +136,7 @@ Revoked roles are suppressed. A missing verified destination retries at one,
 two, four and eight minutes, then exhausts after five attempts. The per-event,
 recipient and template key prevents duplicate queue insertion; an atomic claim
 prevents concurrent dispatch. Each message has one recipient and a stable
-opaque Message-ID, a generic subject and body, and the authenticated inbox
+opaque per-attempt Message-ID, a generic subject and body, and the authenticated inbox
 link. It has no tracking pixel, case identifier, project, advisory or amount.
 
 A successful Cloudflare send is `provider-accepted`, never `delivered`. A thrown
@@ -151,9 +151,11 @@ Private operator service routes (no public routes or `workers.dev` endpoint):
 - `POST https://notify.internal/v1/security-notifications/dispatch`, body `{}`,
   drains up to 25 due notices. The scheduler uses the same dispatcher.
 - `POST https://notify.internal/v1/security-notifications/reconcile`, body with
-  `deliveryId`, `outcome` and `evidenceReference`, records independent provider
+  `deliveryId`, `attempt`, `destinationDigest`, `outcome` and `evidenceReference`, records independent provider
   evidence. Outcomes are `delivered`, `bounced`, `suppressed`, or `not-accepted`.
-  Only an accepted or ambiguous attempt can be reconciled. `not-accepted`
+  Only the exact accepted or ambiguous attempt and destination can be reconciled.
+  Each immutable provider evidence reference is accepted once; an old receipt
+  cannot authorize another retry. `not-accepted`
   permits a bounded retry; it requires proof that the provider did not accept
   the attempt. Do not infer this from an exception. Do not expose this route
   through a browser or public proxy. Delivery evidence is append-only.
