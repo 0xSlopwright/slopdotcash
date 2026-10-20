@@ -87,16 +87,20 @@ an exhausted case. The earliest received exhausted case is funded first
 (`409 earlier_receipt_waiting` otherwise). If no capacity is free, the request
 returns `409 capacity_exhausted` and writes nothing. Every reserving path
 (`decide`, related-party `approve`, and `reserve-award`) uses one guard in the
-reservation insert: while an earlier confirmed case waits for capacity, a
-later decision or approval reserves nothing and its award is
-`capacity-exhausted`, so it waits its turn.
+reservation insert: while an earlier confirmed case waits for capacity or
+for its related-party review, a later decision or approval reserves nothing
+and its award is `capacity-exhausted`, so it waits its turn.
 
 The technical decision records `relatedParty`. The decider declares it, and a
 reporter who is a program approver or the sponsor account is always related.
 An eligible related-party award stays `pending` with no reservation until a
 dispute reviewer records `decide-related-party`. `approve` reserves within
 capacity like any other award; `refuse` makes the award `ineligible`, which
-the reporter can appeal to a different reviewer.
+the reporter can appeal to a different reviewer. A pending review holds its
+root cause: a later report of the same root cause gets `409
+root_cause_reserved` and is recorded as a duplicate. Once a case is related,
+it stays related. A redecision after a returned appeal needs a new review,
+and the earlier reviewer stays recorded.
 
 ## Not available
 
@@ -105,8 +109,9 @@ the reporter can appeal to a different reviewer.
 - Email: no bounty notification sender exists. A case change adds a row to
   the signed-in `/inbox` of the people it concerns (SEC-09): the reporter for
   events their view shows, security maintainers for a new claim, dispute
-  reviewers for an appeal, an assigned triager, and financial approvers when
-  a decision reserves an award. The row holds only the private case id and a
+  reviewers for an appeal or a pending related-party review, an assigned
+  triager, and financial approvers when a decision, a related-party
+  approval or `reserve-award` reserves an award. The row holds only the private case id and a
   link to `/security`; never the project, advisory, severity, amount or
   reason. The actor is never notified of their own action.
 - GitHub advisory content is never fetched. Maintainers verify claims by

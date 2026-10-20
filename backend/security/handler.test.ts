@@ -16,7 +16,9 @@ const MAINTAINER = { githubId: "900000101", githubLogin: "maintainer" };
 const REPORTER = { githubId: "900000102", githubLogin: "reporter" };
 const TRIAGER = { githubId: "900000103", githubLogin: "triager" };
 const FINANCE = { githubId: "900000104", githubLogin: "finance" };
+const FINANCE_2 = { githubId: "900000107", githubLogin: "finance-two" };
 const DISPUTE = { githubId: "900000105", githubLogin: "dispute" };
+const DISPUTE_2 = { githubId: "900000106", githubLogin: "dispute-two" };
 const ADVISORY = "GHSA-7c8f-9g2h-3j4m";
 const RECEIVED = "2026-10-19T09:00:00.000Z";
 
@@ -45,8 +47,8 @@ const OPEN_PROGRAM = {
   sponsor: { name: "Slop", githubId: null },
   approvers: {
     technical: [MAINTAINER],
-    financial: [FINANCE],
-    dispute: [DISPUTE],
+    financial: [FINANCE, FINANCE_2],
+    dispute: [DISPUTE, DISPUTE_2],
   },
   capacity: { awards: 1, closesAt: null },
 };
@@ -143,6 +145,81 @@ function open(
       beforeBatch = hook;
     },
   };
+}
+
+/** Real API steps for a paid program, shared by the award tests. */
+function awardSteps({ call, key, sqlite }: ReturnType<typeof open>) {
+  let advisories = 0;
+  const record = async (receivedAt: string) => {
+    advisories += 1;
+    const recorded = await call(MAINTAINER, "POST", "security-cases", {
+      mode: "record",
+      projectId: PROJECT,
+      advisory: `GHSA-2c3f-4g5h-6j${"23456789"[advisories - 1]}m`,
+      reporterGithubId: REPORTER.githubId,
+      reporterGithubLogin: REPORTER.githubLogin,
+      receivedAt,
+      confirmation: true,
+      idempotencyKey: key(),
+    });
+    expect(recorded.status).toBe(201);
+    return recorded.body.case;
+  };
+  const act = async (
+    as: typeof MAINTAINER,
+    id: string,
+    fields: Record<string, unknown>,
+  ) => {
+    const current = await call(as, "GET", `security-cases/${id}`);
+    return call(as, "POST", `security-cases/${id}/actions`, {
+      expectedRevision: current.body.case.revision,
+      idempotencyKey: key(),
+      ...fields,
+    });
+  };
+  const decide = (id: string, rootCauseKey: string, relatedParty = false) =>
+    act(MAINTAINER, id, {
+      action: "decide",
+      outcome: "confirmed",
+      severity: "critical",
+      loss: "verified-actual",
+      inScope: true,
+      reason: "Confirmed critical loss of covered funds.",
+      evidenceReference: "private-evidence-1",
+      relatedParty,
+      rootCauseKey,
+      evidenceDigest: "a".repeat(64),
+    });
+  // The owner raises capacity to 2 by an appended project revision.
+  const raiseCapacity = () => {
+    const raised = programManifest({
+      ...OPEN_PROGRAM,
+      capacity: { awards: 2, closesAt: null },
+    });
+    const raisedDigest = createHash("sha256").update(raised).digest("hex");
+    sqlite
+      .query(
+        "INSERT INTO project_revisions (project_id, revision, manifest, manifest_sha256, reason, created_at) VALUES (?, 2, ?, ?, 'raise capacity', ?)",
+      )
+      .run(PROJECT, raised, raisedDigest, RECEIVED);
+    sqlite
+      .query(
+        "UPDATE projects SET revision = 2, manifest = ?, manifest_sha256 = ? WHERE id = ?",
+      )
+      .run(raised, raisedDigest, PROJECT);
+  };
+  // Inbox rows one account received for a case (NOT-01, SEC-09).
+  const inbox = (account: typeof MAINTAINER, caseId: string) =>
+    (
+      sqlite
+        .query(
+          "SELECT event_key FROM notifications WHERE recipient_github_id = ? AND event_key LIKE ? ORDER BY event_key",
+        )
+        .all(account.githubId, `security-case:${caseId}:%`) as {
+        event_key: string;
+      }[]
+    ).map((row) => row.event_key);
+  return { record, act, decide, raiseCapacity, inbox };
 }
 
 describe("security cases", () => {
@@ -356,48 +433,9 @@ describe("security cases", () => {
   });
 
   test("raised capacity funds the earliest waiting receipt on every reserving path", async () => {
-    const { call, key, sqlite } = open(OPEN_PROGRAM);
-    let advisories = 0;
-    const record = async (receivedAt: string) => {
-      advisories += 1;
-      const recorded = await call(MAINTAINER, "POST", "security-cases", {
-        mode: "record",
-        projectId: PROJECT,
-        advisory: `GHSA-2c3f-4g5h-6j${"2345"[advisories - 1]}m`,
-        reporterGithubId: REPORTER.githubId,
-        reporterGithubLogin: REPORTER.githubLogin,
-        receivedAt,
-        confirmation: true,
-        idempotencyKey: key(),
-      });
-      expect(recorded.status).toBe(201);
-      return recorded.body.case;
-    };
-    const act = async (
-      as: typeof MAINTAINER,
-      id: string,
-      fields: Record<string, unknown>,
-    ) => {
-      const current = await call(as, "GET", `security-cases/${id}`);
-      return call(as, "POST", `security-cases/${id}/actions`, {
-        expectedRevision: current.body.case.revision,
-        idempotencyKey: key(),
-        ...fields,
-      });
-    };
-    const decide = (id: string, rootCauseKey: string, relatedParty = false) =>
-      act(MAINTAINER, id, {
-        action: "decide",
-        outcome: "confirmed",
-        severity: "critical",
-        loss: "verified-actual",
-        inScope: true,
-        reason: "Confirmed critical loss of covered funds.",
-        evidenceReference: "private-evidence-1",
-        relatedParty,
-        rootCauseKey,
-        evidenceDigest: "a".repeat(64),
-      });
+    const env = open(OPEN_PROGRAM);
+    const { sqlite } = env;
+    const { record, act, decide, raiseCapacity, inbox } = awardSteps(env);
     const funded = await record("2026-10-19T09:10:00.000Z");
     const waiting = await record("2026-10-19T09:20:00.000Z");
     const later = await record("2026-10-19T09:30:00.000Z");
@@ -409,22 +447,7 @@ describe("security cases", () => {
     expect((await decide(waiting.id, "oracle-skew")).body.case.awardState).toBe(
       "capacity-exhausted",
     );
-    // The owner raises capacity to 2 by a project revision.
-    const raised = programManifest({
-      ...OPEN_PROGRAM,
-      capacity: { awards: 2, closesAt: null },
-    });
-    const raisedDigest = createHash("sha256").update(raised).digest("hex");
-    sqlite
-      .query(
-        "INSERT INTO project_revisions (project_id, revision, manifest, manifest_sha256, reason, created_at) VALUES (?, 2, ?, ?, 'raise capacity', ?)",
-      )
-      .run(PROJECT, raised, raisedDigest, RECEIVED);
-    sqlite
-      .query(
-        "UPDATE projects SET revision = 2, manifest = ?, manifest_sha256 = ? WHERE id = ?",
-      )
-      .run(raised, raisedDigest, PROJECT);
+    raiseCapacity();
     // A related-party approval cannot take the slot the earlier receipt
     // waits for.
     expect(
@@ -452,6 +475,14 @@ describe("security cases", () => {
     const reserved = await reserve(waiting.id);
     expect(reserved.status).toBe(200);
     expect(reserved.body.case.awardState).toBe("reserved");
+    // The reservation reaches the other financial approver, never the
+    // actor; a related-party approval that reserved nothing reaches no one
+    // in finance.
+    expect(inbox(FINANCE_2, waiting.id)).toEqual([
+      `security-case:${waiting.id}:3`,
+    ]);
+    expect(inbox(FINANCE, waiting.id)).toEqual([]);
+    expect(inbox(FINANCE_2, related.id)).toEqual([]);
     // Capacity 2 is now used; the later findings still wait their turn.
     expect((await reserve(later.id)).body.error).toBe("capacity_exhausted");
     expect(
@@ -463,5 +494,98 @@ describe("security cases", () => {
         .map((row) => (row as { case_id: string }).case_id)
         .sort(),
     ).toEqual([funded.id, waiting.id].sort());
+  });
+
+  test("a pending related-party review holds its root cause and its place", async () => {
+    const env = open(OPEN_PROGRAM);
+    const { act, decide, record, inbox } = awardSteps(env);
+    const related = await record("2026-10-19T09:10:00.000Z");
+    const otherCause = await record("2026-10-19T09:20:00.000Z");
+    const sameCause = await record("2026-10-19T09:30:00.000Z");
+    expect(
+      (await decide(related.id, "shared-cause", true)).body.case.awardState,
+    ).toBe("pending");
+    // The dispute reviewers learn that a review waits for them; finance
+    // learns nothing before an award is reserved.
+    for (const reviewer of [DISPUTE, DISPUTE_2])
+      expect(inbox(reviewer, related.id)).toEqual([
+        `security-case:${related.id}:2`,
+      ]);
+    expect(inbox(FINANCE, related.id)).toEqual([]);
+    // The earlier receipt waits for its independent review, so a later
+    // finding cannot take the only capacity.
+    expect(
+      (await decide(otherCause.id, "other-cause")).body.case.awardState,
+    ).toBe("capacity-exhausted");
+    // The pending review holds its root cause: a later report records a
+    // duplicate instead.
+    const duplicate = await decide(sameCause.id, "shared-cause");
+    expect(duplicate.status).toBe(409);
+    expect(duplicate.body.error).toBe("root_cause_reserved");
+    const approved = await act(DISPUTE, related.id, {
+      action: "decide-related-party",
+      outcome: "approve",
+      reason: "Approved after independent review.",
+    });
+    expect(approved.status).toBe(200);
+    expect(approved.body.case.awardState).toBe("reserved");
+    // The approval reserved an award, so finance is told once.
+    expect(inbox(FINANCE, related.id)).toEqual([
+      `security-case:${related.id}:3`,
+    ]);
+    // The reviewer is never notified of its own action.
+    expect(inbox(DISPUTE, related.id)).toEqual([
+      `security-case:${related.id}:2`,
+    ]);
+  });
+
+  test("a returned appeal cannot clear the related-party review", async () => {
+    const env = open(OPEN_PROGRAM);
+    const { sqlite } = env;
+    const { act, decide, record } = awardSteps(env);
+    const related = await record("2026-10-19T09:10:00.000Z");
+    expect(
+      (await decide(related.id, "insider-cause", true)).body.case.awardState,
+    ).toBe("pending");
+    const refused = await act(DISPUTE, related.id, {
+      action: "decide-related-party",
+      outcome: "refuse",
+      reason: "Refused after independent review.",
+    });
+    expect(refused.body.case.awardState).toBe("ineligible");
+    expect(
+      (
+        await act(REPORTER, related.id, {
+          action: "appeal",
+          reason: "The related-party refusal used the wrong facts.",
+        })
+      ).status,
+    ).toBe(200);
+    const returned = await act(DISPUTE_2, related.id, {
+      action: "decide-appeal",
+      outcome: "return",
+      reason: "Return for a new technical decision.",
+    });
+    expect(returned.status).toBe(200);
+    // A redecision that declares no related party still needs a review.
+    const redecided = await decide(related.id, "insider-cause", false);
+    expect(redecided.status).toBe(200);
+    expect(redecided.body.case.awardState).toBe("pending");
+    expect(
+      sqlite
+        .query(
+          "SELECT related_party, related_party_review, related_party_reviewer_github_id FROM security_cases WHERE id = ?",
+        )
+        .get(related.id),
+    ).toEqual({
+      related_party: "related",
+      related_party_review: "pending",
+      related_party_reviewer_github_id: DISPUTE.githubId,
+    });
+    expect(
+      sqlite
+        .query("SELECT COUNT(*) AS n FROM security_award_reservations")
+        .get(),
+    ).toEqual({ n: 0 });
   });
 });
