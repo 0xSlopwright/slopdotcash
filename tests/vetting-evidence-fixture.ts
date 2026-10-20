@@ -1,5 +1,5 @@
 /** Real local workerd R2 for the connected vetting workflows; no live policy. */
-import { convertV4MiniflareOptions, Miniflare } from "miniflare";
+import { fileURLToPath } from "node:url";
 import type { ProjectD1Database } from "../backend/projects/cloudflare-persistence";
 import type { R2Bucket } from "../backend/trace/cloudflare-persistence";
 import {
@@ -38,41 +38,62 @@ export async function localVettingEvidence(
   db: ProjectD1Database,
   now: () => Date,
 ) {
-  const runtime = new Miniflare(
-    convertV4MiniflareOptions({
-      name: "evidence",
-      modules: true,
-      script: `export default { async fetch(request, env) {
-        const key = decodeURIComponent(new URL(request.url).pathname.slice(1));
-        if (request.method === "PUT") {
-          const options = JSON.parse(request.headers.get("x-r2-options"));
-          const value = await env.E.put(key, await request.arrayBuffer(), options);
-          return Response.json({ stored: value !== null });
-        }
-        if (request.method === "DELETE") {
-          await env.E.delete(key);
-          return new Response(null, { status: 204 });
-        }
-        const value = request.method === "HEAD"
-          ? await env.E.head(key) : await env.E.get(key);
-        if (!value) return new Response(null, { status: 404 });
-        return new Response(request.method === "HEAD" ? null : value.body, {
-          headers: {
-            "x-r2-size": String(value.size),
-            "x-r2-metadata": JSON.stringify(value.customMetadata ?? {}),
-          },
-        });
-      }} `,
-      compatibilityDate: "2026-07-30",
-      r2Buckets: ["E"],
-    }),
+  const child = Bun.spawn(
+    [
+      "node",
+      fileURLToPath(new URL("./vetting-evidence-r2.mjs", import.meta.url)),
+    ],
+    { stdin: "pipe", stdout: "pipe", stderr: "inherit" },
   );
-  await runtime.ready;
+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  let origin: string;
+  try {
+    const reader = child.stdout.getReader();
+    origin = await Promise.race([
+      (async () => {
+        let line = "";
+        while (!line.includes("\n")) {
+          const chunk = await reader.read();
+          if (chunk.done) throw new Error("Local R2 startup failed");
+          line += new TextDecoder().decode(chunk.value);
+          if (line.length > 256)
+            throw new Error("Invalid local R2 startup line");
+        }
+        return line.trim();
+      })(),
+      new Promise<never>((_, reject) => {
+        startupTimer = setTimeout(
+          () => reject(new Error("Local R2 startup timed out")),
+          4000,
+        );
+      }),
+    ]);
+    reader.releaseLock();
+    const parsed = new URL(origin);
+    if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1")
+      throw new Error("Invalid local R2 origin");
+  } catch (error) {
+    child.kill();
+    await child.exited;
+    throw error;
+  } finally {
+    clearTimeout(startupTimer);
+  }
+  async function dispose() {
+    child.stdin.end();
+    const timer = setTimeout(() => child.kill(), 4000);
+    try {
+      if ((await child.exited) !== 0)
+        throw new Error("Local R2 shutdown failed");
+    } finally {
+      clearTimeout(timer);
+    }
+  }
   // Use asynchronous HTTP to real workerd R2. Miniflare's synchronous RPC
   // property getters can fail under Bun before object metadata is returned.
-  const url = (key: string) => `http://evidence/${encodeURIComponent(key)}`;
+  const url = (key: string) => `${origin}${encodeURIComponent(key)}`;
   async function read(key: string, method: "GET" | "HEAD") {
-    const response = await runtime.dispatchFetch(url(key), { method });
+    const response = await fetch(url(key), { method });
     if (response.status === 404) return null;
     if (!response.ok)
       throw new Error(`Local R2 read failed: ${response.status}`);
@@ -87,7 +108,7 @@ export async function localVettingEvidence(
     head: (key: string) => read(key, "HEAD"),
     get: (key: string) => read(key, "GET"),
     put: async (...[key, bytes, options]: Parameters<R2Bucket["put"]>) => {
-      const response = await runtime.dispatchFetch(url(key), {
+      const response = await fetch(url(key), {
         method: "PUT",
         headers: { "x-r2-options": JSON.stringify(options) },
         body: new Uint8Array(bytes),
@@ -98,7 +119,7 @@ export async function localVettingEvidence(
       return result.stored ? {} : null;
     },
     delete: async (key: string) => {
-      const response = await runtime.dispatchFetch(url(key), {
+      const response = await fetch(url(key), {
         method: "DELETE",
       });
       if (response.status !== 204)
@@ -180,6 +201,6 @@ export async function localVettingEvidence(
     bucket,
     request,
     retain,
-    dispose: () => runtime.dispose(),
+    dispose,
   };
 }
