@@ -9,6 +9,7 @@
  * service, so the lane signs harmless scan results the way the service must.
  */
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import AxeBuilder from "@axe-core/playwright";
 import {
   type APIRequestContext,
@@ -16,7 +17,12 @@ import {
   type Page,
   test,
 } from "@playwright/test";
-import { signedVettingHeaders, vettingResult } from "../vetting-fixtures";
+import {
+  signedVettingHeaders,
+  VETTING_EVIDENCE_OBJECTS,
+  VETTING_TRACE_SHA,
+  vettingResult,
+} from "../vetting-fixtures";
 
 const APPLICANT_TOKEN = process.env.SLOP_E2E_APPLICANT_TOKEN ?? "";
 const ADMIN_TOKEN = process.env.SLOP_E2E_ADMIN_TOKEN ?? "";
@@ -67,6 +73,37 @@ async function postVettingResult(
     }
   ).assessments.find((entry) => entry.projectId === projectId);
   if (queued === undefined) throw new Error("No queued scan for the project");
+  const evidencePath = `/api/v1/vetting/evidence/${queued.assessmentId}/vm-run-${queued.revision}`;
+  const evidenceManifest = JSON.stringify({
+    traceSha256: VETTING_TRACE_SHA,
+    objects: VETTING_EVIDENCE_OBJECTS.map(
+      ({ body: _body, ...object }) => object,
+    ),
+  });
+  for (const [method, path, data] of [
+    ["POST", evidencePath, evidenceManifest],
+    ...VETTING_EVIDENCE_OBJECTS.map((object) => [
+      "PUT",
+      `${evidencePath}/${object.sha256}`,
+      object.body,
+    ]),
+  ]) {
+    const response = await request.fetch(path, {
+      method,
+      data: Buffer.from(data),
+      headers: {
+        "content-type": "application/json",
+        ...(await signedVettingHeaders(
+          privateKey,
+          publicKey,
+          method,
+          path,
+          data,
+        )),
+      },
+    });
+    expect(response.status()).toBeLessThan(300);
+  }
   const body = JSON.stringify(
     vettingResult({ ...queued, repository }, disposition),
   );
@@ -1032,4 +1069,127 @@ test("an unavailable registry shows an error, never an empty list @registry", as
   await expect(alert.getByRole("button")).toBeVisible();
   await expect(page.locator("#projects")).toHaveCount(0);
   await expectAccessible(page);
+});
+
+test.describe("private evidence console", () => {
+  test("a designated operator inspects retained vetting bytes with reasoned access @registry", async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    const failures: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    page.on("requestfailed", (request) => {
+      if (new URL(request.url()).origin === new URL(page.url()).origin)
+        failures.push(
+          `${request.method()} ${new URL(request.url()).pathname}: ${request.failure()?.errorText}`,
+        );
+    });
+    await signIn(page, ADMIN_TOKEN);
+    const overview = await page.request.get("/api/v1/admin/vetting", {
+      headers: { cookie: `__Host-slop_points=${ADMIN_TOKEN}` },
+    });
+    expect(overview.status()).toBe(200);
+    const assessment = (await overview.json()).assessments.find(
+      (entry: { projectId: string; result: unknown }) =>
+        entry.projectId === fixtureProjects().queued.id && entry.result,
+    );
+    expect(assessment).toBeTruthy();
+    const path = `/vetting-evidence?assessmentId=${assessment.id}&runId=${assessment.result.environment.runId}`;
+    const privatePath = `/api/v1/operator/vetting-evidence?assessmentId=${assessment.id}&runId=${assessment.result.environment.runId}`;
+    expect(
+      (
+        await page.request.get(privatePath, {
+          headers: { cookie: `__Host-slop_points=${ADMIN_TOKEN}` },
+        })
+      ).status(),
+    ).toBe(403);
+    await page.goto("/admin", { waitUntil: "networkidle" });
+    const consoleLink = page.locator(`a[href="${path}"]`);
+    await consoleLink
+      .locator("xpath=ancestor::details")
+      .locator("summary")
+      .click();
+    await expect(consoleLink).toHaveText("Open restricted evidence console");
+    await signIn(page, OWNER_TOKEN);
+    await page.goto(path, { waitUntil: "networkidle" });
+    await expect(
+      page.getByRole("heading", {
+        name: "Private vetting evidence",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Inspect evidence inventory" })
+      .click();
+    await expect(
+      page.getByText("Access expiry is enforced here.", { exact: false }),
+    ).toBeVisible();
+    const trace = page.getByRole("article").filter({
+      has: page.getByRole("heading", {
+        name: "Harmless trace fixture",
+        exact: true,
+      }),
+    });
+    await trace
+      .getByLabel("Reason to inspect Harmless trace fixture")
+      .fill("Verify complete private collector evidence");
+    await trace
+      .getByRole("button", { name: "Read Harmless trace fixture" })
+      .focus();
+    await page.keyboard.press("Enter");
+    await expect(trace.getByRole("status")).toHaveText(
+      "Complete bytes verified. Text is displayed without execution.",
+    );
+    await expect(trace.locator("pre")).toHaveText(
+      VETTING_EVIDENCE_OBJECTS[0].body.trim(),
+    );
+    const binary = page
+      .getByRole("article")
+      .filter({ hasText: VETTING_EVIDENCE_OBJECTS[2].sha256 });
+    await binary
+      .getByRole("textbox")
+      .fill("Inspect exact binary artifact without executing it");
+    const downloaded = page.waitForEvent("download");
+    await binary.getByRole("button").click();
+    const download = await downloaded;
+    const saved = test.info().outputPath("harmless-artifact.bin");
+    await download.saveAs(saved);
+    expect(await readFile(saved, "utf8")).toBe(
+      VETTING_EVIDENCE_OBJECTS[2].body,
+    );
+    await page.evaluate(() => {
+      document.documentElement.style.zoom = "2";
+    });
+    await expect(trace.locator("pre")).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+      ),
+    ).toBe(true);
+    await expectAccessible(page);
+    await page.screenshot({
+      path: test.info().outputPath("private-evidence-zoom.png"),
+      fullPage: true,
+    });
+    await page.evaluate(() => {
+      document.documentElement.style.zoom = "1";
+    });
+    await expectAccessible(page);
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.screenshot({
+      path: test.info().outputPath("private-evidence.png"),
+      fullPage: true,
+    });
+    expect(errors).toEqual([]);
+    expect(failures).toEqual([]);
+    const video = page.video();
+    await page.close();
+    if (video)
+      await video.saveAs(
+        test.info().outputPath("private-evidence-walkthrough.webm"),
+      );
+  });
 });

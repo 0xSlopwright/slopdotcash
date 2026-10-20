@@ -2,7 +2,7 @@
 // the signed service contract, the clean, incomplete and malicious
 // dispositions from harmless fixtures, the activation and skill gates, and
 // the fail-closed state when no vetting service is configured.
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import { handleProjectApi } from "../backend/projects/handler";
@@ -11,13 +11,22 @@ import {
   CloudflareVettingPersistence,
   type VettingPin,
 } from "../backend/vetting/persistence";
+import { parseVettingResult } from "../backend/vetting/result";
 import { applicationManifest } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
+import { localVettingEvidence } from "../tests/vetting-evidence-fixture";
 import {
   signedVettingHeaders,
+  VETTING_EVIDENCE_OBJECTS,
+  VETTING_TRACE_BODY,
   vettingKeyPair,
   vettingResult,
 } from "../tests/vetting-fixtures";
+
+let retained: Awaited<ReturnType<typeof localVettingEvidence>>;
+afterEach(async () => {
+  await retained?.dispose();
+});
 
 const ORIGIN = "https://slop.cash";
 const ADMIN = { githubId: "900000001", githubLogin: "e2e-admin" };
@@ -49,7 +58,11 @@ beforeEach(async () => {
   const { db } = database;
   sqlite = database.sqlite;
   projects = new CloudflareProjectPersistence(db);
-  vetting = new CloudflareVettingPersistence(db);
+  retained = await localVettingEvidence(db, () => NOW);
+  vetting = new CloudflareVettingPersistence(
+    db,
+    async (a) => a.result !== null && retained.evidence.complete(a.result),
+  );
   keys = await vettingKeyPair();
   configuredKeys = keys.publicKey;
   livePin = { commitSha: HEAD, templateSha256: TEMPLATE };
@@ -84,6 +97,7 @@ function projectApi(request: Request) {
 
 function vettingApi(request: Request) {
   return handleVettingApi(request, {
+    evidence: retained.evidence,
     vetting,
     projects,
     resultPublicKeys: configuredKeys,
@@ -176,12 +190,14 @@ async function postResult(body: unknown, at = NOW) {
 async function fixture(
   assessmentId: string,
   disposition: "clean" | "incomplete" | "malicious",
+  retain = true,
 ) {
   const project = await projects.getProject("open-registry");
   if (project === null) throw new Error("project was not listed");
   // The service scans exactly the commits the queue assigned.
   const assessment = await vetting.getAssessment(assessmentId);
   if (assessment === null) throw new Error("assessment was not queued");
+  if (retain) await retained.retain(assessmentId, `vm-run-${project.revision}`);
   return vettingResult(
     {
       assessmentId,
@@ -514,4 +530,194 @@ describe("community security vetting", () => {
       ).status,
     ).toBe(503);
   });
+});
+
+test("private retained bytes control inspection and continuing clean clearance", async () => {
+  await listPausedProject();
+  const id = await queueScan();
+  const result = await fixture(id, "clean");
+  const run = result.environment.runId;
+  const base = `/api/v1/operator/vetting-evidence/${id}/${run}/${result.traceSha256}`;
+  const key = `vetting/${id}/${run}/${result.traceSha256}`;
+  const operator = async (
+    path: string,
+    actor = "900000003",
+    body?: unknown,
+    grant?: string,
+  ) =>
+    (await retained.evidence.handle(
+      new Request(`${ORIGIN}${path}`, {
+        method: body === undefined ? "GET" : "POST",
+        headers: {
+          "x-test-operator": actor,
+          ...(body === undefined
+            ? {}
+            : { origin: ORIGIN, "content-type": "application/json" }),
+          ...(grant ? { "x-vetting-read-grant": grant } : {}),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }),
+    ))!;
+  const overview = `/api/v1/operator/vetting-evidence?assessmentId=${id}&runId=${run}`;
+  expect((await operator(overview, "900000001")).status).toBe(403);
+  expect((await operator(overview, "")).status).toBe(401);
+  const visible = await operator(overview);
+  expect(visible.status).toBe(200);
+  expect(await visible.text()).not.toContain(VETTING_TRACE_BODY);
+  const grantResponse = await operator(`${base}/grant`, undefined, {
+    reason: "Inspect recorded collector evidence",
+  });
+  expect(grantResponse.status).toBe(201);
+  const grant = (await grantResponse.json()).grant;
+  const reads = await Promise.all([
+    operator(`${base}/body`, undefined, undefined, grant),
+    operator(`${base}/body`, undefined, undefined, grant),
+  ]);
+  expect(reads.map((r) => r.status).sort()).toEqual([200, 403]);
+  const read = reads.find((r) => r.ok)!;
+  expect(await read.text()).toBe(VETTING_TRACE_BODY);
+  expect(read.headers.get("cache-control")).toBe("private, no-store");
+  const policy = retained.evidence.deps.policy!;
+  const revokeGrant = (
+    await (
+      await operator(`${base}/grant`, undefined, {
+        reason: "Inspect before access is revoked",
+      })
+    ).json()
+  ).grant;
+  retained.evidence.deps.policy = JSON.stringify({
+    ...JSON.parse(policy),
+    operatorGithubIds: ["900000099"],
+  });
+  expect(
+    (await operator(`${base}/body`, undefined, undefined, revokeGrant)).status,
+  ).toBe(403);
+  retained.evidence.deps.policy = policy;
+  expect((await postResult(result)).status).toBe(200);
+  expect((await publicVetting()).state).toBe("cleared");
+  await retained.bucket.delete(key);
+  expect(
+    (
+      await operator(`${base}/grant`, undefined, {
+        reason: "Inspect absent collector evidence",
+      })
+    ).status,
+  ).toBe(404);
+  expect((await publicVetting()).state).toBe("unverified");
+  expect((await activate()).status).not.toBe(200);
+  await retained.bucket.put(
+    key,
+    new TextEncoder().encode(
+      VETTING_TRACE_BODY.replace("Harmless", "Changed!"),
+    ),
+    {
+      customMetadata: { sha256: result.traceSha256 },
+      httpMetadata: { contentType: "text/plain" },
+      onlyIf: { etagDoesNotMatch: "*" },
+    },
+  );
+  expect(
+    (
+      await operator(`${base}/grant`, undefined, {
+        reason: "Inspect changed collector evidence",
+      })
+    ).status,
+  ).toBe(409);
+  expect((await publicVetting()).state).toBe("unverified");
+  await retained.bucket.delete(key);
+  await retained.retain(id, run);
+  expect((await publicVetting()).state).toBe("cleared");
+  retained.evidence.deps.policy = JSON.stringify({
+    ...JSON.parse(policy),
+    maxObjectBytes: 1,
+  });
+  expect(
+    (
+      await operator(`${base}/grant`, undefined, {
+        reason: "Inspect over-limit collector evidence",
+      })
+    ).status,
+  ).toBe(413);
+  retained.evidence.deps.policy = policy;
+  retained.evidence.deps.now = () => new Date(NOW.getTime() + 3600_001);
+  expect(
+    (
+      await operator(`${base}/grant`, undefined, {
+        reason: "Inspect expired collector evidence",
+      })
+    ).status,
+  ).toBe(410);
+  expect((await publicVetting()).state).toBe("unverified");
+  retained.evidence.deps.now = () => new Date(NOW.getTime() + 7200_001);
+  expect(retained.evidence.ready()).toBe(false);
+  expect((await operator(overview)).status).toBe(503);
+});
+
+test("a clean result cannot omit a referenced retained artifact or replace an immutable inventory", async () => {
+  await listPausedProject();
+  const id = await queueScan();
+  const result = await fixture(id, "clean");
+  const run = result.environment.runId;
+  const service = `/api/v1/vetting/evidence/${id}/${run}`;
+  const changed = {
+    traceSha256: result.traceSha256,
+    objects: VETTING_EVIDENCE_OBJECTS.slice(0, 1).map(
+      ({ body: _body, ...object }) => object,
+    ),
+  };
+  const conflict = await retained.evidence.handle(
+    await retained.request("POST", service, JSON.stringify(changed)),
+  );
+  expect(conflict?.status).toBe(409);
+  await retained.bucket.delete(
+    `vetting/${id}/${run}/${result.artifacts[0].sha256}`,
+  );
+  expect((await postResult(result)).status).toBe(422);
+  expect((await publicVetting()).state).toBe("queued");
+  await retained.retain(id, run);
+  expect((await postResult(result)).status).toBe(200);
+  const audits = await retained.evidence.deps.db
+    .prepare(
+      "SELECT action,reason FROM vetting_evidence_audit WHERE assessment_id=?",
+    )
+    .bind(id)
+    .all<{ action: string; reason: string | null }>();
+  expect(audits.results?.filter((a) => a.action === "register")).toHaveLength(
+    1,
+  );
+});
+
+test("historical metadata-only clean results have no retained-evidence exemption", async () => {
+  await listPausedProject();
+  const id = await queueScan();
+  const result = await fixture(id, "clean", false);
+  const parsed = parseVettingResult(result);
+  expect(
+    await vetting.recordResult({
+      result: parsed,
+      resultText: JSON.stringify(parsed),
+      resultSha256: "1".repeat(64),
+      signingKeySha256: "2".repeat(64),
+      at: NOW.toISOString(),
+    }),
+  ).toBe("recorded");
+  expect((await publicVetting()).state).toBe("unverified");
+  expect((await activate()).status).not.toBe(200);
+});
+
+test("missing storage pauses acquisition while harmless queue registration remains available", async () => {
+  retained.evidence.deps.policy = undefined;
+  await listPausedProject();
+  const id = await queueScan();
+  expect((await vetting.getAssessment(id))?.state).toBe("pending");
+  const overview = await vettingApi(
+    sessionRequest("GET", "admin/vetting", "admin"),
+  );
+  expect((await overview.json()).service).toMatchObject({
+    state: "unavailable",
+    queueRegistrationAvailable: true,
+  });
+  expect(
+    (await vettingApi(await signed("GET", "vetting/requests"))).status,
+  ).toBe(503);
 });

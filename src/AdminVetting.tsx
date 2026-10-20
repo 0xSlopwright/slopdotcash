@@ -44,6 +44,7 @@ type AdminAssessment = AssessmentSummary & {
   requestedBy: { githubLogin: string };
   requestReason: string;
   result: {
+    environment: { runId: string };
     telemetry: { visibilityGaps: string[]; tamperDetected: boolean };
     artifacts: {
       sha256: string;
@@ -58,7 +59,10 @@ type AdminAssessment = AssessmentSummary & {
 };
 
 type Overview = {
-  service: { state: "available" } | { state: "unavailable"; reason: string };
+  service: { queueRegistrationAvailable: boolean } & (
+    | { state: "available" }
+    | { state: "unavailable"; reason: string }
+  );
   projects: {
     id: string;
     name: string;
@@ -191,6 +195,19 @@ function AssessmentDetails({ assessment }: { assessment: AdminAssessment }) {
                   .join(", ")}
           </dd>
         </div>
+        {result ? (
+          <div>
+            <dt>Retained evidence</dt>
+            <dd>
+              <a
+                href={`/vetting-evidence?assessmentId=${encodeURIComponent(assessment.id)}&runId=${encodeURIComponent(result.environment.runId)}`}
+              >
+                Open restricted evidence console
+              </a>
+              <p>Separate designated-operator access is required.</p>
+            </dd>
+          </div>
+        ) : null}
         {result ? (
           <div>
             <dt>Telemetry</dt>
@@ -368,7 +385,7 @@ export function VettingSection() {
                       cannot lift a ban.
                     </p>
                   ) : null}
-                  {state.value.service.state === "available" && !queued ? (
+                  {state.value.service.queueRegistrationAvailable && !queued ? (
                     <QueueScan
                       onQueued={() => {
                         setNote(

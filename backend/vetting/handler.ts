@@ -17,6 +17,7 @@ import {
   readLimitedBody,
   sha256Hex,
 } from "../trace/validation";
+import type { VettingEvidence } from "./evidence";
 import {
   type CloudflareVettingPersistence,
   summarize,
@@ -38,6 +39,7 @@ const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
 
 export type VettingApiDependencies = {
   vetting: CloudflareVettingPersistence;
+  evidence?: VettingEvidence;
   projects: Pick<
     ProjectPersistence,
     "getProject" | "listProjects" | "enforcementGeneration"
@@ -143,9 +145,10 @@ export function vettingSignedMessage(
 }
 
 /** Verifies the service signature and returns the body bytes and key digest. */
-async function signedRequest(
+export async function signedVettingRequest(
   request: Request,
-  deps: VettingApiDependencies,
+  deps: Pick<VettingApiDependencies, "resultPublicKeys" | "now">,
+  maximum = MAX_VETTING_RESULT_BYTES,
 ): Promise<{ body: Uint8Array; keySha256: string }> {
   const keys = await serviceKeys(deps.resultPublicKeys);
   if (keys.length === 0)
@@ -169,7 +172,7 @@ async function signedRequest(
   const key = keys.find((candidate) => candidate.sha256 === keyId);
   if (key === undefined || signature === null || signature.length !== 64)
     fail(401, "invalid_signature", "The vetting signature is not valid");
-  const body = await readLimitedBody(request, MAX_VETTING_RESULT_BYTES);
+  const body = await readLimitedBody(request, maximum);
   const url = new URL(request.url);
   const valid = await crypto.subtle.verify(
     "Ed25519",
@@ -231,15 +234,21 @@ async function adminOverview(
       ),
     })),
   );
+  const queueRegistrationAvailable = await vettingServiceAvailable(
+    deps.resultPublicKeys,
+  );
   return json(200, {
     projects,
-    service: (await vettingServiceAvailable(deps.resultPublicKeys))
-      ? { state: "available" }
-      : {
-          state: "unavailable",
-          reason:
-            "No secure-VM vetting service key is configured. No revision can be cleared, so no project skill can be served or activated.",
-        },
+    service:
+      queueRegistrationAvailable && deps.evidence?.ready()
+        ? { state: "available", queueRegistrationAvailable }
+        : {
+            state: "unavailable",
+            queueRegistrationAvailable,
+            reason: queueRegistrationAvailable
+              ? "Private evidence storage or policy is unavailable. You may queue a scan, but acquisition and clean clearance must wait."
+              : "The secure-VM service key is unavailable. New scans cannot be queued, acquired or recorded. Existing decisions still require current retained evidence.",
+          },
     assessments: assessments.map(adminAssessment),
   });
 }
@@ -315,7 +324,13 @@ async function serviceQueue(
   request: Request,
   deps: VettingApiDependencies,
 ): Promise<Response> {
-  await signedRequest(request, deps);
+  await signedVettingRequest(request, deps);
+  if (!deps.evidence?.ready())
+    fail(
+      503,
+      "evidence_unavailable",
+      "Private evidence storage, access policy and current external-control attestation are required before acquisition",
+    );
   const origin = new URL(request.url).origin;
   const pending = await deps.vetting.pendingAssessments();
   return json(200, {
@@ -338,7 +353,7 @@ async function serviceResult(
   request: Request,
   deps: VettingApiDependencies,
 ): Promise<Response> {
-  const { body, keySha256 } = await signedRequest(request, deps);
+  const { body, keySha256 } = await signedVettingRequest(request, deps);
   let value: unknown;
   try {
     value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
@@ -382,6 +397,15 @@ async function serviceResult(
       422,
       "commit_mismatch",
       `The result must scan commit ${assessment.commitSha} with skill template ${assessment.templateSha256}, which the queue assigned`,
+    );
+  if (
+    result.disposition === "clean" &&
+    !(await deps.evidence?.complete(result))
+  )
+    fail(
+      422,
+      "evidence_incomplete",
+      "Clean results require the exact complete retained evidence inventory",
     );
   const resultText = JSON.stringify(result);
   const recorded = await deps.vetting.recordResult({

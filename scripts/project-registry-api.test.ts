@@ -4,7 +4,7 @@
 // activation gate, the security-vetting gate, same-origin GitHub lookups,
 // and ADM-06 enforcement.
 import type { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import {
@@ -62,6 +62,13 @@ class MemoryCache implements EdgeCache {
 
 let persistence: CloudflareProjectPersistence;
 let sqlite: Database;
+
+import { localVettingEvidence } from "../tests/vetting-evidence-fixture";
+
+let retained: Awaited<ReturnType<typeof localVettingEvidence>>;
+afterEach(async () => {
+  await retained?.dispose();
+});
 let vetting: CloudflareVettingPersistence;
 let scans = 0;
 /** The live integration-branch head and template digest vetting compares. */
@@ -73,7 +80,7 @@ let deps: ProjectApiDependencies;
 /** GitHub's answer for the ownership check, by repository. */
 let control: (repository: string) => RepositoryControl;
 
-beforeEach(() => {
+beforeEach(async () => {
   const database = sqliteD1(
     readdirSync(new URL("../migrations", import.meta.url))
       .filter((name) => name.endsWith(".sql"))
@@ -81,7 +88,14 @@ beforeEach(() => {
   );
   sqlite = database.sqlite;
   persistence = new CloudflareProjectPersistence(database.db);
-  vetting = new CloudflareVettingPersistence(database.db);
+  retained = await localVettingEvidence(
+    database.db,
+    () => new Date("2026-10-18T12:00:00.000Z"),
+  );
+  vetting = new CloudflareVettingPersistence(
+    database.db,
+    async (a) => a.result !== null && retained.evidence.complete(a.result),
+  );
   livePin = { commitSha: "a".repeat(40), templateSha256: "d".repeat(64) };
   cache = new MemoryCache();
   tokenReads = [];
@@ -208,6 +222,7 @@ async function clearCurrentRevision(
       disposition,
     ),
   );
+  await retained.retain(id, result.environment.runId);
   expect(
     await vetting.recordResult({
       result,
@@ -1109,4 +1124,45 @@ describe("project enforcement (ADM-06)", () => {
     expect(after).toMatchObject({ revision: 2, status: "paused" });
     expect(after?.manifest.listingTier).toBe("retired");
   });
+});
+
+test("cached skill and public clearance cannot survive loss of retained evidence", async () => {
+  const { get } = await publicationRequests();
+  await listProject();
+  const id = await clearCurrentRevision("open-registry");
+  const assessment = await vetting.getAssessment(id);
+  if (!assessment?.result) throw new Error("Missing fixture assessment");
+  const skillPath = "/projects/open-registry/skill.md";
+  const oldSkill = await get(skillPath);
+  const oldDetail = await call("GET", "projects/open-registry");
+  const oldDiscovery = await get("/.well-known/slop/projects.json");
+  expect(oldSkill.status).toBe(200);
+  expect((await oldDetail.clone().json()).skillsPublished).toBe(true);
+  const generation = await persistence.enforcementGeneration();
+  // Seed the exact legacy cache keys, as if an earlier deployment had cached them.
+  for (const [path, response] of [
+    [skillPath, oldSkill],
+    ["/api/v1/projects/open-registry", oldDetail],
+    ["/.well-known/slop/projects.json", oldDiscovery],
+  ] as const)
+    await cache.put(
+      new Request(`${ORIGIN}/__slop-cache/projects-v1/g${generation}${path}`),
+      response,
+    );
+  await retained.bucket.delete(
+    `vetting/${id}/${assessment.result.environment.runId}/${assessment.result.traceSha256}`,
+  );
+  const refused = await get(skillPath);
+  expect(refused.status).toBe(503);
+  expect(refused.headers.get("cache-control")).toBe("no-store");
+  const detail = await call("GET", "projects/open-registry");
+  expect(detail.headers.get("access-control-allow-origin")).toBe("*");
+  expect(detail.headers.get("cache-control")).toContain("no-store");
+  expect(await detail.json()).toMatchObject({
+    skillsPublished: false,
+    vetting: { state: "unverified" },
+  });
+  expect(
+    (await (await get("/.well-known/slop/projects.json")).json()).projects,
+  ).toEqual([]);
 });

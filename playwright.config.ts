@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
+
 /**
  * Drives desktop and mobile browser verification against the built site.
  */
 
 import { defineConfig, devices } from "@playwright/test";
+import { localEvidencePolicy } from "./tests/vetting-evidence-fixture";
 
 const externalBaseUrl =
   process.env.SLOP_BASE_URL ??
@@ -64,7 +66,7 @@ const registryArguments = registryPersistTo
         : ""
     }${
       registryVettingKey
-        ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey}`
+        ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey} --r2 VETTING_EVIDENCE --binding 'VETTING_EVIDENCE_POLICY=${JSON.stringify(localEvidencePolicy(new Date())).replaceAll("'", "'\\''")}'`
         : ""
     }${registryNotify ? ` --service SLOP_NOTIFY=${registryNotify}` : ""}`
   : "";

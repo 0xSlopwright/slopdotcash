@@ -5,7 +5,8 @@ project in `/.well-known/slop/projects.json`, and activates no revision unless
 a secure-VM scan cleared that exact revision content. The VM, its collectors
 and the two model scanners are external services. This module stores their
 signed results and enforces the gate. It fails closed when the service is
-absent.
+absent. [Private evidence storage and inspection](EVIDENCE.md) use a separate
+R2 binding and an explicit operator-attested policy with inactive defaults.
 
 ## Tables
 
@@ -53,17 +54,18 @@ queue a scan, and Slop serves no skill for it.
 | State | Meaning | Skills, discovery, activation |
 |---|---|---|
 | `unscanned` | No scan of this content | Blocked |
-| `unverified` | Slop could not read the live branch head or template digest, or the manifest names more than one repository | Blocked; skill routes return HTTP 503 |
+| `unverified` | Slop could not read the live pin, the manifest names more than one repository, or the retained evidence is missing, changed, expired or outside current policy | Blocked; skill routes return HTTP 503 |
 | `stale` | Scans of this content exist, but none of the live branch head and template | Blocked |
 | `queued` | A scan of the live pin waits for a result | Blocked |
 | `quarantined` | The newest finished scan of the live pin is `incomplete` | Blocked |
-| `cleared` | The newest finished scan of the live pin is `clean` | Allowed |
+| `cleared` | The newest finished scan of the live pin is `clean` and its required retained objects pass verification | Allowed |
 | `banned` | A malicious scan has no independent reinstatement decision covering it | Blocked; a new scan or commit alone cannot lift it |
 
 Merging to the integration branch therefore pauses skills and discovery for
 the project until an admin queues a scan of the new head and its clean result
-lands. Slop keeps each branch head in the edge cache for 30 seconds, and edge
-copies of public skill responses expire within another 30 seconds.
+lands. Slop keeps each branch head in the edge cache for 30 seconds. Dynamic
+skills, discovery and public clearance responses use no-store. Each request
+checks current private evidence; an old cache cannot bypass access expiry.
 
 A queued rescan keeps the last finished decision until its result lands.
 Reinstatement after a ban uses the ADM-06 path and the exact reviewed scan
@@ -150,8 +152,10 @@ telemetry, artifact release or trusted publication.
    the Ed25519 private key, decides the disposition, and signs the result.
 5. The public key in the Pages variable `VETTING_RESULT_PUBLIC_KEYS` for each
    environment.
-6. A restricted operator console for the full traces, stdout and network
-   evidence, with published retention, access and size limits (VET-03).
+6. The [restricted operator console](EVIDENCE.md) now verifies bounded retained
+   objects. Full assembly-reference closure and large overlay integration remain
+   missing source work. Approved published policy, physical retention, legal holds,
+   backup and recovery controls, and live acceptance remain required (VET-03).
 7. The VET-08 acceptance run of the harmless fixture classes on that
    infrastructure, with its coverage and blind-spot report.
 

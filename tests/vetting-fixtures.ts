@@ -6,6 +6,7 @@
  * the external vetting service must.
  */
 
+import { createHash } from "node:crypto";
 import { vettingSignedMessage } from "../backend/vetting/handler";
 import { TELEMETRY_CHANNELS } from "../backend/vetting/result";
 
@@ -21,6 +22,44 @@ export type VettingFixtureTarget = {
   templateSha256: string;
 };
 
+export const VETTING_TRACE_BODY = "Harmless synthetic private vetting trace.\n";
+export const VETTING_TRACE_SHA = createHash("sha256")
+  .update(VETTING_TRACE_BODY)
+  .digest("hex");
+
+export const VETTING_EVIDENCE_OBJECTS = [
+  { body: VETTING_TRACE_BODY, kind: "trace", contentType: "text/plain" },
+  {
+    body: '{"schemaVersion":"fixture-review-input","source":"harmless"}',
+    kind: "manifest",
+    contentType: "application/json",
+  },
+  {
+    body: "Harmless artifact bytes.",
+    kind: "artifact",
+    contentType: "application/octet-stream",
+  },
+  {
+    body: "Harmless quarantined artifact bytes.",
+    kind: "artifact",
+    contentType: "application/octet-stream",
+  },
+  {
+    body: "Harmless parent archive bytes.",
+    kind: "artifact",
+    contentType: "application/octet-stream",
+  },
+  {
+    body: "Harmless fixture dependency lock.",
+    kind: "artifact",
+    contentType: "text/plain",
+  },
+].map((item) => ({
+  ...item,
+  sha256: createHash("sha256").update(item.body).digest("hex"),
+  sizeBytes: Buffer.byteLength(item.body),
+  label: `Harmless ${item.kind} fixture`,
+}));
 const digest = (character: string) => character.repeat(64);
 
 export function vettingResult(
@@ -35,7 +74,7 @@ export function vettingResult(
     provider: reviewer === "astra" ? "astra-security" : "anthropic",
     model: reviewer === "astra" ? "astra-2026-09" : "claude-opus-5-5",
     promptPolicyRevision: "vet-prompt-1",
-    inputManifestSha256: digest("c"),
+    inputManifestSha256: VETTING_EVIDENCE_OBJECTS[1].sha256,
     runId: `${reviewer}-run-${target.revision}`,
     status: "completed",
     verdict:
@@ -54,8 +93,10 @@ export function vettingResult(
       repository: target.repository,
       commitSha: target.commitSha,
       templateSha256: target.templateSha256,
-      inputManifestSha256: digest("c"),
-      dependencyLocks: [{ path: "bun.lock", sha256: digest("d") }],
+      inputManifestSha256: VETTING_EVIDENCE_OBJECTS[1].sha256,
+      dependencyLocks: [
+        { path: "bun.lock", sha256: VETTING_EVIDENCE_OBJECTS[5].sha256 },
+      ],
     },
     environment: {
       vmProvider: "fixture-microvm",
@@ -79,13 +120,13 @@ export function vettingResult(
       canaryAccessAttempts: disposition === "malicious" ? 2 : 0,
       egress: "default-deny",
     },
-    traceSha256: digest("f"),
+    traceSha256: VETTING_TRACE_SHA,
     modelReviews: [review("astra"), review("opus")],
     artifacts:
       disposition === "clean"
         ? [
             {
-              sha256: digest("1"),
+              sha256: VETTING_EVIDENCE_OBJECTS[2].sha256,
               parentSha256: null,
               origin: "registry.npmjs.org/esbuild",
               path: "node_modules/esbuild/bin/esbuild",
@@ -97,8 +138,8 @@ export function vettingResult(
           ]
         : [
             {
-              sha256: digest("2"),
-              parentSha256: digest("3"),
+              sha256: VETTING_EVIDENCE_OBJECTS[3].sha256,
+              parentSha256: VETTING_EVIDENCE_OBJECTS[4].sha256,
               origin: "postinstall download",
               path: "vendor/addon.node",
               type: "native-module",

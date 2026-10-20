@@ -19,12 +19,14 @@ import { CloudflareVettingPersistence } from "../backend/vetting/persistence";
 import { REWARD_ASSET_NETWORKS } from "../src/lib/reward-asset.mjs";
 import { applicationManifest } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
+import { localVettingEvidence } from "../tests/vetting-evidence-fixture";
 import {
   acquireQueuedAssessment,
   type QueueConnection,
   readPendingAssessments,
 } from "../workers/vetting/queue";
 
+let retained: Awaited<ReturnType<typeof localVettingEvidence>>;
 const digest = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const ORIGIN = "https://slop.cash";
@@ -106,6 +108,7 @@ beforeAll(async () => {
     "0025_community_security_vetting.sql",
     "0026_private_security_cases.sql",
   ]);
+  retained = await localVettingEvidence(db, () => now);
   projects = new CloudflareProjectPersistence(db);
   vetting = new CloudflareVettingPersistence(db);
   const manifest = applicationManifest("queue-fixture", "example/fixture");
@@ -169,6 +172,7 @@ beforeAll(async () => {
       if (path === "/api/v1/vetting/requests")
         return (
           (await handleVettingApi(request, {
+            evidence: retained.evidence,
             vetting,
             projects,
             resultPublicKeys: publicKey,
@@ -268,6 +272,7 @@ beforeAll(async () => {
   };
 });
 afterAll(async () => {
+  await retained?.dispose();
   server.stop(true);
   await rm(root, { recursive: true, force: true });
 });
