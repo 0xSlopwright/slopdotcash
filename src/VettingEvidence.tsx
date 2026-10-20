@@ -98,7 +98,7 @@ export default function VettingEvidencePage() {
               <h2>{run.runId}</h2>
               <p>Assessment: {run.assessmentId}</p>
               <p style={{ overflowWrap: "anywhere" }}>
-                Manifest SHA-256: {run.manifestSha256}
+                Storage inventory SHA-256: {run.manifestSha256}
               </p>
               <p>
                 Access expires: {run.expiresAt}. Policy: {run.policy.version}.

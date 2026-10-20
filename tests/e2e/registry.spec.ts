@@ -1071,7 +1071,6 @@ test("an unavailable registry shows an error, never an empty list @registry", as
 });
 
 test.describe("private evidence console", () => {
-  test.use({ video: "on" });
   test("a designated operator inspects retained vetting bytes with reasoned access @registry", async ({
     page,
   }) => {
@@ -1155,5 +1154,11 @@ test.describe("private evidence console", () => {
     });
     expect(errors).toEqual([]);
     expect(failures).toEqual([]);
+    const video = page.video();
+    await page.close();
+    if (video)
+      await video.saveAs(
+        test.info().outputPath("private-evidence-walkthrough.webm"),
+      );
   });
 });

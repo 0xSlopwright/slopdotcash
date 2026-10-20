@@ -194,7 +194,7 @@ function AssessmentDetails({ assessment }: { assessment: AdminAssessment }) {
         </div>
         {result ? (
           <div>
-            <dt>Raw evidence</dt>
+            <dt>Retained evidence</dt>
             <dd>
               <a
                 href={`/vetting-evidence?assessmentId=${encodeURIComponent(assessment.id)}&runId=${encodeURIComponent(result.environment.runId)}`}

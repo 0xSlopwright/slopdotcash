@@ -41,7 +41,12 @@ the existing `slop-evidence-assembly-v1` manifest and its exact input files with
 rewriting them. The service must retain the full packaged source, dependency,
 collector, lineage and artifact evidence that its assembly references. Source Git
 object identities and captured dependency SHA-256 identities remain distinct.
-No private source paths or URLs belong in public result summaries.
+The current receipt check does not parse the assembly manifest and recursively
+prove that all its referenced source, runtime overlay and nested evidence files
+are stored. That automatic assembly-closure integration is still missing source
+work. A configured store or available service key does not close this gate.
+The actual assembly remains incomplete and authorizes no provider calls or result
+publication. No private source paths or URLs belong in public result summaries.
 
 A clean result requires the exact trace, input manifests used by the result and
 each reviewer, dependency locks, artifacts and named parent artifacts in the
