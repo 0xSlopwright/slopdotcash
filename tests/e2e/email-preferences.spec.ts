@@ -50,7 +50,7 @@ test("verified activity email preference persists and can be withdrawn @registry
       new URL(response.url()).pathname === "/api/v1/notifications/email",
   );
   await page.keyboard.press("Enter");
-  expect(await (await enabledResponse).finished()).toBeNull();
+  expect((await enabledResponse).status()).toBe(200);
   await expect(preferences.getByRole("status")).toContainText(
     "Optional activity email is on.",
   );
@@ -88,7 +88,7 @@ test("verified activity email preference persists and can be withdrawn @registry
   await preferences
     .getByRole("button", { name: "Turn off activity email" })
     .click();
-  expect(await (await disabledResponse).finished()).toBeNull();
+  expect((await disabledResponse).status()).toBe(200);
   await expect(preferences.getByRole("status")).toContainText(
     "Optional activity email is off.",
   );
