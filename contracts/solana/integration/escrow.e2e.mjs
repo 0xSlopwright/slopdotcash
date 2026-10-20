@@ -447,14 +447,14 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
   const charged = await program.account.serviceCharge.fetch(service(invoice));
   assert.equal(charged.amount.toString(), "20000000");
   assert.equal(await balance(feeAccount), 22_000_000n);
-  // The 5% fee rounds down once per withdrawal: 1 pays 0, and
-  // 829,999,999 pays floor(829,999,999 / 20) = 41,499,999.
+  // The 2% fee rounds down once per withdrawal: 1 pays 0, and
+  // 829,999,999 pays floor(829,999,999 / 50) = 16,599,999.
   await withdraw(1);
   assert.equal(await balance(source), 1n);
   assert.equal(await balance(feeAccount), 22_000_000n);
   await withdraw(829_999_999);
-  assert.equal(await balance(source), 788_500_001n);
-  assert.equal(await balance(feeAccount), 63_499_999n);
+  assert.equal(await balance(source), 813_400_001n);
+  assert.equal(await balance(feeAccount), 38_599_999n);
   await assert.rejects(withdraw(1), /InsufficientFreeBalance/);
   // A stolen authority key rebinds actor 102 to a thief, who must expose a
   // wallet by co-signing. Only the owner can veto it, and only while it is
@@ -505,13 +505,13 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     [payer],
   );
   assert.equal(await balance(destination), 147_000_001n);
-  assert.equal(await balance(feeAccount), 64_499_999n);
+  assert.equal(await balance(feeAccount), 39_599_999n);
   assert.equal(await balance(vault), 0n);
   const state = await program.account.project.fetch(project);
   assert.equal(state.reserved.toString(), "0");
   assert.equal(state.paid.toString(), "147000000");
   assert.equal(state.payoutFees.toString(), "3000000");
-  assert.equal(state.withdrawalFees.toString(), "41499999");
+  assert.equal(state.withdrawalFees.toString(), "16599999");
   assert.equal(state.serviceFees.toString(), "20000000");
   assert.equal(
     (await balance(source)) +
@@ -942,8 +942,9 @@ test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay
 });
 
 // Owner decisions of 18 October 2026: permissionless deposit, any classic SPL mint and
-// decimals, and the 5% withdrawal fee. Token-2022 stays rejected.
-test("permissionless deposit, 18-, 9- and 0-decimal mints, 5% withdrawal fee, Token-2022 rejected", async () => {
+// decimals, and the withdrawal fee, 2% since the owner decision of 19 October 2026
+// (#907). Token-2022 stays rejected.
+test("permissionless deposit, 18-, 9- and 0-decimal mints, 2% withdrawal fee, Token-2022 rejected", async () => {
   await ensureConfig(program);
   const { TOKEN_2022_PROGRAM_ID } = await import("@solana/spl-token");
   currentAuthority = authority;
@@ -1011,7 +1012,7 @@ test("permissionless deposit, 18-, 9- and 0-decimal mints, 5% withdrawal fee, To
     const gross = total / 10n,
       awardFee = gross / 50n,
       unused = total - gross,
-      withdrawalFee = unused / 20n;
+      withdrawalFee = unused / 50n;
     mint = await createMint(
       provider.connection,
       payer,
@@ -1098,7 +1099,7 @@ test("permissionless deposit, 18-, 9- and 0-decimal mints, 5% withdrawal fee, To
     const paid = await pay(`decimals-${decimals}`, 301, contributorAccount);
     assert.equal(await balance(contributorAccount), gross - awardFee);
     assert.equal(await balance(feeAccount), awardFee);
-    // The owner withdraws the donor's unused funds at the 5% fee.
+    // The owner withdraws the donor's unused funds at the 2% fee.
     const withdrawn = await withdraw(unused);
     assert.equal(await balance(source), unused - withdrawalFee);
     assert.equal(await balance(feeAccount), awardFee + withdrawalFee);

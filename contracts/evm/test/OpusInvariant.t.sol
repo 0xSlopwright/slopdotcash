@@ -138,7 +138,7 @@ contract OpusHandler {
         gross = 1 + (gross % free);
         vm.prank(owner);
         escrow.withdrawUnused(uint128(gross));
-        ghostWithdrawalFees += gross / 20;
+        ghostWithdrawalFees += gross / 50;
     }
 
     function charge(uint256 amount) external {
@@ -203,9 +203,9 @@ contract OpusInvariantTest is OpusBase {
         require(IERC20(token()).balanceOf(FEE) == handler.ghostClaimed(), "fee recipient balance");
     }
 
-    function invariant_withdrawalFeeIsFivePercentPerWithdrawal() public view {
+    function invariant_withdrawalFeeIsTwoPercentPerWithdrawal() public view {
         require(escrow.totalWithdrawalFees() == handler.ghostWithdrawalFees(), "withdrawal fee");
-        require(escrow.totalWithdrawalFees() <= escrow.totalGrossWithdrawn() / 20, "never above 5%");
+        require(escrow.totalWithdrawalFees() <= escrow.totalGrossWithdrawn() / 50, "never above 2%");
     }
 
     function invariant_totalsMatchGetters() public view {

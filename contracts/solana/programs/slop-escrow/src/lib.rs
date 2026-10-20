@@ -23,9 +23,10 @@ pub const LEGACY_PROJECT_SIZE: usize = 265;
 /// the project. Each veto can only delay the actor by one more binding delay, so this
 /// bounds the owner's delay power.
 const MAX_VETOES_BETWEEN_PAYMENTS: u8 = 3;
-/// Each unused-funds withdrawal pays 1/20 (5%) of its gross to the fee recipient, rounded down
-/// once per withdrawal (PRD section 18).
-const WITHDRAWAL_FEE_DIVISOR: u64 = 20;
+/// Each award and each unused-funds withdrawal pays 1/50 (2%) of its gross to the fee
+/// recipient, rounded down once per award or withdrawal (PRD section 18). One rate for both
+/// stops an owner from awarding free funds to itself to pay a lower fee than a withdrawal (#907).
+const FEE_DIVISOR: u64 = 50;
 #[program]
 pub mod slop_escrow {
     use super::*;
@@ -261,7 +262,7 @@ pub mod slop_escrow {
             award_id == award_id_for(&ctx.accounts.project.key(), &source_digest),
             EscrowError::InvalidAward
         );
-        let fee = gross / 50;
+        let fee = fee_for(gross);
         let principal = gross - fee;
         let reserve = gross;
         let p = &mut ctx.accounts.project;
@@ -451,7 +452,7 @@ pub mod slop_escrow {
             gross > 0 && ctx.accounts.vault.amount >= add(p.reserved, gross)? && free(p)? >= gross,
             EscrowError::InsufficientFreeBalance
         );
-        let fee = withdrawal_fee(gross);
+        let fee = fee_for(gross);
         let returned = gross.checked_sub(fee).ok_or(EscrowError::Arithmetic)?;
         let seeds: &[&[u8]] = &[b"project", p.owner.as_ref(), &p.project_id, &[p.bump]];
         send(
@@ -527,11 +528,11 @@ pub mod slop_escrow {
 pub fn award_id_for(project: &Pubkey, source_digest: &[u8; 32]) -> [u8; 32] {
     hashv(&[b"slop-escrow-award", project.as_ref(), source_digest]).to_bytes()
 }
-/// The 5% fee on one withdrawal of `gross`, rounded down. It depends only on this
-/// withdrawal, so a project that paid the earlier 10% schedule is not affected. A
-/// withdrawal under 20 base units pays no fee; a split saves under one unit per transaction.
-fn withdrawal_fee(gross: u64) -> u64 {
-    gross / WITHDRAWAL_FEE_DIVISOR
+/// The 2% fee on one award or one withdrawal of `gross`, rounded down. It depends only on
+/// this amount, so a project that paid an earlier withdrawal schedule is not affected. An
+/// amount under 50 base units pays no fee; a split saves under one unit per transaction.
+fn fee_for(gross: u64) -> u64 {
+    gross / FEE_DIVISOR
 }
 fn valid_delay(binding_delay: i64) -> bool {
     (MIN_BINDING_DELAY..=MAX_BINDING_DELAY).contains(&binding_delay)
@@ -1000,12 +1001,12 @@ mod tests {
         assert!(!valid_rotation_delay(90 * 86400 + 1));
     }
     #[test]
-    fn withdrawal_fee_is_five_percent_per_withdrawal() {
-        // PRD section 18: 850 USDC gives a 42.5 USDC fee and 807.5 USDC refund.
-        assert_eq!(withdrawal_fee(850_000_000), 42_500_000);
-        assert_eq!(withdrawal_fee(19), 0);
-        assert_eq!(withdrawal_fee(20), 1);
-        assert_eq!(withdrawal_fee(39), 1);
-        assert_eq!(withdrawal_fee(u64::MAX), u64::MAX / 20);
+    fn fee_is_two_percent_per_award_or_withdrawal() {
+        // PRD section 18: 850 USDC gives a 17 USDC fee and 833 USDC refund.
+        assert_eq!(fee_for(850_000_000), 17_000_000);
+        assert_eq!(fee_for(49), 0);
+        assert_eq!(fee_for(50), 1);
+        assert_eq!(fee_for(99), 1);
+        assert_eq!(fee_for(u64::MAX), u64::MAX / 50);
     }
 }

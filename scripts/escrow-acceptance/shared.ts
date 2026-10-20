@@ -60,9 +60,10 @@ export const SOLANA_GENESIS = {
   devnet: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
   testnet: "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
 } as const;
-/** ProjectEscrow.withdrawalFee and the program's WITHDRAWAL_FEE_DIVISOR: 5%, rounded down. */
-export const WITHDRAWAL_FEE_DIVISOR = 20n;
-/** ProjectEscrow.payoutFee and the program's commit: 2%, rounded down. */
+/**
+ * ProjectEscrow.payoutFee and withdrawalFee, and the program's commit and
+ * withdraw: both 2%, rounded down (#907).
+ */
 export const PAYOUT_FEE_DIVISOR = 50n;
 export type ActorRole = "registered" | "walletless";
 export interface TestActor {
@@ -165,7 +166,7 @@ export function scenarioAmounts(decimals: number, divisor: bigint) {
     netA: awardA - awardA / PAYOUT_FEE_DIVISOR,
     netB: awardB - awardB / PAYOUT_FEE_DIVISOR,
     withdrawGross,
-    withdrawFee: withdrawGross / WITHDRAWAL_FEE_DIVISOR,
+    withdrawFee: withdrawGross / PAYOUT_FEE_DIVISOR,
   };
   if (result.netA !== 98n * unit || result.netB !== 49n * unit)
     throw new Error("Unit is too small for exact section 21 figures");
@@ -574,7 +575,7 @@ function acceptanceManifest(
       effectiveCycle,
       chain,
       feeBasisPoints: 200,
-      withdrawalFeeBasisPoints: 500,
+      withdrawalFeeBasisPoints: 200,
       feeMode: "deduct-from-gross",
       deployments: [deployment],
     },

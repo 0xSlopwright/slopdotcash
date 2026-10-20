@@ -35,8 +35,8 @@ contract HugeDecimalsToken {
     }
 }
 
-/// Escrow v2: any standard ERC-20 with any decimals, uint128 amounts, permissionless deposit and the 5%
-/// unused-fund withdrawal fee.
+/// Escrow v2: any standard ERC-20 with any decimals, uint128 amounts, permissionless deposit and the 2%
+/// unused-fund withdrawal fee, equal to the payout fee (#907).
 contract AnyTokenTest is OpusBase {
     AnyTokenVm internal constant vm2 = AnyTokenVm(address(uint160(uint256(keccak256("hevm cheat code")))));
     address internal constant DONOR = address(0xD0D0);
@@ -108,10 +108,11 @@ contract AnyTokenTest is OpusBase {
         uint256 ownerBefore = token.balanceOf(OWNER);
         vm.prank(OWNER);
         vault.withdrawUnused(withdrawal);
-        uint128 withdrawalFee = withdrawal / 20;
+        uint128 withdrawalFee = withdrawal / 50;
         check(vault.withdrawalFee(withdrawal) == withdrawalFee, "withdrawalFee view");
-        check(token.balanceOf(OWNER) - ownerBefore == withdrawal - withdrawalFee, "refund minus 5%");
-        check(vault.totalWithdrawalFees() == withdrawalFee, "withdrawal fee is 5%");
+        check(vault.withdrawalFee(withdrawal) == vault.payoutFee(withdrawal), "withdrawal fee equals payout fee");
+        check(token.balanceOf(OWNER) - ownerBefore == withdrawal - withdrawalFee, "refund minus 2%");
+        check(vault.totalWithdrawalFees() == withdrawalFee, "withdrawal fee is 2%");
         uint128 accrued = vault.accruedFees();
         check(accrued == payout + withdrawalFee, "fees accrue");
         vault.claimFees();
@@ -174,26 +175,26 @@ contract AnyTokenTest is OpusBase {
         uint256 before = usdc.balanceOf(OWNER);
         vm.prank(OWNER);
         escrow.withdrawUnused(500e6);
-        check(usdc.balanceOf(OWNER) - before == 475e6, "owner refund destination gets 95%");
+        check(usdc.balanceOf(OWNER) - before == 490e6, "owner refund destination gets 98%");
         check(usdc.balanceOf(DONOR) == 0, "donor gets no refund");
-        check(escrow.accruedFees() == 25e6, "5% withdrawal fee");
+        check(escrow.accruedFees() == 10e6, "2% withdrawal fee");
     }
 
-    function test_withdrawalFeeIsFivePercentPerWithdrawal() public {
-        // PRD section 18 example: 850 USDC free gives a 42.5 USDC fee and 807.5 USDC to the refund destination.
+    function test_withdrawalFeeIsTwoPercentPerWithdrawal() public {
+        // PRD section 18 example: 850 USDC free gives a 17 USDC fee and 833 USDC to the refund destination.
         fund(1_000e6);
         uint256 before = usdc.balanceOf(OWNER);
         vm.prank(OWNER);
         escrow.withdrawUnused(850e6);
-        check(escrow.totalWithdrawalFees() == 42_500_000, "floor(850e6 / 20)");
-        check(usdc.balanceOf(OWNER) - before == 807_500_000, "807.5 USDC refunded");
+        check(escrow.totalWithdrawalFees() == 17_000_000, "floor(850e6 / 50)");
+        check(usdc.balanceOf(OWNER) - before == 833_000_000, "833 USDC refunded");
         // Rounded down once per withdrawal.
         vm.startPrank(OWNER);
-        escrow.withdrawUnused(39);
-        escrow.withdrawUnused(19);
+        escrow.withdrawUnused(99);
+        escrow.withdrawUnused(49);
         vm.stopPrank();
-        check(escrow.totalWithdrawalFees() == 42_500_000 + 1, "39 pays 1, 19 pays 0");
-        check(escrow.withdrawalFee(type(uint128).max) == type(uint128).max / 20, "no overflow at uint128 max");
+        check(escrow.totalWithdrawalFees() == 17_000_000 + 1, "99 pays 1, 49 pays 0");
+        check(escrow.withdrawalFee(type(uint128).max) == type(uint128).max / 50, "no overflow at uint128 max");
     }
 
     function test_feeOnTransferDepositReverts() public {
@@ -287,8 +288,8 @@ contract AnyTokenTest is OpusBase {
             uint256 balance
         ) = escrow.totals();
         check(deposited == 1_000e6 && paid == 294e6 && payoutFees == 6e6, "award totals");
-        check(grossWithdrawn == 100e6 && withdrawalFees == 5e6 && serviceFees == 5e6, "withdrawal totals");
+        check(grossWithdrawn == 100e6 && withdrawalFees == 2e6 && serviceFees == 5e6, "withdrawal totals");
         check(free == 595e6 && principalReserved == 0 && feesReserved == 0, "balances");
-        check(feesAccrued == 16e6 && balance == 611e6, "vault holds free plus accrued fees");
+        check(feesAccrued == 13e6 && balance == 608e6, "vault holds free plus accrued fees");
     }
 }

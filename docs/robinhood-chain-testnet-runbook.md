@@ -146,7 +146,7 @@ Then run the acceptance scenario with finalized receipts:
    signature (domain `SlopProjectEscrow`, version `4`).
 4. After the binding delay and the award's commit delay, anyone calls `pay`.
 5. The owner withdraws part of the free balance. Check the fee is
-   `floor(gross / 20)` (5%) and only `gross - fee` reaches the refund
+   `floor(gross / 50)` (2%) and only `gross - fee` reaches the refund
    destination.
 6. Anyone calls `claimFees`.
 7. Read `totals()` and the adapter's `readVaultTotals` at the finalized block,
