@@ -202,7 +202,7 @@ export async function signedVettingHeaders(
   publicKeyRaw: Uint8Array,
   method: string,
   pathAndQuery: string,
-  body: string,
+  body: string | Uint8Array,
   at = new Date(),
 ): Promise<Record<string, string>> {
   const timestamp = at.toISOString();
@@ -214,7 +214,9 @@ export async function signedVettingHeaders(
         method,
         pathAndQuery,
         timestamp,
-        await hex(new TextEncoder().encode(body)),
+        await hex(
+          typeof body === "string" ? new TextEncoder().encode(body) : body,
+        ),
       ) as Uint8Array<ArrayBuffer>,
     ),
   );
