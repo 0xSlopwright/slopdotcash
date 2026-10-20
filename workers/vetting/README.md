@@ -71,8 +71,9 @@ QEMU was considered for the execution adapter. Its [security
 contract](https://www.qemu.org/docs/master/system/security.html) requires a
 hardware accelerator and a supported machine. It also requires host privilege
 and resource confinement. Software emulation cannot establish guest isolation.
-A QEMU command line by itself would not complete this service, so this change
-does not add an unverified VM launcher or claim VET-02 acceptance.
+The bounded [offline VM component](VM.md) records actual private boot and
+timeout evidence. It does not execute acquired source or implement the required
+interception collectors, and it does not claim VET-02 acceptance.
 
 The [Bubblewrap project](https://github.com/containers/bubblewrap) explains that
 its security depends on the caller's namespace and filesystem configuration.
