@@ -87,6 +87,11 @@ export async function assembleEvidence(input: {
     collectorSha256: string;
     receiptSha256: string;
   };
+  dependencyEvidence?: {
+    directory: string;
+    inventorySha256: string;
+    profileSha256: string;
+  };
   outputDirectory: string;
 }) {
   const queueBytes = await bytes(
@@ -161,38 +166,50 @@ export async function assembleEvidence(input: {
       throw new Error("Unexpected or duplicate artifact inventory");
     inventories.set(inventory.sourceSha256, inventory);
   }
-  for (const sha256 of objects) {
-    const content = await bytes(
-      join(input.acquisitionDirectory, "objects", sha256),
-      sha256,
-      8 * 1024 * 1024,
-    );
+  async function inspectedObject(
+    sha256: string,
+    objectPath: string,
+    supplied: { path: string; sha256: string },
+    dependency = false,
+  ) {
+    const content = await bytes(objectPath, sha256, 8 * 1024 * 1024);
     try {
       new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
         content,
       );
     } catch {
-      visibility.add("binary-source-bytes-not-readable-by-model");
+      visibility.add(
+        dependency
+          ? "binary-dependency-bytes-not-readable-by-model"
+          : "binary-source-bytes-not-readable-by-model",
+      );
     }
     if (!content.includes(0)) {
       try {
-        add(`object:${sha256}`, content);
+        add(
+          `${dependency ? "dependency-object" : "object"}:${sha256}`,
+          content,
+        );
       } catch (error) {
         if (error instanceof TypeError)
-          visibility.add("binary-source-bytes-not-readable-by-model");
+          visibility.add(
+            dependency
+              ? "binary-dependency-bytes-not-readable-by-model"
+              : "binary-source-bytes-not-readable-by-model",
+          );
         else throw error;
       }
-    } else visibility.add("binary-source-bytes-not-readable-by-model");
+    } else
+      visibility.add(
+        dependency
+          ? "binary-dependency-bytes-not-readable-by-model"
+          : "binary-source-bytes-not-readable-by-model",
+      );
     files.push({
-      role: `acquired-object:${sha256}`,
+      role: `${dependency ? "dependency-object-bytes" : "acquired-object"}:${sha256}`,
       sha256,
       bytes: content.length,
     });
-    const supplied = inventories.get(sha256);
-    if (!supplied)
-      throw new Error(
-        "Every acquired object requires isolated artifact inspection",
-      );
     const inventoryBytes = await bytes(
       supplied.path,
       supplied.sha256,
@@ -210,7 +227,118 @@ export async function assembleEvidence(input: {
     if (inventory.records.length > 1)
       visibility.add("nested-artifact-content-not-supplied-to-models");
     for (const gap of gaps(inventory.visibilityGaps)) visibility.add(gap);
-    add(`artifact:${sha256}`, inventoryBytes);
+    add(
+      `${dependency ? "dependency-artifact" : "artifact"}:${sha256}`,
+      inventoryBytes,
+    );
+  }
+  for (const sha256 of objects) {
+    const supplied = inventories.get(sha256);
+    if (!supplied)
+      throw new Error(
+        "Every acquired object requires isolated artifact inspection",
+      );
+    await inspectedObject(
+      sha256,
+      join(input.acquisitionDirectory, "objects", sha256),
+      supplied,
+    );
+  }
+  if (input.dependencyEvidence) {
+    const supplied = input.dependencyEvidence;
+    const inventoryBytes = await bytes(
+      join(supplied.directory, "inventory.json"),
+      supplied.inventorySha256,
+      1024 * 1024,
+    );
+    const inventory = record(JSON.parse(inventoryBytes.toString("utf8")));
+    const profileBytes = await bytes(
+      join(supplied.directory, "profile.json"),
+      supplied.profileSha256,
+      65536,
+    );
+    const profile = record(JSON.parse(profileBytes.toString("utf8")));
+    if (
+      inventory.schema !== "slop-dependency-inventory-v1" ||
+      inventory.state !== "quarantined" ||
+      inventory.executionAuthorized !== false ||
+      inventory.sourceInventorySha256 !== queue.sourceInventorySha256 ||
+      inventory.profileSha256 !== supplied.profileSha256 ||
+      profile.schema !== "slop-dependency-fetch-profile-v1" ||
+      profile.sourceInventorySha256 !== queue.sourceInventorySha256 ||
+      profile.caBundleSha256 !== inventory.caBundleSha256 ||
+      !HEX.test(String(profile.caBundleSha256)) ||
+      !Array.isArray(profile.dependencies) ||
+      !profile.dependencies.length ||
+      profile.dependencies.length > 16 ||
+      !Array.isArray(inventory.records) ||
+      inventory.records.length !== profile.dependencies.length
+    )
+      throw new Error(
+        "Dependency evidence does not bind approved source/profile",
+      );
+    for (const gap of gaps(inventory.visibilityGaps)) visibility.add(gap);
+    visibility.add("dependency-prefetch-is-not-runtime-proxy-coverage");
+    visibility.add("dependencies-not-authorized-for-execution");
+    add("dependency-profile", profileBytes);
+    add("dependency-inventory", inventoryBytes);
+    let budget = 0;
+    const urls = new Set<string>();
+    const inspected = new Map<string, string>();
+    for (let index = 0; index < inventory.records.length; index++) {
+      const entry = record(inventory.records[index]);
+      const approved = record(profile.dependencies[index]);
+      if (
+        entry.dependencyIndex !== index ||
+        typeof entry.sha256 !== "string" ||
+        !HEX.test(entry.sha256) ||
+        entry.sha256 !== approved.sha256 ||
+        typeof approved.url !== "string" ||
+        urls.has(approved.url) ||
+        entry.url !== approved.url ||
+        entry.state !== "quarantined" ||
+        entry.status !== 200 ||
+        !Number.isSafeInteger(approved.maxBytes) ||
+        Number(approved.maxBytes) < 1 ||
+        Number(approved.maxBytes) > 8 * 1024 * 1024 ||
+        !Number.isSafeInteger(entry.bytes) ||
+        Number(entry.bytes) < 0 ||
+        Number(entry.bytes) > Number(approved.maxBytes) ||
+        typeof entry.inspectionSha256 !== "string" ||
+        !HEX.test(entry.inspectionSha256) ||
+        (inspected.has(entry.sha256) &&
+          inspected.get(entry.sha256) !== entry.inspectionSha256) ||
+        entry.objectPath !== `objects/${entry.sha256}` ||
+        entry.inspectionPath !== `inspections/${entry.sha256}.json`
+      )
+        throw new Error(
+          "Dependency record differs from reviewed fetch profile",
+        );
+      urls.add(approved.url);
+      budget += Number(approved.maxBytes);
+      if (budget > 32 * 1024 * 1024)
+        throw new Error("Dependency evidence exceeds run bound");
+      const objectPath = join(supplied.directory, "objects", entry.sha256);
+      const content = await bytes(objectPath, entry.sha256, 8 * 1024 * 1024);
+      if (content.length !== entry.bytes)
+        throw new Error("Dependency size changed");
+      if (!inspected.has(entry.sha256)) {
+        await inspectedObject(
+          entry.sha256,
+          objectPath,
+          {
+            path: join(
+              supplied.directory,
+              "inspections",
+              `${entry.sha256}.json`,
+            ),
+            sha256: String(entry.inspectionSha256),
+          },
+          true,
+        );
+        inspected.set(entry.sha256, entry.inspectionSha256);
+      }
+    }
   }
   const vmBytes = await bytes(
     join(input.vmEvidence.directory, "evidence.json"),

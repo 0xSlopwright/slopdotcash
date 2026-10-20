@@ -2,7 +2,14 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import {
+  cp,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { assembleEvidence } from "../workers/vetting/assembly";
 
@@ -12,6 +19,8 @@ const [
   vmDirectory,
   outputDirectory,
   guestProfile,
+  dependencyDirectory,
+  dependencyFailureDirectory,
 ] = process.argv.slice(2);
 if (
   !acquisitionDirectory ||
@@ -20,7 +29,7 @@ if (
   !outputDirectory
 )
   throw new Error(
-    "usage: bun scripts/vetting-assembly-workflow.ts ACQUISITION ARTIFACT_REPORTS VM_OUTPUT PRIVATE_OUTPUT_PARENT [APPROVED_GUEST_PROFILE]",
+    "usage: bun scripts/vetting-assembly-workflow.ts ACQUISITION ARTIFACT_REPORTS VM_OUTPUT PRIVATE_OUTPUT_PARENT [APPROVED_GUEST_PROFILE_OR_DASH] [DEPENDENCY_DIRECTORY] [FAILED_DEPENDENCY_DIRECTORY]",
   );
 const digest = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -43,20 +52,32 @@ const input = {
     sha256: digest(await readFile(join(vmDirectory, "evidence.json"))),
   },
   outputDirectory,
-  guestEvidence: guestProfile
+  dependencyEvidence: dependencyDirectory
     ? {
-        profilePath: guestProfile,
-        profileSha256: digest(await readFile(guestProfile)),
-        collectorSha256: digest(
-          await readFile(
-            new URL("../workers/vetting/guest.py", import.meta.url),
-          ),
+        directory: dependencyDirectory,
+        inventorySha256: digest(
+          await readFile(join(dependencyDirectory, "inventory.json")),
         ),
-        receiptSha256: digest(
-          await readFile(join(vmDirectory, "guest-source-evidence.json")),
+        profileSha256: digest(
+          await readFile(join(dependencyDirectory, "profile.json")),
         ),
       }
     : undefined,
+  guestEvidence:
+    guestProfile && guestProfile !== "-"
+      ? {
+          profilePath: guestProfile,
+          profileSha256: digest(await readFile(guestProfile)),
+          collectorSha256: digest(
+            await readFile(
+              new URL("../workers/vetting/guest.py", import.meta.url),
+            ),
+          ),
+          receiptSha256: digest(
+            await readFile(join(vmDirectory, "guest-source-evidence.json")),
+          ),
+        }
+      : undefined,
 };
 const result = await assembleEvidence(input);
 const manifestBytes = await readFile(join(result.directory, "manifest.json"));
@@ -70,7 +91,7 @@ assert.equal(manifest.providerCallsAuthorized, false);
 assert.equal(manifest.publicationAuthorized, false);
 assert(
   review.visibilityGaps.includes(
-    guestProfile
+    input.guestEvidence
       ? "only-approved-harmless-fixture-command-executed"
       : "acquired-source-not-executed",
   ),
@@ -79,6 +100,90 @@ assert(review.visibilityGaps.includes("complete-collector-not-attached"));
 for (const item of review.items)
   assert.equal(digest(Buffer.from(item.text)), item.sha256);
 const before = (await readdir(outputDirectory)).sort();
+if (input.dependencyEvidence) {
+  assert(
+    review.visibilityGaps.includes(
+      "dependency-prefetch-is-not-runtime-proxy-coverage",
+    ),
+  );
+  assert(
+    review.visibilityGaps.includes("dependencies-not-authorized-for-execution"),
+  );
+  assert(
+    manifest.files.some(
+      (file: { role: string }) => file.role === "dependency-inventory",
+    ),
+  );
+  const supplied = input.dependencyEvidence;
+  for (const key of ["inventorySha256", "profileSha256"] as const)
+    await assert.rejects(
+      assembleEvidence({
+        ...input,
+        dependencyEvidence: { ...supplied, [key]: "0".repeat(64) },
+      }),
+    );
+  // Start from real retained fetch outputs; corrupt the copies only.
+  const tampered = await mkdtemp(join(outputDirectory, "dependency-negative-"));
+  try {
+    const copy = join(tampered, "fetch");
+    await cp(supplied.directory, copy, { recursive: true });
+    const inventoryPath = join(copy, "inventory.json");
+    const inventory = JSON.parse((await readFile(inventoryPath)).toString());
+    const object = join(copy, inventory.records[0].objectPath);
+    await rm(object);
+    await writeFile(object, "changed captured dependency");
+    await assert.rejects(
+      assembleEvidence({
+        ...input,
+        dependencyEvidence: { ...supplied, directory: copy },
+      }),
+    );
+    await rm(copy, { recursive: true });
+    await cp(supplied.directory, copy, { recursive: true });
+    const inspection = join(copy, inventory.records[0].inspectionPath);
+    await rm(inspection);
+    await assert.rejects(
+      assembleEvidence({
+        ...input,
+        dependencyEvidence: { ...supplied, directory: copy },
+      }),
+    );
+    await rm(copy, { recursive: true });
+    await cp(supplied.directory, copy, { recursive: true });
+    inventory.sourceInventorySha256 = "0".repeat(64);
+    const altered = Buffer.from(JSON.stringify(inventory));
+    await rm(inventoryPath);
+    await writeFile(inventoryPath, altered);
+    await assert.rejects(
+      assembleEvidence({
+        ...input,
+        dependencyEvidence: {
+          ...supplied,
+          directory: copy,
+          inventorySha256: digest(altered),
+        },
+      }),
+    );
+    if (dependencyFailureDirectory) {
+      const failure = await readFile(
+        join(dependencyFailureDirectory, "failure.json"),
+      );
+      assert.equal(JSON.parse(failure.toString()).state, "incomplete");
+      await assert.rejects(
+        assembleEvidence({
+          ...input,
+          dependencyEvidence: {
+            ...supplied,
+            directory: dependencyFailureDirectory,
+            inventorySha256: digest(failure),
+          },
+        }),
+      );
+    }
+  } finally {
+    await rm(tampered, { recursive: true, force: true });
+  }
+}
 await assert.rejects(
   assembleEvidence({ ...input, queuedInputsSha256: "0".repeat(64) }),
 );
@@ -128,6 +233,10 @@ console.log(
     state: "incomplete",
     providerCalls: 0,
     publications: 0,
-    rejectedCorruptOrMissingInputs: guestProfile ? 7 : 4,
+    rejectedCorruptOrMissingInputs:
+      (input.guestEvidence ? 7 : 4) +
+      (dependencyDirectory
+        ? 5 + Number(Boolean(dependencyFailureDirectory))
+        : 0),
   }),
 );

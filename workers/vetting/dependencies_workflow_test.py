@@ -3,6 +3,7 @@
 Run as root with: unshare --mount --net --fork python3 dependencies_workflow_test.py
 No public network routes, host mounts, public traffic or model calls are used.
 """
+import argparse
 import hashlib
 import http.server
 import json
@@ -32,6 +33,13 @@ def sha(data):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--source-inventory')
+    parser.add_argument('--retain-directory')
+    args = parser.parse_args()
+    if args.retain_directory:
+        retained_directory = Path(args.retain_directory)
+        retained_directory.mkdir(mode=0o700)
     assert sys.platform == 'linux' and os.geteuid() == 0
     # Require a separate namespace before any network or mount mutation.
     assert os.readlink('/proc/self/ns/net') != os.readlink('/proc/1/ns/net')
@@ -151,8 +159,11 @@ def main():
         server.socket = context.wrap_socket(server.socket, server_side=True)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         source = root / 'source.json'
-        source.write_text(json.dumps({'schema': 'slop-source-inventory-v1', 'state': 'quarantined',
-                                     'records': []}))
+        if args.source_inventory:
+            source.write_bytes(Path(args.source_inventory).read_bytes())
+        else:
+            source.write_text(json.dumps({'schema': 'slop-source-inventory-v1', 'state': 'quarantined',
+                                         'records': []}))
         counter = 0
         def run(url, success=False, *, root_analyzer=False, bad_digest=False, multiple=False):
             nonlocal counter
@@ -208,6 +219,8 @@ def main():
                     if multiple:
                         assert failure['failedIndex'] == 1
                         assert {row['dependencyIndex'] for row in failure['lineage']} == {0, 1}
+            if args.retain_directory and (counter == 1 or multiple):
+                shutil.copytree(output, retained_directory / ('complete' if success else 'incomplete'))
             print(('PASS capture+isolated-analysis ' if success else 'PASS refused ') + url, flush=True)
         run('https://good.fixture.example/good', True)
         run('https://rebind.fixture.example/good', True)

@@ -73,3 +73,36 @@ VM run. The signed queue and actual acquisition must produce the input bytes.
 
 Operator-console access, general project execution, complete collectors, and
 the private evidence retention service remain separate unfinished work.
+
+## Optional controlled dependency evidence
+
+`dependencyEvidence` supplies a private directory, `inventorySha256` and an
+independently approved `profileSha256`. The assembler checks the fetch profile
+against the same acquired source inventory. Each ordered request must match its
+captured URL, digest, byte limit and successful observation. It verifies each
+object and isolated artifact report with the same routines used for source
+artifacts. Dependency bytes and provenance have separate evidence IDs; they are
+never represented as Git blobs. Duplicate byte objects may share one report,
+but conflicting report references fail.
+
+The assembler retains every dependency visibility gap and adds explicit markers
+that prefetch is not runtime proxy coverage and that dependencies have no
+execution permission. A failed fetch manifest cannot substitute for a completed
+quarantine inventory. Such failed bytes stay in the separate private failure
+record for operator inspection.
+
+For a connected harmless workflow, pass the actual signed queue's source
+inventory to `dependencies_workflow_test.py --source-inventory PATH
+--retain-directory NEW_DIRECTORY` inside the isolated Linux fixture. It retains
+one real successful fetch and one real multi-request failure under `complete`
+and `incomplete`. Copy those private outputs without changing them, then run:
+
+```sh
+bun scripts/vetting-assembly-workflow.ts ACQUISITION ARTIFACT_REPORTS VM_OUTPUT PRIVATE_OUTPUT_PARENT APPROVED_GUEST_PROFILE DEPENDENCY_COMPLETE DEPENDENCY_INCOMPLETE
+```
+
+Use `-` for the guest profile only when no guest receipt is supplied. The
+workflow checks dependency profile/inventory pins, actual captured bytes,
+missing inspection, source mismatch and refusal of the retained failed fetch.
+It uses the real queue, analyzer, guest and network component outputs and makes
+no model call or result publication.
