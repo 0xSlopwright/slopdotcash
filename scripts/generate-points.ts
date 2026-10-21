@@ -157,12 +157,20 @@ export function pointsSql(journal: PointsJournal): string {
     (r, sequence) =>
       `INSERT INTO points_staging(batch_id,sequence,payload) VALUES(${quote(digest)},${sequence},${quote(JSON.stringify(r))}) ON CONFLICT(batch_id,sequence) DO NOTHING;`,
   );
+  // Coverage is staged one entry per statement so the batch statement stays
+  // within D1's 100 KB statement limit however long coverage grows.
+  for (const [sequence, entry] of journal.coverage.entries())
+    statements.push(
+      `INSERT INTO points_coverage_staging(batch_id,sequence,entry) VALUES(${quote(digest)},${sequence},${quote(JSON.stringify(entry))}) ON CONFLICT(batch_id,sequence) DO NOTHING;`,
+    );
   statements.push(
     // Skip the insert before its BEFORE trigger runs. A known older batch is
     // an idempotent replay, not a new candidate with a shorter history.
-    `INSERT INTO points_batches(digest,generated_at,coverage,revision_count) SELECT ${quote(digest)},${quote(journal.generatedAt)},${quote(JSON.stringify(journal.coverage))},${journal.revisions.length} WHERE NOT EXISTS (SELECT 1 FROM points_batches WHERE digest=${quote(digest)});`,
-    // Replayed batches skip the AFTER INSERT trigger that normally clears staging.
+    // Incomplete staged coverage yields NULL, which the NOT NULL column rejects.
+    `INSERT INTO points_batches(digest,generated_at,coverage,revision_count) SELECT ${quote(digest)},${quote(journal.generatedAt)},(SELECT CASE WHEN COUNT(*)=${journal.coverage.length} THEN json_group_array(json(entry)) END FROM (SELECT entry FROM points_coverage_staging WHERE batch_id=${quote(digest)} ORDER BY sequence)),${journal.revisions.length} WHERE NOT EXISTS (SELECT 1 FROM points_batches WHERE digest=${quote(digest)});`,
+    // Replayed batches skip the AFTER INSERT triggers that normally clear staging.
     `DELETE FROM points_staging WHERE batch_id=${quote(digest)} AND EXISTS (SELECT 1 FROM points_batches WHERE digest=${quote(digest)});`,
+    `DELETE FROM points_coverage_staging WHERE batch_id=${quote(digest)} AND EXISTS (SELECT 1 FROM points_batches WHERE digest=${quote(digest)});`,
   );
   return statements.join("\n") + "\n";
 }
