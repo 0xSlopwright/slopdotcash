@@ -304,22 +304,25 @@ async function relatedPullRequests(
     )
       continue;
     const [targetOwner, targetName] = target.repository.split("/");
-    const result = await client.graphql<{
-      repository: {
-        isPrivate: boolean;
-        nameWithOwner: string;
-        issueOrPullRequest: {
-          __typename: string;
-          id?: string;
-          number?: number;
-          url?: string;
+    const result = await client
+      .graphql<{
+        repository: {
+          isPrivate: boolean;
+          nameWithOwner: string;
+          issueOrPullRequest: {
+            __typename: string;
+            id?: string;
+            number?: number;
+            url?: string;
+          } | null;
         } | null;
-      } | null;
-    }>(
-      `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){isPrivate nameWithOwner issueOrPullRequest(number:$number){__typename ... on PullRequest{id number url}}}}`,
-      { owner: targetOwner, name: targetName, number: target.number },
-    );
-    const repo = result.repository;
+      }>(
+        `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){isPrivate nameWithOwner issueOrPullRequest(number:$number){__typename ... on PullRequest{id number url}}}}`,
+        { owner: targetOwner, name: targetName, number: target.number },
+      )
+      .catch(() => null);
+    // Failed discovery is retained as an explicit gap, never an empty success.
+    const repo = result?.repository;
     if (!repo || repo.isPrivate !== false) {
       limitations.push("Outgoing reference is unavailable or private");
       continue;
