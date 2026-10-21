@@ -67,7 +67,7 @@ const outputName = process.env.SLOP_E2E_OUTPUT ?? localServer;
 const localServerCommand =
   localServer === "preview"
     ? `node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${localPort} --strictPort`
-    : `node node_modules/wrangler/bin/wrangler.js pages dev dist --ip 127.0.0.1 --port ${localPort} --log-level warn --show-interactive-dev-session=false${registryArguments}`;
+    : `node node_modules/wrangler/bin/wrangler.js pages dev dist --ip 127.0.0.1 --port ${localPort} --inspector-port 0 --log-level warn --show-interactive-dev-session=false${registryArguments}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",
