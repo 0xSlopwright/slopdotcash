@@ -356,6 +356,28 @@ async function relatedPullRequests(
     limitations: [...new Set(limitations)],
   };
 }
+/** Captured attribution policy must match the independently selected registry.
+ * A matching source digest alone does not establish project authority.
+ */
+export function valueEvidenceMatchesRepository(
+  evidence: ValueEvidence,
+  repository: TargetRepository,
+): boolean {
+  const policy = evidence.repositoryPolicy;
+  return (
+    policy !== null &&
+    [repository.id, ...repository.aliases].some(
+      (id) => id.toLowerCase() === evidence.repository.toLowerCase(),
+    ) &&
+    policy.id === repository.id &&
+    policy.projectId === repository.projectId &&
+    policy.integrationBranch === repository.integrationBranch &&
+    policy.expectedNodeId === repository.expectedNodeId &&
+    (repository.expectedNodeId === null ||
+      repository.expectedNodeId === evidence.repositoryNodeId)
+  );
+}
+
 export interface ValueEvidence {
   repository: string;
   repositoryPolicy: Pick<

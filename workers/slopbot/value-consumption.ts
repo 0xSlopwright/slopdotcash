@@ -13,7 +13,10 @@ import {
   type ValueContextSelection,
   validValueContextSelections,
 } from "./value-context";
-import type { ValueEvidence } from "./value-evidence";
+import {
+  type ValueEvidence,
+  valueEvidenceMatchesRepository,
+} from "./value-evidence";
 import {
   type StoredValueRecord,
   type ValueJournalRecord,
@@ -125,6 +128,7 @@ export async function readValueDecisionFromHistory(
   if (evidence.limitations.length || !policy.text.trim())
     return { ...common, status: "incomplete" as const };
   if (
+    !valueEvidenceMatchesRepository(evidence, repository) ||
     evidence.pull.state !== "closed" ||
     latest.headSha !== evidence.pull.head.sha ||
     latest.mergeSha !== evidence.pull.merge_commit_sha ||

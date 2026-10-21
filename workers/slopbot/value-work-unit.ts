@@ -8,7 +8,10 @@ import {
   type TargetRepository,
 } from "../../src/lib/repositories.mjs";
 import { sha256Hex } from "./github";
-import type { ValueEvidence } from "./value-evidence";
+import {
+  type ValueEvidence,
+  valueEvidenceMatchesRepository,
+} from "./value-evidence";
 import { valueSourceDigest } from "./value-review";
 
 export interface WorkUnitSource {
@@ -79,16 +82,9 @@ export async function prepareWorkUnitEvidence(
         (id) => id.toLowerCase() === evidence.repository.toLowerCase(),
       ),
     );
-    const capturedPolicy = evidence.repositoryPolicy;
     if (
       !repository ||
-      !capturedPolicy ||
-      capturedPolicy.id !== repository.id ||
-      capturedPolicy.projectId !== repository.projectId ||
-      capturedPolicy.integrationBranch !== repository.integrationBranch ||
-      capturedPolicy.expectedNodeId !== repository.expectedNodeId ||
-      (repository.expectedNodeId !== null &&
-        repository.expectedNodeId !== evidence.repositoryNodeId) ||
+      !valueEvidenceMatchesRepository(evidence, repository) ||
       ids.has(pull.node_id) ||
       pull.state !== "closed" ||
       !Number.isFinite(Date.parse(pull.merged_at ?? pull.closed_at ?? "")) ||

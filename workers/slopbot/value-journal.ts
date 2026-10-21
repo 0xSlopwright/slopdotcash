@@ -29,7 +29,10 @@ import {
   type ValueContextSelection,
   valueContextSelections,
 } from "./value-context";
-import type { ValueEvidence } from "./value-evidence";
+import {
+  type ValueEvidence,
+  valueEvidenceMatchesRepository,
+} from "./value-evidence";
 import {
   type ValueAssessmentResult,
   validateEvidenceAssessment,
@@ -99,6 +102,7 @@ export async function prepareValueRecord(
   if (
     !SHA.test(producerRevision) ||
     !SHA.test(policy.sha) ||
+    policy.sha !== evidence.pull.base.sha ||
     !policy.text.trim() ||
     (supersedes !== null && !DIGEST.test(supersedes))
   )
@@ -119,12 +123,9 @@ export async function prepareValueRecord(
     (supersedes !== null && !revisionReason?.trim())
   )
     throw new Error("A value successor requires an explicit change reason");
-  if (
-    repository.expectedNodeId !== null &&
-    repository.expectedNodeId !== evidence.repositoryNodeId
-  )
+  if (!valueEvidenceMatchesRepository(evidence, repository))
     throw new Error(
-      "Value repository does not match its registered immutable identity",
+      "Value source does not match its registered repository policy",
     );
   const assessment = validateEvidenceAssessment(result.verdict, evidence);
   const occurredAt = evidence.pull.merged_at ?? evidence.pull.closed_at;
