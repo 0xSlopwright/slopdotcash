@@ -3,6 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { selectSuccessfulProductionDeployment } from "./select-pages-deployment.mjs";
+import { verifyStagingRoot } from "./verify-staging-root.mjs";
 
 const [commitHash, boundary] = process.argv.slice(2);
 const notBefore = Number(boundary);
@@ -57,18 +58,7 @@ for (const origin of [
       stdio: "inherit",
     },
   );
-  const response = await fetch(origin, {
-    redirect: "error",
-    signal: AbortSignal.timeout(30000),
-  });
-  if (!response.ok) throw new Error("Staging root is unavailable");
-  for (const header of [
-    "content-security-policy",
-    "strict-transport-security",
-    "x-content-type-options",
-  ])
-    if (!response.headers.has(header))
-      throw new Error(`Staging omitted ${header}`);
+  await verifyStagingRoot(origin);
 }
 if (process.env.GITHUB_STEP_SUMMARY)
   appendFileSync(

@@ -6,7 +6,10 @@ import {
   type QualityEvent,
 } from "../src/lib/contribution-quality";
 import { assertFundingPreparation } from "../src/lib/funding-review-data";
-import { assertLeaderboardSnapshot } from "../src/lib/leaderboard";
+import {
+  assertLeaderboardSnapshot,
+  paymentReviewSnapshot,
+} from "../src/lib/leaderboard";
 import { findProject } from "../src/lib/projects.mjs";
 
 const [preparationPath, snapshotPath, closedPath, basesPath, outputPath] =
@@ -92,7 +95,14 @@ if (
 )
   throw new Error("Closure outside cycle");
 const byId = new Map(nodes.map((row) => [row.id, row]));
-const ledger = snapshot.ledger.filter(
+// Monthly-pool preparations from 2026-10 count and hash the payment review
+// ledger (prepare-funding-review.ts, prepare-monthly-funding.ts), so the
+// evidence must list the events of that same ledger.
+const prepared =
+  preparation.cycleId >= "2026-10" && project.reward.kind === "monthly-pool"
+    ? paymentReviewSnapshot(snapshot).ledger
+    : snapshot.ledger;
+const ledger = prepared.filter(
   (event) =>
     repos.has(event.repository) &&
     Date.parse(event.occurredAt) >= Date.parse(from) &&

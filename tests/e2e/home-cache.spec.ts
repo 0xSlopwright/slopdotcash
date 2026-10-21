@@ -1,4 +1,7 @@
-/** First-visit discovery must not wait for any API or public data response. */
+/**
+ * First-visit discovery waits only for the project registry, which the site
+ * reads from D1 at runtime; no other API or public data response may block it.
+ */
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { homeProjects } from "../../src/lib/home-projects";
@@ -20,18 +23,23 @@ test("renders bundled projects with data stalled and GitHub blocked", async ({
     release = resolve;
   });
   await page.route(/\/(?:data|api)\//, async (route) => {
-    await held;
+    const path = new URL(route.request().url()).pathname;
+    if (
+      path !== "/api/v1/projects" &&
+      path !== "/data/fixture-project-registry.json"
+    )
+      await held;
     await route.fallback();
   });
   await page.route(/https:\/\/[^/]*github[^/]*\//, (route) => route.abort());
   try {
     await page.goto("/", { waitUntil: "domcontentloaded" });
-    const expected = homeProjects();
+    const expected = homeProjects().filter(
+      (project) => project.listingTier === "featured",
+    );
     expect(expected.length).toBeGreaterThan(0);
     await expect(page.locator(".project-card")).toHaveCount(expected.length);
-    for (const project of expected.filter(
-      (project) => project.listingTier === "featured",
-    )) {
+    for (const project of expected) {
       await expect(
         page.getByRole("heading", { name: project.name, exact: true }),
       ).toBeVisible();

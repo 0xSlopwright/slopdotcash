@@ -17,6 +17,8 @@ import {
 } from "@solana/web3.js";
 
 const { Program, BN } = anchor;
+/** A project account created before the identity authority rotation fields existed. */
+const LEGACY_PROJECT_SIZE = 265;
 const hash = (value) => {
   if (typeof value !== "string" || !/^(?:0x)?[a-fA-F0-9]{64}$/.test(value))
     throw new Error("Expected 32-byte digest");
@@ -50,34 +52,12 @@ export function awardIdFor(project, source) {
       .digest(),
   ];
 }
-export async function ownerPlan(input, runtime) {
-  const d = input.deployment,
-    connection = new Connection(runtime.rpcUrl, "finalized");
-  if (
-    typeof runtime.expectedGenesis !== "string" ||
-    (await connection.getGenesisHash()) !== runtime.expectedGenesis
-  )
-    throw new Error("Wrong cluster genesis");
-  const idl = JSON.parse(
-    readFileSync(
-      fileURLToPath(new URL("../idl/slop_escrow.json", import.meta.url)),
-    ),
-  );
-  if (idl.address !== d.programId)
-    throw new Error("IDL program identity mismatch");
-  const program = new Program(idl, { connection }),
-    owner = new PublicKey(d.owner),
-    project = new PublicKey(d.projectPda),
-    mint = new PublicKey(d.asset),
-    vault = new PublicKey(d.vault);
-  const pda = (...seeds) =>
-    PublicKey.findProgramAddressSync(seeds, program.programId)[0];
-  if (!pda(Buffer.from("vault"), project.toBuffer()).equals(vault))
-    throw new Error("Wrong vault PDA");
-  const deployed = await connection.getAccountInfo(
-    program.programId,
-    "finalized",
-  );
+/**
+ * Checks the finalized program against the reviewed loader, upgrade authority
+ * (`null` for an immutable program) and code digest.
+ */
+export async function verifyProgram(connection, programId, d) {
+  const deployed = await connection.getAccountInfo(programId, "finalized");
   if (!deployed?.executable) throw new Error("Program is not executable");
   let executable = deployed.data;
   if (
@@ -112,8 +92,51 @@ export async function ownerPlan(input, runtime) {
     throw new Error("Unsupported loader");
   if (createHash("sha256").update(executable).digest("hex") !== d.codeSha256)
     throw new Error("Reviewed program digest mismatch");
+}
+export async function ownerPlan(input, runtime) {
+  const d = input.deployment,
+    connection = new Connection(runtime.rpcUrl, "finalized");
+  if (
+    typeof runtime.expectedGenesis !== "string" ||
+    (await connection.getGenesisHash()) !== runtime.expectedGenesis
+  )
+    throw new Error("Wrong cluster genesis");
+  const idl = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../idl/slop_escrow.json", import.meta.url)),
+    ),
+  );
+  if (idl.address !== d.programId)
+    throw new Error("IDL program identity mismatch");
+  const program = new Program(idl, { connection }),
+    owner = new PublicKey(d.owner),
+    project = new PublicKey(d.projectPda),
+    mint = new PublicKey(d.asset),
+    vault = new PublicKey(d.vault);
+  const pda = (...seeds) =>
+    PublicKey.findProgramAddressSync(seeds, program.programId)[0];
+  if (!pda(Buffer.from("vault"), project.toBuffer()).equals(vault))
+    throw new Error("Wrong vault PDA");
+  await verifyProgram(connection, program.programId, d);
   const instructions = [];
+  // The transaction fee payer and only signer: the owner, or the depositor of a deposit.
+  let signer = owner;
   if (input.operation === "initialize") {
+    // L-3: the program accepts only the identity authority and fee recipient pinned in
+    // its Config; refuse early, before the owner signs.
+    const configAddress = pda(Buffer.from("config"));
+    const config = await program.account.config.fetchNullable(
+      configAddress,
+      "finalized",
+    );
+    if (!config) throw new Error("Escrow Config missing");
+    if (
+      !config.identityAuthority.equals(new PublicKey(d.identityAuthority)) ||
+      !config.feeRecipient.equals(new PublicKey(d.feeRecipient))
+    )
+      throw new Error(
+        "Reviewed authorities differ from the pinned escrow Config",
+      );
     if (
       !pda(
         Buffer.from("project"),
@@ -130,6 +153,7 @@ export async function ownerPlan(input, runtime) {
           new PublicKey(d.identityAuthority),
           new PublicKey(d.feeRecipient),
           delay(d.bindingDelaySeconds),
+          delay(d.rotationDelaySeconds),
         )
         .accountsStrict({
           owner,
@@ -138,35 +162,84 @@ export async function ownerPlan(input, runtime) {
           vault,
           tokenProgram: TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
+          config: configAddress,
+        })
+        .instruction(),
+    );
+  } else if (input.operation === "migrate") {
+    // Grows a project created before the rotation fields existed. The account
+    // must be this program's 265-byte project for the reviewed owner, mint
+    // and network; the reviewed rotation delay becomes its rotation delay.
+    const legacy = await connection.getAccountInfo(project, "finalized");
+    if (
+      !legacy?.owner.equals(program.programId) ||
+      legacy.data.length !== LEGACY_PROJECT_SIZE ||
+      !legacy.data
+        .subarray(0, 8)
+        .equals(Buffer.from("cda8bdcab5f78e13", "hex")) ||
+      !new PublicKey(legacy.data.subarray(8, 40)).equals(owner) ||
+      !Buffer.from(legacy.data.subarray(72, 104)).equals(
+        Buffer.from(hash(d.networkDomain)),
+      ) ||
+      !new PublicKey(legacy.data.subarray(168, 200)).equals(mint)
+    )
+      throw new Error("Not a legacy project for this reviewed deployment");
+    instructions.push(
+      await program.methods
+        .migrateProject(delay(d.rotationDelaySeconds))
+        .accountsStrict({
+          owner,
+          project,
+          systemProgram: SystemProgram.programId,
         })
         .instruction(),
     );
   } else {
     const state = await program.account.project.fetch(project, "finalized");
+    // The identity authority is not compared: after activation it changes
+    // only through the timelocked rotation that the program enforces.
     if (
       !state.owner.equals(owner) ||
       !state.mint.equals(mint) ||
-      !state.identityAuthority.equals(new PublicKey(d.identityAuthority)) ||
       !state.feeRecipient.equals(new PublicKey(d.feeRecipient)) ||
       !state.bindingDelay.eq(delay(d.bindingDelaySeconds)) ||
+      !state.rotationDelay.eq(delay(d.rotationDelaySeconds)) ||
       !Buffer.from(state.network).equals(Buffer.from(hash(d.networkDomain)))
     )
       throw new Error("Reviewed project configuration mismatch");
-    if (input.operation === "deposit")
+    if (input.operation === "propose-rotation")
+      instructions.push(
+        await program.methods
+          .proposeAuthorityRotation(new PublicKey(input.nextIdentityAuthority))
+          .accountsStrict({ owner, project })
+          .instruction(),
+      );
+    else if (input.operation === "cancel-rotation")
+      instructions.push(
+        await program.methods
+          .cancelAuthorityRotation()
+          .accountsStrict({ owner, project })
+          .instruction(),
+      );
+    else if (input.operation === "deposit") {
+      // Deposits are permissionless: any depositor funds the project from its own
+      // associated token account. Only the owner can later commit or withdraw them.
+      signer =
+        input.depositor === undefined ? owner : new PublicKey(input.depositor);
       instructions.push(
         await program.methods
           .deposit(amount(input.grossMicro))
           .accountsStrict({
-            owner,
+            depositor: signer,
             project,
             mint,
             vault,
-            source: getAssociatedTokenAddressSync(mint, owner),
+            source: getAssociatedTokenAddressSync(mint, signer, true),
             tokenProgram: TOKEN_PROGRAM_ID,
           })
           .instruction(),
       );
-    else if (input.operation === "withdraw") {
+    } else if (input.operation === "withdraw") {
       // The fee recipient's account may not exist yet; creating it is idempotent.
       const feeRecipient = new PublicKey(d.feeRecipient);
       instructions.push(
@@ -200,7 +273,8 @@ export async function ownerPlan(input, runtime) {
           .instruction(),
       );
     } else if (input.operation === "veto") {
-      // Stops a pending wallet binding for this project before it can pay.
+      // Stops the latest wallet binding for this project before it pays. An optional
+      // `obligationId` names an unpaid award whose commit delay extends the window.
       const actor = amount(input.githubUserId),
         version = amount(input.bindingVersion);
       instructions.push(
@@ -211,8 +285,7 @@ export async function ownerPlan(input, runtime) {
             project,
             binding: pda(
               Buffer.from("wallet"),
-              state.identityAuthority.toBuffer(),
-              Buffer.from(state.network),
+              project.toBuffer(),
               actor.toArrayLike(Buffer, "le", 8),
             ),
             veto: pda(
@@ -221,6 +294,14 @@ export async function ownerPlan(input, runtime) {
               actor.toArrayLike(Buffer, "le", 8),
               version.toArrayLike(Buffer, "le", 8),
             ),
+            obligation:
+              input.obligationId === undefined
+                ? null
+                : pda(
+                    Buffer.from("award"),
+                    project.toBuffer(),
+                    Buffer.from(hash(input.obligationId)),
+                  ),
             systemProgram: SystemProgram.programId,
           })
           .instruction(),
@@ -270,7 +351,7 @@ export async function ownerPlan(input, runtime) {
   }
   const blockhash = new PublicKey(runtime.recentBlockhash).toBase58();
   const transaction = new Transaction({
-    feePayer: owner,
+    feePayer: signer,
     recentBlockhash: blockhash,
   }).add(...instructions);
   const serialized = transaction.serialize({
@@ -284,7 +365,7 @@ export async function ownerPlan(input, runtime) {
     programId: d.programId,
     projectPda: d.projectPda,
     operation: input.operation,
-    requiredSigner: owner.toBase58(),
+    requiredSigner: signer.toBase58(),
     recentBlockhash: blockhash,
     transactionBase64: serialized.toString("base64"),
   };

@@ -9,10 +9,19 @@ if (!project || !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(cycleId ?? "") || !output)
   throw new Error(
     "Usage: collect-quality-census.ts PROJECT YYYY-MM OUTPUT_PREFIX",
   );
-const start = new Date(`${cycleId}-01T00:00:00Z`);
+const monthStart = new Date(`${cycleId}-01T00:00:00Z`);
 const end = new Date(
-  Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1),
+  Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1),
 );
+// The preparation period opens at the later of the month start and the
+// project's reward start (assertFundingPreparation). A closure before it is
+// outside the cycle: prepare-contribution-quality refuses it, and its merge
+// would inflate the census against the frozen preparation's merged count.
+const start = new Date(
+  Math.max(monthStart.getTime(), Date.parse(project.reward.rewardStartAt)),
+);
+if (!(start.getTime() < end.getTime()))
+  throw new Error("Project reward period does not cover this cycle");
 if (end.getTime() > Date.now()) throw new Error("Cycle is not complete");
 // Creation order and an unfiltered state connection avoid index omissions and
 // pagination shifts caused by ordering on mutable updated/closed timestamps.

@@ -106,4 +106,3 @@ Its extra distance observation is not an implemented improvement. The #219
 [integration build](https://github.com/SlopDotCash/proximityprize/actions/runs/37830112334)
 passed. These are calibration candidates, not final published awards. Full-project
 comparison and the separate integration/review allocation remain incomplete.
-

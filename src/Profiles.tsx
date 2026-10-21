@@ -1,43 +1,34 @@
 import { type ReactNode, useState } from "react";
-import { browserDeployment } from "./lib/browser-deployment";
 import { fetchWithDeadline, readBoundedJson } from "./lib/browser-json";
 import type { CycleIndex } from "./lib/cycle-index";
+import { githubUserIdFromNodeId } from "./lib/github-actor";
 import type { ScoreEvent } from "./lib/leaderboard";
+import { transactionUrl } from "./lib/payments/contracts";
 import { type PointRevision, type PointsMember, pointKey } from "./lib/points";
+import { dailySlopScore } from "./lib/profile-activity";
 import {
   assertProfiles,
   type ProfileIndex,
   profileCounts,
   profileIssueOutcomes,
 } from "./lib/profiles";
-import { findProject, findProjectByRepositoryId } from "./lib/projects.mjs";
+import {
+  findIngestedProjectByRepositoryId,
+  findProject,
+} from "./lib/projects.mjs";
 import { TARGET_REPOSITORIES } from "./lib/repositories.mjs";
-import { SOURCE_REPOSITORY } from "./lib/source-repository";
+import { useDirectTransfers } from "./lib/use-direct-transfers";
 import { usePublicResource } from "./lib/use-public-resource";
 import {
   ContributorIdentity,
   ExternalLinkAnchor,
   formatCycleMonth,
   formatDate,
+  formatDateTime,
+  formatMicroUsdc,
   formatScore,
 } from "./Presentation";
 
-const disclosures = import.meta.glob("../disclosures/*.json", {
-  eager: true,
-  import: "default",
-}) as Record<
-  string,
-  {
-    projectId: string;
-    contributionMonth: string;
-    observedAt: string;
-    rows: {
-      actorId: string;
-      state: string;
-      observed: null | { amountMinor: string; signature: string };
-    }[];
-  }
->;
 async function loadProfiles(signal: AbortSignal) {
   const response = await fetchWithDeadline("/data/profiles.json", {
     signal,
@@ -52,9 +43,12 @@ type State =
   | { status: "loading" }
   | { status: "error" }
   | { status: "ready"; index: ProfileIndex };
-export function useProfiles(): { state: State; retry: () => void } {
+export function useProfiles(enabled = true): {
+  state: State;
+  retry: () => void;
+} {
   const [state, retry] = usePublicResource(
-    true,
+    enabled,
     loadProfiles,
     "Profiles unavailable",
     15_000,
@@ -62,7 +56,7 @@ export function useProfiles(): { state: State; retry: () => void } {
   return { state, retry };
 }
 function dollars(n: bigint) {
-  return `$${(n / 1000000n).toLocaleString("en-US")}.${(n % 1000000n).toString().padStart(6, "0").replace(/0+$/, "").padEnd(2, "0")}`;
+  return formatMicroUsdc(n.toString());
 }
 export function ProfileActivity({
   work,
@@ -72,9 +66,10 @@ export function ProfileActivity({
   actorId,
   showIdentity = false,
   cycles,
-  recordsLoading = false,
   census,
   summary,
+  badges,
+  children,
 }: {
   login: string;
   work?: readonly ScoreEvent[];
@@ -83,10 +78,11 @@ export function ProfileActivity({
   actorId?: string;
   showIdentity?: boolean;
   cycles?: CycleIndex;
-  /** The cycle records are still loading; their absence is not a failure. */
-  recordsLoading?: boolean;
   census: ReturnType<typeof useProfiles>;
   summary?: ReactNode;
+  badges?: ReactNode;
+  /** Sections shown between the record and the activity timeline. */
+  children?: ReactNode;
 }) {
   const { state, retry } = census;
   const matches =
@@ -120,34 +116,25 @@ export function ProfileActivity({
             })),
         )
       : null;
-  const seen = new Set<string>();
-  const direct = id
-    ? Object.values(disclosures).flatMap((d) =>
-        d.rows
-          .filter(
-            (r) => r.actorId === id && r.state === "paid-direct" && r.observed,
-          )
-          .flatMap((r) => {
-            const o = r.observed;
-            if (
-              !o ||
-              !/^\d+$/.test(o.amountMinor) ||
-              !/^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(o.signature) ||
-              seen.has(o.signature)
-            )
-              return [];
-            seen.add(o.signature);
-            return [
-              {
-                date: d.observedAt,
-                amount: BigInt(o.amountMinor),
-                href: `https://solscan.io/tx/${o.signature}`,
-                name: `${findProject(d.projectId)?.name ?? d.projectId} · ${formatCycleMonth(d.contributionMonth)}`,
-              },
-            ];
-          }),
-      )
-    : [];
+  const githubUserId = id
+    ? /^[1-9]\d*$/u.test(id)
+      ? id
+      : githubUserIdFromNodeId(id)
+    : null;
+  const [directState] = useDirectTransfers(
+    githubUserId ? { githubUserId } : null,
+  );
+  const direct =
+    directState.status === "ready"
+      ? directState.transfers.map((t) => ({
+          date: t.blockTime,
+          amount: BigInt(t.amountMicro),
+          href:
+            transactionUrl(t.network, t.transactionId) ??
+            `/projects/${encodeURIComponent(t.projectId)}/funding`,
+          name: `${findProject(t.projectId)?.name ?? t.projectId} · ${formatCycleMonth(t.contributionMonth)}`,
+        }))
+      : [];
   return (
     <section className="profile-activity" aria-label="Contributor profile">
       {showIdentity ? (
@@ -159,49 +146,22 @@ export function ProfileActivity({
           }}
         />
       ) : null}
-      <h2>Contribution record</h2>
+      {badges}
       <div className="profile-totals">
         {summary}
-        {state.status === "ready" ? (
-          <>
-            {(
-              [
-                ["Merged", "merged"],
-                ["Open", "open"],
-                ["Closed without merging", "closed"],
-              ] as const
-            ).map(([label, key]) => (
-              <div key={key}>
-                <strong>
-                  {counts ? counts[key].toLocaleString() : "Unknown"}
-                </strong>
-                <span>PRs {label.toLowerCase()}</span>
-              </div>
-            ))}
-          </>
-        ) : null}
         <div>
           <strong>
             {payments
-              ? dollars(payments.reduce((n, r) => n + r.amount, 0n))
-              : recordsLoading || (!id && state.status === "loading")
+              ? dollars(
+                  [...payments, ...direct].reduce((n, r) => n + r.amount, 0n),
+                )
+              : !id && state.status === "loading"
                 ? "Loading…"
                 : "Unavailable"}
           </strong>
-          <span>verified payments received · USDC</span>
-        </div>
-        <div>
-          <strong>
-            {id
-              ? dollars(direct.reduce((n, r) => n + r.amount, 0n))
-              : state.status === "loading"
-                ? "Loading…"
-                : "Unavailable"}
-          </strong>
-          <span>direct payments reported · USDC</span>
+          <span>paid · USDC</span>
         </div>
       </div>
-
       {state.status === "error" ? (
         <p role="status">
           PR counts are unavailable.{" "}
@@ -211,68 +171,150 @@ export function ProfileActivity({
         </p>
       ) : state.status === "loading" ? (
         <p role="status">Loading PR history…</p>
-      ) : (
-        <>
-          <p className="points-meta">
-            Slop repository history · updated{" "}
-            {new Date(state.index.generatedAt).toLocaleString()}
-            {Date.now() - Date.parse(state.index.generatedAt) > 8 * 3600000
-              ? " · Stale: refresh pending"
-              : ""}
-          </p>
-          {id ? (
-            <IssueOutcomes key={id} index={state.index} actorId={id} />
-          ) : null}
-          {p ? (
-            <details>
-              <summary>PR counts by repository</summary>
-              <p className="points-meta">
-                Statuses observed between{" "}
-                {new Date(state.index.startedAt).toLocaleString()} and{" "}
-                {new Date(state.index.generatedAt).toLocaleString()}.
-              </p>
-              <ul>
-                {p.repositories.map((r) => (
-                  <li key={r.repository}>
-                    <a
-                      href={`https://github.com/${r.repository}/pulls?q=${encodeURIComponent(`is:pr author:${p.login}`)}`}
-                    >
-                      {r.repository}
-                    </a>{" "}
-                    · {r.merged} merged · {r.open} open · {r.closed} closed
-                    without merging
-                  </li>
-                ))}
-              </ul>
-            </details>
-          ) : null}
-        </>
-      )}
-      <details>
-        <summary>Penalty history</summary>
-        <p>
-          No penalty policy version is approved or active. No penalties are
-          recorded.
-        </p>
-        <p className="points-meta">
-          <a
-            href={`${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/docs/slop-product-requirements.md#closure-penalties-and-outcome-ratios`}
-          >
-            Penalty policy
-          </a>
-        </p>
-      </details>
-      <p className="points-meta">
-        Direct payments come from published disclosures outside Slop’s verified
-        settlement process.
-      </p>
+      ) : counts ? (
+        <PullRequestBar counts={counts} login={p?.login ?? login} />
+      ) : null}
       {revisions ? <PointsRevisionHistory revisions={revisions} /> : null}
-      <ProfileTimeline
-        work={work}
-        awards={awards}
-        payments={payments ?? []}
-        direct={direct}
-      />
+      {children}
+      <PayoutList payments={payments ?? []} direct={direct} />
+      <ProfileTimeline work={work} awards={awards} />
+      {state.status === "ready" && id ? (
+        <IssueOutcomes key={id} index={state.index} actorId={id} />
+      ) : null}
+    </section>
+  );
+}
+
+const PR_SEGMENTS = [
+  ["merged", "Merged", "is:merged"],
+  ["open", "Open", "is:open"],
+  ["closed", "Closed without merging", "is:closed is:unmerged"],
+] as const;
+
+function PullRequestBar({
+  counts,
+  login,
+}: {
+  counts: { merged: number; open: number; closed: number };
+  login: string;
+}) {
+  const total = counts.merged + counts.open + counts.closed;
+  const decided = counts.merged + counts.closed;
+  return (
+    <section className="profile-card" aria-label="Pull requests">
+      <div className="profile-card-heading">
+        <h2>Pull requests</h2>
+        <span>
+          {total.toLocaleString()} total
+          {decided > 0
+            ? ` · ${Math.round((counts.merged * 100) / decided)}% merged`
+            : ""}
+        </span>
+      </div>
+      {total > 0 ? (
+        <div className="pr-bar" aria-hidden="true">
+          {PR_SEGMENTS.map(([key]) =>
+            counts[key] > 0 ? (
+              <span
+                className={`pr-bar-${key}`}
+                key={key}
+                style={{ flexGrow: counts[key] }}
+              />
+            ) : null,
+          )}
+        </div>
+      ) : null}
+      <ul className="pr-legend">
+        {PR_SEGMENTS.map(([key, label, query]) => (
+          <li key={key}>
+            <span className={`pr-dot pr-bar-${key}`} aria-hidden="true" />
+            <a
+              href={`https://github.com/pulls?q=${encodeURIComponent(`is:pr author:${login} ${query}`)}`}
+            >
+              <strong>{counts[key].toLocaleString()}</strong> PRs{" "}
+              {label.toLowerCase()}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+const ACTIVITY_DAYS = 35;
+
+/** Daily Slop Score across the rolling window, so the rhythm reads at a glance. */
+function ActivityChart({ work }: { work: readonly ScoreEvent[] }) {
+  const days = dailySlopScore(work, new Date(), ACTIVITY_DAYS);
+  const max = Math.max(...days.map((entry) => entry.score));
+  if (max <= 0) return null;
+  const total = days.reduce((sum, entry) => sum + entry.score, 0);
+  return (
+    <figure className="activity-chart">
+      <figcaption>
+        {formatScore(total)} Slop Score in the last {ACTIVITY_DAYS} days
+      </figcaption>
+      <div className="activity-bars" aria-hidden="true">
+        {days.map((entry) => (
+          <span
+            key={entry.day}
+            style={{ height: `${Math.max(4, (entry.score / max) * 100)}%` }}
+            className={entry.score > 0 ? "" : "activity-bar-empty"}
+            title={`${formatDate(entry.day)} · ${formatScore(entry.score)}`}
+          />
+        ))}
+      </div>
+    </figure>
+  );
+}
+
+type Payout = {
+  date: string | null;
+  amount: bigint;
+  href: string;
+  name: string;
+};
+
+function PayoutList({
+  payments,
+  direct,
+}: {
+  payments: Payout[];
+  direct: Payout[];
+}) {
+  const rows = [
+    ...payments.map((payment) => ({ ...payment, kind: "Verified settlement" })),
+    ...direct.map((payment) => ({ ...payment, kind: "Direct transfer" })),
+  ].sort(
+    (a, b) =>
+      (b.date ?? "").localeCompare(a.date ?? "") ||
+      a.href.localeCompare(b.href),
+  );
+  if (rows.length === 0) return null;
+  return (
+    <section className="profile-card" aria-label="Payouts">
+      <div className="profile-card-heading">
+        <h2>Payouts</h2>
+        <span>
+          {dollars(rows.reduce((total, row) => total + row.amount, 0n))} USDC
+        </span>
+      </div>
+      <ul className="payout-list">
+        {rows.map((row) => (
+          <li key={`${row.kind}:${row.href}`}>
+            <ExternalLinkAnchor href={row.href}>
+              <span>
+                <strong>{row.name}</strong>
+                <small>
+                  {row.date ? formatDate(row.date) : "Date unavailable"} ·{" "}
+                  {row.kind}
+                </small>
+              </span>
+              <strong className="payout-amount">{dollars(row.amount)}</strong>
+            </ExternalLinkAnchor>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
@@ -383,24 +425,15 @@ function PointsRevisionHistory({
 function ProfileTimeline({
   work = [],
   awards = [],
-  payments,
-  direct,
 }: {
   work?: readonly ScoreEvent[];
   awards?: PointsMember["awards"];
-  payments: Array<{
-    date: string | null;
-    amount: bigint;
-    href: string;
-    name: string;
-  }>;
-  direct: Array<{ date: string; amount: bigint; href: string; name: string }>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const unmatchedAwards = new Map(awards.map((award) => [award.key, award]));
   const records = [
     ...work.map((event) => {
-      const project = findProjectByRepositoryId(event.repository);
+      const project = findIngestedProjectByRepositoryId(event.repository);
       if (!project)
         throw new TypeError(
           `Score event ${event.id} has no registered project`,
@@ -436,22 +469,6 @@ function ProfileTimeline({
       detail: `${findProject(award.projectId)?.name ?? award.projectId}${award.provisional ? " · Provisional tier" : ""}`,
       amount: `+${award.amount.toLocaleString()} Points`,
     })),
-    ...payments.map((payment) => ({
-      key: `paid:${payment.href}`,
-      date: payment.date,
-      href: payment.href,
-      title: payment.name,
-      detail: "Verified settlement",
-      amount: `${dollars(payment.amount)} USDC paid`,
-    })),
-    ...direct.map((payment) => ({
-      key: `reported:${payment.href}`,
-      date: payment.date,
-      href: payment.href,
-      title: payment.name,
-      detail: "Reported outside Slop settlement · grouped by disclosure date",
-      amount: `${dollars(payment.amount)} USDC reported`,
-    })),
   ].sort(
     (a, b) =>
       (b.date ?? "").localeCompare(a.date ?? "") || a.key.localeCompare(b.key),
@@ -467,6 +484,7 @@ function ProfileTimeline({
   return (
     <section className="profile-timeline" aria-label="Contribution activity">
       <h2>Activity</h2>
+      <ActivityChart work={work} />
       {records.length > 10 ? (
         <button
           type="button"
@@ -686,10 +704,7 @@ function IssueOutcomes({
                     return (
                       <li key={record.id}>
                         <time dateTime={record.date}>
-                          {new Date(record.date).toLocaleString(undefined, {
-                            timeZone: "UTC",
-                          })}{" "}
-                          UTC
+                          {formatDateTime(record.date)}
                         </time>
                         {" · "}
                         <a
@@ -714,8 +729,8 @@ function IssueOutcomes({
             <p className="points-meta">
               Coverage: accessible issues in the tracked repositories, plus
               retained records first captured from{" "}
-              {new Date(index.issues.firstObservedAt).toLocaleDateString()}.
-              Records deleted before capture may be absent.
+              {formatDate(index.issues.firstObservedAt)}. Records deleted before
+              capture may be absent.
             </p>
           </>
         ) : (

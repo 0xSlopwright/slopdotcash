@@ -1,5 +1,6 @@
 import type { WalletChain } from "../../src/lib/wallets";
 import { sha256Hex } from "../../workers/identity/crypto";
+import { notifyWalletChanged } from "../notifications/events";
 import type { D1Database } from "../trace/cloudflare-persistence";
 /** Canonical registry bytes preserve the original Solana layout and Base chain field. */
 export async function registerPaymentWallet(
@@ -60,6 +61,7 @@ export async function registerPaymentWallet(
           now,
           JSON.stringify({ recordDigest, supersedesClaimId: predecessor }),
         ),
+      notifyWalletChanged(db, id, now),
     ]);
     if (results.some((r) => !r.success || r.meta?.changes !== 1))
       throw new Error("Atomic wallet registration failed");

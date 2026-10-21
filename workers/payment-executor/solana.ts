@@ -7,6 +7,8 @@ import type {
 import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import {
   BINDING_SIZE,
+  OBLIGATION_DISCRIMINATOR,
+  OBLIGATION_SIZE,
   PROJECT_SIZE,
   type SolanaEscrowConfig,
   solanaAccount,
@@ -17,13 +19,15 @@ import {
   solanaUint,
   verifySolanaDeployment,
 } from "../../contracts/solana/adapter";
-import { decodeBase58Bytes } from "../../src/lib/squads-funding";
+import { decodeBase58Bytes } from "../../src/lib/base58";
+import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
 import {
   authorizeRegistry,
   authorizeWalletRotation,
   holdSuccessorClaim,
   type JournalStore,
 } from "./core";
+import { mainnetExecutionEnabled } from "./mainnet-execution.mjs";
 
 export interface SolanaSigner {
   address: string;
@@ -35,7 +39,6 @@ export interface SolanaExecutorEnvironment {
   PAYMENT_RPC_URLS: string;
   SOLANA_SIGNER: SolanaSigner;
   JOURNAL: JournalStore;
-  ATTESTER?: PaymentExecutor;
   /** Local integration only; hosted wrapper never forwards these fields. */
   ALLOW_LOCAL_TEST_CHAIN?: boolean;
   LOCAL_SOLANA_GENESIS?: string;
@@ -118,24 +121,36 @@ function short(value: number) {
   } while (value);
   return Uint8Array.from(output);
 }
+/** Legacy message: the payer first, then read-only co-signers, then the other accounts. */
 function message(
   payer: string,
   blockhash: string,
   instructions: Instruction[],
+  cosigners: string[] = [],
 ): Uint8Array {
   const accounts = new Map<string, boolean>([[payer, true]]);
+  for (const c of cosigners) {
+    if (c === payer) throw new Error("Co-signer cannot be the payer");
+    accounts.set(c, false);
+  }
   for (const i of instructions) {
     for (const a of i.accounts)
       accounts.set(a.key, Boolean(accounts.get(a.key) || a.write));
     if (!accounts.has(i.program)) accounts.set(i.program, false);
   }
+  const signers = new Set([payer, ...cosigners]);
+  if (cosigners.some((c) => accounts.get(c)))
+    throw new Error("Co-signers are read-only");
   const keys = [
     payer,
-    ...[...accounts].filter(([k, w]) => k !== payer && w).map(([k]) => k),
-    ...[...accounts].filter(([k, w]) => k !== payer && !w).map(([k]) => k),
+    ...cosigners,
+    ...[...accounts].filter(([k, w]) => !signers.has(k) && w).map(([k]) => k),
+    ...[...accounts].filter(([k, w]) => !signers.has(k) && !w).map(([k]) => k),
   ];
   if (keys.length > 32) throw new Error("Executor account limit");
-  const readonly = keys.filter((k) => !accounts.get(k)).length;
+  const readonly = keys.filter(
+    (k) => !signers.has(k) && !accounts.get(k),
+  ).length;
   const compiled = instructions.map((i) =>
     concat(
       Uint8Array.of(keys.indexOf(i.program)),
@@ -146,7 +161,7 @@ function message(
     ),
   );
   return concat(
-    Uint8Array.of(1, 0, readonly),
+    Uint8Array.of(signers.size, cosigners.length, readonly),
     short(keys.length),
     ...keys.map(bytes),
     bytes(blockhash),
@@ -172,7 +187,7 @@ function createAta(payer: string, mint: string, owner: string): Instruction {
   };
 }
 
-/** Rejects mainnet and wrong RPC genesis before the hosted wrapper reads a signer seed. */
+/** Rejects mainnet unless reviewed, and a wrong RPC genesis, before the hosted wrapper reads a signer seed. */
 export async function preflightSolanaDeployment(
   env: Preflight,
   input: DispatchPayment,
@@ -188,14 +203,18 @@ export async function preflightSolanaDeployment(
       d.chain === "solana",
   );
   if (matches.length !== 1) throw new Error("Ambiguous Solana deployment");
+  // A registry test cluster, or the mainnet only when its reviewed
+  // MAINNET_EXECUTION value is on; the genesis hash comes from the registry.
+  const cluster = Object.hasOwn(ESCROW_NETWORKS, input.network)
+    ? ESCROW_NETWORKS[input.network as keyof typeof ESCROW_NETWORKS]
+    : undefined;
   const expected =
-    input.network === "solana-devnet"
-      ? "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
-      : input.network === "solana-testnet"
-        ? "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
-        : env.ALLOW_LOCAL_TEST_CHAIN && input.network === "solana-localnet"
-          ? env.LOCAL_SOLANA_GENESIS
-          : undefined;
+    cluster?.family === "solana" &&
+    (cluster.testnet || mainnetExecutionEnabled(input.network))
+      ? cluster.genesisHash
+      : env.ALLOW_LOCAL_TEST_CHAIN && input.network === "solana-localnet"
+        ? env.LOCAL_SOLANA_GENESIS
+        : undefined;
   if (!expected)
     throw new Error("Only approved Solana test clusters are supported");
   const rpcUrl = (JSON.parse(env.PAYMENT_RPC_URLS) as Record<string, string>)[
@@ -284,23 +303,29 @@ async function authorized(
     bytes(config.projectPda),
     solanaDigest(input.obligationId),
   ]);
-  const obligation = await read(config, awardAddress, 137, "a8ce8d6a584caca7");
+  const obligation = await read(
+    config,
+    awardAddress,
+    OBLIGATION_SIZE,
+    OBLIGATION_DISCRIMINATOR,
+  );
   if (
     !obligation ||
     solanaPubkey(obligation, 48) !== config.projectPda ||
     solanaUint(obligation, 112).toString() !== input.githubUserId ||
-    solanaUint(obligation, 8).toString() !== authorization.grossMicro ||
-    solanaUint(obligation, 128).toString() !== authorization.feeMicro ||
+    solanaUint(obligation, 8).toString() !== authorization.grossBase ||
+    solanaUint(obligation, 128).toString() !== authorization.feeBase ||
     hex(obligation.slice(16, 48)) !== authorization.sourceDigest ||
     solanaUint(obligation, 128) !== solanaUint(obligation, 8) / 50n ||
     solanaUint(obligation, 120) + solanaUint(obligation, 128) !==
       solanaUint(obligation, 8)
   )
     throw new Error("Finalized award mismatch");
+  // Bindings are per project: seeds are the project PDA and the actor. They do not
+  // reference the identity authority, so they survive an authority rotation.
   const bindingAddress = pda(config.programId, [
     encoder.encode("wallet"),
-    project.slice(104, 136),
-    project.slice(72, 104),
+    bytes(config.projectPda),
     le(BigInt(input.githubUserId)),
   ]);
   const binding = await read(
@@ -320,6 +345,13 @@ interface Attempt {
   transactionId: string;
   lastValidBlockHeight: number;
   generation: number;
+  /** Set while the destination wallet's signature is still missing from raw. */
+  cosigner?: string;
+}
+export interface PreparedBinding {
+  transactionId: string;
+  /** Base64 transaction carrying the identity signature and an empty slot for the destination wallet. */
+  transaction?: string;
 }
 async function send(
   env: SolanaExecutorEnvironment,
@@ -327,7 +359,8 @@ async function send(
   input: Input,
   role: string,
   instructions: Instruction[],
-): Promise<{ transactionId: string }> {
+  cosigner?: string,
+): Promise<PreparedBinding> {
   const key = `solana:${role}:${input.network}:${input.idempotencyKey}`,
     fingerprint = hex(
       sha256(
@@ -352,16 +385,8 @@ async function send(
   if (attempt && attempt.fingerprint !== fingerprint)
     throw new Error("Idempotency collision");
   if (attempt) {
-    const response = (await solanaRpc(ctx.config, "getSignatureStatuses", [
-      [attempt.transactionId],
-      { searchTransactionHistory: true },
-    ])) as { value: ({ err: unknown; confirmationStatus: string } | null)[] };
-    const status = response.value[0];
-    if (status) {
-      if (status.err)
-        throw new Error("Existing transaction failed; reconcile before retry");
+    if (await observedTransaction(ctx, attempt))
       return { transactionId: attempt.transactionId };
-    }
     const height = await solanaRpc(ctx.config, "getBlockHeight", [
       { commitment: "finalized" },
     ]);
@@ -399,6 +424,7 @@ async function send(
       env.SOLANA_SIGNER.address,
       latest.value.blockhash,
       instructions,
+      cosigner ? [cosigner] : [],
     );
     attempt = await env.JOURNAL.transaction(async (store) => {
       if (await store.get(`retired:${input.network}:${input.idempotencyKey}`))
@@ -425,7 +451,11 @@ async function send(
         })
       )
         throw new Error("Invalid signer response");
-      const raw = concat(Uint8Array.of(1), signature, msg);
+      // A co-signed binding leaves the second signature slot empty until the
+      // destination wallet signs the same bytes.
+      const raw = cosigner
+        ? concat(Uint8Array.of(2), signature, new Uint8Array(64), msg)
+        : concat(Uint8Array.of(1), signature, msg);
       if (raw.length > 1232) throw new Error("Transaction too large");
       const candidate: Attempt = {
         obligationId: input.obligationId,
@@ -436,32 +466,134 @@ async function send(
         transactionId: solanaBase58(signature),
         lastValidBlockHeight: latest.value.lastValidBlockHeight,
         generation: latest.value.lastValidBlockHeight,
+        ...(cosigner ? { cosigner } : {}),
       };
       await store.put(key, candidate);
       return candidate;
     });
   }
-  const result = await solanaRpc(ctx.config, "sendTransaction", [
-    attempt.raw,
-    {
-      encoding: "base64",
-      skipPreflight: false,
-      preflightCommitment: "confirmed",
-      maxRetries: 3,
-    },
-  ]);
+  if (attempt.cosigner)
+    return { transactionId: attempt.transactionId, transaction: attempt.raw };
+  return broadcast(ctx, attempt);
+}
+/** An observed signature is submission evidence, never proof of payment finality. */
+async function observedTransaction(
+  ctx: Context,
+  attempt: Attempt,
+): Promise<boolean> {
+  const response = (await solanaRpc(ctx.config, "getSignatureStatuses", [
+    [attempt.transactionId],
+    { searchTransactionHistory: true },
+  ])) as { value?: unknown };
+  if (
+    !response ||
+    !Array.isArray(response.value) ||
+    response.value.length !== 1
+  )
+    throw new Error("Invalid signature status response");
+  const status = response.value[0];
+  if (status === null) return false;
+  if (
+    typeof status !== "object" ||
+    Array.isArray(status) ||
+    !Object.hasOwn(status, "err") ||
+    !["processed", "confirmed", "finalized"].includes(status.confirmationStatus)
+  )
+    throw new Error("Invalid signature status response");
+  if (status.err !== null)
+    throw new Error("Existing transaction failed; reconcile before retry");
+  return true;
+}
+async function broadcast(
+  ctx: Context,
+  attempt: Attempt,
+): Promise<{ transactionId: string }> {
+  if (await observedTransaction(ctx, attempt))
+    return { transactionId: attempt.transactionId };
+  let result: unknown;
+  try {
+    result = await solanaRpc(ctx.config, "sendTransaction", [
+      attempt.raw,
+      {
+        encoding: "base64",
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
+        maxRetries: 3,
+      },
+    ]);
+  } catch (error) {
+    // The exact bytes may have landed between the status read and preflight,
+    // or the response may have been lost. Reconcile without signing or resending.
+    if (await observedTransaction(ctx, attempt))
+      return { transactionId: attempt.transactionId };
+    throw error;
+  }
   if (result !== attempt.transactionId)
     throw new Error("Broadcast signature mismatch");
   return { transactionId: attempt.transactionId };
 }
-export function createSolanaAttester(
+/** Verifies the authority and the destination signed the journaled binding bytes, then broadcasts. */
+export async function completeSolanaBinding(
   env: SolanaExecutorEnvironment,
-): PaymentExecutor {
+  input: Input,
+  transaction: string,
+): Promise<{ transactionId: string }> {
+  const ctx = await authorized(env, input);
+  const key = `solana:attester:${input.network}:${input.idempotencyKey}`;
+  const attempt = await env.JOURNAL.get<Attempt>(key);
+  if (!attempt || attempt.obligationId !== input.obligationId)
+    throw new Error("No prepared binding for this attempt");
+  if (!attempt.cosigner) return broadcast(ctx, attempt);
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(transaction))
+    throw new Error("Invalid signed transaction encoding");
+  const signed = Uint8Array.from(atob(transaction), (c) => c.charCodeAt(0));
+  const prepared = Uint8Array.from(atob(attempt.raw), (c) => c.charCodeAt(0));
+  const msg = prepared.slice(129);
+  if (
+    signed.length !== prepared.length ||
+    signed[0] !== 2 ||
+    hex(signed.slice(1, 65)) !== hex(prepared.slice(1, 65)) ||
+    hex(signed.slice(129)) !== hex(msg)
+  )
+    throw new Error("Signed transaction differs from the prepared binding");
+  const walletSignature = signed.slice(65, 129);
+  if (
+    attempt.cosigner !== input.destination ||
+    !ed25519.verify(walletSignature, msg, bytes(input.destination), {
+      zip215: false,
+    })
+  )
+    throw new Error("Destination wallet signature rejected");
+  const completed = await env.JOURNAL.transaction(async (store) => {
+    const current = await store.get<Attempt>(key);
+    if (
+      !current ||
+      current.transactionId !== attempt.transactionId ||
+      current.generation !== attempt.generation
+    )
+      throw new Error("Prepared binding changed; retry");
+    if (!current.cosigner) return current;
+    const next: Attempt = {
+      ...current,
+      raw: btoa(String.fromCharCode(...signed)),
+    };
+    delete next.cosigner;
+    await store.put(key, next);
+    return next;
+  });
+  return broadcast(ctx, completed);
+}
+/** Prepares and half-signs a binding; the destination wallet must co-sign the same bytes. */
+export function createSolanaAttester(env: SolanaExecutorEnvironment): {
+  submit(input: Input): Promise<PreparedBinding>;
+} {
   return {
     async submit(input) {
       const ctx = await authorized(env, input);
       if (solanaPubkey(ctx.project, 104) !== env.SOLANA_SIGNER.address)
         throw new Error("Signer is not identity authority");
+      if (input.destination === env.SOLANA_SIGNER.address)
+        throw new Error("Destination cannot be the identity authority");
       if (
         ctx.binding &&
         (solanaPubkey(ctx.binding, 112) !== input.destination ||
@@ -474,11 +606,14 @@ export function createSolanaAttester(
         );
       if (!ctx.binding) await holdSuccessorClaim(env, input);
       const version = ctx.binding ? solanaUint(ctx.binding, 144) : 0n;
+      // Submission expiry only; the binding itself has no expiry (see contracts/solana/README.md).
+      const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 3600);
       const ix: Instruction = {
         program: ctx.config.programId,
         accounts: [
           { key: env.SOLANA_SIGNER.address, write: true },
           { key: env.SOLANA_SIGNER.address, write: false },
+          { key: input.destination, write: false },
           { key: ctx.config.projectPda, write: false },
           { key: ctx.bindingAddress, write: true },
           { key: SYSTEM, write: false },
@@ -488,13 +623,28 @@ export function createSolanaAttester(
           le(BigInt(input.githubUserId)),
           solanaDigest(ctx.config.networkDomain),
           le(version),
-          bytes(input.destination),
           solanaDigest(input.claimDigest),
+          le(expiresAt),
         ),
       };
-      return send(env, ctx, input, "attester", [ix]);
+      return send(env, ctx, input, "attester", [ix], input.destination);
     },
   };
+}
+/**
+ * Unix time of the latest confirmed block. A payment executes in a later slot, whose
+ * clock is not earlier, so this never runs ahead of the program's clock.
+ */
+async function confirmedChainTime(config: SolanaEscrowConfig): Promise<bigint> {
+  const slot = await solanaRpc(config, "getSlot", [
+    { commitment: "confirmed" },
+  ]);
+  if (typeof slot !== "number" || !Number.isSafeInteger(slot))
+    throw new Error("Invalid confirmed slot");
+  const time = await solanaRpc(config, "getBlockTime", [slot]);
+  if (typeof time !== "number" || !Number.isSafeInteger(time))
+    throw new Error("Confirmed block time unavailable");
+  return BigInt(time);
 }
 export function createSolanaExecutor(
   env: SolanaExecutorEnvironment,
@@ -502,20 +652,31 @@ export function createSolanaExecutor(
   return {
     async submit(input) {
       const ctx = await authorized(env, input);
+      // A binding needs the destination wallet's own signature, so the relayer
+      // cannot request one; the contributor completes it through the attester.
       if (
         !ctx.binding ||
         solanaPubkey(ctx.binding, 112) !== input.destination ||
         hex(ctx.binding.slice(8, 40)) !== input.claimDigest
-      ) {
-        if (!env.ATTESTER) throw new Error("Identity attester unavailable");
-        await env.ATTESTER.submit(input);
-        throw new Error("Destination binding awaiting finality");
-      }
+      )
+        throw new Error(
+          "Destination binding awaits the contributor's co-signature; retry after it is finalized",
+        );
+      // The program pays only the latest binding, which is the claimed destination.
+      // Delays are compared with the chain clock, not the host clock: the program uses
+      // the chain clock, and an early transaction would fail and block retries.
       const version = solanaUint(ctx.binding, 144);
-      const activatesAt = int64(ctx.binding, 152) + int64(ctx.project, 249);
-      if (BigInt(Math.floor(Date.now() / 1000)) < activatesAt)
+      const delay = int64(ctx.project, 249);
+      const now = await confirmedChainTime(ctx.config);
+      const activatesAt = int64(ctx.binding, 152) + delay;
+      if (now < activatesAt)
         throw new Error(
           `Destination binding activates at ${new Date(Number(activatesAt) * 1000).toISOString()}; retry after activation`,
+        );
+      const payableAt = int64(ctx.obligation, 137) + delay;
+      if (now < payableAt)
+        throw new Error(
+          `Award is inside its commit delay until ${new Date(Number(payableAt) * 1000).toISOString()}; retry after it ends`,
         );
       const veto = pda(ctx.config.programId, [
         encoder.encode("veto"),
@@ -541,7 +702,7 @@ export function createSolanaExecutor(
         accounts: [
           { key: ctx.config.projectPda, write: true },
           { key: ctx.awardAddress, write: true },
-          { key: ctx.bindingAddress, write: false },
+          { key: ctx.bindingAddress, write: true },
           { key: ctx.config.mint, write: false },
           { key: ctx.config.vault, write: true },
           { key: ata(ctx.config.mint, input.destination), write: true },

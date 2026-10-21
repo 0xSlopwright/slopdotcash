@@ -52,12 +52,17 @@ export function CyclePage({
   let view: ProjectView | null = null;
   try {
     view = createProjectView(state.snapshot, project.id, cycleId);
-  } catch (error: unknown) {
+  } catch {
     if (!record) {
       return (
-        <NotFound
-          title={error instanceof Error ? error.message : "Cycle unavailable"}
-        />
+        <NotFound title={`No ${formatCycleMonth(cycleId)} cycle record`}>
+          <p>
+            {project.name} has no frozen cycle record for this month, and the
+            live leaderboard does not cover it. Any payment sent outside the
+            cycle flow is listed on the{" "}
+            <Link href={`/projects/${project.slug}`}>project page</Link>.
+          </p>
+        </NotFound>
       );
     }
   }
@@ -68,17 +73,12 @@ export function CyclePage({
     record?.state ?? (view?.cycle.status === "live" ? "live" : "closed");
   const reminder = cycleSettlementReminder({
     closesAt: to,
-    fundingState:
-      project.reward.reviewBudget?.fundingState === "committed"
-        ? "committed"
-        : project.reward.fundingState,
     kind:
       record?.kind ??
       (view?.reward.kind === "external-prize-share"
         ? "external-prize-share"
         : "monthly-pool"),
     now: new Date().toISOString(),
-    paymentMode: project.reward.paymentMode,
     settledAt: record?.settledAt ?? null,
     state: record?.state ?? (view?.cycle.status === "live" ? "live" : "review"),
   });
@@ -212,10 +212,12 @@ export function CyclePage({
           ))}
         </ol>
       )}
-      {view ? (
-        <CycleAllocation updatedAt={state.snapshot.generatedAt} view={view} />
-      ) : record ? (
+      {record ? (
+        // A frozen record is what is under review; never replace it with a
+        // live recompute, even while the rolling window still covers the month.
         <ArchivedCycleLeaderboard cycle={record} />
+      ) : view ? (
+        <CycleAllocation updatedAt={state.snapshot.generatedAt} view={view} />
       ) : null}
       {record ? <CycleArtifacts cycle={record} /> : null}
     </main>

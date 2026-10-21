@@ -4,7 +4,12 @@ import type {
   LeaderboardSnapshot,
   ScoreEvent,
 } from "./leaderboard";
-import { findProject, findProjectByRepositoryId } from "./projects.mjs";
+import {
+  findHistoricalProject,
+  findHistoricalRepository,
+  isHistoricalProjectId,
+  isHistoricalRepositoryId,
+} from "./projects.mjs";
 import { findRegisteredRepositoryById } from "./repositories.mjs";
 import { sha256Hex } from "./sha256";
 
@@ -129,7 +134,7 @@ export function assertPointsJournal(
     if (
       !/^[A-Za-z0-9_=-]{4,256}$/.test(a.actor.id) ||
       !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(a.actor.login) ||
-      !findProject(a.projectId) ||
+      !isHistoricalProjectId(a.projectId) ||
       !categories.has(a.category) ||
       !Number.isSafeInteger(a.amount) ||
       a.amount < 0 ||
@@ -216,7 +221,7 @@ export function assertPointsJournal(
   for (const c of p.coverage) {
     exact(c, ["repository", "from", "to", "digest"]);
     if (
-      !findProjectByRepositoryId(c.repository) ||
+      !isHistoricalRepositoryId(c.repository) ||
       !iso(c.from) ||
       !iso(c.to) ||
       c.from >= c.to ||
@@ -250,18 +255,19 @@ export function pointsForScore(
   return amount;
 }
 export function awardForScore(event: ScoreEvent): PointAward {
-  const project = findProjectByRepositoryId(event.repository);
+  // Retained history may name a project that is no longer listed.
+  const project = findHistoricalRepository(event.repository);
   if (!project || event.actor.kind !== "User")
     throw new Error("Points require a registered project and user");
   return {
     key: pointKey(
-      project.id,
+      project.projectId,
       event.actor.id,
       event.category,
       event.category === "evidence" ? event.id : event.source.id,
     ),
     actor: { id: event.actor.id, login: event.actor.login },
-    projectId: project.id,
+    projectId: project.projectId,
     category: event.category,
     amount: pointsForScore(event),
     occurredAt: new Date(event.occurredAt).toISOString(),
@@ -329,15 +335,42 @@ export function appendPointAwards(
   assertPointsJournal(output);
   return output;
 }
+/**
+ * Keys of positive retained-history awards (substantive reviews and
+ * evaluator awards) whose latest revision was appended by the retained
+ * batch: the batch rule with a digest that no snapshot recorded in the
+ * coverage. The retained files are the only source for these awards.
+ */
+export function retainedBatchOwnedKeys(journal: PointsJournal): Set<string> {
+  const coverage = new Set(journal.coverage.map((c) => c.digest));
+  const keys = new Set<string>();
+  for (const revision of latestPoints(journal).values()) {
+    const award = revision.award;
+    if (
+      award.amount > 0 &&
+      (award.category === "substantive-review" ||
+        award.category === "evaluated-contribution") &&
+      revision.sourceRule === "slop-score-v2" &&
+      !coverage.has(revision.sourceDigest)
+    )
+      keys.add(award.key);
+  }
+  return keys;
+}
 export function applyPointsSnapshot(
   journal: PointsJournal,
   snapshot: LeaderboardSnapshot,
   digest: string,
   recordedAt: string,
 ): PointsJournal {
+  // A snapshot ledger only carries a downstream copy of a retained award
+  // (re-derived work unit, possibly dropped as a repeat work unit), so it
+  // neither rewrites nor zeroes one the retained batch owns.
+  const batchOwned = retainedBatchOwnedKeys(journal);
   const awards = snapshot.ledger
     .filter((e) => e.actor.kind === "User")
-    .map(awardForScore);
+    .map(awardForScore)
+    .filter((a) => !batchOwned.has(a.key));
   const decisions = new Map<string, PointDecision>();
   const parentDecisions = new Map<string, PointDecision>();
   for (const event of snapshot.ledger) {
@@ -357,11 +390,19 @@ export function applyPointsSnapshot(
   }
   const keys = new Set(awards.map((a) => a.key));
   const repositoryIds = new Set(snapshot.repositories.map((r) => r.id));
+  // A review is judged with its merged pull request, so the census can rule
+  // on a review submitted before the window. An exclusion is that ruling.
+  const excludedReviews = new Set(
+    (snapshot.reviewExclusions ?? []).map(
+      (x) =>
+        `${findHistoricalRepository(x.repository)?.projectId}\0${x.reviewId}`,
+    ),
+  );
   // A complete newer census can correct a formerly accepted source. Never infer
   // deletion from missing pages or a shortened rolling window.
   for (const previous of latestPoints(journal).values()) {
     const a = previous.award;
-    const project = findProject(a.projectId);
+    const project = findHistoricalProject(a.projectId);
     const sourceUrl = new URL(a.sourceUrl);
     const match =
       sourceUrl.origin === "https://github.com"
@@ -386,9 +427,12 @@ export function applyPointsSnapshot(
     if (
       a.category !== "payout-received" &&
       a.amount &&
+      !batchOwned.has(a.key) &&
       !keys.has(a.key) &&
-      a.occurredAt >= snapshot.window.from &&
-      a.occurredAt < snapshot.window.to &&
+      ((a.occurredAt >= snapshot.window.from &&
+        a.occurredAt < snapshot.window.to) ||
+        (a.category === "substantive-review" &&
+          excludedReviews.has(`${a.projectId}\0${a.sourceId}`))) &&
       project?.repositories.every((r) => repositoryIds.has(r.id))
     ) {
       awards.push({ ...a, amount: 0 });
@@ -424,44 +468,127 @@ export function applyPointsSnapshot(
   ];
   return result;
 }
+/**
+ * Canonical identity of a GitHub pull-request review URL: the case-folded
+ * owner/repo path plus the PR number. It mirrors exactly what the journal
+ * validator (assertEvaluatorAwardManifest) accepts as a review source:
+ * https scheme, github.com host, /owner/repo/pull/<number> path, and a
+ * review fragment (#pullrequestreview-<id> or #discussion_r<id>, matched
+ * case-insensitively like the validator).
+ *
+ * URL parsing normalizes the evasion forms the validator accepts while
+ * retaining the raw string: owner/repo casing variants, the explicit
+ * default port (:443, dropped as default by the URL parser), an empty query
+ * marker, and dot-segment paths (including percent-encoded dot-segments).
+ *
+ * The owner/repo is resolved through the registered project repository
+ * inventory (registry and removed projects via findHistoricalRepository), so a
+ * registered alias maps to the canonical repository id: the validator
+ * accepts alias paths as review sources, and without this the same PR
+ * reached through the canonical id and through an alias would get different
+ * identities and evade the evaluated-review suppression (PRD section 14
+ * anti-duplication rule). URLs outside the registry keep the case-folded
+ * owner/repo path as their identity.
+ *
+ * It returns undefined for anything else, so genuinely different URLs
+ * (other hosts, other paths, other PR numbers, non-review fragments) and
+ * URLs the validator itself rejects (an explicit non-default port, a
+ * non-empty query) never share an identity and are never deduped together.
+ */
+export function canonicalReviewIdentity(url: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== "https:") return undefined;
+  if (parsed.hostname.toLowerCase() !== "github.com") return undefined;
+  if (parsed.username || parsed.password) return undefined;
+  // Mirrors the strict evaluator URL parser (githubUrl in
+  // src/lib/evaluator-awards.ts): the URL parser drops an explicit default
+  // port, so :443 stays accepted; an explicit non-default port or any
+  // non-empty query is rejected by the validator and must yield no identity.
+  if (parsed.port) return undefined;
+  if (parsed.search) return undefined;
+  const path = /^\/([^/]+)\/([^/]+)\/pull\/([1-9]\d*)$/.exec(parsed.pathname);
+  if (!path) return undefined;
+  const fragment = parsed.hash.toLowerCase();
+  if (!/^#(pullrequestreview-|discussion_r)\d+$/.test(fragment))
+    return undefined;
+  // Canonicalize registered repository aliases: the validator accepts a
+  // review source URL through any registered alias, so keying on the raw
+  // owner/repo would let an evaluated award on the canonical id and a
+  // substantive review on an alias (or vice versa) miss the dedup set and
+  // double-count.
+  const ownerRepo = `${path[1]}/${path[2]}`;
+  const repositoryId = (
+    findHistoricalRepository(ownerRepo)?.repositoryId ?? ownerRepo
+  ).toLowerCase();
+  return `${repositoryId}/pull/${path[3]}`;
+}
 export function pointMembers(
   journal: PointsJournal,
   month = journal.generatedAt.slice(0, 7),
   projectId?: string,
 ): PointsMember[] {
   const groups = new Map<string, PointAward>();
-  const awards = [...latestPoints(journal).values()].map((r) => r.award);
+  const firstContributionAt = new Map<string, string>();
+  const revisions = [...latestPoints(journal).values()];
+  const valueAwardKeys = new Set(
+    revisions
+      .filter((revision) => revision.decision?.sourceId.startsWith("value:"))
+      .map((revision) => revision.award.key),
+  );
+  const awards = revisions.map((revision) => revision.award);
+  // The dedup key is the canonical parsed PR identity, not the raw URL:
+  // the journal validator accepts URL variants (owner/repo casing, default
+  // port, empty query, dot-segments, mixed-case review fragment) while
+  // keeping the raw string, so keying on the raw string lets variants evade
+  // the evaluated-review suppression and double-count (PRD section 14
+  // anti-duplication rule).
   const evaluatedReviews = new Set(
     awards
-      .filter(
-        (a) =>
-          a.amount > 0 &&
-          a.category === "evaluated-contribution" &&
-          a.sourceUrl.includes("#pullrequestreview-"),
-      )
-      .map((a) => `${a.actor.id}:${a.sourceUrl.split("#")[0]}`),
+      .filter((a) => a.amount > 0 && a.category === "evaluated-contribution")
+      .map((a) => {
+        const identity = canonicalReviewIdentity(a.sourceUrl);
+        return identity === undefined ? undefined : `${a.actor.id}:${identity}`;
+      })
+      .filter((key): key is string => key !== undefined),
   );
   for (const a of awards) {
+    const reviewIdentity =
+      a.category === "substantive-review"
+        ? canonicalReviewIdentity(a.sourceUrl)
+        : undefined;
     if (
-      a.category === "substantive-review" &&
-      evaluatedReviews.has(`${a.actor.id}:${a.sourceUrl.split("#")[0]}`)
+      reviewIdentity !== undefined &&
+      evaluatedReviews.has(`${a.actor.id}:${reviewIdentity}`)
     )
       continue;
     if (!a.amount || (projectId && a.projectId !== projectId)) continue;
+    // The first contribution date comes from every counted record, not
+    // only the surviving award: one work unit can have records in more than
+    // one month, and the dedup below keeps only one of them.
+    const first = firstContributionAt.get(a.actor.id);
+    if (first === undefined || a.occurredAt < first)
+      firstContributionAt.set(a.actor.id, a.occurredAt);
     const key = JSON.stringify([
       a.projectId,
       a.actor.id,
       a.category,
-      a.occurredAt.slice(0, 7),
+      valueAwardKeys.has(a.key) ? a.occurredAt.slice(0, 7) : null,
       a.category === "substantive-review" && !a.provisional
-        ? a.sourceUrl.split("#")[0]
+        ? (reviewIdentity ?? a.sourceUrl.split("#")[0])
         : a.workUnitId,
     ]);
     const prior = groups.get(key);
     if (
       !prior ||
       a.amount > prior.amount ||
-      (a.amount === prior.amount && a.sourceId < prior.sourceId)
+      (a.amount === prior.amount &&
+        (a.occurredAt < prior.occurredAt ||
+          (a.occurredAt === prior.occurredAt && a.sourceId < prior.sourceId)))
     )
       groups.set(key, a);
   }
@@ -471,7 +598,7 @@ export function pointMembers(
       actor: a.actor,
       total: 0,
       monthly: 0,
-      firstContributionAt: a.occurredAt,
+      firstContributionAt: firstContributionAt.get(a.actor.id) ?? a.occurredAt,
       projects: 0,
       badges: [],
       awards: [],
@@ -480,15 +607,18 @@ export function pointMembers(
     if (a.occurredAt.startsWith(month)) m.monthly += a.amount;
     if (!Number.isSafeInteger(m.total))
       throw new Error("Points total overflow");
-    if (a.occurredAt < m.firstContributionAt)
-      m.firstContributionAt = a.occurredAt;
     m.awards.push(a);
     members.set(a.actor.id, m);
   }
   // An assessed zero corrects an amount; it does not erase the contributor.
   // Keep these identities discoverable without counting zero awards as badges.
   for (const award of awards) {
-    if (award.amount || (projectId && award.projectId !== projectId)) continue;
+    if (
+      !valueAwardKeys.has(award.key) ||
+      award.amount ||
+      (projectId && award.projectId !== projectId)
+    )
+      continue;
     const member = members.get(award.actor.id);
     if (!member) {
       members.set(award.actor.id, {

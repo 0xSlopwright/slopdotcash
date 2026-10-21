@@ -1,19 +1,30 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
+import type { VaultTotals } from "../vault-totals";
 /** Finalized escrow events from a reviewed deployment. The configured RPC and vault are trust roots. */
-export interface BaseEscrowConfig {
+export interface EvmEscrowConfig {
   rpcUrl: string;
   chainId: bigint;
   vault: string;
   asset: string;
   owner: string;
+  /** The identity authority at activation. Later authorities come only from the factory's
+   * registrar-proposed 7-day timelock, so it is not compared with live state. */
   identityAuthority: string;
   feeRecipient: string;
   codeSha256: string;
   /** Reviewed delay, in seconds, before a destination binding can pay. */
   bindingDelaySeconds: string;
+  /** The EscrowFactory that created the vault and holds the identity authority. */
+  factory: string;
+  /** sha256 of the factory's runtime code: its rotation rules and 7-day delay. */
+  factoryCodeSha256: string;
+  /** The factory registrar, the only account that can propose an authority rotation. */
+  registrar: string;
 }
 
+/** Amount fields keep their historical `*Micro` names; they carry token base units of any decimals as
+ * decimal strings up to uint128. */
 export interface FinalizedEscrowEvent {
   transactionId: string;
   eventIndex: number;
@@ -28,14 +39,44 @@ export interface FinalizedEscrowEvent {
   bindingVersion?: string;
 }
 
-const RESERVE_TOPIC =
-  "0xd42548deb9ef20b582fe02f194f3c5e39fd0b7d1803321cd197e4ce48c30a857";
-const PAYMENT_TOPIC =
-  "0x4bf296cb04d665f3fe904ce30894876ea577c828bbc117e8bacad4c4bcb757f7";
+const toHex = (bytes: Uint8Array) =>
+  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+const keccakText = (text: string) =>
+  toHex(keccak_256(new TextEncoder().encode(text)));
+/** Topic 0 of every ProjectEscrow v4 and EscrowFactory event, from its canonical signature. */
+export const EVM_ESCROW_EVENT_SIGNATURES = Object.freeze({
+  Deposited: "Deposited(address,uint128)",
+  AwardCommitted: "AwardCommitted(bytes32,uint64,uint128,uint128,bytes32)",
+  DestinationBound: "DestinationBound(uint64,address,uint64,bytes32,uint64)",
+  BindingCancelled: "BindingCancelled(uint64,uint64)",
+  Paid: "Paid(bytes32,uint64,address,uint64,uint128,uint128,uint128)",
+  UnusedWithdrawn: "UnusedWithdrawn(address,uint128,uint128,uint128)",
+  ServiceCharged: "ServiceCharged(bytes32,uint128)",
+  FeesClaimed: "FeesClaimed(address,uint128)",
+  VaultCreated: "VaultCreated(bytes32,address,address,address,address,uint8)",
+  IdentityAuthorityRotationProposed:
+    "IdentityAuthorityRotationProposed(address,address,uint64)",
+  IdentityAuthorityRotationCancelled:
+    "IdentityAuthorityRotationCancelled(address)",
+  IdentityAuthorityRotated: "IdentityAuthorityRotated(address,address)",
+});
+export const EVM_ESCROW_EVENT_TOPICS = Object.freeze(
+  Object.fromEntries(
+    Object.entries(EVM_ESCROW_EVENT_SIGNATURES).map(([name, signature]) => [
+      name,
+      `0x${keccakText(signature)}`,
+    ]),
+  ) as Record<keyof typeof EVM_ESCROW_EVENT_SIGNATURES, string>,
+);
+const RESERVE_TOPIC = EVM_ESCROW_EVENT_TOPICS.AwardCommitted;
+const PAYMENT_TOPIC = EVM_ESCROW_EVENT_TOPICS.Paid;
+const BINDING_TOPIC = EVM_ESCROW_EVENT_TOPICS.DestinationBound;
+const selector = (signature: string) => keccakText(signature).slice(0, 8);
 const HASH = /^0x[0-9a-fA-F]{64}$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const QUANTITY = /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/;
 const U64 = (1n << 64n) - 1n;
+const U128 = (1n << 128n) - 1n;
 
 type RpcObject = Record<string, unknown>;
 function object(value: unknown): RpcObject {
@@ -61,8 +102,13 @@ function uint64(word: string): bigint {
   if (value > U64) throw new Error("Invalid uint64 event field");
   return value;
 }
+function uint128(word: string): bigint {
+  const value = BigInt(`0x${word}`);
+  if (value > U128) throw new Error("Invalid uint128 event field");
+  return value;
+}
 async function rpc(
-  config: BaseEscrowConfig,
+  config: { rpcUrl: string },
   method: string,
   params: unknown[],
 ) {
@@ -80,9 +126,49 @@ async function rpc(
   return body.result;
 }
 
-/** codeSha256 hashes decoded immutable runtime code bytes, not hex text or creation code. */
-export async function verifyBaseDeployment(
-  config: BaseEscrowConfig,
+/** The reviewed factory rotates the identity authority only after this notice period. */
+export const EVM_AUTHORITY_ROTATION_DELAY = 7n * 24n * 60n * 60n;
+async function runtimeSha256(
+  config: EvmEscrowConfig,
+  address: string,
+  blockTag: unknown,
+) {
+  const code = await rpc(config, "eth_getCode", [address, blockTag]);
+  if (typeof code !== "string" || !/^0x(?:[0-9a-fA-F]{2})+$/.test(code))
+    throw new Error("Escrow runtime code unavailable");
+  const bytes = Uint8Array.from(code.slice(2).match(/../g) ?? [], (part) =>
+    Number.parseInt(part, 16),
+  );
+  return Array.from(sha256(bytes), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+async function getter(
+  config: { rpcUrl: string },
+  to: string,
+  signature: string,
+  blockTag: unknown,
+  argument = "",
+) {
+  const value = await rpc(config, "eth_call", [
+    { to, data: `0x${selector(signature)}${argument}` },
+    blockTag,
+  ]);
+  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(value))
+    throw new Error("Malformed escrow state");
+  return value.toLowerCase();
+}
+const addressWord = (value: string) =>
+  `0x${value.slice(2).toLowerCase().padStart(64, "0")}`;
+
+/**
+ * codeSha256 and factoryCodeSha256 hash decoded immutable runtime code bytes, not hex text or
+ * creation code. The vault must be the one its pinned factory created for its project and asset,
+ * and the factory must have the reviewed registrar, fee recipient, delays and code, so a vault
+ * from a factory with other rotation rules fails. The asset is a per-vault parameter in v4.
+ */
+export async function verifyEvmDeployment(
+  config: EvmEscrowConfig,
   blockTag: unknown = "finalized",
 ) {
   if (
@@ -92,65 +178,70 @@ export async function verifyBaseDeployment(
       config.owner,
       config.identityAuthority,
       config.feeRecipient,
+      config.factory,
+      config.registrar,
     ].every((value) => ADDRESS.test(value)) ||
     !/^[0-9a-f]{64}$/.test(config.codeSha256) ||
+    !/^[0-9a-f]{64}$/.test(config.factoryCodeSha256) ||
     !/^(0|[1-9][0-9]*)$/.test(config.bindingDelaySeconds) ||
     BigInt(config.bindingDelaySeconds) > U64
   )
     throw new Error("Reviewed deployment identity is incomplete");
   if (quantity(await rpc(config, "eth_chainId", [])) !== config.chainId)
     throw new Error("Wrong chain");
-  const code = await rpc(config, "eth_getCode", [config.vault, blockTag]);
-  if (typeof code !== "string" || !/^0x(?:[0-9a-fA-F]{2})+$/.test(code))
-    throw new Error("Escrow runtime code unavailable");
-  const bytes = Uint8Array.from(code.slice(2).match(/../g) ?? [], (part) =>
-    Number.parseInt(part, 16),
-  );
-  const actual = Array.from(sha256(bytes), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
-  if (actual !== config.codeSha256)
+  if (
+    (await runtimeSha256(config, config.vault, blockTag)) !== config.codeSha256
+  )
     throw new Error("Escrow runtime code does not match reviewed deployment");
-  for (const [getter, expected] of [
-    ["token()", config.asset],
-    ["owner()", config.owner],
-    ["refundDestination()", config.owner],
-    ["identityAuthority()", config.identityAuthority],
-    ["feeRecipient()", config.feeRecipient],
+  if (
+    (await runtimeSha256(config, config.factory, blockTag)) !==
+    config.factoryCodeSha256
+  )
+    throw new Error("Escrow factory code does not match reviewed deployment");
+  for (const [target, signature, expected] of [
+    [config.vault, "token()", config.asset],
+    [config.vault, "owner()", config.owner],
+    [config.vault, "refundDestination()", config.owner],
+    [config.vault, "feeRecipient()", config.feeRecipient],
+    [config.vault, "factory()", config.factory],
+    [config.factory, "registrar()", config.registrar],
+    [config.factory, "feeRecipient()", config.feeRecipient],
   ]) {
-    const selector =
-      "0x" +
-      Array.from(
-        keccak_256(new TextEncoder().encode(getter)).slice(0, 4),
-        (byte) => byte.toString(16).padStart(2, "0"),
-      ).join("");
-    const value = await rpc(config, "eth_call", [
-      { to: config.vault, data: selector },
-      blockTag,
-    ]);
     if (
-      typeof value !== "string" ||
-      !/^0x0{24}[0-9a-fA-F]{40}$/.test(value) ||
-      value.slice(-40).toLowerCase() !== expected.slice(2).toLowerCase()
+      (await getter(config, target, signature, blockTag)) !==
+      addressWord(expected)
     )
       throw new Error(
-        "Escrow asset or authority does not match reviewed deployment",
+        "Escrow asset, factory or registrar does not match reviewed deployment",
       );
   }
-  const delay = await rpc(config, "eth_call", [
-    { to: config.vault, data: "0x7b5290e8" },
-    blockTag,
-  ]);
+  for (const [target, signature, expected] of [
+    [config.vault, "bindingDelay()", BigInt(config.bindingDelaySeconds)],
+    [config.factory, "bindingDelay()", BigInt(config.bindingDelaySeconds)],
+    [
+      config.factory,
+      "AUTHORITY_ROTATION_DELAY()",
+      EVM_AUTHORITY_ROTATION_DELAY,
+    ],
+  ] as const) {
+    if (BigInt(await getter(config, target, signature, blockTag)) !== expected)
+      throw new Error("Escrow delays do not match reviewed deployment");
+  }
+  const projectId = await getter(config, config.vault, "projectId()", blockTag);
   if (
-    typeof delay !== "string" ||
-    !/^0x[0-9a-fA-F]{64}$/.test(delay) ||
-    BigInt(delay) !== BigInt(config.bindingDelaySeconds)
+    (await getter(
+      config,
+      config.factory,
+      "vaults(bytes32,address)",
+      blockTag,
+      `${projectId.slice(2)}${addressWord(config.asset).slice(2)}`,
+    )) !== addressWord(config.vault)
   )
-    throw new Error("Escrow binding delay does not match reviewed deployment");
+    throw new Error("Escrow vault was not created by the reviewed factory");
 }
 
 /** The only award ID ProjectEscrow accepts: keccak256(abi.encode(chainId, vault, sourceDigest)). */
-export function baseAwardId(
+export function evmAwardId(
   chainId: bigint,
   vault: string,
   sourceDigest: string,
@@ -168,7 +259,7 @@ export function baseAwardId(
 }
 
 async function finalizedLog(
-  config: BaseEscrowConfig,
+  config: EvmEscrowConfig,
   transactionId: string,
   eventIndex: number,
 ) {
@@ -208,7 +299,7 @@ async function finalizedLog(
   ) {
     throw new Error("Receipt block is not canonical");
   }
-  await verifyBaseDeployment(config, receipt.blockNumber);
+  await verifyEvmDeployment(config, receipt.blockNumber);
   if (!Array.isArray(receipt.logs)) throw new Error("Missing receipt logs");
   const matches = receipt.logs
     .map(object)
@@ -229,7 +320,7 @@ async function finalizedLog(
 }
 
 async function verify(
-  config: BaseEscrowConfig,
+  config: EvmEscrowConfig,
   transactionId: string,
   eventIndex: number,
   obligationId: string,
@@ -264,9 +355,9 @@ async function verify(
     ...(paid ? [log.data.slice(194, 258)] : []),
   ];
   const actor = uint64(topics[2].slice(2));
-  const gross = uint64(words[paid ? 1 : 0]);
-  const fee = uint64(words[paid ? 3 : 1]);
-  const net = paid ? uint64(words[2]) : gross - fee;
+  const gross = uint128(words[paid ? 1 : 0]);
+  const fee = uint128(words[paid ? 3 : 1]);
+  const net = paid ? uint128(words[2]) : gross - fee;
   if (
     actor === 0n ||
     gross === 0n ||
@@ -302,7 +393,7 @@ async function verify(
 }
 
 export function verifyReserve(
-  config: BaseEscrowConfig,
+  config: EvmEscrowConfig,
   transactionId: string,
   eventIndex: number,
   obligationId: string,
@@ -311,7 +402,7 @@ export function verifyReserve(
 }
 
 export function verifyPayment(
-  config: BaseEscrowConfig,
+  config: EvmEscrowConfig,
   transactionId: string,
   eventIndex: number,
   obligationId: string,
@@ -320,7 +411,7 @@ export function verifyPayment(
 }
 
 export async function verifyBinding(
-  config: BaseEscrowConfig,
+  config: EvmEscrowConfig,
   transactionId: string,
   eventIndex: number,
   githubUserId: string,
@@ -339,11 +430,7 @@ export async function verifyBinding(
     throw new Error("Wrong binding event encoding");
   }
   const topics = log.topics.map(hash);
-  if (
-    topics[0] !==
-      "0xa228a74ce6410fbd6c2c835cf0114180aa30e657287b2f9d47a1ed6c06a2b4b4" ||
-    !/^0x0{24}[0-9a-f]{40}$/.test(topics[2])
-  ) {
+  if (topics[0] !== BINDING_TOPIC || !/^0x0{24}[0-9a-f]{40}$/.test(topics[2])) {
     throw new Error("Wrong binding event");
   }
   const actor = uint64(topics[1].slice(2));
@@ -377,6 +464,18 @@ function word(value: string) {
     throw new Error("Invalid uint64 input");
   return BigInt(value).toString(16).padStart(64, "0");
 }
+/** A token amount in base units: a decimal string or bigint from 1 to uint128 max. */
+function amountWord(value: string | bigint) {
+  const amount =
+    typeof value === "bigint"
+      ? value
+      : /^(0|[1-9][0-9]*)$/.test(value)
+        ? BigInt(value)
+        : -1n;
+  if (amount <= 0n || amount > U128)
+    throw new Error("Amount must be 1 to uint128 max base units");
+  return amount.toString(16).padStart(64, "0");
+}
 
 /** Unsigned call data only. Never selects signers or submits a transaction. */
 export function buildPayCalldata(
@@ -388,13 +487,15 @@ export function buildPayCalldata(
   return `0xcbcf057d${hash(obligationId).slice(2)}${word(expectedBindingVersion)}`;
 }
 
-export function buildBindCalldata(input: {
+export interface BindingInput {
   githubUserId: string;
   destination: string;
   expectedVersion: string;
   claimDigest: string;
   expiresAt: string;
-}) {
+}
+const SIGNATURE = /^0x[0-9a-fA-F]{130}$/;
+function assertBindingInput(input: BindingInput) {
   if (
     !ADDRESS.test(input.destination) ||
     BigInt(input.destination) === 0n ||
@@ -403,27 +504,155 @@ export function buildBindCalldata(input: {
   ) {
     throw new Error("Invalid binding input");
   }
-  return `0x9865ee3f${word(input.githubUserId)}${input.destination.slice(2).toLowerCase().padStart(64, "0")}${word(input.expectedVersion)}${hash(input.claimDigest).slice(2)}${word(input.expiresAt)}`;
+}
+const keccakHex = (bytes: Uint8Array) =>
+  `0x${Array.from(keccak_256(bytes), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("")}`;
+const unhex = (value: string) =>
+  Uint8Array.from(value.replace(/^0x/, "").match(/../g) ?? [], (pair) =>
+    Number.parseInt(pair, 16),
+  );
+/** keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)") */
+const DOMAIN_TYPEHASH =
+  "8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f";
+/** keccak256("DestinationBinding(uint64 actorId,address destination,uint64 expectedVersion,bytes32 claimDigest,uint64 expiresAt)") */
+const BINDING_TYPEHASH =
+  "da5a17ebadee256f10c42cd35247bcea3c3b77ba8772bea3807f7d5023a4489e";
+/** keccak256("SlopProjectEscrow") and keccak256("4"): the vault's EIP-712 name and version. */
+const DOMAIN_NAME_HASH =
+  "3c605d82f7aa4ceb74cffe80a28c3f9b810fb40c95cdc887dea666b075537518";
+const DOMAIN_VERSION_HASH =
+  "13600b294191fc92924bb3ce4b969c1e7e2bab8f4c93c3fc6d0a51733df3c060";
+/** The EIP-712 domain version of ProjectEscrow v4. */
+export const EVM_ESCROW_DOMAIN_VERSION = "4";
+/** The EIP-712 typed data a destination wallet signs to accept a binding (eth_signTypedData_v4). */
+export function evmBindingTypedData(
+  chainId: bigint,
+  vault: string,
+  input: BindingInput,
+) {
+  assertBindingInput(input);
+  if (!ADDRESS.test(vault) || chainId <= 0n || chainId > U64)
+    throw new Error("Invalid binding domain");
+  return {
+    types: {
+      EIP712Domain: [
+        { name: "name", type: "string" },
+        { name: "version", type: "string" },
+        { name: "chainId", type: "uint256" },
+        { name: "verifyingContract", type: "address" },
+      ],
+      DestinationBinding: [
+        { name: "actorId", type: "uint64" },
+        { name: "destination", type: "address" },
+        { name: "expectedVersion", type: "uint64" },
+        { name: "claimDigest", type: "bytes32" },
+        { name: "expiresAt", type: "uint64" },
+      ],
+    },
+    primaryType: "DestinationBinding" as const,
+    domain: {
+      name: "SlopProjectEscrow",
+      version: EVM_ESCROW_DOMAIN_VERSION,
+      chainId: chainId.toString(),
+      verifyingContract: vault.toLowerCase(),
+    },
+    message: {
+      actorId: input.githubUserId,
+      destination: input.destination.toLowerCase(),
+      expectedVersion: input.expectedVersion,
+      claimDigest: hash(input.claimDigest),
+      expiresAt: input.expiresAt,
+    },
+  };
+}
+/** The digest ProjectEscrow.bindingDigest returns for the same fields; recover it to verify a wallet signature. */
+export function evmBindingDigest(
+  chainId: bigint,
+  vault: string,
+  input: BindingInput,
+): string {
+  assertBindingInput(input);
+  if (!ADDRESS.test(vault) || chainId <= 0n || chainId > U64)
+    throw new Error("Invalid binding domain");
+  const domain = keccakHex(
+    unhex(
+      `${DOMAIN_TYPEHASH}${DOMAIN_NAME_HASH}${DOMAIN_VERSION_HASH}${chainId.toString(16).padStart(64, "0")}${vault.slice(2).toLowerCase().padStart(64, "0")}`,
+    ),
+  );
+  const struct = keccakHex(
+    unhex(
+      `${BINDING_TYPEHASH}${word(input.githubUserId)}${input.destination.slice(2).toLowerCase().padStart(64, "0")}${word(input.expectedVersion)}${hash(input.claimDigest).slice(2)}${word(input.expiresAt)}`,
+    ),
+  );
+  return keccakHex(unhex(`1901${domain.slice(2)}${struct.slice(2)}`));
+}
+/** bindDestination(uint64,address,uint64,bytes32,uint64,bytes): the authority's call carrying the wallet's signature. */
+export function buildBindCalldata(
+  input: BindingInput & { walletSignature: string },
+) {
+  assertBindingInput(input);
+  if (!SIGNATURE.test(input.walletSignature))
+    throw new Error("Invalid wallet signature encoding");
+  const signature = input.walletSignature.slice(2).toLowerCase();
+  return `0xac11944e${word(input.githubUserId)}${input.destination.slice(2).toLowerCase().padStart(64, "0")}${word(input.expectedVersion)}${hash(input.claimDigest).slice(2)}${word(input.expiresAt)}${"c0".padStart(64, "0")}${"41".padStart(64, "0")}${signature.padEnd(192, "0")}`;
+}
+export interface EvmAuthorityRotation {
+  factory: string;
+  identityAuthority: string;
+  /** Null when no rotation is proposed. */
+  pendingIdentityAuthority: string | null;
+  effectiveAt: string | null;
+}
+/** The identity authority in force for a vault and any pending factory rotation, at the finalized block. */
+export async function readEvmAuthorityRotation(
+  config: EvmEscrowConfig,
+  blockTag: unknown = "finalized",
+): Promise<EvmAuthorityRotation> {
+  if (!ADDRESS.test(config.vault)) throw new Error("Invalid vault");
+  const read = async (to: string, selector: string, pattern: RegExp) => {
+    const value = await rpc(config, "eth_call", [
+      { to, data: selector },
+      blockTag,
+    ]);
+    if (typeof value !== "string" || !pattern.test(value))
+      throw new Error("Malformed factory state");
+    return value;
+  };
+  const addressWord = /^0x0{24}[0-9a-fA-F]{40}$/;
+  const factory = `0x${(await read(config.vault, "0xc45a0155", addressWord)).slice(-40).toLowerCase()}`;
+  const identityAuthority = `0x${(await read(factory, "0x13fa3c08", addressWord)).slice(-40).toLowerCase()}`;
+  const pending = `0x${(await read(factory, "0xc9a66a21", addressWord)).slice(-40).toLowerCase()}`;
+  const effectiveAt = uint64(
+    (await read(factory, "0x2c35d137", /^0x[0-9a-fA-F]{64}$/)).slice(2),
+  );
+  const proposed = BigInt(pending) !== 0n;
+  return {
+    factory,
+    identityAuthority,
+    pendingIdentityAuthority: proposed ? pending : null,
+    effectiveAt: proposed ? effectiveAt.toString() : null,
+  };
 }
 
-export function buildDepositCalldata(grossMicro: string) {
-  if (grossMicro === "0") throw new Error("Deposit must be positive");
-  return `0x13765838${word(grossMicro)}`;
+/** Permissionless: any sender deposits its own approved tokens into the free balance. */
+export function buildDepositCalldata(grossMicro: string | bigint) {
+  return `0x${selector("deposit(uint128)")}${amountWord(grossMicro)}`;
 }
 export function buildCommitAwardCalldata(input: {
   obligationId: string;
   githubUserId: string;
-  grossMicro: string;
+  grossMicro: string | bigint;
   sourceDigest: string;
 }) {
   if (
     input.githubUserId === "0" ||
-    input.grossMicro === "0" ||
     BigInt(hash(input.obligationId)) === 0n ||
     BigInt(hash(input.sourceDigest)) === 0n
   )
     throw new Error("Invalid award input");
-  return `0x126db652${hash(input.obligationId).slice(2)}${word(input.githubUserId)}${word(input.grossMicro)}${hash(input.sourceDigest).slice(2)}`;
+  return `0x${selector("commitAward(bytes32,uint64,uint128,bytes32)")}${hash(input.obligationId).slice(2)}${word(input.githubUserId)}${amountWord(input.grossMicro)}${hash(input.sourceDigest).slice(2)}`;
 }
 /** Owner-only: stops a pending binding before it can pay. */
 export function buildCancelBindingCalldata(
@@ -438,7 +667,116 @@ export function buildCancelBindingCalldata(
 export function buildClaimFeesCalldata() {
   return "0xd294f093";
 }
-export function buildWithdrawCalldata(grossMicro: string) {
-  if (grossMicro === "0") throw new Error("Withdrawal must be positive");
-  return `0x3b6ba63d${word(grossMicro)}`;
+/** Owner-only: refunds free funds to the refund destination less the 2% fee, floor(gross / 50). */
+export function buildWithdrawCalldata(grossMicro: string | bigint) {
+  return `0x${selector("withdrawUnused(uint128)")}${amountWord(grossMicro)}`;
+}
+/** Owner-only PAY-10 charge from free funds, once per invoice digest. */
+export function buildChargeServiceCalldata(
+  amount: string | bigint,
+  invoiceDigest: string,
+) {
+  if (BigInt(hash(invoiceDigest)) === 0n) throw new Error("Invalid invoice");
+  return `0x${selector("chargeService(uint128,bytes32)")}${amountWord(amount)}${hash(invoiceDigest).slice(2)}`;
+}
+/** Registrar-only: creates the vault for one project and token. */
+export function buildCreateVaultCalldata(input: {
+  projectId: string;
+  asset: string;
+  owner: string;
+  refundDestination: string;
+}) {
+  if (
+    BigInt(hash(input.projectId)) === 0n ||
+    ![input.asset, input.owner, input.refundDestination].every((value) =>
+      ADDRESS.test(value),
+    )
+  )
+    throw new Error("Invalid vault input");
+  return `0x${selector("create(bytes32,address,address,address)")}${hash(input.projectId).slice(2)}${addressWord(input.asset).slice(2)}${addressWord(input.owner).slice(2)}${addressWord(input.refundDestination).slice(2)}`;
+}
+
+export type { VaultTotals } from "../vault-totals";
+export interface EvmVaultTotalsConfig {
+  rpcUrl: string;
+  /** The registry network key, echoed in the result. */
+  network: string;
+  vault: string;
+  chainId: bigint;
+}
+/**
+ * Reads every counter of a vault with one totals() call, plus its token and decimals, all at one
+ * pinned finalized block number. It checks the chain and the conservation identity
+ * deposited = free + reserved + paid + payoutFees + withdrawnGross + serviceFees. It does not
+ * verify the reviewed deployment; call verifyEvmDeployment first for that.
+ */
+export async function readVaultTotals(
+  config: EvmVaultTotalsConfig,
+): Promise<VaultTotals> {
+  const { vault } = config;
+  if (!ADDRESS.test(vault)) throw new Error("Invalid vault");
+  if (quantity(await rpc(config, "eth_chainId", [])) !== config.chainId)
+    throw new Error("Wrong chain");
+  const block = object(
+    await rpc(config, "eth_getBlockByNumber", ["finalized", false]),
+  );
+  const blockNumber = quantity(block.number);
+  const blockTag = `0x${blockNumber.toString(16)}`;
+  const data = await rpc(config, "eth_call", [
+    { to: vault, data: `0x${selector("totals()")}` },
+    blockTag,
+  ]);
+  if (typeof data !== "string" || !/^0x[0-9a-fA-F]{704}$/.test(data))
+    throw new Error("Malformed vault totals");
+  const words = Array.from({ length: 11 }, (_, i) =>
+    data.slice(2 + i * 64, 66 + i * 64),
+  );
+  const [
+    deposited,
+    paid,
+    payoutFees,
+    withdrawnGross,
+    withdrawalFees,
+    serviceFees,
+    free,
+    reservedPrincipal,
+    reservedFees,
+    accruedFees,
+  ] = words.slice(0, 10).map(uint128);
+  const vaultBalance = BigInt(`0x${words[10]}`);
+  const token = await getter(config, vault, "token()", blockTag);
+  const decimals = BigInt(await getter(config, vault, "decimals()", blockTag));
+  if (!/^0x0{24}[0-9a-f]{40}$/.test(token) || decimals > 255n)
+    throw new Error("Malformed vault asset");
+  if (
+    deposited !==
+      free +
+        reservedPrincipal +
+        reservedFees +
+        paid +
+        payoutFees +
+        withdrawnGross +
+        serviceFees ||
+    vaultBalance < free + reservedPrincipal + reservedFees + accruedFees
+  )
+    throw new Error("Vault totals do not conserve");
+  return {
+    network: config.network,
+    vault: vault.toLowerCase(),
+    asset: `0x${token.slice(-40)}`,
+    decimals: Number(decimals),
+    blockNumber: blockNumber.toString(),
+    blockTime: new Date(Number(quantity(block.timestamp)) * 1000).toISOString(),
+    totalDeposited: deposited.toString(),
+    totalPaid: paid.toString(),
+    totalPayoutFees: payoutFees.toString(),
+    totalGrossWithdrawn: withdrawnGross.toString(),
+    totalWithdrawalFees: withdrawalFees.toString(),
+    totalServiceFees: serviceFees.toString(),
+    freeBalance: free.toString(),
+    reservedPrincipal: reservedPrincipal.toString(),
+    reservedFees: reservedFees.toString(),
+    accruedFees: accruedFees.toString(),
+    reserved: null,
+  };
 }

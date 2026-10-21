@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { ArrowDown, ChevronDown } from "lucide-react";
 import {
   createContext,
   type ReactNode,
@@ -23,6 +23,8 @@ import {
 } from "./lib/contributor-standings";
 import type { CycleIndex } from "./lib/cycle-index";
 import { deploymentTier } from "./lib/deployment";
+import { githubUserIdFromNodeId } from "./lib/github-actor";
+import { GithubIcon } from "./lib/github-icon";
 import { requestIdentityAssertion } from "./lib/identity-flow";
 import type { ScoreEvent } from "./lib/leaderboard";
 import {
@@ -35,10 +37,10 @@ import {
 } from "./lib/points";
 import { profileCounts } from "./lib/profiles";
 import { findProject, PROJECTS } from "./lib/projects.mjs";
+import { useAllDirectTransfers } from "./lib/use-direct-transfers";
 import { type DataState, useSnapshot } from "./lib/use-snapshot";
 import {
   DataNotice,
-  formatDate,
   formatMicroUsdc,
   formatScore,
   NotFound,
@@ -48,6 +50,12 @@ import { WalletRegistration } from "./WalletRegistration";
 
 const productOrigin = () =>
   browserDeployment.browserOrigins.has(window.location.origin);
+
+/** Sign-in works only on a product origin, so other origins link there. */
+export const loginHref = (next: string) =>
+  `${productOrigin() ? "" : browserDeployment.site}${
+    next === "/" ? "/login" : `/login?next=${encodeURIComponent(next)}`
+  }`;
 
 interface Membership {
   actor: { id: string; login: string };
@@ -214,6 +222,15 @@ export function PointsProvider({
 const currentPath = () =>
   `${window.location.pathname}${window.location.search}${window.location.hash}`;
 
+/** The signed-in GitHub login, for pages that only need to know who is here. */
+export function useSignedInLogin(): {
+  login: string | null;
+  session: "loading" | "ready" | "error";
+} {
+  const { me, session } = useContext(Context);
+  return { login: me?.actor.login ?? null, session };
+}
+
 export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
   const { state, me, session, setMe, requestPoints, refresh } =
     useContext(Context);
@@ -288,6 +305,7 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
       setBusy(false);
     }
   }
+  if (!me && window.location.pathname === "/login") return null;
   if (!me && session === "loading")
     return (
       <span className="account-control" role="status">
@@ -298,11 +316,9 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
     return (
       <a
         className="account-control account-login"
-        href={
-          window.location.pathname === "/login" || loginReturn === "/"
-            ? "/login"
-            : `/login?next=${encodeURIComponent(loginReturn)}`
-        }
+        href={loginHref(
+          window.location.pathname === "/login" ? "/" : loginReturn,
+        )}
         onClick={navigate}
       >
         Log in
@@ -371,8 +387,11 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
           >
             View profile
           </a>
+          <a href="/inbox" onClick={navigate}>
+            Inbox
+          </a>
           <a href="/earnings" onClick={navigate}>
-            Earnings and wallets
+            Payouts and wallets
           </a>
           <a href="/account" onClick={navigate}>
             Account settings
@@ -399,37 +418,86 @@ function Notice() {
         </button>
       </div>
     );
-  return (
-    <p className="points-meta">
-      Points updated {new Date(state.journal.generatedAt).toLocaleString()}
-      {Date.now() - Date.parse(state.journal.generatedAt) > 8 * 3600000
-        ? " · Stale: the next verified update is pending."
-        : ""}
-    </p>
-  );
+  return null;
 }
+/** Current membership identity, shared with the profile's history and wallet lookup. */
+export function useProfileMembership(login: string, enabled = true) {
+  const { me, session } = useContext(Context);
+  const normalizedLogin = login.toLowerCase();
+  const [lookup, setLookup] = useState<{
+    login: string;
+    status: "loading" | "unavailable" | "absent" | "ready";
+    member: Membership | null;
+  }>({ login: normalizedLogin, status: "loading", member: null });
+  useEffect(() => {
+    if (!enabled) return;
+    const c = new AbortController();
+    const update = (
+      status: typeof lookup.status,
+      value: Membership | null = null,
+    ) => {
+      if (!c.signal.aborted)
+        setLookup({ login: normalizedLogin, status, member: value });
+    };
+    update("loading");
+    if (!productOrigin()) {
+      update("unavailable");
+      return () => c.abort();
+    }
+    void fetch(`/api/v1/points/member?login=${encodeURIComponent(login)}`, {
+      signal: c.signal,
+    })
+      .then(async (r) => {
+        if (r.status === 404) {
+          update("absent");
+          return;
+        }
+        if (!r.ok) throw new Error("unavailable");
+        const value = await readBoundedJson(r, 16384, "member");
+        update(value ? "ready" : "absent", value ? member(value) : null);
+      })
+      .catch(() => update("unavailable"));
+    return () => c.abort();
+  }, [enabled, login, normalizedLogin]);
+  const signedInActor = session === "ready" ? me?.actor : undefined;
+  const own =
+    signedInActor?.login.toLowerCase() === normalizedLogin ? me : null;
+  const current = lookup.login === normalizedLogin ? lookup : null;
+  return {
+    own,
+    signedInActor,
+    joined: current?.member ?? null,
+    joinStatus: current?.status ?? "loading",
+  };
+}
+
 export function ProfilePoints({
   work,
   actorId,
   summary,
   login,
   cycles,
-  recordsLoading = false,
   showIdentity = false,
   notFoundWhenUnrecorded = false,
+  profileCensus,
+  profileMembership,
+  children,
 }: {
+  children?: ReactNode;
   login: string;
   work?: readonly ScoreEvent[];
   cycles?: CycleIndex;
-  recordsLoading?: boolean;
   showIdentity?: boolean;
   summary?: ReactNode;
   actorId?: string;
   /** The caller found no score record, so no points record means no contributor. */
   notFoundWhenUnrecorded?: boolean;
+  profileCensus?: ReturnType<typeof useProfiles>;
+  profileMembership?: ReturnType<typeof useProfileMembership>;
 }) {
-  const { state, me } = useContext(Context);
-  const census = useProfiles();
+  const { state } = useContext(Context);
+  const localCensus = useProfiles(!profileCensus);
+  const census = profileCensus ?? localCensus;
   const censusMatches =
     census.state.status === "ready"
       ? census.state.index.people.filter((p) =>
@@ -439,42 +507,17 @@ export function ProfilePoints({
         )
       : [];
   const recorded = censusMatches.length === 1 ? censusMatches[0] : undefined;
-  const [joined, setJoined] = useState<Membership | null>(null);
-  const [joinStatus, setJoinStatus] = useState("loading");
-  useEffect(() => {
-    const c = new AbortController();
-    setJoined(null);
-    setJoinStatus("loading");
-    if (!productOrigin()) {
-      setJoinStatus("unavailable");
-      return () => c.abort();
-    }
-    void fetch(`/api/v1/points/member?login=${encodeURIComponent(login)}`, {
-      signal: c.signal,
-    })
-      .then(async (r) => {
-        if (r.status === 404) {
-          setJoinStatus("absent");
-          return;
-        }
-        if (!r.ok) throw new Error("unavailable");
-        const m = await readBoundedJson(r, 16384, "member");
-        setJoined(m ? member(m) : null);
-        setJoinStatus(m ? "ready" : "absent");
-      })
-      .catch(() => {
-        if (!c.signal.aborted) setJoinStatus("unavailable");
-      });
-    return () => c.abort();
-  }, [login]);
-  const own = me?.actor.login.toLowerCase() === login.toLowerCase() ? me : null;
+  const localMembership = useProfileMembership(login, !profileMembership);
+  const { own, joined, joinStatus } = profileMembership ?? localMembership;
   const named =
     state.status === "ready"
       ? state.members.filter(
           (m) => m.actor.login.toLowerCase() === login.toLowerCase(),
         )
       : [];
-  const membership = own ?? joined;
+  const membership =
+    own ??
+    (joined?.actor.login.toLowerCase() === login.toLowerCase() ? joined : null);
   const identity =
     !actorId || membership?.actor.id === actorId ? membership : null;
   const resolvedActorId = actorId ?? identity?.actor.id ?? recorded?.id;
@@ -486,7 +529,6 @@ export function ProfilePoints({
           ? named[0]
           : undefined
       : undefined;
-  const [copied, setCopied] = useState("");
   if (
     notFoundWhenUnrecorded &&
     state.status === "ready" &&
@@ -519,8 +561,31 @@ export function ProfilePoints({
         actorId={resolvedActorId ?? m?.actor.id}
         census={census}
         cycles={cycles}
-        recordsLoading={recordsLoading}
         showIdentity={showIdentity}
+        badges={
+          <>
+            <Notice />
+            {state.status === "ready" && (m || identity || recorded) ? (
+              <div className="profile-badges">
+                {m?.badges.map((badge) => (
+                  <span key={badge}>{badge}</span>
+                ))}
+                <PublicXLink
+                  actorId={(m?.actor ?? identity?.actor ?? recorded!).id}
+                />
+                {own ? <a href="/account">Manage account</a> : null}
+              </div>
+            ) : state.status === "ready" ? (
+              <p>
+                {joinStatus === "loading"
+                  ? "Looking up membership…"
+                  : joinStatus === "unavailable"
+                    ? "Membership is temporarily unavailable."
+                    : "No recorded points for this account yet. Join to get started."}
+              </p>
+            ) : null}
+          </>
+        }
         summary={
           <>
             {summary}
@@ -536,76 +601,21 @@ export function ProfilePoints({
                     ? "Loading…"
                     : "Unavailable"}
               </strong>
-              <span>Points · recorded history</span>
+              <span>points</span>
             </div>
           </>
         }
-      />
-      <h2>Slop Points</h2>
-      <Notice />
-      {state.status === "ready" && (m || identity || recorded) ? (
-        <>
-          <p>
-            {m?.monthly.toLocaleString() ?? "0"} earned points this month
-            {identity
-              ? ` · 5 welcome points · ${identity.socialPoints ?? 0} X connection points`
-              : ""}
-          </p>
-          {m || identity || recorded ? (
-            <PublicXLink
-              actorId={(m?.actor ?? identity?.actor ?? recorded!).id}
-            />
-          ) : null}
-          <p>{m?.badges.join(" · ") ?? "Welcome to Slop"}</p>
-          <button
-            type="button"
-            onClick={() => {
-              void navigator.clipboard
-                .writeText(
-                  `${window.location.origin}/contributors/${encodeURIComponent(login)}`,
-                )
-                .then(
-                  () => setCopied("Link copied"),
-                  () =>
-                    setCopied("Copy unavailable. Copy this page’s address."),
-                );
-            }}
-          >
-            Copy profile link
-          </button>
-          <span role="status">{copied}</span>
-        </>
-      ) : state.status === "ready" ? (
-        <p>
-          {joinStatus === "loading"
-            ? "Looking up membership…"
-            : joinStatus === "unavailable"
-              ? "Membership is temporarily unavailable."
-              : "No recorded points for this account yet. Join to get started."}
-        </p>
-      ) : null}
-      <p>{POINTS_NOTICE}</p>
-      {own ? (
-        <p>
-          <a href="/account">Manage account and social connections</a>
-        </p>
-      ) : null}
-      <a href="/points#rules">How to earn points</a>
+      >
+        {children}
+      </ProfileActivity>
     </section>
   );
 }
-function JoinPoints({
-  redirectToProfile = false,
-  showHeading = true,
-}: {
-  redirectToProfile?: boolean;
-  showHeading?: boolean;
-}) {
+function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
   const { me, setMe, session } = useContext(Context);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [authorization, setAuthorization] = useState<string | null>(null);
-  const [publish, setPublish] = useState(false);
   const active = useRef<AbortController | null>(null);
   useEffect(() => () => active.current?.abort(), []);
   async function start() {
@@ -662,17 +672,11 @@ function JoinPoints({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           assertion,
-          public: publish,
+          public: false,
         }),
         signal: c.signal,
       });
-      const signedIn = member(joined);
-      setMe(signedIn);
-      if (redirectToProfile)
-        window.location.assign(
-          returnPath() ??
-            `/contributors/${encodeURIComponent(signedIn.actor.login)}`,
-        );
+      setMe(member(joined));
       setMessage("You’re signed in. Your welcome points are recorded.");
     } catch (e) {
       if (!c.signal.aborted)
@@ -702,16 +706,24 @@ function JoinPoints({
       setMessage("Could not sign out. Please retry.");
     }
   }
-  if (!productOrigin())
+  if (!productOrigin()) {
+    const destination = new URL("/login", browserDeployment.site);
+    const next = returnPath();
+    if (next) destination.searchParams.set("next", next);
     return (
       <section className="points-panel">
         {showHeading ? <h2>Sign in to Slop</h2> : null}
-        <p>Use GitHub to manage your profile.</p>
-        <a href={`${browserDeployment.site}/login`}>
-          Continue with GitHub on {new URL(browserDeployment.site).hostname}
+        <a
+          className="button primary-button"
+          href={destination.href}
+          aria-label={`Continue with GitHub on ${new URL(browserDeployment.site).hostname}`}
+        >
+          <GithubIcon aria-hidden="true" />
+          Continue with GitHub
         </a>
       </section>
     );
+  }
   return (
     <section className="points-panel">
       {showHeading ? (
@@ -724,15 +736,21 @@ function JoinPoints({
       ) : null}
       {me ? (
         <>
-          <p>
-            5 welcome points ·{" "}
-            <a href={`/contributors/${encodeURIComponent(me.actor.login)}`}>
+          <div className="account-session-actions">
+            <a
+              className="button secondary-button"
+              href={`/contributors/${encodeURIComponent(me.actor.login)}`}
+            >
               Your profile
             </a>
-          </p>
-          <button type="button" onClick={() => void signout()}>
-            Sign out
-          </button>
+            <button
+              className="button ghost-button"
+              type="button"
+              onClick={() => void signout()}
+            >
+              Sign out
+            </button>
+          </div>
           <label>
             <input
               type="checkbox"
@@ -758,25 +776,15 @@ function JoinPoints({
         </>
       ) : (
         <>
-          <p>Use GitHub to manage your profile.</p>
           <button
             className="button primary-button"
             type="button"
             disabled={busy || session === "loading"}
             onClick={() => void start()}
           >
+            <GithubIcon aria-hidden="true" />
             {busy ? "Waiting for GitHub…" : "Continue with GitHub"}
           </button>
-          <label>
-            <input
-              type="checkbox"
-              checked={publish}
-              disabled={busy}
-              onChange={(e) => setPublish(e.target.checked)}
-            />
-            Optional: show my membership publicly. Accepted contributions are
-            already public.
-          </label>
           {busy ? (
             <button
               type="button"
@@ -801,15 +809,29 @@ function JoinPoints({
   );
 }
 export function LoginPage() {
+  const { me } = useContext(Context);
+  useEffect(() => {
+    if (me)
+      window.location.replace(
+        returnPath() ?? `/contributors/${encodeURIComponent(me.actor.login)}`,
+      );
+  }, [me]);
   return (
-    <main className="shell route-main points-page">
-      <h1>Log in</h1>
-      <JoinPoints redirectToProfile showHeading={false} />
+    <main className="shell route-main login-page">
+      <h1>{me ? "Signed in" : "Log in to slop.cash"}</h1>
+      {me ? (
+        <p role="status">Opening your destination…</p>
+      ) : (
+        <JoinPoints showHeading={false} />
+      )}
     </main>
   );
 }
 export function AccountPage() {
   const { me } = useContext(Context);
+  const githubActorId = me ? githubUserIdFromNodeId(me.actor.id) : null;
+  const walletOwner =
+    me && githubActorId ? { githubActorId, githubLogin: me.actor.login } : null;
   return (
     <main className="shell route-main points-page">
       <h1>Account</h1>
@@ -817,7 +839,8 @@ export function AccountPage() {
         <a href="#profile">Profile</a>
         {me ? <a href="#connections">Connections</a> : null}
         <a href="#wallets">Wallets</a>
-        <a href="/earnings">Earnings</a>
+        <a href="/earnings">Payouts</a>
+        <a href="/inbox">Inbox</a>
       </nav>
       <div id="profile">
         <JoinPoints />
@@ -825,7 +848,7 @@ export function AccountPage() {
       <div id="connections">
         <SocialConnections />
       </div>
-      <WalletRegistration />
+      <WalletRegistration owner={walletOwner} />
       <p>
         <a href="/points#rules">Points and earning rules</a>
       </p>
@@ -904,16 +927,13 @@ export function ContributorStandings({
     const params = new URLSearchParams(window.location.search);
     const sort = params.get("sort");
     const period = params.get("period");
-    // `period=new` was the earlier combined control: the new-earner cohort
-    // over recorded history.
+    // `period=new` was an earlier link to recorded history.
     return {
       sort:
         sort === "points" || sort === "money"
           ? sort
           : ("score" as StandingsSort),
       period: period === "lifetime" || period === "new" ? "lifetime" : "month",
-      cohort:
-        params.get("cohort") === "new" || period === "new" ? "new" : "all",
       query: params.get("q") ?? "",
       project: projectId ?? findProject(params.get("project") ?? "")?.id ?? "",
       page: Math.max(
@@ -923,13 +943,11 @@ export function ContributorStandings({
     };
   }, [projectId]);
   const [filters, setFilters] = useState(readFilters);
-  const { sort, period, cohort, query, project, page } = filters;
+  const { sort, period, query, project, page } = filters;
   const setSort = (sort: StandingsSort) =>
     setFilters((v) => ({ ...v, sort, page: 0 }));
   const setPeriod = (period: string) =>
     setFilters((v) => ({ ...v, period, page: 0 }));
-  const setCohort = (cohort: string) =>
-    setFilters((v) => ({ ...v, cohort, page: 0 }));
   const setQuery = (query: string) =>
     setFilters((v) => ({ ...v, query, page: 0 }));
   const setProject = (project: string) =>
@@ -945,7 +963,6 @@ export function ContributorStandings({
     for (const [key, value] of Object.entries({
       sort: sort === "score" ? "" : sort,
       period: period === "month" ? "" : period,
-      cohort: cohort === "all" ? "" : cohort,
       q: query,
       project: projectId ? "" : project,
       page: page ? String(page + 1) : "",
@@ -954,7 +971,7 @@ export function ContributorStandings({
       else url.searchParams.delete(key);
     }
     window.history.replaceState(window.history.state, "", url);
-  }, [sort, period, cohort, query, project, page, projectId]);
+  }, [sort, period, query, project, page, projectId]);
   const { state } = useContext(Context);
   const members = useMemo(() => {
     if (state.status !== "ready") return [];
@@ -967,22 +984,18 @@ export function ContributorStandings({
   const metric = (
     m: ReturnType<typeof contributorStandings>["rows"][number],
   ) => (sort === "score" ? m.score : sort === "points" ? m.points : m.money);
+  const [direct] = useAllDirectTransfers(PROJECTS.map((p) => p.id));
   const projection = contributorStandings(
     scores,
     state.status === "ready" ? members : null,
     period === "month" ? new Date().toISOString().slice(0, 7) : null,
     project,
+    direct.status === "ready" ? direct.transfers : [],
   );
   // Loading and failed sources stay distinct in each column.
   const scoreMissing = scores.status === "loading" ? "Loading…" : "Unavailable";
   const pointsMissing = state.status === "loading" ? "Loading…" : "Unavailable";
   const ranked = projection.rows
-    .filter(
-      (m) =>
-        cohort !== "new" ||
-        (m.firstContributionAt !== null &&
-          Date.parse(m.firstContributionAt) >= Date.now() - 30 * 86400000),
-    )
     .filter((m) => metric(m) !== null)
     .sort((a, b) => {
       const left = metric(a) ?? 0;
@@ -1020,90 +1033,66 @@ export function ContributorStandings({
         <DataNotice state={scores} retry={retryScore ?? retryLoadedScore} />
       ) : null}
       <Notice />
-      {scores.status === "ready" ? (
+      {scores.status === "ready" && !projection.scoreAvailable ? (
         <p className="points-meta">
-          Score records: {formatDate(scores.snapshot.window.from)} to{" "}
-          {formatDate(scores.snapshot.window.to)}, plus closed cycles.
-          {period === "month"
-            ? ` Selected month: ${new Date().toISOString().slice(0, 7)} (UTC).`
-            : " Recorded history; coverage may have gaps."}
-          {!projection.scoreAvailable
-            ? " No score records cover this period. Select Recorded history or retry after the next update."
-            : ""}
+          {compact
+            ? "No score records cover this month yet."
+            : "No score records cover this period. Select Recorded history."}
         </p>
       ) : null}
-      <div className="points-controls">
-        <label>
-          Sort by
-          <select
-            value={sort}
-            onChange={(e) => {
-              setSort(e.target.value as StandingsSort);
-              setPage(0);
-            }}
-          >
-            <option value="score">Slop Score</option>
-            <option value="points">Points</option>
-            <option value="money">Money received</option>
-          </select>
-        </label>
-        <label>
-          Period
-          <select
-            aria-label="Period"
-            value={period}
-            onChange={(e) => {
-              setPeriod(e.target.value);
-              setPage(0);
-            }}
-          >
-            <option value="month">This month (UTC)</option>
-            <option value="lifetime">Recorded history</option>
-          </select>
-        </label>
-        <label>
-          Cohort
-          <select
-            aria-label="Cohort"
-            value={cohort}
-            onChange={(e) => setCohort(e.target.value)}
-          >
-            <option value="all">All contributors</option>
-            <option value="new">New · first contribution in 30 days</option>
-          </select>
-        </label>
-        {!projectId ? (
+      {!compact ? (
+        <div className="points-controls">
+          <fieldset className="points-period">
+            <legend>Period</legend>
+            {(
+              [
+                ["month", "This month (UTC)"],
+                ["lifetime", "Recorded history"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                aria-pressed={period === value}
+                key={value}
+                onClick={() => setPeriod(value)}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+          </fieldset>
+          {!projectId ? (
+            <label>
+              Project
+              <select
+                aria-label="Project"
+                value={project}
+                onChange={(e) => {
+                  setProject(e.target.value);
+                  setPage(0);
+                }}
+              >
+                <option value="">All projects</option>
+                {PROJECTS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           <label>
-            Project
-            <select
-              aria-label="Project"
-              value={project}
+            Find a contributor
+            <input
+              value={query}
               onChange={(e) => {
-                setProject(e.target.value);
+                setQuery(e.target.value);
                 setPage(0);
               }}
-            >
-              <option value="">All projects</option>
-              {PROJECTS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+              type="search"
+            />
           </label>
-        ) : null}
-        <label>
-          Find a contributor
-          <input
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setPage(0);
-            }}
-            type="search"
-          />
-        </label>
-      </div>
+        </div>
+      ) : null}
       {(
         sort === "points"
           ? state.status === "ready"
@@ -1111,9 +1100,6 @@ export function ContributorStandings({
             (sort !== "score" || projection.scoreAvailable)
       ) ? (
         <>
-          <p className="standings-scroll-hint">
-            Scroll the table to see all columns.
-          </p>
           <section
             className="points-table"
             aria-label="Contributor standings table"
@@ -1125,9 +1111,30 @@ export function ContributorStandings({
                 <tr>
                   <th scope="col">Rank</th>
                   <th scope="col">Contributor</th>
-                  <th scope="col">Slop Score</th>
-                  <th scope="col">Points</th>
-                  <th scope="col">Money received · USDC</th>
+                  {(
+                    [
+                      ["score", "Score"],
+                      ["points", "Points"],
+                      ["money", "Amount"],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <th
+                      aria-sort={sort === key ? "descending" : "none"}
+                      key={key}
+                      scope="col"
+                    >
+                      <button
+                        className="points-sort"
+                        onClick={() => setSort(key)}
+                        type="button"
+                      >
+                        {label}
+                        {sort === key ? (
+                          <ArrowDown aria-hidden="true" size={14} />
+                        ) : null}
+                      </button>
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
@@ -1196,17 +1203,6 @@ export function ContributorStandings({
             </button>
           </div>
         </>
-      ) : null}
-      <p className="points-meta">
-        Slop Score measures accepted work. Points record recognition. Money
-        received is verified finalized USDC principal. Equal values share a
-        rank.
-      </p>
-      {compact ? (
-        <p>
-          <a href="/points">Full standings and earning rules</a> ·{" "}
-          <a href="/points#people">Find people</a>
-        </p>
       ) : null}
     </section>
   );

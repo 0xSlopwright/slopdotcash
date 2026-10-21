@@ -1,0 +1,33 @@
+export interface PaymentStackInput {
+  stack?: "test" | "production";
+  network: string;
+  databaseId?: string;
+  databaseName?: string;
+  deployments: unknown;
+  registry: unknown;
+  registryDatabase: { database_name: string; database_id: string };
+}
+export interface PaymentStackConfig {
+  name: string;
+  vars: Record<string, string>;
+  services?: { binding: string; service: string }[];
+  d1_databases: {
+    binding: string;
+    database_name: string;
+    database_id: string;
+    migrations_dir?: string;
+  }[];
+  triggers?: { crons: string[] };
+}
+export interface PaymentStack<Role extends string> {
+  names: Record<Role, string>;
+  configs: Record<Role, PaymentStackConfig>;
+  secret: string;
+}
+/** A production stack has the identity attester only (PRD PAY-04, PAY-05). */
+export declare function paymentStack(
+  input: PaymentStackInput & { stack: "production" },
+): PaymentStack<"attester">;
+export declare function paymentStack(
+  input: PaymentStackInput & { stack?: "test" },
+): PaymentStack<"attester" | "relayer" | "dispatcher">;

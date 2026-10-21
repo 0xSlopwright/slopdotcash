@@ -1,0 +1,55 @@
+# Fee-wallet converter (PRD MVP-07c). Off by default. Releases go only through
+# the checked-in deploy workflow when the SLOP_FEE_CONVERTER_RELEASE repository
+# variable is "enabled". See README.md before changing any value here.
+name = "slop-fee-converter"
+main = "index.ts"
+compatibility_date = "2026-07-30"
+workers_dev = false
+preview_urls = false
+
+# No routes: the Worker runs only on its cron trigger.
+[triggers]
+crons = ["*/15 * * * *"]
+
+[[d1_databases]]
+binding = "FEE_DB"
+database_name = "slop-private"
+database_id = "1b453124-2709-45af-8389-151a8105c461"
+migrations_dir = "../../migrations"
+
+[vars]
+# off | dry_run | live. dry_run quotes and records but never loads a key.
+FEE_CONVERTER_MODE = "off"
+# Comma-separated subset of base,ethereum,robinhood,solana.
+FEE_CONVERTER_NETWORKS = ""
+# Optional operator allowlist, e.g. {"base":["0x..."]}. Project reward assets
+# from D1 are always candidates; arbitrary airdropped tokens never are.
+FEE_CONVERTER_ALLOWLIST = ""
+# Stablecoin micro-units (1 USDC = 1000000).
+FEE_CONVERTER_MIN_VALUE_MICRO = "5000000"
+FEE_CONVERTER_GAS_MULTIPLE = "10"
+FEE_CONVERTER_MAX_SLIPPAGE_BPS = "100"
+FEE_CONVERTER_MAX_PRICE_IMPACT_BPS = "200"
+FEE_CONVERTER_RUN_CAP_MICRO = "1000000000"
+FEE_CONVERTER_DAILY_CAP_MICRO = "5000000000"
+FEE_CONVERTER_SOLANA_FEE_MICRO = "2000"
+# Published network fee wallets (docs/slop-mvp-plan.md MVP-07a). Robinhood
+# Chain and Ethereum fee wallets are not decided; those networks stay
+# disabled until the owner records them here.
+FEE_WALLET_BASE = "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86"
+# Owner decision 19 October 2026: the Base fee wallet is also the Robinhood
+# Chain and Ethereum fee wallet.
+FEE_WALLET_ROBINHOOD = "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86"
+FEE_WALLET_ETHEREUM = "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86"
+FEE_WALLET_SOLANA = "9EyxVhhnCJH4QL5bDsRyukrkHFyitFMuf45UDdLxm4BY"
+KYBERSWAP_CLIENT_ID = "slop-fee-converter"
+
+# Secrets, set only with `wrangler secret put` by the key custodian:
+#   FEE_WALLET_KEY_BASE, FEE_WALLET_KEY_ETHEREUM, FEE_WALLET_KEY_ROBINHOOD,
+#   FEE_WALLET_KEY_SOLANA, optional RPC_URL_<NETWORK> and JUPITER_API_KEY.
+
+[observability]
+enabled = true
+
+  [observability.logs]
+  invocation_logs = false

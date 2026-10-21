@@ -1,3 +1,4 @@
+import { isHistoricalRepositoryId } from "./projects.mjs";
 import { TARGET_REPOSITORIES } from "./repositories.mjs";
 export interface ProfileRecord {
   id: string;
@@ -14,6 +15,11 @@ export interface ProfileIndex {
   schemaVersion: "1" | "2";
   startedAt: string;
   generatedAt: string;
+  /**
+   * Every collected repository, plus the last census of a registered or
+   * legacy repository that is no longer collected. Those counts are carried
+   * unchanged, so a removed project does not erase contributor history.
+   */
   repositories: { repository: string; count: number; excluded: number }[];
   people: ProfileRecord[];
   issues?: ProfileIssueHistory;
@@ -53,8 +59,22 @@ export interface ProfileIssueHistory {
   firstObservedAt: string;
   repositories: { repository: string; count: number }[];
   items: ProfileIssue[];
+  /**
+   * Unchanged records of registered repositories outside this census, such as
+   * a paused project's issues. They are not displayed; a reactivated project
+   * resumes their history.
+   */
+  archived?: ProfileIssue[];
 }
-export function assertProfiles(value: unknown): asserts value is ProfileIndex {
+/**
+ * `targets` defaults to the current active repositories. A previous census
+ * may predate an activation or retirement, so its caller passes its own
+ * registered inventory instead.
+ */
+export function assertProfiles(
+  value: unknown,
+  targets: readonly string[] = TARGET_REPOSITORIES.map((r) => r.id),
+): asserts value is ProfileIndex {
   const v = value as ProfileIndex;
   const validCount = (n: number) => Number.isSafeInteger(n) && n >= 0;
   if (
@@ -67,10 +87,15 @@ export function assertProfiles(value: unknown): asserts value is ProfileIndex {
     !Array.isArray(v.repositories)
   )
     throw Error("Invalid profile census");
-  const targets = TARGET_REPOSITORIES.map((r) => r.id).sort();
+  // Every collected repository is present. A repository outside the census
+  // keeps its last counts only when it is registered or legacy history.
+  const inventory = new Set(v.repositories.map((r) => r.repository));
   if (
-    JSON.stringify(v.repositories.map((r) => r.repository).sort()) !==
-    JSON.stringify(targets)
+    inventory.size !== v.repositories.length ||
+    !targets.every((id) => inventory.has(id)) ||
+    ![...inventory].every(
+      (id) => targets.includes(id) || isHistoricalRepositoryId(id),
+    )
   )
     throw Error("Profile repository inventory mismatch");
   const ids = new Set<string>();
@@ -99,7 +124,7 @@ export function assertProfiles(value: unknown): asserts value is ProfileIndex {
     const repos = new Set<string>();
     for (const r of p.repositories) {
       if (
-        !targets.includes(r.repository) ||
+        !inventory.has(r.repository) ||
         repos.has(r.repository) ||
         ![r.merged, r.open, r.closed].every(validCount)
       )
@@ -117,12 +142,12 @@ export function assertProfiles(value: unknown): asserts value is ProfileIndex {
       (totals.get(r.repository) ?? 0) + r.excluded !== r.count
     )
       throw Error("Incomplete profile census");
-  if (v.schemaVersion === "2") assertProfileIssues(v);
+  if (v.schemaVersion === "2") assertProfileIssues(v, targets);
   else if (v.issues !== undefined)
     throw Error("Unexpected legacy issue census");
 }
 
-function assertProfileIssues(index: ProfileIndex) {
+function assertProfileIssues(index: ProfileIndex, targets: readonly string[]) {
   const history = index.issues;
   const time = (value: string) =>
     typeof value === "string" && Number.isFinite(Date.parse(value));
@@ -131,13 +156,13 @@ function assertProfileIssues(index: ProfileIndex) {
     !time(history.firstObservedAt) ||
     Date.parse(history.firstObservedAt) > Date.parse(index.generatedAt) ||
     !Array.isArray(history.repositories) ||
-    !Array.isArray(history.items)
+    !Array.isArray(history.items) ||
+    (history.archived !== undefined && !Array.isArray(history.archived))
   )
     throw Error("Invalid issue history coverage");
-  const targets = TARGET_REPOSITORIES.map((r) => r.id).sort();
   if (
     JSON.stringify(history.repositories.map((r) => r.repository).sort()) !==
-    JSON.stringify(targets)
+    JSON.stringify([...targets].sort())
   )
     throw Error("Issue repository inventory mismatch");
   const people = new Set(index.people.map((p) => p.id));
@@ -146,13 +171,18 @@ function assertProfileIssues(index: ProfileIndex) {
   const reason = (value: string | null) =>
     value === null ||
     (typeof value === "string" && /^[A-Z_]{1,64}$/.test(value));
-  for (const issue of history.items) {
+  const records = [...history.items, ...(history.archived ?? [])];
+  for (const [position, issue] of records.entries()) {
+    const archived = position >= history.items.length;
     if (
       !issue ||
       typeof issue.id !== "string" ||
       !issue.id ||
       ids.has(issue.id) ||
-      !targets.includes(issue.repository) ||
+      (archived
+        ? targets.includes(issue.repository) ||
+          !isHistoricalRepositoryId(issue.repository)
+        : !targets.includes(issue.repository)) ||
       !Number.isSafeInteger(issue.number) ||
       issue.number <= 0 ||
       (issue.authorId !== null && !people.has(issue.authorId)) ||
@@ -178,7 +208,7 @@ function assertProfileIssues(index: ProfileIndex) {
     )
       throw Error("Invalid issue history record");
     ids.add(issue.id);
-    if (issue.unavailableSince === null)
+    if (!archived && issue.unavailableSince === null)
       counts.set(issue.repository, (counts.get(issue.repository) ?? 0) + 1);
     const events = new Set<string>();
     let previous = Date.parse(issue.createdAt);
@@ -285,7 +315,10 @@ export function profileIssueOutcomes(
       new Date(occurredAt).toISOString().slice(0, 7) !== period
     )
       continue;
-    if (issue.unavailableSince !== null) {
+    if (
+      issue.unavailableSince !== null &&
+      Date.parse(issue.unavailableSince) < end
+    ) {
       counts.unavailable++;
       continue;
     }

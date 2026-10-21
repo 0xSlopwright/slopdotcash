@@ -4,6 +4,9 @@ compatibility_date = "2026-07-30"
 
 [vars]
 PUBLIC_SITE_URL = "https://slop.cash"
+# GitHub numeric actor IDs allowed to review project applications: lalalune
+# and drew-dot-com. Admin email recipients live in workers/notify.
+ADMIN_GITHUB_IDS = "18633264,202660855"
 
 [[d1_databases]]
 binding = "SLOP_DB"
@@ -18,6 +21,11 @@ bucket_name = "slop-private-traces"
 [[services]]
 binding = "SLOP_IDENTITY"
 service = "slop-identity"
+
+# Released by the protected production workflow before Pages publication.
+[[services]]
+binding = "SLOP_NOTIFY"
+service = "slop-notify"
 
 # Cloudflare's non-inheritable bindings must be declared separately for every
 # environment. Keeping preview explicit and binding-free prevents preview

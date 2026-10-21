@@ -13,8 +13,15 @@ on:
       - 'src/Earnings.tsx'
       - 'src/EscrowFunding.tsx'
       - 'src/ProjectProposalPage.tsx'
+      - 'src/WalletRegistration.tsx'
+      - 'src/lib/wallets.ts'
+      - 'src/lib/wallet-registration.ts'
+      - 'src/lib/funding-address.*'
+      - 'src/lib/project-schema.*'
+      - 'scripts/check-payout-test-funding.mjs'
       - 'scripts/*escrow*'
       - 'scripts/prepare-payment-deployments.ts'
+      - 'scripts/check-payout-readiness.ts'
       - 'scripts/test-payout-browser.mjs'
       - 'migrations/**'
       - 'package.json'
@@ -30,7 +37,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  base:
+  evm:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -48,7 +55,11 @@ jobs:
         with:
           version: v1.7.1
       - run: bun install --frozen-lockfile --ignore-scripts
-      - run: bun run test:contracts:base
+      - run: forge fmt --root contracts/evm --check
+      - run: forge build --root contracts/evm --sizes
+      - run: forge test --root contracts/evm
+      - run: bun run test:escrow-policy
+      - run: bun run test:contracts:evm
       - run: bun run test:payments
       - run: bunx playwright install --with-deps chromium
       - run: bunx vite build

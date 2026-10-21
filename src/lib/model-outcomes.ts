@@ -22,6 +22,8 @@ const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
   "z.ai": "zai",
   "z-ai": "zai",
   "moonshot-ai": "moonshotai",
+  spacexai: "xai",
+  "x-ai": "xai",
 };
 
 export interface ModelIdentityKey {
@@ -42,7 +44,9 @@ export function modelIdentityKey(
   model: string,
 ): ModelIdentityKey {
   const rawProvider = provider.trim().toLowerCase();
-  const normalizedProvider = PROVIDER_ALIASES[rawProvider] ?? rawProvider;
+  const normalizedProvider = Object.hasOwn(PROVIDER_ALIASES, rawProvider)
+    ? PROVIDER_ALIASES[rawProvider]
+    : rawProvider;
   let normalizedModel = model.trim().toLowerCase();
   const prefixes = [
     normalizedProvider,

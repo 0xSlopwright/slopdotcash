@@ -4,6 +4,7 @@ import {
   isExactProviderIdentifier,
 } from "./model-identity";
 import { findProject, type ProjectId } from "./projects.mjs";
+import { isRecord } from "./record-validation";
 import type { ProjectRunReceipt } from "./run-receipts";
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
@@ -49,10 +50,6 @@ export interface ReviewRecord {
 export interface ReviewRecordContext {
   artifactUrl: string;
   headSha: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function boundedStrings(value: unknown, field: string): string[] {

@@ -49,7 +49,8 @@ other actors follow in actor-ID order; the first actors receive the remainder.
 Each actor keeps at least one third. The author's event keeps the
 `<pull-request-node-id>:merged` ID and the only evidence bonus; each other
 actor's event is `<pull-request-node-id>:merged:<actor-node-id>`. A formal
-review by any credit actor of the same pull request is a self-review.
+review, a `slop-review` record, or a `slop-score` ratification by any credit
+actor of the same pull request is a self-review and earns no review credit.
 
 ## Review credit
 
@@ -68,6 +69,17 @@ ignored, and reviews without a recorded commit publish `unchanged-outcome`;
 other qualifying reviews publish `pull-request-review-awarded`. Higher review
 tiers still come only from maintainer-ratified review records or evaluated
 contributions.
+
+Payment-only amendment for #683 (owner decision, 14 October 2026): ordinary
+review payment eligibility changes at `2026-10-09T23:21:35.388Z`, the successful
+production release of SCR-05, rather than October 1. See the
+[PRD amendment](../docs/slop-product-requirements.md#scr-05-payment-cutoff-amendment--14-october-2026)
+for release evidence. Pre-release qualifying approvals and change requests
+retain standard payment weight. Public Slop Score and Points keep the October
+1 rule above. New snapshots publish `paymentReviewBasis` with policy
+`scr-05-payments-production-v1`, its cutoff, and the separately validated
+allocation ledger. October and later payment proposals require this basis;
+missing evidence fails closed. Earlier closed cycles remain unchanged.
 
 Formal review collection is independent of the reviewed pull-request author's
 full-detail hydration cap. Before detail hydration, the generator performs a

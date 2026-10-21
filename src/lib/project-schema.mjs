@@ -1,17 +1,40 @@
 import { assertEscrowPolicy } from "./escrow-policy.mjs";
-import { assertFreshCyclePaymentPolicy } from "./fresh-cycle-policy.mjs";
 /**
  * Validates untrusted project folders before they enter discovery, ingestion,
  * skills, or money-shaped views. The schema is intentionally narrow so a pull
  * request cannot smuggle executable configuration or ambiguous reward terms.
  */
 
-import { assertFundingAddresses } from "./funding-address.mjs";
 import {
-  assertFundingCommitments,
-  assertMonthlyCommitmentPolicy,
-  hasActiveFundingCommitment,
-} from "./funding-instruments.mjs";
+  assertFundingAddresses,
+  fundingAssetForNetwork,
+} from "./funding-address.mjs";
+import {
+  assertRewardAsset,
+  REWARD_ASSET_NETWORK_IDS,
+} from "./reward-asset.mjs";
+import { assertSecurityBountyTerms } from "./security-bounty.mjs";
+
+/**
+ * The canonical generic templates every generated project skill renders from
+ * (PRD SKL-03). A project names one as its skill source path.
+ */
+export const PROJECT_SKILL_TEMPLATES = Object.freeze({
+  contributor: "skills/project-contributor-template",
+  reviewer: "skills/project-reviewer-template",
+});
+
+/** Maintainer-authored fields, in render order, that generate project skills. */
+export const CONTRIBUTION_FIELDS = Object.freeze([
+  "approvedScope",
+  "contributionGuide",
+  "supportedTasks",
+  "requiredTests",
+  "reviewExpectations",
+  "securityContact",
+  "closurePolicy",
+  "maintainerNotes",
+]);
 
 const PROJECT_KEYS = [
   "authority",
@@ -33,6 +56,17 @@ const PROJECT_KEYS = [
   "status",
   "steward",
   "terms",
+];
+/**
+ * Optional manifest sections. `rewardAsset` and `contribution` arrive with
+ * the D1 registry; older revisions omit them.
+ */
+const OPTIONAL_PROJECT_KEYS = [
+  "escrow",
+  "participation",
+  "rewardAsset",
+  "contribution",
+  "securityBounty",
 ];
 export const MAX_MONTHLY_CAP_MINOR = 1_000_000_000_000_000n;
 
@@ -755,9 +789,15 @@ function validateSkill(
   if (publicPath && !hasPublishAtRoot && !allowLegacyMissingPublishAtRoot) {
     throw new TypeError(`${field}.publishAtRoot is required`);
   }
+  // A generated skill names its canonical template; a historical project
+  // names its own committed skill folder.
+  const template = publicPath
+    ? PROJECT_SKILL_TEMPLATES.contributor
+    : PROJECT_SKILL_TEMPLATES.reviewer;
   if (
     skill.id !== expectedId ||
-    skill.sourcePath !== `skills/${expectedId}` ||
+    (skill.sourcePath !== `skills/${expectedId}` &&
+      skill.sourcePath !== template) ||
     (publicPath &&
       (skill.publicPath !== publicPath ||
         (hasPublishAtRoot && typeof skill.publishAtRoot !== "boolean")))
@@ -765,6 +805,27 @@ function validateSkill(
     throw new TypeError(`${field} does not match its project identity`);
   }
   return skill;
+}
+
+/**
+ * Maintainer-authored text that generated skills carry as data. Strings must
+ * be well-formed Unicode so every renderer serializes the same bytes.
+ */
+function validateContribution(value) {
+  const contribution = record(value, "project.contribution");
+  exactKeys(contribution, [...CONTRIBUTION_FIELDS], "project.contribution");
+  for (const field of CONTRIBUTION_FIELDS) {
+    const entry = contribution[field];
+    if (
+      typeof entry !== "string" ||
+      !entry.isWellFormed() ||
+      entry.length < (field === "approvedScope" ? 6 : 0) ||
+      entry.length > 2000
+    ) {
+      throw new TypeError(`project.contribution.${field} is invalid`);
+    }
+  }
+  return contribution;
 }
 
 function validateExternalEvaluations(value, field) {
@@ -825,7 +886,11 @@ function validateReviewBudget(value, field, poolPaymentMode) {
 function validateReward(
   value,
   field,
-  { allowLegacyExternalPrizeFee = false, escrow = undefined } = {},
+  {
+    allowLegacyExternalPrizeFee = false,
+    escrow = undefined,
+    rewardAsset = undefined,
+  } = {},
 ) {
   const reward = record(value, field);
   const hasExternal = Object.hasOwn(reward, "externalOpportunity");
@@ -888,14 +953,27 @@ function validateReward(
   }
   if (reward.kind === "monthly-pool") {
     const paymentsDisabled = reward.paymentMode === "disabled";
+    // A chosen reward asset fixes the network and the paid symbol. Without
+    // one, each settlement network has one approved stablecoin (FND-02).
+    const legacyRail =
+      !escrow &&
+      (reward.chain === "solana" || reward.chain === "base") &&
+      (rewardAsset === undefined || rewardAsset.kind === "stablecoin");
     if (
       hasExternal ||
-      reward.currency !== "USDC" ||
+      (rewardAsset !== undefined && rewardAsset.network !== reward.chain) ||
+      reward.currency !==
+        (rewardAsset?.symbol ?? fundingAssetForNetwork(reward.chain)) ||
       // `reward.chain` is the project's one settlement network (RFC #472).
-      // An escrow project settles on its escrow chain.
+      // An escrow project settles on its escrow chain. Before it adopts an
+      // escrow policy, a project names Base or Solana with a stablecoin, or
+      // declares another reviewed reward asset as display metadata only.
       (escrow
         ? reward.chain !== escrow.chain
-        : reward.chain !== "solana" && reward.chain !== "base") ||
+        : !legacyRail &&
+          (rewardAsset === undefined ||
+            !REWARD_ASSET_NETWORK_IDS.includes(reward.chain) ||
+            reward.paymentMode !== "disabled")) ||
       reward.unusedFunds !== "rollover-without-cap-increase" ||
       (paymentsDisabled
         ? !(
@@ -980,20 +1058,11 @@ function validateReward(
   return reward;
 }
 
-function validateFunding(value, projectId, settlementNetwork) {
+function validateFunding(value, projectId) {
   const funding = record(value, "project.funding");
-  const hasCommitments = Object.hasOwn(funding, "commitments");
-  const hasPaymentPolicy = Object.hasOwn(funding, "freshCyclePaymentPolicy");
   exactKeys(
     funding,
-    [
-      "addresses",
-      ...(hasCommitments ? ["commitments"] : []),
-      ...(hasPaymentPolicy ? ["freshCyclePaymentPolicy"] : []),
-      "disclosure",
-      "mode",
-      "recordsPath",
-    ],
+    ["addresses", "disclosure", "mode", "recordsPath"],
     "project.funding",
   );
   if (
@@ -1005,38 +1074,6 @@ function validateFunding(value, projectId, settlementNetwork) {
     throw new TypeError("project.funding non-custodial policy is invalid");
   }
   assertFundingAddresses(funding.addresses, "project.funding.addresses");
-  if (hasCommitments) {
-    assertFundingCommitments(
-      funding.commitments,
-      "project.funding.commitments",
-    );
-  }
-  if (hasPaymentPolicy) {
-    const policy = assertFreshCyclePaymentPolicy(
-      funding.freshCyclePaymentPolicy,
-    );
-    // The instrument must settle on the project's network (RFC #472): a
-    // Squads vault on Solana, or a Base Sablier stream with a reviewed
-    // recipient actor who attests control of the source address.
-    const fundsNetwork = (v) =>
-      settlementNetwork === "base"
-        ? v.kind === "sablier-lockup-v4" &&
-          v.network === "base" &&
-          v.recipientGithub !== undefined
-        : v.kind === "squads-v4-vault" || v.kind === "squads-project-vault";
-    if (
-      policy.projectId !== projectId ||
-      !(funding.commitments ?? []).some(
-        (v) =>
-          fundsNetwork(v) &&
-          v.replacedAt === null &&
-          v.monthlyCommitment?.cycleId === policy.cycleId,
-      )
-    )
-      throw new TypeError(
-        "Fresh-cycle policy requires its exact active monthly instrument on the settlement network",
-      );
-  }
   return funding;
 }
 
@@ -1047,7 +1084,6 @@ function validateProjectDefinition(
     allowLegacyMissingPublishAtRoot = false,
     allowLegacyExternalPrizeFee = false,
     allowLegacyUnsupportedOwnershipClaim = false,
-    allowLegacyCommitmentPolicy = false,
   } = {},
 ) {
   const project = record(value, "project");
@@ -1056,13 +1092,11 @@ function validateProjectDefinition(
     allowLegacyMissingListingTier && !("listingTier" in project)
       ? [
           ...PROJECT_KEYS.filter((key) => key !== "listingTier"),
-          ...(Object.hasOwn(project, "escrow") ? ["escrow"] : []),
-          ...(Object.hasOwn(project, "participation") ? ["participation"] : []),
+          ...OPTIONAL_PROJECT_KEYS.filter((key) => Object.hasOwn(project, key)),
         ]
       : [
           ...PROJECT_KEYS,
-          ...(Object.hasOwn(project, "escrow") ? ["escrow"] : []),
-          ...(Object.hasOwn(project, "participation") ? ["participation"] : []),
+          ...OPTIONAL_PROJECT_KEYS.filter((key) => Object.hasOwn(project, key)),
         ],
     "project",
   );
@@ -1089,15 +1123,22 @@ function validateProjectDefinition(
   text(project.eyebrow, "project.eyebrow", { max: 80, min: 3 });
   text(project.headline, "project.headline", { max: 120, min: 8 });
   text(project.description, "project.description", { max: 600, min: 24 });
+  if (project.contribution !== undefined)
+    validateContribution(project.contribution);
   if (
     !(allowLegacyMissingListingTier && !("listingTier" in project)) &&
     project.listingTier !== "featured" &&
-    project.listingTier !== "community"
+    project.listingTier !== "community" &&
+    project.listingTier !== "retired"
   ) {
     throw new TypeError("project.listingTier is invalid");
   }
   if (project.status !== "active" && project.status !== "paused") {
     throw new TypeError("project.status is invalid");
+  }
+  // A retired manifest only resolves immutable history; it never collects.
+  if (project.listingTier === "retired" && project.status !== "paused") {
+    throw new TypeError("retired projects must stay paused");
   }
   if (project.participation !== undefined) {
     const participation = record(
@@ -1156,22 +1197,45 @@ function validateProjectDefinition(
     "project.reviewSkill",
     `review-${id}-contributions`,
   );
+  if (project.rewardAsset !== undefined) {
+    assertRewardAsset(project.rewardAsset);
+    if (project.reward?.kind !== "monthly-pool")
+      throw new TypeError("project.rewardAsset requires a monthly pool");
+  }
+  // Generated skills render from both templates and the maintainer fields.
+  const generated =
+    project.skill.sourcePath === PROJECT_SKILL_TEMPLATES.contributor;
+  if (
+    generated !==
+      (project.reviewSkill.sourcePath === PROJECT_SKILL_TEMPLATES.reviewer) ||
+    (generated && project.contribution === undefined)
+  ) {
+    throw new TypeError(
+      "generated project skills need both templates and project.contribution",
+    );
+  }
   validateReward(project.reward, "project.reward", {
     allowLegacyExternalPrizeFee,
     escrow: project.escrow,
+    rewardAsset: project.rewardAsset,
   });
-  validateFunding(project.funding, id, project.reward.chain);
+  validateFunding(project.funding, id);
+  if (project.securityBounty !== undefined)
+    assertSecurityBountyTerms(project.securityBounty, {
+      repositories,
+      reward: project.reward,
+    });
+  // Escrow is the only funding mode, and the escrow vault holds the balance.
+  // No manifest instrument can back a committed amount or an enabled payment.
   if (
-    (project.reward.fundingState === "committed" ||
-      project.reward.reviewBudget?.fundingState === "committed") &&
-    !hasActiveFundingCommitment(project.funding.commitments)
+    project.reward.fundingState === "committed" ||
+    project.reward.reviewBudget?.fundingState === "committed"
   ) {
     throw new TypeError(
-      "project.reward committed funding requires an active commitment instrument",
+      "project.reward committed funding is unsupported; fund the project escrow",
     );
   }
   validateSteward(project.steward);
-  if (!allowLegacyCommitmentPolicy) assertMonthlyCommitmentPolicy(project);
   validateAuthority(project.authority, repositories[0]);
   validateTerms(
     project.terms,
@@ -1227,7 +1291,18 @@ function validateProjectDefinition(
   }
   for (const [name, value] of Object.entries(links)) {
     text(name, "project link name", { max: 40, pattern: /^[a-z][a-z0-9-]*$/u });
-    url(value, `project.links.${name}`);
+    url(
+      value,
+      `project.links.${name}`,
+      name === "x" ? "https://x.com" : undefined,
+    );
+    if (
+      name === "x" &&
+      (new URL(value).search ||
+        !/^\/[A-Za-z0-9_]{1,15}$/u.test(new URL(value).pathname))
+    ) {
+      throw new TypeError("project.links.x must be an X profile URL");
+    }
   }
   return project;
 }
@@ -1248,22 +1323,22 @@ export function assertHistoricalProjectDefinition(value) {
     allowLegacyMissingPublishAtRoot: true,
     allowLegacyExternalPrizeFee: true,
     allowLegacyUnsupportedOwnershipClaim: true,
-    allowLegacyCommitmentPolicy: true,
   });
 }
 
 /** Validates uniqueness and trust boundaries across the full registry. */
 export function assertProjectRegistry(values) {
-  if (!Array.isArray(values) || values.length === 0 || values.length > 100) {
-    throw new TypeError("project registry must contain 1 to 100 projects");
+  // Projects are added on slop.cash, so a new registry starts empty.
+  if (!Array.isArray(values) || values.length > 100) {
+    throw new TypeError("project registry must contain 0 to 100 projects");
   }
   const projects = values.map(assertProjectDefinition);
   if (
-    projects.filter((project) => project.skill.publishAtRoot === true)
-      .length !== 1
+    projects.filter((project) => project.skill.publishAtRoot === true).length >
+    1
   ) {
     throw new TypeError(
-      "project registry must declare exactly one root-published contributor skill",
+      "project registry must declare at most one root-published contributor skill",
     );
   }
   for (const [field, entries] of [

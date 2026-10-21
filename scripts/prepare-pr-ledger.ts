@@ -8,6 +8,9 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
   assertLeaderboardSnapshot,
+  assignLeaderboardRanks,
+  compareRankedEntries,
+  createLeaderboardSnapshot,
   LEADERBOARD_SCHEMA_VERSION,
   type LeaderboardEntry,
   type LeaderboardSnapshot,
@@ -17,7 +20,11 @@ import {
   type ScoreEvent,
 } from "../src/lib/leaderboard";
 import { isUnavailableModelIdentifier } from "../src/lib/model-identity";
-import { REGISTERED_REPOSITORIES } from "../src/lib/repositories.mjs";
+import { findProject } from "../src/lib/projects.mjs";
+import {
+  REGISTERED_REPOSITORIES,
+  TARGET_REPOSITORIES,
+} from "../src/lib/repositories.mjs";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -101,16 +108,69 @@ function rebindTransferredRepositoryPresentation(
     : candidate;
 }
 
+/**
+ * A project activated in code has no collected rows in the deployed ledger
+ * yet. Insert its repositories, in registry order and without events, so the
+ * pull-request checks see the current target registry. Trusted builds collect
+ * the repository from GitHub instead.
+ */
+function addActivatedRepositories(candidate: JsonRecord): JsonRecord {
+  const repositories = array(candidate.repositories, "snapshot.repositories");
+  const source = record(candidate.source, "snapshot.source");
+  const sourceRepositories = array(
+    source.repositories,
+    "snapshot.source.repositories",
+  );
+  const deployedIds = repositories.map(
+    (value, index) => record(value, `snapshot.repositories[${index}]`).id,
+  );
+  const targetIds = TARGET_REPOSITORIES.map((repository) => repository.id);
+  let cursor = 0;
+  for (const id of deployedIds) {
+    cursor = targetIds.indexOf(String(id), cursor);
+    if (cursor < 0) return candidate;
+    cursor += 1;
+  }
+  if (deployedIds.length === targetIds.length) return candidate;
+  const nextRepositories: unknown[] = [];
+  const nextSourceRepositories: unknown[] = [];
+  for (const target of TARGET_REPOSITORIES) {
+    const index = deployedIds.indexOf(target.id);
+    if (index >= 0) {
+      nextRepositories.push(repositories[index]);
+      nextSourceRepositories.push(sourceRepositories[index]);
+      continue;
+    }
+    const project = findProject(target.projectId);
+    if (project?.repositories[0]?.id !== target.id) {
+      throw new TypeError(
+        `activated repository ${target.id} has no recorded GraphQL node ID`,
+      );
+    }
+    const {
+      aliases: _aliases,
+      expectedNodeId: _expectedNodeId,
+      ...published
+    } = target;
+    nextRepositories.push(published);
+    nextSourceRepositories.push({
+      id: target.id,
+      repositoryId: project.authority.repositoryNodeId,
+    });
+  }
+  return {
+    ...candidate,
+    repositories: nextRepositories,
+    source: { ...source, repositories: nextSourceRepositories },
+  };
+}
+
 function actorId(value: unknown): string {
   const actor = record(value, "actor");
   if (typeof actor.id !== "string" || actor.id.length === 0) {
     throw new TypeError("actor.id must be a non-empty string");
   }
   return actor.id;
-}
-
-function codeUnitCompare(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function eventThirds(event: ScoreEvent): number {
@@ -255,19 +315,8 @@ function rebuildLeaders(
       ),
     };
   });
-  leaders.sort(
-    (left, right) =>
-      right.scoreThirds - left.scoreThirds ||
-      codeUnitCompare(
-        left.actor.login.toLowerCase(),
-        right.actor.login.toLowerCase(),
-      ) ||
-      codeUnitCompare(left.actor.login, right.actor.login) ||
-      codeUnitCompare(left.actor.id, right.actor.id),
-  );
-  leaders.forEach((leader, index) => {
-    leader.rank = index + 1;
-  });
+  leaders.sort(compareRankedEntries);
+  assignLeaderboardRanks(leaders);
   return leaders;
 }
 
@@ -312,6 +361,76 @@ function retainCausalAttributions(
   });
 }
 
+/**
+ * With no active project nothing is collected, so the deployed rows belong to
+ * no current repository. Rebuild the empty snapshot over the deployed window.
+ */
+function emptyRegistryLedger(input: JsonRecord): LeaderboardSnapshot {
+  const window = record(input.window, "snapshot.window");
+  const source = record(input.source, "snapshot.source");
+  const rateLimit = record(source.rateLimit, "snapshot.source.rateLimit");
+  const evidence = record(
+    source.evidenceVerification,
+    "snapshot.source.evidenceVerification",
+  );
+  const generatedAt = String(input.generatedAt);
+  const windowFrom = String(window.from);
+  const windowTo = String(window.to);
+  return createLeaderboardSnapshot({
+    generatedAt,
+    windowFrom,
+    windowTo,
+    sourceUpdatedAt: windowTo,
+    source: {
+      provider: "github-graphql",
+      fetchedAt: generatedAt,
+      cutoffAt: windowTo,
+      repositoryId: null,
+      repositories: [],
+      requestCount: 1,
+      searchSliceCount: 0,
+      rateLimit: {
+        cost: Number(rateLimit.cost),
+        limit: Number(rateLimit.limit),
+        remaining: Number(rateLimit.remaining),
+        resetAt: String(rateLimit.resetAt),
+      },
+      counts: {
+        mergedPullRequests: 0,
+        detailedMergedPullRequests: 0,
+        closedIssues: 0,
+        detailedClosedIssues: 0,
+        resolvedIssues: 0,
+        openIssues: 0,
+        openPullRequests: 0,
+      },
+      verificationWindow: {
+        days: Number(window.days),
+        from: windowFrom,
+        to: windowTo,
+      },
+      evidenceVerification: {
+        status: "complete",
+        sourceCount: 0,
+        artifactCount: 0,
+        maxSources: Number(evidence.maxSources),
+        maxArtifacts: Number(evidence.maxArtifacts),
+      },
+    },
+    mergedPullRequestOutcomes: [],
+    mergedPullRequests: [],
+    reviewedMergedPullRequests: [],
+    detailEligibleMergedPullRequestIds: [],
+    closedIssueCount: 0,
+    resolvedIssues: [],
+    openIssues: [],
+    openPullRequests: [],
+    verificationWindowFrom: windowFrom,
+    verifiedEvidence: [],
+    evaluatedContributions: [],
+  });
+}
+
 export function preparePullRequestLedger(value: unknown): LeaderboardSnapshot {
   const input = record(value, "snapshot");
   if (
@@ -320,12 +439,17 @@ export function preparePullRequestLedger(value: unknown): LeaderboardSnapshot {
   ) {
     throw new TypeError("snapshot.generatedAt cannot be in the future");
   }
-  const candidate = rebindTransferredRepositoryPresentation(
-    record(value, "snapshot"),
+  if (TARGET_REPOSITORIES.length === 0) return emptyRegistryLedger(input);
+  const candidate = addActivatedRepositories(
+    rebindTransferredRepositoryPresentation(record(value, "snapshot")),
   );
   if (candidate.schemaVersion === LEADERBOARD_SCHEMA_VERSION) {
     assertLeaderboardSnapshot(candidate);
-    return candidate as unknown as LeaderboardSnapshot;
+    const leaders = candidate.leaders
+      .map((leader) => ({ ...leader }))
+      .sort(compareRankedEntries);
+    assignLeaderboardRanks(leaders);
+    return { ...candidate, leaders };
   }
   if (candidate.schemaVersion !== "5") {
     throw new TypeError("deployed ledger is not schema 5 or 6");

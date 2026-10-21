@@ -47,13 +47,15 @@ const rootPublishedProjects = PROJECTS.filter(
 const externalPrizeProjects = PROJECTS.filter(
   (project) => project.reward.kind === "external-prize-share",
 );
-if (rootPublishedProjects.length !== 1 || externalPrizeProjects.length === 0) {
+if (rootPublishedProjects.length > 1) {
   throw new TypeError(
-    "evidence capture requires one root-published project and an external-prize project",
+    "evidence capture allows at most one root-published project",
   );
 }
-const rootPublishedProjectId = rootPublishedProjects[0].id;
-const representativeExternalPrizeProjectId = externalPrizeProjects[0].id;
+// The registry may be empty; the walkthrough visits only listed projects.
+const rootPublishedProjectId = rootPublishedProjects[0]?.id ?? null;
+const representativeExternalPrizeProjectId =
+  externalPrizeProjects[0]?.id ?? null;
 
 function run(command, args) {
   return new Promise((resolvePromise, reject) => {
@@ -497,6 +499,17 @@ try {
       viewport,
     });
     const page = await context.newPage();
+    // The site reads the project registry from D1 at startup. A local
+    // preview has no Pages Functions, so it serves the committed snapshot
+    // the build ingested; production evidence reads the live API.
+    if (mode !== "production")
+      await page.route("**/api/v1/projects", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json; charset=utf-8",
+          body: JSON.stringify({ schemaVersion: "1", projects: PROJECTS }),
+        }),
+      );
     page.on("console", (message) => {
       log.console.push({
         page: name,
@@ -568,25 +581,28 @@ try {
       await page.locator("#leaderboard").scrollIntoViewIfNeeded();
       await page.waitForTimeout(900);
 
-      await page.goto(
-        `${baseUrl}/projects/${rootPublishedProjectId}?evidence=${cacheKey}`,
-        {
-          waitUntil: "networkidle",
-        },
-      );
-      await page.locator("h1").waitFor({ state: "visible" });
-      await page.locator("#start").scrollIntoViewIfNeeded();
-      await page.waitForTimeout(900);
-      await page.getByText("Cycle allocation details", { exact: true }).click();
-      await page.locator(".project-leader-section").scrollIntoViewIfNeeded();
-      await page.waitForTimeout(900);
+      if (rootPublishedProjectId !== null) {
+        await page.goto(
+          `${baseUrl}/projects/${rootPublishedProjectId}?evidence=${cacheKey}`,
+          {
+            waitUntil: "networkidle",
+          },
+        );
+        await page.locator("h1").waitFor({ state: "visible" });
+        await page.locator("#start").scrollIntoViewIfNeeded();
+        await page.waitForTimeout(900);
+        await page.locator("#contributors").scrollIntoViewIfNeeded();
+        await page.waitForTimeout(900);
+      }
 
-      await page.goto(
-        `${baseUrl}/projects/${representativeExternalPrizeProjectId}?evidence=${cacheKey}`,
-        { waitUntil: "networkidle" },
-      );
-      await page.locator("h1").waitFor({ state: "visible" });
-      await page.waitForTimeout(900);
+      if (representativeExternalPrizeProjectId !== null) {
+        await page.goto(
+          `${baseUrl}/projects/${representativeExternalPrizeProjectId}?evidence=${cacheKey}`,
+          { waitUntil: "networkidle" },
+        );
+        await page.locator("h1").waitFor({ state: "visible" });
+        await page.waitForTimeout(900);
+      }
 
       await page.goto(`${baseUrl}/projects/new?evidence=${cacheKey}`, {
         waitUntil: "networkidle",

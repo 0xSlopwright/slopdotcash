@@ -102,7 +102,11 @@ export function assertScoreRatificationRecord(
   )
     throw new TypeError("score record workUnitId is invalid");
   const tier = record.tier as ScoreTier;
-  if (!(tier in SCORE_TIERS) || record.scoreThirds !== SCORE_TIERS[tier])
+  if (
+    typeof tier !== "string" ||
+    !(tier in SCORE_TIERS) ||
+    record.scoreThirds !== SCORE_TIERS[tier]
+  )
     throw new TypeError("score record tier and scoreThirds do not match");
   if (
     !Array.isArray(record.proposalReviewNodeIds) ||

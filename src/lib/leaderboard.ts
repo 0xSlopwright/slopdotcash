@@ -42,6 +42,7 @@ import type {
   WorkItemModelStatus,
   WorkItemSelection,
 } from "./leaderboard-types";
+import { isRecord } from "./record-validation";
 import { REVIEW_VALUE_THIRDS, VALUE_TIERS } from "./value-assessment";
 
 export type {
@@ -136,7 +137,7 @@ export {
 } from "./repositories.mjs";
 
 /** Backward-compatible alias for the primary registry repository. */
-export const LEADERBOARD_REPOSITORY = PRIMARY_REPOSITORY.id;
+export const LEADERBOARD_REPOSITORY = PRIMARY_REPOSITORY?.id ?? null;
 export const LEADERBOARD_SCHEMA_VERSION = "6" as const;
 export const PROFILE_OPPORTUNITY_LIMIT = 5 as const;
 export const SCORE_RULE_VERSION = "slop-score-v2" as const;
@@ -146,6 +147,9 @@ const USAGE_NEUTRAL_EVIDENCE_POLICY_AT = "2026-08-19T00:00:00.000Z" as const;
 // ordinary formal review scores only when the code changed after it requested
 // changes, at most once per pull request and at triage weight.
 export const OUTCOME_FIRST_POLICY_AT = "2026-10-01T00:00:00.000Z" as const;
+// #683: first successful production deployment of SCR-05 (run 38001124966).
+export const PAYMENT_REVIEW_POLICY_AT = "2026-10-09T23:21:35.388Z" as const;
+export const PAYMENT_REVIEW_POLICY = "scr-05-payments-production-v1" as const;
 // A 35-day collection window guarantees a complete prior UTC calendar month;
 // project reward views still exclude everything before their reward start.
 export const SCORE_WINDOW_DAYS = 35;
@@ -346,12 +350,9 @@ interface AttributionDeclarationLine {
 interface AttributionMarkerRecord {
   end: number;
   payload: string;
+  slop: boolean;
   start: number;
   version: "v1" | "v2";
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeLabel(value: string): string {
@@ -435,8 +436,9 @@ function attributionMarkerRecords(body: string): AttributionMarkerRecord[] {
       return {
         end: record.start + leadingWhitespace + raw.length,
         payload: marker[3].trim(),
+        slop: marker[2] !== undefined,
         start: record.start + leadingWhitespace,
-        version: marker[2] ? "v2" : (marker[1].toLowerCase() as "v1" | "v2"),
+        version: marker[1] ? (marker[1].toLowerCase() as "v1" | "v2") : "v1",
       };
     })
     .filter((record): record is AttributionMarkerRecord => record !== null);
@@ -505,7 +507,17 @@ function compareCodeUnits(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-function compareRankedEntries(
+export function compareRankedEntries(
+  left: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
+  right: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
+): number {
+  return (
+    right.scoreThirds - left.scoreThirds ||
+    compareCodeUnits(left.actor.id, right.actor.id)
+  );
+}
+
+function compareLegacyRankedEntries(
   left: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
   right: Pick<MutableLeaderboardEntry, "actor" | "scoreThirds">,
 ): number {
@@ -518,6 +530,17 @@ function compareRankedEntries(
     compareCodeUnits(left.actor.login, right.actor.login) ||
     compareCodeUnits(left.actor.id, right.actor.id)
   );
+}
+
+/** Assign competition ranks to entries already sorted by exact score. */
+export function assignLeaderboardRanks(
+  leaders: { rank: number; scoreThirds: number }[],
+): void {
+  leaders.forEach((entry, index) => {
+    const previous = leaders[index - 1];
+    entry.rank =
+      previous?.scoreThirds === entry.scoreThirds ? previous.rank : index + 1;
+  });
 }
 
 export function dedupeByNodeId<T extends { id: string }>(records: T[]): T[] {
@@ -737,6 +760,7 @@ export function selectUniqueVerifiedEvidence(
 function parseMarker(
   value: string,
   version: "v1" | "v2",
+  slop = false,
 ):
   | {
       provider: string;
@@ -756,7 +780,7 @@ function parseMarker(
   if (!isRecord(parsed)) {
     return { error: "marker payload must be an object" };
   }
-  if (version === "v2") {
+  if (version === "v2" || (slop && Object.hasOwn(parsed, "run"))) {
     try {
       const run = assertRunReceiptMarker(parsed);
       const project = findProject(run.projectId);
@@ -1034,7 +1058,7 @@ export function assessModelAttribution(
     const markerMatchesToParse =
       markerMatches.length === 1 ? markerMatches : [];
     for (const match of markerMatchesToParse) {
-      const marker = parseMarker(match.payload, match.version);
+      const marker = parseMarker(match.payload, match.version, match.slop);
       if ("error" in marker) {
         invalidSourceIds.add(source.id);
         invalidMarkers.push({
@@ -1083,7 +1107,8 @@ export function assessModelAttribution(
         }
       }
       let verifiedRun = marker.run;
-      if (options.verifyRunReceipt) {
+      // An ordinary v1 marker has no run receipt, so no signature to verify.
+      if (options.verifyRunReceipt && marker.run !== null) {
         try {
           verifiedRun = options.verifyRunReceipt(marker.run);
         } catch (error: unknown) {
@@ -1547,6 +1572,22 @@ function actorEntry(
   return created;
 }
 
+/**
+ * The work unit that addScore records for a v2 event. An event that arrives
+ * without one is recorded under its source id. Code that converts the same
+ * unscored input outside the scorer (generate-points) uses this function, so
+ * its copy of the event matches the copy in the published ledger.
+ */
+export function ledgerWorkUnitId(
+  projectId: string,
+  event: Pick<ScoreEvent, "workUnitId" | "source">,
+): string {
+  return (
+    event.workUnitId ??
+    `wu_${projectId}_${event.source.id.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_")}`
+  );
+}
+
 function addScore(
   entries: Map<string, MutableLeaderboardEntry>,
   ledger: ScoreEvent[],
@@ -1603,9 +1644,7 @@ function addScore(
     ) {
       throw new TypeError("v2 scoreThirds must be a positive safe integer");
     }
-    const workUnitId =
-      event.workUnitId ??
-      `wu_${projectId}_${event.source.id.toLowerCase().replace(/[^a-z0-9_-]+/gu, "_")}`;
+    const workUnitId = ledgerWorkUnitId(projectId, event);
     const globalWorkUnitKey = `${projectId}\0${event.occurredAt.slice(0, 7)}\0${workUnitId}`;
     if (entry.creditedWorkUnits.has(globalWorkUnitKey)) return false;
     if (
@@ -2606,6 +2645,48 @@ export function shareScoreThirds(
 export function createLeaderboardSnapshot(
   input: LeaderboardInput,
 ): LeaderboardSnapshot {
+  const snapshot = createSnapshotWithReviewCutoff(
+    input,
+    OUTCOME_FIRST_POLICY_AT,
+  );
+  if (parseIsoTime(input.windowTo) > parseIsoTime(OUTCOME_FIRST_POLICY_AT)) {
+    const payments = createSnapshotWithReviewCutoff(
+      input,
+      PAYMENT_REVIEW_POLICY_AT,
+    );
+    snapshot.paymentReviewBasis = {
+      policy: PAYMENT_REVIEW_POLICY,
+      effectiveAt: PAYMENT_REVIEW_POLICY_AT,
+      leaders: payments.leaders,
+      ledger: changedPaymentRecords(snapshot.ledger, payments.ledger),
+      removedEventIds: removedPaymentRecordIds(
+        snapshot.ledger,
+        payments.ledger,
+      ),
+      removedAttributionIds: removedPaymentRecordIds(
+        snapshot.attributions,
+        payments.attributions,
+      ),
+      attributionOrder: payments.attributions.map((record) => record.id),
+      reviewExclusions: payments.reviewExclusions ?? [],
+      attributions: changedPaymentRecords(
+        snapshot.attributions,
+        payments.attributions,
+      ),
+      invalidAttributionMarkers: payments.invalidAttributionMarkers,
+      attributionCoverage: payments.attributionCoverage,
+      opportunities: payments.opportunities,
+    };
+  }
+  assertPublishableLeaderboardSnapshot(snapshot);
+  return snapshot;
+}
+
+/** Reuse the complete eligibility pipeline; only ordinary review timing differs. */
+function createSnapshotWithReviewCutoff(
+  input: LeaderboardInput,
+  reviewCutoff: string,
+): LeaderboardSnapshot {
   if (
     input.jointValueDecisions !== undefined &&
     input.valueDecisions === undefined
@@ -2785,6 +2866,28 @@ export function createLeaderboardSnapshot(
     ...mergedPullRequests,
     ...valueContexts.filter((source) => source.mergedAt !== null),
   ];
+  const commitOwners = commitCreditOwners(mergedPullRequestOutcomes);
+  const outcomeById = new Map(
+    mergedPullRequestOutcomes.map((pullRequest) => [
+      pullRequest.id,
+      pullRequest,
+    ]),
+  );
+  // SCR-04 credit actors of one merged pull request: everyone it shares the
+  // merge credit with (Score v2) or its author alone (Score v1 history).
+  const mergeCreditActorsOf = (
+    pullRequest: MergedPullRequestOutcome,
+  ): GitHubActor[] => {
+    if (
+      parseIsoTime(pullRequest.mergedAt) >= parseIsoTime(SCORE_V2_EFFECTIVE_AT)
+    ) {
+      return mergeCreditActors(pullRequest, commitOwners);
+    }
+    return pullRequest.author && !isBotActor(pullRequest.author)
+      ? [pullRequest.author]
+      : [];
+  };
+
   const scoreRatifications = new Map<
     string,
     { record: ScoreRatificationRecord; source: GitHubTextSource }
@@ -2831,8 +2934,14 @@ export function createLeaderboardSnapshot(
       }
       // Related-party scoring requires a second maintainer regardless of tier:
       // a ratifier must never be the sole authority over their own outcome.
+      // Under SCR-04 a linked commit co-author shares that outcome too.
+      const outcome = outcomeById.get(pullRequest.id);
+      const sharesOutcome = (who: GitHubActor | null) =>
+        sameActor(who, pullRequest.author) ||
+        (outcome !== undefined &&
+          mergeCreditActorsOf(outcome).some((actor) => sameActor(who, actor)));
       if (
-        sameActor(source.author, pullRequest.author) &&
+        sharesOutcome(source.author) &&
         record.coRatifierNodeIds.length === 0
       ) {
         throw new TypeError(
@@ -2895,6 +3004,13 @@ export function createLeaderboardSnapshot(
         if (sameActor(ratifier.author, source.author)) {
           throw new TypeError(
             "slop-score co-ratifier must be a second maintainer",
+          );
+        }
+        // The second maintainer is the independent approval, so it cannot be
+        // a credit actor of the outcome it approves.
+        if (sharesOutcome(ratifier.author)) {
+          throw new TypeError(
+            "slop-score co-ratifier must not share the scored outcome",
           );
         }
         const approval = parseScoreApprovalBlock(ratifier.body);
@@ -2984,7 +3100,9 @@ export function createLeaderboardSnapshot(
     jointDecisions.set(decision.latestDigest as string, decision);
   }
 
-  const commitOwners = commitCreditOwners(mergedPullRequestOutcomes);
+  // SCR-04 credit actors by pull request. A shared work unit can suppress a
+  // pull request's merge events; its credit actors stay self-reviewers.
+  const creditActorIds = new Map<string, ReadonlySet<string>>();
   for (const pullRequest of mergedPullRequestOutcomes) {
     const repositoryId = repositoryIdFromUrl(pullRequest.url);
     const ratification =
@@ -3002,11 +3120,11 @@ export function createLeaderboardSnapshot(
         ? pullRequest.author
         : null;
     // Score v1 history credits the pull-request author only.
-    let actors = v2
-      ? mergeCreditActors(pullRequest, commitOwners)
-      : author
-        ? [author]
-        : [];
+    let actors = mergeCreditActorsOf(pullRequest);
+    creditActorIds.set(
+      pullRequest.id,
+      new Set(actors.map((actor) => actor.id)),
+    );
     if (!ratification && input.jointValueDecisions?.has(pullRequest.id))
       continue;
     const valueDecision = input.valueDecisions?.get(pullRequest.id);
@@ -3605,6 +3723,11 @@ export function createLeaderboardSnapshot(
     const reviewLedgerStart = ledger.length;
     const ratification = scoreRatifications.get(pullRequest.id);
     const awardedReviewers = new Set<string>();
+    // SCR-04: a review by any credit actor of this pull request is a
+    // self-review on every review path, not only for its author.
+    const isCreditActor = (actorId: string | undefined): boolean =>
+      actorId !== undefined &&
+      (creditActorIds.get(pullRequest.id)?.has(actorId) ?? false);
     const hasEvaluatedReviewReservation = (actorId: string): boolean =>
       evaluatedReviewReservations.has(
         `${repositoryId}\0${pullRequest.number}\0${actorId}`,
@@ -3619,7 +3742,8 @@ export function createLeaderboardSnapshot(
       if (
         rawReview === null ||
         !source.author ||
-        sameActor(source.author, pullRequest.author)
+        sameActor(source.author, pullRequest.author) ||
+        isCreditActor(source.author.id)
       )
         continue;
       if (hasEvaluatedReviewReservation(source.author.id)) continue;
@@ -3682,32 +3806,6 @@ export function createLeaderboardSnapshot(
       }
     }
 
-    if (
-      ratification?.source.author &&
-      !sameActor(ratification.source.author, pullRequest.author) &&
-      !hasEvaluatedReviewReservation(ratification.source.author.id) &&
-      !awardedReviewers.has(ratification.source.author.id)
-    ) {
-      addScore(entries, ledger, {
-        id: `${pullRequest.id}:ratifier:${ratification.source.id}`,
-        actor: ratification.source.author,
-        category: "substantive-review",
-        points: 1 / 3,
-        scoreThirds: 1,
-        workUnitId: `${ratification.record.workUnitId}_ratification`,
-        occurredAt: ratification.source.createdAt,
-        repository: repositoryIdFromUrl(pullRequest.url),
-        source: {
-          id: ratification.source.id,
-          kind: "comment",
-          number: pullRequest.number,
-          title: pullRequest.title,
-          url: ratification.source.url,
-        },
-        reason:
-          "Immutable maintainer score ratification for an accepted outcome.",
-      });
-    }
     const orderedReviews = dedupeByNodeId(pullRequest.reviews).sort(
       (left, right) => {
         if (left.submittedAt === right.submittedAt) {
@@ -3793,14 +3891,7 @@ export function createLeaderboardSnapshot(
       }
       const exclusionReason =
         reviewExclusionReason(review, pullRequest) ??
-        (ledger.some(
-          (event) =>
-            event.category === "merged-pull-request" &&
-            event.source.id === pullRequest.id &&
-            event.actor.id === review.author?.id,
-        )
-          ? "self-review"
-          : null);
+        (isCreditActor(review.author?.id) ? "self-review" : null);
       if (exclusionReason !== null) {
         excludeReview(pullRequest, review, exclusionReason);
         continue;
@@ -3821,9 +3912,7 @@ export function createLeaderboardSnapshot(
           `Qualifying review ${review.id} is missing its submitted timestamp`,
         );
       }
-      if (
-        parseIsoTime(review.submittedAt) < parseIsoTime(OUTCOME_FIRST_POLICY_AT)
-      ) {
+      if (parseIsoTime(review.submittedAt) < parseIsoTime(reviewCutoff)) {
         awardReview(
           review,
           false,
@@ -3887,6 +3976,38 @@ export function createLeaderboardSnapshot(
         });
       }
       if (history.length > 1) event.reviewHistory = history;
+    }
+    // The maintainer ratification is a fallback review award. Award it only
+    // after every formal review on this artifact so an actor who already
+    // received review credit does not also earn the separate ratification.
+    // This mirrors the automated-review path above, which registers its
+    // reviewer in awardedReviewers before its own ratification guard.
+    if (
+      ratification?.source.author &&
+      !sameActor(ratification.source.author, pullRequest.author) &&
+      !isCreditActor(ratification.source.author.id) &&
+      !hasEvaluatedReviewReservation(ratification.source.author.id) &&
+      !awardedReviewers.has(ratification.source.author.id)
+    ) {
+      addScore(entries, ledger, {
+        id: `${pullRequest.id}:ratifier:${ratification.source.id}`,
+        actor: ratification.source.author,
+        category: "substantive-review",
+        points: 1 / 3,
+        scoreThirds: 1,
+        workUnitId: `${ratification.record.workUnitId}_ratification`,
+        occurredAt: ratification.source.createdAt,
+        repository: repositoryIdFromUrl(pullRequest.url),
+        source: {
+          id: ratification.source.id,
+          kind: "comment",
+          number: pullRequest.number,
+          title: pullRequest.title,
+          url: ratification.source.url,
+        },
+        reason:
+          "Immutable maintainer score ratification for an accepted outcome.",
+      });
     }
   }
 
@@ -3966,7 +4087,16 @@ export function createLeaderboardSnapshot(
     ledger.map((event) => `${event.repository}\0${event.source.id}`),
   );
   const retainedAttributionCandidates = new Map<string, ModelAttribution>();
+  // History from a repository that is no longer collected cannot score.
+  const collectedRepositoryIds = new Set(
+    TARGET_REPOSITORIES.map((repository) => repository.id),
+  );
   for (const [index, event] of [...(input.retainedReviewEvents ?? [])]
+    .filter(
+      (event) =>
+        !isRecord(event) ||
+        collectedRepositoryIds.has(String((event as ScoreEvent).repository)),
+    )
     .sort(
       (left, right) =>
         parseIsoTime(right.occurredAt) - parseIsoTime(left.occurredAt) ||
@@ -4167,8 +4297,8 @@ export function createLeaderboardSnapshot(
         entry.score > 0 || entry.acceptedOutcomes.mergedPullRequests > 0,
     )
     .sort(compareRankedEntries)
-    .map<LeaderboardEntry>((entry, index) => ({
-      rank: index + 1,
+    .map<LeaderboardEntry>((entry) => ({
+      rank: 0,
       actor: entry.actor,
       score: Math.floor(entry.scoreThirds / 3),
       scoreThirds: entry.scoreThirds,
@@ -4185,6 +4315,8 @@ export function createLeaderboardSnapshot(
       rawActivity: { ...entry.rawActivity },
       reportedModels: uniqueSorted(entry.models),
     }));
+
+  assignLeaderboardRanks(leaders);
 
   const snapshot: LeaderboardSnapshot = {
     schemaVersion: LEADERBOARD_SCHEMA_VERSION,
@@ -4656,7 +4788,10 @@ function assertSourceValue(
   }
   assertIsoTimestamp(source.fetchedAt, `${path}.fetchedAt`);
   assertIsoTimestamp(source.cutoffAt, `${path}.cutoffAt`);
-  assertString(source.repositoryId, `${path}.repositoryId`);
+  if (repositories.length === 0) {
+    if (source.repositoryId !== null)
+      throw new Error(`${path}.repositoryId must be null without repositories`);
+  } else assertString(source.repositoryId, `${path}.repositoryId`);
   if (
     !Array.isArray(source.repositories) ||
     source.repositories.length !== repositories.length
@@ -4691,7 +4826,14 @@ function assertSourceValue(
     }
   });
   assertPositiveInteger(source.requestCount, `${path}.requestCount`);
-  assertPositiveInteger(source.searchSliceCount, `${path}.searchSliceCount`);
+  // An empty registry runs no repository searches.
+  if (repositories.length === 0)
+    assertNonNegativeInteger(
+      source.searchSliceCount,
+      `${path}.searchSliceCount`,
+    );
+  else
+    assertPositiveInteger(source.searchSliceCount, `${path}.searchSliceCount`);
 
   const rateLimit = assertObject(source.rateLimit, `${path}.rateLimit`);
   assertNonNegativeInteger(rateLimit.cost, `${path}.rateLimit.cost`);
@@ -4819,13 +4961,9 @@ function assertNonNegativeNumber(value: unknown, path: string): void {
 function assertLeaderValue(
   value: unknown,
   path: string,
-  rank: number,
 ): asserts value is LeaderboardEntry {
   const entry = assertObject(value, path);
   assertPositiveInteger(entry.rank, `${path}.rank`);
-  if (entry.rank !== rank) {
-    throw new Error(`${path}.rank is not contiguous`);
-  }
   assertActorValue(entry.actor, `${path}.actor`);
   assertNonNegativeInteger(entry.score, `${path}.score`);
   assertNonNegativeInteger(entry.scoreThirds, `${path}.scoreThirds`);
@@ -5789,10 +5927,10 @@ export function assertLeaderboardSnapshot(
   }
   if (
     !Array.isArray(snapshot.repositories) ||
-    snapshot.repositories.length === 0
+    (snapshot.repositories.length === 0) !== (TARGET_REPOSITORIES.length === 0)
   ) {
     throw new Error(
-      "snapshot.repositories must list a nonempty target repository registry",
+      "snapshot.repositories must list the target repository registry",
     );
   }
   let previousRepositoryIndex = -1;
@@ -5805,7 +5943,7 @@ export function assertLeaderboardSnapshot(
     );
     if (
       registeredIndex <= previousRepositoryIndex ||
-      (index === 0 && published.id !== PRIMARY_REPOSITORY.id)
+      (index === 0 && published.id !== PRIMARY_REPOSITORY?.id)
     ) {
       throw new Error(
         `${path}.id must follow the target repository registry order and include the primary repository`,
@@ -5878,7 +6016,7 @@ export function assertLeaderboardSnapshot(
     throw new Error("snapshot.leaders must be an array");
   }
   const validatedLeaders = snapshot.leaders.map((valueEntry, index) => {
-    assertLeaderValue(valueEntry, `snapshot.leaders[${index}]`, index + 1);
+    assertLeaderValue(valueEntry, `snapshot.leaders[${index}]`);
     return valueEntry;
   });
   if (
@@ -5887,18 +6025,8 @@ export function assertLeaderboardSnapshot(
   ) {
     throw new Error("snapshot.leaders must contain unique actors");
   }
-  for (let index = 1; index < validatedLeaders.length; index += 1) {
-    if (
-      compareRankedEntries(
-        validatedLeaders[index - 1],
-        validatedLeaders[index],
-      ) > 0
-    ) {
-      throw new Error(
-        "snapshot.leaders must follow the published rank ordering",
-      );
-    }
-  }
+  assertLeaderboardOrdering(validatedLeaders, true);
+  assertLeaderboardRanks(validatedLeaders, true);
 
   if (!Array.isArray(snapshot.ledger)) {
     throw new Error("snapshot.ledger must be an array");
@@ -5938,18 +6066,30 @@ export function assertLeaderboardSnapshot(
     ) {
       throw new Error("snapshot.reviewExclusions must contain unique IDs");
     }
-    for (const exclusion of validatedReviewExclusions) {
-      if (
-        validatedLedger.some(
-          (event) =>
-            event.repository === exclusion.repository &&
-            (event.source.id === exclusion.reviewId ||
-              event.source.url === exclusion.url),
-        )
-      ) {
-        throw new Error(
-          "snapshot.reviewExclusions cannot contain a score-bearing review source",
-        );
+    if (validatedReviewExclusions.length > 0) {
+      const scoredSources = new Map<
+        string,
+        { ids: Set<string>; urls: Set<string> }
+      >();
+      for (const event of validatedLedger) {
+        let sources = scoredSources.get(event.repository);
+        if (!sources) {
+          sources = { ids: new Set(), urls: new Set() };
+          scoredSources.set(event.repository, sources);
+        }
+        sources.ids.add(event.source.id);
+        sources.urls.add(event.source.url);
+      }
+      for (const exclusion of validatedReviewExclusions) {
+        const sources = scoredSources.get(exclusion.repository);
+        if (
+          sources?.ids.has(exclusion.reviewId) ||
+          sources?.urls.has(exclusion.url)
+        ) {
+          throw new Error(
+            "snapshot.reviewExclusions cannot contain a score-bearing review source",
+          );
+        }
       }
     }
     for (let index = 1; index < validatedReviewExclusions.length; index += 1) {
@@ -6656,6 +6796,164 @@ export function assertLeaderboardSnapshot(
     );
   }
   assertMethodologyValue(snapshot.methodology, "snapshot.methodology");
+  if (snapshot.paymentReviewBasis !== undefined) {
+    const basis = assertObject(
+      snapshot.paymentReviewBasis,
+      "snapshot.paymentReviewBasis",
+    );
+    if (
+      basis.policy !== PAYMENT_REVIEW_POLICY ||
+      basis.effectiveAt !== PAYMENT_REVIEW_POLICY_AT
+    ) {
+      throw new Error(
+        "snapshot payment review policy must match the approved production cutoff",
+      );
+    }
+    // Validate the alternate ledger with the same totals, identity, attribution,
+    // duplicate-credit and source-coverage contracts as the score ledger.
+    assertLeaderboardSnapshot(
+      paymentReviewSnapshot(value as LeaderboardSnapshot),
+    );
+  }
+}
+
+// Store only differences for the two largest arrays. Duplicating the complete
+// ledger and attribution arrays would exceed Cloudflare's 25 MiB asset limit.
+function changedPaymentRecords<T extends { id: string }>(
+  before: T[],
+  after: T[],
+): T[] {
+  const original = new Map(
+    before.map((record) => [record.id, JSON.stringify(record)]),
+  );
+  return after.filter(
+    (record) => original.get(record.id) !== JSON.stringify(record),
+  );
+}
+
+function removedPaymentRecordIds<T extends { id: string }>(
+  before: T[],
+  after: T[],
+): string[] {
+  const retained = new Set(after.map((record) => record.id));
+  return before
+    .filter((record) => !retained.has(record.id))
+    .map((record) => record.id);
+}
+
+function applyPaymentRecords<T extends { id: string }>(
+  original: T[],
+  changes: T[],
+  removed: string[],
+): T[] {
+  if (
+    !Array.isArray(changes) ||
+    !Array.isArray(removed) ||
+    new Set(removed).size !== removed.length ||
+    new Set(changes.map((record) => record?.id)).size !== changes.length
+  ) {
+    throw new Error(
+      "Payment basis changes must contain unique records and removals",
+    );
+  }
+  const records = new Map(original.map((record) => [record.id, record]));
+  for (const id of removed) {
+    if (!records.delete(id) || changes.some((record) => record.id === id)) {
+      throw new Error(
+        "Payment basis removal must name an existing unchanged record",
+      );
+    }
+  }
+  for (const record of changes) records.set(record.id, record);
+  return [...records.values()];
+}
+
+/** Payment callers must never silently use the retroactive score ledger. */
+export function paymentReviewSnapshot(
+  snapshot: LeaderboardSnapshot,
+): LeaderboardSnapshot {
+  const basis = snapshot.paymentReviewBasis;
+  if (
+    !basis ||
+    basis.policy !== PAYMENT_REVIEW_POLICY ||
+    basis.effectiveAt !== PAYMENT_REVIEW_POLICY_AT
+  ) {
+    throw new Error(
+      "Payment allocation requires the production-release review basis; regenerate the source snapshot",
+    );
+  }
+  const attributions = applyPaymentRecords(
+    snapshot.attributions,
+    basis.attributions,
+    basis.removedAttributionIds,
+  );
+  const byId = new Map(attributions.map((record) => [record.id, record]));
+  if (
+    !Array.isArray(basis.attributionOrder) ||
+    basis.attributionOrder.length !== byId.size ||
+    new Set(basis.attributionOrder).size !== byId.size ||
+    basis.attributionOrder.some((id) => !byId.has(id))
+  ) {
+    throw new Error(
+      "Payment attribution order must name each reconstructed record once",
+    );
+  }
+  return {
+    ...snapshot,
+    paymentReviewBasis: undefined,
+    leaders: basis.leaders,
+    ledger: applyPaymentRecords(
+      snapshot.ledger,
+      basis.ledger,
+      basis.removedEventIds,
+    ).sort(
+      (left, right) =>
+        right.points - left.points ||
+        left.source.number - right.source.number ||
+        left.id.localeCompare(right.id),
+    ),
+    reviewExclusions: basis.reviewExclusions,
+    attributions: basis.attributionOrder.map(
+      (id) => byId.get(id) as ModelAttribution,
+    ),
+    invalidAttributionMarkers: basis.invalidAttributionMarkers,
+    attributionCoverage: basis.attributionCoverage,
+    opportunities: basis.opportunities,
+  };
+}
+
+function assertLeaderboardOrdering(
+  leaders: LeaderboardEntry[],
+  allowLegacy: boolean,
+): void {
+  const orderedBy = (compare: typeof compareRankedEntries) =>
+    leaders.every(
+      (entry, index) => index === 0 || compare(leaders[index - 1], entry) <= 0,
+    );
+  if (
+    !orderedBy(compareRankedEntries) &&
+    !(allowLegacy && orderedBy(compareLegacyRankedEntries))
+  ) {
+    throw new Error("snapshot.leaders must follow score and actor ID ordering");
+  }
+}
+
+function assertLeaderboardRanks(
+  leaders: LeaderboardEntry[],
+  allowLegacy: boolean,
+): void {
+  let rank = 0;
+  const competitionRanks = leaders.every((entry, index) => {
+    if (entry.scoreThirds !== leaders[index - 1]?.scoreThirds) rank = index + 1;
+    return entry.rank === rank;
+  });
+  // Immutable snapshots published before tie handling retain their complete
+  // contiguous rank vector. Never accept a mixture of the two conventions.
+  const legacyRanks =
+    allowLegacy && leaders.every((entry, index) => entry.rank === index + 1);
+  if (!competitionRanks && !legacyRanks) {
+    throw new Error("snapshot.leaders must use equal-score competition ranks");
+  }
 }
 
 export function assertPublishableLeaderboardSnapshot(
@@ -6663,6 +6961,8 @@ export function assertPublishableLeaderboardSnapshot(
   now = Date.now(),
 ): asserts value is LeaderboardSnapshot {
   assertLeaderboardSnapshot(value);
+  assertLeaderboardOrdering(value.leaders, false);
+  assertLeaderboardRanks(value.leaders, false);
   // Archived and deployed snapshots retain their collected inventory. A new
   // publication must collect every current active target; paused projects are not collected.
   if (

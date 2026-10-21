@@ -40,11 +40,6 @@
 /.well-known/agent-skills/*/SKILL.md
   Content-Type: text/markdown; charset=utf-8
 
-/.well-known/slop/projects.json
-  Content-Type: application/json; charset=utf-8
-  Access-Control-Allow-Origin: *
-  Cache-Control: public, max-age=300, must-revalidate
-
 /protocol/*.json
   Content-Type: application/json; charset=utf-8
   Access-Control-Allow-Origin: *
@@ -75,18 +70,3 @@
   Access-Control-Allow-Origin: *
   Cache-Control: public, max-age=300, must-revalidate
 
-/projects/:project/:artifact.md
-  Content-Type: text/markdown; charset=utf-8
-  Access-Control-Allow-Origin: *
-  Cache-Control: public, max-age=300, must-revalidate
-
-/projects/:project/:artifact.json
-  Content-Type: application/json; charset=utf-8
-  Access-Control-Allow-Origin: *
-  Cache-Control: public, max-age=300, must-revalidate
-
-/projects/:project/downloads/:archive
-  Content-Type: application/octet-stream
-  Content-Disposition: attachment
-  Access-Control-Allow-Origin: *
-  Cache-Control: public, max-age=300, must-revalidate

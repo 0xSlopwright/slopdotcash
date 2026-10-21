@@ -1,37 +1,58 @@
+import { ExternalLink, Wallet as WalletIcon, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { readBoundedJson } from "./lib/browser-json";
-import type { PaymentChain, PaymentsAccount } from "./lib/payments/contracts";
+import {
+  chainFamily,
+  ESCROW_CHAINS,
+  ESCROW_NETWORKS,
+  type EscrowChain,
+  EVM_CHAINS,
+} from "./lib/escrow-policy.mjs";
+import {
+  formatAssetAmount,
+  formatBaseUnits,
+  isAssetDecimals,
+  isBaseUnits,
+  type PaymentChain,
+  type PaymentsAccount,
+  transactionUrl,
+} from "./lib/payments/contracts";
+import { isDirectTransfer } from "./lib/use-direct-transfers";
+import { type PayoutWallet, usePayoutWallets } from "./lib/use-payout-wallets";
+import { formatDate, formatDateTime } from "./Presentation";
 
-const networkName = { base: "Base", solana: "Solana" };
-
-const networkLabels: Record<string, string> = {
-  "base-mainnet": "Base · USDC",
-  "base-sepolia": "Base Sepolia · test USDC",
-  "solana-mainnet": "Solana · USDC",
-  "solana-devnet": "Solana Devnet · test USDC",
-  "solana-testnet": "Solana Testnet · test token",
-  anvil: "Local Base test · test USDC",
+const networkName: Record<EscrowChain, string> = {
+  base: "Base",
+  solana: "Solana",
+  robinhood: "Robinhood Chain",
+  ethereum: "Ethereum",
 };
-function transactionUrl(network: string, id: string | null): string | null {
-  if (!id) return null;
-  if (network === "base-sepolia")
-    return `https://sepolia.basescan.org/tx/${encodeURIComponent(id)}`;
-  if (network === "base-mainnet")
-    return `https://basescan.org/tx/${encodeURIComponent(id)}`;
-  if (network === "solana-mainnet")
-    return `https://explorer.solana.com/tx/${encodeURIComponent(id)}`;
-  if (network === "solana-devnet" || network === "solana-testnet")
-    return `https://explorer.solana.com/tx/${encodeURIComponent(id)}?cluster=${network.slice(7)}`;
-  return null;
+
+// Network names only: each amount names its own vault asset.
+const networkLabels: Record<string, string> = {
+  "base-mainnet": "Base",
+  "base-sepolia": "Base Sepolia (test)",
+  "solana-mainnet": "Solana",
+  "solana-devnet": "Solana Devnet (test)",
+  "solana-testnet": "Solana Testnet (test)",
+  "robinhood-mainnet": "Robinhood Chain",
+  "robinhood-testnet": "Robinhood Chain Testnet (test)",
+  ethereum: "Ethereum",
+  "ethereum-sepolia": "Ethereum Sepolia (test)",
+  anvil: "Local EVM test",
+};
+
+function chainDefaultNetwork(chain: EscrowChain): string {
+  return (
+    Object.entries(ESCROW_NETWORKS).find(
+      ([, n]) => n.chain === chain && !n.testnet,
+    )?.[0] ?? ""
+  );
 }
 
-function amount(value: string): string {
-  const number = BigInt(value);
-  const fraction = (number % 1_000_000n)
-    .toString()
-    .padStart(6, "0")
-    .replace(/0+$/, "");
-  return `${(number / 1_000_000n).toLocaleString()}${fraction ? `.${fraction}` : ""} USDC`;
+/** Direct transfers are imported only from reviewed USDC disclosures (6 decimals). */
+function usdcAmount(value: string): string {
+  return `${formatBaseUnits(value, 6)} USDC`;
 }
 
 class SignedOutError extends Error {}
@@ -66,8 +87,10 @@ function account(value: unknown): PaymentsAccount {
   if (!value || typeof value !== "object")
     throw new Error("Invalid payment account response.");
   const data = value as PaymentsAccount;
-  const money = (v: unknown) =>
-    typeof v === "string" && /^(0|[1-9]\d*)$/.test(v);
+  const asset = (v: { assetAddress?: unknown; assetDecimals?: unknown }) =>
+    typeof v.assetAddress === "string" &&
+    /^[0-9A-Za-z]{32,44}$/.test(v.assetAddress) &&
+    isAssetDecimals(v.assetDecimals);
   if (
     typeof data.githubUserId !== "string" ||
     !/^\d+$/.test(data.githubUserId) ||
@@ -77,7 +100,7 @@ function account(value: unknown): PaymentsAccount {
     data.wallets.some(
       (w) =>
         !w ||
-        !["base", "solana"].includes(w.chain) ||
+        !ESCROW_CHAINS.includes(w.chain) ||
         typeof w.claimId !== "string" ||
         typeof w.address !== "string" ||
         typeof w.authorized !== "boolean",
@@ -85,16 +108,17 @@ function account(value: unknown): PaymentsAccount {
     data.payments.some(
       (p) =>
         !p ||
-        !["base", "solana"].includes(p.chain) ||
+        !ESCROW_CHAINS.includes(p.chain) ||
         typeof p.projectId !== "string" ||
         typeof p.network !== "string" ||
         (p.transactionId !== null && typeof p.transactionId !== "string") ||
         (p.state === "paid" && !p.transactionId) ||
         typeof p.id !== "string" ||
-        !money(p.grossMicro) ||
-        !money(p.netMicro) ||
-        !money(p.feeMicro) ||
-        BigInt(p.grossMicro) !== BigInt(p.netMicro) + BigInt(p.feeMicro) ||
+        !asset(p) ||
+        !isBaseUnits(p.grossBase) ||
+        !isBaseUnits(p.netBase) ||
+        !isBaseUnits(p.feeBase) ||
+        BigInt(p.grossBase) !== BigInt(p.netBase) + BigInt(p.feeBase) ||
         !["reserved", "paid"].includes(p.state) ||
         ![
           "needs_wallet",
@@ -105,36 +129,51 @@ function account(value: unknown): PaymentsAccount {
         ].includes(p.deliveryState),
     ) ||
     data.balances.some(
-      (b) => !b || !["base", "solana"].includes(b.chain) || !money(b.netMicro),
+      (b) =>
+        !b ||
+        !ESCROW_CHAINS.includes(b.chain) ||
+        typeof b.network !== "string" ||
+        (Object.hasOwn(ESCROW_NETWORKS, b.network) &&
+          ESCROW_NETWORKS[b.network as keyof typeof ESCROW_NETWORKS].chain !==
+            b.chain) ||
+        !asset(b) ||
+        !isBaseUnits(b.netBase),
+    ) ||
+    !Array.isArray(data.directTransfers) ||
+    !data.directTransfers.every(isDirectTransfer) ||
+    !Array.isArray(data.walletObservations) ||
+    data.walletObservations.some(
+      (o) =>
+        !o ||
+        !ESCROW_CHAINS.includes(o.chain) ||
+        typeof o.address !== "string" ||
+        o.proofLevel !== "profile_readme" ||
+        !/^https:\/\/github\.com\//u.test(o.sourceUrl) ||
+        Number.isNaN(Date.parse(o.observedAt)),
     )
   )
     throw new Error("The payment record could not be verified. Please retry.");
   return data;
 }
 
-type EthereumWallet = {
-  request(input: { method: string; params?: unknown[] }): Promise<unknown>;
-};
-type SolanaWallet = {
-  connect(): Promise<{ publicKey: { toString(): string } }>;
-  signMessage(
-    message: Uint8Array,
-    display: "utf8",
-  ): Promise<{ signature: Uint8Array }>;
-};
-type WalletWindow = Window & {
-  ethereum?: EthereumWallet;
-  solana?: SolanaWallet;
-  phantom?: { solana?: SolanaWallet };
-};
-
 export function EarningsPage() {
+  const wallets = usePayoutWallets();
+  const [picker, setPicker] = useState<PaymentChain | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
   const [data, setData] = useState<PaymentsAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [signedOut, setSignedOut] = useState(false);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<PaymentChain | null>(null);
+  const [pendingChange, setPendingChange] = useState<{
+    chain: PaymentChain;
+    saved: string;
+    address: string;
+    sign(message: string): Promise<string>;
+  } | null>(null);
+  const changeHeading = useRef<HTMLHeadingElement>(null);
+  const returnFocus = useRef<PaymentChain | null>(null);
   const [revision, setRevision] = useState(0);
   const refresh = () => setRevision((n) => n + 1);
   const mounted = useRef(true);
@@ -164,7 +203,7 @@ export function EarningsPage() {
           setData(null);
         } else
           setError(
-            e instanceof Error ? e.message : "Could not load your earnings.",
+            e instanceof Error ? e.message : "Could not load your payouts.",
           );
       })
       .finally(() => {
@@ -173,85 +212,25 @@ export function EarningsPage() {
     return () => controller.abort();
   }, [revision]);
 
-  async function connect(chain: PaymentChain) {
+  useEffect(() => {
+    if (pendingChange) changeHeading.current?.focus();
+    else if (returnFocus.current) {
+      document.getElementById(`${heading}-${returnFocus.current}`)?.focus();
+      returnFocus.current = null;
+    }
+  }, [pendingChange, heading]);
+
+  useEffect(() => {
+    if (picker) dialog.current?.showModal();
+    else dialog.current?.close();
+  }, [picker]);
+
+  async function walletStep(chain: PaymentChain, step: () => Promise<void>) {
     setBusy(chain);
     setError("");
     setMessage("");
     try {
-      const provider = window as WalletWindow;
-      let address: string;
-      let sign: (message: string) => Promise<string>;
-      if (chain === "base") {
-        const wallet = provider.ethereum;
-        if (!wallet)
-          throw new Error(
-            "Open this page in your Base wallet’s browser or enable its browser extension.",
-          );
-        const addresses = await wallet.request({
-          method: "eth_requestAccounts",
-        });
-        if (!Array.isArray(addresses) || typeof addresses[0] !== "string")
-          throw new Error("Your wallet did not return a Base address.");
-        address = addresses[0].toLowerCase();
-        sign = async (text) => {
-          const hex = `0x${Array.from(new TextEncoder().encode(text), (n) => n.toString(16).padStart(2, "0")).join("")}`;
-          const signature = await wallet.request({
-            method: "personal_sign",
-            params: [hex, address],
-          });
-          if (typeof signature !== "string")
-            throw new Error("Your wallet did not return a signature.");
-          return signature;
-        };
-      } else {
-        const wallet = provider.phantom?.solana ?? provider.solana;
-        if (!wallet)
-          throw new Error(
-            "Open this page in your Solana wallet’s browser or enable its browser extension.",
-          );
-        address = (await wallet.connect()).publicKey.toString();
-        sign = async (text) => {
-          const result = await wallet.signMessage(
-            new TextEncoder().encode(text),
-            "utf8",
-          );
-          return btoa(String.fromCharCode(...result.signature));
-        };
-      }
-      const claim = (await request("wallets/register", { chain, address })) as {
-        claimId: string;
-      };
-      if (typeof claim.claimId !== "string")
-        throw new Error("Wallet registration could not be verified.");
-      const challenge = (await request("wallets/challenge", {
-        claimId: claim.claimId,
-      })) as {
-        challengeId: string;
-        message: string;
-        address: string;
-        chain: string;
-      };
-      if (
-        challenge.address !== address ||
-        challenge.chain !== chain ||
-        typeof challenge.challengeId !== "string" ||
-        typeof challenge.message !== "string"
-      )
-        throw new Error(
-          "Wallet confirmation does not match your selected address.",
-        );
-      const signature = await sign(challenge.message);
-      await request("wallets/authorize", {
-        claimId: claim.claimId,
-        challengeId: challenge.challengeId,
-        signature,
-      });
-      if (mounted.current) {
-        setMessage(
-          `${networkName[chain]} wallet confirmed. Eligible unpaid awards will be sent automatically. Wallet changes wait at least 24 hours and any earlier payment must be reconciled first.`,
-        );
-        refresh();
-      }
+      await step();
     } catch (e) {
       if (!mounted.current) return;
       if (e instanceof SignedOutError) {
@@ -268,14 +247,174 @@ export function EarningsPage() {
     }
   }
 
+  async function register(
+    chain: PaymentChain,
+    address: string,
+    sign: (message: string) => Promise<string>,
+  ) {
+    const claim = (await request("wallets/register", { chain, address })) as {
+      claimId: string;
+    };
+    if (typeof claim.claimId !== "string")
+      throw new Error("Wallet registration could not be verified.");
+    const challenge = (await request("wallets/challenge", {
+      claimId: claim.claimId,
+    })) as {
+      challengeId: string;
+      message: string;
+      address: string;
+      chain: string;
+    };
+    if (
+      challenge.address !== address ||
+      challenge.chain !== chain ||
+      typeof challenge.challengeId !== "string" ||
+      typeof challenge.message !== "string"
+    )
+      throw new Error(
+        "Wallet confirmation does not match your selected address.",
+      );
+    const signature = await sign(challenge.message);
+    await request("wallets/authorize", {
+      claimId: claim.claimId,
+      challengeId: challenge.challengeId,
+      signature,
+    });
+    if (mounted.current) {
+      setMessage(
+        `${networkName[chain]} wallet confirmed. Eligible unpaid awards will be sent automatically. Wallet changes wait at least 24 hours and any earlier payment must be reconciled first.`,
+      );
+      refresh();
+    }
+  }
+
+  function connect(chosen: PayoutWallet, chain: PaymentChain) {
+    setPicker(null);
+    setPendingChange(null);
+    const saved = data?.wallets.find((w) => w.chain === chain);
+    void walletStep(chain, async () => {
+      const { address, sign } = await chosen.connect({
+        chooseAccount: saved?.authorized === true,
+      });
+      // The wallet decides which account it returns. A different address
+      // from the saved one is a change, so it needs the same public-record
+      // consent as Account Wallets before anything is registered (WAL-02).
+      if (saved && saved.address !== address) {
+        if (mounted.current)
+          setPendingChange({ chain, saved: saved.address, address, sign });
+        return;
+      }
+      await register(chain, address, sign);
+    });
+  }
+
+  function confirmChange() {
+    if (!pendingChange) return;
+    const { chain, address, sign } = pendingChange;
+    setPendingChange(null);
+    void walletStep(chain, () => register(chain, address, sign));
+  }
+
+  function keepSaved() {
+    if (!pendingChange) return;
+    returnFocus.current = pendingChange.chain;
+    setPendingChange(null);
+    setMessage(
+      `Kept your saved ${networkName[pendingChange.chain]} address. Nothing was registered.`,
+    );
+  }
+
   return (
     <main className="shell route-main earnings-page" aria-labelledby={heading}>
-      <h1 id={heading}>Your earnings</h1>
-      <p>Contributor amounts include the 2% payout fee deduction.</p>
-      {loading && <p role="status">Checking your earnings…</p>}
+      <h1 id={heading}>Your payouts</h1>
+      <p>
+        This page shows escrow payouts after the 2% fee deduction. Legacy
+        project cycles keep their recorded fee policy.
+      </p>
+      <dialog
+        ref={dialog}
+        className="wallet-picker"
+        aria-labelledby={`${heading}-wallet-picker`}
+        onCancel={() => setPicker(null)}
+        onClose={() => setPicker(null)}
+      >
+        <div className="wallet-picker-header">
+          <h2 id={`${heading}-wallet-picker`}>
+            Connect a {picker ? networkName[picker] : ""} wallet
+          </h2>
+          <button
+            type="button"
+            className="button ghost-button icon-button wallet-picker-close"
+            aria-label="Close wallet picker"
+            onClick={() => setPicker(null)}
+          >
+            <X size={20} aria-hidden="true" />
+          </button>
+        </div>
+        <p>
+          Choose a wallet for your {picker ? networkName[picker] : ""} payouts.
+        </p>
+        <div className="wallet-picker-list">
+          {wallets
+            .filter((wallet) => picker && wallet.family === chainFamily(picker))
+            .map((wallet) => (
+              <button
+                type="button"
+                key={wallet.id}
+                className="wallet-picker-row"
+                onClick={() => picker && void connect(wallet, picker)}
+              >
+                {wallet.icon ? (
+                  <img src={wallet.icon} width={32} height={32} alt="" />
+                ) : (
+                  <WalletIcon size={24} aria-hidden="true" />
+                )}
+                <span>{wallet.name}</span>
+                <small>Detected</small>
+              </button>
+            ))}
+          {!wallets.some(
+            (wallet) => picker && wallet.family === chainFamily(picker),
+          ) && (
+            <>
+              <p>
+                No wallet detected. Install a wallet, then reload this page.
+              </p>
+              <a
+                className="wallet-picker-row"
+                href="https://metamask.io/download"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <WalletIcon size={24} aria-hidden="true" />
+                <span>MetaMask</span>
+                <small>
+                  Install <ExternalLink size={16} aria-hidden="true" />
+                </small>
+              </a>
+              <a
+                className="wallet-picker-row"
+                href="https://phantom.com/download"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <WalletIcon size={24} aria-hidden="true" />
+                <span>Phantom</span>
+                <small>
+                  Install <ExternalLink size={16} aria-hidden="true" />
+                </small>
+              </a>
+            </>
+          )}
+        </div>
+        <p className="wallet-picker-note">
+          Each network can use a different wallet.
+        </p>
+      </dialog>
+      {loading && <p role="status">Checking your payouts…</p>}
       {signedOut && !loading && (
         <div>
-          <p>Sign in with GitHub to view your earnings.</p>
+          <p>Sign in with GitHub to view your payouts.</p>
           <a className="button" href="/login?next=earnings">
             Sign in with GitHub
           </a>
@@ -294,24 +433,64 @@ export function EarningsPage() {
         <>
           {error && <p>Showing the last verified account response.</p>}
           <section aria-label="Payout wallets" className="earnings-wallets">
-            {(["base", "solana"] as const).map((chain) => {
+            {ESCROW_CHAINS.map((chain) => {
               const wallet = data.wallets.find((w) => w.chain === chain);
-              const balance =
-                data.balances.find((b) => b.chain === chain)?.netMicro ?? "0";
+              // Each network and asset keeps its own balance; never summed.
+              const unpaid = data.balances.filter(
+                (b) => b.chain === chain && b.netBase !== "0",
+              );
+              const defaultNetwork = chainDefaultNetwork(chain);
               return (
                 <article key={chain} className="funding-workbench">
                   <h2>{networkName[chain]}</h2>
-                  <p>
-                    <strong>{amount(balance)}</strong> unpaid
-                  </p>
+                  {unpaid.length === 0 ? (
+                    <p>No unpaid awards</p>
+                  ) : (
+                    unpaid.map((b) => (
+                      <p key={`${b.network}:${b.assetAddress}`}>
+                        <strong>{formatAssetAmount(b.netBase, b)}</strong>{" "}
+                        unpaid
+                        {b.network === defaultNetwork
+                          ? ""
+                          : ` on ${networkLabels[b.network] ?? b.network}`}
+                      </p>
+                    ))
+                  )}
                   {wallet ? (
                     <p className="wallet-address">{wallet.address}</p>
                   ) : (
                     <p>
                       Add a {networkName[chain]} wallet to receive awards on
                       this network.
+                      {EVM_CHAINS.includes(chain)
+                        ? " Signing this consent does not require your wallet to be switched to this network."
+                        : ""}
                     </p>
                   )}
+                  {!wallet?.authorized &&
+                    data.walletObservations
+                      .filter(
+                        (o) =>
+                          o.chain === chain && o.address !== wallet?.address,
+                      )
+                      .slice(0, 1)
+                      .map((o) => (
+                        <p key={o.sourceUrl}>
+                          Your{" "}
+                          <a
+                            href={o.sourceUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            GitHub profile README
+                          </a>{" "}
+                          listed{" "}
+                          <span className="wallet-address">{o.address}</span> on{" "}
+                          {formatDate(o.observedAt)}. That record is history
+                          only. Connect and confirm a wallet to receive escrow
+                          payments.
+                        </p>
+                      ))}
                   {wallet && (
                     <p>
                       {wallet.authorized
@@ -323,20 +502,83 @@ export function EarningsPage() {
                     Date.parse(wallet.activationEligibleAt) > Date.now() && (
                       <p>
                         Wallet change becomes eligible after{" "}
-                        {new Date(wallet.activationEligibleAt).toLocaleString()}
-                        . Existing awards remain reserved.
+                        {formatDateTime(wallet.activationEligibleAt)}. Existing
+                        awards remain reserved.
                       </p>
                     )}
                   <button
+                    id={`${heading}-${chain}`}
                     className="button secondary-button"
                     type="button"
-                    disabled={busy !== null}
-                    onClick={() => void connect(chain)}
+                    disabled={busy !== null || pendingChange !== null}
+                    onClick={() => setPicker(chain)}
                   >
                     {busy === chain
                       ? "Confirm in your wallet…"
                       : `${wallet?.authorized ? "Change" : "Connect"} ${networkName[chain]} wallet`}
                   </button>
+                  {pendingChange?.chain === chain && (
+                    <section
+                      className="wallet-confirmation"
+                      aria-labelledby={`${heading}-${chain}-change`}
+                    >
+                      <h3
+                        id={`${heading}-${chain}-change`}
+                        className="wallet-heading"
+                        ref={changeHeading}
+                        tabIndex={-1}
+                      >
+                        Register a different {networkName[chain]} address?
+                      </h3>
+                      <p>
+                        Your wallet returned a different account from your saved{" "}
+                        {networkName[chain]} address. Nothing has been
+                        registered yet.
+                      </p>
+                      <dl>
+                        <div>
+                          <dt>Saved address</dt>
+                          <dd>
+                            <code className="wallet-address">
+                              {pendingChange.saved}
+                            </code>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>Wallet account</dt>
+                          <dd>
+                            <code className="wallet-address">
+                              {pendingChange.address}
+                            </code>
+                          </dd>
+                        </div>
+                      </dl>
+                      <p className="wallet-consequence">
+                        <strong>
+                          Your GitHub identity and this address become a public,
+                          permanent record.
+                        </strong>{" "}
+                        The new address appends a successor record; the earlier
+                        record stays public.
+                      </p>
+                      <div className="wallet-change-actions">
+                        <button
+                          className="button primary-button"
+                          type="button"
+                          onClick={confirmChange}
+                        >
+                          Register wallet account
+                        </button>
+                        <button
+                          className="button secondary-button"
+                          type="button"
+                          onClick={keepSaved}
+                        >
+                          Keep saved address
+                        </button>
+                      </div>
+                    </section>
+                  )}
                 </article>
               );
             })}
@@ -358,8 +600,8 @@ export function EarningsPage() {
             </button>
             {data.payments.length === 0 ? (
               <p>
-                No funded awards yet. Proposed rewards appear on project pages
-                until they are approved and funded.
+                No funded escrow awards yet. Proposed rewards appear on project
+                pages until they are approved and funded.
               </p>
             ) : (
               <section
@@ -395,18 +637,18 @@ export function EarningsPage() {
                         <td>
                           {networkLabels[payment.network] ?? payment.network}
                         </td>
-                        <td>{amount(payment.grossMicro)}</td>
-                        <td>{amount(payment.feeMicro)}</td>
-                        <td>{amount(payment.netMicro)}</td>
+                        <td>{formatAssetAmount(payment.grossBase, payment)}</td>
+                        <td>{formatAssetAmount(payment.feeBase, payment)}</td>
+                        <td>{formatAssetAmount(payment.netBase, payment)}</td>
                         <td>
                           {
                             {
-                              paid: "Paid — verified on chain",
+                              paid: "Paid, verified on chain",
                               needs_wallet: `Add or confirm ${networkName[payment.chain]} wallet`,
                               awaiting_binding: "Awaiting automatic payment",
                               submitted:
-                                "Submitted — waiting for chain verification",
-                              held: "Payment held — funds remain reserved",
+                                "Submitted, waiting for chain verification",
+                              held: "Payment held, funds remain reserved",
                             }[payment.deliveryState]
                           }
                           {transactionUrl(
@@ -436,6 +678,67 @@ export function EarningsPage() {
               </section>
             )}
           </section>
+          {data.directTransfers.length > 0 && (
+            <section aria-labelledby={`${heading}-direct`}>
+              <h2 id={`${heading}-direct`}>Sent outside escrow</h2>
+              <p>
+                A project creator sent these transfers directly, before escrow
+                payouts. Each one is in a published disclosure and on chain. No
+                payout fee was deducted.
+              </p>
+              <section
+                className="points-table"
+                aria-label="Direct payment details; scroll horizontally for all columns"
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll the payment history on narrow screens.
+                tabIndex={0}
+              >
+                <table>
+                  <caption>Direct transfers by contribution month</caption>
+                  <thead>
+                    <tr>
+                      <th>Project</th>
+                      <th>Month</th>
+                      <th>Network</th>
+                      <th>Received</th>
+                      <th>Transaction</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.directTransfers.map((t) => (
+                      <tr key={`${t.network}:${t.transactionId}`}>
+                        <td>
+                          <a
+                            href={`/projects/${encodeURIComponent(t.projectId)}`}
+                          >
+                            {t.projectId}
+                          </a>
+                        </td>
+                        <td>{t.contributionMonth}</td>
+                        <td>{networkLabels[t.network] ?? t.network}</td>
+                        <td>{usdcAmount(t.amountMicro)}</td>
+                        <td>
+                          {transactionUrl(t.network, t.transactionId) ? (
+                            <a
+                              href={
+                                transactionUrl(t.network, t.transactionId) ??
+                                undefined
+                              }
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              View transfer
+                            </a>
+                          ) : (
+                            t.transactionId
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+            </section>
+          )}
         </>
       )}
     </main>

@@ -31,19 +31,26 @@ export function DataNotice({
       </div>
     );
   }
-  if (!stale(state.snapshot)) return null;
-  return (
-    <div className="data-notice data-stale" role="status">
-      <span className="status-dot stale-dot" />
-      Data may be outdated · updated {formatDate(state.snapshot.generatedAt)}
-    </div>
-  );
+  return null;
 }
 
 export function stale(
   snapshot: Pick<LeaderboardSnapshot, "generatedAt">,
 ): boolean {
   return Date.now() - Date.parse(snapshot.generatedAt) > 8 * 60 * 60 * 1_000;
+}
+
+/** Date and time in UTC, for timestamps shown beside formatDate values. */
+export function formatDateTime(value: string): string {
+  return `${new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    month: "short",
+    timeZone: "UTC",
+    year: "numeric",
+  }).format(new Date(value))} UTC`;
 }
 
 export function formatDate(value: string): string {
@@ -219,6 +226,13 @@ export function formatPercent(partsPerMillion: number): string {
 
 /** A pledged pool never headlines its cap; the cap is small print only. */
 export const UNFUNDED_POOL_HEADLINE = "Not funded yet";
+
+/** A $0 monthly pool pays no money; accepted work still earns points. */
+export function monthlyPoolPointsOnly(
+  reward: Pick<ProjectDefinition["reward"], "kind" | "monthlyCapMinor">,
+): boolean {
+  return reward.kind === "monthly-pool" && reward.monthlyCapMinor === "0";
+}
 
 export function formatCompact(value: number): string {
   return new Intl.NumberFormat("en-US", {

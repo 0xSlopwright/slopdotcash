@@ -40,6 +40,27 @@ function cookie(request: Request) {
     .find((x) => x.startsWith(`${cookieName}=`))
     ?.slice(cookieName.length + 1);
 }
+/**
+ * Resolves the signed-in GitHub account from the site session cookie. Other
+ * same-origin APIs reuse this sign-in instead of minting their own sessions.
+ */
+export async function sessionGithubActor(
+  request: Request,
+  db: D1Database,
+  now: string,
+): Promise<{ githubId: string; githubLogin: string } | null> {
+  const token = cookie(request);
+  if (!token || !/^[A-Za-z0-9_-]{40,128}$/.test(token)) return null;
+  const member = await db
+    .prepare(
+      "SELECT m.github_id,m.login FROM points_members m JOIN points_sessions s ON s.actor_id=m.actor_id WHERE s.token_hash=? AND s.expires_at>?",
+    )
+    .bind(await sha256Hex(token), now)
+    .first<{ github_id: string; login: string }>();
+  return member
+    ? { githubId: member.github_id, githubLogin: member.login }
+    : null;
+}
 function sessionCookie(token: string, seconds: number) {
   return `${cookieName}=${token}; Path=/; Max-Age=${seconds}; Secure; HttpOnly; SameSite=Strict`;
 }
@@ -105,7 +126,7 @@ export async function handlePointsApi(
         return response;
       }
     }
-    if (route.startsWith("/x/")) return handleX(request, deps, now);
+    if (route.startsWith("/x/")) return await handleX(request, deps, now);
     if (route === "/people" && request.method === "GET") {
       const after = url.searchParams.get("after") ?? "";
       if (after && !/^[A-Za-z0-9_=-]{4,256}$/.test(after))
@@ -254,7 +275,7 @@ export async function handlePointsApi(
       // Login collisions fail closed; numeric actor identity remains canonical.
       const row = await deps.db
         .prepare(
-          "SELECT CASE WHEN COUNT(*)=1 THEN json_object('actor',json_object('id',actor_id,'login',login),'joinedAt',joined_at,'public',json('true'),'welcome',welcome,'socialPoints',COALESCE((SELECT points FROM points_x_awards a WHERE a.actor_id=points_members.actor_id),0)) ELSE NULL END AS member FROM points_members WHERE lower(login)=lower(?) AND public=1",
+          "SELECT CASE WHEN COUNT(*)=1 AND public=1 THEN json_object('actor',json_object('id',actor_id,'login',login),'joinedAt',joined_at,'public',json('true'),'welcome',welcome,'socialPoints',COALESCE((SELECT points FROM points_x_awards a WHERE a.actor_id=points_members.actor_id),0)) ELSE NULL END AS member FROM points_members WHERE lower(login)=lower(?)",
         )
         .bind(login)
         .first<{ member: string | null }>();
@@ -266,7 +287,7 @@ export async function handlePointsApi(
         return json(400, { error: "invalid_cursor" });
       const batch = await deps.db
         .prepare(
-          "SELECT generated_at,coverage,revision_count,digest FROM points_batches ORDER BY generated_at DESC,digest DESC LIMIT 1",
+          "SELECT generated_at,coverage,revision_count,digest FROM points_batches ORDER BY revision_count DESC,generated_at DESC,digest DESC LIMIT 1",
         )
         .first<{
           generated_at: string;

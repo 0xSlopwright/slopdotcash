@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
+
 /**
  * Drives desktop and mobile browser verification against the built site.
  */
 
 import { defineConfig, devices } from "@playwright/test";
+import { localEvidencePolicy } from "./tests/vetting-evidence-fixture";
 
 const externalBaseUrl =
   process.env.SLOP_BASE_URL ??
@@ -22,10 +24,58 @@ if (!Number.isInteger(localPort) || localPort < 1024 || localPort > 65535)
 const localOrigin = `http://127.0.0.1:${localPort}`;
 const requestedWorkers = process.env.SLOP_E2E_WORKERS;
 
+// The registry lane gives Pages a fresh local D1, test-only admins and
+// test-only project moderators.
+const registryNotify = process.env.SLOP_E2E_NOTIFY_SERVICE;
+if (
+  registryNotify !== undefined &&
+  !/^slop-notify-e2e-[0-9]{4,5}$/u.test(registryNotify)
+)
+  throw new Error("Invalid local notification Worker name");
+const registryPersistTo = process.env.SLOP_E2E_PERSIST_TO;
+const registryAdmins = process.env.SLOP_E2E_ADMIN_GITHUB_IDS;
+const registryModerators = process.env.SLOP_E2E_MODERATOR_GITHUB_IDS;
+for (const [name, value] of [
+  ["SLOP_E2E_ADMIN_GITHUB_IDS", registryAdmins],
+  ["SLOP_E2E_MODERATOR_GITHUB_IDS", registryModerators],
+])
+  if (value !== undefined && !/^[1-9][0-9]*(?:,[1-9][0-9]*)*$/u.test(value))
+    throw new Error(`${name} must list GitHub actor IDs`);
+const registryGitHub = process.env.SLOP_E2E_GITHUB_API_ORIGIN;
+if (
+  registryGitHub !== undefined &&
+  !/^http:\/\/127\.0\.0\.1:[0-9]{4,5}$/u.test(registryGitHub)
+)
+  throw new Error("SLOP_E2E_GITHUB_API_ORIGIN must be a loopback origin");
+const registryVettingKey = process.env.SLOP_E2E_VETTING_PUBLIC_KEY;
+if (
+  registryVettingKey !== undefined &&
+  !/^[A-Za-z0-9+/]{43}=$/u.test(registryVettingKey)
+)
+  throw new Error("SLOP_E2E_VETTING_PUBLIC_KEY must be a base64 Ed25519 key");
+const registryArguments = registryPersistTo
+  ? ` --persist-to ${JSON.stringify(registryPersistTo)}${
+      registryAdmins ? ` --binding ADMIN_GITHUB_IDS=${registryAdmins}` : ""
+    }${
+      registryModerators
+        ? ` --binding PROJECT_MODERATOR_GITHUB_IDS=${registryModerators}`
+        : ""
+    }${
+      registryGitHub
+        ? ` --binding SLOP_GITHUB_API_ORIGIN=${registryGitHub}`
+        : ""
+    }${
+      registryVettingKey
+        ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey} --r2 VETTING_EVIDENCE --binding 'VETTING_EVIDENCE_POLICY=${JSON.stringify({ ...localEvidencePolicy(new Date()), maxObjectBytes: 32 * 1024 * 1024 }).replaceAll("'", "'\\''")}'`
+        : ""
+    }${registryNotify ? ` --service SLOP_NOTIFY=${registryNotify}` : ""}`
+  : "";
+const outputName = process.env.SLOP_E2E_OUTPUT ?? localServer;
+
 const localServerCommand =
   localServer === "preview"
     ? `node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port ${localPort} --strictPort`
-    : `node node_modules/wrangler/bin/wrangler.js pages dev dist --ip 127.0.0.1 --port ${localPort} --log-level warn --show-interactive-dev-session=false`;
+    : `node node_modules/wrangler/bin/wrangler.js pages dev dist --ip 127.0.0.1 --port ${localPort} --inspector-port 0 --log-level warn --show-interactive-dev-session=false${registryArguments}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -38,7 +88,7 @@ export default defineConfig({
   timeout: 120_000,
   // The deploy job's own 180 min limit still bounds a hung suite.
   globalTimeout: 35 * 60_000,
-  outputDir: `test-results/${localServer}`,
+  outputDir: `test-results/${outputName}`,
   expect: { timeout: 10_000 },
   fullyParallel: true,
   // Wrangler's Pages proxy can terminate while serving concurrent browser
@@ -60,9 +110,9 @@ export default defineConfig({
   reporter: [
     [
       "html",
-      { open: "never", outputFolder: `playwright-report/${localServer}` },
+      { open: "never", outputFolder: `playwright-report/${outputName}` },
     ],
-    ["json", { outputFile: `test-results/${localServer}/results.json` }],
+    ["json", { outputFile: `test-results/${outputName}/results.json` }],
     ["list"],
   ],
   use: {
@@ -88,7 +138,33 @@ export default defineConfig({
       },
   projects: [
     {
+      name: "evidence-firefox",
+      testMatch: "**/evidence-download.spec.ts",
+      use: {
+        ...devices["Desktop Firefox"],
+        viewport: { width: 1440, height: 1000 },
+      },
+    },
+    // Observed no-store stream EOF + ERR_ABORTED matches this Chromium report:
+    // https://github.com/microsoft/playwright/issues/42742
+    // Keep the bounded private reader and strict failure assertions. Exercise
+    // the new email workflow in Firefox; existing Chromium coverage is unchanged.
+    ...[
+      ["wide-desktop", 1440, 1000],
+      ["desktop", 1024, 768],
+      ["tablet", 768, 1024],
+      ["narrow-mobile", 320, 800],
+    ].map(([name, width, height]) => ({
+      name: `${name}-email-firefox`,
+      testMatch: "**/email-preferences.spec.ts",
+      use: {
+        ...devices["Desktop Firefox"],
+        viewport: { width: Number(width), height: Number(height) },
+      },
+    })),
+    {
       name: "wide-desktop-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 1440, height: 1000 },
@@ -96,6 +172,7 @@ export default defineConfig({
     },
     {
       name: "desktop-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 1024, height: 768 },
@@ -103,6 +180,7 @@ export default defineConfig({
     },
     {
       name: "tablet-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 768, height: 1024 },
@@ -110,6 +188,7 @@ export default defineConfig({
     },
     {
       name: "narrow-mobile-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 320, height: 800 },

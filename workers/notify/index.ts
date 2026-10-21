@@ -1,0 +1,171 @@
+import { EmailMessage } from "cloudflare:email";
+import type { SecurityD1Database } from "../../backend/security/handler";
+import { readBoundedJson } from "../../src/lib/browser-json";
+import {
+  type ActivityMailDependencies,
+  activityMailEligibility,
+  dispatchActivityMail,
+  parseActivityMailConfig,
+} from "./activity";
+import { handleNotifyRequest } from "./handler";
+import {
+  dispatchSecurityMail,
+  parseSecurityMailConfig,
+  reconcileSecurityMail,
+  type SecurityMailDependencies,
+} from "./security";
+
+type SendEmailBinding = {
+  send(message: EmailMessage): Promise<void>;
+};
+
+type Env = {
+  ADMIN_EMAIL: SendEmailBinding;
+  ADMIN_EMAILS?: string;
+  SLOP_DB?: SecurityD1Database;
+  SECURITY_MAIL_PILOT?: string;
+  ACTIVITY_MAIL_PILOT?: string;
+  NOTIFY_FROM_ADDRESS: string;
+  NOTIFY_INBOX_URL?: string;
+};
+
+function securityDependencies(env: Env): SecurityMailDependencies | null {
+  const config = parseSecurityMailConfig(env.SECURITY_MAIL_PILOT);
+  if (!config || !env.SLOP_DB || config.inboxUrl !== env.NOTIFY_INBOX_URL)
+    return null;
+  return {
+    db: env.SLOP_DB,
+    config,
+    fromAddress: env.NOTIFY_FROM_ADDRESS,
+    now: () => new Date(),
+    sendEmail: (from, to, rawMime) =>
+      env.ADMIN_EMAIL.send(new EmailMessage(from, to, rawMime)),
+  };
+}
+
+function activityDependencies(env: Env): ActivityMailDependencies | null {
+  const config = parseActivityMailConfig(env.ACTIVITY_MAIL_PILOT);
+  if (!config || !env.SLOP_DB || config.inboxUrl !== env.NOTIFY_INBOX_URL)
+    return null;
+  return {
+    db: env.SLOP_DB,
+    config,
+    fromAddress: env.NOTIFY_FROM_ADDRESS,
+    now: () => new Date(),
+    sendEmail: (from, to, mime) =>
+      env.ADMIN_EMAIL.send(new EmailMessage(from, to, mime)),
+  };
+}
+
+export default {
+  async scheduled(_event: unknown, env: Env): Promise<void> {
+    const deps = securityDependencies(env);
+    if (deps) await dispatchSecurityMail(deps);
+    const activity = activityDependencies(env);
+    if (activity) await dispatchActivityMail(activity);
+  },
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    if (
+      url.origin === "https://notify.internal" &&
+      [
+        "/v1/security-notifications/dispatch",
+        "/v1/security-notifications/reconcile",
+      ].includes(url.pathname) &&
+      !url.search
+    ) {
+      const respond = (status: number) =>
+        new Response(null, {
+          status,
+          headers: { "cache-control": "private, no-store" },
+        });
+      if (request.method !== "POST") return respond(405);
+      const deps = securityDependencies(env);
+      if (!deps) return respond(503);
+      try {
+        const body = await readBoundedJson(
+          request as unknown as Response,
+          8192,
+          "private notice",
+        );
+        if (typeof body !== "object" || body === null || Array.isArray(body))
+          return respond(400);
+        if (url.pathname.endsWith("/reconcile"))
+          return respond(
+            (await reconcileSecurityMail(deps, body as Record<string, unknown>))
+              ? 204
+              : 409,
+          );
+        if (Object.keys(body).length !== 0) return respond(400);
+        await dispatchSecurityMail(deps);
+        return respond(204);
+      } catch {
+        return respond(500);
+      }
+    }
+    if (
+      url.origin === "https://notify.internal" &&
+      [
+        "/v1/activity-notifications/eligibility",
+        "/v1/activity-notifications/dispatch",
+        "/v1/activity-notifications/reconcile",
+      ].includes(url.pathname) &&
+      !url.search
+    ) {
+      const respond = (status: number, body?: unknown) =>
+        new Response(body === undefined ? null : JSON.stringify(body), {
+          status,
+          headers: {
+            "cache-control": "private, no-store",
+            "content-type": "application/json",
+          },
+        });
+      if (request.method !== "POST") return respond(405);
+      const deps = activityDependencies(env);
+      if (!deps) return respond(503);
+      try {
+        const body = await readBoundedJson(
+          request as unknown as Response,
+          8192,
+          "activity notice",
+        );
+        if (!body || typeof body !== "object" || Array.isArray(body))
+          return respond(400);
+        const value = body as Record<string, unknown>;
+        if (url.pathname.endsWith("/eligibility")) {
+          if (
+            Object.keys(value).join() !== "githubId" ||
+            typeof value.githubId !== "string" ||
+            !/^[1-9]\d{0,19}$/u.test(value.githubId)
+          )
+            return respond(400);
+          return respond(
+            200,
+            await activityMailEligibility(
+              deps.config,
+              value.githubId,
+              deps.now(),
+            ),
+          );
+        }
+        if (url.pathname.endsWith("/reconcile"))
+          return respond(
+            (await reconcileSecurityMail(deps, value, "activity")) ? 204 : 409,
+          );
+        if (Object.keys(value).length) return respond(400);
+        await dispatchActivityMail(deps);
+        return respond(204);
+      } catch {
+        return respond(500);
+      }
+    }
+    return handleNotifyRequest(request, {
+      adminEmails: env.ADMIN_EMAILS,
+      fromAddress: env.NOTIFY_FROM_ADDRESS,
+      now: () => new Date(),
+      randomId: () => crypto.randomUUID(),
+      sendEmail: (from, to, rawMime) =>
+        env.ADMIN_EMAIL.send(new EmailMessage(from, to, rawMime)),
+    });
+  },
+};

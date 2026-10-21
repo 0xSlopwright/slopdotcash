@@ -18,11 +18,15 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PROJECTS } from "../src/lib/projects.mjs";
-import { packageSkillArtifact } from "./package-skill-artifact.mjs";
+import { GENERATED_SKILL_TEMPLATES } from "../src/lib/install-command.ts";
+import { PROJECT_SKILL_TEMPLATES } from "../src/lib/project-schema.mjs";
+import {
+  ACCEPTED_SKILL_REVISIONS,
+  GUIDE_RENDERER_PATHS,
+} from "../src/lib/project-skill-publication.mjs";
 import { readIdentityRecord } from "./protocol-identity.mjs";
-import { renderInstallGuide } from "./render-install-guide.mjs";
 import { pythonCommand } from "./skill-python.mjs";
+import { skillSourceMatchesCommit } from "./skill-source-matches-commit.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = packageRoot;
@@ -32,39 +36,12 @@ const protocolRoot = join(repositoryRoot, "protocol");
 const publicProtocolRoot = join(publicRoot, "protocol");
 const bootstrapSkillRoot = join(repositoryRoot, "skills", "slop");
 const bootstrapSkillSource = join(bootstrapSkillRoot, "SKILL.md");
-const rootPublishedProjects = PROJECTS.filter(
-  (project) => project.skill.publishAtRoot === true,
-);
-if (rootPublishedProjects.length !== 1) {
-  throw new TypeError(
-    "[Slop] project registry must select exactly one root-published skill",
-  );
-}
-const rootPublishedProject = rootPublishedProjects[0];
-const rootProjectId = rootPublishedProject.id;
-const rootSkillName = rootPublishedProject.skill.id;
-const skillRepositoryPath = rootPublishedProject.skill.sourcePath;
-const skillRoot = join(repositoryRoot, skillRepositoryPath);
-const skillSource = join(skillRoot, "SKILL.md");
-const repositoryContractPath = join(
-  skillRoot,
-  "references",
-  "repository-contract.md",
-);
-const evidenceRubricPath = join(
-  skillRoot,
-  "references",
-  "evidence-review-rubric.md",
-);
 const skillValidator = join(
   repositoryRoot,
   "scripts",
   "skill-validation",
   "quick_validate.py",
 );
-const archiveName = `${rootSkillName}.skill`;
-const archivePath = join(downloadsRoot, archiveName);
-const sourcePath = `${skillRepositoryPath}/SKILL.md`;
 const publicSiteOrigin = "https://slop.cash";
 const sourceRepository = "SlopDotCash/slopdotcash";
 
@@ -127,11 +104,13 @@ function listRegularSkillFiles(root, prefix = "") {
 }
 
 mkdirSync(publicRoot, { recursive: true });
+// Project endpoints are Function responses now; a reused checkout must not
+// keep serving files a build published before the D1 registry.
+rmSync(join(publicRoot, "projects"), { force: true, recursive: true });
 // Retire the deployment-bound intake timer from existing build directories.
 rmSync(join(publicRoot, "data", "private-intake-attestation.json"), {
   force: true,
 });
-mkdirSync(downloadsRoot, { recursive: true });
 mkdirSync(publicProtocolRoot, { recursive: true });
 const privateTraceContractPath = join(protocolRoot, "private-trace-v1.md");
 if (!existsSync(privateTraceContractPath)) {
@@ -160,55 +139,6 @@ if (existsSync(identityRecordPath)) {
 }
 runPython([skillValidator, bootstrapSkillRoot]);
 
-const skillMarkdown = readFileSync(skillSource);
-const repositoryContract = readFileSync(repositoryContractPath, "utf8");
-const evidenceRubric = readFileSync(evidenceRubricPath, "utf8");
-const skillDigest = sha256(skillMarkdown);
-const trackedSkillFiles = execFileSync(
-  "git",
-  ["ls-files", "-z", "--", skillRepositoryPath],
-  {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  },
-)
-  .split("\0")
-  .filter(Boolean)
-  .map((path) => relative(skillRepositoryPath, path).replaceAll("\\", "/"))
-  .sort();
-const actualSkillFiles = listRegularSkillFiles(skillRoot).sort();
-if (
-  trackedSkillFiles.length === 0 ||
-  trackedSkillFiles.includes("PROVENANCE.json") ||
-  trackedSkillFiles.some(
-    (path) => path === ".." || path.startsWith("../") || path.includes("/../"),
-  )
-) {
-  throw new TypeError(
-    "[Slop] tracked skill file manifest is empty, escaped its root, or reserves PROVENANCE.json",
-  );
-}
-if (trackedSkillFiles.length > 32) {
-  throw new TypeError(
-    "[Slop] canonical skill exceeds the installer's 32-file authority bound",
-  );
-}
-if (
-  trackedSkillFiles.length !== actualSkillFiles.length ||
-  trackedSkillFiles.some((path, index) => path !== actualSkillFiles[index])
-) {
-  const tracked = new Set(trackedSkillFiles);
-  const actual = new Set(actualSkillFiles);
-  const extras = actualSkillFiles.filter((path) => !tracked.has(path));
-  const missing = trackedSkillFiles.filter((path) => !actual.has(path));
-  throw new TypeError(
-    `[Slop] skill source must exactly match tracked files (extra: ${extras.join(", ") || "none"}; missing: ${missing.join(", ") || "none"})`,
-  );
-}
-const skillFileManifest = trackedSkillFiles.map((path) => ({
-  path,
-  sha256: sha256(readFileSync(join(skillRoot, path))),
-}));
 const commit = execFileSync("git", ["rev-parse", "HEAD"], {
   cwd: repositoryRoot,
   encoding: "utf8",
@@ -251,56 +181,6 @@ try {
 } catch {
   // error-policy:J3 an absent committed source is an explicit working-tree state.
 }
-const committedSkillFiles = execFileSync(
-  "git",
-  ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", skillRepositoryPath],
-  {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-  },
-)
-  .split("\0")
-  .filter(Boolean)
-  .map((path) => relative(skillRepositoryPath, path).replaceAll("\\", "/"))
-  .sort();
-const sourceMatchesCommit =
-  committedSkillFiles.length === trackedSkillFiles.length &&
-  committedSkillFiles.every(
-    (path, index) =>
-      path === trackedSkillFiles[index] &&
-      readFileSync(join(skillRoot, path)).equals(
-        execFileSync("git", ["show", `HEAD:${skillRepositoryPath}/${path}`], {
-          cwd: repositoryRoot,
-          encoding: null,
-          maxBuffer: 16 * 1024 * 1024,
-        }),
-      ),
-  );
-const sourceRevisionStatus = sourceMatchesCommit ? "committed" : "working-tree";
-const guideRendererPaths = [
-  "scripts/render-install-guide.mjs",
-  "src/lib/install-command.ts",
-  "skills/contribute-to-eliza/scripts/skill-authority.mjs",
-];
-const rendererMatchesCommit = guideRendererPaths.every((path) => {
-  try {
-    return readFileSync(join(repositoryRoot, path)).equals(
-      execFileSync("git", ["show", `HEAD:${path}`], {
-        cwd: repositoryRoot,
-        encoding: null,
-        maxBuffer: 16 * 1024 * 1024,
-        stdio: ["ignore", "pipe", "ignore"],
-      }),
-    );
-  } catch {
-    // error-policy:J3 an absent immutable renderer is an explicit working-tree state.
-    return false;
-  }
-});
-const rendererRevisionStatus = rendererMatchesCommit
-  ? "committed"
-  : "working-tree";
-
 run(process.execPath, [
   join(repositoryRoot, "scripts", "sync-brand-assets.mjs"),
   publicRoot,
@@ -308,24 +188,6 @@ run(process.execPath, [
   "--favicons",
   "--ogembeds",
 ]);
-
-const archive = packageSkillArtifact({
-  repositoryRoot,
-  skillRoot,
-  downloadsRoot,
-  runPython,
-  provenance: {
-    schemaVersion: "1",
-    name: rootSkillName,
-    repository: sourceRepository,
-    revision: sourceRevisionStatus === "committed" ? commit : null,
-    revisionStatus: sourceRevisionStatus,
-    source: { path: sourcePath, sha256: skillDigest },
-    files: skillFileManifest,
-  },
-});
-
-const archiveDigest = sha256(archive);
 
 const discoveryRoot = join(publicRoot, ".well-known", "agent-skills");
 const discoverySkillRoot = join(discoveryRoot, "slop");
@@ -356,484 +218,170 @@ writeFileSync(
   join(publicRoot, "llms.txt"),
   `# Slop\n\n> Make money shipping open source. Pick important public work, ship an accepted result, and build a contributor record on GitHub.\n\n## Agent onboarding\n\n- [Slop bootstrap skill](${publicSiteOrigin}/SKILL.md): Inspect and install the repository-specific contribution skill. SHA-256: ${bootstrapSkillDigest}.\n- [Agent Skills discovery index](${publicSiteOrigin}/.well-known/agent-skills/index.json): Machine-readable v0.2 discovery and integrity metadata.\n\nThe bootstrap source revision is ${commit} (${bootstrapRevisionStatus}). It never authorizes wallet creation, background upload, raw prompt, transcript, source, credential, or private-key disclosure.\n`,
 );
-const projectDiscoveryRoot = join(publicRoot, ".well-known", "slop");
-rmSync(projectDiscoveryRoot, { force: true, recursive: true });
-mkdirSync(projectDiscoveryRoot, { recursive: true });
+// Project skills are rendered per request from the D1 manifest revision and
+// this one reviewed template pair, so no per-project file is built here. The
+// project discovery index and terms are Pages Function responses too.
+rmSync(join(publicRoot, ".well-known", "slop"), {
+  force: true,
+  recursive: true,
+});
+for (const name of [
+  "mission.md",
+  "codex.md",
+  "claude.md",
+  "claude-code.md",
+  "manual.md",
+])
+  rmSync(join(publicRoot, name), { force: true });
+rmSync(downloadsRoot, { force: true, recursive: true });
 writeFileSync(
-  join(projectDiscoveryRoot, "projects.json"),
+  join(publicRoot, "skill-manifest.json"),
   `${JSON.stringify(
     {
       schemaVersion: "1",
-      projects: PROJECTS.flatMap((project) =>
-        project.repositories.map((repository) => ({
-          project_id: project.id,
-          project_url: `${publicSiteOrigin}/projects/${project.id}/`,
-          repository: repository.aliases?.at(-1) ?? repository.id,
-          review_skill: project.reviewSkill.id,
-          review_skill_manifest: `${publicSiteOrigin}/projects/${project.id}/review-skill-manifest.json`,
-          skill: project.skill.id,
-          skill_source: project.skill.sourcePath,
-        })),
-      ),
+      name: null,
+      repository: sourceRepository,
+      revision: commit,
+      revisionStatus: bootstrapRevisionStatus,
+      generatedAt: new Date().toISOString(),
     },
     null,
     2,
   )}\n`,
 );
 
-const standaloneMission = `${skillMarkdown.toString()}
+// install-command.ts inlines the template paths for the bootstrap renderer
+// contract; the build refuses to publish if the two copies ever differ.
+if (
+  JSON.stringify(GENERATED_SKILL_TEMPLATES) !==
+  JSON.stringify(PROJECT_SKILL_TEMPLATES)
+)
+  throw new TypeError("[Slop] generated skill template paths have drifted");
 
----
-
-# Embedded repository contract
-
-The URL-only mission embeds both required references so an agent does not need
-to fetch or execute additional code. If the local live-report script is absent,
-use the read-only inspection commands below and verify live claim state
-manually.
-
-${repositoryContract}
-
----
-
-# Embedded evidence and review rubric
-
-${evidenceRubric}
-`;
-writeFileSync(join(publicRoot, "mission.md"), standaloneMission);
-
-const primaryGuideOptions = {
-  artifactOrigin: `${publicSiteOrigin}/projects/${rootProjectId}`,
-  skillName: rootSkillName,
-  skillRepositoryPath,
-};
-const codexBootstrap = renderInstallGuide({
-  ...primaryGuideOptions,
-  client: "codex",
+/** True when the published guide renderer is the committed source. */
+const rendererMatchesCommit = GUIDE_RENDERER_PATHS.every((path) => {
+  try {
+    return readFileSync(join(repositoryRoot, path)).equals(
+      execFileSync("git", ["show", `HEAD:${path}`], {
+        cwd: repositoryRoot,
+        encoding: null,
+        maxBuffer: 16 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "ignore"],
+      }),
+    );
+  } catch {
+    // error-policy:J3 an absent immutable renderer is an explicit working-tree state.
+    return false;
+  }
 });
 
-writeFileSync(join(publicRoot, "codex.md"), codexBootstrap);
-const claudeBootstrap = renderInstallGuide({
-  ...primaryGuideOptions,
-  client: "claude-code",
-});
-writeFileSync(join(publicRoot, "claude.md"), claudeBootstrap);
-writeFileSync(join(publicRoot, "claude-code.md"), claudeBootstrap);
-const manualBootstrap = renderInstallGuide({
-  ...primaryGuideOptions,
-  client: "manual",
-});
-writeFileSync(join(publicRoot, "manual.md"), manualBootstrap);
-writeFileSync(
-  join(downloadsRoot, `${archiveName}.sha256`),
-  `${archiveDigest}  ${archiveName}\n`,
-);
-
-function guideRecord({
-  artifactOrigin,
-  client,
-  publicUrl,
-  skillName,
-  skillRepositoryPath,
-  source,
-}) {
-  return {
-    publicUrl,
-    sha256: sha256(source),
-    renderer: {
-      entrypoint: "scripts/render-install-guide.mjs",
-      repository: sourceRepository,
-      revision: rendererMatchesCommit ? commit : null,
-      revisionStatus: rendererRevisionStatus,
-      paths: guideRendererPaths,
-      arguments: [
-        "--artifact-origin",
-        artifactOrigin,
-        "--client",
-        client,
-        "--skill",
-        skillName,
-        "--source",
-        skillRepositoryPath,
-      ],
-    },
-  };
-}
-
-const manifest = {
-  schemaVersion: "1",
-  name: rootSkillName,
-  repository: "SlopDotCash/slopdotcash",
-  revision: commit,
-  revisionStatus: sourceRevisionStatus,
-  generatedAt: new Date().toISOString(),
-  source: {
-    path: sourcePath,
-    url: `https://github.com/SlopDotCash/slopdotcash/blob/${commit}/${sourcePath}`,
-    publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/skill.md`,
-    sha256: skillDigest,
-  },
-  archive: {
-    url: `${publicSiteOrigin}/downloads/${archiveName}`,
-    sha256: archiveDigest,
-    checksumUrl: `${publicSiteOrigin}/downloads/${archiveName}.sha256`,
-  },
-  guides: {
-    codex: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "codex",
-      publicUrl: `${publicSiteOrigin}/codex.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: codexBootstrap,
-    }),
-    claude: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "claude-code",
-      publicUrl: `${publicSiteOrigin}/claude.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: claudeBootstrap,
-    }),
-    manual: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "manual",
-      publicUrl: `${publicSiteOrigin}/manual.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: manualBootstrap,
-    }),
-  },
-  authority: {
-    apiOrigin: "https://api.github.com",
-    rawOrigin: "https://raw.githubusercontent.com",
-    canonicalPath: skillRepositoryPath,
-    releaseCandidateLabel: "slop-release-candidate",
-    acceptedRevisions: [
-      "current main head",
-      "main ancestor whose complete canonical skill tree is byte-identical to current main",
-      "open non-draft same-repository PR head into main, zero behind current main, with a release-candidate label event after the exact current-head event",
-    ],
-  },
-  provenance: {
-    status: "self-reported",
-    policy:
-      "Contributors disclose provider, exact model identifier, client, and skill revision. Disclosure is not independently verified and does not affect score.",
-  },
-  telemetry: {
-    source: "ccusage@20.0.20",
-    policy:
-      "Contribute through GitHub with exact provider, model, and client disclosure. Signed receipts, usage collection, private traces, and wallet registration are optional. Inspected traces require consent under https://slop.cash/protocol/private-trace-v1.md; only finalized evidence earns the trace bonus. Missing evidence never blocks submission.",
-  },
-};
-
-writeFileSync(
-  join(publicRoot, "skill-manifest.json"),
-  `${JSON.stringify(manifest, null, 2)}\n`,
-);
-
-function publishPrimaryProjectAlias() {
-  const projectRoot = join(publicRoot, "projects", rootProjectId);
-  const projectDownloads = join(projectRoot, "downloads");
-  mkdirSync(projectDownloads, { recursive: true });
-  copyFileSync(skillSource, join(projectRoot, "skill.md"));
-  writeFileSync(join(projectRoot, "mission.md"), standaloneMission);
-  copyFileSync(archivePath, join(projectDownloads, archiveName));
-  copyFileSync(
-    join(downloadsRoot, `${archiveName}.sha256`),
-    join(projectDownloads, `${archiveName}.sha256`),
-  );
-  const codexGuide = codexBootstrap;
-  writeFileSync(join(projectRoot, "codex.md"), codexGuide);
-  const claudeGuide = claudeBootstrap;
-  writeFileSync(join(projectRoot, "claude.md"), claudeGuide);
-  writeFileSync(join(projectRoot, "claude-code.md"), claudeGuide);
-  const manualGuide = manualBootstrap;
-  writeFileSync(join(projectRoot, "manual.md"), manualGuide);
-  const projectManifest = structuredClone(manifest);
-  projectManifest.source.publicUrl = `${publicSiteOrigin}/projects/${rootProjectId}/skill.md`;
-  projectManifest.archive.url = `${publicSiteOrigin}/projects/${rootProjectId}/downloads/${archiveName}`;
-  projectManifest.archive.checksumUrl = `${projectManifest.archive.url}.sha256`;
-  projectManifest.guides = {
-    codex: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "codex",
-      publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/codex.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: codexGuide,
-    }),
-    claude: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "claude-code",
-      publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/claude.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: claudeGuide,
-    }),
-    manual: guideRecord({
-      artifactOrigin: primaryGuideOptions.artifactOrigin,
-      client: "manual",
-      publicUrl: `${publicSiteOrigin}/projects/${rootProjectId}/manual.md`,
-      skillName: primaryGuideOptions.skillName,
-      skillRepositoryPath: primaryGuideOptions.skillRepositoryPath,
-      source: manualGuide,
-    }),
-  };
-  writeFileSync(
-    join(projectRoot, "skill-manifest.json"),
-    `${JSON.stringify(projectManifest, null, 2)}\n`,
-  );
-}
-
-function publishAdditionalProject({
-  id,
-  name,
-  publicationPrefix = "",
-  skillRepositoryPath,
-}) {
-  const additionalSkillRoot = join(repositoryRoot, skillRepositoryPath);
-  const additionalSkillSource = join(additionalSkillRoot, "SKILL.md");
-  const sourcePath = `${skillRepositoryPath}/SKILL.md`;
-  const projectRoot = join(publicRoot, "projects", id);
-  const projectDownloads = join(projectRoot, "downloads");
-  const archiveName = `${name}.skill`;
-  mkdirSync(projectDownloads, { recursive: true });
-
-  const trackedFiles = execFileSync(
-    "git",
-    ["ls-files", "-z", "--", skillRepositoryPath],
-    { cwd: repositoryRoot, encoding: "utf8" },
-  )
+/**
+ * Publishes the canonical template trees with their digests and source
+ * commit. The skill Function renders each project from these bytes and the
+ * project's D1 revision, and refuses any file whose digest differs.
+ */
+function templateGroup(sourcePath) {
+  const tracked = execFileSync("git", ["ls-files", "-z", "--", sourcePath], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  })
     .split("\0")
     .filter(Boolean)
-    .map((path) => relative(skillRepositoryPath, path).replaceAll("\\", "/"))
+    .map((path) => relative(sourcePath, path).replaceAll("\\", "/"))
     .sort();
-  const actualFiles = listRegularSkillFiles(additionalSkillRoot).sort();
+  const paths = listRegularSkillFiles(join(repositoryRoot, sourcePath)).sort();
   if (
-    trackedFiles.length === 0 ||
-    trackedFiles.includes("PROVENANCE.json") ||
-    trackedFiles.length > 32 ||
-    trackedFiles.some(
-      (path) =>
-        path === ".." || path.startsWith("../") || path.includes("/../"),
-    ) ||
-    trackedFiles.length !== actualFiles.length ||
-    trackedFiles.some((path, index) => path !== actualFiles[index])
-  ) {
-    throw new TypeError(
-      `[Slop] ${name} source must be a bounded, tracked, exact file tree`,
-    );
-  }
-  const fileManifest = trackedFiles.map((path) => ({
-    path,
-    sha256: sha256(readFileSync(join(additionalSkillRoot, path))),
-  }));
-  const committedFiles = execFileSync(
-    "git",
-    ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", skillRepositoryPath],
-    { cwd: repositoryRoot, encoding: "utf8" },
+    paths.length === 0 ||
+    paths.length > 32 ||
+    paths.includes("PROVENANCE.json") ||
+    paths.includes("project.json") ||
+    paths.length !== tracked.length ||
+    paths.some((path, index) => path !== tracked[index])
   )
-    .split("\0")
-    .filter(Boolean)
-    .map((path) => relative(skillRepositoryPath, path).replaceAll("\\", "/"))
-    .sort();
-  const sourceMatchesCommit =
-    committedFiles.length === trackedFiles.length &&
-    committedFiles.every(
-      (path, index) =>
-        path === trackedFiles[index] &&
-        readFileSync(join(additionalSkillRoot, path)).equals(
-          execFileSync("git", ["show", `HEAD:${skillRepositoryPath}/${path}`], {
-            cwd: repositoryRoot,
-            encoding: null,
-            maxBuffer: 16 * 1024 * 1024,
-          }),
-        ),
+    throw new TypeError(
+      `[Slop] skill template ${sourcePath} must be a bounded, tracked, exact file tree`,
     );
-  const revisionStatus = sourceMatchesCommit ? "committed" : "working-tree";
-  const skillBytes = readFileSync(additionalSkillSource);
-  const archive = packageSkillArtifact({
-    repositoryRoot,
-    skillRoot: additionalSkillRoot,
-    downloadsRoot: projectDownloads,
-    runPython,
-    provenance: {
-      schemaVersion: "1",
-      name,
-      repository: sourceRepository,
-      revision: revisionStatus === "committed" ? commit : null,
-      revisionStatus,
-      source: { path: sourcePath, sha256: sha256(skillBytes) },
-      files: fileManifest,
-    },
-  });
-
-  const archiveDigest = sha256(archive);
-  const references = trackedFiles
-    .filter((path) => path.startsWith("references/") && path.endsWith(".md"))
-    .map((path) => readFileSync(join(additionalSkillRoot, path), "utf8"));
-  writeFileSync(join(projectRoot, `${publicationPrefix}skill.md`), skillBytes);
-  writeFileSync(
-    join(projectRoot, `${publicationPrefix}mission.md`),
-    `${skillBytes.toString()}\n\n---\n\n${references.join("\n\n---\n\n")}`,
-  );
-  const codexGuide = renderInstallGuide({
-    artifactOrigin: `${publicSiteOrigin}/projects/${id}`,
-    client: "codex",
-    skillName: name,
-    skillRepositoryPath,
-  });
-  writeFileSync(join(projectRoot, `${publicationPrefix}codex.md`), codexGuide);
-  const claudeGuide = renderInstallGuide({
-    artifactOrigin: `${publicSiteOrigin}/projects/${id}`,
-    client: "claude-code",
-    skillName: name,
-    skillRepositoryPath,
-  });
-  writeFileSync(
-    join(projectRoot, `${publicationPrefix}claude.md`),
-    claudeGuide,
-  );
-  writeFileSync(
-    join(projectRoot, `${publicationPrefix}claude-code.md`),
-    claudeGuide,
-  );
-  const manualGuide = renderInstallGuide({
-    artifactOrigin: `${publicSiteOrigin}/projects/${id}`,
-    client: "manual",
-    skillName: name,
-    skillRepositoryPath,
-  });
-  writeFileSync(
-    join(projectRoot, `${publicationPrefix}manual.md`),
-    manualGuide,
-  );
-  writeFileSync(
-    join(projectDownloads, `${archiveName}.sha256`),
-    `${archiveDigest}  ${archiveName}\n`,
-  );
-  const additionalManifest = {
-    schemaVersion: "1",
-    name,
-    repository: "SlopDotCash/slopdotcash",
-    revision: commit,
-    revisionStatus,
-    generatedAt: new Date().toISOString(),
-    source: {
-      path: sourcePath,
-      url: `https://github.com/SlopDotCash/slopdotcash/blob/${commit}/${sourcePath}`,
-      publicUrl: `${publicSiteOrigin}/projects/${id}/${publicationPrefix}skill.md`,
-      sha256: sha256(skillBytes),
-    },
-    archive: {
-      url: `${publicSiteOrigin}/projects/${id}/downloads/${archiveName}`,
-      sha256: archiveDigest,
-      checksumUrl: `${publicSiteOrigin}/projects/${id}/downloads/${archiveName}.sha256`,
-    },
-    guides: {
-      codex: guideRecord({
-        artifactOrigin: `${publicSiteOrigin}/projects/${id}`,
-        client: "codex",
-        publicUrl: `${publicSiteOrigin}/projects/${id}/${publicationPrefix}codex.md`,
-        skillName: name,
-        skillRepositoryPath,
-        source: codexGuide,
-      }),
-      claude: guideRecord({
-        artifactOrigin: `${publicSiteOrigin}/projects/${id}`,
-        client: "claude-code",
-        publicUrl: `${publicSiteOrigin}/projects/${id}/${publicationPrefix}claude.md`,
-        skillName: name,
-        skillRepositoryPath,
-        source: claudeGuide,
-      }),
-      manual: guideRecord({
-        artifactOrigin: `${publicSiteOrigin}/projects/${id}`,
-        client: "manual",
-        publicUrl: `${publicSiteOrigin}/projects/${id}/${publicationPrefix}manual.md`,
-        skillName: name,
-        skillRepositoryPath,
-        source: manualGuide,
-      }),
-    },
-    authority: {
-      apiOrigin: "https://api.github.com",
-      rawOrigin: "https://raw.githubusercontent.com",
-      canonicalPath: skillRepositoryPath,
-      releaseCandidateLabel: "slop-release-candidate",
-      acceptedRevisions: manifest.authority.acceptedRevisions,
-    },
-    provenance: {
-      status: "self-reported",
-      policy:
-        "Every provider, exact model identifier, and agent client may participate. Exact provider, model, client, and skill revision disclosure is required, self-reported, and never changes score.",
-    },
-    telemetry: {
-      source: "ccusage@20.0.20",
-      policy:
-        "Contribute through GitHub with exact provider, model, and client disclosure. Signed receipts, usage collection, private traces, and wallet registration are optional. Inspected traces require consent under https://slop.cash/protocol/private-trace-v1.md; only finalized evidence earns the trace bonus. Missing evidence never blocks submission.",
-    },
-    ...(publicationPrefix
-      ? {
-          review: {
-            policy:
-              "Advisory review only. The reviewer must post exact provider, model, and client identity with optional finalized private-trace evidence. Maintainers decide acceptance, score, and every money-state transition.",
-          },
-        }
-      : {}),
-  };
-  writeFileSync(
-    join(projectRoot, `${publicationPrefix}skill-manifest.json`),
-    `${JSON.stringify(additionalManifest, null, 2)}\n`,
-  );
-  console.log(
-    `[Slop] prepared ${archiveName} (${archiveDigest.slice(0, 12)}) from ${commit.slice(0, 12)}`,
-  );
-}
-
-publishPrimaryProjectAlias();
-for (const project of PROJECTS) {
-  if (!project.skill.publishAtRoot) {
-    publishAdditionalProject({
-      id: project.id,
-      name: project.skill.id,
-      skillRepositoryPath: project.skill.sourcePath,
-    });
+  const target = join(publicRoot, "skill-templates", sourcePath);
+  for (const path of paths) {
+    mkdirSync(dirname(join(target, path)), { recursive: true });
+    copyFileSync(join(repositoryRoot, sourcePath, path), join(target, path));
   }
-  publishAdditionalProject({
-    id: project.id,
-    name: project.reviewSkill.id,
-    publicationPrefix: "review-",
-    skillRepositoryPath: project.reviewSkill.sourcePath,
-  });
-  const projectRoot = join(publicRoot, "projects", project.id);
-  mkdirSync(projectRoot, { recursive: true });
-  writeFileSync(
-    join(projectRoot, "terms.json"),
-    `${JSON.stringify(
-      {
-        schemaVersion: "1",
-        projectId: project.id,
-        status: project.status,
-        steward: project.steward,
-        authority: project.authority,
-        terms: project.terms,
-      },
-      null,
-      2,
-    )}\n`,
-  );
+  return {
+    sourcePath,
+    committed: skillSourceMatchesCommit(
+      repositoryRoot,
+      commit,
+      sourcePath,
+      paths,
+    ),
+    files: paths.map((path) => ({
+      path,
+      sha256: sha256(readFileSync(join(repositoryRoot, sourcePath, path))),
+    })),
+  };
 }
+rmSync(join(publicRoot, "skill-templates"), { force: true, recursive: true });
+const templateGroups = {
+  contributor: templateGroup(PROJECT_SKILL_TEMPLATES.contributor),
+  reviewer: templateGroup(PROJECT_SKILL_TEMPLATES.reviewer),
+};
+/**
+ * The Functions render every project skill from these sources. With the
+ * template trees and the accepted revisions they decide the generated skill
+ * bytes, apart from the provenance commit label. A vetting clearance binds
+ * their digest, not the site commit, so an unrelated deploy keeps it and
+ * staging and production share it (VET-07).
+ */
+const rendererSources = [
+  ...GUIDE_RENDERER_PATHS,
+  "src/lib/project-skill-publication.mjs",
+  "src/lib/project-skill.mjs",
+  "src/lib/project-schema.mjs",
+].map((path) => ({
+  path,
+  sha256: sha256(readFileSync(join(repositoryRoot, path))),
+}));
+const templateInputs = {
+  ...Object.fromEntries(
+    Object.entries(templateGroups).map(([key, { sourcePath, files }]) => [
+      key,
+      { sourcePath, files },
+    ]),
+  ),
+  rendererSources,
+  acceptedRevisions: ACCEPTED_SKILL_REVISIONS,
+};
+writeFileSync(
+  join(publicRoot, "skill-templates", "index.json"),
+  `${JSON.stringify(
+    {
+      schemaVersion: "1",
+      repository: sourceRepository,
+      commit,
+      templateSha256: sha256(JSON.stringify(templateInputs)),
+      revisionStatus: Object.values(templateGroups).every(
+        (group) => group.committed,
+      )
+        ? "committed"
+        : "working-tree",
+      contributor: templateInputs.contributor,
+      reviewer: templateInputs.reviewer,
+      renderer: {
+        paths: GUIDE_RENDERER_PATHS,
+        sources: rendererSources,
+        revisionStatus: rendererMatchesCommit ? "committed" : "working-tree",
+      },
+      acceptedRevisions: ACCEPTED_SKILL_REVISIONS,
+    },
+    null,
+    2,
+  )}\n`,
+);
+
 run("bun", [join(repositoryRoot, "scripts", "sync-cycle-index.ts")]);
 run("bun", [join(repositoryRoot, "scripts", "generate-sitemap.ts")]);
-run("bun", [
-  join(repositoryRoot, "scripts", "sync-squads-execution-registry.ts"),
-]);
-run("bun", [join(repositoryRoot, "scripts", "sync-funding-index.ts")]);
-run("bun", [join(repositoryRoot, "scripts", "prepare-funding-review.ts")]);
 run("bun", [join(repositoryRoot, "scripts", "sync-contribution-quality.ts")]);
 
 console.log(
-  `[Slop] prepared ${archiveName} (${archiveDigest.slice(0, 12)}) from ${commit.slice(0, 12)}`,
+  `[Slop] prepared the project skill templates from ${commit.slice(0, 12)}`,
 );

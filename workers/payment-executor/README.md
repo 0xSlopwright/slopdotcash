@@ -7,18 +7,61 @@ calldata, amounts, tokens, programs, or arbitrary destinations.
 
 Deploy a separate Worker for each test network, isolated database, and role. The identity attester has only
 that chain's test identity key. The gas relayer has only its own test gas key.
-Each Worker has its own SQLite Durable Object journal. The relayer reaches the
-attester through a private service binding. Both roles independently read the
-current wallet authorization from D1, reconstruct the exact signed consent,
-verify the wallet signature, check its GitHub actor and immutable claim digest,
-and inspect the finalized obligation. This trusts the GitHub session admission
-and reviewed deployment registry. It does not make GitHub identity verifiable
-without the identity authority.
+Each Worker has its own SQLite Durable Object journal. On EVM networks the
+relayer reaches the attester through a private service binding. Both roles
+independently read the current wallet authorization from D1, reconstruct the
+exact signed consent, verify the wallet signature, check its GitHub actor and
+immutable claim digest, and inspect the finalized obligation. This trusts the
+GitHub session admission and reviewed deployment registry. It does not make
+GitHub identity verifiable without the identity authority.
 
-The hosted wrapper checks the configured test network and the RPC's chain or
-genesis identity before reading the signer secret. Base mainnet and Solana
-mainnet are rejected. The local integration override exists only in the core
-APIs and is not forwarded by the hosted wrapper.
+The attester cannot bind on its own: every destination binding also carries
+the destination wallet's signature (PAY-05, escrow review H-1). On Base the
+contributor signs an EIP-712 `DestinationBinding` for the exact chain, vault,
+actor, destination, expected version, claim digest and expiry through the
+account API (`/wallets/bind-challenge`, then `/wallets/bind-authorize`), which
+takes the chain ID from the reviewed deployment, stores the signature in the
+low-s, 27-or-28 encoding the vault accepts, and appends it to
+`payment_binding_authorizations`. A renewal with a new expiry is a new row, so
+an expired authorization never blocks the claim. The attester reads the stored
+signature with the latest expiry for the on-chain version it is about to bind,
+verifies it again, and submits it unchanged; with no stored signature it
+refuses, and the award waits for the contributor. On Solana the destination keypair must sign
+the same transaction: `POST /v1/pay` on the attester prepares, half-signs and
+journals the `bind_wallet` transaction and returns its bytes; the contributor's
+wallet signs them; `POST /v1/complete-bind` checks that the bytes, the identity
+signature and the wallet signature all match before broadcasting. The signed-in
+contributor reaches both through the account API
+(`/wallets/solana-bind/prepare`, then `/wallets/solana-bind/complete`), which
+selects the contributor's current claim and payout attempt and calls the
+attester through its service binding. The
+transaction must be completed inside its blockhash lifetime, so a Solana
+binding is always an interactive step; the relayer reports a missing binding
+and never requests one.
+
+The hosted wrapper checks the configured network and the RPC's chain or
+genesis identity before reading the signer secret. Every registry test network
+is accepted (Base Sepolia, Robinhood Chain Testnet, Ethereum Sepolia, Solana
+Devnet and Testnet); each network's chain and chain id come from
+`src/lib/escrow-policy.mjs`. A mainnet network (Base, Ethereum, Robinhood
+Chain, Solana) is accepted only when its value in `mainnet-execution.mjs` is
+`true`. Every value is `false`. Only a reviewed pull request that records that
+network's production activation can change one. The local integration
+override exists only in the core APIs and is not forwarded by the hosted
+wrapper. `assert-fresh-test-stack.mjs` accepts only registry test networks.
+
+Each signer belongs to one stack (`SIGNER_STACK`, see `signer-stacks.mjs`). A
+`test` stack (also when the variable is absent, as in stacks generated before
+it existed) signs for registry test networks only and reads
+`TEST_SIGNER_PRIVATE_KEY` or `TEST_SOLANA_SIGNER_SEED`, with the journal
+`dedicated-test-signer-v1`. A `production` stack signs for registry mainnets
+only and reads `SIGNER_PRIVATE_KEY` or `SOLANA_SIGNER_SEED`, with the journal
+`production-signer-v1`, and it is the identity attester only: the wrapper
+refuses the relayer role on it (PRD PAY-04). The wrapper checks the stack and
+the network, then the preflight, before it reads a secret, so a test key
+never signs for a mainnet and a production key never signs while
+`MAINNET_EXECUTION` is off.
+Any other `SIGNER_STACK` value stops the signer.
 
 ## Durability and retries
 
@@ -38,11 +81,14 @@ token accounts idempotently and pays through the version-bound escrow instructio
 
 `POST /v1/pay` returns a submitted transaction identity. It does not mark a
 payment paid; the independent scanner and verifier must prove finality first.
-A missing finalized wallet binding requests the separate attester and remains
-retryable until binding finality. A successor wallet activates only after 24 hours have passed since both its
+On Base a missing finalized wallet binding requests the separate attester and
+remains retryable until binding finality; on Solana it waits for the
+contributor's co-signed binding. A successor wallet activates only after 24 hours have passed since both its
 registration and signed authorization. The previous on-chain claim must occur
 in the same actor/chain predecessor lineage, and all older-wallet payment
-attempts must be reconciled. An operator cannot bypass this path.
+attempts for unpaid awards must be reconciled. An award whose finalized payout
+is indexed is settled, even when an older attempt never recorded that
+transaction. An operator cannot bypass this path.
 
 `POST /v1/attempt-status` returns a persisted payment transaction identity or
 null. It checks the original database attempt and journal identity, and does
@@ -58,10 +104,20 @@ the old attempt failed only after confirmed retirement; a null lookup alone is
 never proof that signing cannot race the lookup.
 
 Signer keys must be dedicated to these Workers. Manual external transactions
-using the same keys would invalidate the nonce ownership assumption. A Base
+using the same keys would invalidate the nonce ownership assumption. An EVM
 transaction stuck due to fee pricing requires operator reconciliation; there
-is no automatic gas-price replacement in this version. Base signing limits gas
-to 500,000 and max gas price to 10 gwei. Never delete or restore an old journal
+is no automatic gas-price replacement in this version.
+
+EVM signing limits gas to the deployment record's `gasCeiling`, copied from the
+network registry, and max gas price to 10 gwei; a record without a ceiling is
+refused.
+
+| Network | `gasCeiling` | Why |
+| --- | --- | --- |
+| Base (`base-sepolia`, `base-mainnet`) | 500,000 | Plain L2 execution gas |
+| Robinhood Chain (`robinhood-testnet`, `robinhood-mainnet`) | 2,000,000 | `eth_estimateGas` on Arbitrum Nitro folds the Ethereum data-posting fee into the returned units |
+
+Never delete or restore an old journal
 snapshot to clear an error. A restore must preserve every signed attempt and
 reconcile the chain before resuming.
 
@@ -83,7 +139,7 @@ This command does not create resources or deploy. Generated configuration has
 `workers_dev: false`, `preview_urls: false`, no routes, and the SQLite Durable
 Object migration. It emits an attester, relayer, and five-minute scheduled dispatcher
 for exactly one network. Every deployment must byte-for-structure match its canonical
-project manifest; empty, invented, mixed-network, and duplicate-project entries fail.
+project manifest in the D1 registry snapshot; empty, invented, mixed-network, and duplicate-project entries fail.
 Use database names `slop-payments-NETWORK` with an optional lowercase suffix, at most
 43 characters. Worker/service names include the complete database name, so separate
 Solana clusters and repeated isolated stacks cannot share keys or journals.
@@ -104,6 +160,37 @@ must be reconciled explicitly: rerunning will fail closed once a Worker exists.
 This is a fresh-stack installer, not an updater or journal reset tool. Coordinate a
 single release operator to prevent concurrent provisioning races.
 
+### Production stack definition
+
+`--stack production` generates the identity attester Worker for one registry
+mainnet. It is for `contracts/DEPLOY-MAINNET.md` section 3.2 and is run by an
+operator only:
+
+```sh
+bun run projects:sync
+bun run payments:deployments mainnet "$NETWORK" > "$PINNED_DEPLOYMENTS_FILE"
+node workers/payment-executor/configure.mjs --stack production \
+  --network "$NETWORK" \
+  --deployments "$PINNED_DEPLOYMENTS_FILE" \
+  --output workers/payment-executor/.generated
+```
+
+The command does not create resources, read keys or deploy. It refuses a test
+network and any `--database-id` or `--database-name`. The production stack
+has no relayer and no dispatcher: under PRD PAY-04 the project or a
+permissionless executor holds the relayer key, and Slop runs no service or
+scheduled job that starts a payment. The PAY-05 attester is the only Slop-held
+payment key. The Worker name is `slop-payments-NETWORK-attester`. Its
+`PAYMENTS_DB` is the registry database (`SLOP_DB` in `wrangler.toml`),
+because the account API stores wallet claims and binding authorizations
+there; the Pages release migrates it, so this configuration has no migrations
+directory. The attester has `SIGNER_STACK=production`, takes the production
+secret name above, and refuses the network while its `MAINNET_EXECUTION`
+value is `false`. The hosted signer refuses `SIGNER_ROLE=relayer` and the
+relayer endpoints on a production stack. The generated
+`apply-production-stack.sh` lists the dry run, the attester deploy and its
+secret prompts for the operator to review and run.
+
 The generated `pages-bindings.json` is an integration fragment for an isolated test
 Pages environment, not permission to change an existing staging deployment. Bind its
 `SLOP_DB` to the exact same test D1 as the dispatcher; only one network/database may
@@ -114,25 +201,32 @@ Set secret bindings only through the approved isolated test release process:
 
 - `PAYMENT_RPC_URLS`: private JSON mapping of network names to authenticated RPC
   endpoints. Do not place RPC credentials in public manifests.
-- Base Worker: `TEST_SIGNER_PRIVATE_KEY`, dedicated test key in hex form.
+- EVM Worker (Base or Robinhood Chain): `TEST_SIGNER_PRIVATE_KEY`, dedicated test
+  key in hex form.
 - Solana Worker: `TEST_SOLANA_SIGNER_SEED`, dedicated test seed as 64 hex digits.
 
 Supply only the one signer secret for the Worker's chain and role. The
-`PAYMENT_DEPLOYMENTS` public configuration is generated from reviewed project
-manifests; it is not a second editable project inventory. Both roles use
+`PAYMENT_DEPLOYMENTS` public configuration of the two signer roles is
+generated from the D1 project registry snapshot (`bun run projects:sync`); it
+is not a second editable project inventory. The dispatcher has no deployment
+list: it reads the vaults of its `PAYMENT_NETWORKS` on every run from
+`REGISTRY_DB`, which `configure.mjs` binds to the `SLOP_DB` registry database
+in `wrangler.toml` without a migrations directory. The generator refuses an
+isolated payment database that is the registry database. Both roles use
 `PAYMENTS_DB`; the executor code reads authorization data and does not create
 wallet authorizations or approve awards. Journal storage contains sensitive
 operational material and has no read route other than transaction-ID lookup.
 
 ## Validation boundaries
 
-`bun backend/payments/base.integration.ts` executes the account API, signed
+`bun backend/payments/evm.integration.ts` executes the account API, signed
 wallet consent, finalized reservation scanner, real separate EIP1559 signers,
 payment dispatch, disk-backed journal recovery after a deliberately lost RPC
 response, and finalized payout indexing against actual Anvil contracts. It
 checks the net 98-USDC balance from a 100-USDC gross award, rejects a substituted
-destination, verifies scanner replay, rejects an early successor, and executes
-the successor payment after a simulated 25-hour delay. It also proves signed
+destination, refuses to bind without the wallet's accepted binding, verifies
+scanner replay, rejects an early successor, and executes the successor payment
+after a simulated 25-hour delay with the successor wallet's own acceptance. It also proves signed
 attempt discovery after wallet replacement and prevents retirement of signed
 transactions. The deterministic Anvil mnemonic is a
 public test fixture, not a user secret.
@@ -180,4 +274,3 @@ Existing `slop-staging.pages.dev` is owned by another task: coordinate before ch
 its Pages bindings or deploying the isolated artifact. No live OAuth or hosted session
 claim is made until real GitHub sign-in, one-use assertion consumption, same-host cookie,
 wallet control signature, and finalized payout pass there. Use the new login/earnings
-flow; the legacy standalone wallet registration continues to use production identity.

@@ -66,7 +66,7 @@ lease. Recovery re-reads GitHub and policy before it can infer or act; it is
 unbilled under the service-retry rule. The public summary reports
 `itemsBlocked` separately from completed reviews.
 
-Apply migration `0024_slopbot_budget_blocks.sql` before the worker and summary
+Apply migration `0047_slopbot_budget_blocks.sql` before the worker and summary
 API. This recovery mechanism does not set provider limits, reserve prepaid
 credit, or make an estimated token price a hard spending cap.
 
@@ -92,7 +92,7 @@ amount already recorded for that review. Triage and confirmation therefore
 share one rounding boundary. Failed calls and service retries add no billable
 cost. Token-rate arithmetic uses integers throughout.
 
-Migration `0023_slopbot_review_billing.sql` preserves old `call-v1` amounts.
+Migration `0046_slopbot_review_billing.sql` preserves old `call-v1` amounts.
 A previously billed legacy review cannot accept a new billable call under
 the new rule without explicit reconciliation. A call already made is retained
 as unbilled evidence before the review reports this failure. Unbilled retries
@@ -103,9 +103,10 @@ authorize a service charge.
 Billing must use the existing project vaults under PAY-10. The owner authorizes
 `chargeService` on Base or `charge_service` on Solana. The operation must use
 only free sponsor funds, preserve reserved awards and donor funds, and prevent
-a second charge for the same invoice digest. Neither contract has that
-operation yet; finalized invoice reconciliation is also required before launch.
-Issue #616 tracks these dependencies.
+a second charge for the same invoice digest. Both contracts now include that
+operation; it is not reviewed or deployed. Contract security review, deployment
+and finalized invoice reconciliation are still required before launch. Issue
+#616 tracks these dependencies.
 
 Do not send service deposits to payout-fee wallets. There is no public prepaid
 deposit-credit endpoint. A past fee transfer must never become new service
@@ -573,7 +574,7 @@ These controlled checks do not prove live GitHub delivery or production activati
 
 ### Recovering interrupted review attempts
 
-Migration `0021_slopbot_review_leases.sql` gives each running attempt a private
+Migration `0044_slopbot_review_leases.sql` gives each running attempt a private
 claim token and a 20-minute expiry. This exceeds the documented
 [15-minute queue consumer wall limit](https://developers.cloudflare.com/queues/platform/limits/).
 A competing delivery retries when the lease expires; it is not acknowledged as

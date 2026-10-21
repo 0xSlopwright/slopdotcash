@@ -1,5 +1,37 @@
-import { handlePaymentsApi } from "../../../backend/payments/handler";
-import { handlePointsApi } from "../../../backend/points/handler";
+import {
+  type FeeConversionsDependencies,
+  handleFeeConversionsApi,
+} from "../../../backend/fee-conversions/handler";
+import {
+  handleEmailPreferences,
+  verifiedEmailEligibility,
+} from "../../../backend/notifications/email";
+import {
+  handleNotificationsApi,
+  type NotificationsDependencies,
+} from "../../../backend/notifications/handler";
+import {
+  handlePaymentsApi,
+  type PaymentsDependencies,
+} from "../../../backend/payments/handler";
+import {
+  handlePointsApi,
+  sessionGithubActor,
+} from "../../../backend/points/handler";
+import {
+  CloudflareProjectPersistence,
+  type ProjectD1Database,
+} from "../../../backend/projects/cloudflare-persistence";
+import type { RepositoryControl } from "../../../backend/projects/contracts";
+import { edgeCache } from "../../../backend/projects/edge-cache";
+import { githubApiOrigin } from "../../../backend/projects/github-lookup";
+import {
+  type AdminApplicationNotice,
+  handleProjectApi,
+} from "../../../backend/projects/handler";
+import { assetTemplateSource } from "../../../backend/projects/skill-publication";
+import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata";
+import { handleSecurityApi } from "../../../backend/security/handler";
 import { handleSlopbotApi } from "../../../backend/slopbot/summary";
 import {
   CloudflareTracePersistence,
@@ -7,24 +39,71 @@ import {
   type R2Bucket,
 } from "../../../backend/trace/cloudflare-persistence";
 import { handleTraceApi } from "../../../backend/trace/handler";
+import { VettingEvidence } from "../../../backend/vetting/evidence";
+import {
+  handleVettingApi,
+  signedVettingRequest,
+} from "../../../backend/vetting/handler";
+import {
+  readVettingPin,
+  vettingBranchCache,
+} from "../../../backend/vetting/live-pin";
+import { CloudflareVettingPersistence } from "../../../backend/vetting/persistence";
 import { deploymentTier } from "../../../src/lib/deployment";
+import type { ProjectDefinition } from "../../../src/lib/projects.mjs";
+import {
+  loadRegistryPaymentDeployments,
+  parsePaymentNetworks,
+} from "../../../workers/payments/deployments";
 
 type Env = {
   SLOP_ENVIRONMENT?: "production" | "staging";
-  SLOP_DB: D1Database;
+  SLOP_DB: D1Database &
+    ProjectD1Database &
+    FeeConversionsDependencies["db"] &
+    NotificationsDependencies["db"];
   PAYMENTS_ALLOWED_ORIGIN?: string;
+  /**
+   * JSON array of the registry networks whose escrow vaults accept wallet
+   * bindings here, as the payments Worker reads it. Unset or invalid keeps
+   * every binding closed.
+   */
+  PAYMENT_NETWORKS?: string;
   PRIVATE_TRACES: R2Bucket;
   TRACE_AUTH_SECRET: string;
   X_CLIENT_ID?: string;
   X_CLIENT_SECRET?: string;
   OPERATOR_GITHUB_IDS?: string;
+  /** GitHub numeric actor IDs allowed to review project applications. */
+  ADMIN_GITHUB_IDS?: string;
+  /**
+   * GitHub numeric actor IDs with the project moderation role: Quarantine,
+   * Ban and reinstatement (PRD ADM-06). Unset keeps those actions closed.
+   */
+  PROJECT_MODERATOR_GITHUB_IDS?: string;
   SLOP_IDENTITY: { fetch(request: Request): Promise<Response> };
+  /** Local browser tests only: a loopback GitHub API fixture origin. */
+  SLOP_GITHUB_API_ORIGIN?: string;
+  /** Optional read-only GitHub token for repository ownership checks. */
+  SLOP_GITHUB_READ_TOKEN?: string;
+  /** Admin email Worker; absent where no notifier is deployed. */
+  SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
   ASSETS?: { fetch(request: Request): Promise<Response> };
+  /** Secure-VM vetting service Ed25519 public keys (base64, comma separated). */
+  VETTING_RESULT_PUBLIC_KEYS?: string;
+  VETTING_EVIDENCE?: R2Bucket;
+  VETTING_EVIDENCE_POLICY?: string;
+  /** Optional RPC overrides for reward token decimals verification. */
+  REWARD_RPC_BASE?: string;
+  REWARD_RPC_ETHEREUM?: string;
+  REWARD_RPC_ROBINHOOD?: string;
+  REWARD_RPC_SOLANA?: string;
 };
 
 type PagesContext = {
   request: Request;
   env: Env;
+  waitUntil?: (promise: Promise<unknown>) => void;
 };
 
 export const MAX_IDENTITY_RESPONSE_BYTES = 16 * 1024;
@@ -130,14 +209,316 @@ async function verifyIdentityAssertion(
   return { githubId: id, githubLogin: login };
 }
 
+function githubIdSet(value: string | undefined): Set<string> {
+  return new Set(
+    (value ?? "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => /^[1-9]\d*$/u.test(entry)),
+  );
+}
+
+async function notifyAdmins(
+  notify: Env["SLOP_NOTIFY"],
+  notice: AdminApplicationNotice,
+): Promise<boolean> {
+  if (notify === undefined) return false;
+  const response = await notify.fetch(
+    new Request("https://notify.internal/v1/project-applications", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(notice),
+    }),
+  );
+  return response.status === 202;
+}
+
+function githubHeaders(token: string | undefined): Record<string, string> {
+  return {
+    accept: "application/vnd.github+json",
+    "user-agent": "slop.cash-project-registry",
+    "x-github-api-version": "2022-11-28",
+    ...(token ? { authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+/**
+ * Proves control from public GitHub facts only: the applicant owns a user
+ * repository, or is a public member of the owning organization. The manifest's
+ * repository and steward identities must match GitHub exactly.
+ */
+async function repositoryControl(
+  manifest: ProjectDefinition,
+  actor: { githubId: string; githubLogin: string },
+  env: Env,
+): Promise<RepositoryControl> {
+  const api = githubApiOrigin(env.SLOP_GITHUB_API_ORIGIN);
+  const token = env.SLOP_GITHUB_READ_TOKEN;
+  const repository = manifest.repositories[0];
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository.id))
+    return { state: "mismatch", reason: "Repository must be owner/name" };
+  const response = await fetch(`${api}/repos/${repository.id}`, {
+    headers: githubHeaders(token),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status === 404)
+    return {
+      state: "mismatch",
+      reason: "GitHub has no public repository with that name",
+    };
+  if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
+  const facts = (await readBoundedJson(response, 512 * 1024)) as {
+    id?: unknown;
+    node_id?: unknown;
+    full_name?: unknown;
+    private?: unknown;
+    owner?: { id?: unknown; login?: unknown; type?: unknown };
+  };
+  if (
+    String(facts.id) !== manifest.authority.repositoryId ||
+    facts.node_id !== manifest.authority.repositoryNodeId ||
+    String(facts.full_name).toLowerCase() !== repository.id.toLowerCase() ||
+    facts.private !== false ||
+    String(facts.owner?.id) !== manifest.steward.github.actorId
+  )
+    return {
+      state: "mismatch",
+      reason: "Repository or steward facts do not match GitHub",
+    };
+  if (facts.owner?.type === "User")
+    return String(facts.owner.id) === actor.githubId
+      ? {
+          state: "proven",
+          reason: `@${actor.githubLogin} owns ${repository.id}`,
+        }
+      : {
+          state: "unproven",
+          reason: `@${actor.githubLogin} does not own ${repository.id}`,
+        };
+  const membership = await fetch(
+    `${api}/orgs/${encodeURIComponent(String(facts.owner?.login))}/public_members/${encodeURIComponent(actor.githubLogin)}`,
+    { headers: githubHeaders(token), signal: AbortSignal.timeout(10_000) },
+  );
+  if (membership.status === 204)
+    return {
+      state: "proven",
+      reason: `@${actor.githubLogin} is a public member of ${String(facts.owner?.login)}`,
+    };
+  if (membership.status === 404)
+    return {
+      state: "unproven",
+      reason: `@${actor.githubLogin} is not a public member of ${String(facts.owner?.login)}`,
+    };
+  throw new Error(`GitHub returned ${membership.status}`);
+}
+
 export async function onRequest(context: PagesContext): Promise<Response> {
+  const projectPersistence = new CloudflareProjectPersistence(
+    context.env.SLOP_DB,
+  );
+  const evidence = new VettingEvidence({
+    db: context.env.SLOP_DB,
+    bucket: context.env.VETTING_EVIDENCE,
+    policy: context.env.VETTING_EVIDENCE_POLICY,
+    session: async (request) => {
+      const actor = await sessionGithubActor(
+        request,
+        context.env.SLOP_DB,
+        new Date().toISOString(),
+      );
+      return actor ? { ...actor, admin: false } : null;
+    },
+    now: () => new Date(),
+    randomId: () => crypto.randomUUID(),
+    signed: (request, maximum) =>
+      signedVettingRequest(
+        request,
+        {
+          resultPublicKeys: context.env.VETTING_RESULT_PUBLIC_KEYS,
+          now: () => new Date(),
+        },
+        maximum,
+      ),
+  });
+  const vetting = new CloudflareVettingPersistence(
+    context.env.SLOP_DB,
+    async (assessment) =>
+      assessment.result !== null && evidence.complete(assessment.result),
+  );
+  const github = {
+    fetch: (url: string, init: RequestInit) => fetch(url, init),
+    token: context.env.SLOP_GITHUB_READ_TOKEN,
+    apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
+    cache: vettingBranchCache(context.request),
+  };
+  const loadTemplate = assetTemplateSource(
+    context.env.ASSETS,
+    new URL(context.request.url).origin,
+  );
+  // A clearance counts only for the live branch head and template (VET-07).
+  const livePin = async (manifest: ProjectDefinition) =>
+    readVettingPin(
+      github,
+      manifest,
+      (await loadTemplate()).index.templateSha256,
+    );
+  const projectResponse = await handleProjectApi(context.request, {
+    persistence: projectPersistence,
+    vettingClearance: (
+      projectId,
+      manifest,
+      throughRevision,
+      forReinstatement,
+    ) =>
+      vetting.manifestClearance(
+        projectId,
+        manifest,
+        throughRevision,
+        () => livePin(manifest),
+        forReinstatement,
+      ),
+    adminGithubIds: githubIdSet(context.env.ADMIN_GITHUB_IDS),
+    moderatorGithubIds: githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),
+    now: () => new Date(),
+    randomId: () => crypto.randomUUID(),
+    sessionActor: (request) =>
+      sessionGithubActor(
+        request,
+        context.env.SLOP_DB,
+        new Date().toISOString(),
+      ),
+    notifyAdmins: (notice) => notifyAdmins(context.env.SLOP_NOTIFY, notice),
+    repositoryControl: (manifest, actor) =>
+      repositoryControl(manifest, actor, context.env),
+    readTokenMetadata: rpcTokenMetadataReader(fetch, {
+      base: context.env.REWARD_RPC_BASE,
+      ethereum: context.env.REWARD_RPC_ETHEREUM,
+      robinhood: context.env.REWARD_RPC_ROBINHOOD,
+      solana: context.env.REWARD_RPC_SOLANA,
+    }),
+    github,
+    cache: edgeCache(),
+    waitUntil: context.waitUntil?.bind(context),
+  });
+  if (projectResponse !== null) return projectResponse;
+  const securityResponse = await handleSecurityApi(context.request, {
+    db: context.env.SLOP_DB,
+    now: () => new Date(),
+    randomId: () => crypto.randomUUID(),
+    sessionActor: (request) =>
+      sessionGithubActor(
+        request,
+        context.env.SLOP_DB,
+        new Date().toISOString(),
+      ),
+    github: {
+      fetch: (url, init) => fetch(url, init),
+      token: context.env.SLOP_GITHUB_READ_TOKEN,
+      apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
+    },
+    cache: edgeCache(),
+    waitUntil: context.waitUntil?.bind(context),
+  });
+  if (securityResponse !== null) return securityResponse;
+  const evidenceResponse = await evidence.handle(context.request);
+  if (evidenceResponse !== null) return evidenceResponse;
+  const vettingResponse = await handleVettingApi(context.request, {
+    evidence,
+    vetting,
+    projects: projectPersistence,
+    resultPublicKeys: context.env.VETTING_RESULT_PUBLIC_KEYS,
+    operatorGithubIds: [
+      ...new Set([
+        ...githubIdSet(context.env.ADMIN_GITHUB_IDS),
+        ...githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),
+      ]),
+    ],
+    livePin,
+    session: async (request) => {
+      const actor = await sessionGithubActor(
+        request,
+        context.env.SLOP_DB,
+        new Date().toISOString(),
+      );
+      return actor === null
+        ? null
+        : {
+            ...actor,
+            admin: githubIdSet(context.env.ADMIN_GITHUB_IDS).has(
+              actor.githubId,
+            ),
+          };
+    },
+    now: () => new Date(),
+    randomId: () => crypto.randomUUID(),
+    cache: edgeCache(),
+  });
+  if (vettingResponse !== null) return vettingResponse;
+  const feeConversionsResponse = await handleFeeConversionsApi(
+    context.request,
+    {
+      db: context.env.SLOP_DB,
+      adminGithubIds: githubIdSet(context.env.ADMIN_GITHUB_IDS),
+      sessionActor: (request) =>
+        sessionGithubActor(
+          request,
+          context.env.SLOP_DB,
+          new Date().toISOString(),
+        ),
+    },
+  );
+  if (feeConversionsResponse !== null) return feeConversionsResponse;
+  const emailPreferencesResponse = await handleEmailPreferences(
+    context.request,
+    {
+      db: context.env.SLOP_DB,
+      sessionActor: (request) =>
+        sessionGithubActor(
+          request,
+          context.env.SLOP_DB,
+          new Date().toISOString(),
+        ),
+      now: () => new Date(),
+      eligibility: (githubId) =>
+        verifiedEmailEligibility(context.env.SLOP_NOTIFY, githubId),
+    },
+  );
+  if (emailPreferencesResponse !== null) return emailPreferencesResponse;
+  const notificationsResponse = await handleNotificationsApi(context.request, {
+    db: context.env.SLOP_DB,
+    sessionActor: (request) =>
+      sessionGithubActor(
+        request,
+        context.env.SLOP_DB,
+        new Date().toISOString(),
+      ),
+    now: () => new Date(),
+  });
+  if (notificationsResponse !== null) return notificationsResponse;
   if (new URL(context.request.url).pathname.startsWith("/api/v1/payments/"))
     return handlePaymentsApi(context.request, {
       db: context.env.SLOP_DB,
+      // Cloudflare's per-colo edge cache; absent outside the Workers runtime.
+      edgeCache: (
+        globalThis as {
+          caches?: {
+            default?: NonNullable<PaymentsDependencies["edgeCache"]>;
+          };
+        }
+      ).caches?.default,
       operatorIds: (context.env.OPERATOR_GITHUB_IDS ?? "")
         .split(",")
         .map((id) => id.trim())
         .filter((id) => /^[1-9][0-9]*$/.test(id)),
+      // Binding consent names a vault recorded in the D1 project registry for
+      // a served network; a vault of any other network is unknown.
+      paymentDeployments: async () =>
+        (
+          await loadRegistryPaymentDeployments(
+            context.env.SLOP_DB,
+            parsePaymentNetworks(context.env.PAYMENT_NETWORKS),
+          )
+        ).deployments,
       ...([
         "https://staging.slop.cash",
         "https://slop-staging.pages.dev",

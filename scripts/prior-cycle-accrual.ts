@@ -9,9 +9,11 @@ import {
 import type { ProjectId } from "../src/lib/projects.mjs";
 import {
   assertRewardAllocationManifest,
+  type ProfileReadmeWalletProof,
   type RewardAllocationManifest,
   type UnsafeDestinationReport,
 } from "../src/lib/rewards";
+import { priorReadmeProofs } from "./readme-proof-binding";
 
 const MAX_MANIFEST_BYTES = 8 * 1024 * 1024;
 const MAX_HISTORY_BYTES = 32 * 1024 * 1024;
@@ -21,6 +23,12 @@ const MAX_ACTOR_REPORTS = 32;
 
 export interface PriorCycleAccrual {
   actorLogins: ReadonlyMap<string, string>;
+  /**
+   * The README proof that the reviewed prior manifest froze for each actor id
+   * (every row, not only accruals). A row of this cycle may hold a README
+   * proof only if it is byte-equal to this proof (readme-proof-binding.ts).
+   */
+  actorReadmeProofs?: ReadonlyMap<string, ProfileReadmeWalletProof>;
   accruedMinor: ReadonlyMap<string, string>;
   unsafeDestinationReports?: ReadonlyMap<string, UnsafeDestinationReport[]>;
 }
@@ -263,7 +271,17 @@ export async function loadPriorCycleAccrual(input: {
       `Prior cycle ${input.projectId}/${priorId} allocation is not approved`,
     );
   }
-  const proposal = allocation ?? reviewedProposal;
+  // The next cycle may close before this one is finalized. Finalization copies
+  // every reviewed row unchanged (reward-finalization.ts), so an allocation
+  // approved after asOf did not exist yet: replay the reviewed proposal that
+  // the next cycle was built from, as validation does at its generatedAt.
+  const approved =
+    allocation?.approvedAt &&
+    Date.parse(allocation.approvedAt) <= Date.parse(input.asOf)
+      ? allocation
+      : null;
+  const proposal = approved ?? reviewedProposal;
+  const actorReadmeProofs = priorReadmeProofs(proposal);
   if (proposal.projectId !== input.projectId || proposal.cycleId !== priorId) {
     throw new TypeError(
       `Prior accrual manifest does not match ${input.projectId}/${priorId}`,
@@ -271,8 +289,8 @@ export async function loadPriorCycleAccrual(input: {
   }
   if (
     Date.parse(proposal.review.lastMaterialChangeAt) > Date.parse(input.asOf) ||
-    (proposal.approvedAt !== null &&
-      Date.parse(proposal.approvedAt) > Date.parse(input.asOf))
+    (proposal.review.lapsedAt !== undefined &&
+      Date.parse(proposal.review.lapsedAt) > Date.parse(input.asOf))
   ) {
     throw new RangeError(
       `Prior cycle ${input.projectId}/${priorId} contains future review state`,
@@ -283,11 +301,12 @@ export async function loadPriorCycleAccrual(input: {
   if (!proposal.fundingBasis && proposal.cycleId <= LAST_LEGACY_CAP_CYCLE) {
     return {
       actorLogins: new Map(),
+      actorReadmeProofs,
       accruedMinor: new Map(),
       unsafeDestinationReports,
     };
   }
-  if (!allocation) {
+  if (!approved) {
     // An unfunded score record has no reviewed monetary balance to carry.
     if (
       proposal.fundingBasis &&
@@ -296,6 +315,7 @@ export async function loadPriorCycleAccrual(input: {
     ) {
       return {
         actorLogins: new Map(),
+        actorReadmeProofs,
         accruedMinor: new Map(),
         unsafeDestinationReports,
       };
@@ -344,5 +364,10 @@ export async function loadPriorCycleAccrual(input: {
     accruedMinor.set(row.actor.id, amount);
     actorLogins.set(row.actor.id, row.actor.login);
   }
-  return { actorLogins, accruedMinor, unsafeDestinationReports };
+  return {
+    actorLogins,
+    actorReadmeProofs,
+    accruedMinor,
+    unsafeDestinationReports,
+  };
 }

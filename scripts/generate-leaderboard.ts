@@ -51,6 +51,7 @@ import {
   type TargetRepository,
 } from "../src/lib/repositories.mjs";
 import {
+  isTransientArtifactFailure,
   planReferencedArtifacts,
   verifyReferencedArtifacts,
 } from "./check-pr-evidence.mjs";
@@ -82,6 +83,9 @@ export const MAX_EVIDENCE_ARTIFACTS_PER_SOURCE =
   MAX_EVIDENCE_ARTIFACTS_PER_SNAPSHOT;
 export const EVIDENCE_VERIFICATION_CONCURRENCY = 4;
 export const EVIDENCE_ARTIFACT_TIMEOUT_MS = 5_000;
+/** Extra fetches of one artifact after a transport failure. */
+export const EVIDENCE_TRANSIENT_RETRIES = 2;
+export const EVIDENCE_TRANSIENT_RETRY_DELAY_MS = 1_000;
 export const EVIDENCE_CONTENT_DIGEST_LIMIT_BYTES = 32 * 1024 * 1024;
 export const DEFAULT_OUTPUT_PATH = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -276,6 +280,7 @@ export interface GenerateOptions {
   evidenceFetch?: FetchLike;
   evidenceToken?: string;
   evidenceTimeoutMs?: number;
+  evidenceRetryDelayMs?: number;
   evaluatedContributions?: ScoreEvent[];
   retainedReviewEvents?: ScoreEvent[];
   retainedReviewAttributions?: ModelAttribution[];
@@ -478,6 +483,13 @@ const ISSUE_FRAGMENT = `
         author { ...LeaderboardActor }
       }
     }
+  }
+`;
+
+/** Loads the rate-limit budget when no registry repository is collected. */
+const RATE_LIMIT_QUERY = `
+  query LeaderboardRateLimit {
+    rateLimit { cost limit remaining resetAt }
   }
 `;
 
@@ -1409,6 +1421,17 @@ async function readGraphqlResponseBody(response: Response): Promise<string> {
     );
   }
   const decoder = new TextDecoder("utf-8", { fatal: true });
+  const decode = (chunk?: Uint8Array, stream = false): string => {
+    try {
+      return decoder.decode(chunk, { stream });
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      throw new GraphqlResponseBoundaryError(
+        "GitHub GraphQL response is not valid UTF-8",
+        { cause: error },
+      );
+    }
+  };
   let byteLength = 0;
   let body = "";
   try {
@@ -1422,18 +1445,10 @@ async function readGraphqlResponseBody(response: Response): Promise<string> {
           `GitHub GraphQL response exceeds ${MAX_GRAPHQL_RESPONSE_BYTES} bytes`,
         );
       }
-      body += decoder.decode(chunk.value, { stream: true });
+      // Stream reads can also throw TypeError; preserve those for transport retries.
+      body += decode(chunk.value, true);
     }
-    body += decoder.decode();
-  } catch (error) {
-    if (error instanceof GraphqlResponseBoundaryError) throw error;
-    if (error instanceof TypeError) {
-      throw new GraphqlResponseBoundaryError(
-        "GitHub GraphQL response is not valid UTF-8",
-        { cause: error },
-      );
-    }
-    throw error;
+    body += decode();
   } finally {
     reader.releaseLock();
   }
@@ -2019,10 +2034,10 @@ export async function collectSearchReferences(
   const firstPage = parseSearchPage(firstData, (value, path) =>
     parseSearchReference(value, path, expectedKind, qualifier === "merged"),
   );
-  if (firstPage.totalCount >= SEARCH_SAFE_RESULT_LIMIT) {
+  async function collectSplitRange() {
     if (to.getTime() - from.getTime() <= MINIMUM_SEARCH_SLICE_MS) {
       throw new Error(
-        `GitHub Search returned ${firstPage.totalCount} results in one minute (${searchRange(from, to)}); refusing a snapshot that could hit the 1,000-result cap`,
+        `GitHub Search cannot reconcile ${firstPage.totalCount} results in a minimum-size range (${searchRange(from, to)}); refusing a snapshot with incomplete or capped results`,
       );
     }
     const split = midpoint(from, to);
@@ -2046,7 +2061,16 @@ export async function collectSearchReferences(
       expectedKind,
       stats,
     );
-    return dedupeByNodeId([...left, ...right]);
+    const combined = dedupeByNodeId([...left, ...right]);
+    if (combined.length !== firstPage.totalCount) {
+      throw new Error(
+        `Split GitHub Search returned ${combined.length} unique references but parent reported ${firstPage.totalCount} for ${searchRange(from, to)}`,
+      );
+    }
+    return combined;
+  }
+  if (firstPage.totalCount >= SEARCH_SAFE_RESULT_LIMIT) {
+    return collectSplitRange();
   }
 
   const references = [...firstPage.nodes];
@@ -2075,9 +2099,11 @@ export async function collectSearchReferences(
 
   const deduped = dedupeByNodeId(references);
   if (deduped.length !== expectedCount) {
-    throw new Error(
-      `GitHub Search returned ${deduped.length} unique references but reported ${expectedCount} for ${searchRange(from, to)}`,
-    );
+    // Discard the incomplete cursor result and query narrower ranges. Each
+    // child and the deduplicated union must reconcile to the parent's count.
+    // The one-minute split floor and client's request/rate budgets still bound
+    // recovery. No missing record can become a successful partial snapshot.
+    return collectSplitRange();
   }
   for (const reference of deduped) {
     await completeOutcomeCommits(client, reference, repository);
@@ -3464,9 +3490,36 @@ async function mapWithFixedConcurrency<T, R>(
   return results;
 }
 
+interface UnavailableEvidenceArtifact {
+  pullRequestUrl: string;
+  artifactUrl: string;
+  status: string;
+  detail: string | null;
+}
+
 interface CandidateEvidenceVerdict {
   artifacts: VerifiedEvidenceArtifact[];
   failedCategories: EvidenceCategory[];
+  unavailable: UnavailableEvidenceArtifact[];
+}
+
+/**
+ * A score-bearing artifact stayed unavailable after its transport retries.
+ * Missing data is unavailable, never a fabricated zero (protocol/points-v1.md),
+ * and incomplete evidence must fail snapshot collection
+ * (protocol/scoring-v2.md), so no scored snapshot is returned or written.
+ */
+export class EvidenceUnavailableError extends Error {
+  readonly unavailable: readonly UnavailableEvidenceArtifact[];
+
+  constructor(unavailable: UnavailableEvidenceArtifact[]) {
+    const first = unavailable[0];
+    super(
+      `Evidence collection is incomplete: ${unavailable.length} score-bearing artifact(s) stayed unavailable after ${EVIDENCE_TRANSIENT_RETRIES + 1} attempts (first: ${first.artifactUrl} in ${first.pullRequestUrl}, ${first.status}${first.detail ? ` ${first.detail}` : ""})`,
+    );
+    this.name = "EvidenceUnavailableError";
+    this.unavailable = unavailable;
+  }
 }
 
 export interface PullRequestEvidenceVerificationResult {
@@ -3487,7 +3540,10 @@ export async function verifyPullRequestEvidence(
   pullRequests: PullRequestRecord[],
   options: Pick<
     GenerateOptions,
-    "evidenceFetch" | "evidenceTimeoutMs" | "evidenceToken"
+    | "evidenceFetch"
+    | "evidenceTimeoutMs"
+    | "evidenceToken"
+    | "evidenceRetryDelayMs"
   > = {},
 ): Promise<PullRequestEvidenceVerificationResult> {
   const candidates = evidenceVerificationCandidates(pullRequests);
@@ -3527,6 +3583,8 @@ export async function verifyPullRequestEvidence(
     selectedCandidates,
     EVIDENCE_VERIFICATION_CONCURRENCY,
     async ({ pullRequest, source }): Promise<CandidateEvidenceVerdict> => {
+      // The verifier retries only the artifact that failed in transport. A
+      // terminal finding such as HTTP 404 keeps its first verdict.
       const verification = await verifyReferencedArtifacts(
         source.body,
         SCORE_EVIDENCE_ROWS,
@@ -3537,8 +3595,23 @@ export async function verifyPullRequestEvidence(
           fetchImpl: options.evidenceFetch,
           timeoutMs: options.evidenceTimeoutMs ?? EVIDENCE_ARTIFACT_TIMEOUT_MS,
           token: options.evidenceToken,
+          transientRetries: EVIDENCE_TRANSIENT_RETRIES,
+          transientRetryDelayMs:
+            options.evidenceRetryDelayMs ?? EVIDENCE_TRANSIENT_RETRY_DELAY_MS,
         },
       );
+      const unavailable = verification.findings
+        .filter(
+          (finding) =>
+            SCORE_EVIDENCE_CATEGORY.has(finding.id) &&
+            isTransientArtifactFailure(finding),
+        )
+        .map((finding) => ({
+          pullRequestUrl: pullRequest.url,
+          artifactUrl: finding.url,
+          status: finding.status,
+          detail: finding.detail ?? null,
+        }));
       const failedCategories = new Set<EvidenceCategory>();
       for (const finding of verification.findings) {
         const category = SCORE_EVIDENCE_CATEGORY.get(finding.id);
@@ -3580,9 +3653,16 @@ export async function verifyPullRequestEvidence(
           } satisfies VerifiedEvidenceArtifact,
         ];
       });
-      return { artifacts, failedCategories: [...failedCategories] };
+      return {
+        artifacts,
+        failedCategories: [...failedCategories],
+        unavailable,
+      };
     },
   );
+  // Fail closed before any artifact list is returned for scoring.
+  const unavailable = verdicts.flatMap((verdict) => verdict.unavailable);
+  if (unavailable.length > 0) throw new EvidenceUnavailableError(unavailable);
   const failedByPullRequest = new Set<string>();
   for (const [index, verdict] of verdicts.entries()) {
     const pullRequestId = selectedCandidates[index].pullRequest.id;
@@ -3649,6 +3729,9 @@ export async function generateLeaderboardFromGitHub(
   const closedIssues: IssueRecord[] = [];
   let closedIssueCount = 0;
 
+  // An empty registry is a complete, valid state with nothing to collect.
+  if (TARGET_REPOSITORIES.length === 0)
+    await client.execute(RATE_LIMIT_QUERY, {});
   for (const [index, repository] of TARGET_REPOSITORIES.entries()) {
     const preflight = await preflightRepository(client, repository, {
       requireStartingBudget: index === 0,
@@ -3919,11 +4002,14 @@ export async function generateLeaderboardFromGitHub(
     ...openIssues,
     ...openPullRequests,
   ];
-  const latestPreflightUpdate = collections
-    .map((collection) => collection.preflight.updatedAt)
-    .reduce((latest, current) =>
-      Date.parse(current) > Date.parse(latest) ? current : latest,
-    );
+  const latestPreflightUpdate =
+    collections.length === 0
+      ? now.toISOString()
+      : collections
+          .map((collection) => collection.preflight.updatedAt)
+          .reduce((latest, current) =>
+            Date.parse(current) > Date.parse(latest) ? current : latest,
+          );
   let valueRestRequests = 0;
   let valueInputs: Pick<
     LeaderboardInput,
@@ -4008,7 +4094,7 @@ export async function generateLeaderboardFromGitHub(
     provider: "github-graphql",
     fetchedAt,
     cutoffAt: now.toISOString(),
-    repositoryId: collections[0].preflight.id,
+    repositoryId: collections[0]?.preflight.id ?? null,
     repositories: collections.map((collection) => ({
       id: collection.repository.id,
       repositoryId: collection.preflight.id,
@@ -4077,7 +4163,9 @@ export async function writeLeaderboardAtomically(
   await mkdir(dirname(outputPath), { recursive: true });
   const temporaryPath = `${outputPath}.${process.pid}.${Date.now()}.tmp`;
   try {
-    await Bun.write(temporaryPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+    // The two review bases must fit Pages' 25 MiB per-file limit. Whitespace
+    // alone adds over 5 MiB to the complete October publication.
+    await Bun.write(temporaryPath, `${JSON.stringify(snapshot)}\n`);
     await rename(temporaryPath, outputPath);
   } finally {
     // error-policy:J6 a failed atomic write may leave only its unique temporary file.

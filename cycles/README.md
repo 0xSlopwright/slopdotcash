@@ -1,166 +1,77 @@
 # Reward cycles
 
 Reward state is a public, append-only Git workflow. Each closed cycle lives at
-`cycles/<project-id>/<YYYY-MM>/` and starts with:
+`cycles/<project-id>/<YYYY-MM>/`. Escrow is the only funding mode, so every
+new cycle is an escrow cycle.
 
-- `source-snapshot.json` — the exact validated leaderboard bytes used to make
-  the proposal;
-- `proposal.json` — deterministic suggested amounts or external-prize shares.
+## Escrow cycles
 
-The trusted first-of-month workflow runs `rewards:close-month` for every active
-project and opens these files in a review PR. It records an empty proposal when
-no work qualified, so a zero-award month is auditable and unused funding can
-roll forward without raising the next cap. Existing complete cycles are left
-untouched; a directory containing only one required file is refused as partial.
+The trusted first-of-month workflow first runs `projects:sync` against
+`https://slop.cash`, because projects live only in the D1 registry. It then
+runs `rewards:close-month`. For every active, verified project whose escrow
+policy is effective for the closed month, it writes
+`cycles/<project-id>/<YYYY-MM>/escrow-v2/` and opens a review PR that also
+carries the synced registry snapshot. A project without an effective escrow
+policy has no payable cycle and is skipped.
+Existing complete cycles are left untouched; a directory that holds only one of
+the proposal and the source snapshot is refused as partial.
 
-New monthly proposals freeze `fundingBasis` (cycle ID, stable instrument ID,
-funding state, applicable committed amount, and monthly cap). Positive new
-principal requires exactly one unreplaced reviewed instrument whose
-`monthlyCommitment.cycleId` equals the proposal cycle. An instrument for an
-earlier or later month contributes zero, not retroactive or advance funding.
-The stable ID binds Squads kind/network/multisig/vault index/vault, or Sablier
-kind/network/contract/stream ID; an unfunded cycle records a null instrument ID.
-Their new shared-pool allocation is the smaller of committed
-funding and the cap when funding is committed, and zero otherwise. Accepted
-events, scores, evidence, and previously reviewed carry remain recorded even
-when this month's allocation is zero. A zero-funded proposal with no carry
-does not prevent the next snapshot or close and contributes no monetary carry.
+An escrow cycle directory holds only these files:
 
-The existing July 2026 cap-based proposal is the grandfathered unfunded trial.
-Its original snapshot, score table, suggestions, and review dates remain intact;
-the old suggestions never become carry, even when a reviewed allocation exists.
-Cycle validation uses the cap recorded in the historical artifact through July,
-not the current project cap; the trusted transition gate forbids changing that
-recorded cap. From August onward,
-new cycle artifacts must include their frozen funding basis. The cycle index
-identifies the historical trial as unfunded without rewriting its artifacts.
+- `source-snapshot.json`: the exact validated leaderboard bytes;
+- `project.json`: the exact bytes of the project's newest D1 revision when
+  the cycle was prepared. Its SHA-256 is the proposal's `projectPolicySha256`
+  and the revision's public `manifestSha256` at
+  `/api/v1/project-revisions/<project-id>/<revision>`;
+- `github-identities.json`: the numeric GitHub identities of the leaders;
+- `proposal.json`: the deterministic gross proposal;
+- `decisions.json` (optional): the owner's per-row decisions, each with a
+  public reason for a changed amount;
+- `platform-approvals.json` (optional): platform approvals bound to the exact
+  proposal and decisions digests.
+
+`bun run rewards:plan-escrow` produces unsigned owner requests from a
+review-complete proposal. Run `projects:sync` first. The planner checks that
+its local policy matches both the live D1 project and the exact immutable
+revision bytes. It records the revision URL, number, and digest in
+`currentDeploymentPublication`. A changed or unavailable registry record stops
+the plan. The financial policy must still match the reviewed cycle archive.
+Proposal, decision, and separate approval records require exact-byte merged
+PR evidence on `development`; the existing review period still applies.
+
+The escrow contract enforces reserved awards, the 2%
+fee, and exact-once payment. No command in this repository reads a private key,
+signs, or broadcasts.
+
+`bun run cycles:check` validates every escrow cycle against its frozen
+snapshot, policy, and identities. It reads no chain.
+
+## Historical monthly-pool cycles
+
+Cycles from the removed monthly-pool mode keep `source-snapshot.json`,
+`proposal.json`, and, after approval, `allocation.json`. The cycle index
+regenerates each proposal from its frozen snapshot and checks each approved
+allocation against its reviewed proposal, so points, profiles, and the cycle
+archive read the same scores. No new monthly-pool proposal is created, and no
+settlement plan, transaction evidence, settlement record, or windup record is
+accepted. Delta Star uses only `source-snapshot.json` and `proposal.json`; it
+publishes a provisional contribution percentage and never represents the
+external prize as money owed by this platform.
+
+A historical proposal freezes `fundingBasis`. Its instrument ID is null and its
+committed amount is zero, because no manifest instrument backs a monthly
+commitment. The July 2026 cap-based proposal is the grandfathered unfunded
+trial; cycle validation uses the cap recorded in that artifact.
 
 `bun run cycles:sync` also generates `src/lib/project-promotion.generated.json`
 from the validated cycle index. This compact funding history ships with the
 application so homepage project cards never wait for the ledger or cycle fetch.
-`cycles:check` rejects a stale copy; refresh timestamps are excluded so scheduled
-data refreshes preserve application asset bytes.
-Monthly close and selected-cycle proposal workflows include the regenerated
-history in their review PRs. Existing immutable cycle files stay unchanged.
+`cycles:check` rejects a stale copy; refresh timestamps are excluded so
+unchanged history keeps the application asset bytes stable.
+The monthly close workflow includes the regenerated history in its review PR.
+Existing immutable cycle files stay unchanged.
 
-The trusted project-transition gate executes from the immutable base commit.
-For each newly added monthly proposal it requires the frozen funding basis to
-equal that base commit's reviewed project manifest. Changes to that project's
-reward policy or instrument inventory must land separately before a proposal;
-the proposal cannot authorize its own funding. Historical funding bases remain
-unchanged when later manifests evolve. This migration activates that gate for
-subsequent proposal PRs and adds no proposal itself.
-
-After two consecutive closed unfunded months, the site suppresses project pool
-promotion and the skill install CTA until positive committed funding for the
-explicit display cycle resumes. A commitment for another month cannot reopen
-promotion; each caller uses its snapshot-derived project view cycle, not the
-wall clock or a raw policy balance.
-This affects discovery only: the project page, score history, snapshot writing,
-cycle closing, and existing reviewed balances remain available. Missing cycle
-history cannot authorize promotion.
-
-Later funding supports a new reviewed allocation; retained scores create no
-automatic claim on it. Re-proposing an old cycle would need a separate reviewed
-append-only revision mechanism and a fresh 14-day review. The current CLI does
-not overwrite a closed proposal, and this migration does not add that mechanism.
-
-For a platform-funded monthly pool, the creator edits `proposal.json` during
-the 14-day review. The creator may set any contributor amount, including zero,
-or raise it above the deterministic suggestion while the cycle total remains
-within the published cap. Every changed amount records a public reason and
-updates `review.lastMaterialChangeAt`, which resets `review.endsAt`. Wallets
-are cut off at `generatedAt`: a wallet observed after the proposal was
-generated applies to the next cycle and never modifies the current proposal
-or its review clock. The row stays `unclaimed` and carries forward. Only a
-creator amount change moves `review.lastMaterialChangeAt`. The normal
-progression then adds, without replacing earlier files:
-
-Transfers have a 2 USDC minimum. Smaller awards remain
-`held-below-minimum`, retain their exact integer micro-USDC amount, and accrue
-without being discarded or redistributed. A later proposal publishes the
-carried amount; settlement may proceed only when the combined approved intent
-is at least 2 USDC. The 1% fee applies only to principal actually approved for
-payment.
-
-The next proposal derives carry only from the immediately preceding reviewed
-cycle. `held-below-minimum`, `unclaimed`, and authenticated unsafe-destination
-holds carry even when the actor did no new work; approved payout intents stay
-in their original cycle, while excluded and ordinary manually held rows never become new payment proposals
-automatically. An unfinished review or unresolved proposed row fails the next
-cycle closed instead of guessing a reviewed balance; an unfunded record with
-no carried amount is exempt because it contains no monetary allocation.
-For line-aware rows, only `lines.sharedPool.suggestedMinor` carries; additive
-review awards never become shared-pool principal. Rows without lines retain
-the historical `accruedMinor ?? suggestedMinor` interpretation.
-
-The public cycle index carries `carriedMinor` separately from the new cycle's
-cap. Shared-pool approvals may total at most cap plus carry. An additive review
-line publishes its own `reviewBudgetCapMinor`, the smaller of its committed
-amount and cap; shared-pool carry never increases that separate limit.
-
-### Review lapse
-
-A creator may approve, hold, exclude, reduce, or increase any row during the
-14-day public review, and every change carries a public reason. Doing nothing
-was the one option with no recorded outcome. Because every writer of row state
-refuses once `review.endsAt` passes, while finalization refuses while any row is
-still `proposed`, a single undecided row used to leave its cycle in `proposed`
-permanently and block that project's next close.
-
-`rewards:lapse` closes that gap. After `review.endsAt`, it records
-`review.lapsedAt` and moves every still-undecided row to `held` with
-`hold.kind: "review-lapsed"` and a public reason naming the closed window. The
-transition is mechanical and one-directional. It never approves an amount,
-never chooses a destination, never signs or broadcasts, and refuses outright on
-a cycle where any amount was already approved, which belongs on the ordinary
-finalization path instead.
-
-A lapse is an absent decision, not a decision against the contributor, so a
-lapsed row keeps its frozen wallet and suggestion and carries forward into the
-next cycle exactly like an unclaimed one. Creator inaction therefore cannot
-extinguish a contributor's position, and it cannot jam the project's next close
-either. Once written, the trusted transition gate holds the lapsed row at its
-original wallet, amount, and zero approval, so a lapse cannot be quietly
-rewritten or reversed.
-
-### Project vault windup
-
-On a 2-of-3 project vault (RFC #500) the vault is the creator's money until a
-payout is `paid`. The creator may return any part of the balance to the
-creator's own wallet at any time; Slop takes no part and cannot prevent it.
-When that happens after the creator has bound a proposal for an approved
-allocation, the proposal can no longer execute for lack of balance and the
-approved rows cannot be paid.
-
-The reserved `allocation.json` is permanently immutable, so the rows are not
-rewritten. `funding:prepare-project-vault-windup` derives `windup.json` from
-public evidence only: the frozen allocation and plan, the execution binding in
-`funding/executions/ledger.json`, the verified `refund` records in the funding
-ledger observed after approval, and one finalized quorum observation of the
-vault balance. It refuses while the vault still covers the plan, while no
-verified refund followed approval, or while the proposal is not bound. The
-record names the refund transactions, holds every approved row at its approved
-amount with one deterministic public reason, and is validated against those
-files by the cycle index, which always supplies the project's verified funding
-ledger: every named refund must be a verified record there, and the ledger's
-own verified balance as of the observation must fall short of the plan. How
-the file was produced grants nothing. Its cycle state is `wound-up`.
-
-A windup is not a cancellation. An approved Squads proposal stays approved on
-chain, and the program checks approval and the time lock at execution, not the
-balance at an earlier instant; if funds return to the vault, an executor can
-still execute the exact bound plan. So `wound-up` holds every approved row at
-its approved amount with no funded backing, nothing is paid in that state, and
-the cycle leaves it only through the ordinary settlement path: the settlement
-verifier accepts the cycle, reconciles finalized evidence against the same
-bound plan, and `transactions.json` and `settlement.json` are recorded beside
-`windup.json` without rewriting it. A held row is never carried or reissued,
-because a reserved intent is never imported as carry. A windup is a decision
-by the creator about the creator's funds, not a decision against any
-contributor, and the record says so.
-
-### Unsafe destination reports
+## Unsafe destination reports
 
 A contributor may report the exact Slop wallet claim on an open proposal as
 unsafe. The report is evidence; the maintainer chooses whether to hold the row
@@ -195,8 +106,7 @@ re-verifies every unique report against GitHub and fails closed if its exact
 commit, message, or signer cannot be verified. Only this trusted checker and the
 maintainer's explicit hold command require `gh` authentication. Ordinary PR
 `cycles:check`, index generation, `prepare:site`, and builds remain credential-free
-structural validation; `cycles:verify` additionally checks public finalized Solana
-transactions, not GitHub signatures. These packaging checks do not authorize a
+structural validation. These packaging checks do not authorize a
 new report or replace the required trusted transition gate. No contributor code
 is executed with the gate's token. `unsafeDestinationReports` retains
 the signed evidence through carry; `hold` identifies the report selected by
@@ -213,9 +123,9 @@ a different actor-bound claim observed after report verification, the row is
 new claim never makes it eligible. A safe successor starts a normal proposal
 in the next cycle; it never substitutes a wallet within an existing review.
 
-Safety history is independent of money carry. Proposal preparation and snapshot
-verification read every earlier immutable project cycle, including approved,
-paid, excluded, and zero-participation history. Every report must trace to its
+Safety history is independent of money carry. Snapshot verification reads
+every earlier immutable project cycle, including approved, paid, excluded, and
+zero-participation history. Every report must trace to its
 original held row; repeated copies must have identical normalized bytes and
 the same contributor. Approving a safe successor, paying its intent, exhausting
 the balance, or omitting the contributor from a later cycle never clears an
@@ -251,110 +161,20 @@ policy. It supplies no review, merge, or deployment authority. Maintainer
 changes to the enforcement workflow or repository policy remain a separate
 GitHub trust boundary, not permission granted by this report mechanism.
 
-- `allocation.json` — reviewed and approved payout intents;
-- `execution-plan.json` — an unsigned, exact USDC transfer plan on the cycle
-  network;
-- `transactions.json` — submitted public Solana signatures or Base
-  transaction hashes;
-- `settlement.json` — generated only after finalized on-chain balance changes
-  reconcile every contributor transfer and the 1% platform fee charged when
-  the approved payout is paid;
-- `windup.json` — only on a cycle funded by a 2-of-3 project vault: the
-  creator returned the vault after binding the proposal, so every approved
-  row is held with a public reason naming the finalized refund transactions.
-  It does not cancel the bound proposal; if the vault is refunded and the
-  exact bound plan later executes, `transactions.json` and `settlement.json`
-  are recorded beside it (see "Project vault windup" below).
+## October review payment basis
 
-Delta Star uses only `source-snapshot.json` and `proposal.json`; it publishes a
-provisional contribution percentage and never represents the external prize as
-money owed by this platform.
+For #683, October and later payment proposals use the source snapshot's
+`paymentReviewBasis` (`scr-05-payments-production-v1`). Ordinary reviews
+submitted before `2026-10-09T23:21:35.388Z` retain the previous payment rule.
+The public Score and Points ledger remains separate. Regenerate a source
+snapshot that lacks this basis before proposing payment; never substitute the
+score ledger. The same basis must drive identity and wallet collection,
+allocation and frozen-source verification. Earlier closed cycles are unchanged.
+This changes eligibility weights only, not funding, approval or settlement.
 
-Use the repository commands rather than hand-authoring lifecycle transitions:
-
-```bash
-bun run rewards:propose --project eliza --cycle 2026-07
-bun run rewards:close-month -- --cycle 2026-07
-bun run rewards:approve --project eliza --cycle 2026-07
-bun run rewards:plan-settlement --project eliza --cycle 2026-07 \
-  --source-wallet <CREATOR_SOLANA_ADDRESS> \
-  --fee-wallet 9EyxVhhnCJH4QL5bDsRyukrkHFyitFMuf45UDdLxm4BY
-bun run rewards:verify-settlement --project eliza --cycle 2026-07
-bun run cycles:verify
-```
-
-`--fee-wallet` must equal the project's reviewed
-`freshCyclePaymentPolicy.feeRecipient`. For a new Solana policy, that is
-Slop's published Solana fee recipient
-`9EyxVhhnCJH4QL5bDsRyukrkHFyitFMuf45UDdLxm4BY` (owner decision, 9 October
-2026). No command reads a private key or signs a transaction. Keep seed phrases and
-private keys out of Git, issues, CI, skills, prompts, and local telemetry.
-
-For an allocation with a frozen funding basis, a Solana execution plan must
-use that exact Squads vault as `sourceOwner`. The same check applies when
-reading a stored plan; another valid wallet is not a substitute. A pledged or
-Sablier/EVM basis cannot produce a Solana plan without a separately reviewed
-funding transition. A Base plan requires a frozen Base Sablier basis and uses
-that stream's recipient as `sourceOwner`; a Squads or Ethereum basis cannot
-produce a Base plan. Historical allocations predating the funding-basis schema
-retain their existing validation; this does not migrate or rewrite records.
-Source binding does not prove current backing, signing capability, transaction
-retirement, or safe carry, and does not enable payments.
-
-### Settlement network
-
-Each monthly-pool project declares one settlement network in `reward.chain`:
-`solana` (default) or `base` (RFC #472). A proposal records that network in
-its `chain` field. The allocation, plan, and settlement of the cycle keep it,
-even if the project changes network later. The trusted project-transition gate
-refuses a new proposal whose `chain` differs from the reviewed base commit and
-refuses any change to a recorded proposal's `chain`. A network change therefore
-lands in its own PR, between cycles.
-
-Contributors keep one wallet claim per network. Proposal generation reads only
-the claim on the cycle network. A contributor with no claim on that network is
-`unclaimed`, exactly like a contributor with no wallet.
-
-A Base cycle uses the same lifecycle files. Its plan has kind
-`base-usdc-transfer-plan`, chain ID 8453, and the Base USDC contract. Each
-transfer maps to an EIP-681 request
-(`ethereum:<USDC>@8453/transfer?address=<recipient>&uint256=<amount>`). The 1%
-fee is a separate transfer to the Base fee recipient. Its `transactions.json`
-has kind `base-settlement-evidence`, `transactionHash` per attempt, and
-`platformFeeTransactionHash`. `rewards:verify-settlement` proves each hash with
-the read-only verifier below and writes `settlement.json` only when every
-intent and the fee reconcile exactly. A Base transaction must be confirmed
-after the plan's `createdAt`, because an EIP-681 request carries no memo. The
-settlement record stores each hash in its `signature` field.
-
-A Base cycle uses the same reservation and release commands as Solana
-(`protocol/fresh-cycle-payments.md`). The plan source is the frozen Base
-stream recipient, the signer is the reviewed `recipientGithub` actor with an
-EIP-191 proof, and the fee goes to Slop's published Base fee recipient
-`0x8f77c37d8650776bfe73c9b12b15209ee15d9b86`. On 9 October 2026 the owner
-replaced the 8 October recipient
-`0xb7b0d5e45016d6d31629d9ab375df770fd2aaf77`, which is retired. No project
-uses Base today and no payment is enabled.
-
-### Read-only Base payout check
-
-A separate read-only tool reconciles one confirmed Base mainnet USDC
-transaction against a declared source and a closed list of recipients:
-
-```bash
-bun run settlement:verify-evm -- --network base --transaction <0x-hash> \
-  --source <0x-source-address> \
-  --transfers <0x-recipient:amount-minor[,0x-recipient:amount-minor...]>
-```
-
-It queries the same three fixed Base RPC authorities as the funding verifier,
-requires two to agree on canonical inclusion under the 12-confirmation policy,
-and then requires the exact source debit, the exact credit to every listed
-recipient, and no other nonzero USDC delta. It reads Transfer deltas, not the
-transaction sender, so a single transfer, a relayed transfer, and a
-smart-account batch all reconcile the same way. Addresses are lowercase
-canonical hex and amounts are integer USDC micro-units.
-
-This check writes nothing. It does not create a plan, produce
-`settlement.json`, or move any cycle to `paid`. `rewards:verify-settlement`
-uses the same verifier for a Base cycle.
+The payment basis stores changed ledger and attribution records plus removed
+record IDs. Reconstruct it with `paymentReviewSnapshot`; its `ledger` field
+alone is not a complete ledger. The source snapshot hash binds both views.
+Proposal `score` values are payment allocation weights. Cycle-index score
+values still come from the public score ledger, so closing a cycle does not
+add grandfathered payment weight to Score or Points.

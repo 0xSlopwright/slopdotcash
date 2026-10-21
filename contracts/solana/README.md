@@ -1,52 +1,206 @@
 # Solana protected payout escrow
 
-This Anchor program holds classic six-decimal SPL tokens in a separate PDA vault
-for each owner/project digest. Deployment policy must pin the approved USDC mint
-and network domain. The program deliberately cannot determine GitHub authority or
-whether an arbitrary mint is Circle USDC. A reviewed project manifest must bind
-its program ID, project PDA, network, mint, owner and identity authority.
+This Anchor program holds classic SPL Token mints in a separate PDA vault for
+each owner/project digest. Any classic SPL mint is accepted, with any number of
+decimals. Every transfer passes the mint's own decimals to `transfer_checked`.
+Token-2022 mints are rejected: `Account<Mint>` and `Program<Token>` require the
+classic token program. Classic SPL has no transfer fee and no rebasing, so the
+vault always receives the exact amount sent. Deployment policy must pin the
+approved mint and network domain. The program cannot determine GitHub authority
+or whether a mint is the asset the project intends. A reviewed project manifest
+must bind its program ID, project PDA, network, mint, owner and identity
+authority.
 
-The owner deposits and approves immutable awards. Award approval reserves principal
+All counters are u64 token base units. A high-decimal mint limits the total a
+project can hold: at 18 decimals, u64 holds about 18.4 whole tokens in the
+cumulative `deposited` counter. Use a mint whose decimals fit the expected
+project budget.
+
+Anyone can deposit. The owner approves immutable awards. The only mutable
+authority is the identity authority, replaced by a public two-party timelock. Award approval reserves principal
 and its included 2% fee before a wallet exists. The `award` PDA and separate `origin` PDA are
 permanent: no close, cancellation, rescue or reserve withdrawal instruction exists.
 The same source digest cannot be committed again under a different award ID.
 The award ID must equal `sha256("slop-escrow-award" || project PDA || source digest)`,
 so another project cannot reserve the same ID first.
-A narrow identity authority binds numeric GitHub actors to destinations with an
-expected predecessor version. Binding PDAs include authority, network, actor and
-the program deployment. Permissionless payment callers select neither amount nor
-recipient; the binding and expected version select the recipient. The backend must
-verify GitHub login and the contributor's wallet authorization before the identity
-signer submits this transaction. An identity key can redirect future unpaid awards;
-this authority must be disclosed, protected and reviewed separately from relayers.
+A binding needs two signatures. The project's identity authority (Slop's
+attester key) and the destination keypair both sign `bind_wallet`, which binds
+a numeric GitHub actor to that co-signing destination with an expected
+predecessor version. The program takes the destination from the co-signer, so
+the authority alone cannot bind a wallet it does not hold, and a destination
+cannot bind itself without the authority. Binding PDAs are per project: their
+seeds are the project PDA and the actor, inside the program deployment, and
+`bind_wallet` also checks the project's network domain. A binding in one
+project never pays, delays or vetoes anything in another project, and the seeds
+do not include the authority, so bindings survive an authority rotation.
+Permissionless payment callers select neither amount nor recipient; the binding
+and expected version select the recipient. The backend must verify GitHub login
+and the contributor's current registered claim before the identity signer
+co-signs. A compromised identity key cannot redirect unpaid awards on its own;
+with a colluding wallet it can propose a new destination, which the delay and
+veto below exist to catch. The authority must be disclosed, protected and
+reviewed separately from relayers.
 
-Each binding records `bound_at`. In a project, `pay` rejects a binding until
-`bound_at + binding_delay` (set once at `initialize`). While a binding is
-pending, the project owner can call `veto_binding(actor_id, version)`. It
-creates a permanent `veto` PDA for that project, actor and version, and `pay`
-rejects any binding version with a veto. Bindings are shared across projects
-with the same identity authority and network, so a veto affects only the
-vetoing project. Only a new authority binding (the next version, with a new
-delay) can follow. An active binding cannot be vetoed. An owner can delay a
-contributor's payout but never take an approved award back. Production
-deployments use a delay of at least 48 hours, and the adapter checks the
-project's delay against the reviewed manifest. `pay` also requires the
-destination to be the bound wallet's associated token account.
+Two delays protect awards, both of length `binding_delay` (set once at
+`initialize`, between one hour and 30 days). Each binding records `bound_at`,
+and `pay` rejects the latest binding until `bound_at + binding_delay`. Each
+award records `committed_at`, and `pay` rejects the award until
+`committed_at + binding_delay`, so a binding placed before the actor had any
+award still gives the owner a full delay from the moment money is attached to
+it. The owner's exact power is `veto_binding(actor_id, version)` on the latest
+binding: allowed while that binding waits out its own delay, or while an unpaid
+award to the actor (passed as the optional `obligation` account) is inside its
+commit delay, and never on a binding that has paid. A veto creates a permanent
+`veto` PDA for that project, actor and version, and `pay` in that project never
+uses a vetoed version. Only a new co-signed binding (the next version, with a
+new delay) can follow. Between two payments to an actor, the owner can veto at
+most three times (`veto_count` on the binding, reset by each payment); the next
+binding cannot be vetoed and pays after its delay. An owner can therefore delay
+a contributor's payout by a bounded number of delays, but never take an approved
+award back or redirect it.
+
+Only the latest binding (`destination`, `version`, `bound_at`, `claim_digest`)
+can pay. `pay` requires its delay to have passed in this project and requires
+the empty `veto` address for that version. `paid_version` records the version
+the last payment in this project used, so that binding cannot be vetoed. While
+a rotation waits out its delay, or after the owner vetoes it, no payment goes
+to any earlier wallet: a contributor who rotates away from a lost or compromised
+wallet freezes payment to it at once. This is the stale-binding rule in
+`docs/base-solana-payout-plan.md`: a finalized change invalidates payment to
+the earlier destination. `pay` requires the destination to be the
+paying wallet's associated token account, and `bind_wallet` rejects a zero
+claim digest, a destination equal to the identity authority, the project or the
+vault PDA, and a submission past its `expires_at`; a PDA cannot co-sign in any
+case. `initialize` rejects a fee recipient equal to the owner
+or the project. Production deployments use a delay of at least 48 hours, and
+the adapter checks the project's delay against the reviewed manifest.
+
+### Deployment Config (review finding L-3)
+
+The program has one `Config` PDA (seeds `["config"]`) with the deployment-wide
+`identity_authority` and `fee_recipient`. `initialize_config(identity_authority,
+fee_recipient)` creates it once. Only the program's upgrade authority can sign
+it: the instruction requires the program's ProgramData account and checks that
+its `upgrade_authority_address` is the signer. The two keys must be distinct
+and non-default. No instruction changes or closes the Config. After the upgrade
+authority is revoked, nobody can create it, so the human runbook creates it
+before `solana program set-upgrade-authority --final`.
+
+`initialize` takes the Config as its last account. It rejects an identity
+authority or fee recipient that differs from the Config (`ConfigMismatch`), and
+keeps the earlier separation checks. Each project still rotates its own
+identity authority (below). The owner proposes, the pinned fee recipient
+confirms, and the timelock applies. Thus every identity authority a new project
+ever has is either the pinned one or one that the pinned Slop fee recipient
+confirmed. A new project always starts with the Config identity authority, even
+after other projects rotate away from it. If that key is ever compromised, each
+new project must rotate at once after `initialize`.
+
+Why on chain: an adapter-only check would need the attester key published in
+source, and the owner has not published it. On-chain pinning matches the EVM
+factory. The human upgrade authority writes it before the program becomes
+immutable.
+
+Residual risk: Project accounts created before the Config existed are not
+pinned. The upgrade runbook lists them with `scripts/config-plan.mjs projects`
+(a `getProgramAccounts` query on the Project discriminator) before `--final`.
+The adapter refuses a project whose fee recipient differs from the Config fee
+recipient, and refuses a deployment that has no Config account.
+
+### Identity authority rotation
+
+Each project rotates its own identity authority through a public two-party
+timelock. The owner calls `propose_authority_rotation(next)`, which records the
+candidate and an effective time `rotation_delay` seconds later (set at
+`initialize`; production uses at least 7 days, and the adapter checks the
+project's delay against the reviewed manifest) and emits
+`AuthorityRotationProposed`. The fee recipient, the second fixed party, calls
+`confirm_authority_rotation`. The owner can cancel its own pending proposal
+with `cancel_authority_rotation`. Once confirmed and past the effective time,
+anyone can call `execute_authority_rotation`, which emits `AuthorityRotated`;
+the current authority has no instruction that blocks or delays it. Until
+execution the current authority keeps binding; afterwards only the new one
+can. Binding PDAs derive from the project and actor, not the current
+authority, so every existing binding stays valid and `pay` keeps finding it.
+Each project rotates independently: no other project's authority can write this
+project's bindings. The next authority must differ from the owner, the fee
+recipient and the current authority.
+
+### Key recovery runbook
+
+Who acts: the project owner key and the fee recipient key, together. The
+identity key is a hot service key and is never used for recovery. Slop holds
+the identity key and, as fee recipient, the confirming key; the owner alone
+starts every rotation.
+
+Identity key lost: the authority can no longer co-sign, so awards to actors
+without an active binding wait; nothing is lost and no reserve moves. The
+owner proposes the replacement, the fee recipient confirms, and anyone
+executes after the delay. Existing bindings keep paying throughout.
+Contributors whose bindings were pending or missing co-sign their next binding
+with the new authority.
+
+Identity key compromised: the owner proposes the replacement at once; the
+exposure window is the rotation delay. During it the attacker can submit only
+bindings that a wallet co-signs, each activating after `binding_delay`. The
+owner watches `WalletBound` and vetoes any binding it did not expect with
+`veto_binding`, which costs the contributor a delay and nothing else. After
+execution the old key cannot bind. Rotation never vetoes or re-points a
+binding by itself, so review every binding made during the window. The owner
+vetoes late in each binding's delay, so three vetoes and the fourth binding's
+own delay cover at least four binding delays: 8 days at the 48-hour production
+minimum, longer than a 7-day rotation delay. After execution the new authority
+co-signs the contributor's binding as the next version before the attacker's
+last binding activates, and only the latest binding pays. A project whose
+rotation delay is longer than four binding delays must choose a longer binding
+delay.
+
+Owner key lost: awards, withdrawals and rotation proposals for that project
+stop (other parties can still deposit, but nobody can commit or withdraw the
+deposits); reserved awards still pay to active bindings. Fee recipient key
+lost: fee transfers to its token accounts still work, but no rotation can be
+confirmed, so the identity key of that project becomes fixed. There is no
+owner or fee recipient change in this version.
 
 The owner can commit an award to any GitHub actor, including an account the
-owner controls, and so move unused funds out at the 2% payout fee instead of the
-10% withdrawal fee. This is an accepted, documented risk: maintainer review of
-related-party awards enforces the policy, not the program.
+owner controls. Because the withdrawal fee equals the award fee (repository
+owner decision of 19 October 2026, #907), such a self-award costs the same 2%
+as a withdrawal and gives no fee advantage. Maintainer review of related-party
+awards still applies under the eligibility policy.
 
 The 2% fee is deducted from each gross award: 100 pays 98 to the contributor
 and 2 to the fee recipient, reserving 100. Integer arithmetic floors gross/50 once
-per immutable award; unused withdrawal charges the difference
-between floor(cumulative gross/10) and fees already charged. Amounts are SPL u64
-micro-units. Tiny awards can incur zero fee. Withdrawals consume only free vault
-balance, return funds only to the declared owner, and retain fees after any earlier
-payout. Direct unsolicited token deposits do not confer refund rights and are not
-counted in `deposited`; such transfers remain unavailable to awards and refunds. Both credited free balance
-and the actual vault token balance must cover every new reserve or withdrawal.
+per immutable award. An unused-funds withdrawal pays the same 2%:
+`floor(gross / 50)`, rounded down once per withdrawal (PRD section 18). Withdrawing
+850 USDC pays 17 USDC and returns 833 USDC. A withdrawal under 50 base units pays no fee,
+so a split saves under one base unit per transaction. The fee depends only on
+the current withdrawal, so a test project that paid an earlier 10% or 5%
+schedule is not affected.
+Amounts are token base units. Tiny awards and withdrawals can incur zero fee.
+Withdrawals consume only free vault balance, return funds only to the declared
+owner, and retain fees after any earlier payout.
+
+`deposit(amount)` is permissionless. The `depositor` signs and transfers from
+its own token account of the project mint. The program adds the amount to
+`deposited` and emits `Deposited { project, depositor, amount }`. The deposit
+becomes free balance. The depositor gets no refund right: only the owner can
+commit or withdraw free balance, and a withdrawal goes only to the owner.
+Direct unsolicited token transfers to the vault are not counted in `deposited`;
+such transfers remain unavailable to awards and refunds. Both credited free
+balance and the actual vault token balance must cover every new reserve or
+withdrawal.
+
+`charge_service(amount, invoice_digest)` (PAY-10) lets only the owner pay one
+Slopbot invoice from free funds to the fee recipient's token account. A
+permanent `service` PDA per project and invoice digest makes each charge
+happen once. The `service_fees` counter joins the conservation identity:
+`deposited = free + reserved + paid + payout_fees + withdrawn_gross + service_fees`.
+The binding lifecycle does not change this identity. A zero-amount transfer leg
+(a zero fee, or a withdrawal whose return rounds to zero) is skipped, so a
+frozen fee account cannot stall a zero-fee payout.
+It cannot spend reserved principal or fees. Every credited balance is
+owner-controlled free balance, whoever deposited it; this version keeps no
+separate donor-class funds.
 
 All transfer instructions validate the classic token program, mint, token account
 owners, vault PDA, project account and signer. Failed token transfers roll back the
@@ -59,9 +213,22 @@ records remain permanently allocated to prevent account recreation replay.
 Run `npm run build` here to build the actual SBF binary and its IDL.
 Run `npm run test:e2e` to load that binary into an isolated local validator and
 execute the SPL payment, durable executor, and unsigned owner-plan workflows.
+The validator loads the program with `--upgradeable-program`, with the local
+payer as upgrade authority, so ProgramData exists. The first suite proves that
+`initialize_config` rejects a signer that is not the upgrade authority, creates
+the Config through the unsigned `config-plan.mjs` transaction, and proves that
+a second call fails. Every later suite creates or checks the Config first
+(`integration/deployment.mjs`) and uses its fixture identity authority and fee
+recipient. The suites also cover a permissionless deposit by a third party
+that the owner then withdraws, 18-decimal and 0-decimal mints through deposit,
+commit, pay and withdraw, the 2% withdrawal fee rounded down per withdrawal,
+`initialize` rejected when the identity authority or fee recipient differs from
+the Config, a Token-2022 mint rejected at `initialize`, and `readVaultTotals`
+against the on-chain counters.
 These use real token accounts, transactions, finalized receipts and balance
 checks. They cover the canonical lifecycle, delayed wallet registration, wallet
-rotation, binding delay and owner veto, reserve protection, split withdrawals,
+rotation that freezes payment to the earlier wallet, project-scoped bindings,
+binding delay and owner veto with its cap, reserve protection, split withdrawals,
 frozen destination rollback, duplicate payment and forged award rejection, wrong
 destination, unauthorized binding, a third-party payment mixed with unrelated
 token transfers, and a foreign project that mentions this project's account.
@@ -69,6 +236,14 @@ Fixture keys and tokens have no mainnet value. CI runs these end-to-end
 workflows; a successful build alone is not payment evidence.
 `cargo check --locked` verifies the host program build but does not prove SBF or
 validator execution. Use Anchor 0.32.1 and the platform tools pinned in the scripts.
+The end-to-end suite waits the binding delay out in seconds, so `test-e2e.sh`
+builds with the `short-delay-for-tests` Cargo feature, which lowers the on-chain
+delay floor from one hour to one second. `deploy-testnet.sh` never sets it;
+a reviewed deployment digest must come from a build without it. Before that,
+`test-e2e.sh` builds the deployable program without the feature, loads it into
+the validator and runs `integration/production-delay.e2e.mjs`, which proves that
+`initialize` rejects 3,599 seconds and accepts 3,600 seconds. `cargo test` checks
+the same bounds on the host build.
 
 ## Public test deployment
 
@@ -89,9 +264,17 @@ finalized reconciliation, real OAuth and browser journey separately.
 Program upgrade authority remains a fundamental trust boundary: a retained upgrade
 key can replace these restrictions. Do not activate mainnet without an explicit
 reviewed immutable or governance-controlled deployment decision and independent
-contract review. Identity and owner keys are fixed in each v1 project; migration
-and key rotation require a separately designed successor protocol, not a hidden
-administrative bypass.
+contract review. The owner and fee recipient keys are fixed in each project;
+the identity authority changes only through the public two-party timelock
+above, never through a hidden administrative bypass.
+
+## Mainnet upgrade
+
+The program is upgradeable on mainnet until the human runbook in
+`contracts/DEPLOY-MAINNET.md` ("Solana program upgrade") revokes the upgrade
+authority. That runbook builds verifiably, upgrades through a checked buffer,
+creates the Config with `config-plan.mjs`, lists unpinned projects, and then
+runs `solana program set-upgrade-authority --final`. Agents never run it.
 
 ## Deployment identity and automatic execution
 
@@ -100,16 +283,28 @@ escrow instruction, not per transaction. The event index is the instruction's
 position in the transaction's flattened instruction list (top-level
 instructions, each followed by its inner instructions). For `commit` it checks
 the instruction's project, award account and arguments against the durable
-award. For `pay` it requires exactly two inner `transferChecked` calls from the
-vault, signed by the project PDA, for the net amount to the destination and the
-fee to the fee recipient's account. Logs are not used, because unrelated
+award. For `pay` it requires the inner `transferChecked` calls from the vault,
+signed by the project PDA: the net amount to the destination, and the fee to
+the fee recipient's account unless the fee is zero. Logs are not used, because unrelated
 instructions in the same transaction can truncate them. Unrelated instructions
 in the same transaction cannot make a valid payment unverifiable. The scanner
 uses the same instruction list, skips other projects' instructions, processes
 at most 100 transactions per run, and atomically checkpoints each verified chunk.
 Backward discovery pages persist across runs, so a large backlog does not reset
-discovery to the newest signature. Each reviewed configuration includes owner, identity authority,
-fee recipient, token mint, network domain, program loader and code digest.
+discovery to the newest signature. Each reviewed configuration includes owner,
+identity authority at activation, rotation delay, fee recipient, token mint,
+network domain, program loader and code digest. The adapter also reads the Config PDA. It refuses the deployment when the
+Config is missing, or unless the project fee recipient, the Config fee
+recipient and the reviewed `feeRecipient` are equal and the reviewed
+`identityAuthority` is the Config identity authority. For `pay` it reads the
+mint at finalized commitment (classic SPL layout, decimals at byte 44, owned by
+the Token program) and requires each transfer's decimals to equal the mint's.
+The result fields `grossMicro`, `netMicro` and `feeMicro` keep their names; they
+carry token base units of the project mint as decimal strings. The adapter checks every field
+against finalized state except the identity authority: after activation it
+changes only through the timelocked rotation that the verified program code
+enforces, so the immutable manifest keeps verifying through a rotation and
+historical receipts stay verifiable.
 For the upgradeable loader, `codeSha256` hashes every byte after the fixed
 45-byte ProgramData header, including allocation padding. `upgradeAuthority`
 must match the finalized loader state, including `null` for an immutable program.
@@ -123,7 +318,20 @@ The shared service in `workers/payment-executor/solana.ts` validates the current
 SQLite/D1 wallet consent and the finalized deployment before signing. Each role
 holds a different test signer. The gas signer cannot be the owner or identity
 signer. It creates recipient and fee ATAs idempotently and pays the exact bound
-version. The identity role stores the claim digest in the wallet binding. A
+version. The identity role prepares a `bind_wallet` transaction that names the
+destination as a second required signer, signs its half, journals the bytes
+and returns them; the contributor's wallet signs the same bytes and the
+completed transaction is broadcast through the identity role, which checks
+both signatures against the journaled message first. The transaction must be
+completed within its blockhash lifetime, so the identity role never binds
+unattended. The account API reaches the identity role through a service
+binding: a signed-in contributor calls `POST /wallets/solana-bind/prepare` with
+the award ID to receive the half-signed transaction for their current claim
+and payout attempt, signs it in the wallet, and returns it with
+`POST /wallets/solana-bind/complete`. The identity role stores the claim digest
+in the wallet binding. The executor compares both delays with the time of the
+latest confirmed block, not the host clock, so a fast host clock cannot submit
+a payment the program must reject. A
 successor needs the shared 24-hour signed-lineage policy and reconciliation of
 older attempts. The program itself never authorizes GitHub sessions.
 
@@ -134,7 +342,46 @@ and finalized obligations/bindings are reconciled. Replacement uses an atomic
 comparison with the exact expired attempt, so concurrent workers cannot replace a
 still-valid transaction. Retired unsigned attempts are rejected before signing.
 
-`owner-plan.mjs` creates unsigned initialize/deposit/commit/withdraw transactions.
+`readVaultTotals({ rpcUrl, network, projectPda, programId })` returns the
+shared `VaultTotals` shape from `contracts/vault-totals.ts`. It reads the
+Project and mint accounts with one finalized `getMultipleAccounts` call, so
+both come from one slot. `blockNumber` is that slot and `blockTime` is its
+finalized block time. `vault` is the project PDA, `asset` the mint, and
+`decimals` comes from the mint account. Counters are decimal text in token base
+units. `freeBalance` is `deposited - paid - payout_fees - withdrawn_gross -
+service_fees - reserved`; the function throws when it is negative. Solana keeps
+one combined `reserved`, so `reservedPrincipal`, `reservedFees` and
+`accruedFees` are null.
+
+`owner-plan.mjs` creates unsigned initialize/deposit/commit/veto/withdraw,
+migrate, propose-rotation and cancel-rotation transactions; a veto may name an
+unpaid award (`obligationId`) to use its commit-delay window. `initialize`
+refuses reviewed authorities that differ from the Config, and passes the Config
+account. `deposit` takes an optional `depositor`; the depositor then pays the
+fee, signs, and funds the deposit from its associated token account.
+
+`config-plan.mjs plan` creates the unsigned `initialize_config` transaction for
+the current upgrade authority after it checks the deployed program bytes and
+that no Config exists. `config-plan.mjs projects` lists every Project account
+and marks which ones the Config pins. Neither mode reads keys or sends a
+transaction.
+
+### Project account migration
+
+The rotation fields (`pending_identity_authority`, `rotation_effective_at`,
+`rotation_confirmed`, `rotation_delay`) are appended to `Project`, which grows
+from 265 to 314 bytes. Borsh keeps every earlier field at its offset. A project
+created by an earlier build of this program keeps its 265-byte account after an
+upgrade, and Anchor cannot read it, so every instruction on it fails until the
+owner runs `migrate_project(rotation_delay)` (owner-plan operation `migrate`).
+The instruction accepts only this program's 265-byte project account whose
+stored owner signed, tops up rent from the owner, grows the account, sets the
+rotation delay within the same bounds as `initialize` and leaves no rotation
+pending. A second migration fails. The vault, awards, bindings and reserves are
+untouched. Mainnet requires an immutable program, so this path applies to test
+deployments upgraded in place; a mainnet layout change is a new deployment.
+`test-e2e.sh` preloads a 265-byte project into the validator
+(`integration/legacy-project.mjs`) and the owner-plan suite migrates it.
 Give it the reviewed input file; private RPC URL, expected genesis and a fresh
 blockhash come separately from `SLOP_SOLANA_RPC_URL`, `SLOP_SOLANA_GENESIS`, and
 `SLOP_SOLANA_RECENT_BLOCKHASH`. It verifies deployed code and authorities and never

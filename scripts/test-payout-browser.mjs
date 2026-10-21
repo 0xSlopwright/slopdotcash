@@ -10,7 +10,7 @@ const fixtureLog = openSync("evidence/payout-browser-fixture.log", "w");
 const previewLog = openSync("evidence/payout-browser-preview.log", "w");
 const fixture = spawn(
   "bun",
-  ["backend/payments/base.integration.ts", "--serve"],
+  ["backend/payments/evm.integration.ts", "--serve"],
   { stdio: ["ignore", fixtureLog, fixtureLog] },
 );
 const preview = spawn(
@@ -71,6 +71,16 @@ try {
       body: await response.text(),
     });
   });
+  // The site reads the project registry from D1 at startup. The payments
+  // fixture serves no registry, so answer it with the empty registry the
+  // payout flow needs; registered last, this route takes precedence.
+  await page.route("**/api/v1/projects", (route) =>
+    route.fulfill({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ schemaVersion: "1", projects: [] }),
+    }),
+  );
   await page.exposeFunction("localWalletSign", (message) =>
     signer.signMessage({ message: { raw: message } }),
   );
@@ -85,14 +95,22 @@ try {
     };
   }, signer.address);
   await page.goto("http://127.0.0.1:18549/earnings");
-  await page.getByRole("heading", { name: "Your earnings" }).waitFor();
+  await page.getByRole("heading", { name: "Your payouts" }).waitFor();
   await page.getByRole("button", { name: "Connect Base wallet" }).waitFor();
+  await page
+    .getByRole("button", { name: "Connect Robinhood Chain wallet" })
+    .waitFor();
+  await page.getByRole("heading", { name: "Robinhood Chain" }).waitFor();
   await page.screenshot({
     path: "evidence/payout-desktop-before.png",
     fullPage: true,
   });
   await page.getByRole("button", { name: "Connect Base wallet" }).focus();
   await page.keyboard.press("Enter");
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Browser wallet Detected" })
+    .click();
   await page
     .getByText("Base wallet confirmed.", { exact: false })
     .waitFor({ timeout: 60000 });
@@ -103,23 +121,51 @@ try {
       .waitFor({ state: "visible" });
     await page.waitForLoadState("networkidle");
     if (
-      await page.getByText("Paid — verified on chain", { exact: true }).count()
+      await page.getByText("Paid, verified on chain", { exact: true }).count()
     )
       break;
     await page.waitForTimeout(1000);
   }
   await page
-    .getByText("Paid — verified on chain", { exact: true })
+    .getByText("Paid, verified on chain", { exact: true })
     .waitFor({ timeout: 10000 });
   const paid = await (
     await fetch("http://127.0.0.1:18548/api/v1/payments/me")
   ).json();
   if (
-    paid.payments[0].netMicro !== "98000000" ||
-    paid.payments[0].feeMicro !== "2000000" ||
+    paid.payments[0].netBase !== "98000000" ||
+    paid.payments[0].feeBase !== "2000000" ||
     paid.payments[0].state !== "paid"
   )
     throw new Error("Wrong payment result");
+  // The same signer registers a separate Robinhood Chain claim from the
+  // keyboard; the Base lineage and its paid receipt stay unchanged.
+  await page
+    .getByRole("button", { name: "Connect Robinhood Chain wallet" })
+    .focus();
+  await page.keyboard.press("Enter");
+  // The picker offers the same EVM wallet for Robinhood Chain; choose it from the keyboard.
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Browser wallet Detected" })
+    .focus();
+  await page.keyboard.press("Enter");
+  await page
+    .getByText("Robinhood Chain wallet confirmed.", { exact: false })
+    .waitFor({ timeout: 60000 });
+  const both = await (
+    await fetch("http://127.0.0.1:18548/api/v1/payments/me")
+  ).json();
+  const walletOn = (chain) => both.wallets.filter((w) => w.chain === chain);
+  if (
+    walletOn("base").length !== 1 ||
+    walletOn("robinhood").length !== 1 ||
+    !walletOn("robinhood")[0].authorized ||
+    walletOn("robinhood")[0].claimId === walletOn("base")[0].claimId ||
+    both.payments[0].state !== "paid" ||
+    both.balances.some((b) => b.chain === "robinhood")
+  )
+    throw new Error("Robinhood Chain wallet registration changed Base state");
   await page.screenshot({
     path: "evidence/payout-desktop-paid.png",
     fullPage: true,
