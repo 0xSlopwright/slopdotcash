@@ -106,3 +106,24 @@ Its extra distance observation is not an implemented improvement. The #219
 [integration build](https://github.com/SlopDotCash/proximityprize/actions/runs/37830112334)
 passed. These are calibration candidates, not final published awards. Full-project
 comparison and the separate integration/review allocation remain incomplete.
+
+## Stacked research split, refreshed 21 October
+
+The complete Git inventories for Delta Star #188–#192 match GitHub's reported
+submitted file counts. The REST file lists stop at 3,000 entries for these PRs.
+Use their immutable Git trees to cover the omitted files.
+
+| PR | Submitted file entries | First-parent accepted file entries |
+| --- | ---: | ---: |
+| [#188](https://github.com/SlopDotCash/proximityprize/pull/188) | [3,529](https://github.com/SlopDotCash/proximityprize/compare/aeb2a3eb0a25de1d010167911bc836724c54e2fe...577b06b6d3e6857bcea8bb5b159c947f144807e7) | [3,529](https://github.com/SlopDotCash/proximityprize/commit/d877638fd0aacab2c560e26f47d98577d5212096) |
+| [#189](https://github.com/SlopDotCash/proximityprize/pull/189) | [3,541](https://github.com/SlopDotCash/proximityprize/compare/aeb2a3eb0a25de1d010167911bc836724c54e2fe...8b4582342bd498471b6a787d903dc742fb540ce4) | [13](https://github.com/SlopDotCash/proximityprize/commit/36dedf10c818a1bbe4815ef54955f1765d01cbfb) |
+| [#190](https://github.com/SlopDotCash/proximityprize/pull/190) | [3,784](https://github.com/SlopDotCash/proximityprize/compare/aeb2a3eb0a25de1d010167911bc836724c54e2fe...c22062892210404649e5133e8226d6f512ea426f) | [2](https://github.com/SlopDotCash/proximityprize/commit/3bc8d7e82e377260c1f1bc3102e1b897cc719d37) |
+| [#191](https://github.com/SlopDotCash/proximityprize/pull/191) | [3,917](https://github.com/SlopDotCash/proximityprize/compare/aeb2a3eb0a25de1d010167911bc836724c54e2fe...4999165d96d394c8e7302a116ca2d16d1cba8e57) | [176](https://github.com/SlopDotCash/proximityprize/commit/cf7128d8a15cff757a8ce157666491574db6804e) |
+| [#192](https://github.com/SlopDotCash/proximityprize/pull/192) | [3,920](https://github.com/SlopDotCash/proximityprize/compare/aeb2a3eb0a25de1d010167911bc836724c54e2fe...a5f11522480ff3da0546902b0f5090165b5e72bc) | [2](https://github.com/SlopDotCash/proximityprize/commit/12e6b0db6b54e5b06397cf3ee3914966796a8f57) |
+
+In #188, 1,510 moves retain identical blob contents. These counts establish
+scope and overlap, not value. Review the retained module boundary, changed
+imports, proof content, and build evidence together. Do not award five large
+refactors from the submitted totals, or discard original authors because a
+later integration carries their commits. Individual tiers and any distinct
+integration or review credit remain unresolved until that joint review finishes.
