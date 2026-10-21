@@ -208,3 +208,38 @@ Live GitHub reads of selected reviewed-head and final-head files match their
 immutable Git blobs. Credit only the particular validation the review supports;
 its approval does not establish review of later additions. Joint attribution
 with #202 and subsequent integration carriers remains open before final tiers.
+
+## Separate prior searches from new certificate validation
+
+Delta Star [#202](https://github.com/SlopDotCash/proximityprize/pull/202)
+adds input and storage checks to the integer probe, checks rounded MILP
+assignments against every constraint before reporting signatures, and rejects
+malformed W6 certificates. All 22 submitted files match the accepted merge.
+Only two are Lean files, and both change module documentation without changing
+theorem bodies. The main retained JSON accounts for 14,727 added lines. That
+volume is not an independent measure of value.
+
+The three source hashes in the completed-search audit match the base revision
+and #198's head, not #202's final probe bytes. These are retained earlier runs,
+not execution evidence for the new guards. The locator change only corrects a
+claim about lifting results between fields. The integer and MILP changes alter
+validation behavior, which needs its own evidence. Do not count the same search
+again through both PR descriptions.
+
+An independent data check read all 2,103 retained tail-replay rows. The prime
+keys and expected values match the retained CSV, every stored difference is
+arithmetically correct, and every row satisfies the reported tolerance. This
+checks the record's internal consistency; it does not rerun the coset sums or
+prove a rigorous numerical error bound. The raw artifact is now covered by a
+complete immutable Git read despite the omitted GitHub patch.
+
+The [first review](https://github.com/SlopDotCash/proximityprize/pull/202#pullrequestreview-5126088643)
+reports specific reproduced checks of the four probe files. Those files are
+byte-identical at the reviewed and accepted heads. Later changes add the tail
+replay, its explanation, and exhaustive Boolean-encoding checks; the earlier
+review does not validate those additions. A
+[later review](https://github.com/SlopDotCash/proximityprize/pull/202#pullrequestreview-5432170432)
+describes 22 Lean/module changes, which the accepted diff does not support.
+That description alone does not establish a distinct verified review outcome.
+This is an evidence distinction, not an abuse finding or penalty. Final joint
+valuation and project-wide calibration remain open.
