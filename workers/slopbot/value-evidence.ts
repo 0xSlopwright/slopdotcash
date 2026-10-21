@@ -1,5 +1,8 @@
 import { isCreditEligibleCommitAuthor } from "../../src/lib/commit-credit";
-import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+import {
+  findRegisteredRepositoryById,
+  type TargetRepository,
+} from "../../src/lib/repositories.mjs";
 
 // Shared by the installation worker and the historical reviewer. Missing or
 // moving evidence prevents assessment; pagination limits never imply coverage.
@@ -276,6 +279,10 @@ async function relatedPullRequests(
 }
 export interface ValueEvidence {
   repository: string;
+  repositoryPolicy: Pick<
+    TargetRepository,
+    "id" | "projectId" | "integrationBranch" | "expectedNodeId"
+  > | null;
   repositoryNodeId: string;
   repositoryDatabaseId: number;
   collectedAt: string;
@@ -306,6 +313,9 @@ export async function collectValueEvidence(
   client: EvidenceClient,
   repository: string,
   number: number,
+  repositoryPolicy: TargetRepository | null = findRegisteredRepositoryById(
+    repository,
+  ),
 ): Promise<ValueEvidence> {
   if (
     !/^[\w.-]+\/[\w.-]+$/u.test(repository) ||
@@ -318,6 +328,15 @@ export async function collectValueEvidence(
     root,
   );
   if (!repositoryIdentity) throw new Error("Repository identity unavailable");
+  if (
+    repositoryPolicy !== null &&
+    (![repositoryPolicy.id, ...repositoryPolicy.aliases].some(
+      (id) => id.toLowerCase() === repository.toLowerCase(),
+    ) ||
+      (repositoryPolicy.expectedNodeId !== null &&
+        repositoryPolicy.expectedNodeId !== repositoryIdentity.node_id))
+  )
+    throw new Error("Repository policy does not match the evidence source");
   const path = `${root}/pulls/${number}`;
   const rawPull = await client.get<Pull>(path);
   if (!rawPull) throw new Error("Pull request unavailable");
@@ -408,6 +427,8 @@ export async function collectValueEvidence(
   const comments = rawComments.map(comment);
   const reviewComments = rawReviewComments.map(comment);
   const limitations: string[] = [];
+  if (repositoryPolicy === null)
+    limitations.push("Registered repository scoring policy is unavailable");
   let mergeCommitEvidence: CommitChangeEvidence | null = null;
   if (pull.merged_at !== null) {
     if (!pull.merge_commit_sha) {
@@ -517,10 +538,7 @@ export async function collectValueEvidence(
   // Trailer identities are source text, not credit authority under SCR-04.
   const implementationActors = new Set<string>();
   if (pull.user.type !== "Bot") implementationActors.add(pull.user.node_id);
-  if (
-    pull.base.ref ===
-    findRegisteredRepositoryById(repository)?.integrationBranch
-  ) {
+  if (pull.base.ref === repositoryPolicy?.integrationBranch) {
     for (const commit of commits) {
       if (
         commit.parents.length <= 1 &&
@@ -564,6 +582,15 @@ export async function collectValueEvidence(
     repository,
     repositoryNodeId: repositoryIdentity.node_id,
     repositoryDatabaseId: repositoryIdentity.id,
+    repositoryPolicy:
+      repositoryPolicy === null
+        ? null
+        : {
+            id: repositoryPolicy.id,
+            projectId: repositoryPolicy.projectId,
+            integrationBranch: repositoryPolicy.integrationBranch,
+            expectedNodeId: repositoryPolicy.expectedNodeId,
+          },
     collectedAt: new Date().toISOString(),
     pull,
     files,

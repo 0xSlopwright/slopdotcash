@@ -1,6 +1,12 @@
 /** Read-only evidence export. Raw source evidence stays outside the repository. */
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
+import { assertProjectRegistry } from "../src/lib/project-schema.mjs";
+import { collectTargetRepositories } from "../src/lib/repositories.mjs";
+import {
+  fetchProjectRegistry,
+  renderProjectRevisions,
+} from "./sync-project-registry.mjs";
 import {
   collectValueEvidence,
   type EvidenceClient,
@@ -60,10 +66,21 @@ const client: EvidenceClient = {
     return JSON.parse(body) as T;
   },
 };
+const registry = await fetchProjectRegistry();
+const projects = assertProjectRegistry(registry.projects);
+renderProjectRevisions(registry.revisions, projects);
+const repositoryPolicy = collectTargetRepositories(projects).find((entry) =>
+  [entry.id, ...entry.aliases].some(
+    (id) => id.toLowerCase() === repository.toLowerCase(),
+  ),
+);
+if (!repositoryPolicy)
+  throw new Error("Repository is not active in the live project registry");
 const evidence = await collectValueEvidence(
   client,
   repository,
   Number(numberText),
+  repositoryPolicy,
 );
 const bytes = `${JSON.stringify(evidence, null, 2)}\n`;
 const digest = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
