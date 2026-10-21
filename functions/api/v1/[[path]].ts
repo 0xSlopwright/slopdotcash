@@ -279,7 +279,7 @@ async function repositoryControl(
     facts.node_id !== manifest.authority.repositoryNodeId ||
     String(facts.full_name).toLowerCase() !== repository.id.toLowerCase() ||
     facts.private !== false ||
-    String(facts.owner?.id) !== manifest.steward.github.actorId
+    !stewardIsOwner(facts.owner, manifest.steward.github)
   )
     return {
       state: "mismatch",
@@ -310,6 +310,22 @@ async function repositoryControl(
       reason: `@${actor.githubLogin} is not a public member of ${String(facts.owner?.login)}`,
     };
   throw new Error(`GitHub returned ${membership.status}`);
+}
+
+/**
+ * The steward is the account GitHub reports as the repository owner: the same
+ * numeric id, node id and login (GitHub logins are case-insensitive). Pages
+ * show the steward by login and attribute the project to its node id.
+ */
+function stewardIsOwner(
+  owner: { id?: unknown; node_id?: unknown; login?: unknown } | undefined,
+  steward: ProjectDefinition["steward"]["github"],
+): boolean {
+  return (
+    String(owner?.id) === steward.actorId &&
+    owner?.node_id === steward.nodeId &&
+    String(owner?.login).toLowerCase() === steward.login.toLowerCase()
+  );
 }
 
 export async function onRequest(context: PagesContext): Promise<Response> {
