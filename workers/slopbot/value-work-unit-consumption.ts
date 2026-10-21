@@ -8,6 +8,7 @@ import {
 import { VALUE_RUBRIC_VERSION } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
 import { TRIAGE_ROUTE } from "./models";
+import { validValueContextSelections } from "./value-context";
 import {
   prepareWorkUnitEvidence,
   type WorkUnitSource,
@@ -82,10 +83,7 @@ function assertRecord(
       !digest(source.sourceDigest) ||
       !time(source.occurredAt) ||
       (source.contextPaths !== undefined &&
-        (!Array.isArray(source.contextPaths) ||
-          source.contextPaths.length > 16 ||
-          source.contextPaths.some((path) => typeof path !== "string") ||
-          new Set(source.contextPaths).size !== source.contextPaths.length)) ||
+        !validValueContextSelections(source.contextPaths)) ||
       ids.has(key)
     )
       throw new Error("Joint history source identity is invalid");

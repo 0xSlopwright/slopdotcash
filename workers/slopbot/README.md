@@ -386,8 +386,11 @@ repository set; callers must keep it consistent across the operation.
 An unchanged file can prove or disprove a review claim. Pass its repository path
 after the output directory in `scripts/collect-value-evidence.ts`. The collector
 reads the full UTF-8 file at the PR head and binds its bytes, path and immutable
-revision to the assessment source digest. Publication reads those files again.
-Journal records retain the selected paths so ingestion can re-fetch the same
+revision to the assessment source digest. Use `--context-at SHA path` to compare
+a file at the captured base or a formal review's recorded commit. Arbitrary
+revisions are refused. This lets an assessment distinguish a review of an early
+revision from validation of later changes. Publication reads those files again.
+Journal records retain the selected paths and non-head revisions so ingestion can re-fetch the same
 context. They never include the file bodies. Older records without context
 selection keep their original digest contract.
 Missing, oversized or invalid files stop collection; partial context is not

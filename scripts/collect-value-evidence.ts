@@ -3,7 +3,10 @@ import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { assertProjectRegistry } from "../src/lib/project-schema.mjs";
 import { collectTargetRepositories } from "../src/lib/repositories.mjs";
-import { collectValueContext } from "../workers/slopbot/value-context";
+import {
+  collectValueContext,
+  type ValueContextSelection,
+} from "../workers/slopbot/value-context";
 import {
   collectValueEvidence,
   type EvidenceClient,
@@ -13,12 +16,26 @@ import {
   renderProjectRevisions,
 } from "./sync-project-registry.mjs";
 
-const [repository, numberText, directory, ...contextPaths] =
+const [repository, numberText, directory, ...contextArgs] =
   process.argv.slice(2);
 if (!repository || !numberText || !directory)
   throw new Error(
-    "Usage: bun scripts/collect-value-evidence.ts owner/repo PR_NUMBER /absolute/private-output-directory [context-path ...]",
+    "Usage: bun scripts/collect-value-evidence.ts owner/repo PR_NUMBER /absolute/private-output-directory [context-path | --context-at SHA path ...]",
   );
+const contextPaths: ValueContextSelection[] = [];
+for (let index = 0; index < contextArgs.length; index += 1) {
+  if (contextArgs[index] !== "--context-at") {
+    contextPaths.push(contextArgs[index]);
+    continue;
+  }
+  const ref = contextArgs[++index];
+  const path = contextArgs[++index];
+  if (!ref || !/^[a-f0-9]{40}$/u.test(ref) || !path)
+    throw new Error(
+      "--context-at requires an immutable SHA and repository path",
+    );
+  contextPaths.push({ path, ref });
+}
 const output = resolve(directory);
 if (!isAbsolute(directory))
   throw new Error("Output directory must be absolute");

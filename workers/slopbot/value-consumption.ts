@@ -10,6 +10,10 @@ import { VALUE_RUBRIC_VERSION } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
 import { TRIAGE_ROUTE } from "./models";
 import type { D1Database } from "./persistence";
+import {
+  type ValueContextSelection,
+  validValueContextSelections,
+} from "./value-context";
 import type { ValueEvidence } from "./value-evidence";
 import {
   type StoredValueRecord,
@@ -51,7 +55,7 @@ export async function readValueDecisionFromHistory(
   policy: { sha: string; text: string },
   hydrateContext?: (
     evidence: ValueEvidence,
-    paths: readonly string[],
+    paths: readonly ValueContextSelection[],
   ) => Promise<ValueEvidence>,
   repositories: readonly TargetRepository[] = REGISTERED_REPOSITORIES,
 ) {
@@ -113,10 +117,7 @@ export async function readValueDecisionFromHistory(
   if (!latest) return { ...common, status: "missing" as const };
   if (
     latest.contextPaths !== undefined &&
-    (!Array.isArray(latest.contextPaths) ||
-      latest.contextPaths.length > 16 ||
-      latest.contextPaths.some((path) => typeof path !== "string") ||
-      new Set(latest.contextPaths).size !== latest.contextPaths.length)
+    !validValueContextSelections(latest.contextPaths)
   )
     throw new Error("Value history context selection is invalid");
   if (hydrateContext)

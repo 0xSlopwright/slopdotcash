@@ -10,7 +10,7 @@ import { GitHubClient } from "./github";
 import { type D1Database, installation } from "./persistence";
 import { loadPolicy, type ReviewEnv } from "./review";
 import { readValueDecision } from "./value-consumption";
-import { collectValueContext } from "./value-context";
+import { collectValueContext, valueContextSelections } from "./value-context";
 import {
   collectValueEvidence,
   type EvidenceClient,
@@ -76,7 +76,7 @@ export async function verifyCurrentValueSource(
   const current = await collectValueContext(
     github,
     collected,
-    evidence.contextFiles?.map((file) => file.path) ?? [],
+    valueContextSelections(evidence),
   );
   if (current.pull.state !== "closed" || current.limitations.length)
     throw new Error(

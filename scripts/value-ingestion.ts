@@ -9,7 +9,10 @@ import { findRegisteredRepositoryById } from "../src/lib/repositories.mjs";
 import type { GitHubClient } from "../workers/slopbot/github";
 import { loadPolicy } from "../workers/slopbot/review";
 import { readValueDecisionFromHistory } from "../workers/slopbot/value-consumption";
-import { collectValueContext } from "../workers/slopbot/value-context";
+import {
+  collectValueContext,
+  type ValueContextSelection,
+} from "../workers/slopbot/value-context";
 import { collectValueEvidence } from "../workers/slopbot/value-evidence";
 import type { valueHistory } from "../workers/slopbot/value-journal";
 import type { WorkUnitSource } from "../workers/slopbot/value-work-unit";
@@ -211,7 +214,7 @@ export async function loadValueInputs(
     repositoryId: string,
     number: number,
     id: string,
-    contextPaths: readonly string[] = [],
+    contextPaths: readonly ValueContextSelection[] = [],
   ) {
     const cached = sourceCache.get(id);
     if (cached) {

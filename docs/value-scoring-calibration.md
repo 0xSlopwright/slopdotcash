@@ -176,3 +176,35 @@ inputs, while explicitly excluding a real deployment. The October reviews
 mostly assert input compatibility without execution receipts or direct
 compatibility citations. Preserve this difference in evidence strength; neither
 review text nor this comparison proves a successful Cloudflare deployment.
+
+## Probe repairs and the revision a reviewer checked
+
+Delta Star [#198](https://github.com/SlopDotCash/proximityprize/pull/198) retains
+36 changed files at its accepted merge. Its final description also discusses
+C++ and MILP repairs delivered in
+[#202](https://github.com/SlopDotCash/proximityprize/pull/202). Do not use that
+combined description to credit those repairs twice.
+
+Independent modular arithmetic reproduced the source-root interpolation defect.
+For the documented cubic, the old transpose contraction failed at 124 of 126
+four-point anchors. The corrected contraction recovered the coefficients at
+all 126 anchors. An independent enumeration also matched the new W8 integer
+formula against the original constraints in 5,000 cells. These are bounded
+arithmetic checks, not execution of the full research probes or Lean proofs.
+The G94 numerical function is unchanged after removing its docstring; its
+change corrects the interpretation of a greedy upper bound.
+
+Of 22 checked source-hash references in the retained audit records, 21 match
+the accepted source bytes. The W8 record matches the earlier reviewed commit;
+its final file differs only in the module docstring, with the remaining Python
+syntax tree unchanged. Preserve that distinction instead of calling either a
+stale hash a final-head execution receipt or a prose-only change a failed
+numerical validation. The recorded full replays remain contributor-reported.
+
+The [formal review](https://github.com/SlopDotCash/proximityprize/pull/198#pullrequestreview-5125991154)
+reports reproducing the W6 empty-search failure and comparing G94 outputs.
+Its recorded commit precedes the interpolation and configurable-domain repairs.
+Live GitHub reads of selected reviewed-head and final-head files match their
+immutable Git blobs. Credit only the particular validation the review supports;
+its approval does not establish review of later additions. Joint attribution
+with #202 and subsequent integration carriers remains open before final tiers.

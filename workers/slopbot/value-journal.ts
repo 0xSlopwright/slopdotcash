@@ -10,6 +10,10 @@ import {
 import { sha256Hex } from "./github";
 import { type CallRecord, TRIAGE_ROUTE } from "./models";
 import type { D1Database } from "./persistence";
+import {
+  type ValueContextSelection,
+  valueContextSelections,
+} from "./value-context";
 import type { ValueEvidence } from "./value-evidence";
 import {
   type assessValue,
@@ -31,7 +35,7 @@ export interface ValueJournalRecord {
   occurredAt: string;
   policySha: string;
   sourceDigest: string;
-  contextPaths?: string[];
+  contextPaths?: ValueContextSelection[];
   rubricVersion: string;
   producerRevision: string;
   assessedAt: string;
@@ -139,7 +143,7 @@ export async function prepareValueRecord(
     policySha: policy.sha,
     sourceDigest: result.sourceDigest,
     ...(evidence.contextFiles?.length
-      ? { contextPaths: evidence.contextFiles.map((file) => file.path).sort() }
+      ? { contextPaths: valueContextSelections(evidence) }
       : {}),
     rubricVersion: result.rubricVersion,
     producerRevision,

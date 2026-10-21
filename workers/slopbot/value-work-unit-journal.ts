@@ -11,6 +11,10 @@ import {
 import { VALUE_RUBRIC_VERSION } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
 import type { D1Database } from "./persistence";
+import {
+  type ValueContextSelection,
+  valueContextSelections,
+} from "./value-context";
 import { type StoredValueRecord, valueProducerIdentity } from "./value-journal";
 import {
   prepareWorkUnitEvidence,
@@ -37,7 +41,7 @@ export interface WorkUnitRecord {
     occurredAt: string;
     policySha: string;
     sourceDigest: string;
-    contextPaths?: string[];
+    contextPaths?: ValueContextSelection[];
   }[];
   claims: WorkUnitEvidence["claims"];
   units: (WorkUnitAssessment["units"][number] & { workUnitId: string })[];
@@ -158,7 +162,7 @@ export function workUnitSourceBindings(
       policySha: policy.sha,
       sourceDigest: evidence.sourceDigests[i].digest,
       ...(source.contextFiles?.length
-        ? { contextPaths: source.contextFiles.map((file) => file.path).sort() }
+        ? { contextPaths: valueContextSelections(source) }
         : {}),
     };
   });
