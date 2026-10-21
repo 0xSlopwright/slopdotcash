@@ -81,6 +81,11 @@ function assertRecord(
       !sha(source.policySha) ||
       !digest(source.sourceDigest) ||
       !time(source.occurredAt) ||
+      (source.contextPaths !== undefined &&
+        (!Array.isArray(source.contextPaths) ||
+          source.contextPaths.length > 16 ||
+          source.contextPaths.some((path) => typeof path !== "string") ||
+          new Set(source.contextPaths).size !== source.contextPaths.length)) ||
       ids.has(key)
     )
       throw new Error("Joint history source identity is invalid");

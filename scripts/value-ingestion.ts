@@ -9,6 +9,7 @@ import { findRegisteredRepositoryById } from "../src/lib/repositories.mjs";
 import type { GitHubClient } from "../workers/slopbot/github";
 import { loadPolicy } from "../workers/slopbot/review";
 import { readValueDecisionFromHistory } from "../workers/slopbot/value-consumption";
+import { collectValueContext } from "../workers/slopbot/value-context";
 import { collectValueEvidence } from "../workers/slopbot/value-evidence";
 import type { valueHistory } from "../workers/slopbot/value-journal";
 import type { WorkUnitSource } from "../workers/slopbot/value-work-unit";
@@ -206,7 +207,12 @@ export async function loadValueInputs(
     return { repository, identity };
   }
 
-  async function source(repositoryId: string, number: number, id: string) {
+  async function source(
+    repositoryId: string,
+    number: number,
+    id: string,
+    contextPaths: readonly string[] = [],
+  ) {
     const cached = sourceCache.get(id);
     if (cached) {
       if (
@@ -215,7 +221,14 @@ export async function loadValueInputs(
         cached.evidence.pull.number !== number
       )
         throw new Error("Joint source identity changed between records");
-      return cached;
+      return {
+        ...cached,
+        evidence: await collectValueContext(
+          github,
+          cached.evidence,
+          contextPaths,
+        ),
+      };
     }
     const { repository, identity } = await repositoryIdentity(repositoryId);
     const evidence = await collectValueEvidence(github, repository.id, number);
@@ -247,7 +260,10 @@ export async function loadValueInputs(
     };
     const collected = { evidence, policy };
     sourceCache.set(id, collected);
-    return collected;
+    return {
+      ...collected,
+      evidence: await collectValueContext(github, evidence, contextPaths),
+    };
   }
 
   async function legacy(collected: WorkUnitSource) {
@@ -262,8 +278,9 @@ export async function loadValueInputs(
           after,
           transport,
         ),
-      collected.evidence,
+      sourceCache.get(id)?.evidence ?? collected.evidence,
       collected.policy,
+      (evidence, paths) => collectValueContext(github, evidence, paths),
     );
     valueDecisions.set(id, decision);
     return decision;
@@ -349,6 +366,7 @@ export async function loadValueInputs(
             member.repository,
             member.pullRequestNumber,
             member.pullRequestNodeId,
+            member.contextPaths ?? [],
           );
           members.push(collected);
           legacyDigests.set(
@@ -410,6 +428,7 @@ export async function loadValueInputs(
             ),
       collected.evidence,
       collected.policy,
+      (evidence, paths) => collectValueContext(github, evidence, paths),
     );
     valueDecisions.set(outcome.id, decision);
     if (decision.status === "assessed")

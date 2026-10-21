@@ -31,6 +31,7 @@ export interface ValueJournalRecord {
   occurredAt: string;
   policySha: string;
   sourceDigest: string;
+  contextPaths?: string[];
   rubricVersion: string;
   producerRevision: string;
   assessedAt: string;
@@ -137,6 +138,9 @@ export async function prepareValueRecord(
     occurredAt,
     policySha: policy.sha,
     sourceDigest: result.sourceDigest,
+    ...(evidence.contextFiles?.length
+      ? { contextPaths: evidence.contextFiles.map((file) => file.path).sort() }
+      : {}),
     rubricVersion: result.rubricVersion,
     producerRevision,
     assessedAt: result.assessedAt,

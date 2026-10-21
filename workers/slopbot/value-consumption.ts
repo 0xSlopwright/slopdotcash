@@ -1,7 +1,11 @@
 /** Internal journal consumer. The database connection is the authority boundary;
  * a digest alone never authenticates records copied from an arbitrary host.
  */
-import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+import {
+  findRegisteredRepositoryById,
+  REGISTERED_REPOSITORIES,
+  type TargetRepository,
+} from "../../src/lib/repositories.mjs";
 import { VALUE_RUBRIC_VERSION } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
 import { TRIAGE_ROUTE } from "./models";
@@ -45,11 +49,20 @@ export async function readValueDecisionFromHistory(
   ) => Promise<Awaited<ReturnType<typeof valueHistory>>>,
   evidence: ValueEvidence,
   policy: { sha: string; text: string },
+  hydrateContext?: (
+    evidence: ValueEvidence,
+    paths: readonly string[],
+  ) => Promise<ValueEvidence>,
+  repositories: readonly TargetRepository[] = REGISTERED_REPOSITORIES,
 ) {
   const history: PublicRecord[] = [];
   let cursor = 0;
   let more = true;
-  const repository = findRegisteredRepositoryById(evidence.repository);
+  const repository = repositories.find((entry) =>
+    [entry.id, ...entry.aliases].some(
+      (id) => id.toLowerCase() === evidence.repository.toLowerCase(),
+    ),
+  );
   if (!repository) throw new Error("Value source repository is not registered");
   let previous: PublicRecord | null = null;
   let latest: ValueJournalRecord | null = null;
@@ -98,6 +111,16 @@ export async function readValueDecisionFromHistory(
     implementationActorNodeIds: [...evidence.implementationActorNodeIds],
   };
   if (!latest) return { ...common, status: "missing" as const };
+  if (
+    latest.contextPaths !== undefined &&
+    (!Array.isArray(latest.contextPaths) ||
+      latest.contextPaths.length > 16 ||
+      latest.contextPaths.some((path) => typeof path !== "string") ||
+      new Set(latest.contextPaths).size !== latest.contextPaths.length)
+  )
+    throw new Error("Value history context selection is invalid");
+  if (hydrateContext)
+    evidence = await hydrateContext(evidence, latest.contextPaths ?? []);
   if (evidence.limitations.length || !policy.text.trim())
     return { ...common, status: "incomplete" as const };
   if (

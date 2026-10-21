@@ -387,6 +387,9 @@ An unchanged file can prove or disprove a review claim. Pass its repository path
 after the output directory in `scripts/collect-value-evidence.ts`. The collector
 reads the full UTF-8 file at the PR head and binds its bytes, path and immutable
 revision to the assessment source digest. Publication reads those files again.
+Journal records retain the selected paths so ingestion can re-fetch the same
+context. They never include the file bodies. Older records without context
+selection keep their original digest contract.
 Missing, oversized or invalid files stop collection; partial context is not
 assessment evidence. The limits are 16 files, 512 KiB per file and 2 MiB total.
 Keep these raw captures in the private output directory outside the repository.

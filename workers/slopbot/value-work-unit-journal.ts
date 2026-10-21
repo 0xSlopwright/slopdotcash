@@ -37,6 +37,7 @@ export interface WorkUnitRecord {
     occurredAt: string;
     policySha: string;
     sourceDigest: string;
+    contextPaths?: string[];
   }[];
   claims: WorkUnitEvidence["claims"];
   units: (WorkUnitAssessment["units"][number] & { workUnitId: string })[];
@@ -156,6 +157,9 @@ export function workUnitSourceBindings(
       occurredAt,
       policySha: policy.sha,
       sourceDigest: evidence.sourceDigests[i].digest,
+      ...(source.contextFiles?.length
+        ? { contextPaths: source.contextFiles.map((file) => file.path).sort() }
+        : {}),
     };
   });
 }
