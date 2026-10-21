@@ -309,6 +309,51 @@ async function pages<T>(client: EvidenceClient, path: string): Promise<T[]> {
     if (batch.length < 100) return values;
   }
 }
+/** The PR commits route stops at 250. The immutable comparison paginates the
+ * complete range; reconcile it with both the reported count and observed IDs.
+ */
+async function pullCommits(
+  client: EvidenceClient,
+  root: string,
+  path: string,
+  pull: Pull,
+): Promise<Commit[]> {
+  const observed = await pages<Commit>(client, `${path}/commits`);
+  if (observed.length >= pull.commits) return observed;
+  const complete: Commit[] = [];
+  const ids = new Set<string>();
+  for (let page = 1; page <= Math.ceil(pull.commits / 100); page++) {
+    const batch = await client.get<{
+      total_commits: number;
+      commits: Commit[];
+    }>(
+      `${root}/compare/${pull.base.sha}...${pull.head.sha}?per_page=100&page=${page}`,
+    );
+    if (
+      !batch ||
+      batch.total_commits !== pull.commits ||
+      !Array.isArray(batch.commits)
+    )
+      throw new Error(
+        "Comparison cannot reconcile the reported PR commit count",
+      );
+    for (const commit of batch.commits) {
+      if (!/^[a-f0-9]{40}$/u.test(commit.sha) || ids.has(commit.sha))
+        throw new Error("Comparison contains an invalid or repeated commit");
+      ids.add(commit.sha);
+      complete.push(commit);
+    }
+  }
+  if (
+    complete.length !== pull.commits ||
+    observed.some((commit) => !ids.has(commit.sha))
+  )
+    throw new Error(
+      "Comparison commit range does not cover the observed PR commits",
+    );
+  return complete;
+}
+
 export async function collectValueEvidence(
   client: EvidenceClient,
   repository: string,
@@ -383,7 +428,7 @@ export async function collectValueEvidence(
   const [rawFiles, rawCommits, rawReviews, rawComments, rawReviewComments] =
     await Promise.all([
       pages<FileChange>(client, `${path}/files`),
-      pages<Commit>(client, `${path}/commits`),
+      pullCommits(client, root, path, pull),
       pages<Review>(client, `${path}/reviews`),
       pages<Comment>(client, `${root}/issues/${number}/comments`),
       pages<Comment>(client, `${path}/comments`),
