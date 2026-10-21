@@ -1101,6 +1101,11 @@ test.describe("private evidence console", () => {
     expect(await readFile(saved, "utf8")).toBe(
       VETTING_EVIDENCE_OBJECTS[2].body,
     );
+    // At 200% zoom, keep at least the supported 320 CSS-pixel reflow width.
+    // Zooming a 320px viewport directly would test an unsupported 160px layout.
+    const viewport = page.viewportSize();
+    if (viewport && viewport.width < 640)
+      await page.setViewportSize({ ...viewport, width: 640 });
     await page.evaluate(() => {
       document.documentElement.style.zoom = "2";
     });
@@ -1120,6 +1125,7 @@ test.describe("private evidence console", () => {
     });
     await expectAccessible(page);
     await page.evaluate(() => window.scrollTo(0, 0));
+    if (viewport) await page.setViewportSize(viewport);
     await page.screenshot({
       path: test.info().outputPath("private-evidence.png"),
       fullPage: true,
