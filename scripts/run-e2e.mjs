@@ -1,4 +1,7 @@
-import { startNotifyWorkerFixture } from "../tests/notify-worker-fixture.mjs";
+import {
+  E2E_EMAIL_ACCOUNTS,
+  startNotifyWorkerFixture,
+} from "../tests/notify-worker-fixture.mjs";
 /**
  * Runs the complete browser matrix against the stable built-site preview and,
  * at the same time, checks redirects, artifacts, and contributor API access
@@ -119,6 +122,12 @@ function prepareRegistryDatabase() {
     applicant: { token: sessionToken(), githubId: "900000002" },
     moderator: { token: sessionToken(), githubId: E2E_MODERATOR_GITHUB_ID },
     owner: { token: sessionToken(), githubId: E2E_OWNER.githubId },
+    ...Object.fromEntries(
+      Object.entries(E2E_EMAIL_ACCOUNTS).map(([role, githubId]) => [
+        role,
+        { token: sessionToken(), githubId },
+      ]),
+    ),
     // Private security bounty roles (tests/e2e/security-bounty.spec.ts).
     ...Object.fromEntries(
       Object.entries(E2E_SECURITY_ACCOUNTS).map(([role, githubId]) => [
@@ -161,6 +170,14 @@ function prepareRegistryDatabase() {
       SLOP_E2E_MODERATOR_GITHUB_IDS: `${E2E_ADMIN_GITHUB_ID},${E2E_MODERATOR_GITHUB_ID}`,
       SLOP_E2E_ADMIN_TOKEN: sessions.admin.token,
       SLOP_E2E_APPLICANT_TOKEN: sessions.applicant.token,
+      SLOP_E2E_EMAIL_TOKENS: JSON.stringify(
+        Object.fromEntries(
+          Object.keys(E2E_EMAIL_ACCOUNTS).map((role) => [
+            role,
+            sessions[role].token,
+          ]),
+        ),
+      ),
       SLOP_E2E_MODERATOR_TOKEN: sessions.moderator.token,
       SLOP_E2E_OWNER_TOKEN: sessions.owner.token,
       SLOP_E2E_SECURITY_TOKENS: JSON.stringify(

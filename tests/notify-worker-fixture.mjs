@@ -5,6 +5,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { childEnvironment } from "../scripts/child-environment.mjs";
 
+export const E2E_EMAIL_ACCOUNTS = Object.fromEntries(
+  [1440, 1024, 768, 320].map((width, index) => [
+    `email${width}`,
+    String(900000101 + index),
+  ]),
+);
+
 export async function startNotifyWorkerFixture(root, persistTo, port) {
   const folder = mkdtempSync(join(tmpdir(), "slop-notify-e2e-"));
   const name = `slop-notify-e2e-${port}`;
@@ -23,13 +30,18 @@ export async function startNotifyWorkerFixture(root, persistTo, port) {
         NOTIFY_INBOX_URL: "https://staging.slop.cash/inbox",
         ACTIVITY_MAIL_PILOT: JSON.stringify({
           inboxUrl: "https://staging.slop.cash/inbox",
-          recipients: {
-            900000002: {
-              email: "applicant@example.com",
-              verifiedAt: "2026-01-01T00:00:00.000Z",
-              evidenceReference: "synthetic-local-pilot-verification",
-            },
-          },
+          recipients: Object.fromEntries(
+            ["900000002", ...Object.values(E2E_EMAIL_ACCOUNTS)].map(
+              (githubId) => [
+                githubId,
+                {
+                  email: "applicant@example.com",
+                  verifiedAt: "2026-01-01T00:00:00.000Z",
+                  evidenceReference: "synthetic-local-pilot-verification",
+                },
+              ],
+            ),
+          ),
         }),
       },
       d1_databases: [
