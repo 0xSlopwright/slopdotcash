@@ -4,13 +4,13 @@ import { isAbsolute, resolve } from "node:path";
 import { assertProjectRegistry } from "../src/lib/project-schema.mjs";
 import { collectTargetRepositories } from "../src/lib/repositories.mjs";
 import {
-  fetchProjectRegistry,
-  renderProjectRevisions,
-} from "./sync-project-registry.mjs";
-import {
   collectValueEvidence,
   type EvidenceClient,
 } from "../workers/slopbot/value-evidence";
+import {
+  fetchProjectRegistry,
+  renderProjectRevisions,
+} from "./sync-project-registry.mjs";
 
 const [repository, numberText, directory] = process.argv.slice(2);
 if (!repository || !numberText || !directory)
