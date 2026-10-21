@@ -17,10 +17,10 @@ import {
   type ValueEvidence,
 } from "./value-evidence";
 import { appendValueRecord, prepareValueRecord } from "./value-journal";
-import { type assessValue, valueSourceDigest } from "./value-review";
+import { type ValueAssessmentResult, valueSourceDigest } from "./value-review";
 
 export type ValueClient = EvidenceClient & Pick<GitHubClient, "fileText">;
-type ValueResult = Awaited<ReturnType<typeof assessValue>>;
+type ValueResult = ValueAssessmentResult;
 
 export async function loadValuePolicy(
   github: Pick<GitHubClient, "fileText">,

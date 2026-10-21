@@ -8,7 +8,6 @@ import {
 } from "../../src/lib/repositories.mjs";
 import { VALUE_RUBRIC_VERSION } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
-import { TRIAGE_ROUTE } from "./models";
 import type { D1Database } from "./persistence";
 import {
   type ValueContextSelection,
@@ -20,6 +19,7 @@ import {
   type ValueJournalRecord,
   valueHistory,
 } from "./value-journal";
+import { isValueProducer } from "./value-producer";
 import { validateEvidenceAssessment, valueSourceDigest } from "./value-review";
 
 type PublicRecord = Omit<StoredValueRecord, "assessment_key">;
@@ -139,13 +139,7 @@ export async function readValueDecisionFromHistory(
   if (
     !/^[a-f0-9]{40}$/u.test(latest.producerRevision) ||
     !Number.isFinite(Date.parse(latest.assessedAt)) ||
-    !latest.model ||
-    latest.model.requested !== latest.model.reported ||
-    !TRIAGE_ROUTE.some(
-      (step) =>
-        step.provider === latest.model.provider &&
-        step.model === latest.model.requested,
-    )
+    !isValueProducer(latest.model)
   )
     throw new Error("Current value record has invalid producer identity");
   const assessment = validateEvidenceAssessment(latest.assessment, evidence);

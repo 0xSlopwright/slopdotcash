@@ -1,14 +1,29 @@
 /** Internal source-bound journal. Call only after authenticated installation and
  * current-source checks. This module creates no GitHub action or payment.
  */
-import { findProject, type ProjectId } from "../../src/lib/projects.mjs";
-import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+
+import { assertProjectRegistry } from "../../src/lib/project-schema.mjs";
+import {
+  findProject,
+  type ProjectDefinition,
+  type ProjectId,
+} from "../../src/lib/projects.mjs";
+import {
+  collectTargetRepositories,
+  REGISTERED_REPOSITORIES,
+} from "../../src/lib/repositories.mjs";
 import {
   VALUE_RUBRIC_VERSION,
   type ValueAssessment,
 } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
-import { type CallRecord, TRIAGE_ROUTE } from "./models";
+import {
+  type ValueProducer,
+  valueResultProducerIdentity,
+} from "./value-producer";
+
+export { valueProducerIdentity } from "./value-producer";
+
 import type { D1Database } from "./persistence";
 import {
   type ValueContextSelection,
@@ -16,12 +31,12 @@ import {
 } from "./value-context";
 import type { ValueEvidence } from "./value-evidence";
 import {
-  type assessValue,
+  type ValueAssessmentResult,
   validateEvidenceAssessment,
   valueSourceDigest,
 } from "./value-review";
 
-type AssessmentResult = Awaited<ReturnType<typeof assessValue>>;
+type AssessmentResult = ValueAssessmentResult;
 export interface ValueJournalRecord {
   schemaVersion: "slop-value-record:v1";
   projectId: ProjectId;
@@ -41,7 +56,7 @@ export interface ValueJournalRecord {
   assessedAt: string;
   supersedes: string | null;
   revisionReason: string | null;
-  model: { provider: string; requested: string; reported: string };
+  model: ValueProducer;
   assessment: ValueAssessment;
 }
 export interface StoredValueRecord {
@@ -54,27 +69,6 @@ export interface StoredValueRecord {
 const SHA = /^[a-f0-9]{40}$/u;
 const DIGEST = /^[a-f0-9]{64}$/u;
 
-export function valueProducerIdentity(
-  call: CallRecord | null,
-  assessedAt: string,
-) {
-  if (
-    call?.outcome !== "ok" ||
-    call.servedModel !== call.requestedModel ||
-    !TRIAGE_ROUTE.some(
-      (step) =>
-        step.provider === call.provider && step.model === call.requestedModel,
-    ) ||
-    !Number.isFinite(Date.parse(assessedAt))
-  )
-    throw new Error("Value result lacks a validated model identity");
-  return {
-    provider: call.provider,
-    requested: call.requestedModel,
-    reported: call.servedModel,
-  };
-}
-
 export async function prepareValueRecord(
   result: AssessmentResult,
   evidence: ValueEvidence,
@@ -82,9 +76,24 @@ export async function prepareValueRecord(
   producerRevision: string,
   supersedes: string | null,
   revisionReason: string | null = null,
+  projects?: readonly ProjectDefinition[],
 ) {
-  const repository = findRegisteredRepositoryById(evidence.repository);
-  const project = repository ? findProject(repository.projectId) : null;
+  const registry =
+    projects === undefined ? null : assertProjectRegistry(projects);
+  const repositories =
+    registry === null
+      ? REGISTERED_REPOSITORIES
+      : collectTargetRepositories(registry);
+  const repository = repositories.find((entry) =>
+    [entry.id, ...entry.aliases].some(
+      (id) => id.toLowerCase() === evidence.repository.toLowerCase(),
+    ),
+  );
+  const project = repository
+    ? registry === null
+      ? findProject(repository.projectId)
+      : registry.find((entry) => entry.id === repository.projectId)
+    : null;
   if (!repository || !project || project.status !== "active")
     throw new Error("Value source must belong to an active registered project");
   if (
@@ -128,7 +137,7 @@ export async function prepareValueRecord(
       "Value record requires a closed outcome with its occurrence date",
     );
   if (!assessment) throw new Error("Value result lacks a validated assessment");
-  const model = valueProducerIdentity(result.servedBy, result.assessedAt);
+  const model = valueResultProducerIdentity(result);
   const record: ValueJournalRecord = {
     schemaVersion: "slop-value-record:v1",
     projectId: project.id,

@@ -7,8 +7,8 @@ import {
 } from "../../src/lib/repositories.mjs";
 import { VALUE_RUBRIC_VERSION } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
-import { TRIAGE_ROUTE } from "./models";
 import { validValueContextSelections } from "./value-context";
+import { isValueProducer } from "./value-producer";
 import {
   prepareWorkUnitEvidence,
   type WorkUnitSource,
@@ -251,13 +251,7 @@ export async function consumeWorkUnitHistory(
     JSON.stringify(record.sources) !==
       JSON.stringify(workUnitSourceBindings(evidence, repositories)) ||
     JSON.stringify(record.claims) !== JSON.stringify(evidence.claims) ||
-    !record.model ||
-    record.model.requested !== record.model.reported ||
-    !TRIAGE_ROUTE.some(
-      (step) =>
-        step.provider === record.model.provider &&
-        step.model === record.model.requested,
-    )
+    !isValueProducer(record.model)
   )
     throw new Error(
       "Current joint record does not bind its sources or producer",

@@ -378,8 +378,8 @@ GitHub App credentials.
 Historical joint-record preparation can receive the independently fetched D1
 project registry used to collect its sources. The registry is validated again,
 and only active project repositories can supply those records. Captured source
-policy cannot override it. This does not bypass the model receipt requirement
-or authorize publication from a subscription assessment.
+policy cannot override it. This does not authorize publication by an external caller. Producer provenance
+and installation authority are checked separately.
 Source revalidation and joint-history readers accept that same verified
 repository set; callers must keep it consistent across the operation.
 
@@ -620,3 +620,24 @@ Local queue/SDK/SQLite checks cover contention without inference, expired recove
 a replaced token during inference, stale completion rejection, concurrent claims,
 skip-to-funded recovery, and migration of existing running rows. Production
 interruption recovery and dead-letter operations still require hosted verification.
+
+
+### Subscription assessment provenance
+
+The historical review may use the owner's existing ChatGPT subscription. A
+trusted internal publisher can supply `SubscriptionResult` with a separate
+`provenance` declaration: channel `chatgpt-subscription`, provider `openai`,
+declared model and client, `identityEvidence: self-reported`, and null
+`exactVariant` and `apiReceipt`. This records the declared session identity;
+it does not claim that a provider response verified the model or billing.
+Subscription results must omit `calls`, `servedBy`, and `budgetResetAt`.
+They cannot create API usage receipts or service charges. API results retain
+the existing route and served-model checks.
+
+Both forms use the same source, rubric, occurrence, predecessor and journal
+checks. Readers preserve the distinct provenance. Single-source preparation,
+like joint preparation, can use an independently verified active D1 registry.
+Publication still requires the installation's repository authority and a fresh
+source read. This change adds no public import endpoint, operator credentials,
+production activation, human ratification or payout authority. The authenticated
+historical intake and ongoing automatic dispatch remain separate delivery gates.

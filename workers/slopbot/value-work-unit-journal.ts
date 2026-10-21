@@ -15,15 +15,19 @@ import {
   type ValueContextSelection,
   valueContextSelections,
 } from "./value-context";
-import { type StoredValueRecord, valueProducerIdentity } from "./value-journal";
+import type { StoredValueRecord } from "./value-journal";
+import {
+  type ValueProducer,
+  valueResultProducerIdentity,
+} from "./value-producer";
 import {
   prepareWorkUnitEvidence,
   type WorkUnitEvidence,
 } from "./value-work-unit";
 import {
-  type assessWorkUnits,
   validateWorkUnitAssessment,
   type WorkUnitAssessment,
+  type WorkUnitAssessmentResult,
 } from "./value-work-unit-review";
 
 export interface WorkUnitRecord {
@@ -51,13 +55,13 @@ export interface WorkUnitRecord {
   supersedes: string[];
   legacyPredecessors: string[];
   revisionReason: string | null;
-  model: ReturnType<typeof valueProducerIdentity>;
+  model: ValueProducer;
 }
 
 const DIGEST = /^[a-f0-9]{64}$/u;
 
 export async function prepareWorkUnitRecord(
-  result: Awaited<ReturnType<typeof assessWorkUnits>>,
+  result: WorkUnitAssessmentResult,
   supplied: WorkUnitEvidence,
   producerRevision: string,
   supersedes: readonly string[],
@@ -103,7 +107,7 @@ export async function prepareWorkUnitRecord(
     );
   const assessment = validateWorkUnitAssessment(result.verdict, evidence);
   if (!assessment) throw new Error("Joint value assessment does not validate");
-  const model = valueProducerIdentity(result.servedBy, result.assessedAt);
+  const model = valueResultProducerIdentity(result);
   const sources = workUnitSourceBindings(evidence, repositories);
   const units: WorkUnitRecord["units"] = [];
   for (const unit of assessment.units) {

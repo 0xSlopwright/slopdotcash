@@ -7,6 +7,7 @@ import {
 import { sha256Hex } from "./github";
 import { type ModelEnv, runStructuredRoute, TRIAGE_ROUTE } from "./models";
 import type { ValueEvidence } from "./value-evidence";
+import type { SubscriptionResult } from "./value-producer";
 
 /** Callers must reserve an approved inference budget before invoking this.
  * This function returns a proposal and usage; it cannot publish or approve it.
@@ -81,3 +82,7 @@ export function validateEvidenceAssessment(
       ),
   });
 }
+
+export type ValueAssessmentResult =
+  | Awaited<ReturnType<typeof assessValue>>
+  | SubscriptionResult<Awaited<ReturnType<typeof assessValue>>>;

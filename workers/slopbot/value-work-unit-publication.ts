@@ -22,9 +22,9 @@ import {
   currentWorkUnitRecord,
   prepareWorkUnitRecord,
 } from "./value-work-unit-journal";
-import type { assessWorkUnits } from "./value-work-unit-review";
+import type { WorkUnitAssessmentResult } from "./value-work-unit-review";
 
-type Result = Awaited<ReturnType<typeof assessWorkUnits>>;
+type Result = WorkUnitAssessmentResult;
 
 /** Reuse the single-source identity, complete-evidence and pinned-policy checks
  * for every member. No source may be added or silently dropped after inference.

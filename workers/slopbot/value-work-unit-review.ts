@@ -6,6 +6,7 @@ import {
   validateValueAssessment,
 } from "../../src/lib/value-assessment";
 import { type ModelEnv, runStructuredRoute, TRIAGE_ROUTE } from "./models";
+import type { SubscriptionResult } from "./value-producer";
 import {
   validateWorkUnitPartition,
   type WorkUnitEvidence,
@@ -178,3 +179,7 @@ Joint assessment: return units under the supplied joint schema. Partition EVERY 
     assessedAt: new Date().toISOString(),
   };
 }
+
+export type WorkUnitAssessmentResult =
+  | Awaited<ReturnType<typeof assessWorkUnits>>
+  | SubscriptionResult<Awaited<ReturnType<typeof assessWorkUnits>>>;
