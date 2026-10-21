@@ -3195,7 +3195,9 @@ function createSnapshotWithReviewCutoff(
     const shares = shareScoreThirds(
       totalThirds,
       actors.length,
-      valueRecord || ratification ? 0 : 1,
+      input.valueDecisions !== undefined && (valueRecord || ratification)
+        ? 0
+        : 1,
     );
     if (author) {
       const authorEntry = actorEntry(entries, author);
