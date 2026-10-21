@@ -160,3 +160,19 @@ refer to, not independent execution of the reported Lean checks. The accepted
 #192 diff changes only the README and repository map to explain build surfaces.
 Its large submitted diff must not turn those two documentation changes into a
 second full refactor award. Original stacked commits still need joint credit.
+
+## Dependency updates after a workflow replacement
+
+The [September site rewrite](https://github.com/SlopDotCash/proximityprize/commit/e0f9de09e4b80b251b478f320cb467a4f3b08dfc)
+changed the site's Wrangler action from v4 back to v3, Node setup from v7 to
+v4, and artifact upload from v7 to v4. The later October dependency updates
+therefore operate on a regressed baseline. Repeated version numbers alone do
+not establish duplicate work or abuse.
+
+The ten inspected dependency PRs (#173–#177 and #207–#211) have the same verified
+GitHub Bot author. Apply the existing bot eligibility rule separately from
+review value. The #175 review reports comparing Wrangler CLI flags and action
+inputs, while explicitly excluding a real deployment. The October reviews
+mostly assert input compatibility without execution receipts or direct
+compatibility citations. Preserve this difference in evidence strength; neither
+review text nor this comparison proves a successful Cloudflare deployment.
