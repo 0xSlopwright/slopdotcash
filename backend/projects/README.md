@@ -149,11 +149,13 @@ rate limit, and caches each answer for five minutes. The browser never calls
   (`SLOP_GITHUB_READ_TOKEN` is optional). The repository id, node id, name,
   and owner must match the manifest, or the application is refused. Every
   other repository and every alias must also be a public GitHub repository,
-  and an alias must be a name of the repository it is listed under. Whether
-  the applicant owns each user repository, or is a public member of each
-  owning organization, is stored as `githubCheck` for the admin. Every
-  application waits for an admin (PRD PRJ-02). One account may keep 3
-  applications waiting.
+  and an alias must be a name of the repository it is listed under. An
+  application names at most 5 repositories and aliases in all, so one
+  submission makes a bounded number of GitHub reads. Whether the applicant
+  owns each user repository, or is a public member of each owning
+  organization, is stored as `githubCheck` for the admin. Every application
+  waits for an admin (PRD PRJ-02). One account may keep 3 applications
+  waiting.
 - `/admin` previews the exact generated contributor and reviewer skills before
   an admin approves or activates a revision.
 - A revision activates, and its skills and discovery entry are served, only

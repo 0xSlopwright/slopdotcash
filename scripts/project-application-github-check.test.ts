@@ -202,3 +202,41 @@ test("an alias must lead to the repository it names", async () => {
     "GitHub has no public repository named someone-else/missing-repo",
   );
 });
+
+test("an application names at most 5 repositories and aliases", async () => {
+  const docs = repositories["example/registry-docs"];
+  for (const name of ["docs-old-1", "docs-old-2", "docs-old-3"])
+    repositories[`example/${name}`] = docs;
+  const five = manifestWith(
+    { aliases: ["example/old-registry-name"] },
+    {
+      ...repository("example/registry-docs"),
+      aliases: ["example/docs-old-1", "example/docs-old-2"],
+    },
+  );
+  const accepted = await submit(five);
+  expect(accepted.status).toBe(201);
+  expect(lookups.filter((url) => url.startsWith(`${API}/repos/`))).toHaveLength(
+    5,
+  );
+
+  lookups.length = 0;
+  const [first, second] = five.repositories as Record<string, unknown>[];
+  const six = {
+    ...five,
+    repositories: [
+      first,
+      {
+        ...second,
+        aliases: [...(second.aliases as string[]), "example/docs-old-3"],
+      },
+    ],
+  };
+  const refused = await submit(six);
+  expect(refused.status).toBe(422);
+  expect(refused.body).toMatchObject({
+    error: "invalid_manifest",
+    message: "An application may name at most 5 repositories and aliases",
+  });
+  expect(lookups).toEqual([]);
+});

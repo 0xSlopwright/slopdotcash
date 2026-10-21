@@ -266,6 +266,13 @@ async function githubRepository(
 }
 
 /**
+ * Repositories and aliases one application may name, so a submission makes a
+ * bounded number of GitHub reads. Listed projects name one repository and at
+ * most one alias, and `/projects/new` sends one repository.
+ */
+const MAX_APPLICATION_GITHUB_NAMES = 5;
+
+/**
  * Proves control from public GitHub facts only: the applicant owns a user
  * repository, or is a public member of the owning organization. The manifest's
  * repository and steward identities must match GitHub exactly. Every other
@@ -282,6 +289,15 @@ async function repositoryControl(
   const repository = manifest.repositories[0];
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository.id))
     return { state: "mismatch", reason: "Repository must be owner/name" };
+  const names = manifest.repositories.flatMap((entry) => [
+    entry.id,
+    ...(entry.aliases ?? []),
+  ]);
+  if (names.length > MAX_APPLICATION_GITHUB_NAMES)
+    return {
+      state: "mismatch",
+      reason: `An application may name at most ${MAX_APPLICATION_GITHUB_NAMES} repositories and aliases`,
+    };
   const facts = await githubRepository(api, token, repository.id);
   if (!facts)
     return {
@@ -299,14 +315,25 @@ async function repositoryControl(
       state: "mismatch",
       reason: "Repository or steward facts do not match GitHub",
     };
+  // The other names are independent reads, so they run together.
+  const read = new Map(
+    await Promise.all(
+      names
+        .slice(1)
+        .map(
+          async (path) =>
+            [path, await githubRepository(api, token, path)] as const,
+        ),
+    ),
+  );
+  read.set(repository.id, facts);
   let control = await ownerControl(api, token, facts, repository.id, actor);
   const missing = (path: string): RepositoryControl => ({
     state: "mismatch",
     reason: `GitHub has no public repository named ${path}`,
   });
   for (const [index, entry] of manifest.repositories.entries()) {
-    const named =
-      index === 0 ? facts : await githubRepository(api, token, entry.id);
+    const named = read.get(entry.id);
     if (named?.private !== false) return missing(entry.id);
     if (String(named.full_name).toLowerCase() !== entry.id.toLowerCase())
       return {
@@ -314,7 +341,7 @@ async function repositoryControl(
         reason: `GitHub names ${entry.id} ${String(named.full_name)}`,
       };
     for (const alias of entry.aliases ?? []) {
-      const aliased = await githubRepository(api, token, alias);
+      const aliased = read.get(alias);
       if (aliased?.private !== false) return missing(alias);
       if (String(aliased.id) !== String(named.id))
         return {
