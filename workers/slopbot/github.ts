@@ -208,15 +208,13 @@ export async function authorExemption(
   try {
     const permission = await github.get<{
       permission: string;
-      role_name?: string;
     }>(
       `/repos/${owner.login}/${repo}/collaborators/${author.login}/permission`,
     );
+    // GitHub maps maintain to write; custom role names are not access levels.
     if (
       permission !== null &&
-      ["admin", "maintain", "write"].includes(
-        permission.role_name ?? permission.permission,
-      )
+      ["admin", "write"].includes(permission.permission)
     ) {
       return "exempt";
     }

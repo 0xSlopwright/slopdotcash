@@ -7,6 +7,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { labelOnlyConfig, type Verdict, validateVerdict } from "./contracts";
+import { authorExemption } from "./github";
 import {
   finishReview,
   recordCalls,
@@ -15,6 +16,53 @@ import {
 } from "./persistence";
 import { grounded, neutralize, prefilter, pullDiff } from "./review";
 import { route } from "./routing";
+
+describe("custom collaborator roles", () => {
+  test.each([
+    { permission: "write", role_name: "release-manager", exempt: true },
+    { permission: "admin", role_name: "repository-admin", exempt: true },
+    { permission: "read", role_name: "auditor", exempt: false },
+  ])("routes $role_name by its $permission access", async (permission) => {
+    // An outside collaborator has repository access but no org membership.
+    const github = {
+      get: async () => ({
+        permission: permission.permission,
+        role_name: permission.role_name,
+      }),
+      request: async () => ({ status: 404, data: null }),
+    } as unknown as Parameters<typeof authorExemption>[0];
+    const exemption = await authorExemption(
+      github,
+      { login: "example-org", id: 1, type: "Organization" },
+      "repo",
+      { login: "outside-collaborator", id: 2 },
+    );
+    expect(exemption).toBe(permission.exempt ? "exempt" : "not-exempt");
+    const input = {
+      config: labelOnlyConfig(),
+      installationActive: true,
+      repositoryPrivate: false,
+      itemKind: "pull_request" as const,
+      itemOpen: true,
+      draft: false,
+      merged: false,
+      authorType: "User",
+      authorIsSelf: false,
+      exemption,
+      markerPresent: false,
+      participant: false,
+      humanReopenedThisRevision: false,
+      authorCapReached: false,
+      balanceMicroUsdc: 1,
+    };
+    expect(route(input)).toMatchObject({ review: !permission.exempt });
+    if (permission.exempt) {
+      expect(
+        route({ ...input, config: { ...input.config, reviewExempt: true } }),
+      ).toMatchObject({ review: true, mayClose: false });
+    }
+  });
+});
 
 const policy = [
   {
