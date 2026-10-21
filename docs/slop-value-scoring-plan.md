@@ -112,7 +112,7 @@ maintainers must not receive the same implementation award twice.
 
 ## Delivery and acceptance checklist
 
-- [x] Refresh the visible September/October census through 2026-10-21T21:28:26.301Z from the live D1 registry: five active projects, 274 connection pages, 27,003 PRs scanned, 5,784 closures, and 4,209 merges. September has 1,460 merges and October has 2,749. The manifest reward-start dates make 1,387 and 2,633 respectively eligible for reward review. This is source coverage, not a completed valuation; unavailable historical nodes remain separate evidence gaps.
+- [x] Refresh the visible September/October census through 2026-10-21T21:28:26.301Z from the live D1 registry: five active projects, 274 connection pages, 27,003 PRs scanned, 5,784 closures, and 4,209 merges. September has 1,460 merges and October has 2,749. Of these, 1,387 and 2,633 respectively fall within the manifest reward-start windows, before bot, attribution, overlap, and evidence checks. This is source coverage, not a completed valuation; unavailable historical nodes remain separate evidence gaps.
 - [ ] Full diff and discussion evidence, with explicit missing-source coverage.
 - [ ] Calibrated rubric and individual reasoned assessment for every eligible outcome.
 - [ ] Reviewer and maintainer outcomes assessed without duplicate credit.
