@@ -1,5 +1,10 @@
 // Internal publication boundary. The hosted consumer supplies the installation
 // identity and deployed producer revision; neither comes from model output.
+
+import {
+  REGISTERED_REPOSITORIES,
+  type TargetRepository,
+} from "../../src/lib/repositories.mjs";
 import type { Job } from "./contracts";
 import { GitHubClient } from "./github";
 import { type D1Database, installation } from "./persistence";
@@ -39,7 +44,15 @@ export async function verifyCurrentValueSource(
   github: ValueClient,
   evidence: ValueEvidence,
   result: Pick<ValueResult, "policySha" | "sourceDigest">,
+  repositories: readonly TargetRepository[] = REGISTERED_REPOSITORIES,
 ) {
+  const repository = repositories.find((entry) =>
+    [entry.id, ...entry.aliases].some(
+      (id) => id.toLowerCase() === evidence.repository.toLowerCase(),
+    ),
+  );
+  if (!repository)
+    throw new Error("Value source is absent from the verified registry");
   const [owner, repo] = evidence.repository.split("/");
   const identity = await github.get<{
     id: number;
@@ -58,6 +71,7 @@ export async function verifyCurrentValueSource(
     github,
     evidence.repository,
     evidence.pull.number,
+    repository,
   );
   const current = await collectValueContext(
     github,

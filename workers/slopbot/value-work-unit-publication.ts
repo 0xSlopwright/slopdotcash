@@ -1,3 +1,7 @@
+import {
+  REGISTERED_REPOSITORIES,
+  type TargetRepository,
+} from "../../src/lib/repositories.mjs";
 import type { Job } from "./contracts";
 import { GitHubClient } from "./github";
 import type { ReviewEnv } from "./review";
@@ -29,8 +33,12 @@ export async function verifyCurrentWorkUnitSource(
   github: ValueClient,
   supplied: WorkUnitEvidence,
   result: Pick<Result, "sourceDigest">,
+  repositories: readonly TargetRepository[] = REGISTERED_REPOSITORIES,
 ) {
-  const original = await prepareWorkUnitEvidence(supplied.sources);
+  const original = await prepareWorkUnitEvidence(
+    supplied.sources,
+    repositories,
+  );
   if (
     original.sourceDigest !== supplied.sourceDigest ||
     original.sourceDigest !== result.sourceDigest
@@ -39,13 +47,18 @@ export async function verifyCurrentWorkUnitSource(
   const sources: WorkUnitSource[] = [];
   for (const [i, source] of original.sources.entries()) {
     sources.push(
-      await verifyCurrentValueSource(github, source.evidence, {
-        policySha: source.policy.sha,
-        sourceDigest: original.sourceDigests[i].digest,
-      }),
+      await verifyCurrentValueSource(
+        github,
+        source.evidence,
+        {
+          policySha: source.policy.sha,
+          sourceDigest: original.sourceDigests[i].digest,
+        },
+        repositories,
+      ),
     );
   }
-  const current = await prepareWorkUnitEvidence(sources);
+  const current = await prepareWorkUnitEvidence(sources, repositories);
   if (
     current.limitations.length ||
     current.sourceDigest !== result.sourceDigest
