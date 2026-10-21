@@ -1,5 +1,13 @@
-import { findProject } from "../../src/lib/projects.mjs";
-import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+import { assertProjectRegistry } from "../../src/lib/project-schema.mjs";
+import {
+  findProject,
+  type ProjectDefinition,
+} from "../../src/lib/projects.mjs";
+import {
+  collectTargetRepositories,
+  REGISTERED_REPOSITORIES,
+  type TargetRepository,
+} from "../../src/lib/repositories.mjs";
 import { VALUE_RUBRIC_VERSION } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
 import type { D1Database } from "./persistence";
@@ -50,10 +58,25 @@ export async function prepareWorkUnitRecord(
   supersedes: readonly string[],
   legacyPredecessors: readonly string[],
   revisionReason: string | null,
+  projects?: readonly ProjectDefinition[],
 ) {
+  // Internal callers may supply the independently fetched D1 registry. Never
+  // derive project authority from the model result or captured source policy.
+  const registry =
+    projects === undefined ? null : assertProjectRegistry(projects);
+  const repositories =
+    registry === null
+      ? REGISTERED_REPOSITORIES
+      : collectTargetRepositories(registry);
   // Recompute bindings instead of trusting caller-supplied claims or recipients.
-  const evidence = await prepareWorkUnitEvidence(supplied.sources);
-  const project = findProject(evidence.projectId);
+  const evidence = await prepareWorkUnitEvidence(
+    supplied.sources,
+    repositories,
+  );
+  const project =
+    registry === null
+      ? findProject(evidence.projectId)
+      : registry.find((entry) => entry.id === evidence.projectId);
   if (project?.status !== "active")
     throw new Error("Joint value source must belong to an active project");
   if (
@@ -76,7 +99,7 @@ export async function prepareWorkUnitRecord(
   const assessment = validateWorkUnitAssessment(result.verdict, evidence);
   if (!assessment) throw new Error("Joint value assessment does not validate");
   const model = valueProducerIdentity(result.servedBy, result.assessedAt);
-  const sources = workUnitSourceBindings(evidence);
+  const sources = workUnitSourceBindings(evidence, repositories);
   const units: WorkUnitRecord["units"] = [];
   for (const unit of assessment.units) {
     units.push({ ...unit, workUnitId: await workUnitIdentity(unit) });
@@ -110,10 +133,15 @@ export async function prepareWorkUnitRecord(
 
 export function workUnitSourceBindings(
   evidence: WorkUnitEvidence,
+  repositories: readonly TargetRepository[] = REGISTERED_REPOSITORIES,
 ): WorkUnitRecord["sources"] {
   return evidence.sources.map(({ evidence: source, policy }, i) => {
     const occurredAt = source.pull.merged_at ?? source.pull.closed_at;
-    const repository = findRegisteredRepositoryById(source.repository);
+    const repository = repositories.find((entry) =>
+      [entry.id, ...entry.aliases].some(
+        (id) => id.toLowerCase() === source.repository.toLowerCase(),
+      ),
+    );
     if (!repository) throw new Error("Joint source repository is unregistered");
     if (occurredAt === null)
       throw new Error("Joint source lacks occurrence date");

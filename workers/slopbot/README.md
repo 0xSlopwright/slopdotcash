@@ -375,6 +375,12 @@ GitHub App credentials.
 
 ## Supporting code for value assessments
 
+Historical joint-record preparation can receive the independently fetched D1
+project registry used to collect its sources. The registry is validated again,
+and only active project repositories can supply those records. Captured source
+policy cannot override it. This does not bypass the model receipt requirement
+or authorize publication from a subscription assessment.
+
 An unchanged file can prove or disprove a review claim. Pass its repository path
 after the output directory in `scripts/collect-value-evidence.ts`. The collector
 reads the full UTF-8 file at the PR head and binds its bytes, path and immutable
