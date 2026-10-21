@@ -5,6 +5,7 @@ import { GitHubClient } from "./github";
 import { type D1Database, installation } from "./persistence";
 import { loadPolicy, type ReviewEnv } from "./review";
 import { readValueDecision } from "./value-consumption";
+import { collectValueContext } from "./value-context";
 import {
   collectValueEvidence,
   type EvidenceClient,
@@ -53,10 +54,15 @@ export async function verifyCurrentValueSource(
     throw new Error(
       "Value publication requires the same public repository identity",
     );
-  const current = await collectValueEvidence(
+  const collected = await collectValueEvidence(
     github,
     evidence.repository,
     evidence.pull.number,
+  );
+  const current = await collectValueContext(
+    github,
+    collected,
+    evidence.contextFiles?.map((file) => file.path) ?? [],
   );
   if (current.pull.state !== "closed" || current.limitations.length)
     throw new Error(

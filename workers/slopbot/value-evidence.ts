@@ -378,6 +378,13 @@ export interface ValueEvidence {
   implementationActorNodeIds: string[];
   commitAttribution: CommitAttribution[];
   relatedPullRequests: RelatedPullRequest[];
+  contextFiles?: {
+    path: string;
+    ref: string;
+    blobSha: string;
+    text: string;
+    url: string;
+  }[];
 }
 async function pages<T>(client: EvidenceClient, path: string): Promise<T[]> {
   const values: T[] = [];

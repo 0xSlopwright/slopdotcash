@@ -373,6 +373,21 @@ Invalid JSON returned 400, and an invalid signature returned 401, without
 creating receipts. This check did not exercise the hosted Cloudflare queue or
 GitHub App credentials.
 
+## Supporting code for value assessments
+
+An unchanged file can prove or disprove a review claim. Pass its repository path
+after the output directory in `scripts/collect-value-evidence.ts`. The collector
+reads the full UTF-8 file at the PR head and binds its bytes, path and immutable
+revision to the assessment source digest. Publication reads those files again.
+Missing, oversized or invalid files stop collection; partial context is not
+assessment evidence. The limits are 16 files, 512 KiB per file and 2 MiB total.
+Keep these raw captures in the private output directory outside the repository.
+
+For Eliza #34761, the exact-head application entry point and number parser
+resolved claims about code outside the three-file PR diff. Live GitHub reads
+matched the local immutable Git blobs. This check supplies assessment evidence;
+it does not publish a score or establish that the application tests passed.
+
 ## Immutable billing evidence
 
 Migration `0017` rejects changes to every cost field, credit deletion and SQLite

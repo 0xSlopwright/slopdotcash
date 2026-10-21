@@ -3,6 +3,7 @@ import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { assertProjectRegistry } from "../src/lib/project-schema.mjs";
 import { collectTargetRepositories } from "../src/lib/repositories.mjs";
+import { collectValueContext } from "../workers/slopbot/value-context";
 import {
   collectValueEvidence,
   type EvidenceClient,
@@ -12,10 +13,11 @@ import {
   renderProjectRevisions,
 } from "./sync-project-registry.mjs";
 
-const [repository, numberText, directory] = process.argv.slice(2);
+const [repository, numberText, directory, ...contextPaths] =
+  process.argv.slice(2);
 if (!repository || !numberText || !directory)
   throw new Error(
-    "Usage: bun scripts/collect-value-evidence.ts owner/repo PR_NUMBER /absolute/private-output-directory",
+    "Usage: bun scripts/collect-value-evidence.ts owner/repo PR_NUMBER /absolute/private-output-directory [context-path ...]",
   );
 const output = resolve(directory);
 if (!isAbsolute(directory))
@@ -76,12 +78,13 @@ const repositoryPolicy = collectTargetRepositories(projects).find((entry) =>
 );
 if (!repositoryPolicy)
   throw new Error("Repository is not active in the live project registry");
-const evidence = await collectValueEvidence(
+const collected = await collectValueEvidence(
   client,
   repository,
   Number(numberText),
   repositoryPolicy,
 );
+const evidence = await collectValueContext(client, collected, contextPaths);
 const bytes = `${JSON.stringify(evidence, null, 2)}\n`;
 const digest = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const path = `${canonicalOutput}/${repository.replace("/", "-")}-${numberText}-${digest}.json`;
