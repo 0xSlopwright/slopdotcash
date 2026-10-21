@@ -5,6 +5,11 @@ import { expect, test } from "@playwright/test";
 test("verified activity email preference persists and can be withdrawn @registry", async ({
   browser,
 }) => {
+  // Each concurrent viewport owns its preference row in the real local D1.
+  const tokens = JSON.parse(process.env.SLOP_E2E_EMAIL_TOKENS ?? "{}");
+  const token = tokens[`email${test.info().project.use.viewport?.width}`];
+  if (typeof token !== "string" || !token)
+    throw new Error("Missing isolated email preference session");
   const context = await browser.newContext({
     viewport: test.info().project.use.viewport,
     recordVideo: { dir: test.info().outputPath("email-preference-video") },
@@ -16,7 +21,7 @@ test("verified activity email preference persists and can be withdrawn @registry
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
   await page.evaluate((token) => {
     document.cookie = `__Host-slop_points=${token}; Path=/; Secure; SameSite=Strict`;
-  }, process.env.SLOP_E2E_APPLICANT_TOKEN ?? "");
+  }, token);
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("response", (response) => {
     if (
@@ -33,7 +38,7 @@ test("verified activity email preference persists and can be withdrawn @registry
   await page.goto("/inbox", { waitUntil: "networkidle" });
   const preferences = page.getByRole("region", { name: "Email preferences" });
   await expect(preferences).toContainText("applicant@example.com");
-  // Tests share a synthetic account across widths; each starts by restoring opt-out.
+  // Restore opt-out before exercising the complete consent workflow.
   const off = preferences.getByRole("button", {
     name: "Turn off activity email",
   });
