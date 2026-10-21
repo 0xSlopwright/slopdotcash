@@ -150,3 +150,13 @@ execution. Their reviewed heads also precede later changes. Preserve those
 limits when evaluating review value. Do not award three independent memory
 repairs from these three merges. The integration's broader source coverage,
 original attribution, distinct integration work, and final tiers remain open.
+
+The complete accepted diff for #189 moves two reusable algebra modules, updates
+imports, and adds a focused validation record. All three source hashes in that
+record match the accepted Git blobs. The accepted diff for #190 adds a
+restricted-sumset audit and updates its guidance; all eight reported source
+hashes match that accepted tree. These matches establish which bytes the reports
+refer to, not independent execution of the reported Lean checks. The accepted
+#192 diff changes only the README and repository map to explain build surfaces.
+Its large submitted diff must not turn those two documentation changes into a
+second full refactor award. Original stacked commits still need joint credit.
