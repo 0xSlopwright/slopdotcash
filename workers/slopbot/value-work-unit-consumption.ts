@@ -1,7 +1,10 @@
 /** Call only through the configured journal authority. Hashes authenticate
  * bytes within that history; they do not authenticate an arbitrary web host.
  */
-import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+import {
+  REGISTERED_REPOSITORIES,
+  type TargetRepository,
+} from "../../src/lib/repositories.mjs";
 import { VALUE_RUBRIC_VERSION } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
 import { TRIAGE_ROUTE } from "./models";
@@ -30,7 +33,10 @@ const sourceKey = (source: {
   pullRequestNodeId: string;
 }) => JSON.stringify([source.repositoryNodeId, source.pullRequestNodeId]);
 
-function assertRecord(value: WorkUnitRecord) {
+function assertRecord(
+  value: WorkUnitRecord,
+  repositories: readonly TargetRepository[],
+) {
   if (
     value?.schemaVersion !== "slop-work-unit-record:v1" ||
     !digest(value.sourceDigest) ||
@@ -54,7 +60,9 @@ function assertRecord(value: WorkUnitRecord) {
     throw new Error("Joint history record has invalid revision bindings");
   const ids = new Set<string>();
   for (const source of value.sources) {
-    const repository = findRegisteredRepositoryById(source.repository);
+    const repository = repositories.find(
+      (entry) => entry.id === source.repository,
+    );
     const key = sourceKey(source);
     if (
       !repository ||
@@ -91,6 +99,7 @@ function assertRecord(value: WorkUnitRecord) {
 export async function readWorkUnitHistory(
   loadPage: (after: number, through: number | null) => Promise<Page>,
   target: { repositoryNodeId: string; pullRequestNodeId: string },
+  repositories: readonly TargetRepository[] = REGISTERED_REPOSITORIES,
 ) {
   const history: Row[] = [];
   const records = new Map<string, { row: Row; record: WorkUnitRecord }>();
@@ -128,7 +137,7 @@ export async function readWorkUnitHistory(
       )
         throw new Error("Joint history has invalid bytes or sequence");
       const record = JSON.parse(row.record_json) as WorkUnitRecord;
-      assertRecord(record);
+      assertRecord(record, repositories);
       const predecessors = new Set(record.supersedes);
       const members = new Set(record.sources.map(sourceKey));
       for (const previous of predecessors) {
@@ -201,6 +210,7 @@ export async function consumeWorkUnitHistory(
   history: Awaited<ReturnType<typeof readWorkUnitHistory>>,
   sources: readonly WorkUnitSource[],
   legacyDigests: ReadonlyMap<string, string | null>,
+  repositories: readonly TargetRepository[] = REGISTERED_REPOSITORIES,
 ) {
   const common = {
     history: history.history,
@@ -208,7 +218,7 @@ export async function consumeWorkUnitHistory(
     latestDigest: history.current?.row.record_digest ?? null,
   };
   if (!history.current) return { ...common, status: "missing" as const };
-  const evidence = await prepareWorkUnitEvidence(sources);
+  const evidence = await prepareWorkUnitEvidence(sources, repositories);
   if (evidence.limitations.length)
     return { ...common, status: "incomplete" as const };
   const record = history.current.record;
@@ -236,7 +246,7 @@ export async function consumeWorkUnitHistory(
     return { ...common, status: "stale" as const };
   if (
     JSON.stringify(record.sources) !==
-      JSON.stringify(workUnitSourceBindings(evidence)) ||
+      JSON.stringify(workUnitSourceBindings(evidence, repositories)) ||
     JSON.stringify(record.claims) !== JSON.stringify(evidence.claims) ||
     !record.model ||
     record.model.requested !== record.model.reported ||

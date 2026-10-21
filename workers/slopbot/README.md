@@ -380,6 +380,8 @@ project registry used to collect its sources. The registry is validated again,
 and only active project repositories can supply those records. Captured source
 policy cannot override it. This does not bypass the model receipt requirement
 or authorize publication from a subscription assessment.
+Source revalidation and joint-history readers accept that same verified
+repository set; callers must keep it consistent across the operation.
 
 An unchanged file can prove or disprove a review claim. Pass its repository path
 after the output directory in `scripts/collect-value-evidence.ts`. The collector
