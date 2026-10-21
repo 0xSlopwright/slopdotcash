@@ -202,6 +202,7 @@ async function relatedPullRequests(
   repository: string,
   number: number,
   pullId: string,
+  sourceTexts: readonly string[],
 ) {
   const references = new Map<string, RelatedPullRequest>();
   const limitations: string[] = [];
@@ -269,6 +270,81 @@ async function relatedPullRequests(
       throw new Error("Related PR pagination did not advance");
     cursors.add(page.endCursor);
     cursor = page.endCursor;
+  }
+  // Timeline events point from a referenced PR back to its source. Resolve
+  // outgoing references too: a replacement often names the original only in
+  // its own body or review discussion. Text is a discovery hint, not proof of
+  // duplication; GitHub supplies the immutable identity and visibility.
+  const candidates = new Map<string, { repository: string; number: number }>();
+  for (const text of sourceTexts) {
+    for (const match of text.matchAll(
+      /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:pull|issues)\/(\d+)\b|(?<![\w/])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#(\d+)\b/gu,
+    )) {
+      const targetRepository = match[1] ?? match[3] ?? repository;
+      const targetNumber = Number(match[2] ?? match[4]);
+      if (!Number.isSafeInteger(targetNumber) || targetNumber <= 0) continue;
+      if (
+        targetRepository.toLowerCase() === repository.toLowerCase() &&
+        targetNumber === number
+      )
+        continue;
+      candidates.set(`${targetRepository.toLowerCase()}#${targetNumber}`, {
+        repository: targetRepository,
+        number: targetNumber,
+      });
+    }
+  }
+  for (const target of candidates.values()) {
+    if (
+      [...references.values()].some(
+        (entry) =>
+          entry.repository.toLowerCase() === target.repository.toLowerCase() &&
+          entry.number === target.number,
+      )
+    )
+      continue;
+    const [targetOwner, targetName] = target.repository.split("/");
+    const result = await client.graphql<{
+      repository: {
+        isPrivate: boolean;
+        nameWithOwner: string;
+        issueOrPullRequest: {
+          __typename: string;
+          id?: string;
+          number?: number;
+          url?: string;
+        } | null;
+      } | null;
+    }>(
+      `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){isPrivate nameWithOwner issueOrPullRequest(number:$number){__typename ... on PullRequest{id number url}}}}`,
+      { owner: targetOwner, name: targetName, number: target.number },
+    );
+    const repo = result.repository;
+    if (!repo || repo.isPrivate !== false) {
+      limitations.push("Outgoing reference is unavailable or private");
+      continue;
+    }
+    const referenced = repo.issueOrPullRequest;
+    if (!referenced) {
+      limitations.push(
+        `Outgoing reference is unavailable: ${target.repository}#${target.number}`,
+      );
+      continue;
+    }
+    if (referenced.__typename !== "PullRequest") continue;
+    if (
+      !referenced.id ||
+      referenced.number !== target.number ||
+      referenced.url !==
+        `https://github.com/${repo.nameWithOwner}/pull/${target.number}`
+    )
+      throw new Error("Invalid outgoing PR identity");
+    references.set(referenced.id, {
+      id: referenced.id,
+      number: target.number,
+      url: referenced.url,
+      repository: repo.nameWithOwner,
+    });
   }
   return {
     references: [...references.values()].sort((a, b) =>
@@ -533,6 +609,12 @@ export async function collectValueEvidence(
     repository,
     number,
     pull.node_id,
+    [
+      pull.body ?? "",
+      ...reviews.map((review) => review.body),
+      ...comments.map((entry) => entry.body),
+      ...reviewComments.map((entry) => entry.body),
+    ],
   );
   limitations.push(...related.limitations);
   const evidenceUrls = [
