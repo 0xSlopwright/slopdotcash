@@ -3,7 +3,10 @@
  * This is evidence preparation, not journal publication or payout approval.
  */
 import { isCreditEligibleCommitAuthor } from "../../src/lib/commit-credit";
-import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+import {
+  REGISTERED_REPOSITORIES,
+  type TargetRepository,
+} from "../../src/lib/repositories.mjs";
 import { sha256Hex } from "./github";
 import type { ValueEvidence } from "./value-evidence";
 import { valueSourceDigest } from "./value-review";
@@ -39,9 +42,12 @@ const ordered = (values: Iterable<string>) =>
 /** Source order and collection timestamps do not create new evidence revisions.
  * The caller must collect every carrier needed to resolve overlap. This function
  * never infers completeness of a project census from the supplied PR subset.
+ * Historical callers may supply a validated D1 registry; source policy fields
+ * must match it and cannot grant themselves a project or attribution rule.
  */
 export async function prepareWorkUnitEvidence(
   input: readonly WorkUnitSource[],
+  repositories: readonly TargetRepository[] = REGISTERED_REPOSITORIES,
 ): Promise<WorkUnitEvidence> {
   if (input.length === 0) throw new Error("Joint value sources are missing");
   const sources = [...input].sort((a, b) =>
@@ -68,9 +74,19 @@ export async function prepareWorkUnitEvidence(
   for (const source of sources) {
     const { evidence, policy } = source;
     const { pull } = evidence;
-    const repository = findRegisteredRepositoryById(evidence.repository);
+    const repository = repositories.find((entry) =>
+      [entry.id, ...entry.aliases].some(
+        (id) => id.toLowerCase() === evidence.repository.toLowerCase(),
+      ),
+    );
+    const capturedPolicy = evidence.repositoryPolicy;
     if (
       !repository ||
+      !capturedPolicy ||
+      capturedPolicy.id !== repository.id ||
+      capturedPolicy.projectId !== repository.projectId ||
+      capturedPolicy.integrationBranch !== repository.integrationBranch ||
+      capturedPolicy.expectedNodeId !== repository.expectedNodeId ||
       (repository.expectedNodeId !== null &&
         repository.expectedNodeId !== evidence.repositoryNodeId) ||
       ids.has(pull.node_id) ||
