@@ -40,6 +40,12 @@ export class EnforcementRefusal extends Error {
 
 export type ProjectRestriction = {
   projectId: string;
+  /**
+   * Project whose records hold the restriction, and so the project an appeal
+   * names: another project's when the restriction binds a repository this
+   * project claims.
+   */
+  sourceProjectId: string;
   state: RestrictionState;
   appeal: AppealState;
   /** When the restriction in force began; null when the project is clear. */
@@ -65,6 +71,7 @@ export function projectRestriction(
     .sort((left, right) => left.sequence - right.sequence);
   const restriction: ProjectRestriction = {
     projectId,
+    sourceProjectId: projectId,
     state: "clear",
     appeal: "none",
     since: null,
@@ -132,6 +139,20 @@ export function repositoryIdentity(manifest: ProjectDefinition): {
       ),
     ],
   };
+}
+
+/** True when both manifests claim the same GitHub id and repository paths. */
+export function sameRepositoryIdentity(
+  left: ProjectDefinition,
+  right: ProjectDefinition,
+): boolean {
+  const a = repositoryIdentity(left);
+  const b = repositoryIdentity(right);
+  return (
+    a.githubId === b.githubId &&
+    a.keys.length === b.keys.length &&
+    a.keys.every((key) => b.keys.includes(key))
+  );
 }
 
 /** The restriction in force on any repository this manifest claims. */

@@ -53,7 +53,8 @@ points and profiles still validate.
 | `POST /api/v1/admin/projects/:id/enforcement` | moderator | Records the previewed action (`action`, `reason`, `evidenceReference`, `expectedRevision`, `expectedSequence`) |
 
 `GET /api/v1/projects` also returns `restrictions`: the project id, state,
-appeal state and start time of every quarantined or banned project. A reader
+appeal state and start time of every quarantined or banned project, and
+`sourceProjectId`, the project whose records hold the restriction. A reader
 treats those projects as paused and retired. `GET /api/v1/projects/:id`
 answers HTTP 410 for a restricted project.
 
@@ -174,6 +175,10 @@ rate limit, and caches each answer for five minutes. The browser never calls
 - A restriction binds the GitHub repository id and every repository path. A
   restricted project cannot get a revision that is not paused and retired, and
   no application for the same repository can be submitted or approved.
+  Another project already listed for the same repository closes on public
+  routes with it. Its restriction names the restricted project as
+  `sourceProjectId`, and an appeal is filed on that project. The other project
+  can only get a paused, retired revision that claims the same repositories.
 - The project steward named in the manifest, or the applicant whose
   application listed the project, may file the reinstatement request with
   `POST /api/v1/project-appeals` (`projectId`, `reason`,

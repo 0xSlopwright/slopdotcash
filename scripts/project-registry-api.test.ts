@@ -40,6 +40,7 @@ import {
 } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 import { vettingResult } from "../tests/vetting-fixtures";
+import { fetchProjectRegistry } from "./sync-project-registry.mjs";
 
 const ORIGIN = "https://slop.cash";
 const ADMIN = { githubId: "900000001", githubLogin: "e2e-admin" };
@@ -1030,22 +1031,102 @@ describe("project enforcement (ADM-06)", () => {
     ).toEqual([]);
     const single = await call("GET", "projects/renamed-registry");
     expect(single.status).toBe(410);
-    expect((await single.json()).restriction).toMatchObject({
+    const closed = await single.json();
+    // The record, and so the only appeal, lives on the banned project.
+    expect(closed.restriction).toMatchObject({
       projectId: "renamed-registry",
+      sourceProjectId: "open-registry",
       state: "banned",
     });
+    expect(closed.message).toContain("open-registry");
     expect((await (await call("GET", "projects")).json()).restrictions).toEqual(
       [
         expect.objectContaining({
           projectId: "open-registry",
+          sourceProjectId: "open-registry",
           state: "banned",
         }),
         expect.objectContaining({
           projectId: "renamed-registry",
+          sourceProjectId: "open-registry",
           state: "banned",
         }),
       ],
     );
+  });
+
+  test("another project listed for a banned repository can still be retired", async () => {
+    await listProject();
+    // Listed before the ban: the renamed repository, same GitHub id.
+    await listProject(
+      applicationManifest("renamed-registry", "example/renamed-registry"),
+    );
+    expect((await enforce("admin", "quarantine")).status).toBe(200);
+    expect((await enforce("admin", "ban")).status).toBe(200);
+    const registry = async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (input: string | URL | Request) =>
+        handleProjectApi(new Request(input), deps)) as typeof fetch;
+      try {
+        return await fetchProjectRegistry(ORIGIN);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    };
+    // projects:sync asks an admin to append B's paused, retired revision.
+    expect((await registry()).withheld).toEqual(["renamed-registry"]);
+    async function revise(
+      change: (manifest: ProjectDefinition) => Record<string, unknown>,
+    ) {
+      const project = await persistence.getProject("renamed-registry");
+      if (project === null) throw new Error("renamed-registry is not listed");
+      return call("PUT", "admin/projects/renamed-registry/manifest", "admin", {
+        manifest: change(project.manifest),
+        expectedRevision: project.revision,
+        reason: "Retire the project of the banned repository",
+      });
+    }
+    const retire = (manifest: ProjectDefinition) => ({
+      ...manifest,
+      status: "paused",
+      listingTier: "retired",
+    });
+    // Every other revision still cannot claim the banned repository.
+    for (const change of [
+      (manifest: ProjectDefinition) => ({ ...manifest, status: "active" }),
+      (manifest: ProjectDefinition) => ({
+        ...manifest,
+        listingTier: "featured",
+      }),
+      (manifest: ProjectDefinition) => ({
+        ...retire(manifest),
+        repositories: manifest.repositories.map((repository) => ({
+          ...repository,
+          aliases: ["example/open-registry"],
+        })),
+      }),
+    ]) {
+      const refused = await revise(change);
+      expect(refused.status).toBe(403);
+      expect((await refused.json()).error).toBe("repository_restricted");
+    }
+    expect(await persistence.getProject("renamed-registry")).toMatchObject({
+      revision: 1,
+    });
+
+    expect((await revise(retire)).status).toBe(200);
+    expect(await persistence.getProject("renamed-registry")).toMatchObject({
+      revision: 2,
+      manifest: { status: "paused", listingTier: "retired" },
+    });
+    expect((await registry()).withheld).toEqual([]);
+    // The retired project cannot be listed again while the ban holds.
+    const restored = await revise((manifest) => ({
+      ...manifest,
+      listingTier: "community",
+    }));
+    expect(restored.status).toBe(403);
+    expect((await restored.json()).error).toBe("repository_restricted");
   });
 
   test("reinstatement is refused while the restriction revision is pending", async () => {
