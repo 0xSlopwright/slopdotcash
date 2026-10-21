@@ -127,3 +127,26 @@ imports, proof content, and build evidence together. Do not award five large
 refactors from the submitted totals, or discard original authors because a
 later integration carries their commits. Individual tiers and any distinct
 integration or review credit remain unresolved until that joint review finishes.
+
+## Competing certificate-memory repairs
+
+Delta Star [#186](https://github.com/SlopDotCash/proximityprize/pull/186) splits
+the R394 finite box into separately checked slices.
+[#187](https://github.com/SlopDotCash/proximityprize/pull/187) instead transports
+the field equation to integer divisibility. Both also reuse the R394 result
+for R395. [#193](https://github.com/SlopDotCash/proximityprize/pull/193) retains
+the integer approach in the relocated Research tree. Inspect the
+[accepted R394 source](https://github.com/SlopDotCash/proximityprize/blob/52b1a416bf80837bbeb737eaea7f8f0c65646b3c/Research/ProximityPrize/Frontier/_R394L1KernelCertificate.lean)
+when separating original repair value from integration value.
+
+Independent integer enumeration checked all 28,561 box points. Of these,
+1,289 satisfy the L1 bound of six. Only the zero vector vanishes modulo 1409
+with coefficients 1, 72, 5184 and 373248. This supports the finite arithmetic
+claim. It does not prove Lean elaboration, kernel acceptance, measured memory
+savings, or a successful hosted build.
+
+The two formal reviews explicitly report static inspection without Lean
+execution. Their reviewed heads also precede later changes. Preserve those
+limits when evaluating review value. Do not award three independent memory
+repairs from these three merges. The integration's broader source coverage,
+original attribution, distinct integration work, and final tiers remain open.
