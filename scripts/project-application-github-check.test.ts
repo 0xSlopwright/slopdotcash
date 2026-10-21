@@ -13,7 +13,12 @@ const ORIGIN = "https://slop.cash";
 const API = "https://api.github.com";
 const SESSION = "t".repeat(48);
 
-const OWNER = { id: 987654321, login: "example", type: "User" };
+const OWNER = {
+  id: 987654321,
+  node_id: "U_example",
+  login: "example",
+  type: "User",
+};
 const repositories: Record<string, unknown> = {
   "example/open-registry": {
     id: 123456789,
@@ -34,14 +39,24 @@ const repositories: Record<string, unknown> = {
     node_id: "R_partner",
     full_name: "partner-lab/shared-models",
     private: false,
-    owner: { id: 777000111, login: "partner-lab", type: "Organization" },
+    owner: {
+      id: 777000111,
+      node_id: "O_partner_lab",
+      login: "partner-lab",
+      type: "Organization",
+    },
   },
   "someone-else/their-repo": {
     id: 555000111,
     node_id: "R_other",
     full_name: "someone-else/their-repo",
     private: false,
-    owner: { id: 444000111, login: "someone-else", type: "User" },
+    owner: {
+      id: 444000111,
+      node_id: "U_someone_else",
+      login: "someone-else",
+      type: "User",
+    },
   },
 };
 // GitHub answers a former name with the renamed repository.
