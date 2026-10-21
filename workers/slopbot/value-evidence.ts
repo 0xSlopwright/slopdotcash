@@ -3,6 +3,7 @@ import {
   findRegisteredRepositoryById,
   type TargetRepository,
 } from "../../src/lib/repositories.mjs";
+import { addedValuePatchRecovery, hasCompleteValuePatch } from "./value-patch";
 
 // Shared by the installation worker and the historical reviewer. Missing or
 // moving evidence prevents assessment; pagination limits never imply coverage.
@@ -54,7 +55,7 @@ interface Comment {
   updated_at: string;
   pull_request_review_id?: number;
 }
-interface FileChange {
+export interface FileChange {
   filename: string;
   previous_filename?: string;
   status: string;
@@ -582,6 +583,8 @@ export async function collectValueEvidence(
   const limitations: string[] = [];
   if (repositoryPolicy === null)
     limitations.push("Registered repository scoring policy is unavailable");
+  const recoverAddedPatches = addedValuePatchRecovery(client, repository);
+  await recoverAddedPatches(files, pull.head.sha);
   let mergeCommitEvidence: CommitChangeEvidence | null = null;
   if (pull.merged_at !== null) {
     if (!pull.merge_commit_sha) {
@@ -598,6 +601,10 @@ export async function collectValueEvidence(
       mergeCommitEvidence = accepted.commit;
       limitations.push(...accepted.limitations);
       if (mergeCommitEvidence !== null) {
+        await recoverAddedPatches(
+          mergeCommitEvidence.files,
+          pull.merge_commit_sha,
+        );
         const directMerge =
           mergeCommitEvidence.parents.length === 2 &&
           mergeCommitEvidence.parents[1]?.sha === pull.head.sha;
@@ -626,14 +633,7 @@ export async function collectValueEvidence(
   // GitHub omits binary and oversized patches. Do not let absent or truncated
   // content turn into a confident low-value recommendation.
   for (const file of [...files, ...(mergeCommitEvidence?.files ?? [])]) {
-    const lines = file.patch?.split("\n") ?? [];
-    const added = lines.filter((line) => line.startsWith("+")).length;
-    const removed = lines.filter((line) => line.startsWith("-")).length;
-    if (
-      file.patch === undefined ||
-      added !== file.additions ||
-      removed !== file.deletions
-    )
+    if (!hasCompleteValuePatch(file))
       limitations.push(`Full diff required: ${file.filename}`);
   }
   const related = await relatedPullRequests(
