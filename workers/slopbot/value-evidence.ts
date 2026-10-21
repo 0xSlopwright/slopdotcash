@@ -61,7 +61,7 @@ interface FileChange {
   additions: number;
   deletions: number;
   patch?: string;
-  blob_url: string;
+  blob_url: string | null;
 }
 interface Commit {
   sha: string;
@@ -643,7 +643,7 @@ export async function collectValueEvidence(
       ...comments.map((comment) => comment.html_url),
       ...reviewComments.map((comment) => comment.html_url),
     ]),
-  ];
+  ].filter((url): url is string => typeof url === "string");
   // Retain GitHub-linked primary authors and complete paths for scoped evidence.
   // Co-author trailers do not establish credit under SCR-04.
   const commitAttribution: CommitAttribution[] = [];
