@@ -242,10 +242,35 @@ function githubHeaders(token: string | undefined): Record<string, string> {
   };
 }
 
+type GithubRepositoryFacts = {
+  id?: unknown;
+  node_id?: unknown;
+  full_name?: unknown;
+  private?: unknown;
+  owner?: { id?: unknown; login?: unknown; type?: unknown };
+};
+
+/** Reads a repository from GitHub; null when GitHub has no such repository. */
+async function githubRepository(
+  api: string,
+  token: string | undefined,
+  path: string,
+): Promise<GithubRepositoryFacts | null> {
+  const response = await fetch(`${api}/repos/${path}`, {
+    headers: githubHeaders(token),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
+  return (await readBoundedJson(response, 512 * 1024)) as GithubRepositoryFacts;
+}
+
 /**
  * Proves control from public GitHub facts only: the applicant owns a user
  * repository, or is a public member of the owning organization. The manifest's
- * repository and steward identities must match GitHub exactly.
+ * repository and steward identities must match GitHub exactly. Every other
+ * repository and every alias must be a public GitHub repository, an alias the
+ * repository it names, and control is proven only for every owner.
  */
 async function repositoryControl(
   manifest: ProjectDefinition,
@@ -257,23 +282,12 @@ async function repositoryControl(
   const repository = manifest.repositories[0];
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository.id))
     return { state: "mismatch", reason: "Repository must be owner/name" };
-  const response = await fetch(`${api}/repos/${repository.id}`, {
-    headers: githubHeaders(token),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (response.status === 404)
+  const facts = await githubRepository(api, token, repository.id);
+  if (!facts)
     return {
       state: "mismatch",
       reason: "GitHub has no public repository with that name",
     };
-  if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
-  const facts = (await readBoundedJson(response, 512 * 1024)) as {
-    id?: unknown;
-    node_id?: unknown;
-    full_name?: unknown;
-    private?: unknown;
-    owner?: { id?: unknown; login?: unknown; type?: unknown };
-  };
   if (
     String(facts.id) !== manifest.authority.repositoryId ||
     facts.node_id !== manifest.authority.repositoryNodeId ||
@@ -285,15 +299,53 @@ async function repositoryControl(
       state: "mismatch",
       reason: "Repository or steward facts do not match GitHub",
     };
+  let control = await ownerControl(api, token, facts, repository.id, actor);
+  const missing = (path: string): RepositoryControl => ({
+    state: "mismatch",
+    reason: `GitHub has no public repository named ${path}`,
+  });
+  for (const [index, entry] of manifest.repositories.entries()) {
+    const named =
+      index === 0 ? facts : await githubRepository(api, token, entry.id);
+    if (named?.private !== false) return missing(entry.id);
+    if (String(named.full_name).toLowerCase() !== entry.id.toLowerCase())
+      return {
+        state: "mismatch",
+        reason: `GitHub names ${entry.id} ${String(named.full_name)}`,
+      };
+    for (const alias of entry.aliases ?? []) {
+      const aliased = await githubRepository(api, token, alias);
+      if (aliased?.private !== false) return missing(alias);
+      if (String(aliased.id) !== String(named.id))
+        return {
+          state: "mismatch",
+          reason: `Alias ${alias} is not a name of ${entry.id} on GitHub`,
+        };
+    }
+    if (index > 0 && control.state === "proven") {
+      const owned = await ownerControl(api, token, named, entry.id, actor);
+      if (owned.state !== "proven") control = owned;
+    }
+  }
+  return control;
+}
+
+async function ownerControl(
+  api: string,
+  token: string | undefined,
+  facts: GithubRepositoryFacts,
+  repository: string,
+  actor: { githubId: string; githubLogin: string },
+): Promise<RepositoryControl> {
   if (facts.owner?.type === "User")
     return String(facts.owner.id) === actor.githubId
       ? {
           state: "proven",
-          reason: `@${actor.githubLogin} owns ${repository.id}`,
+          reason: `@${actor.githubLogin} owns ${repository}`,
         }
       : {
           state: "unproven",
-          reason: `@${actor.githubLogin} does not own ${repository.id}`,
+          reason: `@${actor.githubLogin} does not own ${repository}`,
         };
   const membership = await fetch(
     `${api}/orgs/${encodeURIComponent(String(facts.owner?.login))}/public_members/${encodeURIComponent(actor.githubLogin)}`,
