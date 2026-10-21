@@ -66,7 +66,7 @@ lease. Recovery re-reads GitHub and policy before it can infer or act; it is
 unbilled under the service-retry rule. The public summary reports
 `itemsBlocked` separately from completed reviews.
 
-Apply migration `0047_slopbot_budget_blocks.sql` before the worker and summary
+Apply migration `0048_slopbot_budget_blocks.sql` before the worker and summary
 API. This recovery mechanism does not set provider limits, reserve prepaid
 credit, or make an estimated token price a hard spending cap.
 
@@ -92,7 +92,7 @@ amount already recorded for that review. Triage and confirmation therefore
 share one rounding boundary. Failed calls and service retries add no billable
 cost. Token-rate arithmetic uses integers throughout.
 
-Migration `0046_slopbot_review_billing.sql` preserves old `call-v1` amounts.
+Migration `0047_slopbot_review_billing.sql` preserves old `call-v1` amounts.
 A previously billed legacy review cannot accept a new billable call under
 the new rule without explicit reconciliation. A call already made is retained
 as unbilled evidence before the review reports this failure. Unbilled retries
@@ -574,7 +574,7 @@ These controlled checks do not prove live GitHub delivery or production activati
 
 ### Recovering interrupted review attempts
 
-Migration `0044_slopbot_review_leases.sql` gives each running attempt a private
+Migration `0045_slopbot_review_leases.sql` gives each running attempt a private
 claim token and a 20-minute expiry. This exceeds the documented
 [15-minute queue consumer wall limit](https://developers.cloudflare.com/queues/platform/limits/).
 A competing delivery retries when the lease expires; it is not acknowledged as

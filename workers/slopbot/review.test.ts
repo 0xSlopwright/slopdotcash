@@ -37,10 +37,10 @@ test("a skipped revision can be claimed once without changing prior-call retry b
     ),
   );
   for (const migration of [
-    "0038_slopbot_provider_cost.sql",
-    "0042_slopbot_provider_request.sql",
-    "0044_slopbot_review_leases.sql",
-    "0046_slopbot_review_billing.sql",
+    "0039_slopbot_provider_cost.sql",
+    "0043_slopbot_provider_request.sql",
+    "0045_slopbot_review_leases.sql",
+    "0047_slopbot_review_billing.sql",
   ])
     sqlite.exec(
       readFileSync(
