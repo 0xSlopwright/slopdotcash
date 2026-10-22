@@ -5,12 +5,11 @@
  * same commit again, and only an integration-branch pull request shares its
  * credit with the committers it owns.
  */
-import { expect, setSystemTime, test } from "bun:test";
+import { afterAll, expect, setSystemTime, test } from "bun:test";
 import type {
   GitHubActor,
   LeaderboardInput,
   MergedPullRequestOutcome,
-  MergedPullRequestReviewRecord,
 } from "../src/lib/leaderboard";
 import { createLeaderboardSnapshot } from "../src/lib/leaderboard";
 import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
@@ -22,6 +21,7 @@ const HEAD = "a".repeat(40);
 
 // The scorer refuses a snapshot generated in the future of the wall clock.
 setSystemTime(new Date(AT));
+afterAll(() => setSystemTime());
 
 function actor(login: string, id: string): GitHubActor {
   return {
@@ -108,29 +108,6 @@ function outcome(
     deletions: 1,
     baseRefName,
     commits,
-  };
-}
-
-function reviewed(
-  merged: MergedPullRequestOutcome,
-  comments: MergedPullRequestReviewRecord["comments"],
-  reviews: MergedPullRequestReviewRecord["reviews"] = [],
-): MergedPullRequestReviewRecord {
-  return {
-    id: merged.id,
-    number: merged.number,
-    title: merged.title,
-    url: merged.url,
-    body: merged.body,
-    createdAt: merged.createdAt,
-    updatedAt: merged.updatedAt,
-    lastEditedAt: null,
-    editor: null,
-    mergedAt: merged.mergedAt,
-    headRefOid: HEAD,
-    author: merged.author,
-    comments,
-    reviews,
   };
 }
 
