@@ -1,4 +1,14 @@
 import { evmBindingTypedData } from "../../contracts/evm/adapter";
+import {
+  type SolanaEscrowConfig,
+  solanaMintDecimals,
+} from "../../contracts/solana/adapter";
+import {
+  checkSolanaFunding,
+  prepareSolanaFunding,
+  SolanaFundingError,
+  type SolanaFundingIntent,
+} from "../../contracts/solana/funding";
 import { readBoundedJson } from "../../src/lib/browser-json";
 import {
   ESCROW_CHAINS,
@@ -13,6 +23,7 @@ import {
   type PaymentsAccount,
   VAULT_SNAPSHOT_STALE_MS,
 } from "../../src/lib/payments/contracts";
+import { parseVaultAmount } from "../../src/lib/payments/vault-amount";
 import { isWalletAddress, isWalletChain } from "../../src/lib/wallets";
 import { sha256Hex } from "../../workers/identity/crypto";
 import type { D1TransactionalDatabase as D1Database } from "../d1";
@@ -49,6 +60,12 @@ export interface PaymentsDependencies {
     db: D1Database;
     solanaAttester?: { fetch(request: Request): Promise<Response> };
   };
+  /** Resolve only a reviewed registry vault and an operator-configured RPC. No request URL or signing service. */
+  solanaFundingConfig?: (
+    projectId: string,
+    network: string,
+    vault: string,
+  ) => Promise<SolanaEscrowConfig>;
   /** Edge cache for public vault snapshot reads (caches.default on Pages). */
   edgeCache?: {
     match(request: Request): Promise<Response | undefined>;
@@ -110,6 +127,80 @@ export async function handlePaymentsApi(
   )
     return json(403, { error: "origin_forbidden" });
   try {
+    const fundingRoute =
+      /^\/projects\/([a-z0-9][a-z0-9-]*)\/solana-funding$/.exec(path);
+    if (fundingRoute && request.method === "POST") {
+      if (!deps.solanaFundingConfig)
+        return json(503, { error: "funding_unavailable" });
+      const body = (await readBoundedJson(
+        request,
+        4096,
+        "vault funding action",
+      )) as Record<string, unknown>;
+      if (
+        !body ||
+        (body.step !== "review" && body.step !== "check") ||
+        (body.operation !== "deposit" && body.operation !== "withdraw") ||
+        typeof body.network !== "string" ||
+        typeof body.vault !== "string" ||
+        typeof body.wallet !== "string" ||
+        !isWalletAddress("solana", body.wallet) ||
+        (body.step === "review" &&
+          (typeof body.amount !== "string" || body.amount.length > 80)) ||
+        (body.step === "check" &&
+          (typeof body.gross !== "string" ||
+            !/^[1-9][0-9]{0,19}$/.test(body.gross))) ||
+        (body.step === "check" &&
+          (typeof body.blockhash !== "string" ||
+            !isWalletAddress("solana", body.blockhash) ||
+            typeof body.transactionId !== "string" ||
+            body.transactionId.length > 100))
+      )
+        return json(400, { error: "invalid_funding_action" });
+      const config = await deps.solanaFundingConfig(
+        fundingRoute[1],
+        body.network,
+        body.vault,
+      );
+      let gross = body.gross as string;
+      if (body.step === "review") {
+        const decimals = await solanaMintDecimals(config, config.mint);
+        try {
+          gross = parseVaultAmount(body.amount as string, decimals).toString();
+        } catch {
+          return json(422, {
+            error: "invalid_funding_amount",
+            message:
+              "Enter a positive amount within this token's decimal precision and vault limit.",
+          });
+        }
+      }
+      const intent: Omit<SolanaFundingIntent, "blockhash"> = {
+        operation: body.operation,
+        wallet: body.wallet,
+        gross,
+      };
+      try {
+        if (body.step === "review")
+          return json(200, {
+            plan: await prepareSolanaFunding(config, intent),
+          });
+        return json(200, {
+          status: await checkSolanaFunding(
+            config,
+            { ...intent, blockhash: body.blockhash as string },
+            body.transactionId as string,
+          ),
+        });
+      } catch (error) {
+        if (error instanceof SolanaFundingError)
+          return json(422, {
+            error: "funding_action_rejected",
+            message: error.message,
+          });
+        throw error;
+      }
+    }
     const totalsRoute = /^\/projects\/([a-z0-9][a-z0-9-]*)\/totals$/.exec(path);
     if (totalsRoute && request.method === "GET") {
       const projectId = totalsRoute[1];

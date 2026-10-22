@@ -9,6 +9,7 @@ import {
   verifyVaultFundingAction,
 } from "../../contracts/evm/adapter";
 import { ESCROW_NETWORKS, type EscrowDeployment } from "./escrow-policy.mjs";
+import { parseVaultAmount } from "./payments/vault-amount";
 import type { PayoutWallet } from "./use-payout-wallets";
 
 export type VaultConnection = Awaited<ReturnType<PayoutWallet["connect"]>>;
@@ -23,26 +24,6 @@ const word = (value: unknown): bigint => {
     throw new Error("The wallet returned an invalid token amount.");
   return BigInt(value);
 };
-export function parseVaultAmount(value: string, decimals: number): bigint {
-  if (
-    !/^(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(value) ||
-    !Number.isInteger(decimals) ||
-    decimals < 0 ||
-    decimals > 36
-  )
-    throw new Error(
-      "Enter a positive amount using digits and a decimal point.",
-    );
-  const [whole, fraction = ""] = value.split(".");
-  if (fraction.length > decimals)
-    throw new Error(`This token supports at most ${decimals} decimal places.`);
-  const amount =
-    BigInt(whole) * 10n ** BigInt(decimals) +
-    BigInt(fraction.padEnd(decimals, "0") || "0");
-  if (amount <= 0n || amount >= 1n << 128n)
-    throw new Error("The amount is outside the vault's supported range.");
-  return amount;
-}
 
 export function walletVaultConfig(
   deployment: EscrowDeployment,

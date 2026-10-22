@@ -1,5 +1,8 @@
 import { useState } from "react";
-import type { EscrowDeployment } from "./lib/escrow-policy.mjs";
+import {
+  ESCROW_NETWORKS,
+  type EscrowDeployment,
+} from "./lib/escrow-policy.mjs";
 import {
   checkVaultAction,
   reviewVaultAction,
@@ -8,8 +11,20 @@ import {
   type VaultConnection,
   type VaultOperation,
 } from "./lib/evm-vault-actions";
-import { formatAssetAmount, transactionUrl } from "./lib/payments/contracts";
+import { isSolanaTransactionId } from "./lib/funding-address.mjs";
+import {
+  formatAssetAmount,
+  formatBaseUnits,
+  transactionUrl,
+} from "./lib/payments/contracts";
+import {
+  checkSolanaVaultAction,
+  reviewSolanaVaultAction,
+  type SolanaFundingPlan,
+  sendSolanaVaultAction,
+} from "./lib/solana-vault-actions";
 import { type PayoutWallet, usePayoutWallets } from "./lib/use-payout-wallets";
+import { isWalletAddress } from "./lib/wallets";
 
 type Step = "approve" | "reset" | "send";
 type Pending = {
@@ -21,14 +36,16 @@ type Pending = {
   decimals: number;
   step: Step;
   hash: string | null;
+  solanaBlockhash?: string;
 };
-function readPending(key: string): Pending | null {
+type Review = VaultActionReview & { solanaPlan?: SolanaFundingPlan };
+function readPending(key: string, solana: boolean): Pending | null {
   const text = sessionStorage.getItem(key);
   if (!text) return null;
   const value = JSON.parse(text) as Pending;
   if (
     value.version !== 1 ||
-    !/^0x[0-9a-fA-F]{40}$/.test(value.wallet) ||
+    !isWalletAddress(solana ? "solana" : "base", value.wallet) ||
     !["deposit", "withdraw"].includes(value.operation) ||
     !["approve", "reset", "send"].includes(value.step) ||
     !/^[1-9][0-9]*$/.test(value.gross) ||
@@ -36,7 +53,13 @@ function readPending(key: string): Pending | null {
     !Number.isInteger(value.decimals) ||
     value.decimals < 0 ||
     value.decimals > 36 ||
-    (value.hash !== null && !/^0x[0-9a-fA-F]{64}$/.test(value.hash))
+    (solana &&
+      (value.step !== "send" ||
+        !isWalletAddress("solana", value.solanaBlockhash))) ||
+    (value.hash !== null &&
+      !(solana
+        ? isSolanaTransactionId(value.hash)
+        : /^0x[0-9a-fA-F]{64}$/.test(value.hash)))
   )
     throw new Error(
       "The saved transaction cannot be read. Check your wallet activity before starting a new action.",
@@ -48,16 +71,21 @@ const message = (error: unknown) =>
 
 /** Wallet-confirmed funding actions; no keys or signing authority enter Slop. */
 export function VaultActions({
+  projectId,
   deployment,
   onFinalized,
 }: {
+  projectId: string;
   deployment: EscrowDeployment;
   onFinalized: () => void;
 }) {
+  const solana = ESCROW_NETWORKS[deployment.network].family === "solana";
+  const sameWallet = (a: string, b: string) =>
+    solana ? a === b : a.toLowerCase() === b.toLowerCase();
   const key = `slop:vault-action:v1:${deployment.network}:${deployment.vault}:${deployment.asset}`;
   const [saved] = useState(() => {
     try {
-      return { pending: readPending(key), error: "" };
+      return { pending: readPending(key, solana), error: "" };
     } catch (error) {
       return { pending: null, error: message(error) };
     }
@@ -70,11 +98,15 @@ export function VaultActions({
     saved.pending?.operation ?? "deposit",
   );
   const [amount, setAmount] = useState(saved.pending?.amount ?? "");
-  const [review, setReview] = useState<VaultActionReview | null>(null);
+  const [review, setReview] = useState<Review | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [recoveryHash, setRecoveryHash] = useState("");
-  const wallets = usePayoutWallets().filter((entry) => entry.family === "evm");
+  const wallets = usePayoutWallets().filter((entry) =>
+    solana
+      ? entry.family === "solana" && entry.solanaFunding
+      : entry.family === "evm",
+  );
   const remember = (value: Pending | null) => {
     if (value) sessionStorage.setItem(key, JSON.stringify(value));
     else sessionStorage.removeItem(key);
@@ -95,10 +127,7 @@ export function VaultActions({
   const connect = (provider: PayoutWallet) =>
     run(async () => {
       const connection = await provider.connect();
-      if (
-        pending &&
-        connection.address.toLowerCase() !== pending.wallet.toLowerCase()
-      )
+      if (pending && !sameWallet(connection.address, pending.wallet))
         throw new Error(
           `Reconnect the wallet that submitted this action: ${pending.wallet}`,
         );
@@ -108,11 +137,39 @@ export function VaultActions({
   const inspect = () =>
     run(async () => {
       if (!wallet) throw new Error("Choose a wallet first.");
-      setReview(await reviewVaultAction(deployment, wallet, operation, amount));
+      setReview(
+        solana
+          ? await reviewSolanaVaultAction(
+              projectId,
+              deployment,
+              wallet,
+              operation,
+              amount,
+            )
+          : await reviewVaultAction(deployment, wallet, operation, amount),
+      );
     });
   const send = (step: Step) =>
     run(async () => {
       if (!wallet || !review || pending || storageError) return;
+      const current = solana
+        ? await reviewSolanaVaultAction(
+            projectId,
+            deployment,
+            wallet,
+            operation,
+            amount,
+          )
+        : review;
+      if (
+        current.gross !== review.gross ||
+        current.fee !== review.fee ||
+        current.net !== review.net ||
+        current.decimals !== review.decimals
+      )
+        throw new Error(
+          "The vault review changed. Review the action again before signing.",
+        );
       const intent: Pending = {
         version: 1,
         wallet: wallet.address,
@@ -122,21 +179,36 @@ export function VaultActions({
         decimals: review.decimals,
         step,
         hash: null,
+        ...(current.solanaPlan
+          ? { solanaBlockhash: current.solanaPlan.blockhash }
+          : {}),
       };
       let requested = false;
       try {
-        const hash = await sendVaultAction(
-          deployment,
-          wallet,
-          operation,
-          amount,
-          step,
-          () => {
-            // Persist before asking the wallet. Reloading cannot turn an unknown result into a new send.
-            remember(intent);
-            requested = true;
-          },
-        );
+        const beforeSend = () => {
+          remember(intent);
+          requested = true;
+        };
+        let hash: string;
+        if (solana) {
+          if (!current.solanaPlan || step !== "send")
+            throw new Error("Review the Solana action again.");
+          hash = await sendSolanaVaultAction(
+            deployment,
+            wallet,
+            current.solanaPlan,
+            beforeSend,
+          );
+        } else {
+          hash = await sendVaultAction(
+            deployment,
+            wallet,
+            operation,
+            amount,
+            step,
+            beforeSend,
+          );
+        }
         const submitted = { ...intent, hash };
         setPending(submitted);
         try {
@@ -165,14 +237,24 @@ export function VaultActions({
     run(async () => {
       if (!pending || !wallet) return;
       const hash = pending.hash ?? recoveryHash.trim();
-      const result = await checkVaultAction(
-        deployment,
-        wallet,
-        pending.operation,
-        pending.gross,
-        hash,
-        pending.step,
-      );
+      const result = solana
+        ? await checkSolanaVaultAction(
+            projectId,
+            deployment,
+            wallet,
+            pending.operation,
+            pending.gross,
+            pending.solanaBlockhash as string,
+            hash,
+          )
+        : await checkVaultAction(
+            deployment,
+            wallet,
+            pending.operation,
+            pending.gross,
+            hash,
+            pending.step,
+          );
       if (!pending.hash) remember({ ...pending, hash });
       if (result === "pending") {
         setNotice("Submitted. Waiting for finalized chain evidence.");
@@ -254,8 +336,11 @@ export function VaultActions({
             ))
           ) : (
             <p>
-              No EVM wallet was found. Open this page in your wallet's browser
-              or enable its browser extension.
+              {solana
+                ? "No Solana wallet with transaction support was found."
+                : "No EVM wallet was found."}{" "}
+              Open this page in your wallet's browser or enable its browser
+              extension.
             </p>
           )}
         </fieldset>
@@ -283,7 +368,7 @@ export function VaultActions({
             </p>
           ) : (
             <label>
-              Transaction hash from your wallet
+              Transaction {solana ? "signature" : "hash"} from your wallet
               <input
                 value={recoveryHash}
                 onChange={(event) => setRecoveryHash(event.target.value)}
@@ -378,6 +463,15 @@ export function VaultActions({
                     ? "Unavailable"
                     : formatted(review.freeBalance)}
                 </dd>
+                {review.solanaPlan && (
+                  <>
+                    <dt>Estimated network fee (SOL)</dt>
+                    <dd>
+                      {formatBaseUnits(review.solanaPlan.networkFeeLamports, 9)}{" "}
+                      SOL, plus any token-account rent shown by your wallet
+                    </dd>
+                  </>
+                )}
                 <dt>Amount</dt>
                 <dd>{formatted(review.gross)}</dd>
                 <dt>Fee</dt>

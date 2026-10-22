@@ -55,7 +55,9 @@ import {
   vettingBranchCache,
 } from "../../../backend/vetting/live-pin";
 import { CloudflareVettingPersistence } from "../../../backend/vetting/persistence";
+import type { SolanaEscrowConfig } from "../../../contracts/solana/adapter";
 import { deploymentTier } from "../../../src/lib/deployment";
+import { ESCROW_NETWORKS } from "../../../src/lib/escrow-policy.mjs";
 import type { ProjectDefinition } from "../../../src/lib/projects.mjs";
 import {
   loadRegistryPaymentDeployments,
@@ -79,6 +81,8 @@ type Env = {
   SECURITY_SOLANA_IDENTITY_ATTESTER?: {
     fetch(request: Request): Promise<Response>;
   };
+  /** Private RPC endpoints for explicit wallet funding review/check requests. Never returned to the browser. */
+  PAYMENT_RPC_URLS?: string;
   PRIVATE_TRACES: R2Bucket;
   TRACE_AUTH_SECRET: string;
   X_CLIENT_ID?: string;
@@ -613,6 +617,37 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       securityPayments: {
         db: securityPaymentDatabase(context.env.SLOP_DB),
         solanaAttester: context.env.SECURITY_SOLANA_IDENTITY_ATTESTER,
+      },
+      solanaFundingConfig: async (projectId, network, vault) => {
+        const networks = parsePaymentNetworks(context.env.PAYMENT_NETWORKS);
+        const selected = networks.find((name) => name === network);
+        if (!selected || ESCROW_NETWORKS[selected].family !== "solana")
+          throw new Error("Funding network unavailable");
+        const registry = await loadRegistryPaymentDeployments(
+          context.env.SLOP_DB,
+          [selected],
+        );
+        const matches = registry.deployments.filter(
+          (row) =>
+            row.projectId === projectId &&
+            row.network === network &&
+            row.vault === vault,
+        );
+        if (matches.length !== 1) throw new Error("Funding vault unavailable");
+        const rpcUrl = (
+          JSON.parse(context.env.PAYMENT_RPC_URLS ?? "{}") as Record<
+            string,
+            unknown
+          >
+        )[network];
+        if (typeof rpcUrl !== "string" || new URL(rpcUrl).protocol !== "https:")
+          throw new Error("Funding RPC unavailable");
+        return {
+          ...matches[0],
+          mint: matches[0].asset,
+          rpcUrl,
+          genesisHash: ESCROW_NETWORKS[selected].genesisHash,
+        } as SolanaEscrowConfig;
       },
       // Cloudflare's per-colo edge cache; absent outside the Workers runtime.
       edgeCache: (

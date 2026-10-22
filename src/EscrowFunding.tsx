@@ -199,18 +199,14 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
               />
             ))
           )}
-          {project.escrow?.deployments
-            .filter(
-              (deployment) =>
-                ESCROW_NETWORKS[deployment.network].family === "evm",
-            )
-            .map((deployment) => (
-              <VaultActions
-                key={`${deployment.network}:${deployment.vault}`}
-                deployment={deployment}
-                onFinalized={() => setRevision((value) => value + 1)}
-              />
-            ))}
+          {project.escrow?.deployments.map((deployment) => (
+            <VaultActions
+              key={`${deployment.network}:${deployment.vault}`}
+              deployment={deployment}
+              projectId={project.id}
+              onFinalized={() => setRevision((value) => value + 1)}
+            />
+          ))}
           <button
             className="button secondary-button"
             type="button"

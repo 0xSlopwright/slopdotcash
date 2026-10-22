@@ -1,4 +1,7 @@
-import type { SolanaSignMessageFeature } from "@solana/wallet-standard-features";
+import type {
+  SolanaSignAndSendTransactionFeature,
+  SolanaSignMessageFeature,
+} from "@solana/wallet-standard-features";
 import { getWallets } from "@wallet-standard/app";
 import type { Wallet, WalletWithFeatures } from "@wallet-standard/base";
 import type { StandardConnectFeature } from "@wallet-standard/features";
@@ -40,6 +43,8 @@ export type PayoutWallet = {
   icon?: string;
   /** EVM wallets serve every EVM chain; the consent message names the chain. */
   family: EscrowFamily;
+  /** Wallet Standard transaction support, discovered without connecting. */
+  solanaFunding?: boolean;
   /**
    * `chooseAccount` asks the wallet to show its account picker, for a change
    * of an already confirmed wallet. Wallets without one return their
@@ -50,6 +55,11 @@ export type PayoutWallet = {
     sign(message: string): Promise<string>;
     /** Available only for the selected EVM provider; every call rechecks its identity. */
     evmRequest?: (method: string, params: unknown[]) => Promise<unknown>;
+    solanaSend?: (
+      transaction: Uint8Array,
+      chain: `solana:${string}`,
+      beforeSend: () => void,
+    ) => Promise<Uint8Array>;
   }>;
 };
 
@@ -206,6 +216,7 @@ export function usePayoutWallets(): PayoutWallet[] {
           name: wallet.name,
           icon: wallet.icon,
           family: "solana",
+          solanaFunding: "solana:signAndSendTransaction" in wallet.features,
           async connect() {
             const { accounts } =
               await supported.features["standard:connect"].connect();
@@ -220,6 +231,55 @@ export function usePayoutWallets(): PayoutWallet[] {
               );
             return {
               address: account.address,
+              ...("solana:signAndSendTransaction" in wallet.features &&
+              account.features.includes("solana:signAndSendTransaction")
+                ? {
+                    async solanaSend(
+                      transaction: Uint8Array,
+                      chain: `solana:${string}`,
+                      beforeSend: () => void,
+                    ) {
+                      const current = wallet.accounts.find(
+                        (entry) => entry.address === account.address,
+                      );
+                      if (
+                        !standard.get().includes(wallet) ||
+                        !current?.chains.includes(chain) ||
+                        !current.features.includes(
+                          "solana:signAndSendTransaction",
+                        )
+                      )
+                        throw new Error(
+                          "The wallet account or network changed. Connect and review again.",
+                        );
+                      const feature = (
+                        wallet as WalletWithFeatures<SolanaSignAndSendTransactionFeature>
+                      ).features["solana:signAndSendTransaction"];
+                      if (
+                        !feature.supportedTransactionVersions.includes("legacy")
+                      )
+                        throw new Error(
+                          "This wallet does not support the vault transaction format.",
+                        );
+                      beforeSend();
+                      const [result] = await feature.signAndSendTransaction({
+                        account: current,
+                        chain,
+                        transaction,
+                        options: {
+                          commitment: "confirmed",
+                          skipPreflight: false,
+                          maxRetries: 0,
+                        },
+                      });
+                      if (result?.signature.length !== 64)
+                        throw new Error(
+                          "The wallet did not return a transaction signature. Check wallet activity before another attempt.",
+                        );
+                      return result.signature;
+                    },
+                  }
+                : {}),
               async sign(message) {
                 const bytes = new TextEncoder().encode(message);
                 const [result] = await supported.features[
