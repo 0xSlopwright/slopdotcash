@@ -194,6 +194,7 @@ test("zero-line file changes are not deterministically empty", () => {
   const pull = {
     draft: false,
     merged: false,
+    base: { sha: "baseline" },
     head: { sha: "a".repeat(40) },
     changed_files: 1,
     additions: 0,
@@ -302,6 +303,7 @@ describe("item text that instructs Slopbot to close another item", () => {
       "confidence",
       "evidence",
       "limitations",
+      "objective_defect",
       "rule_refs",
       "summary",
     ]);

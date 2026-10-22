@@ -27,7 +27,6 @@ export const UNIVERSAL_CATEGORIES: ReadonlySet<Category> = new Set([
 export const NEVER_CLOSE: ReadonlySet<Category> = new Set([
   "none",
   "missing_evidence",
-  "low_quality",
 ]);
 
 export type CategoryMode = "off" | "label" | "close";
@@ -185,6 +184,7 @@ export type Verdict = {
   evidence: string[];
   summary: string;
   limitations: string[];
+  objective_defect?: string | null;
 };
 
 // JSON Schema shared by every provider's structured-output mode.
@@ -198,8 +198,10 @@ export const VERDICT_SCHEMA = {
     "evidence",
     "summary",
     "limitations",
+    "objective_defect",
   ],
   properties: {
+    objective_defect: { type: ["string", "null"] },
     category: { type: "string", enum: [...CATEGORIES] },
     confidence: { type: "number" },
     rule_refs: {
@@ -242,7 +244,15 @@ export function validateVerdict(raw: unknown): Verdict | null {
   if (!value.limitations.every((item) => typeof item === "string")) return null;
   if (typeof value.summary !== "string" || value.summary.length === 0)
     return null;
+  if (
+    value.objective_defect != null &&
+    (typeof value.objective_defect !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(value.objective_defect))
+  )
+    return null;
   return {
+    objective_defect:
+      (value.objective_defect as string | null | undefined) ?? null,
     category: value.category as Category,
     confidence,
     rule_refs: ruleRefs,
@@ -321,6 +331,7 @@ export const REOPEN_BREAKER_RATIO = 0.1;
 export type Job =
   | {
       kind: "review";
+      qualityCommentId?: number;
       deliveryId: string;
       installationId: number;
       repositoryId: number;
