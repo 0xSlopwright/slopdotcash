@@ -51,6 +51,13 @@ test("social membership shows connection points, respects privacy and survives d
       ),
     });
   });
+  await page.route(`${site}/api/v1/project-session`, (route) =>
+    route.fulfill({
+      json: {
+        session: { githubId: "123", githubLogin: me.actor.login, admin: false },
+      },
+    }),
+  );
   await page.route(`${site}/api/v1/payments/me`, (route) =>
     route.fulfill({
       json: {
