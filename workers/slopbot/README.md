@@ -808,7 +808,7 @@ allowance and a conservative maximum attempt cost. It atomically counts the
 current month's recorded provider costs (or estimates) across installations and
 all unreconciled reservations. Prior-month reservations remain held because an
 unresolved provider request can be charged later. A repeated attempt ID does
-not authorize another call. The single-source consumer uses these primitives. They do not configure a
+not authorize another call. The scheduled consumer uses these primitives. They do not configure a
 production allowance or impose a provider-side spending cap.
 
 The consumer must use its unique `value:<UUID>` attempt ID as the cost ledger's
@@ -853,26 +853,28 @@ reclaimed after expiry; its old token cannot report success. An explicit retry
 time retains budget, authority and evidence blocks. Published/current outcomes
 and open-context dispositions complete that delivery only; a later source event
 has its own request. The consumer must check ownership before external calls
-and publication. The scheduler processes one due request per invocation. Single-source
-consumption is connected; complete grouped consumption remains pending.
+and publication. The scheduler processes one due request per invocation. Single-source and
+joint consumption use the same durable request lifecycle.
 
 A file-backed SQLite replay verifies one concurrent winner, process restart,
 expiry/reclaim, rejection of a stale completion, scheduled budget retry and a
 terminal open-context disposition. The immutable request remains present. This
 is durable-state evidence, not a model, queue or publication acceptance result.
 
-### Scheduled single-source consumption
+### Scheduled value consumption
 
 The scheduler selects one due request and claims it before source reads. It
 checks live registry and installation authority, then reads the complete closed
 PR evidence and pinned policy. A matching current journal avoids another model
 call. New results pass the reserved inference route, a final ownership check
 and the existing fresh-source publisher before the request is completed.
-Open work completes as context, not an implementation award. Missing evidence
-or related PRs wait for the full joint collector; they do not receive guessed
-single-source value. Failures retain a retry state without provider exception
-bodies. Grouped consumption and restart reuse of unpublished model results
-remain incomplete.
+Open work completes as context, not an implementation award. Missing evidence keeps the request pending. Related PRs are collected with
+their pinned policies and prior joint membership. All members must belong to
+the same registered project, be closed, be within the API start boundary, and
+have complete evidence. Collection stops at 32 sources and leaves a larger
+group pending; it does not assign zero or split that group. Failures retain a
+retry state without provider exception bodies. Restart reuse of unpublished
+model results remains incomplete.
 
 Required operator settings have no defaults:
 `SLOPBOT_VALUE_MONTHLY_BUDGET_MICRO_USD`,
@@ -904,9 +906,9 @@ can acquire a lease while the first remains active.
 ### Source-set ownership
 
 Migration `0053_slopbot_value_source_leases.sql` adds all-or-none ownership of
-repository-ID/PR-number source sets. The single-source consumer now uses it
+repository-ID/PR-number source sets. The consumer uses it
 before inference and checks it before each call and publication. Joint
-consumption must acquire its full source set with this same mechanism before
+consumption acquires its full source set with this same mechanism before
 spending; different initiating PRs do not make overlapping work independent.
 An active competing group prevents the entire acquisition. Completed or expired
 request ownership stops authorizing external work, and disjoint sets can run.
@@ -914,5 +916,14 @@ request ownership stops authorizing external work, and disjoint sets can run.
 The real SQLite replay proves that groups [1,2] and [2,3] have one winner, the
 loser acquires no part of its set, and disjoint work proceeds. Completion and
 expiry revoke ownership. The actual single-source HTTP/SQLite consumer and
-concurrent-delivery replays still publish once with one receipt. Automatic
-related-source collection and joint consumption remain unfinished.
+concurrent-delivery replays still publish once with one receipt. The joint consumer validates predecessor history and legacy digests before
+inference, then uses the existing fresh-source joint publisher. Previous group
+members remain in scope when a PR removes a reference.
+
+A local joint workflow uses captured GitHub evidence with a controlled outgoing
+reference, installation selection and unresolved model response. Initial delivery
+creates one joint record; repeat delivery reuses it. Removing the reference
+causes reassessment of both retained members, with two total joint records, two
+cost receipts and no single-source rows. The unmodified linked group rooted at
+proximityprize #195 stays pending because #206 has an unavailable or private
+reference. These are orchestration checks, not live-provider valuation evidence.

@@ -4,6 +4,7 @@ import { registeredRepository } from "./registry";
 import type { ReviewEnv } from "./review";
 import { readValueDecision } from "./value-consumption";
 import { collectValueEvidence } from "./value-evidence";
+import { collectValueGroup } from "./value-group-collection";
 import {
   claimValueRequest,
   finishValueRequest,
@@ -19,6 +20,17 @@ import {
 import type { ValueRequest } from "./value-requests";
 import { assessValue } from "./value-review";
 import { claimValueSources, ownsValueSources } from "./value-source-leases";
+import { prepareWorkUnitEvidence } from "./value-work-unit";
+import {
+  consumeWorkUnitHistory,
+  readWorkUnitHistory,
+} from "./value-work-unit-consumption";
+import {
+  currentWorkUnitRecord,
+  workUnitHistory,
+} from "./value-work-unit-journal";
+import { publishWorkUnitAssessment } from "./value-work-unit-publication";
+import { assessWorkUnits } from "./value-work-unit-review";
 
 export type ValueConsumerEnv = ReviewEnv & {
   SLOPBOT_PRODUCER_REVISION?: string;
@@ -31,9 +43,8 @@ const amount = (value: string | undefined) =>
     ? Number(value)
     : null;
 
-/** Process one durable delivery. Related-source groups remain pending until
- * their complete joint collection path is available; never score a carrier
- * independently merely because the single-source path is simpler.
+/** Process one durable delivery with every current or previously grouped source.
+ * Incomplete groups stay pending; a carrier never becomes an independent award.
  */
 export async function consumeValueRequest(
   env: ValueConsumerEnv,
@@ -98,42 +109,151 @@ export async function consumeValueRequest(
     // Historical work is handled by the subscription intake, never this API route.
     if (!Number.isFinite(occurred)) return await finish("source-incomplete");
     if (occurred < start) return await finish("authority");
-    const evidence = await collectValueEvidence(
+    let evidence = await collectValueEvidence(
       github,
       repository.id,
       job.number,
       repository,
     );
-    if (evidence.limitations.length || evidence.relatedPullRequests.length)
-      return await finish("source-incomplete");
+    if (evidence.limitations.length) return await finish("source-incomplete");
     const policy = await loadValuePolicy(
       github,
       job.owner,
       job.repo,
       evidence.pull.base.sha,
     );
-    const scopes = [
-      {
-        repositoryDatabaseId: evidence.repositoryDatabaseId,
-        pullRequestNumber: evidence.pull.number,
+    const sources = await collectValueGroup(
+      db,
+      github,
+      { evidence, policy },
+      async (source) => {
+        if (!(await ownsValueRequest(db, claim))) return false;
+        const [owner, repo] = source.repository.split("/");
+        if (
+          !(await registeredRepository(db, {
+            owner,
+            repo,
+            repositoryId: source.repositoryDatabaseId,
+          }))
+        )
+          return false;
+        await assertValueInstallation(db, job.installationId);
+        await assertValueInstallationRepositories(github, [source]);
+        return true;
       },
-    ];
+      start,
+    );
+    if (!sources) return await finish("source-incomplete");
+    evidence = sources[0].evidence;
+    const scopes = sources.map(({ evidence: source }) => ({
+      repositoryDatabaseId: source.repositoryDatabaseId,
+      pullRequestNumber: source.pull.number,
+    }));
     if (!(await claimValueSources(db, claim, scopes)))
       return await finish("retry");
-    const current = await readValueDecision(db, evidence, policy);
-    if (current.status === "assessed" || current.status === "unresolved")
-      return await finish("current", true);
     const mayCall = async () => {
       if (
         !(await ownsValueRequest(db, claim)) ||
-        !(await ownsValueSources(db, claim, scopes)) ||
-        !(await registeredRepository(db, job))
+        !(await ownsValueSources(db, claim, scopes))
       )
         return false;
+      for (const { evidence: source } of sources) {
+        const [owner, repo] = source.repository.split("/");
+        if (
+          !(await registeredRepository(db, {
+            owner,
+            repo,
+            repositoryId: source.repositoryDatabaseId,
+          }))
+        )
+          return false;
+      }
       await assertValueInstallation(db, job.installationId);
-      await assertValueInstallationRepositories(github, membership);
+      await assertValueInstallationRepositories(
+        github,
+        sources.map((s) => s.evidence),
+      );
       return true;
     };
+    const decisions = await Promise.all(
+      sources.map((s) => readValueDecision(db, s.evidence, s.policy)),
+    );
+    const previousGroups = await Promise.all(
+      sources.map((s) =>
+        currentWorkUnitRecord(
+          db,
+          s.evidence.repositoryNodeId,
+          s.evidence.pull.node_id,
+        ),
+      ),
+    );
+    if (sources.length > 1 || previousGroups.some(Boolean)) {
+      const joint = await prepareWorkUnitEvidence(sources);
+      if (joint.limitations.length) return await finish("source-incomplete");
+      const legacy = new Map(
+        sources.map((s, i) => [
+          s.evidence.pull.node_id,
+          decisions[i].latestDigest,
+        ]),
+      );
+      const supersedes = [
+        ...new Set(previousGroups.flatMap((r) => (r ? [r.record_digest] : []))),
+      ].sort();
+      // Validate every existing root, including a sibling group being joined.
+      for (const source of sources) {
+        const history = await readWorkUnitHistory(
+          (after, through) =>
+            workUnitHistory(
+              db,
+              source.evidence.repository,
+              source.evidence.pull.number,
+              after,
+              through,
+            ),
+          {
+            repositoryNodeId: source.evidence.repositoryNodeId,
+            pullRequestNodeId: source.evidence.pull.node_id,
+          },
+        );
+        const decision = await consumeWorkUnitHistory(history, sources, legacy);
+        if (decision.status === "assessed" || decision.status === "unresolved")
+          return await finish("current", true);
+      }
+      const result = await assessWorkUnits(env, joint, mayCall, {
+        db,
+        installationId: job.installationId,
+        attemptId: `value:${crypto.randomUUID()}`,
+        maximumMicroUsd: maximum,
+        approvedMonthlyMicroUsd: monthly,
+      });
+      if (result.blocked)
+        return await finish(
+          result.blockReason === "budget" ? "budget" : "authority",
+        );
+      if (!result.verdict) return await finish("retry");
+      if (!(await mayCall())) return await finish("authority");
+      const legacyPredecessors = [
+        ...new Set(
+          decisions.flatMap((d) => (d.latestDigest ? [d.latestDigest] : [])),
+        ),
+      ].sort();
+      await publishWorkUnitAssessment(
+        env,
+        { ...job, itemKind: "pull_request" },
+        result,
+        joint,
+        revision,
+        supersedes,
+        legacyPredecessors,
+        supersedes.length || legacyPredecessors.length
+          ? "Source group changed; automatic provisional reassessment"
+          : null,
+      );
+      return await finish("published", true);
+    }
+    const current = decisions[0];
+    if (current.status === "assessed" || current.status === "unresolved")
+      return await finish("current", true);
     const result = await assessValue(env, evidence, policy, mayCall, {
       db,
       installationId: job.installationId,
