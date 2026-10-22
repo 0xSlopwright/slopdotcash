@@ -889,6 +889,9 @@ async function createTraceIntent(
   }
   const body = await readJsonObject(request);
   const sha256 = requiredString(body, "sha256", validSha256);
+  if (run.traceSha256 !== null && run.traceSha256 !== sha256) {
+    fail(409, "trace_conflict", "The run already has a different trace");
+  }
   const sizeBytes = body.sizeBytes;
   if (
     typeof sizeBytes !== "number" ||
@@ -1008,6 +1011,27 @@ async function uploadTraceCapability(
       createdByGithubId: intent.githubId,
       createdAt: deps.now().toISOString(),
     } as const);
+  // R2 objects are create-only and permanent, so an upload that cannot attach
+  // must be refused before its bytes are written, not after.
+  const run = await deps.persistence.getRun(intent.runId);
+  if (run === null || run.githubId !== intent.githubId) {
+    fail(404, "not_found", "Run not found");
+  }
+  if (run.state === "finalized") {
+    fail(409, "run_finalized", "A finalized run cannot be changed");
+  }
+  if (run.traceSha256 !== null && run.traceSha256 !== actualDigest) {
+    fail(409, "trace_conflict", "The run already has a different trace");
+  }
+  if (
+    !(await deps.persistence.reserveTraceWrite({
+      runId: intent.runId,
+      githubId: intent.githubId,
+      object,
+    }))
+  ) {
+    fail(409, "trace_conflict", "The run cannot reserve this trace for upload");
+  }
   await deps.persistence.putTraceBytes(object, bytes);
   const result = await deps.persistence.attachTrace({
     runId: intent.runId,
