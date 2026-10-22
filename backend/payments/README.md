@@ -176,6 +176,25 @@ reserved amounts in the vault asset, with the block time ("as of") and a stale
 warning past `staleAfterMs`. It shows "not reported" for a NULL counter and no
 totals before the first read, never zero.
 
+`POST /api/v1/payments/projects/<id>/solana-funding` reviews or checks a
+wallet funding action. It needs no Slop session: the depositor or owner signs
+in their wallet. A `review` request names `network`, `vault`, `wallet`,
+`operation` (`deposit` or `withdraw`) and decimal `amount`. The service reads
+mint precision, verifies the current deployment and balances, simulates the
+unsigned transaction, and returns its review and blockhash lifetime. A `check`
+request instead supplies base-unit `gross`, the reviewed `blockhash`, and
+`transactionId`. It accepts only the exact wallet-signed message on the
+finalized chain, with matching token balance changes. It never signs, sends,
+changes an award or writes payment state.
+
+Pages resolves the vault from the current D1 registry and `PAYMENT_NETWORKS`.
+Its `PAYMENT_RPC_URLS` binding supplies HTTPS RPC endpoints for those networks;
+keep this private if a URL includes a provider credential. No RPC URL is
+accepted from a request or returned in the plan. Missing configuration fails
+closed. Passive page views still use the cached snapshot route above. A wallet
+rejection, unconfirmed transaction and finalized failure are separate states;
+an uncertain send must be reconciled before another send.
+
 Migration `0014` adds `payment_direct_transfers`: transfers that a project
 creator sent outside escrow, imported from the reviewed `disclosures/*.json`
 records. Each deploy runs `scripts/prepare-payments-import.ts` after the

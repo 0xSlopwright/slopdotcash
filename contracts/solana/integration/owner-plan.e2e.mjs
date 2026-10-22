@@ -16,6 +16,11 @@ import {
   sendAndConfirmTransaction,
   Transaction,
 } from "@solana/web3.js";
+import {
+  checkSolanaFunding,
+  prepareSolanaFunding,
+} from "../.local/funding.mjs";
+import { handlePaymentsApi } from "../.local/handler.mjs";
 import { listProjects } from "../scripts/config-plan.mjs";
 import { awardIdFor, ownerPlan } from "../scripts/owner-plan.mjs";
 import {
@@ -124,6 +129,99 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
     );
     await provider.connection.confirmTransaction(signature, "finalized");
   }
+  const fundingConfig = {
+    ...deployment,
+    rpcUrl: provider.connection.rpcEndpoint,
+    genesisHash: expectedGenesis,
+    projectId: "owner-plan-project",
+    network: "solana-localnet",
+    mint: deployment.asset,
+  };
+  async function fundingApi(body) {
+    const request = new Request(
+      "https://slop.cash/api/v1/payments/projects/owner-plan-project/solana-funding",
+      {
+        method: "POST",
+        headers: {
+          origin: "https://slop.cash",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          network: "solana-localnet",
+          vault: deployment.vault,
+          ...body,
+        }),
+      },
+    );
+    const response = await handlePaymentsApi(request, {
+      db: {
+        prepare() {
+          throw new Error(
+            "Permissionless funding must not query a member session",
+          );
+        },
+      },
+      solanaFundingConfig: async (id, network, vault) => {
+        assert.equal(id, "owner-plan-project");
+        assert.equal(network, "solana-localnet");
+        assert.equal(vault, deployment.vault);
+        return fundingConfig;
+      },
+    });
+    const result = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(result));
+    assert.equal(
+      JSON.stringify(result).includes(provider.connection.rpcEndpoint),
+      false,
+    );
+    return result;
+  }
+  async function executeFunding(operation, gross, signer = owner) {
+    const intent = { operation, gross, wallet: signer.publicKey.toBase58() };
+    const units = BigInt(gross);
+    const amount = `${units / 1_000_000n}.${(units % 1_000_000n).toString().padStart(6, "0")}`;
+    const { plan } = await fundingApi({ step: "review", ...intent, amount });
+    assert.equal(
+      JSON.stringify(plan).includes(provider.connection.rpcEndpoint),
+      false,
+    );
+    const transaction = Transaction.from(
+      Buffer.from(plan.transaction, "base64"),
+    );
+    assert.equal(
+      transaction.signatures.every((s) => s.signature === null),
+      true,
+    );
+    assert.equal(transaction.feePayer.toBase58(), signer.publicKey.toBase58());
+    // Preserve the exact reviewed blockhash. sendAndConfirmTransaction replaces
+    // it before signing, which is a different action from the pending intent.
+    transaction.sign(signer);
+    const signature = await provider.connection.sendRawTransaction(
+      transaction.serialize(),
+      { skipPreflight: false, maxRetries: 0 },
+    );
+    await provider.connection.confirmTransaction(signature, "finalized");
+    assert.equal(
+      (
+        await fundingApi({
+          step: "check",
+          ...intent,
+          blockhash: plan.blockhash,
+          transactionId: signature,
+        })
+      ).status,
+      "finalized",
+    );
+    await assert.rejects(
+      checkSolanaFunding(
+        fundingConfig,
+        { ...plan, gross: String(BigInt(gross) + 1n) },
+        signature,
+      ),
+      /does not match/,
+    );
+    return plan;
+  }
   // initialize refuses a deployment whose authorities differ from the pinned Config.
   const pinned = deployment.feeRecipient;
   deployment.feeRecipient = Keypair.generate().publicKey.toBase58();
@@ -153,7 +251,7 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
     mint,
     donor.publicKey,
   );
-  await mintTo(
+  const minted = await mintTo(
     provider.connection,
     owner,
     mint,
@@ -161,10 +259,25 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
     owner,
     40_000_000n,
   );
-  await execute(
-    "deposit",
-    { grossMicro: "40000000", depositor: donor.publicKey.toBase58() },
-    donor,
+  await provider.connection.confirmTransaction(minted, "finalized");
+  await assert.rejects(
+    prepareSolanaFunding(fundingConfig, {
+      operation: "deposit",
+      wallet: donor.publicKey.toBase58(),
+      gross: "40000001",
+    }),
+    /balance is too low/,
+  );
+  const deposit = await executeFunding("deposit", "40000000", donor);
+  assert.equal(deposit.decimals, 6);
+  assert.equal(deposit.fee, "0");
+  await assert.rejects(
+    prepareSolanaFunding(fundingConfig, {
+      operation: "withdraw",
+      wallet: donor.publicKey.toBase58(),
+      gross: "1",
+    }),
+    /Only the vault owner's wallet/,
   );
   const sourceDigest = hash("owner-plan-source");
   await assert.rejects(
@@ -232,7 +345,18 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
       "finalized",
     ),
   );
-  await execute("withdraw", { grossMicro: "75000000" });
+  await assert.rejects(
+    prepareSolanaFunding(fundingConfig, {
+      operation: "withdraw",
+      wallet: owner.publicKey.toBase58(),
+      gross: "75000001",
+    }),
+    /free balance/,
+  );
+  const withdrawal = await executeFunding("withdraw", "75000000");
+  assert.equal(withdrawal.freeBalance, "75000000");
+  assert.equal(withdrawal.fee, "1500000");
+  assert.equal(withdrawal.net, "73500000");
   assert.equal(
     (await getAccount(provider.connection, vault)).amount,
     25_000_000n,

@@ -19,6 +19,8 @@
     "src/lib/payments/**/*.ts",
     "contracts/evm/adapter.ts",
     "contracts/solana/adapter.ts",
+    "contracts/solana/transactions.ts",
+    "contracts/solana/funding.ts",
     "contracts/vault-totals.ts",
     "src/lib/base58.ts",
     "src/lib/byte-encoding.ts",
