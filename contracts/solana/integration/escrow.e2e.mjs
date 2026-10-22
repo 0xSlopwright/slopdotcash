@@ -104,9 +104,14 @@ async function commit(
   principal,
   origin = id,
   awardId = awardOf(origin),
+  bounty = false,
 ) {
-  return program.methods
-    .commit([...awardId], hash(`source:${origin}`), bn(actor), bn(principal))
+  return program.methods[bounty ? "commitBounty" : "commit"](
+    [...awardId],
+    hash(`source:${origin}`),
+    bn(actor),
+    bn(principal),
+  )
     .accountsStrict({
       owner: payer.publicKey,
       project,
@@ -520,7 +525,15 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
       (await balance(vault)),
     1_000_000_000n,
   );
-  await provider.connection.confirmTransaction(firstPayment, "finalized");
+  // This payment can precede a long attack suite. Query retained history before
+  // subscribing: the legacy confirmation helper can miss an already rooted signature.
+  const previousPayment = await provider.connection.getSignatureStatuses(
+    [firstPayment],
+    { searchTransactionHistory: true },
+  );
+  assert.equal(previousPayment.value[0]?.err, null);
+  if (previousPayment.value[0]?.confirmationStatus !== "finalized")
+    await provider.connection.confirmTransaction(firstPayment, "finalized");
   await provider.connection.confirmTransaction(polluted, "finalized");
   const evidence = {
     programId: program.programId.toBase58(),
@@ -1240,4 +1253,88 @@ test("permissionless deposit, 18-, 9- and 0-decimal mints, 2% withdrawal fee, To
     initializeFor(mint2022, "token-2022", TOKEN_2022_PROGRAM_ID).send(),
     /InvalidProgramId|AccountOwnedByWrongProgram/,
   );
+});
+
+test("private bounty pays exactly 75/25 and ordinary verification refuses its policy", async () => {
+  destination = await createAccount(
+    provider.connection,
+    payer,
+    mint,
+    recipient.publicKey,
+  );
+  await mintTo(provider.connection, payer, mint, source, payer, 100_000_000n);
+  await program.methods
+    .deposit(bn(100_000_000))
+    .accountsStrict({
+      depositor: payer.publicKey,
+      project,
+      mint,
+      vault,
+      source,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .rpc();
+  const actor = 981;
+  await bind(actor, recipient);
+  const beforeNet = await balance(destination);
+  const beforeFee = await balance(feeAccount);
+  await assert.rejects(
+    commit(
+      "private-inexact",
+      actor,
+      100_000_001,
+      "private-inexact",
+      awardOf("private-inexact"),
+      true,
+    ),
+    /InvalidAmount/,
+  );
+  await commit(
+    "private-bounty",
+    actor,
+    100_000_000,
+    "private-bounty",
+    awardOf("private-bounty"),
+    true,
+  );
+  await activate();
+  const paid = await pay("private-bounty", actor, destination);
+  await provider.connection.confirmTransaction(paid, "finalized");
+  const [payment] = escrowInvocations(
+    await parsedTransaction(paid),
+    program.programId.toBase58(),
+  );
+  const config = {
+    rpcUrl: provider.connection.rpcEndpoint,
+    genesisHash: await provider.connection.getGenesisHash(),
+    programId: program.programId.toBase58(),
+    projectPda: project.toBase58(),
+    projectId: "private-bounty",
+    network: "solana:localnet",
+    networkDomain: Buffer.from(network).toString("hex"),
+    vault: vault.toBase58(),
+    mint: mint.toBase58(),
+    owner: payer.publicKey.toBase58(),
+    identityAuthority: authority.publicKey.toBase58(),
+    feeRecipient: feeOwner.publicKey.toBase58(),
+    ...expectedDeployment,
+    bindingDelaySeconds: String(DELAY),
+    rotationDelaySeconds: String(ROTATION_DELAY),
+  };
+  const evidence = {
+    transactionId: paid,
+    eventIndex: payment.index,
+    kind: "paid",
+    obligationId: awardOf("private-bounty").toString("hex"),
+  };
+  const verified = await solanaPaymentAdapter({
+    ...config,
+    payoutPolicy: "security-bounty",
+  }).verifyFinalized(evidence);
+  assert.equal(verified.netMicro, "75000000");
+  assert.equal(verified.feeMicro, "25000000");
+  await assert.rejects(solanaPaymentAdapter(config).verifyFinalized(evidence));
+  assert.equal((await balance(destination)) - beforeNet, 75_000_000n);
+  assert.equal((await balance(feeAccount)) - beforeFee, 25_000_000n);
+  await assert.rejects(pay("private-bounty", actor, destination));
 });

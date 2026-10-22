@@ -58,6 +58,7 @@ Suggested pilot targets are product targets, not observed performance: at least 
 | --- | --- | --- |
 | GitHub registration | OAuth identity worker and separate points membership session | MVP: one account experience with properly scoped sessions |
 | X connection | OAuth connection, opt-in display, one-time points | MVP: expose within account settings; verify live provider activation |
+| Telegram connection | None | MVP addition: bot-verified connection in account settings, opt-in display, no points (SOC-02) |
 | Wallet records | Append-only backend claims; independent Base and Solana lineages | MVP: unified wallet UX, independent Robinhood Chain and Ethereum lineages, possession/consent rules, recovery, and payout binding |
 | Wallet page | Inspected form validates Solana addresses | MVP: every supported network and network-specific status |
 | Contribution skills | General bootstrap plus canonical project contributor/reviewer skills | MVP: discovery without an existing checkout; project skills generated from the D1 project revision with one canonical generic template (SKL-03) |
@@ -120,6 +121,12 @@ After OAuth, show the verified GitHub identity and a short setup screen. Require
 **SOC-01.** Connect X only from a signed-in GitHub account, using OAuth with state and PKCE. Verify the provider's stable account ID. Linking, public display, and notifications are separate choices. No posting, following, messaging, follower import, or ongoing social monitoring is necessary.
 
 Preserve the existing minimal-storage design: account ID, observed handle, verification time, and visibility; no persistent provider token or refresh token. Reconnection refreshes a changed handle. Disconnect hides the link and revokes access where supported; it cannot reissue the connection award. Conflicting connections enter recovery rather than silently moving another person's identity. X failure never blocks GitHub work or payments. The provider's documented authorization flow supports scoped PKCE authorization; live access remains an activation dependency. [X OAuth documentation](https://docs.x.com/fundamentals/authentication/oauth-2-0/authorization-code)
+
+### Telegram connection
+
+**SOC-02.** Telegram connection, proposed 20 October 2026 by the operator and approved by the owner's merge. Connect Telegram only from a signed-in GitHub account. The site never loads Telegram scripts or frames (the content security policy allows neither) and never asks for a phone number or a Telegram password. The account issues a single-use code behind a `t.me/<bot>?start=<code>` deep link that expires after ten minutes; Telegram's delivery of the member's `/start <code>` message to the Slop bot webhook, authenticated by the webhook secret header, is the only proof of the numeric Telegram account ID. The webhook accepts nothing but that message in a private chat and replies only there.
+
+Store the numeric account ID, the optional username snapshot, the verification time and the visibility choice; no phone number, display name, photo, chat history or group membership. A Telegram account is reserved to the first GitHub identity that verifies it and cannot move to another account; disconnecting hides the link and keeps the reservation. Public display needs both the public membership and the public link opt-in. The connection earns no points and confers no GitHub, project, organization, wallet or payment authority. Telegram failure never blocks GitHub work or payments. Group gating and any bot answering in a community group are separate proposals and are not part of this requirement. [Telegram deep links](https://core.telegram.org/api/links#bot-links), [Telegram Bot API webhooks](https://core.telegram.org/bots/api#setwebhook)
 
 ## 6 Wallets and payment identity
 
@@ -199,6 +206,8 @@ A fully automatic listing transition would require a separately approved, narrow
 **PRJ-03 — Defaults.** Recommend bounded approved work, evidence of a useful result, reuse of existing code, real workflow tests, exact-head review, disclosure of agent identity, no token-volume rewards, private security reporting, and conflict-of-interest rules. For UI work, use the repository's required walkthrough and evidence videos. Show the resulting guide as editable policy text before publication; templates do not invent feature approval.
 
 **PRJ-04 — Project updates.** A maintainer edits the dashboard draft and sees a field-level diff, affected skills, effective date, and affected cycles. An admin approves the reviewed change at `/admin` as the next append-only registry revision; a stale revision fails instead of overwriting. Publish only the saved revision, and regenerate the project skills from it (SKL-03). Retry failed synchronization without creating duplicate projects. Preserve old skill and policy versions for open work.
+
+**PRJ-05 — Referral attribution (proposed 20 October 2026 by the operator; approved by the owner's merge).** An applicant may arrive by a referral link, `/projects/new?ref=<github-login>`. The form shows the named referrer and lets the applicant clear it. At submission the API resolves the login to an account that has signed in to slop.cash and records its immutable GitHub actor ID and login on the application; approval copies them to the project row, and neither row can change them afterwards. The applicant, the manifest steward and Slop team accounts (admins and moderators) are refused as referrers, with the reason, and the submission fails instead of dropping the referral silently. One referrer per project, for the life of the project. The record is attribution only: nothing in the registry, scoring, rewards, settlement or points reads it, and it carries no entitlement. Any program that pays for referrals is a separate decision with its own PRD rows, counsel review and funding line before it exists.
 
 Economic changes take effect at a future UTC month boundary. Do not lower an already funded award, retroactively exclude accepted work, or change the fee on existing obligations. Security pauses may stop new intake immediately, with a visible reason and a process for existing submissions. Repository transfers require renewed authority verification and immutable-ID continuity. Removing the App stops new bot work; it does not erase earned awards or receipts.
 
@@ -996,6 +1005,7 @@ served files. Issue #534 tracks this approved operational change.
 | Deployment branch policy | Resolve open staging/production proposal before implementation release work | Release owner |
 | Security bounty terms | **Product direction recorded 13 October 2026; approved by the repository owner on 14 October 2026:** MVP private routing under SEC-01–18 and MVP-13; critical plus verified potential funds loss; configurable gross amount; 75/25 researcher/Slop split; Slop commits $10,000 gross for Umia ($7,500 public researcher bounty). The commitment is not a verified deposit. SEC-01–18 launch choices remain explicit | Repository owner; program maintainer, security, finance and legal owners approve activation of each program |
 | Robinhood Chain escrow settlement | **Proposed 13 October 2026 by Drew Pierson; approved by the repository owner on 14 October 2026:** Robinhood Chain (chain id 4663) is a third escrow settlement network under FND-02 with Paxos USDG as its asset, run by the existing EVM contract and adapter with its own network definition, wallet lineage and consent; the legacy monthly-pool rail stayed Base and Solana until its removal on 18 October 2026; fees and fee incidence are unchanged except for the withdrawal fee decisions of 18 and 19 October 2026; the testnet is prepare-only and a human broadcasts; no project is activated and the hosted executor's mainnet rejection stands; destination binding and payment dispatch reuse the PAY-05 design the repository owner approved on 14 October 2026 and stay blocked on mainnet under PAY-05; the Robinhood Chain testnet scenario is part of the MVP completion evidence. The Robinhood Chain fee recipient is the Base fee wallet `0x8f77c37d8650776bfe73c9b12b15209ee15d9b86` (decided 19 October 2026). Still open: the Robinhood Chain identity authority, the first project, and when the executor may accept a mainnet network (`docs/robinhood-chain-escrow-design.md`). The 18 October 2026 decisions remove the legacy rail and apply the 2% withdrawal fee (#907, 19 October 2026) on Robinhood Chain too | Repository owner |
+| Telegram connection | **Proposed 20 October 2026 by the operator; approved by the owner's merge:** an optional Telegram connection beside the X connection (SOC-02), proven by the Slop bot receiving the member's `/start <code>` message, storing account ID, username snapshot, time and visibility only; no points, no authority, no group gating or community bot in scope | Product owner |
 
 No unresolved decision in this table is permission for an agent to invent a new economic rule. The drafting can complete now; implementation must bind to the approved choices.
 
@@ -1003,7 +1013,7 @@ No unresolved decision in this table is permission for an agent to invent a new 
 
 Version the Slopbot and scoring protocols before enabling the requested closures and negative events. Existing nonnegative points validators and score projections need signed-event support and explicit financial boundaries. Start penalties at a published effective date; do not punish old closed work. Require a security-vetting transition for existing community/featured project revisions before continuing executable onboarding. Preserve membership, historical outcomes and exact closure attribution during backfill; absence of bot identity evidence is not proof of a bot penalty.
 
-Inventory account memberships, points journals, X connections, actor aliases, wallet claims, D1 project revisions, cycle records, finalized receipts and the removed legacy funding records in git history before cutover. Reuse immutable IDs and preserve predecessor hashes. Import neither passwords nor wallet secrets; none should be needed.
+Inventory account memberships, points journals, X and Telegram connections, actor aliases, wallet claims, D1 project revisions, cycle records, finalized receipts and the removed legacy funding records in git history before cutover. Reuse immutable IDs and preserve predecessor hashes. Import neither passwords nor wallet secrets; none should be needed.
 
 Map legacy wallet observations to historical claims with their original proof level. Ask contributors to confirm a destination before using it in the new protected protocol. Preserve the old address bound to already executed receipts. Reconcile previously reported direct payments before creating any new obligation; ambiguous transfers require resolution, not automatic repayment.
 
@@ -1086,3 +1096,34 @@ The independent audit and counsel gate (#903) remains before the mainnet tasks
 acceptance scenario uses the approved 2% withdrawal fee, as well as the 2% payout
 fee. An older issue's 5% instruction does not override that decision. Neither a
 source merge nor this close-out direction is an MVP completion record.
+
+## Private bounty payment implementation decision — 22 October 2026
+
+For issue #910, the repository owner approved using the application's existing
+payment rails for private bounty awards. Reuse destination authorization,
+execution recovery and canonical finalized receipt verification. The bounty
+split is 75% researcher and 25% Slop, with no additional ordinary payout fee.
+Use the same finality rules as ordinary payments: unresolved sends remain held;
+only proved finalized failure permits a fresh attempt. A finalized successful
+payment is immutable and cannot be reversed by an application toggle.
+
+Case records, decisions, payment records, queues, counters and notices stay
+restricted. Use a separate bounty vault and private ledger so ordinary public
+balances, cycles and account views reveal no case-related amounts or deltas.
+The reporter accepts the selected rail's public chain visibility before a
+financial approver prepares the unsigned owner commitment. Public chain data
+includes actor number, addresses, timing and amounts; no case reference or report
+digest is submitted on chain. Existing USD-denominated obligations do not
+silently become USDC obligations.
+
+Umia is an example only. It is not an implementation dependency, a special
+payment route, or an activation target. This decision permits implementation
+and synthetic testing; it does not open a program, approve an award, deploy a
+mainnet contract, send a live payment or authorize public disclosure.
+
+Any registered user may submit a report. Each project's designated maintainers
+review that project's reports through its current program roles. A reporter
+cannot review their own report, and technical and financial decisions remain
+independent. The owner authorized `lalalune` and `SlopDotCash/slopdotcash` for
+synthetic hosted testing. A single account can test reporting and refusal of
+self-approval; it cannot prove a completed independent approval workflow.

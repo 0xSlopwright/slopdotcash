@@ -48,6 +48,12 @@ const SETTLEMENT_CHAIN_NAMES: Record<string, string> = Object.fromEntries(
 );
 const PROPOSAL_DRAFT_KEY = "slop:project-proposal:v1";
 const PROPOSAL_STEP_KEY = `${PROPOSAL_DRAFT_KEY}:step`;
+/**
+ * The referrer named by a `?ref=<login>` link (PRJ-05). It is kept apart
+ * from the draft so a resumed draft keeps it, and cleared after submission.
+ */
+const REFERRER_KEY = "slop:project-referrer:v1";
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
 /** PRJ-03 default, shown as editable text the maintainer can replace. */
 const DEFAULT_CRITERIA =
   "Merged pull requests that fix a reproduced bug or deliver a change the maintainers asked for, with tests or other evidence that the result works.";
@@ -286,7 +292,7 @@ function proposalErrors(p: Proposal): FieldErrors {
     errors.integrationBranch = "Enter a valid Git branch name.";
   const stewardName = lengthError(p.stewardName, 2, 120);
   if (stewardName) errors.stewardName = stewardName;
-  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u.test(p.stewardLogin))
+  if (!GITHUB_LOGIN.test(p.stewardLogin))
     errors.stewardLogin = "Enter a GitHub login.";
   if (!NUMERIC_ID.test(p.stewardActorId))
     errors.stewardActorId = "Enter the steward's numeric GitHub ID.";
@@ -381,6 +387,32 @@ function proposalErrors(p: Proposal): FieldErrors {
         "Enter a positive dollar amount, or remove the review budget.";
   }
   return errors;
+}
+
+/** The `?ref=` login from the current link, else the one stored earlier. */
+function initialReferrer(): string | null {
+  try {
+    const fromLink = new URLSearchParams(window.location.search).get("ref");
+    if (fromLink !== null) {
+      const login = fromLink.trim();
+      if (GITHUB_LOGIN.test(login)) {
+        localStorage.setItem(REFERRER_KEY, login);
+        return login;
+      }
+    }
+    const stored = localStorage.getItem(REFERRER_KEY);
+    return stored !== null && GITHUB_LOGIN.test(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function forgetReferrer() {
+  try {
+    localStorage.removeItem(REFERRER_KEY);
+  } catch {
+    // Nothing stored, or storage is unavailable; the page state is cleared.
+  }
 }
 
 function readDraft(): Proposal | null {
@@ -725,6 +757,7 @@ export default function ProjectProposalPage() {
     () => readDraft() ?? EMPTY_PROPOSAL,
   );
   const [restored] = useState(() => readDraft() !== null);
+  const [referrer, setReferrer] = useState<string | null>(initialReferrer);
   const [step, setStep] = useState(() => {
     try {
       const stored = localStorage.getItem(PROPOSAL_STEP_KEY);
@@ -1040,10 +1073,20 @@ export default function ProjectProposalPage() {
     | { status: "error"; message: string }
     | { status: "submitted"; application: ProjectApplication }
   >({ status: "idle" });
+  function clearReferrer() {
+    forgetReferrer();
+    setReferrer(null);
+  }
   function submit() {
     setSubmission({ status: "submitting" });
-    submitProjectApplication(manifest as unknown as ProjectDefinition).then(
-      ({ application }) => setSubmission({ status: "submitted", application }),
+    submitProjectApplication(
+      manifest as unknown as ProjectDefinition,
+      referrer,
+    ).then(
+      ({ application }) => {
+        forgetReferrer();
+        setSubmission({ status: "submitted", application });
+      },
       (error: unknown) =>
         setSubmission({
           status: "error",
@@ -1766,6 +1809,21 @@ export default function ProjectProposalPage() {
                     unverified
                   </dd>
                 </div>
+                {referrer ? (
+                  <div>
+                    <dt>Referred by</dt>
+                    <dd>
+                      @{referrer} · recorded with the application{" "}
+                      <button
+                        className="text-button"
+                        onClick={clearReferrer}
+                        type="button"
+                      >
+                        Clear referral
+                      </button>
+                    </dd>
+                  </div>
+                ) : null}
                 <div>
                   <dt>License</dt>
                   <dd>{licenseKnown ? p.licenseSpdx : "Unknown"}</dd>
@@ -1795,6 +1853,9 @@ export default function ProjectProposalPage() {
                 <p>
                   Application {submission.application.id} · submitted by @
                   {submission.application.applicant.githubLogin}
+                  {submission.application.referrer
+                    ? ` · referred by @${submission.application.referrer.githubLogin}`
+                    : ""}
                 </p>
               </div>
             ) : valid ? (

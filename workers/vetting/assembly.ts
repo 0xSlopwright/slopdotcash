@@ -4,6 +4,12 @@ import { constants } from "node:fs";
 import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseAssemblyManifest } from "./assembly-manifest";
+import { indexSyscalls, syscallEvidence } from "./events";
+import { assertFilesystemReferences } from "./filesystem-capture";
+import {
+  bindProvenanceSource,
+  parseProvenanceReport,
+} from "./provenance-report";
 
 const hash = (bytes: Uint8Array | string) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -93,6 +99,7 @@ export async function assembleEvidence(input: {
     inventorySha256: string;
     profileSha256: string;
   };
+  provenanceEvidence?: { directory: string; reportSha256: string };
   outputDirectory: string;
 }) {
   const queueBytes = await bytes(
@@ -129,7 +136,9 @@ export async function assembleEvidence(input: {
   ]);
   const items: { id: string; text: string; sha256: string }[] = [];
   const files: { role: string; sha256: string; bytes: number }[] = [];
+  const generated = new Map<string, Buffer>();
   let total = 0;
+  let structuredTrace: Buffer | undefined;
   function add(id: string, value: Buffer) {
     const text = new TextDecoder("utf-8", {
       fatal: true,
@@ -143,6 +152,43 @@ export async function assembleEvidence(input: {
   }
   add("queue", queueBytes);
   add("source-inventory", sourceBytes);
+  if (input.provenanceEvidence) {
+    const evidence = input.provenanceEvidence;
+    const raw = await bytes(
+      join(evidence.directory, "report.json"),
+      evidence.reportSha256,
+      2 * 1024 * 1024,
+    );
+    const report = parseProvenanceReport(JSON.parse(raw.toString("utf8")));
+    bindProvenanceSource(report, source, String(queue.sourceInventorySha256));
+    if (report.inputs[0].bytes !== sourceBytes.length)
+      throw new Error("Provenance source size mismatch");
+    for (const [index, name] of [
+      [1, "source.tar"],
+      [2, "release.tar"],
+    ] as const) {
+      const descriptor = report.inputs[index];
+      const content = await bytes(
+        join(evidence.directory, name),
+        descriptor.sha256,
+        32 * 1024 * 1024,
+      );
+      if (content.length !== descriptor.bytes)
+        throw new Error("Provenance archive size mismatch");
+      files.push({
+        role: `provenance-${descriptor.role}`,
+        sha256: descriptor.sha256,
+        bytes: content.length,
+      });
+    }
+    add("source-release-comparison", raw);
+    for (const gap of [
+      ...report.visibilityGaps,
+      ...report.sourceVisibilityGaps,
+    ])
+      visibility.add(gap);
+  }
+
   const objects = new Set<string>();
   for (const value of [...source.records, ...queue.inputs]) {
     const entry = record(value);
@@ -438,6 +484,101 @@ export async function assembleEvidence(input: {
       )
         throw new Error("Retained guest output differs from actual serial");
       add(`untrusted-${field}`, content);
+      if (field === "trace") {
+        if (
+          !Number.isInteger(receipt.exitCode) ||
+          typeof receipt.termination !== "string" ||
+          typeof vm.termination !== "string"
+        )
+          throw new Error("Guest collector termination evidence is missing");
+        const indexed = indexSyscalls(content, {
+          expectedSha256: String(receipt.traceSha256),
+          collectorExitCode: Number(receipt.exitCode),
+          collectorTermination: receipt.termination,
+          vmTermination: vm.termination,
+        });
+        const structured = syscallEvidence(indexed);
+        structuredTrace = structured.bytes;
+        files.push({
+          role: "syscall-index",
+          sha256: structured.indexSha256,
+          bytes: structured.bytes.length,
+        });
+        add("syscall-review", structured.review);
+        const summary = record(JSON.parse(structured.review.toString("utf8")));
+        for (const gap of gaps(summary.visibilityGaps)) visibility.add(gap);
+      }
+    }
+    if (receipt.filesystemSha256 !== undefined) {
+      const capture = await bytes(
+        join(input.vmEvidence.directory, "guest-filesystem.json"),
+        String(receipt.filesystemSha256),
+        2 * 1024 * 1024,
+      );
+      if (
+        frame.filesystemSha256 !== receipt.filesystemSha256 ||
+        typeof frame.filesystem !== "string" ||
+        frame.filesystemEncoding !== "json-utf8" ||
+        !Buffer.from(frame.filesystem, "utf8").equals(capture)
+      )
+        throw new Error("Filesystem evidence differs from actual serial");
+      const document = record(JSON.parse(capture.toString("utf8")));
+      if (
+        document.schema !== "slop-filesystem-capture-v1" ||
+        document.state !== "incomplete" ||
+        document.executionAuthorized !== false ||
+        document.root !== "/tmp/slop-quarantine"
+      )
+        throw new Error("Invalid filesystem evidence");
+      const captured = record(document.objects);
+      if (Object.keys(captured).length > 256)
+        throw new Error("Filesystem object count exceeded");
+      let capturedBytes = 0;
+      const descriptors = [];
+      for (const [sha, encoded] of Object.entries(captured)) {
+        if (!HEX.test(sha) || typeof encoded !== "string")
+          throw new Error("Invalid filesystem object");
+        const content = await bytes(
+          join(input.vmEvidence.directory, `filesystem-object-${sha}`),
+          sha,
+          1024 * 1024,
+        );
+        capturedBytes += content.length;
+        if (
+          capturedBytes > 672 * 1024 ||
+          content.toString("base64") !== encoded
+        )
+          throw new Error("Filesystem content mismatch or limit");
+        descriptors.push({ sha256: sha, bytes: content.length });
+        files.push({
+          role: `captured-filesystem-object:${sha}`,
+          sha256: sha,
+          bytes: content.length,
+        });
+      }
+      assertFilesystemReferences(
+        document,
+        new Map(descriptors.map((entry) => [entry.sha256, entry.bytes])),
+      );
+      files.push({
+        role: "raw-filesystem-capture",
+        sha256: hash(capture),
+        bytes: capture.length,
+      });
+      const summary = Buffer.from(
+        JSON.stringify({ ...document, objects: descriptors }),
+      );
+      generated.set("filesystem-review.json", summary);
+      add("untrusted-filesystem-inventory", summary);
+      for (const gap of gaps(document.visibilityGaps)) visibility.add(gap);
+      for (const gap of [
+        "captured-filesystem-artifacts-not-inspected-or-released",
+        "filesystem-observation-not-atomic-or-independent-host-proof",
+        "filesystem-writes-between-observations-may-be-unseen",
+        "filesystem-paths-outside-declared-root-not-observed",
+        "filesystem-hardlinks-may-alias-paths-outside-root",
+      ])
+        visibility.add(gap);
     }
     if (profile.kernelPolicySha256 !== undefined) {
       const kernel = record(receipt.kernelArtifactGate);
@@ -512,6 +653,16 @@ export async function assembleEvidence(input: {
     join(input.outputDirectory, "slop-evidence-"),
   );
   try {
+    if (structuredTrace)
+      await writeFile(join(directory, "syscall-index.json"), structuredTrace, {
+        flag: "wx",
+        mode: 0o400,
+      });
+    for (const [name, content] of generated)
+      await writeFile(join(directory, name), content, {
+        flag: "wx",
+        mode: 0o400,
+      });
     await writeFile(join(directory, "review-input.json"), review, {
       flag: "wx",
       mode: 0o400,

@@ -38,6 +38,7 @@ const PRODUCTION_ROLES = ["attester"];
  */
 export function paymentStack({
   stack = "test",
+  scope = "ordinary",
   network,
   databaseId,
   databaseName,
@@ -45,6 +46,8 @@ export function paymentStack({
   registry,
   registryDatabase,
 }) {
+  if (!["ordinary", "security-bounty"].includes(scope))
+    throw new Error("Unknown payment scope");
   const policy = Object.hasOwn(ESCROW_NETWORKS, network ?? "")
     ? ESCROW_NETWORKS[network]
     : undefined;
@@ -92,10 +95,17 @@ export function paymentStack({
       );
     seen.add(deployment.projectId);
     const project = projects.find((item) => item.id === deployment.projectId);
-    const reviewed = project?.escrow?.deployments.find(
+    const settlement =
+      scope === "security-bounty"
+        ? project?.securityBounty?.settlement
+        : project?.escrow;
+    const reviewed = settlement?.deployments.find(
       (item) => item.network === network,
     );
-    const expected = reviewed && paymentDeploymentRecord(project.id, reviewed);
+    const expected = reviewed && {
+      ...paymentDeploymentRecord(project.id, reviewed),
+      ...(scope === "security-bounty" ? { payoutPolicy: scope } : {}),
+    };
     if (!expected || !isDeepStrictEqual(expected, deployment))
       throw new Error(
         "Deployment differs from canonical project manifest; publish real chain evidence first",
@@ -103,7 +113,7 @@ export function paymentStack({
   }
   const production = stack === "production";
   const roles = production ? PRODUCTION_ROLES : ROLES;
-  const prefix = production ? `slop-payments-${network}` : databaseName;
+  const prefix = `${production ? `slop-payments-${network}` : databaseName}${scope === "security-bounty" ? "-bounty" : ""}`;
   const names = Object.fromEntries(
     roles.map((role) => [role, `${prefix}-${role}`]),
   );
@@ -131,7 +141,14 @@ export function paymentStack({
     configs[role] = {
       ...common,
       name: names[role],
-      main: resolve(root, signer ? "index.ts" : "../payments/index.ts"),
+      main: resolve(
+        root,
+        signer
+          ? "index.ts"
+          : scope === "security-bounty"
+            ? "../security-payments/index.ts"
+            : "../payments/index.ts",
+      ),
       // Signers sign only for the deployments pinned here at review time. The
       // dispatcher reads its vaults from the registry database (REGISTRY_DB).
       ...(signer
@@ -140,12 +157,21 @@ export function paymentStack({
             d1_databases: [
               ...common.d1_databases,
               // No migrations_dir: this configuration never migrates the registry.
-              { binding: "REGISTRY_DB", ...registryDatabase },
+              {
+                binding: "REGISTRY_DB",
+                ...(scope === "security-bounty"
+                  ? {
+                      database_name: paymentsDatabase.database_name,
+                      database_id: paymentsDatabase.database_id,
+                    }
+                  : registryDatabase),
+              },
             ],
           }),
       vars: signer
         ? {
             PAYMENT_DEPLOYMENTS: JSON.stringify(deployments),
+            ...(scope === "security-bounty" ? { PAYMENT_SCOPE: scope } : {}),
             SIGNER_ROLE: role,
             SIGNER_STACK: stack,
             CHAIN_FAMILY: family,
@@ -194,6 +220,7 @@ async function main() {
   const args = {};
   const allowed = new Set([
     "stack",
+    "scope",
     "network",
     "database-id",
     "database-name",
@@ -219,6 +246,7 @@ async function main() {
   const network = args.network;
   const { names, configs, secret } = paymentStack({
     stack,
+    scope: args.scope,
     network,
     databaseId: args["database-id"],
     databaseName: args["database-name"],

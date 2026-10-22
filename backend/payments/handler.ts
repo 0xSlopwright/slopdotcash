@@ -43,6 +43,12 @@ export interface PaymentsDependencies {
     | (() => Promise<readonly PaymentDeploymentIdentity[]>);
   /** Service binding to the Solana identity attester role; never request-supplied. */
   solanaAttester?: { fetch(request: Request): Promise<Response> };
+  /** Private bounty ledger and its separately scoped attester. Only the
+   * authenticated reporter's binding request may access this ledger. */
+  securityPayments?: {
+    db: D1Database;
+    solanaAttester?: { fetch(request: Request): Promise<Response> };
+  };
   /** Edge cache for public vault snapshot reads (caches.default on Pages). */
   edgeCache?: {
     match(request: Request): Promise<Response | undefined>;
@@ -586,16 +592,40 @@ export async function handlePaymentsApi(
             !/^[A-Za-z0-9+/]+={0,2}$/.test(body.transaction)))
       )
         return json(400, { error: "invalid_request" });
-      if (!deps.solanaAttester)
+      if (!deps.solanaAttester && !deps.securityPayments)
         return json(503, { error: "identity_attester_unavailable" });
-      const payment = await deps.db
-        .prepare(
-          "SELECT o.id obligationId,o.network,o.vault,o.github_user_id githubUserId,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,t.id idempotencyKey FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND o.github_user_id=? AND o.chain='solana' AND o.state='reserved' AND w.source='d1_registry' AND t.state IN ('prepared','unknown','submitted') AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id) ORDER BY t.created_at LIMIT 1",
-        )
+      const bindingQuery =
+        "SELECT o.id obligationId,o.network,o.vault,o.github_user_id githubUserId,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,t.id idempotencyKey FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND o.github_user_id=? AND o.chain='solana' AND o.state='reserved' AND w.source='d1_registry' AND t.state IN ('prepared','unknown','submitted') AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id) ORDER BY t.created_at LIMIT 1";
+      let attester = deps.solanaAttester;
+      let payment = await deps.db
+        .prepare(bindingQuery)
         .bind(body.obligationId, member.github_id)
         .first<Record<string, string>>();
+      if (!payment && deps.securityPayments) {
+        const owned = await deps.db
+          .prepare(
+            "SELECT s.case_id FROM security_settlements s JOIN security_cases c ON c.id=s.case_id WHERE s.obligation_id=? AND c.reporter_github_id=?",
+          )
+          .bind(body.obligationId, member.github_id)
+          .first<{ case_id: string }>();
+        if (owned) {
+          await deps.db
+            .prepare(
+              "INSERT INTO security_case_access_log(case_id,actor_github_id,actor_role,action,at) VALUES(?,?,'reporter','write',?)",
+            )
+            .bind(owned.case_id, member.github_id, now)
+            .run();
+          payment = await deps.securityPayments.db
+            .prepare(bindingQuery)
+            .bind(body.obligationId, member.github_id)
+            .first<Record<string, string>>();
+          attester = deps.securityPayments.solanaAttester;
+        }
+      }
       if (!payment) return json(409, { error: "binding_not_ready" });
-      const response = await deps.solanaAttester.fetch(
+      if (!attester)
+        return json(503, { error: "identity_attester_unavailable" });
+      const response = await attester.fetch(
         new Request(
           `https://identity-attester.internal/v1/${complete ? "complete-bind" : "pay"}`,
           {

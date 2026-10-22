@@ -14,17 +14,25 @@ export function paymentDeployments(
   definitions: unknown,
   environment: "testnet" | "mainnet",
   selectedNetwork?: string,
+  scope: "ordinary" | "security-bounty" = "ordinary",
 ) {
   const result = [];
   for (const project of assertProjectRegistry(definitions)) {
-    for (const deployment of project.escrow?.deployments ?? []) {
+    const policy =
+      scope === "security-bounty"
+        ? project.securityBounty?.settlement
+        : project.escrow;
+    for (const deployment of policy?.deployments ?? []) {
       if (selectedNetwork && deployment.network !== selectedNetwork) continue;
       if (
         ESCROW_NETWORKS[deployment.network].testnet !==
         (environment === "testnet")
       )
         continue;
-      result.push(paymentDeploymentRecord(project.id, deployment));
+      result.push({
+        ...paymentDeploymentRecord(project.id, deployment),
+        ...(scope === "security-bounty" ? { payoutPolicy: scope } : {}),
+      });
     }
   }
   if (new Set(result.map((entry) => entry.projectId)).size !== result.length)
@@ -38,10 +46,13 @@ if (import.meta.main) {
   const environment = process.argv[2];
   if (environment !== "testnet" && environment !== "mainnet")
     throw new Error("Select testnet or mainnet explicitly");
+  if (process.argv[4] !== undefined && process.argv[4] !== "--security-bounty")
+    throw new Error("Unknown payment scope option");
   const deployments = paymentDeployments(
     HISTORICAL_PROJECTS,
     environment,
     process.argv[3],
+    process.argv[4] === "--security-bounty" ? "security-bounty" : "ordinary",
   );
   if (deployments.length === 0)
     throw new Error(

@@ -306,7 +306,10 @@ export async function ownerPlan(input, runtime) {
           })
           .instruction(),
       );
-    } else if (input.operation === "commit") {
+    } else if (
+      input.operation === "commit" ||
+      input.operation === "commit-bounty"
+    ) {
       if (
         !Array.isArray(input.awards) ||
         input.awards.length < 1 ||
@@ -320,14 +323,20 @@ export async function ownerPlan(input, runtime) {
           !Buffer.from(awardId).equals(Buffer.from(awardIdFor(project, source)))
         )
           throw new Error("Award ID is not bound to this project and source");
+        if (
+          input.operation === "commit-bounty" &&
+          BigInt(award.grossMicro) % 4n !== 0n
+        )
+          throw new Error("Bounty split must be exact");
         instructions.push(
-          await program.methods
-            .commit(
-              awardId,
-              source,
-              amount(award.githubUserId),
-              amount(award.grossMicro),
-            )
+          await program.methods[
+            input.operation === "commit-bounty" ? "commitBounty" : "commit"
+          ](
+            awardId,
+            source,
+            amount(award.githubUserId),
+            amount(award.grossMicro),
+          )
             .accountsStrict({
               owner,
               project,

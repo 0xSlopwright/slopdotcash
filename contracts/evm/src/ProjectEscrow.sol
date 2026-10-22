@@ -275,11 +275,21 @@ contract ProjectEscrow {
 
     /// @param sourceDigest Unique per award origin (project/cycle/actor/allocation), not a whole-cycle digest.
     function commitAward(bytes32 id, uint64 actorId, uint128 gross, bytes32 sourceDigest) external onlyOwner {
+        commit(id, actorId, gross, sourceDigest, payoutFee(gross));
+    }
+
+    /// @notice Owner-approved private bounty: exactly 75% to the researcher and 25% to Slop.
+    /// The source must be a random opaque commitment, never a digest of a private report.
+    function commitBountyAward(bytes32 id, uint64 actorId, uint128 gross, bytes32 sourceDigest) external onlyOwner {
+        if (gross % 4 != 0) revert InvalidInput();
+        commit(id, actorId, gross, sourceDigest, gross / 4);
+    }
+
+    function commit(bytes32 id, uint64 actorId, uint128 gross, bytes32 sourceDigest, uint128 fee) private {
         if (actorId == 0 || gross == 0 || sourceDigest == bytes32(0) || id != awardId(sourceDigest)) {
             revert InvalidInput();
         }
         if (awards[id].actorId != 0 || consumedSources[sourceDigest]) revert DuplicateAward();
-        uint128 fee = payoutFee(gross);
         if (gross > freeBalance) revert InsufficientFreeBalance();
         freeBalance -= gross;
         reservedPrincipal += gross - fee;
