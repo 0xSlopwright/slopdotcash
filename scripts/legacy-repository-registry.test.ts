@@ -5,6 +5,7 @@
  * at admission and keeps accepting the historical id.
  */
 import { expect, test } from "bun:test";
+import { readdirSync } from "node:fs";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import {
   handleProjectApi,
@@ -80,10 +81,11 @@ test("a legacy alias is bound to the same historical id", () => {
 async function submit(id: string): Promise<{ status: number; body: unknown }> {
   const deps: ProjectApiDependencies = {
     persistence: new CloudflareProjectPersistence(
-      sqliteD1([
-        "0019_project_registry.sql",
-        "0020_project_application_github_check.sql",
-      ]).db,
+      sqliteD1(
+        readdirSync(new URL("../migrations/", import.meta.url))
+          .filter((name) => name.endsWith(".sql"))
+          .sort(),
+      ).db,
     ),
     adminGithubIds: new Set(["900000001"]),
     now: () => new Date("2026-10-19T12:00:00.000Z"),
