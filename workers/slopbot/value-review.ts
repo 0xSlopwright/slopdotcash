@@ -6,11 +6,11 @@ import {
 } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
 import type { ModelEnv } from "./models";
+import type { ValueEvidence } from "./value-evidence";
 import {
   runValueInference,
   type ValueInferenceBudget,
 } from "./value-inference";
-import type { ValueEvidence } from "./value-evidence";
 import type { SubscriptionResult } from "./value-producer";
 
 /** Callers must reserve an approved inference budget before invoking this.
