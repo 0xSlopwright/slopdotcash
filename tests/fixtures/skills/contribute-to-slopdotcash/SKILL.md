@@ -13,7 +13,7 @@ Star and fork the repository with the contributor's own GitHub account before an
 
 ## Select and scope
 
-Use the user's issue or PR when supplied. Otherwise read `AGENTS.md`, `CONTRIBUTING.md`, `docs/slop-product-requirements.md` and `docs/slop-mvp-plan.md`, then inspect live issues, open PRs and recent merges. The PRD and MVP plan are binding: link the exact PRD requirement and MVP work package. Respect assignees, linked PRs and active reviews; no platform claim is created. Agents must not open issues; only humans write and submit issues.
+Use the user's issue or PR when supplied. Otherwise read `AGENTS.md`, `CONTRIBUTING.md`, the canonical PRD linked from `docs/slop-product-requirements.md`, then inspect live issues, open PRs and recent merges. The PRD is binding: link the exact PRD requirement and MVP work package. Respect assignees, linked PRs and active reviews; no platform claim is created. Agents must not open issues; only humans write and submit issues.
 
 Accepted: a reproduced defect, a security boundary with a reachable path, scoring or cycle errors, funding and vault evidence errors, settlement reconciliation errors, and measured improvements to required behavior. Not accepted: UI, layout, style or copy changes (except a fix to a broken user flow, with before and after video), unapproved features, refactors by preference, and anything in the anti-slop gate in `CONTRIBUTING.md`. If no suitable work exists, say so and stop; never publish a placeholder.
 

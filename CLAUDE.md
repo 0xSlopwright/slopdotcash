@@ -47,10 +47,10 @@ alias only.
 
 ## MVP scope and phase gate
 
-The canonical product requirements are
-[Slop Product Requirements](docs/slop-product-requirements.md). The only current
-implementation scope is [Slop MVP Delivery Plan](docs/slop-mvp-plan.md).
-Read both before selecting work, proposing a change, reviewing a PR, or
+The [canonical Slop PRD](docs/slop-product-requirements.md) defines
+product scope, MVP delivery packages, acceptance, and completion.
+The Google Docs version mirrors the repository PRD. The repository governs.
+Read the PRD before selecting work, proposing a change, reviewing a PR, or
 implementing a feature. Link the exact PRD requirement and MVP work-package ID
 in every implementation PR. Existing code, an open issue, a model suggestion,
 or a PRD entry marked Future does not approve implementation.
@@ -62,15 +62,15 @@ Reuse existing implementations and simplify the affected code. Explain the
 useful result and why the selected implementation is needed.
 
 A new requirement must first be discussed with humans and added to the PRD.
-Maintainers must approve its scope and phase, and update the MVP plan when it
-changes the current phase, before implementation starts. Unresolved choices
-in the PRD are decision gates, not authority for an agent to choose economic,
+Maintainers must approve its scope, phase, and delivery requirements in the PRD
+before implementation starts. Unresolved choices in the PRD are decision gates,
+not authority for an agent to choose economic,
 security, or product policy. Keep proposals distinct from approved work.
 
 Do not start the rest of the PRD until maintainers explicitly confirm that the
 whole MVP is finished, verified, tested, and validated. The confirmation must
-be a reviewed completion record linked from the MVP plan. It must cover every
-MVP requirement and release gate with exact tested revisions, real end-to-end
+be a reviewed completion record in the PRD. It must cover every MVP requirement
+and release gate with exact tested revisions, real end-to-end
 results, deployment/provider/chain evidence where applicable, and resolution
 of blocking defects. A merged PR, a local test pass, partial rollout, or an
 agent's statement cannot close the MVP. After that record is approved, humans
@@ -454,7 +454,7 @@ bun run verify
 
 ## Definition of done
 
-Every PR must show a useful result and its PRD/MVP references. New features
+Every PR must show a useful result and its PRD references. New features
 remain blocked by the scope and phase gate above. For documentation-only
 changes, validate links, instructions, scope consistency, and policy mirrors;
 explain why application acceptance does not apply to the prose itself. Keep
@@ -480,12 +480,15 @@ availability. Report each boundary precisely.
 
 ## Escrow payout migration
 
-The maintainer-authorized escrow MVP is defined in `docs/payouts-mvp.md` and
-`docs/base-solana-payout-plan.md`. Its scoped contract, identity attestation and
-relayer services may execute isolated test-chain transactions under those rules.
+The canonical PRD defines escrow requirements and delivery. The historical
+`docs/payouts-mvp.md` and `docs/base-solana-payout-plan.md` records provide context.
+The scoped contract, identity attestation, and
+executor services may execute isolated test-chain transactions under those rules.
 This supersedes the legacy unsigned-only model for that protocol only. Never
 use production credentials or move mainnet funds during testnet qualification.
-New gross awards deduct 2% before contributor earnings are displayed or paid.
+New ordinary public-work awards deduct 2% before display or payment.
+Private security bounties use SEC-05 instead: 75% to the researcher and 25% to
+slop.cash. Do not add the ordinary 2% fee to a private security bounty.
 For a project-token reward (PRD TOK-06, owner decision of 14 October 2026),
 the 2% is deducted in that token and paid in that token to the network fee
 wallet at payout. No contract converts it. A scheduled backend job converts

@@ -1,9 +1,6 @@
 # Slopbot v2 proposal: hosted protection bot, cost-recovery billing
 
-Date: 9 October 2026. Status: **approved by the repository owner on 9 October 2026.** Owner decisions: Q5 Surplus for everything; Q6 GPT-6.1 Sol fallback; Q8/Q9 both; Q14 no free allowance; all other proposed answers accepted. Requirements are merged into the PRD, MVP plan and `protocol/slopbot-v2.md`. Nothing here is
-approved scope. After approval, the agreed items are merged into
-`docs/slop-product-requirements.md` (PRD), `docs/slop-mvp-plan.md` (MVP plan),
-a new `protocol/slopbot-v2.md`, and `AGENTS.md`/`CLAUDE.md`.
+Date: 9 October 2026. Historical design and decision record. The repository owner approved the recorded choices on that date. The canonical PRD, linked from `docs/slop-product-requirements.md`, now defines current requirements and delivery. Later approved decisions take precedence, including the active-registry restriction. This record does not activate production closure.
 
 Research basis: PRD sections 9, 10, 11, 12, 14, 17, 18, 20 and 22;
 `protocol/slopbot-v1.md`; `contracts/solana/programs/slop-escrow/src/lib.rs`;
@@ -42,7 +39,7 @@ this document.
 | R19 | Price = actual cost + 10%. |
 | R20 | Ideally built in the SlopDotCash organization and this repository. |
 | R21 | Before building: full requirements, clarifying questions with proposed answers, and a risk / opportunity / strength / weakness analysis. |
-| R22 | After owner approval: add the result to the PRD and MVP plan, then build. |
+| R22 | After owner approval: add the result to the PRD, then build. |
 
 ## 2 What already exists, and where the request conflicts with it
 
@@ -312,7 +309,7 @@ Existing BOT-01 to BOT-07 stay. The changes are:
   or metered plans".
 - **Section 22 (add decisions):** Surplus use, fallback model, closure
   categories, billing steps, free allowance.
-- **MVP plan:** amend MVP-05; add **MVP-05a** (protection-only installation,
+- **PRD delivery packages:** amend MVP-05; add **MVP-05a** (protection-only installation,
   route, ledger, prepaid credits), **MVP-05b** (vault `charge_service`, merged
   into MVP-06 contract work), and **MVP-09a** (Automation row).
 
