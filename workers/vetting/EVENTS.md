@@ -41,3 +41,10 @@ The existing `scripts/vetting-assembly-workflow.ts` checks real retained guest
 traces, split calls, raw spans, digest refusal, truncated and malformed copies,
 and a dense copy made from an actually observed line. Replayed trace checks
 are not evidence of a new VM run or independent host collection.
+
+The canonical assembler derives the index after checking the trace against the
+actual guest serial frame and receipt. It saves `syscall-index.json` privately,
+binds its exact bytes in the assembly manifest, and includes the bounded review
+summary alongside the complete raw trace. Every summary gap also appears in the
+assembly. Storage closure requires both derived objects and their exact raw-trace
+binding. Removing the full index cannot leave a retained-summary claim.

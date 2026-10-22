@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseAssemblyManifest } from "./assembly-manifest";
+import { indexSyscalls, syscallEvidence } from "./events";
 
 const hash = (bytes: Uint8Array | string) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -130,6 +131,7 @@ export async function assembleEvidence(input: {
   const items: { id: string; text: string; sha256: string }[] = [];
   const files: { role: string; sha256: string; bytes: number }[] = [];
   let total = 0;
+  let structuredTrace: Buffer | undefined;
   function add(id: string, value: Buffer) {
     const text = new TextDecoder("utf-8", {
       fatal: true,
@@ -438,6 +440,30 @@ export async function assembleEvidence(input: {
       )
         throw new Error("Retained guest output differs from actual serial");
       add(`untrusted-${field}`, content);
+      if (field === "trace") {
+        if (
+          !Number.isInteger(receipt.exitCode) ||
+          typeof receipt.termination !== "string" ||
+          typeof vm.termination !== "string"
+        )
+          throw new Error("Guest collector termination evidence is missing");
+        const indexed = indexSyscalls(content, {
+          expectedSha256: String(receipt.traceSha256),
+          collectorExitCode: Number(receipt.exitCode),
+          collectorTermination: receipt.termination,
+          vmTermination: vm.termination,
+        });
+        const structured = syscallEvidence(indexed);
+        structuredTrace = structured.bytes;
+        files.push({
+          role: "syscall-index",
+          sha256: structured.indexSha256,
+          bytes: structured.bytes.length,
+        });
+        add("syscall-review", structured.review);
+        const summary = record(JSON.parse(structured.review.toString("utf8")));
+        for (const gap of gaps(summary.visibilityGaps)) visibility.add(gap);
+      }
     }
     if (profile.kernelPolicySha256 !== undefined) {
       const kernel = record(receipt.kernelArtifactGate);
@@ -512,6 +538,11 @@ export async function assembleEvidence(input: {
     join(input.outputDirectory, "slop-evidence-"),
   );
   try {
+    if (structuredTrace)
+      await writeFile(join(directory, "syscall-index.json"), structuredTrace, {
+        flag: "wx",
+        mode: 0o400,
+      });
     await writeFile(join(directory, "review-input.json"), review, {
       flag: "wx",
       mode: 0o400,

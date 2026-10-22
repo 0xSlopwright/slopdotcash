@@ -117,6 +117,21 @@ if (input.guestEvidence) {
   const indexed = indexSyscalls(raw, context);
   const structured = syscallEvidence(indexed);
   assert.equal(digest(structured.bytes), structured.indexSha256);
+  assert.deepEqual(
+    await readFile(join(result.directory, "syscall-index.json")),
+    structured.bytes,
+  );
+  assert.equal(
+    manifest.files.find(
+      (file: { role: string }) => file.role === "syscall-index",
+    ).sha256,
+    structured.indexSha256,
+  );
+  assert.equal(
+    review.items.find((item: { id: string }) => item.id === "syscall-review")
+      .text,
+    structured.review.toString("utf8"),
+  );
   assert(structured.review.length <= 64 * 1024);
   const summary = JSON.parse(structured.review.toString());
   assert.equal(summary.indexSha256, structured.indexSha256);

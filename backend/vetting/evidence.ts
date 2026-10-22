@@ -498,6 +498,32 @@ export class VettingEvidence {
         role("untrusted-post-collector-probe", gate.postCollectorOutputSha256);
       }
     }
+    if (roles.has("syscall-review") || roles.has("syscall-index")) {
+      const summary = await read(role("syscall-review").sha256);
+      const indexFile = role("syscall-index", summary.indexSha256);
+      required(summary.indexSha256, summary.indexBytes);
+      const index = await read(indexFile.sha256);
+      const raw = role("untrusted-trace");
+      if (
+        summary.schema !== "slop-syscall-review-v1" ||
+        index.schema !== "slop-syscall-index-v1" ||
+        summary.rawSha256 !== raw.sha256 ||
+        index.rawSha256 !== raw.sha256 ||
+        summary.rawBytes !== raw.bytes ||
+        index.rawBytes !== raw.bytes ||
+        summary.state !== "incomplete" ||
+        index.state !== "incomplete" ||
+        summary.providerCallsAuthorized !== false ||
+        index.providerCallsAuthorized !== false ||
+        summary.publicationAuthorized !== false ||
+        index.publicationAuthorized !== false
+      )
+        fail(
+          409,
+          "assembly_mismatch",
+          "Structured observations do not bind the retained trace",
+        );
+    }
     const dependency = roles.get("dependency-inventory");
     if (dependency) {
       const record = await read(dependency.sha256);
