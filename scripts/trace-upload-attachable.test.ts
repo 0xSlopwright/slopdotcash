@@ -25,6 +25,7 @@ const T0 = Date.parse("2026-10-19T00:00:00.000Z");
 
 /** A create-only bucket that records every object it was asked to keep. */
 function r2() {
+  let failNextWrite = false;
   const objects = new Map<
     string,
     { bytes: Uint8Array; contentType: string; meta: Record<string, string> }
@@ -37,6 +38,10 @@ function r2() {
         : null;
     },
     async put(key, value, options) {
+      if (failNextWrite) {
+        failNextWrite = false;
+        throw new Error("local storage failure");
+      }
       if (objects.has(key)) throw new Error("precondition failed");
       objects.set(key, {
         bytes: value.slice(),
@@ -56,7 +61,13 @@ function r2() {
       };
     },
   };
-  return { bucket, objects };
+  return {
+    bucket,
+    objects,
+    failNextWrite() {
+      failNextWrite = true;
+    },
+  };
 }
 
 function api() {
@@ -172,7 +183,20 @@ function api() {
     const digest = await sha256Hex(bytes);
     return store.objects.has(`traces/sha256/${digest.slice(0, 2)}/${digest}`);
   };
-  return { createRun, intent, upload, finalize, retained };
+  return {
+    createRun,
+    intent,
+    upload,
+    finalize,
+    retained,
+    failNextWrite: store.failNextWrite,
+    reservation: (id: string) =>
+      sqlite
+        .query(
+          "SELECT trace_sha256 FROM trace_write_reservations WHERE run_id = ?",
+        )
+        .get(id),
+  };
 }
 
 const encode = (text: string) => new TextEncoder().encode(text);
@@ -244,4 +268,43 @@ test("an intent issued before finalization cannot write its bytes afterwards", a
     message: "A finalized run cannot be changed",
   });
   expect(await t.retained(TRACE_B)).toBe(false);
+});
+
+test("overlapping different uploads retain only the reserved trace", async () => {
+  const t = api();
+  const created = await t.createRun();
+  const id = created.json.serverRunId as string;
+  const a = await t.intent(id, TRACE_A);
+  const b = await t.intent(id, TRACE_B);
+  const results = await Promise.all([
+    t.upload(a.json.uploadUrl as string, TRACE_A),
+    t.upload(b.json.uploadUrl as string, TRACE_B),
+  ]);
+  expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+  expect(
+    [await t.retained(TRACE_A), await t.retained(TRACE_B)].filter(Boolean),
+  ).toHaveLength(1);
+});
+
+test("a failed storage write retains its reservation and permits a same-byte retry", async () => {
+  const t = api();
+  const created = await t.createRun();
+  const id = created.json.serverRunId as string;
+  const a = await t.intent(id, TRACE_A);
+  const b = await t.intent(id, TRACE_B);
+  t.failNextWrite();
+  expect((await t.upload(a.json.uploadUrl as string, TRACE_A)).status).toBe(
+    500,
+  );
+  expect(await t.retained(TRACE_A)).toBe(false);
+  expect(t.reservation(id)).toEqual({ trace_sha256: await sha256Hex(TRACE_A) });
+  expect((await t.finalize(id)).status).toBe(409);
+  expect((await t.upload(b.json.uploadUrl as string, TRACE_B)).status).toBe(
+    409,
+  );
+  expect(await t.retained(TRACE_B)).toBe(false);
+  expect((await t.upload(a.json.uploadUrl as string, TRACE_A)).status).toBe(
+    201,
+  );
+  expect((await t.finalize(id)).status).toBe(200);
 });

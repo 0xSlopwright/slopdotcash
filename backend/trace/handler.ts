@@ -1023,6 +1023,15 @@ async function uploadTraceCapability(
   if (run.traceSha256 !== null && run.traceSha256 !== actualDigest) {
     fail(409, "trace_conflict", "The run already has a different trace");
   }
+  if (
+    !(await deps.persistence.reserveTraceWrite({
+      runId: intent.runId,
+      githubId: intent.githubId,
+      object,
+    }))
+  ) {
+    fail(409, "trace_conflict", "The run cannot reserve this trace for upload");
+  }
   await deps.persistence.putTraceBytes(object, bytes);
   const result = await deps.persistence.attachTrace({
     runId: intent.runId,
