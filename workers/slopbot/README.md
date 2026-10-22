@@ -948,6 +948,10 @@ it. Discovery, pagination, tree, text and ancestry bounds produce an unresolved
 gap rather than inferred absence or zero value. Hints without a verified integration
 do not grant credit. Publication re-collects source evidence and consumers compare
 the exact bindings. GitHub merge counts and source state remain unchanged.
+Ledger awards carry `acceptanceKind: "indirect-integration"` and count against
+the closed-unmerged census. Distinct joint units use distinct Points keys even
+when they share a PR and recipient. Existing keys remain valid; a new projection
+appends corrections instead of changing earlier revisions.
 
 ### Source-set ownership
 
