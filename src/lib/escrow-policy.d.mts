@@ -1,3 +1,5 @@
+export const ESCROW_PAYOUT_FEE_BASIS_POINTS: 200;
+export const ESCROW_WITHDRAWAL_FEE_BASIS_POINTS: 200;
 export interface EscrowDeployment {
   network:
     | "base-sepolia"

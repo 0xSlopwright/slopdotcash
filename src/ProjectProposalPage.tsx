@@ -1,11 +1,18 @@
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { GeneratedSkillPreview } from "./GeneratedSkillPreview";
 import { Link } from "./Link";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
 import { copyText } from "./lib/copy-text";
-import { isEscrowChain } from "./lib/escrow-policy.mjs";
+import {
+  ESCROW_PAYOUT_FEE_BASIS_POINTS,
+  ESCROW_WITHDRAWAL_FEE_BASIS_POINTS,
+  isEscrowChain,
+} from "./lib/escrow-policy.mjs";
 import {
   type ProjectApplication,
+  type ProjectSessionState,
+  projectApiRequest,
   submitProjectApplication,
   useProjectSession,
 } from "./lib/project-api";
@@ -29,7 +36,7 @@ import {
   rewardAssetChoice,
 } from "./lib/reward-asset.mjs";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
-import { loginHref, useSignedInLogin } from "./Points";
+import { loginHref } from "./Points";
 
 const SETTLEMENT_CHAIN_NAMES: Record<string, string> = Object.fromEntries(
   Object.entries(REWARD_ASSET_NETWORKS).map(([id, network]) => [
@@ -38,6 +45,7 @@ const SETTLEMENT_CHAIN_NAMES: Record<string, string> = Object.fromEntries(
   ]),
 );
 const PROPOSAL_DRAFT_KEY = "slop:project-proposal:v1";
+const PROPOSAL_STEP_KEY = `${PROPOSAL_DRAFT_KEY}:step`;
 /** PRJ-03 default, shown as editable text the maintainer can replace. */
 const DEFAULT_CRITERIA =
   "Merged pull requests that fix a reproduced bug or deliver a change the maintainers asked for, with tests or other evidence that the result works.";
@@ -46,7 +54,6 @@ const SETUP_STEPS = [
   "Repository",
   "Contribution rules",
   "Rewards",
-  "Funding",
   "Review",
 ] as const;
 
@@ -533,11 +540,17 @@ function ErrorSummary({
 function RepositoryPicker({
   selected,
   onChoose,
+  projectSession,
 }: {
   selected: string;
+  projectSession: ProjectSessionState;
   onChoose: (repository: string) => void;
 }) {
-  const { login, session } = useSignedInLogin();
+  const login =
+    projectSession.status === "signed-in"
+      ? projectSession.session.githubLogin
+      : null;
+  const session = projectSession.status;
   const [list, setList] = useState<
     | { status: "loading" }
     | { status: "ready"; repositories: OwnedRepository[] }
@@ -565,7 +578,7 @@ function RepositoryPicker({
     );
     return () => controller.abort();
   }, [login]);
-  if (session === "loading")
+  if (session === "checking")
     return (
       <p className="repository-picker-status" role="status">
         Checking whether you are signed in…
@@ -705,11 +718,25 @@ function SubmitApplication({
 }
 
 export default function ProjectProposalPage() {
+  const projectSession = useProjectSession();
   const [proposal, setProposal] = useState<Proposal>(
     () => readDraft() ?? EMPTY_PROPOSAL,
   );
   const [restored] = useState(() => readDraft() !== null);
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(() => {
+    try {
+      const stored = localStorage.getItem(PROPOSAL_STEP_KEY);
+      const index = stored === null ? 0 : Number(stored);
+      return readDraft() &&
+        Number.isInteger(index) &&
+        index >= 0 &&
+        index < SETUP_STEPS.length
+        ? index
+        : 0;
+    } catch {
+      return 0;
+    }
+  });
   const [attempted, setAttempted] = useState<boolean[]>(
     SETUP_STEPS.map(() => false),
   );
@@ -736,11 +763,12 @@ export default function ProjectProposalPage() {
   useEffect(() => {
     try {
       localStorage.setItem(PROPOSAL_DRAFT_KEY, JSON.stringify(proposal));
+      localStorage.setItem(PROPOSAL_STEP_KEY, String(step));
       setSaveFailed(false);
     } catch {
       setSaveFailed(true);
     }
-  }, [proposal]);
+  }, [proposal, step]);
   useEffect(() => () => lookupController.current?.abort(), []);
   const set = (field: ProposalField) => (value: string) => {
     if (field === "repository") {
@@ -776,7 +804,7 @@ export default function ProjectProposalPage() {
     ) as FieldErrors;
   const shown = (field: ProposalField) => {
     const owner = FIELD_STEP[field];
-    return owner !== undefined && (attempted[owner] || attempted[4])
+    return owner !== undefined && (attempted[owner] || attempted[3])
       ? errors[field]
       : undefined;
   };
@@ -928,9 +956,9 @@ export default function ProjectProposalPage() {
         approvedScope:
           p.criteria.trim() ||
           "Define exact accepted outcomes with the maintainer.",
-        ...Object.fromEntries(
+        ...(Object.fromEntries(
           SKILL_RULE_FIELDS.map((field) => [field, p[field].trim()]),
-        ),
+        ) as Record<(typeof SKILL_RULE_FIELDS)[number], string>),
       },
       // Networks without a reviewed escrow program keep the asset as
       // display metadata with payments disabled.
@@ -1182,6 +1210,11 @@ export default function ProjectProposalPage() {
           <a href={CONTACT_MAILTO}>{CONTACT_EMAIL}</a>.
         </p>
       </section>
+      <ApplicationStatus
+        refreshKey={
+          submission.status === "submitted" ? submission.application.id : ""
+        }
+      />
       <nav aria-label="Setup steps">
         <ol className="proposal-steps">
           {SETUP_STEPS.map((label, index) => {
@@ -1219,6 +1252,7 @@ export default function ProjectProposalPage() {
         {step === 0 ? (
           <>
             <RepositoryPicker
+              projectSession={projectSession}
               onChoose={(repository) => {
                 set("repository")(repository);
                 void runLookup(repository);
@@ -1237,16 +1271,25 @@ export default function ProjectProposalPage() {
                 placeholder="owner/repository"
                 value={p.repository}
               />
-              <button
-                className="button secondary-button"
-                disabled={lookup.state === "loading"}
-                onClick={() => void runLookup()}
-                type="button"
-              >
-                {lookup.state === "loading"
-                  ? "Looking up…"
-                  : "Look up on GitHub"}
-              </button>
+              {projectSession.status === "signed-in" ? (
+                <button
+                  className="button secondary-button"
+                  disabled={lookup.state === "loading"}
+                  onClick={() => void runLookup()}
+                  type="button"
+                >
+                  {lookup.state === "loading"
+                    ? "Looking up…"
+                    : "Look up on GitHub"}
+                </button>
+              ) : (
+                <a
+                  className="button secondary-button"
+                  href={loginHref("/projects/new")}
+                >
+                  Sign in to look up repository
+                </a>
+              )}
             </div>
             <p
               className={
@@ -1416,8 +1459,11 @@ export default function ProjectProposalPage() {
               placeholder="What accepted GitHub outcomes qualify?"
               value={p.criteria}
             />
-            <fieldset className="proposal-skill-rules">
-              <legend>Project skill rules (optional)</legend>
+            <details
+              className="proposal-skill-rules"
+              open={SKILL_RULE_FIELDS.some((field) => Boolean(shown(field)))}
+            >
+              <summary>Customize contributor instructions (optional)</summary>
               <p className="field-hint">
                 Slop generates this project's contributor and reviewer skills
                 from these rules and its standard template. They can narrow what
@@ -1435,7 +1481,7 @@ export default function ProjectProposalPage() {
                   value={p[field]}
                 />
               ))}
-            </fieldset>
+            </details>
             <details
               className="proposal-advanced"
               onToggle={(event) => setTermsOpen(event.currentTarget.open)}
@@ -1629,8 +1675,8 @@ export default function ProjectProposalPage() {
               value={p.monthlyPool}
             />
             <p className="fee-preview">
-              Fee preview: contributors receive their award minus a 2% fee.
-              Returning unused project-vault funds costs 10%.
+              Payout fee: {ESCROW_PAYOUT_FEE_BASIS_POINTS / 100}%. Unused-fund
+              withdrawal fee: {ESCROW_WITHDRAWAL_FEE_BASIS_POINTS / 100}%.
             </p>
             <label className="checkbox-field">
               <input
@@ -1661,32 +1707,9 @@ export default function ProjectProposalPage() {
         {step === 3 ? (
           <>
             <p>
-              Funding opens only after review. This proposal cannot deploy a
-              vault, take deposits or enable payments.
+              Funding starts after approval. A reviewed vault and verified
+              funding authority are required before deposits or payouts.
             </p>
-            <ul className="activation-gates">
-              <li>
-                <strong>Project vault:</strong>{" "}
-                {escrow
-                  ? `not deployed. A reviewed ${network.name} deployment is required first.`
-                  : `no reviewed escrow exists on ${network.name}. The reward asset is shown, and payments stay disabled.`}
-              </li>
-              <li>
-                <strong>Funding and refund authority:</strong> not verified.
-              </li>
-              <li>
-                <strong>Donations:</strong> not enabled in this version.
-              </li>
-              <li>
-                <strong>Payments:</strong> disabled until the payout path is
-                independently verified.{" "}
-                <a href={REQUIREMENTS_URL}>View requirements</a>
-              </li>
-            </ul>
-          </>
-        ) : null}
-        {step === 4 ? (
-          <>
             <article className="proposal-preview" aria-label="Listing preview">
               <span className="draft-badge">Draft · not listed</span>
               <h3>{p.name || "Unnamed project"}</h3>
@@ -1752,10 +1775,12 @@ export default function ProjectProposalPage() {
               </dl>
               <p>{p.goal || "No goal yet."}</p>
             </article>
+            {valid ? <GeneratedSkillPreview manifest={manifest} draft /> : null}
             <ErrorSummary errors={errors} onSelect={focusField} />
             {submission.status === "submitted" ? (
               <div className="proposal-submitted" role="status">
                 <h2>Application submitted</h2>
+                <a href="#applications">View application status</a>
                 <p>
                   {submission.application.manifest.name} is waiting for admin
                   review. After approval it is listed as a paused project, and
@@ -1828,7 +1853,7 @@ export default function ProjectProposalPage() {
             </details>
           </>
         ) : null}
-        {step < 4 ? (
+        {step < 3 ? (
           <ErrorSummary errors={currentErrors} onSelect={focusField} />
         ) : null}
         {navigation}
@@ -1868,9 +1893,54 @@ export default function ProjectProposalPage() {
 
 /**
  * Project updates reuse the setup fields and validation. The page drafts a
- * reviewed GitHub change only; it never saves or publishes project state.
+ * change against the current D1 revision; an admin publishes the decision.
  */
 export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
+  const session = useProjectSession();
+  const [baseRevision, setBaseRevision] = useState<number | null>(null);
+  const [baseProject, setBaseProject] = useState<ProjectDefinition | null>(
+    null,
+  );
+  const [submission, setSubmission] = useState<{
+    state: "idle" | "submitting" | "submitted" | "error";
+    message: string;
+  }>({ state: "idle", message: "" });
+  useEffect(() => {
+    let active = true;
+    projectApiRequest<{ revision: number; project: ProjectDefinition }>(
+      "GET",
+      `projects/${encodeURIComponent(project.id)}`,
+    ).then(
+      (body) => {
+        if (!active) return;
+        if (
+          body.project.headline !== project.headline ||
+          body.project.description !== project.description
+        ) {
+          setSubmission({
+            state: "error",
+            message: "This project changed. Reload before editing.",
+          });
+        } else {
+          setBaseRevision(body.revision);
+          setBaseProject(body.project);
+        }
+      },
+      (error) => {
+        if (active)
+          setSubmission({
+            state: "error",
+            message:
+              error instanceof Error
+                ? error.message
+                : "Cannot read the current revision.",
+          });
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [project]);
   const key = `slop:project-update:v1:${project.id}`;
   const initial = { headline: project.headline, goal: project.description };
   const [draft, setDraft] = useState(() => {
@@ -1987,7 +2057,7 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
         />
         <TextField
           error={shown("reason")}
-          hint="Reviewers read this reason on GitHub."
+          hint="Explain this change to the admin."
           label="Reason for the change"
           multiline
           name="reason"
@@ -2032,23 +2102,83 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
           </p>
         ) : null}
         <div className="handoff-actions">
-          {valid ? (
-            <a className="button primary-button" href="/admin">
-              Open admin review <ArrowRight aria-hidden="true" />
+          {session.status !== "signed-in" ? (
+            <a
+              className="button primary-button"
+              href={loginHref(`/projects/${project.slug}/manage`)}
+            >
+              Sign in to submit changes
             </a>
           ) : (
             <button
               className="button primary-button"
-              onClick={() => setAttempted(true)}
               type="button"
+              disabled={
+                submission.state === "submitting" ||
+                submission.state === "submitted" ||
+                baseRevision === null
+              }
+              onClick={async () => {
+                setAttempted(true);
+                if (!valid || baseRevision === null || baseProject === null)
+                  return;
+                setSubmission({ state: "submitting", message: "" });
+                try {
+                  await projectApiRequest("POST", "project-applications", {
+                    manifest: {
+                      ...baseProject,
+                      status: "paused",
+                      headline: draft.headline.trim(),
+                      description: draft.goal.trim(),
+                      ...(draft.criteria.trim()
+                        ? {
+                            contribution: {
+                              ...baseProject.contribution,
+                              approvedScope: draft.criteria.trim(),
+                            },
+                          }
+                        : {}),
+                    },
+                    expectedRevision: baseRevision,
+                    reason: draft.reason.trim(),
+                  });
+                  setSubmission({
+                    state: "submitted",
+                    message:
+                      "Changes submitted for admin review. Approval creates a paused revision; activation requires a new security review.",
+                  });
+                } catch (error) {
+                  setSubmission({
+                    state: "error",
+                    message:
+                      error instanceof Error
+                        ? error.message
+                        : "Changes were not submitted.",
+                  });
+                }
+              }}
             >
-              Open admin review <ArrowRight aria-hidden="true" />
+              {submission.state === "submitting"
+                ? "Submitting…"
+                : submission.state === "submitted"
+                  ? "Submitted"
+                  : "Submit changes for review"}
             </button>
           )}
+          {submission.message ? (
+            <p role={submission.state === "error" ? "alert" : "status"}>
+              {submission.message}
+            </p>
+          ) : null}
+          {submission.state === "submitted" ? (
+            <Link href="/projects/new#applications">
+              View application status
+            </Link>
+          ) : null}
           <p className="proposal-note">
             {saveFailed
               ? "This browser cannot save the draft."
-              : "Draft saved on this device only. Nothing changes until a Slop admin saves a reviewed revision. Copy the brief and send it to an admin if you are not one."}
+              : "Draft saved on this device. Submit it for an admin to review. Approval pauses the project until its changed content passes security review."}
           </p>
           <div className="handoff-alternatives">
             <span>Other options:</span>
@@ -2098,8 +2228,8 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
           {payoutText}{" "}
           {project.reward.kind === "monthly-pool" ? (
             <>
-              <Link href={`/projects/${project.slug}/funding#payouts`}>
-                Manage payouts
+              <Link href={`/projects/${project.slug}/funding`}>
+                Funding setup
               </Link>
               {project.reward.paymentMode === "disabled" ? (
                 <>
@@ -2112,5 +2242,71 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
         </p>
       </section>
     </main>
+  );
+}
+
+function ApplicationStatus({ refreshKey }: { refreshKey: string }) {
+  const session = useProjectSession();
+  const [applications, setApplications] = useState<ProjectApplication[] | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (session.status !== "signed-in") return;
+    let active = true;
+    setError(null);
+    projectApiRequest<{ applications: ProjectApplication[] }>(
+      "GET",
+      `project-applications/mine?refresh=${attempt}&submission=${encodeURIComponent(refreshKey)}`,
+    ).then(
+      (body) => {
+        if (active) setApplications(body.applications);
+      },
+      (caught) => {
+        if (active)
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "Applications unavailable",
+          );
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [session.status, attempt, refreshKey]);
+  if (session.status !== "signed-in") return null;
+  return (
+    <details id="applications">
+      <summary>Your applications</summary>
+      {error ? (
+        <p role="alert">{error}</p>
+      ) : applications === null ? (
+        <p role="status">Loading applications…</p>
+      ) : applications.length === 0 ? (
+        <p>No applications submitted.</p>
+      ) : (
+        <ul>
+          {applications.map((application) => (
+            <li key={application.id}>
+              <strong>{application.manifest.name}</strong> ·{" "}
+              {application.status}
+              {application.decisionReason ? (
+                <p>{application.decisionReason}</p>
+              ) : null}
+              {application.status === "approved" ? (
+                <Link href={`/projects/${application.manifest.slug}`}>
+                  View project
+                </Link>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      <button type="button" onClick={() => setAttempt((value) => value + 1)}>
+        Refresh applications
+      </button>
+    </details>
   );
 }

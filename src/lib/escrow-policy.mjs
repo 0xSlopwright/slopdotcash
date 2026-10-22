@@ -17,6 +17,9 @@ import { isFundingAddress, isSolanaTransactionId } from "./funding-address.mjs";
  */
 const asset = (address, symbol, decimals, source) =>
   Object.freeze({ address, symbol, decimals, source });
+export const ESCROW_PAYOUT_FEE_BASIS_POINTS = 200;
+export const ESCROW_WITHDRAWAL_FEE_BASIS_POINTS = 200;
+
 const CIRCLE_USDC_ADDRESSES =
   "https://developers.circle.com/stablecoins/usdc-contract-addresses";
 function network(definition, assets) {
@@ -256,11 +259,11 @@ export function assertEscrowPolicy(value) {
     value.schemaVersion !== "1" ||
     !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(value.effectiveCycle) ||
     !isEscrowChain(value.chain) ||
-    value.feeBasisPoints !== 200 ||
+    value.feeBasisPoints !== ESCROW_PAYOUT_FEE_BASIS_POINTS ||
     // Escrow v2 (PRD section 18): the unused-fund withdrawal fee equals the
     // 2% payout fee, floor(gross / 50) per withdrawal (#907). The contracts
     // enforce both.
-    value.withdrawalFeeBasisPoints !== 200 ||
+    value.withdrawalFeeBasisPoints !== ESCROW_WITHDRAWAL_FEE_BASIS_POINTS ||
     value.feeMode !== "deduct-from-gross" ||
     !Array.isArray(value.deployments)
   )

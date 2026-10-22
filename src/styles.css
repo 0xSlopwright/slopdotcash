@@ -4773,3 +4773,17 @@ small {
   font: inherit;
   font-weight: 400;
 }
+
+.reward-exact-amount {
+  display: inline-block;
+  white-space: nowrap;
+  font-size: clamp(28px, 3.4vw, 44px);
+}
+.standings-scroll-hint {
+  display: none;
+}
+@media (max-width: 640px) {
+  .standings-scroll-hint {
+    display: block;
+  }
+}

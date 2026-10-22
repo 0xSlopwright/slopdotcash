@@ -13,6 +13,7 @@ export const PROJECT_REGISTRY_URL: string =
 
 declare global {
   var __SLOP_PROJECT_REGISTRY__: unknown[] | undefined;
+  var __SLOP_PROJECT_REGISTRY_ERROR__: string | undefined;
 }
 
 export async function loadProjectRegistry(): Promise<unknown[]> {

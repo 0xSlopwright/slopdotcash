@@ -221,7 +221,6 @@ async function draftApplication(
   await page.getByLabel("Project name").fill(project.name);
   await page.getByRole("button", { name: "Next: Rewards" }).click();
   await page.getByLabel("Monthly pool target, USD").fill("1000");
-  await page.getByRole("button", { name: "Next: Funding" }).click();
   await page.getByRole("button", { name: "Next: Review" }).click();
   await expect(
     page.getByRole("article", { name: "Listing preview" }),
@@ -276,11 +275,12 @@ test("a signed-out visitor must sign in to look up GitHub and submit @registry",
   const project = fixtureProjects().queued;
   await page.goto("/projects/new", { waitUntil: "networkidle" });
   await page.getByLabel("Public GitHub repository").fill(project.repository);
-  await page.getByRole("button", { name: "Look up on GitHub" }).click();
-  // Setup lookups run on the site server with the site session, so a
-  // signed-out browser never calls GitHub and nothing is filled in.
-  await expect(page.locator(".lookup-status.field-error")).toBeVisible();
-  await expect(page.getByLabel("Repository numeric ID")).toHaveValue("");
+  await expect(
+    page.getByRole("button", { name: "Look up on GitHub" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "Sign in to look up repository" }),
+  ).toHaveAttribute("href", /\/login\?next=%2Fprojects%2Fnew$/u);
   await expect(
     page.getByRole("link", { name: "Sign in with GitHub", exact: true }),
   ).toHaveAttribute("href", /\/login\?next=%2Fprojects%2Fnew$/u);
@@ -484,6 +484,48 @@ test("an owner's proof and generated skills reach the admin, who lists and delis
     skill: { sourcePath: "skills/project-contributor-template" },
   });
 
+  // A maintainer submits a real update; approval publishes one paused revision.
+  const returningContext = await browser.newContext();
+  const returningOwner = await returningContext.newPage();
+  await signIn(returningOwner, OWNER_TOKEN);
+  await returningOwner.goto(`/projects/${project.id}/manage`, {
+    waitUntil: "networkidle",
+  });
+  await returningOwner
+    .getByLabel("Short description", { exact: true })
+    .fill("Useful accepted outcomes with a clearer project scope");
+  await returningOwner
+    .getByLabel("Reason for the change", { exact: true })
+    .fill("Clarify the project scope for contributors");
+  await returningOwner
+    .getByRole("button", { name: "Submit changes for review" })
+    .click();
+  await expect(returningOwner.getByRole("status")).toContainText(
+    "Changes submitted for admin review",
+  );
+  expect(
+    (await (await admin.request.get(`/api/v1/projects/${project.id}`)).json())
+      .revision,
+  ).toBe(1);
+  await admin.reload({ waitUntil: "networkidle" });
+  const update = admin.locator(".admin-card", {
+    has: admin.getByRole("button", { name: "Approve paused revision" }),
+  });
+  await expect(update).toContainText(
+    "Clarify the project scope for contributors",
+  );
+  await update.getByRole("button", { name: "Approve paused revision" }).click();
+  await expect(card).toContainText("2 · updated");
+  expect(
+    (await (await admin.request.get(`/api/v1/projects/${project.id}`)).json())
+      .project.headline,
+  ).toBe("Useful accepted outcomes with a clearer project scope");
+  await returningOwner.goto("/projects/new", { waitUntil: "networkidle" });
+  await returningOwner.getByText("Your applications", { exact: true }).click();
+  await expect(returningOwner.locator("main")).toContainText("approved");
+  await expectAccessible(returningOwner);
+  await returningContext.close();
+
   await card.getByRole("button", { name: "Delist", exact: true }).click();
   await card.getByRole("button", { name: "Delist project" }).click();
   await expect(admin.getByRole("status")).toContainText("Saved.");
@@ -609,14 +651,37 @@ test("an admin cannot activate or publish skills without canonical scan closure 
   );
   // A normal paused manifest edit remains available and produces its own notice.
   await card.getByLabel("Project status").selectOption("paused");
-  const manifestEditor = card.getByLabel(/^Manifest \(revision 1\)/u);
+  await card
+    .getByText("Advanced project settings (revision 1)", { exact: true })
+    .click();
+  const manifestEditor = card.getByLabel("Other manifest fields");
   const pausedManifest = JSON.parse(await manifestEditor.inputValue());
+  expect(pausedManifest).not.toHaveProperty("status");
+  expect(pausedManifest).not.toHaveProperty("contribution");
+  expect(pausedManifest).not.toHaveProperty("rewardAsset");
+  await manifestEditor.fill(
+    JSON.stringify({ ...pausedManifest, status: "active" }),
+  );
+  await expect(
+    card.getByRole("region", { name: "Revision changes" }),
+  ).toContainText("Remove those keys");
+  await expect(
+    card.getByRole("button", { name: "Save revision 2" }),
+  ).toBeDisabled();
   pausedManifest.headline =
     "A reviewed paused project awaiting complete security evidence.";
   await manifestEditor.fill(JSON.stringify(pausedManifest, null, 2));
   await card
     .getByLabel("Reason for this revision (public history)")
     .fill("Clarify paused project description");
+  await card.getByRole("button", { name: "Close and keep draft" }).click();
+  await card.getByRole("button", { name: "Edit manifest" }).click();
+  await expect(
+    card.getByLabel("Reason for this revision (public history)"),
+  ).toHaveValue("Clarify paused project description");
+  await expect(
+    card.getByRole("region", { name: "Revision changes" }),
+  ).toContainText("headline");
   await card.getByRole("button", { name: "Save revision 2" }).click();
   await expect(card).toContainText("2 · updated");
   await expectAccessible(admin);
@@ -1010,6 +1075,18 @@ test("an unavailable registry shows an error, never an empty list @registry", as
   await expect(alert.getByRole("button")).toBeVisible();
   await expect(page.locator("#projects")).toHaveCount(0);
   await expectAccessible(page);
+  for (const [path, heading] of [
+    ["/account", "Account"],
+    ["/login", "Log in to slop.cash"],
+  ]) {
+    await page.goto(path, { waitUntil: "networkidle" });
+    await expect(page.getByRole("heading", { level: 1 })).toContainText(
+      heading,
+    );
+    await expect(
+      page.getByRole("heading", { name: "Projects are unavailable" }),
+    ).toHaveCount(0);
+  }
 });
 
 test.describe("private evidence console", () => {
