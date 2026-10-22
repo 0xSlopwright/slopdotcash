@@ -925,6 +925,34 @@ stores one receipt and one journal row, and the other delivery returns current
 when retried. The file-backed claim replay also confirms that a different PR
 can acquire a lease while the first remains active.
 
+### Work accepted through another integration
+
+A closed PR can contain work accepted through an integration branch without a
+GitHub merge event on that PR. The collector uses commit references in integration
+comments only as discovery hints. It verifies a two-parent integration commit,
+the historical head in the PR's commit inventory, ancestry on the registered
+integration branch, and a GitHub push-triggered workflow observation before
+closure. A workflow's result is not test acceptance; even a cancelled run can
+prove the branch and SHA that triggered it.
+
+The source keeps its original head, closure and null merge fields. The joint
+record adds a separate indirect-acceptance binding and uses its branch-observation
+time as the recorded acceptance observation. Complete hash-verified trees and
+texts preserve renamed, changed and removed content between the historical head
+and observed branch tip. Only original non-merge commits newly integrated in that
+range can supply claims. The assessor must compare retained content and separate
+maintainer repairs; source hunks removed during integration do not become awards.
+
+This path requires joint work-unit assessment. The legacy single-PR route rejects
+it. Discovery, pagination, tree, text and ancestry bounds produce an unresolved
+gap rather than inferred absence or zero value. Hints without a verified integration
+do not grant credit. Publication re-collects source evidence and consumers compare
+the exact bindings. GitHub merge counts and source state remain unchanged.
+Ledger awards carry `acceptanceKind: "indirect-integration"` and count against
+the closed-unmerged census. Distinct joint units use distinct Points keys even
+when they share a PR and recipient. Existing keys remain valid; a new projection
+appends corrections instead of changing earlier revisions.
+
 ### Source-set ownership
 
 Migration `0053_slopbot_value_source_leases.sql` adds all-or-none ownership of

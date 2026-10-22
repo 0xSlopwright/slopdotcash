@@ -3313,19 +3313,23 @@ function createSnapshotWithReviewCutoff(
         )
       )
         continue;
+      const acceptanceTime = (
+        source: (typeof decision.evidence.sources)[number]["evidence"],
+      ) =>
+        source.pull.merged_at ?? source.indirectAcceptance?.observedOnBranchAt;
       const sources = [
         ...new Set(scoped.map((claim) => claim.creditPullRequestId)),
       ]
         .map((id) => {
           const source = members.get(id);
-          if (!source || !source.pull.merged_at)
+          if (!source || !acceptanceTime(source))
             throw new Error("Joint claim has no accepted source");
           return source;
         })
         .sort(
           (a, b) =>
-            parseIsoTime(a.pull.merged_at as string) -
-              parseIsoTime(b.pull.merged_at as string) ||
+            parseIsoTime(acceptanceTime(a) as string) -
+              parseIsoTime(acceptanceTime(b) as string) ||
             compareCodeUnits(a.pull.node_id, b.pull.node_id),
         );
       if (
@@ -3336,19 +3340,27 @@ function createSnapshotWithReviewCutoff(
         continue;
       const first = sources[0];
       const completion = sources.at(-1);
-      const completedAt = completion?.pull.merged_at;
+      const completedAt = completion ? acceptanceTime(completion) : undefined;
       if (!first || !completion || !completedAt)
         throw new Error("Joint implementation has no occurrence time");
       const occurred = parseIsoTime(completedAt);
       if (occurred < parseIsoTime(input.windowFrom) || occurred >= windowTo)
         continue;
       if (
-        !mergedPullRequestOutcomes.some(
-          (outcome) =>
-            outcome.id === completion.pull.node_id &&
-            outcome.headRefOid === completion.pull.head.sha &&
-            outcome.mergedAt === completedAt,
-        )
+        !(completion.indirectAcceptance
+          ? closedUnmergedPullRequests.some(
+              (outcome) =>
+                outcome.id === completion.pull.node_id &&
+                outcome.headRefOid === completion.pull.head.sha &&
+                outcome.mergedAt === null &&
+                outcome.closedAt === completion.pull.closed_at,
+            )
+          : mergedPullRequestOutcomes.some(
+              (outcome) =>
+                outcome.id === completion.pull.node_id &&
+                outcome.headRefOid === completion.pull.head.sha &&
+                outcome.mergedAt === completedAt,
+            ))
       )
         throw new Error(
           "Joint completion source is absent from the accepted outcome census",
@@ -3390,6 +3402,9 @@ function createSnapshotWithReviewCutoff(
           workUnitId: unit.workUnitId,
           scoreDecisionSourceId: `value:${decision.latestDigest}`,
           scoreDecisionAt: decision.history.at(-1)?.recorded_at,
+          ...(completion.indirectAcceptance
+            ? { acceptanceKind: "indirect-integration" as const }
+            : {}),
           occurredAt: completedAt,
           repository: repositoryIdFromUrl(completion.pull.html_url),
           source: {
@@ -3399,7 +3414,7 @@ function createSnapshotWithReviewCutoff(
             title: completion.pull.title,
             url: completion.pull.html_url,
           },
-          reason: `Provisional joint value assessment (${tier}): ${unit.assessment.rationale} Shared among ${actors.length} scoped implementation actors.`,
+          reason: `Provisional joint value assessment (${tier})${completion.indirectAcceptance ? " of work accepted through indirect integration" : ""}: ${unit.assessment.rationale} Shared among ${actors.length} scoped implementation actors.`,
         });
       }
     }
@@ -5451,6 +5466,16 @@ function assertLedgerValue(
     event.scoreDecisionAt === undefined
   )
     throw new Error("Value score event requires its decision time");
+  if (
+    event.acceptanceKind !== undefined &&
+    (event.acceptanceKind !== "indirect-integration" ||
+      event.category !== "merged-pull-request" ||
+      typeof event.scoreDecisionSourceId !== "string" ||
+      !/^value:[a-f0-9]{64}$/u.test(event.scoreDecisionSourceId) ||
+      typeof event.id !== "string" ||
+      !event.id.includes(":joint:"))
+  )
+    throw new Error("Indirect acceptance requires a joint value award");
   assertString(event.reason, `${path}.reason`);
   if ("continuity" in event) {
     if (
@@ -6735,7 +6760,16 @@ export function assertLeaderboardSnapshot(
   // Shared merge credit emits one event per commit author of one source.
   const mergedOutcomeSourceIds = new Set(
     validatedLedger
-      .filter((event) => event.category === "merged-pull-request")
+      .filter(
+        (event) =>
+          event.category === "merged-pull-request" &&
+          event.acceptanceKind !== "indirect-integration",
+      )
+      .map((event) => event.source.id),
+  );
+  const indirectOutcomeSourceIds = new Set(
+    validatedLedger
+      .filter((event) => event.acceptanceKind === "indirect-integration")
       .map((event) => event.source.id),
   );
   const detailedPullRequestIds = new Set(
@@ -6782,6 +6816,11 @@ export function assertLeaderboardSnapshot(
   );
   if (
     mergedOutcomeSourceIds.size > mergedPullRequestCount ||
+    indirectOutcomeSourceIds.size >
+      Number(counts.closedUnmergedPullRequests ?? 0) ||
+    [...indirectOutcomeSourceIds].some((id) =>
+      mergedOutcomeSourceIds.has(id),
+    ) ||
     detailedPullRequestIds.size > detailedMergedPullRequestCount ||
     reviewedPullRequestIds.size >
       mergedPullRequestCount + Number(counts.closedUnmergedPullRequests ?? 0) ||

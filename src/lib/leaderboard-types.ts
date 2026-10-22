@@ -289,6 +289,8 @@ export interface ScoreEvent {
   workUnitId?: string;
   scoreDecisionSourceId?: string;
   scoreDecisionAt?: string;
+  /** Accepted on the integration branch while the source PR stayed unmerged. */
+  acceptanceKind?: "indirect-integration";
   occurredAt: string;
   repository: RepositoryId;
   source: {

@@ -42,6 +42,14 @@ export interface WorkUnitRecord {
     pullRequestNumber: number;
     headSha: string;
     mergeSha: string | null;
+    indirectAcceptance?: {
+      historicalHeadSha: string;
+      integrationSha: string;
+      acceptedTipSha: string;
+      branch: string;
+      observationRunId: number;
+      observedOnBranchAt: string;
+    };
     occurredAt: string;
     policySha: string;
     sourceDigest: string;
@@ -145,7 +153,10 @@ export function workUnitSourceBindings(
   repositories: readonly TargetRepository[] = REGISTERED_REPOSITORIES,
 ): WorkUnitRecord["sources"] {
   return evidence.sources.map(({ evidence: source, policy }, i) => {
-    const occurredAt = source.pull.merged_at ?? source.pull.closed_at;
+    const occurredAt =
+      source.pull.merged_at ??
+      source.indirectAcceptance?.observedOnBranchAt ??
+      source.pull.closed_at;
     const repository = repositories.find((entry) =>
       [entry.id, ...entry.aliases].some(
         (id) => id.toLowerCase() === source.repository.toLowerCase(),
@@ -162,6 +173,18 @@ export function workUnitSourceBindings(
       pullRequestNumber: source.pull.number,
       headSha: source.pull.head.sha,
       mergeSha: source.pull.merge_commit_sha,
+      ...(source.indirectAcceptance
+        ? {
+            indirectAcceptance: {
+              historicalHeadSha: source.indirectAcceptance.historicalHeadSha,
+              integrationSha: source.indirectAcceptance.integrationSha,
+              acceptedTipSha: source.indirectAcceptance.acceptedTipSha,
+              branch: source.indirectAcceptance.branch,
+              observationRunId: source.indirectAcceptance.observationRunId,
+              observedOnBranchAt: source.indirectAcceptance.observedOnBranchAt,
+            },
+          }
+        : {}),
       occurredAt,
       policySha: policy.sha,
       sourceDigest: evidence.sourceDigests[i].digest,
@@ -209,12 +232,14 @@ export async function appendWorkUnitRecord(
   )
     throw new Error("Joint value journal bytes do not match their digest");
   await db
-    .prepare(`INSERT INTO slopbot_work_unit_journal
+    .prepare(
+      `INSERT INTO slopbot_work_unit_journal
     (record_digest, assessment_key, project_id, source_digest, record_json, recorded_at)
     SELECT ?, ?, ?, ?, ?, ?
     WHERE NOT EXISTS (SELECT 1 FROM slopbot_work_unit_journal WHERE assessment_key = ?)
       AND (? IS NULL OR EXISTS (SELECT 1 FROM slopbot_installations
-        WHERE installation_id = ? AND removed_at IS NULL AND suspended_at IS NULL))`)
+        WHERE installation_id = ? AND removed_at IS NULL AND suspended_at IS NULL))`,
+    )
     .bind(
       recordDigest,
       assessmentKey,
@@ -228,8 +253,10 @@ export async function appendWorkUnitRecord(
     )
     .run();
   const stored = await db
-    .prepare(`SELECT sequence, record_digest, assessment_key, record_json, recorded_at
-    FROM slopbot_work_unit_journal WHERE assessment_key = ?`)
+    .prepare(
+      `SELECT sequence, record_digest, assessment_key, record_json, recorded_at
+    FROM slopbot_work_unit_journal WHERE assessment_key = ?`,
+    )
     .bind(assessmentKey)
     .first<StoredValueRecord>();
   if (!stored)
@@ -246,11 +273,13 @@ export async function currentWorkUnitRecord(
   pullRequestNodeId: string,
 ) {
   return db
-    .prepare(`SELECT j.sequence, j.record_digest, j.assessment_key, j.record_json, j.recorded_at
+    .prepare(
+      `SELECT j.sequence, j.record_digest, j.assessment_key, j.record_json, j.recorded_at
     FROM slopbot_work_unit_journal j
     JOIN slopbot_work_unit_sources s ON s.record_digest = j.record_digest
     WHERE s.repository_node_id = ? AND s.pull_request_node_id = ?
-      AND NOT EXISTS (SELECT 1 FROM slopbot_work_unit_predecessors p WHERE p.predecessor_digest = j.record_digest)`)
+      AND NOT EXISTS (SELECT 1 FROM slopbot_work_unit_predecessors p WHERE p.predecessor_digest = j.record_digest)`,
+    )
     .bind(repositoryNodeId, pullRequestNodeId)
     .first<StoredValueRecord>();
 }
@@ -275,7 +304,8 @@ export async function workUnitHistory(
   )
     throw new Error("Joint history requires a stable sequence boundary");
   const row = await db
-    .prepare(`WITH RECURSIVE
+    .prepare(
+      `WITH RECURSIVE
     bounds AS (SELECT COALESCE(MAX(sequence), 0) AS maximum,
       COALESCE(?, MAX(sequence), 0) AS through_sequence FROM slopbot_work_unit_journal),
     lineage(record_digest) AS (
@@ -295,7 +325,8 @@ export async function workUnitHistory(
        FROM (SELECT j.sequence, j.record_digest, j.record_json, j.recorded_at
          FROM slopbot_work_unit_journal j JOIN lineage l ON l.record_digest = j.record_digest
          WHERE j.sequence > ? ORDER BY j.sequence LIMIT 101)) AS records_json
-    FROM bounds b`)
+    FROM bounds b`,
+    )
     .bind(throughSequence, repository, pullRequestNumber, afterSequence)
     .first<{
       maximum: number;

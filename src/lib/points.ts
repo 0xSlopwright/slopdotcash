@@ -176,7 +176,21 @@ export function assertPointsJournal(
       a.sourceUrl.length > 2048
     )
       throw new Error("Invalid point source");
-    if (a.key !== pointKey(a.projectId, a.actor.id, a.category, a.sourceId))
+    if (
+      a.key !== pointKey(a.projectId, a.actor.id, a.category, a.sourceId) &&
+      !(
+        a.category === "merged-pull-request" &&
+        /^wu_[a-f0-9]{64}$/u.test(a.workUnitId) &&
+        a.key ===
+          pointKey(
+            a.projectId,
+            a.actor.id,
+            a.category,
+            a.sourceId,
+            a.workUnitId,
+          )
+      )
+    )
       throw new Error("Point source key mismatch");
     const { id, ...body } = r;
     if (
@@ -234,8 +248,17 @@ export function pointKey(
   actor: string,
   category: string,
   source: string,
+  workUnit?: string,
 ): string {
-  return sha256Hex(JSON.stringify([project, actor, category, source]));
+  return sha256Hex(
+    JSON.stringify([
+      project,
+      actor,
+      category,
+      source,
+      ...(workUnit === undefined ? [] : [workUnit]),
+    ]),
+  );
 }
 export function pointsForScore(
   event: Pick<ScoreEvent, "scoreThirds" | "points"> &
@@ -264,6 +287,9 @@ export function awardForScore(event: ScoreEvent): PointAward {
       event.actor.id,
       event.category,
       event.category === "evidence" ? event.id : event.source.id,
+      event.category === "merged-pull-request" && event.id.includes(":joint:")
+        ? event.workUnitId
+        : undefined,
     ),
     actor: { id: event.actor.id, login: event.actor.login },
     projectId: project.projectId,

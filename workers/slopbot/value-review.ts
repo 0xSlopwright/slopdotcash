@@ -23,6 +23,8 @@ export async function assessValue(
   mayCall: () => Promise<boolean>,
   budget: ValueInferenceBudget,
 ) {
+  if (evidence.indirectAcceptance)
+    throw new Error("Indirect acceptance requires joint work-unit assessment");
   if (evidence.limitations.length > 0)
     throw new Error("Complete source evidence is required before valuation");
   if (!/^[a-f0-9]{40}$/u.test(policy.sha) || !policy.text.trim())
@@ -69,6 +71,7 @@ export function validateEvidenceAssessment(
   value: unknown,
   evidence: ValueEvidence,
 ) {
+  if (evidence.indirectAcceptance) return null;
   return validateValueAssessment(value, {
     evidenceUrls: new Set(evidence.evidenceUrls),
     relatedPullRequestUrls: new Set(
