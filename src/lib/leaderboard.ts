@@ -2558,9 +2558,10 @@ function latestSourceUpdate(input: LeaderboardInput): string {
 }
 
 /**
- * Assigns each commit SHA to the earliest merged integration-branch pull
- * request that lists it, so a later consolidation or promotion pull request
- * cannot score the same commits again.
+ * Assigns each commit SHA to the earliest merged pull request that lists it,
+ * whatever its base branch, so a later consolidation or promotion pull
+ * request cannot score the same commits again. Only an integration-branch
+ * pull request shares credit with the committers it owns (SCR-04).
  */
 function commitCreditOwners(
   outcomes: readonly MergedPullRequestOutcome[],
@@ -2573,13 +2574,7 @@ function commitCreditOwners(
   );
   for (const pullRequest of ordered) {
     const repositoryId = repositoryIdFromUrl(pullRequest.url);
-    if (
-      pullRequest.commits === null ||
-      pullRequest.baseRefName !==
-        findRegisteredRepositoryById(repositoryId)?.integrationBranch
-    ) {
-      continue;
-    }
+    if (pullRequest.commits === null) continue;
     for (const commit of pullRequest.commits) {
       const key = `${repositoryId.toLowerCase()}\0${commit.oid}`;
       if (!owners.has(key)) owners.set(key, pullRequest.id);
@@ -2602,7 +2597,12 @@ function mergeCreditActors(
       : null;
   const committers = new Map<string, GitHubActor>();
   const repositoryId = repositoryIdFromUrl(pullRequest.url).toLowerCase();
-  for (const commit of pullRequest.commits ?? []) {
+  // A pull request that targets another branch keeps author-only credit.
+  const sharesCommitCredit =
+    pullRequest.baseRefName ===
+    findRegisteredRepositoryById(repositoryIdFromUrl(pullRequest.url))
+      ?.integrationBranch;
+  for (const commit of sharesCommitCredit ? (pullRequest.commits ?? []) : []) {
     if (
       commit.author &&
       isCreditEligibleCommitAuthor(commit.author) &&
