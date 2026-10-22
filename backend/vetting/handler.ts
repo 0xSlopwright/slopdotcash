@@ -430,7 +430,12 @@ async function serviceResult(
   );
   const stored = await deps.vetting.getAssessment(result.assessmentId);
   if (stored === null) fail(500, "internal_error", "Assessment vanished");
-  return json(200, { assessment: summarize(stored) });
+  return json(200, {
+    assessment: {
+      ...summarize(stored),
+      resultSha256: stored.resultSha256,
+    },
+  });
 }
 
 /** Returns null when the path belongs to another API module. */
