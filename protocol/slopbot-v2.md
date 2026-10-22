@@ -55,3 +55,14 @@ payment key.
 Slopbot appears only in the Automation row (PRD LDR-04). Bot activity still
 does not score, and a Slopbot record is still never a prior review for the
 duplicate-review rule.
+
+## Registered repository scope
+
+Owner decision, 21 October 2026: the hosted rollout operates only on public
+repositories of active D1 projects. This restriction also applies before v2's
+effective date. App installation alone grants no review authority. Paused,
+retired, quarantined, banned and unregistered projects are outside the rollout.
+Read the live registry before queue intake, job execution, inference and each
+GitHub write. A read failure stops that action. A stale installation or queued
+job cannot override the registry. Protection-only operation is superseded for
+this rollout. Closure activation and financial decisions remain separate.
