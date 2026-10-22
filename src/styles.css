@@ -4751,13 +4751,68 @@ small {
 }
 
 .security-page .admin-card ul,
-.security-case-list,
 .security-history {
   display: grid;
   gap: 6px;
   margin: 0;
   padding-left: 18px;
   font-size: 13px;
+}
+
+.security-case-list {
+  margin: 0;
+  font-size: 13px;
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.security-case-choice {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 0.35rem 1rem;
+  padding: 1rem;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.security-case-choice[aria-pressed="true"] {
+  border-color: currentColor;
+}
+
+.security-reference {
+  margin-block: 1rem;
+}
+
+.security-award-split {
+  display: grid;
+  grid-template-columns: 3fr 1fr;
+  gap: 0.5rem;
+  margin-block: 1rem 1.5rem;
+}
+
+.security-award-split > div {
+  display: grid;
+  gap: 0.5rem;
+  padding-block: 0.75rem;
+  border-top: 0.5rem solid currentColor;
+}
+
+.security-award-split strong {
+  font-size: clamp(1rem, 3vw, 1.75rem);
+}
+
+@media (max-width: 480px) {
+  .security-case-choice {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .security-handoff {
