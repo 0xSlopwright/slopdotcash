@@ -1,4 +1,5 @@
 /** Advisory, source-bound outcome calculations. Never establishes approval. */
+import { sha256Hex } from "./async-sha256.mjs";
 import { isCanonicalExternalSourceUrl } from "./external-sources";
 import { exactRecord, type FundingPreparation } from "./funding-review-data";
 
@@ -393,7 +394,7 @@ export async function verifyQualityEventIds(
   preparation: FundingPreparation,
 ) {
   for (const actor of preparation.contributors) {
-    const bytes = new TextEncoder().encode(
+    const hash = await sha256Hex(
       JSON.stringify(
         evidence.events
           .filter((event) => event.actorId === actor.actor.id)
@@ -401,10 +402,6 @@ export async function verifyQualityEventIds(
           .sort(),
       ),
     );
-    const digest = await crypto.subtle.digest("SHA-256", bytes);
-    const hash = Array.from(new Uint8Array(digest), (byte) =>
-      byte.toString(16).padStart(2, "0"),
-    ).join("");
     requireValue(
       hash === actor.eventIdsSha256,
       "Quality event identities do not match the frozen actor ledger",
@@ -416,11 +413,5 @@ export async function verifyQualityEventIds(
 export async function qualityEvidenceBinding(
   evidence: QualityEvidence,
 ): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(JSON.stringify(evidence)),
-  );
-  return `quality-evidence-v2:${Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("")}`;
+  return `quality-evidence-v2:${await sha256Hex(JSON.stringify(evidence))}`;
 }

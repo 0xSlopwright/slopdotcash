@@ -1,3 +1,5 @@
+export { sha256Hex } from "../../src/lib/async-sha256.mjs";
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -35,13 +37,6 @@ export function randomToken(byteLength = 32): string {
   const bytes = new Uint8Array(byteLength);
   crypto.getRandomValues(bytes);
   return encodeBase64Url(bytes);
-}
-
-export async function sha256Hex(value: string): Promise<string> {
-  const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", encoder.encode(value)),
-  );
-  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export async function pkceChallenge(verifier: string): Promise<string> {

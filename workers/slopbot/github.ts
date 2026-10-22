@@ -1,6 +1,8 @@
 // GitHub App plumbing: webhook signatures, App JWT, installation tokens, and
 // the few REST calls Slopbot is allowed to make (BOT-01, slopbot-v2 permissions).
 
+export { sha256Hex } from "../../src/lib/async-sha256.mjs";
+
 const API = "https://api.github.com";
 const encoder = new TextEncoder();
 
@@ -8,10 +10,6 @@ function hex(bytes: ArrayBuffer): string {
   return [...new Uint8Array(bytes)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-}
-
-export async function sha256Hex(text: string): Promise<string> {
-  return hex(await crypto.subtle.digest("SHA-256", encoder.encode(text)));
 }
 
 function timingSafeEqual(a: string, b: string): boolean {

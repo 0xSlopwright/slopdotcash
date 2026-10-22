@@ -189,11 +189,4 @@ export async function readLimitedBody(
   return result;
 }
 
-export async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", copy.buffer),
-  );
-  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
+export { sha256Hex } from "../../src/lib/async-sha256.mjs";
