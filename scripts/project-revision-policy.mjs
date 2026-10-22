@@ -9,10 +9,10 @@
  * `manifestSha256`.
  */
 
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { assertProjectDefinition } from "../src/lib/project-schema.mjs";
+import { sha256Hex } from "./sha256.mjs";
 
 const REVISIONS_PATH = "src/lib/project-revisions.generated.json";
 
@@ -29,9 +29,7 @@ export async function currentProjectPolicies(root) {
     .sort((left, right) => left.projectId.localeCompare(right.projectId))
     .map((row) => {
       const bytes = Buffer.from(JSON.stringify(row.manifest), "utf8");
-      if (
-        createHash("sha256").update(bytes).digest("hex") !== row.manifestSha256
-      )
+      if (sha256Hex(bytes) !== row.manifestSha256)
         throw new TypeError(
           `Project ${row.projectId}@${row.revision} bytes do not match their D1 digest`,
         );

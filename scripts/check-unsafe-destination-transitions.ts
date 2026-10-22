@@ -130,17 +130,13 @@ interface TransitionInput {
   repositoryRoot?: string;
 }
 
-function inspectUnsafeDestinationTransitions(
-  input: TransitionInput,
-  requireBaseCheckout = true,
-) {
+function inspectUnsafeDestinationTransitions(input: TransitionInput) {
   const root = input.repositoryRoot ?? ROOT;
   if (!SHA.test(input.baseSha) || !SHA.test(input.headSha))
     throw new TypeError(
       "Cycle transition requires immutable base and head SHAs",
     );
   if (
-    requireBaseCheckout &&
     git(root, ["rev-parse", "HEAD"]).toString("utf8").trim() !== input.baseSha
   )
     throw new TypeError(
@@ -296,13 +292,6 @@ function inspectUnsafeDestinationTransitions(
   return { preservedFiles: base.size, checkedFiles, reports };
 }
 
-/** Credential-free preservation diagnostics do not authorize new signed reports. */
-export function checkUnsafeDestinationTransitions(input: TransitionInput) {
-  const { preservedFiles, checkedFiles } =
-    inspectUnsafeDestinationTransitions(input);
-  return { preservedFiles, checkedFiles };
-}
-
 /** Online authorization is explicit and runs only from the immutable trusted base. */
 export async function verifyUnsafeDestinationTransitionAuthorities(
   input: TransitionInput,
@@ -316,27 +305,6 @@ export async function verifyUnsafeDestinationTransitionAuthorities(
   return { preservedFiles, checkedFiles, verifiedReports: reports.size };
 }
 
-/** Deployed trusted verifier reads historical immutable blobs without checking
- * out or executing historical code. The standalone CLI retains its base check. */
-export async function verifyUnsafeDestinationHistoryAuthorities(
-  input: TransitionInput,
-  readCommit?: Parameters<typeof verifyUnsafeDestinationReport>[1],
-) {
-  const root = input.repositoryRoot ?? ROOT;
-  if (
-    git(root, ["rev-parse", "--is-shallow-repository"]).toString().trim() !==
-    "false"
-  )
-    throw new TypeError(
-      "Unsafe destination history requires complete nonshallow history",
-    );
-  git(root, ["merge-base", "--is-ancestor", input.baseSha, input.headSha]);
-  const { preservedFiles, checkedFiles, reports } =
-    inspectUnsafeDestinationTransitions(input, false);
-  for (const report of reports.values())
-    await verifyUnsafeDestinationReport(report, readCommit);
-  return { preservedFiles, checkedFiles, verifiedReports: reports.size };
-}
 if (import.meta.main) {
   const [baseSha, headSha, ...extra] = process.argv.slice(2);
   if (!baseSha || !headSha || extra.length)

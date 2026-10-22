@@ -5,6 +5,7 @@ import {
   assemblyRecord,
   parseAssemblyManifest,
 } from "../../workers/vetting/assembly-manifest";
+import { fail } from "../api-error";
 import type { ProjectD1Database } from "../projects/cloudflare-persistence";
 import type { WebSession } from "../projects/contracts";
 import type { R2Bucket } from "../trace/cloudflare-persistence";
@@ -52,9 +53,6 @@ export type EvidencePolicy = {
     validUntil: string;
   };
 };
-function fail(status: number, code: string, message: string): never {
-  throw Object.assign(new Error(message), { status, code });
-}
 function exact(value: Record<string, unknown>, keys: string[]) {
   if (Object.keys(value).sort().join() !== keys.sort().join())
     fail(400, "invalid_request", "Unexpected evidence fields");

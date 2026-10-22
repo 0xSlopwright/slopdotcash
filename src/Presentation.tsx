@@ -53,6 +53,24 @@ export function formatDateTime(value: string): string {
   }).format(new Date(value))} UTC`;
 }
 
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Something went wrong.";
+}
+
+export function formatTime(value: string | null): string {
+  if (value === null) return "—";
+  return new Date(value).toLocaleString("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "UTC",
+  });
+}
+
+/** Optional admin timestamps include an explicit UTC suffix. */
+export function formatNullableUtc(value: string | null): string {
+  return value === null ? "—" : `${formatTime(value)} UTC`;
+}
+
 export function formatDate(value: string): string {
   return new Intl.DateTimeFormat("en-US", {
     day: "numeric",
@@ -232,13 +250,6 @@ export function monthlyPoolPointsOnly(
   reward: Pick<ProjectDefinition["reward"], "kind" | "monthlyCapMinor">,
 ): boolean {
   return reward.kind === "monthly-pool" && reward.monthlyCapMinor === "0";
-}
-
-export function formatCompact(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: 1,
-    notation: value >= 1_000 ? "compact" : "standard",
-  }).format(value);
 }
 
 export function formatScore(value: number): string {

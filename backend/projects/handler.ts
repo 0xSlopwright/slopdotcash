@@ -1,3 +1,14 @@
+import {
+  type DeploymentTier,
+  deploymentOrigins,
+} from "../../src/lib/deployment";
+import type {
+  ProjectApplicationNotice as AdminApplicationNotice,
+  EnforcementPreview,
+  ProjectEnforcementState,
+  PublicProjectApplication,
+} from "../../src/lib/project-contracts";
+import { validRepositoryPath } from "../../src/lib/project-contracts";
 import { assertProjectPolicyTransition } from "../../src/lib/project-policy.mjs";
 import {
   assertProjectDefinition,
@@ -12,6 +23,8 @@ import {
   rewardAssetChoice,
   sameRewardAsset,
 } from "../../src/lib/reward-asset.mjs";
+import { type ApiError, fail } from "../api-error";
+import { pathParts } from "../api-path";
 import { readJsonObject, sha256Hex } from "../trace/validation";
 import type { VettingClearance } from "../vetting/persistence";
 import {
@@ -35,6 +48,7 @@ import {
   purgeProjectCache,
 } from "./edge-cache";
 import {
+  activeRestrictions,
   ENFORCEMENT_ACTIONS,
   enforcedManifest,
   enforcementRevisionReason,
@@ -52,21 +66,13 @@ import {
   listOwnedRepositories,
   lookupGitHubRepository,
   validGithubLogin,
-  validRepositoryPath,
 } from "./github-lookup";
 import { TokenMetadataError, type TokenMetadataReader } from "./token-metadata";
 
-export type AdminApplicationNotice = {
-  applicationId: string;
-  projectId: string;
-  projectName: string;
-  repository: string;
-  applicantLogin: string;
-  submittedAt: string;
-  reviewUrl: string;
-};
+export type { ProjectApplicationNotice as AdminApplicationNotice } from "../../src/lib/project-contracts";
 
 export type ProjectApiDependencies = {
+  tier?: DeploymentTier;
   persistence: ProjectPersistence;
   adminGithubIds: ReadonlySet<string>;
   /** GitHub actor IDs with the project moderation role (PRD ADM-05, ADM-06). */
@@ -101,18 +107,8 @@ export type ProjectApiDependencies = {
   ) => Promise<RepositoryControl>;
 };
 
-type ApiError = Error & { status?: number; code?: string };
-
 const APPLICATION_ID = /^app_[A-Za-z0-9_-]{8,72}$/u;
 const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
-const ADMIN_REVIEW_URL = "https://slop.cash/admin";
-
-function fail(status: number, code: string, message: string): never {
-  const error: ApiError = new Error(message);
-  error.status = status;
-  error.code = code;
-  throw error;
-}
 
 function json(
   status: number,
@@ -380,7 +376,7 @@ function assertRegistryWith(
 
 function publicApplication(
   application: ProjectApplication,
-): Record<string, unknown> {
+): PublicProjectApplication {
   return {
     id: application.id,
     projectId: application.projectId,
@@ -402,7 +398,7 @@ function publicApplication(
   };
 }
 
-function adminProject(project: ProjectRecord): Record<string, unknown> {
+function adminProject(project: ProjectRecord): ProjectRecord {
   return {
     id: project.id,
     status: project.status,
@@ -573,7 +569,7 @@ async function submitApplication(
       repository,
       applicantLogin: session.githubLogin,
       submittedAt: application.submittedAt,
-      reviewUrl: `${ADMIN_REVIEW_URL}/applications/${application.id}`,
+      reviewUrl: `${deploymentOrigins(deps.tier).site}/admin/applications/${application.id}`,
     });
   } catch {
     // The application is already stored; the failed email stays visible to
@@ -882,9 +878,7 @@ function activePublicRestrictions(
   projects: ProjectRecord[],
   records: ProjectEnforcement[],
 ): Record<string, unknown>[] {
-  const restricted = [...new Set(records.map((record) => record.projectId))]
-    .map((projectId) => projectRestriction(projectId, records))
-    .filter((restriction) => restriction.state !== "clear");
+  const restricted = activeRestrictions(records);
   // A project listed for a restricted repository is closed with it.
   const shared = projects
     .filter(
@@ -916,8 +910,8 @@ function assertRepositoryUnrestricted(
 function adminEnforcement(
   project: ProjectRecord,
   restriction: ProjectRestriction,
-  moderation: "unconfigured" | "moderator" | "not-moderator",
-): Record<string, unknown> {
+  moderation: ProjectEnforcementState["moderation"],
+): ProjectEnforcementState {
   return {
     state: restriction.state,
     appeal: restriction.appeal,
@@ -1182,7 +1176,7 @@ async function recordEnforcement(
     ...(vettingReview ? { vettingReview } : {}),
     createdAt: at,
   };
-  const preview = {
+  const preview: EnforcementPreview = {
     projectId,
     projectName: project.manifest.name,
     action,
@@ -1414,12 +1408,6 @@ function isProjectRoute(parts: string[]): boolean {
     (parts[0] === "admin" &&
       (parts[1] === "projects" || parts[1] === "project-applications"))
   );
-}
-
-function pathParts(request: Request): string[] {
-  const path = new URL(request.url).pathname;
-  if (!path.startsWith("/api/v1/")) return [];
-  return path.slice("/api/v1/".length).split("/").filter(Boolean);
 }
 
 /** Returns null when the path belongs to another API module. */

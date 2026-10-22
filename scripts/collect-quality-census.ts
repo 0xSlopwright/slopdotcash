@@ -1,7 +1,10 @@
 /** Read-only repository connection census. Does not rely on GitHub search indexing. */
 import { execFile, execFileSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import { findProject } from "../src/lib/projects.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const [projectId, cycleId, output] = process.argv.slice(2);
 const project = findProject(projectId);
@@ -126,29 +129,12 @@ for (let i = 0; i < batches.length; i += 4) {
         variables: { ids: batch.map((node) => node.id) },
       });
       // Structured JSON via stdin avoids shell interpolation and identifier quoting.
-      const child = execFile(
-        "gh",
-        ["api", "graphql", "--input", "-"],
-        { timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
-        () => {},
-      );
-      const responseText = await new Promise<string>((resolve, reject) => {
-        let stdout = "",
-          stderr = "";
-        child.stdout?.on("data", (chunk) => {
-          stdout += chunk;
-        });
-        child.stderr?.on("data", (chunk) => {
-          stderr += chunk;
-        });
-        child.on("error", reject);
-        child.on("close", (code) =>
-          code === 0
-            ? resolve(stdout)
-            : reject(new Error(`GitHub statistics failed: ${stderr}`)),
-        );
-        child.stdin?.end(payload);
+      const pending = execFileAsync("gh", ["api", "graphql", "--input", "-"], {
+        timeout: 30_000,
+        maxBuffer: 32 * 1024 * 1024,
       });
+      pending.child.stdin?.end(payload);
+      const { stdout: responseText } = await pending;
       const response = JSON.parse(responseText);
       if (
         response.errors?.length ||

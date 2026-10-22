@@ -21,7 +21,7 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { privateKeyToAccount } from "viem/accounts";
-import type { D1Database } from "../../backend/trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import type { evmBindingTypedData } from "../../contracts/evm/adapter";
 import { onRequest } from "../../functions/api/v1/[[path]]";
 import {

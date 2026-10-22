@@ -31,7 +31,7 @@ import {
 } from "../../workers/payment-executor/core";
 import { readDeploymentVaultTotals } from "../../workers/payments/index";
 import { scanEvmPayments } from "../../workers/payments/scanner";
-import type { D1Database } from "../trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import { dispatchPayment } from "./dispatch";
 import { evmPaymentAdapter } from "./evm-adapter";
 import { handlePaymentsApi, type PaymentDeploymentIdentity } from "./handler";

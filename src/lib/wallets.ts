@@ -4,12 +4,10 @@
  * custody of the key; payout reviewers preserve the exact source observation.
  */
 
+import { decodeBase58Bytes } from "./base58";
 import { chainFamily } from "./escrow-policy.mjs";
 
-export const WALLET_MARKER_VERSION = "1" as const;
-export const WALLET_MARKER_PREFIX = "slop-wallet:v1" as const;
 export const WALLET_CLAIM_REPOSITORY = "SlopDotCash/slopdotcash" as const;
-export const WALLET_CLAIM_TITLE = "Slop wallet claim" as const;
 
 /** Networks a contributor may publish a payout wallet for, one claim each. */
 export const WALLET_CHAINS = [
@@ -29,65 +27,26 @@ export function isWalletChain(value: unknown): value is WalletChain {
   return WALLET_CHAINS.includes(value as WalletChain);
 }
 
-const BASE58_ALPHABET =
-  "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-const BASE58_INDEX = new Map(
-  [...BASE58_ALPHABET].map((character, index) => [character, index]),
-);
-
-function decodeBase58(value: string): Uint8Array | null {
-  if (!value || value.length > 44) return null;
-  const bytes: number[] = [0];
-  for (const character of value) {
-    const digit = BASE58_INDEX.get(character);
-    if (digit === undefined) return null;
-    let carry = digit;
-    for (let index = 0; index < bytes.length; index += 1) {
-      carry += bytes[index] * 58;
-      bytes[index] = carry & 0xff;
-      carry >>= 8;
-    }
-    while (carry > 0) {
-      bytes.push(carry & 0xff);
-      carry >>= 8;
-    }
-  }
-  let leadingZeroes = 0;
-  while (leadingZeroes < value.length && value[leadingZeroes] === "1") {
-    leadingZeroes += 1;
-  }
-  const significantBytes = bytes.length === 1 && bytes[0] === 0 ? [] : bytes;
-  const decoded = new Uint8Array(leadingZeroes + significantBytes.length);
-  for (let index = 0; index < significantBytes.length; index += 1) {
-    decoded[decoded.length - 1 - index] = significantBytes[index];
-  }
-  return decoded;
-}
-
-/** Returns true only for a canonical 32-byte Solana public key. */
-export function isSolanaAddress(value: unknown): value is string {
+function decodedSolanaAddress(value: unknown): Uint8Array | null {
   if (
     typeof value !== "string" ||
     value.length < 32 ||
     value.length > 44 ||
     !/^[1-9A-HJ-NP-Za-km-z]+$/u.test(value)
-  ) {
-    return false;
-  }
-  const decoded = decodeBase58(value);
-  return decoded !== null && decoded.length === 32;
+  )
+    return null;
+  const bytes = decodeBase58Bytes(value);
+  return bytes.length === 32 ? bytes : null;
 }
-
-/**
- * Returns the exact 32 decoded bytes of a canonical Solana public key. Callers
- * that verify a signature need the key itself, not its textual form.
- */
+/** Returns true only for a canonical 32-byte Solana public key. */
+export function isSolanaAddress(value: unknown): value is string {
+  return decodedSolanaAddress(value) !== null;
+}
+/** Returns the exact decoded bytes used for Solana signature verification. */
 export function solanaAddressBytes(value: string): Uint8Array {
-  const decoded = isSolanaAddress(value) ? decodeBase58(value) : null;
-  if (decoded === null || decoded.length !== 32) {
-    throw new TypeError("Invalid Solana public address");
-  }
-  return decoded;
+  const bytes = decodedSolanaAddress(value);
+  if (bytes === null) throw new TypeError("Invalid Solana public address");
+  return bytes;
 }
 
 /**

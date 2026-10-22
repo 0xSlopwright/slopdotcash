@@ -204,6 +204,14 @@ type Context = {
   diffTruncated: boolean;
 };
 
+async function publicRepository(
+  github: GitHubClient,
+  job: Job,
+): Promise<Repo | null> {
+  const repo = await github.get<Repo>(`/repos/${job.owner}/${job.repo}`);
+  return repo?.private === false && repo.id === job.repositoryId ? repo : null;
+}
+
 async function loadContext(
   env: ReviewEnv,
   job: Extract<Job, { kind: "review" }>,
@@ -213,11 +221,12 @@ async function loadContext(
     env.SLOPBOT_APP_PRIVATE_KEY,
     job.installationId,
   );
-  const repo = await github.get<Repo>(`/repos/${job.owner}/${job.repo}`);
+  const repo = await publicRepository(github, job);
+  if (repo === null) return null;
   const issue = await github.get<Issue>(
     `/repos/${job.owner}/${job.repo}/issues/${job.number}`,
   );
-  if (repo === null || issue === null) return null;
+  if (issue === null) return null;
   const branch = await github.get<{ commit: { sha: string } }>(
     `/repos/${job.owner}/${job.repo}/branches/${encodeURIComponent(repo.default_branch)}`,
   );
@@ -545,6 +554,25 @@ export function commentBody(input: {
     .join("\n");
 }
 
+async function addLabels(
+  env: ReviewEnv,
+  job: Job,
+  github: GitHubClient,
+  labels: string[],
+): Promise<void> {
+  await requireRegisteredRepository(env.SLOPBOT_DB, job);
+  const result = await github.request(
+    "POST",
+    `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
+    { labels },
+  );
+  if (result.status !== 200 || result.data === null)
+    throw new GitHubError(
+      result.status,
+      "GitHub did not confirm the label addition",
+    );
+}
+
 async function upsertComment(
   env: ReviewEnv,
   job: Job,
@@ -832,19 +860,9 @@ async function runReview(
     "comment",
     category,
   );
-  await requireRegisteredRepository(db, job);
-  const labeled = await context.github.request(
-    "POST",
-    `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
-    {
-      labels: [`slopbot: ${category.replaceAll("_", " ")}`],
-    },
-  );
-  if (labeled.status !== 200 || labeled.data === null)
-    throw new GitHubError(
-      labeled.status,
-      "GitHub did not confirm the label addition",
-    );
+  await addLabels(env, job, context.github, [
+    `slopbot: ${category.replaceAll("_", " ")}`,
+  ]);
   await store.recordAction(
     db,
     reviewKey,
@@ -917,15 +935,12 @@ export async function recordHumanSignal(
     env.SLOPBOT_APP_PRIVATE_KEY,
     job.installationId,
   );
-  const repo = await github.get<Repo>(`/repos/${job.owner}/${job.repo}`);
+  const repo = await publicRepository(github, job);
+  if (repo === null) return "ignored";
   const issue = await github.get<Issue>(
     `/repos/${job.owner}/${job.repo}/issues/${job.number}`,
   );
-  if (
-    repo === null ||
-    issue === null ||
-    String(job.senderId) === env.SLOPBOT_APP_USER_ID
-  )
+  if (issue === null || String(job.senderId) === env.SLOPBOT_APP_USER_ID)
     return "ignored";
   const pull =
     job.itemKind === "pull_request"
@@ -961,13 +976,6 @@ export async function recordHumanSignal(
     kind,
     String(job.senderId),
   );
-  if (kind === "appeal") {
-    await requireRegisteredRepository(db, job);
-    await github.request(
-      "POST",
-      `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
-      { labels: ["slopbot: appeal"] },
-    );
-  }
+  if (kind === "appeal") await addLabels(env, job, github, ["slopbot: appeal"]);
   return kind;
 }

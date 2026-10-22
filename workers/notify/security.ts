@@ -1,8 +1,10 @@
 /** SEC-16 restricted pilot. No public route, caller-supplied destination or case content. */
+
 import {
   type SecurityD1Database,
   securityNotificationAccess,
 } from "../../backend/security/handler";
+import { sha256Hex } from "../../src/lib/async-sha256.mjs";
 import { encodeQuotedPrintable } from "./handler";
 
 type Destination = {
@@ -123,11 +125,7 @@ export async function recordDelivery(
 }
 
 export async function destinationDigest(value: object): Promise<string> {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  return Array.from(
-    new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
-    (byte) => byte.toString(16).padStart(2, "0"),
-  ).join("");
+  return sha256Hex(JSON.stringify(value));
 }
 
 function mime(

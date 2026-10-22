@@ -6,18 +6,20 @@
  * "malicious" needs concrete confirmation evidence, not a model label.
  */
 
+import {
+  VETTING_DISPOSITIONS,
+  type VettingDisposition,
+} from "../../src/lib/vetting-contracts";
 import { validIsoTimestamp, validSha256 } from "../trace/validation";
 
 export const VETTING_RESULT_SCHEMA = "slop-vetting-result-v1";
 /** Results carry summaries and digests; the full trace stays with the VM operator. */
 export const MAX_VETTING_RESULT_BYTES = 256 * 1024;
 
-export const VETTING_DISPOSITIONS = [
-  "clean",
-  "incomplete",
-  "malicious",
-] as const;
-export type VettingDisposition = (typeof VETTING_DISPOSITIONS)[number];
+export {
+  VETTING_DISPOSITIONS,
+  type VettingDisposition,
+} from "../../src/lib/vetting-contracts";
 
 /** Telemetry channels VET-03 requires; each must be complete for "clean". */
 export const TELEMETRY_CHANNELS = [

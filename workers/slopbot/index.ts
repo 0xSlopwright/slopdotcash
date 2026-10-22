@@ -33,7 +33,12 @@ type Payload = {
     account?: { id: number; login: string; type: string };
     updated_at?: string | number;
   };
-  repository?: { id: number; name: string; owner: { login: string } };
+  repository?: {
+    id: number;
+    name: string;
+    private: boolean;
+    owner: { login: string };
+  };
   sender?: { id: number; type: string };
   issue?: { number: number; pull_request?: unknown };
   pull_request?: { number: number };
@@ -50,6 +55,7 @@ function jobFor(
   if (
     installation === undefined ||
     repository === undefined ||
+    repository.private !== false ||
     sender === undefined ||
     action === undefined
   )

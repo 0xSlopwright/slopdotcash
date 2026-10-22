@@ -458,7 +458,11 @@ export async function runScheduledMaintenance(
       );
     }
   }
-  if (cleanup.status === "rejected" || renewal.status === "rejected") {
+  if (
+    cleanup.status === "rejected" ||
+    renewal.status === "rejected" ||
+    renewal.value.status === "skipped"
+  ) {
     throw new Error("slop identity scheduled maintenance failed");
   }
 }

@@ -294,7 +294,7 @@ export async function handleX(
   if (route === "/start" && request.method === "POST") {
     if (!config) return json(503, { error: "x_not_configured" });
     const body = (await readBoundedJson(
-      request as unknown as Response,
+      request,
       256,
       "X connection",
     )) as Record<string, unknown>;
@@ -360,7 +360,7 @@ export async function handleX(
   }
   if (route === "/visibility" && request.method === "POST") {
     const body = (await readBoundedJson(
-      request as unknown as Response,
+      request,
       256,
       "X visibility",
     )) as Record<string, unknown>;

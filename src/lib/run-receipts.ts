@@ -1,4 +1,8 @@
-import { exactKeys, isRecord } from "./record-validation";
+import {
+  exactKeys,
+  isRecord,
+  nonNegativeInteger,
+} from "./record-validation.mjs";
 /**
  * Defines the public, device-signed project-run receipt embedded in a GitHub
  * contribution footer. The receipt proves stable bytes and device continuity;
@@ -313,13 +317,6 @@ export function assertProjectRunReceipt(value: unknown): ProjectRunReceipt {
       device_signature: value.deviceSignature,
     },
   });
-}
-
-function nonNegativeInteger(value: unknown, path: string): number {
-  if (!Number.isSafeInteger(value) || Number(value) < 0) {
-    throw new TypeError(`${path} must be a non-negative safe integer`);
-  }
-  return Number(value);
 }
 
 function isoTimestamp(value: unknown, path: string): string {

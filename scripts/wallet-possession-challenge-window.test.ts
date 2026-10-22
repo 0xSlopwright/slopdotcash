@@ -8,10 +8,10 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { ed25519 } from "@noble/curves/ed25519.js";
+import type { D1TransactionalDatabase as D1Database } from "../backend/d1";
 import { signApiToken } from "../backend/trace/auth";
 import {
   CloudflareTracePersistence,
-  type D1Database,
   type R2Bucket,
 } from "../backend/trace/cloudflare-persistence";
 import {

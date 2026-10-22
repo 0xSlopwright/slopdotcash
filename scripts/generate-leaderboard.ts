@@ -5,6 +5,7 @@
  * becoming a plausible-looking empty snapshot.
  */
 
+import type { ConnectionPage, PageInfo } from "./github-pagination";
 import { resolveGitHubToken } from "./github-token";
 
 export { resolveGitHubToken } from "./github-token";
@@ -124,17 +125,6 @@ type FetchLike = (
   input: RequestInfo | URL,
   init?: RequestInit,
 ) => Promise<Response>;
-
-interface PageInfo {
-  hasNextPage: boolean;
-  endCursor: string | null;
-}
-
-interface ConnectionPage<T> {
-  totalCount: number;
-  nodes: T[];
-  pageInfo: PageInfo;
-}
 
 interface NestedPageState {
   totalCount: number;
@@ -801,27 +791,6 @@ const MORE_CLOSING_PULL_REQUESTS_QUERY = `
   }
   ${ACTOR_FRAGMENT}
 `;
-
-export const LEADERBOARD_QUERY_DOCUMENTS = {
-  preflight: PREFLIGHT_QUERY,
-  searchReferences: SEARCH_REFERENCES_QUERY,
-  openIssueReferences: OPEN_ISSUE_REFERENCES_QUERY,
-  openPullRequestReferences: OPEN_PULL_REQUEST_REFERENCES_QUERY,
-  issueDetails: ISSUE_DETAILS_QUERY,
-  pullRequestDetails: PULL_REQUEST_DETAILS_QUERY,
-  mergedPullRequestReviews: MERGED_PULL_REQUEST_REVIEWS_QUERY,
-  reviewedPullRequestReferences: REVIEWED_PULL_REQUEST_REFERENCES_QUERY,
-  reviewInlineComments: REVIEW_INLINE_COMMENTS_QUERY,
-  morePullRequestComments: MORE_PULL_REQUEST_COMMENTS_QUERY,
-  moreIssueComments: MORE_ISSUE_COMMENTS_QUERY,
-  moreIssueReferences: MORE_ISSUE_REFERENCES_QUERY,
-  moreReviews: MORE_REVIEWS_QUERY,
-  moreFormalReviews: MORE_FORMAL_REVIEWS_QUERY,
-  moreReviewInlineComments: MORE_REVIEW_INLINE_COMMENTS_QUERY,
-  moreFiles: MORE_FILES_QUERY,
-  moreClosingIssues: MORE_CLOSING_ISSUES_QUERY,
-  moreClosingPullRequests: MORE_CLOSING_PULL_REQUESTS_QUERY,
-} as const;
 
 function asRecord(value: unknown, path: string): JsonRecord {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {

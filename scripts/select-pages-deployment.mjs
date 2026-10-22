@@ -1,3 +1,4 @@
+import { readRecord as asObject } from "../src/lib/record-validation.mjs";
 /**
  * Selects the newly created successful Cloudflare Pages production deployment
  * whose clean commit metadata exactly matches the verified workflow revision.
@@ -5,13 +6,6 @@
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-
-function asObject(value, path) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an object`);
-  }
-  return value;
-}
 
 export function selectSuccessfulProductionDeployment(
   apiResponse,

@@ -34,6 +34,7 @@ import {
   shouldBuildForEvidence,
   verifyRemoteArtifacts,
 } from "./evidence-contract.mjs";
+import { sha256Hex as hash } from "./sha256.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = packageRoot;
@@ -73,10 +74,6 @@ function run(command, args) {
       }
     });
   });
-}
-
-function hash(contents) {
-  return createHash("sha256").update(contents).digest("hex");
 }
 
 function digest(path) {

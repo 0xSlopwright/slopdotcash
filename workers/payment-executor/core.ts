@@ -1,4 +1,5 @@
 import { keccak_256 } from "@noble/hashes/sha3.js";
+import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import type {
   DispatchPayment,
   PaymentExecutor,
@@ -8,7 +9,6 @@ import {
   verifyEvmBindingSignature,
   verifyPaymentWalletSignature,
 } from "../../backend/payments/possession";
-import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import {
   buildBindCalldata,
   buildPayCalldata,

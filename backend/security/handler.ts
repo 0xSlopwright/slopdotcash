@@ -8,32 +8,23 @@
  * Platform admins have no implicit access. No route here is cached, listed
  * publicly, or exported to builds, leaderboards, points or cycles.
  */
+import type { GithubActor as Actor } from "../../src/lib/project-contracts";
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
 import {
   type SecurityBountyTerms,
   securityBountySplit,
 } from "../../src/lib/security-bounty.mjs";
+import { type ApiError, fail } from "../api-error";
+import { pathParts } from "../api-path";
+import type {
+  D1Result,
+  D1QueryStatement as D1Statement,
+  D1TransactionalDatabase,
+} from "../d1";
 import { notifySecurityCase } from "../notifications/events";
 import { cachedPublicResponse, type EdgeCache } from "../projects/edge-cache";
 import { readJsonObject } from "../trace/validation";
-
-type D1Result<T = unknown> = {
-  success: boolean;
-  results?: T[];
-  meta?: { changes?: number };
-};
-type D1Statement = {
-  bind(...values: unknown[]): D1Statement;
-  first<T>(): Promise<T | null>;
-  all<T>(): Promise<D1Result<T>>;
-  run(): Promise<D1Result>;
-};
-export type SecurityD1Database = {
-  batch(statements: D1Statement[]): Promise<D1Result[]>;
-  prepare(query: string): D1Statement;
-};
-
-type Actor = { githubId: string; githubLogin: string };
+export type SecurityD1Database = D1TransactionalDatabase<D1Statement>;
 
 export type SecurityApiDependencies = {
   db: SecurityD1Database;
@@ -133,8 +124,6 @@ type FrozenTerms = {
   capacityAwards: number;
 };
 
-type ApiError = Error & { status?: number; code?: string };
-
 const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
 const CASE_ID = /^sc_[A-Za-z0-9_-]{8,72}$/u;
 const GHSA =
@@ -152,13 +141,6 @@ const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const RECEIVED_AT_SOURCE = "maintainer-attested";
 /** A browser that kept an older readiness answer must check again. */
 export const INTAKE_READINESS_TTL_SECONDS = 30;
-
-function fail(status: number, code: string, message: string): never {
-  const error: ApiError = new Error(message);
-  error.status = status;
-  error.code = code;
-  throw error;
-}
 
 function json(
   status: number,
@@ -2029,12 +2011,6 @@ async function intakeReadiness(
     },
     `public, max-age=0, s-maxage=${INTAKE_READINESS_TTL_SECONDS}`,
   );
-}
-
-function pathParts(request: Request): string[] {
-  const path = new URL(request.url).pathname;
-  if (!path.startsWith("/api/v1/")) return [];
-  return path.slice("/api/v1/".length).split("/").filter(Boolean);
 }
 
 /** Returns null when the path belongs to another API module. */

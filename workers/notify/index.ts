@@ -1,6 +1,7 @@
 import { EmailMessage } from "cloudflare:email";
 import type { SecurityD1Database } from "../../backend/security/handler";
 import { readBoundedJson } from "../../src/lib/browser-json";
+import { deploymentTier } from "../../src/lib/deployment";
 import {
   type ActivityMailDependencies,
   activityMailEligibility,
@@ -20,6 +21,7 @@ type SendEmailBinding = {
 };
 
 type Env = {
+  SLOP_ENVIRONMENT?: "production" | "staging";
   ADMIN_EMAIL: SendEmailBinding;
   ADMIN_EMAILS?: string;
   SLOP_DB?: SecurityD1Database;
@@ -60,9 +62,13 @@ function activityDependencies(env: Env): ActivityMailDependencies | null {
 export default {
   async scheduled(_event: unknown, env: Env): Promise<void> {
     const deps = securityDependencies(env);
-    if (deps) await dispatchSecurityMail(deps);
     const activity = activityDependencies(env);
-    if (activity) await dispatchActivityMail(activity);
+    const results = await Promise.allSettled([
+      deps ? dispatchSecurityMail(deps) : Promise.resolve(),
+      activity ? dispatchActivityMail(activity) : Promise.resolve(),
+    ]);
+    if (results.some((result) => result.status === "rejected"))
+      throw new Error("Notification queue dispatch failed");
   },
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -83,11 +89,7 @@ export default {
       const deps = securityDependencies(env);
       if (!deps) return respond(503);
       try {
-        const body = await readBoundedJson(
-          request as unknown as Response,
-          8192,
-          "private notice",
-        );
+        const body = await readBoundedJson(request, 8192, "private notice");
         if (typeof body !== "object" || body === null || Array.isArray(body))
           return respond(400);
         if (url.pathname.endsWith("/reconcile"))
@@ -124,11 +126,7 @@ export default {
       const deps = activityDependencies(env);
       if (!deps) return respond(503);
       try {
-        const body = await readBoundedJson(
-          request as unknown as Response,
-          8192,
-          "activity notice",
-        );
+        const body = await readBoundedJson(request, 8192, "activity notice");
         if (!body || typeof body !== "object" || Array.isArray(body))
           return respond(400);
         const value = body as Record<string, unknown>;
@@ -160,6 +158,7 @@ export default {
       }
     }
     return handleNotifyRequest(request, {
+      tier: deploymentTier(env.SLOP_ENVIRONMENT),
       adminEmails: env.ADMIN_EMAILS,
       fromAddress: env.NOTIFY_FROM_ADDRESS,
       now: () => new Date(),

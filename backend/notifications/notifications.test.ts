@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
 import { sqliteD1 } from "../../tests/sqlite-d1";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import { dispatchPayment } from "../payments/dispatch";
 import {
   indexPaymentEvent,
@@ -14,10 +15,7 @@ import {
 import { registerPaymentWallet } from "../payments/wallet-registration";
 import { CloudflareProjectPersistence } from "../projects/cloudflare-persistence";
 import type { ProjectEnforcement } from "../projects/contracts";
-import {
-  CloudflareTracePersistence,
-  type D1Database,
-} from "../trace/cloudflare-persistence";
+import { CloudflareTracePersistence } from "../trace/cloudflare-persistence";
 import { handleNotificationsApi } from "./handler";
 
 const migrations = readdirSync("migrations")

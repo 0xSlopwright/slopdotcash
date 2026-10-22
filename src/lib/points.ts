@@ -13,7 +13,6 @@ import {
 import { sha256Hex } from "./sha256";
 
 export const POINTS_RULE = "slop-points-v1";
-export const WELCOME_POINTS = 5;
 export const POINTS_NOTICE =
   "Points have no monetary value and cannot be transferred or redeemed. Project payments follow separate published rules.";
 export interface PointAward {

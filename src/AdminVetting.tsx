@@ -1,3 +1,7 @@
+import {
+  errorMessage as message,
+  formatNullableUtc as time,
+} from "./Presentation";
 /**
  * The admin view of community project security vetting (PRD VET-01 to
  * VET-08). It shows each project's revision-bound clearance, the restricted
@@ -9,35 +13,11 @@
 import { CircleAlert, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { projectApiRequest } from "./lib/project-api";
-
-type AssessmentState = "pending" | "incomplete" | "clean" | "malicious";
-
-type AssessmentSummary = {
-  id: string;
-  revision: number;
-  state: AssessmentState;
-  commitSha: string;
-  templateSha256: string;
-  policyVersion: string | null;
-  requestedAt: string;
-  completedAt: string | null;
-  modelRuns: { reviewer: string; provider: string; model: string }[];
-  artifacts: number;
-  heldArtifacts: number;
-};
-
-type Clearance =
-  | { state: "unscanned" }
-  | { state: "unverified"; reason: string }
-  | {
-      state: "stale";
-      assessment: AssessmentSummary;
-      live: { commitSha: string; templateSha256: string };
-    }
-  | {
-      state: "queued" | "quarantined" | "cleared" | "banned";
-      assessment: AssessmentSummary;
-    };
+import type {
+  AssessmentState,
+  AssessmentSummary,
+  VettingClearance as Clearance,
+} from "./lib/vetting-contracts";
 
 type AdminAssessment = AssessmentSummary & {
   projectId: string;
@@ -89,19 +69,6 @@ const STATE_TEXT: Record<AssessmentState, string> = {
   clean: "Clean",
   malicious: "Confirmed malicious",
 };
-
-function time(value: string | null): string {
-  if (value === null) return "—";
-  return `${new Date(value).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  })} UTC`;
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong.";
-}
 
 function QueueScan({
   project,

@@ -1,10 +1,10 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
+import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import type {
   DispatchPayment,
   PaymentExecutor,
 } from "../../backend/payments/dispatch";
-import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import {
   BINDING_SIZE,
   OBLIGATION_DISCRIMINATOR,
