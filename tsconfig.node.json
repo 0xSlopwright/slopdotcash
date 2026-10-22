@@ -21,6 +21,8 @@
     "contracts/solana/adapter.ts",
     "contracts/solana/transactions.ts",
     "contracts/solana/funding.ts",
+    "contracts/solana/wallet-transactions.ts",
+    "contracts/solana/commitment.ts",
     "contracts/vault-totals.ts",
     "src/lib/base58.ts",
     "src/lib/byte-encoding.ts",

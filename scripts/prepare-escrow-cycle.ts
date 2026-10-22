@@ -1,4 +1,5 @@
 import type { EscrowIdentity } from "../src/lib/payments/escrow-cycle";
+import { resolveEscrowIdentities as resolveLiveEscrowIdentities } from "../src/lib/payments/escrow-identities";
 
 export type { EscrowIdentity } from "../src/lib/payments/escrow-cycle";
 
@@ -12,7 +13,6 @@ export { escrowAwardOrigin } from "../src/lib/payments/escrow-cycle";
 /** Generate source-bound gross proposals. This command neither approves nor signs. */
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { readBoundedJson } from "../src/lib/browser-json";
 import { assertPublishableLeaderboardSnapshot } from "../src/lib/leaderboard";
 import { createPaymentProjectView } from "../src/lib/project-view";
 import { findProject } from "../src/lib/projects.mjs";
@@ -24,52 +24,10 @@ export async function resolveEscrowIdentities(
   nodeIds: string[],
   token?: string,
 ): Promise<EscrowIdentity[]> {
-  const authorization = token ?? (await resolveGitHubToken());
-  const result: EscrowIdentity[] = [];
-  for (let i = 0; i < nodeIds.length; i += 100) {
-    const ids = nodeIds.slice(i, i + 100);
-    const response = await fetch("https://api.github.com/graphql", {
-      method: "POST",
-      redirect: "error",
-      signal: AbortSignal.timeout(30000),
-      headers: {
-        authorization: `Bearer ${authorization}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        query:
-          "query($ids:[ID!]!){nodes(ids:$ids){... on User{id databaseId login}}}",
-        variables: { ids },
-      }),
-    });
-    if (!response.ok) throw new Error("GitHub numeric identity lookup failed");
-    const body = (await readBoundedJson(
-      response,
-      1048576,
-      "GitHub actor identities",
-    )) as {
-      errors?: unknown;
-      data?: { nodes?: { id: string; databaseId: number; login: string }[] };
-    };
-    if (body.errors || body.data?.nodes?.length !== ids.length)
-      throw new Error("Incomplete GitHub identity evidence");
-    for (const [index, node] of body.data.nodes.entries()) {
-      if (
-        !node ||
-        node.id !== ids[index] ||
-        !Number.isSafeInteger(node.databaseId) ||
-        node.databaseId <= 0 ||
-        typeof node.login !== "string"
-      )
-        throw new Error("GitHub actor identity mismatch");
-      result.push({
-        nodeId: node.id,
-        githubUserId: String(node.databaseId),
-        login: node.login,
-      });
-    }
-  }
-  return result.sort((a, b) => a.nodeId.localeCompare(b.nodeId));
+  return resolveLiveEscrowIdentities(
+    nodeIds,
+    token ?? (await resolveGitHubToken()),
+  );
 }
 
 export function buildEscrowCycle(

@@ -17,6 +17,10 @@ import {
   Transaction,
 } from "@solana/web3.js";
 import {
+  checkSolanaCommitment,
+  prepareSolanaCommitment,
+} from "../.local/commitment.mjs";
+import {
   checkSolanaFunding,
   prepareSolanaFunding,
 } from "../.local/funding.mjs";
@@ -293,18 +297,86 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
     }),
     /not bound to this project/,
   );
-  await execute("commit", {
-    awards: [
-      {
-        awardId: Buffer.from(
-          awardIdFor(project, Buffer.from(sourceDigest, "hex")),
-        ).toString("hex"),
-        sourceDigest,
-        githubUserId: "999",
-        grossMicro: "25000000",
-      },
-    ],
-  });
+  const commitmentIntent = {
+    wallet: owner.publicKey.toBase58(),
+    sourceDigest,
+    githubUserId: "999",
+    gross: "25000000",
+  };
+  await assert.rejects(
+    prepareSolanaCommitment(fundingConfig, {
+      ...commitmentIntent,
+      wallet: donor.publicKey.toBase58(),
+    }),
+    /owner's wallet/,
+  );
+  await assert.rejects(
+    prepareSolanaCommitment(fundingConfig, {
+      ...commitmentIntent,
+      gross: "100000001",
+    }),
+    /insufficient free funds/,
+  );
+  const commitment = await prepareSolanaCommitment(
+    fundingConfig,
+    commitmentIntent,
+  );
+  assert.equal(commitment.fee, "500000");
+  assert.equal(commitment.net, "24500000");
+  const unsigned = Transaction.from(
+    Buffer.from(commitment.transaction, "base64"),
+  );
+  assert.equal(
+    unsigned.signatures.every((s) => s.signature === null),
+    true,
+  );
+  const cliCommitment = await ownerPlan(
+    {
+      deployment,
+      operation: "commit",
+      awards: [
+        {
+          awardId: Buffer.from(
+            awardIdFor(project, Buffer.from(sourceDigest, "hex")),
+          ).toString("hex"),
+          sourceDigest,
+          githubUserId: "999",
+          grossMicro: "25000000",
+        },
+      ],
+    },
+    {
+      rpcUrl: provider.connection.rpcEndpoint,
+      expectedGenesis,
+      recentBlockhash: commitment.blockhash,
+    },
+  );
+  const cliTransaction = Transaction.from(
+    Buffer.from(cliCommitment.transactionBase64, "base64"),
+  );
+  assert.deepEqual(unsigned.instructions, cliTransaction.instructions);
+  unsigned.sign(owner);
+  const signature = await provider.connection.sendRawTransaction(
+    unsigned.serialize(),
+    { skipPreflight: false, maxRetries: 0 },
+  );
+  await provider.connection.confirmTransaction(signature, "finalized");
+  assert.equal(
+    await checkSolanaCommitment(fundingConfig, commitment, signature),
+    "finalized",
+  );
+  await assert.rejects(
+    checkSolanaCommitment(
+      fundingConfig,
+      { ...commitment, githubUserId: "1000" },
+      signature,
+    ),
+    /does not match/,
+  );
+  await assert.rejects(
+    prepareSolanaCommitment(fundingConfig, commitmentIntent),
+    /already committed/,
+  );
   // The identity authority and the destination wallet bind actor 999; the
   // owner vetoes it while pending.
   const program = new anchor.Program(

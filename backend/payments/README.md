@@ -237,3 +237,21 @@ Missing decisions, the 14-day review period, and unavailable approval evidence
 cannot produce a verified review. Held and excluded awards remain visible.
 This read route neither approves awards nor reserves or transfers funds.
 `reviewVerified` does not establish current funding or wallet authority.
+
+`POST /api/v1/payments/projects/:projectId/awards/:YYYY-MM/commitment`
+rechecks the current steward, repository authority, published review, frozen
+proposal and decisions, recipient identity, project revision, and enforcement
+state. The request names the reviewed hashes, network and recipient. Only an
+approved positive award on an enabled project and configured network returns
+a commitment plan. It does not change the published decision or send a transaction.
+
+The EVM browser flow verifies the vault and free balance through the selected
+owner wallet. The Solana flow uses the authenticated `solana-commitment` route
+under the same cycle path: `review` returns an unsigned, simulated transaction
+for the approved award; `check` verifies the exact submitted signature and
+finalized reservation. Solana RPC configuration comes only from the service.
+The browser reconstructs the expected message before requesting the owner's
+signature. Both flows save the pending request before the wallet call and
+support recovery after reload without a second submission. Transaction checks
+do not require the published review to remain available after submission.
+A finalized reservation is a commitment, not a payment.
