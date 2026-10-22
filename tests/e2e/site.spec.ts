@@ -278,6 +278,11 @@ test("equal contributors share cycle and profile ranks", async ({
 test("discovers projects and one score-ranked homepage leaderboard", async ({
   page,
 }) => {
+  await page.route("**/.well-known/slop/projects.json", (route) =>
+    route.fulfill({
+      json: { schemaVersion: "1", projects: [{ project_id: "eliza" }] },
+    }),
+  );
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/", { waitUntil: "networkidle" });
   await page.reload({ waitUntil: "networkidle" });

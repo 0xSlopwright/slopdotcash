@@ -1,0 +1,499 @@
+/** Browser-to-Anvil workflow. No production RPC, credentials or funds are used. */
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import AxeBuilder from "@axe-core/playwright";
+import { expect, test } from "@playwright/test";
+import { encodeFunctionData, parseAbi } from "viem";
+import { EVM_ESCROW_EVENT_TOPICS } from "../../contracts/evm/adapter";
+import type { EscrowDeployment } from "../../src/lib/escrow-policy.mjs";
+import { PROJECTS } from "../../src/lib/projects.mjs";
+
+test.skip(
+  process.env.SLOP_E2E_VAULT_ACTIONS !== "1",
+  "Requires the explicit local Anvil funding workflow run.",
+);
+test.describe.configure({ mode: "serial" });
+test.use({ actionTimeout: 15_000 });
+const root = fileURLToPath(new URL("../..", import.meta.url));
+const owner = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+const attester = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8";
+const registrar = "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc";
+const fee = "0x90f79bf6eb2c4f870365e785982e1f101e93b906";
+const donor = "0x15d34aaf54267db7d7c367839aaF71a00a2C6A65".toLowerCase();
+const rpcUrl = "http://127.0.0.1:18761";
+let anvil: ChildProcess;
+let deployment: EscrowDeployment;
+let project: (typeof PROJECTS)[number];
+async function rpc(method: string, params: unknown[]) {
+  const response = await fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  const body = await response.json();
+  if (body.error) throw new Error(body.error.message);
+  return body.result;
+}
+const abi = parseAbi([
+  "function mint(address,uint256)",
+  "function create(bytes32,address,address,address)",
+  "function vaults(bytes32,address) view returns (address)",
+  "function balanceOf(address) view returns (uint256)",
+]);
+
+test.beforeAll(async () => {
+  anvil = spawn(
+    "anvil",
+    ["--port", "18761", "--chain-id", "84532", "--silent"],
+    { stdio: "ignore" },
+  );
+  for (let i = 0; i < 100; i++) {
+    try {
+      await rpc("eth_chainId", []);
+      break;
+    } catch {
+      if (anvil.exitCode !== null || i === 99)
+        throw new Error("Local Anvil startup failed");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  const deploy = (contract: string, args: string[] = []) =>
+    JSON.parse(
+      execFileSync(
+        "forge",
+        [
+          "create",
+          "--root",
+          `${root}/contracts/evm`,
+          contract,
+          "--rpc-url",
+          rpcUrl,
+          "--unlocked",
+          "--from",
+          owner,
+          "--broadcast",
+          "--json",
+          ...(args.length ? ["--constructor-args", ...args] : []),
+        ],
+        { encoding: "utf8" },
+      ),
+    );
+  const token = deploy(
+    "integration/TestDollar.sol:TestDollar",
+  ).deployedTo.toLowerCase() as `0x${string}`;
+  const factory = deploy("src/ProjectEscrow.sol:EscrowFactory", [
+    registrar,
+    fee,
+    attester,
+    "3600",
+  ]).deployedTo.toLowerCase() as `0x${string}`;
+  const projectDigest = `0x${"a".repeat(64)}` as `0x${string}`;
+  const createHashId = await rpc("eth_sendTransaction", [
+    {
+      from: registrar,
+      to: factory,
+      gas: "0x7a1200",
+      data: encodeFunctionData({
+        abi,
+        functionName: "create",
+        args: [projectDigest, token, owner, owner],
+      }),
+    },
+  ]);
+  const encoded = await rpc("eth_call", [
+    {
+      to: factory,
+      data: encodeFunctionData({
+        abi,
+        functionName: "vaults",
+        args: [projectDigest, token],
+      }),
+    },
+    "latest",
+  ]);
+  const vault = `0x${encoded.slice(-40)}`;
+  await rpc("eth_sendTransaction", [
+    {
+      from: owner,
+      to: token,
+      gas: "0x100000",
+      data: encodeFunctionData({
+        abi,
+        functionName: "mint",
+        args: [donor as `0x${string}`, 100_000_000n],
+      }),
+    },
+  ]);
+  await rpc("anvil_mine", ["0x40"]);
+  const digest = async (address: string) =>
+    createHash("sha256")
+      .update(
+        Buffer.from(
+          (await rpc("eth_getCode", [address, "latest"])).slice(2),
+          "hex",
+        ),
+      )
+      .digest("hex");
+  deployment = {
+    network: "base-sepolia",
+    vault,
+    asset: token,
+    owner,
+    identityAuthority: attester,
+    feeRecipient: fee,
+    factory,
+    registrar,
+    programId: null,
+    upgradeAuthority: null,
+    projectPda: null,
+    networkDomain: null,
+    rotationDelaySeconds: null,
+    bindingDelaySeconds: "3600",
+    deploymentTransaction: createHashId,
+    sourceCommit: "a".repeat(40),
+    codeSha256: await digest(vault),
+    factoryCodeSha256: await digest(factory),
+  };
+  const original = PROJECTS.find((entry) => entry.id === "eliza");
+  if (!original) throw new Error("Missing project fixture");
+  project = {
+    ...original,
+    reward: {
+      ...original.reward,
+      chain: "base",
+      currency: "TEST",
+      feeBasisPoints: 200,
+      paymentMode: "disabled",
+      committedMinor: "0",
+      fundingState: "pledged",
+    },
+    rewardAsset: {
+      network: "base",
+      kind: "token",
+      address: token,
+      symbol: "TEST",
+      decimals: 6,
+      chainId: "8453",
+      cluster: null,
+      verifiedAt: "2026-10-22T00:00:00.000Z",
+    },
+    escrow: {
+      schemaVersion: "1",
+      effectiveCycle: "2026-10",
+      chain: "base",
+      feeBasisPoints: 200,
+      withdrawalFeeBasisPoints: 200,
+      feeMode: "deduct-from-gross",
+      deployments: [deployment],
+    },
+  } as typeof project;
+});
+test.afterAll(() => anvil?.kill("SIGTERM"));
+
+test("depositor funds a real vault, recovers a submitted transaction and owner withdraws only free funds", async ({
+  page,
+}, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (event) => {
+    if (event.type() === "error") errors.push(event.text());
+  });
+  let account = donor;
+  let wrongNetwork = true;
+  let rejected = false;
+  let ambiguous = false;
+  let forceFailedTransaction = false;
+  const sends: string[] = [];
+  await page.exposeFunction(
+    "vaultWalletRequest",
+    async (method: string, params: unknown[]) => {
+      if (method === "eth_chainId" && wrongNetwork) return "0x1";
+      if (method === "eth_accounts" || method === "eth_requestAccounts")
+        return [account];
+      if (method === "eth_sendTransaction") {
+        if (rejected) return { fixtureError: "rejected" };
+        const requestParams = forceFailedTransaction
+          ? [{ ...(params[0] as Record<string, unknown>), gas: "0x7000" }]
+          : params;
+        const hash = await rpc(method, requestParams);
+        sends.push(hash);
+        if (ambiguous) return { fixtureError: "unknown" };
+        return hash;
+      }
+      return rpc(method, params);
+    },
+  );
+  await page.addInitScript(() => {
+    Object.assign(window, {
+      ethereum: {
+        isMetaMask: true,
+        request: async ({
+          method,
+          params = [],
+        }: {
+          method: string;
+          params?: unknown[];
+        }) => {
+          const value = await (
+            window as unknown as {
+              vaultWalletRequest: (
+                method: string,
+                params: unknown[],
+              ) => Promise<unknown>;
+            }
+          ).vaultWalletRequest(method, params);
+          if ((value as { fixtureError?: string })?.fixtureError === "rejected")
+            throw Object.assign(new Error("User rejected"), { code: 4001 });
+          if ((value as { fixtureError?: string })?.fixtureError === "unknown")
+            throw new Error("Transport interrupted after send");
+          return value;
+        },
+      },
+    });
+  });
+  await page.route(
+    /\/(?:api\/v1\/projects|data\/fixture-project-registry\.json)$/,
+    (route) =>
+      route.fulfill({ json: { schemaVersion: "1", projects: [project] } }),
+  );
+  await page.route("**/api/v1/projects/eliza", (route) =>
+    route.fulfill({ json: { project, revision: 1 } }),
+  );
+  await page.route("**/api/v1/payments/projects/eliza/vault", (route) =>
+    route.fulfill({
+      json: {
+        projectId: "eliza",
+        snapshots: [],
+        staleAfterMs: 60000,
+        servedAt: new Date().toISOString(),
+      },
+    }),
+  );
+  await page.route("**/api/v1/project-session", (route) =>
+    route.fulfill({ json: { session: null } }),
+  );
+  await page.goto("/projects/eliza/funding", { waitUntil: "networkidle" });
+  const actions = page.getByRole("region", {
+    name: "Fund or withdraw · base-sepolia",
+  });
+  await actions
+    .getByRole("button", { name: "Connect MetaMask", exact: true })
+    .click();
+  await actions.getByLabel("Token amount", { exact: true }).fill("101");
+  await actions
+    .getByRole("button", { name: "Review deposit", exact: true })
+    .click();
+  await expect(actions.getByRole("alert")).toContainText("Switch your wallet");
+  wrongNetwork = false;
+  await actions
+    .getByRole("button", { name: "Review deposit", exact: true })
+    .click();
+  await expect(actions.getByRole("alert")).toContainText("balance is too low");
+  await actions.getByLabel("Token amount", { exact: true }).fill("10");
+  await actions
+    .getByRole("button", { name: "Review deposit", exact: true })
+    .click();
+  await expect(
+    actions.getByRole("region", { name: "Review vault action" }),
+  ).toContainText("no refund right");
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.screenshot({
+    path: info.outputPath("deposit-review.png"),
+    fullPage: true,
+  });
+  rejected = true;
+  await actions
+    .getByRole("button", { name: "Approve exact token amount in wallet" })
+    .click();
+  await expect(actions.getByRole("alert")).toContainText("You declined");
+  expect(sends).toHaveLength(0);
+  rejected = false;
+  await actions
+    .getByRole("button", { name: "Approve exact token amount in wallet" })
+    .click();
+  await expect.poll(() => sends.length).toBe(1);
+  await rpc("anvil_mine", ["0x40"]);
+  await actions
+    .getByRole("button", { name: "Check transaction", exact: true })
+    .click();
+  await expect(actions.getByRole("status")).toContainText(
+    "no funds have been deposited yet",
+  );
+  await actions
+    .getByRole("button", { name: "Review deposit", exact: true })
+    .click();
+  ambiguous = true;
+  await actions
+    .getByRole("button", { name: "Confirm deposit in wallet", exact: true })
+    .click();
+  await expect(actions.getByRole("alert")).toContainText(
+    "wallet result is unclear",
+  );
+  await page.reload({ waitUntil: "networkidle" });
+  await actions
+    .getByRole("button", { name: "Connect MetaMask", exact: true })
+    .click();
+  await expect(
+    actions.getByRole("button", {
+      name: "Confirm deposit in wallet",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await actions.getByLabel("Transaction hash from your wallet").fill(sends[0]);
+  await actions
+    .getByRole("button", { name: "Check transaction", exact: true })
+    .click();
+  await expect(actions.getByRole("alert")).toContainText(
+    "does not match the pending wallet action",
+  );
+  await actions.getByLabel("Transaction hash from your wallet").fill(sends[1]);
+  await actions
+    .getByRole("button", { name: "Check transaction", exact: true })
+    .click();
+  await expect(actions.getByRole("status")).toContainText(
+    "Waiting for finalized",
+  );
+  await rpc("anvil_mine", ["0x40"]);
+  await actions
+    .getByRole("button", { name: "Check transaction", exact: true })
+    .click();
+  await expect(actions.getByRole("status")).toContainText("Deposit verified");
+  const deposited = await rpc("eth_getTransactionReceipt", [sends[1]]);
+  expect(
+    deposited.logs.some(
+      (log: { topics: string[] }) =>
+        log.topics[0] === EVM_ESCROW_EVENT_TOPICS.Deposited,
+    ),
+  ).toBe(true);
+  await actions
+    .getByRole("radio", {
+      name: "Withdraw free funds (owner only)",
+      exact: true,
+    })
+    .check();
+  await actions
+    .getByRole("button", { name: "Review withdrawal", exact: true })
+    .click();
+  await expect(actions.getByRole("alert")).toContainText(
+    "Only the vault owner's wallet",
+  );
+  account = owner;
+  ambiguous = false;
+  await actions.getByRole("button", { name: "Choose another wallet" }).click();
+  await actions
+    .getByRole("button", { name: "Connect MetaMask", exact: true })
+    .click();
+  await actions.getByLabel("Token amount", { exact: true }).fill("11");
+  await actions
+    .getByRole("button", { name: "Review withdrawal", exact: true })
+    .click();
+  await expect(actions.getByRole("alert")).toContainText(
+    "exceeds the vault's free balance",
+  );
+  await actions.getByLabel("Token amount", { exact: true }).fill("5");
+  await actions
+    .getByRole("button", { name: "Review withdrawal", exact: true })
+    .click();
+  await expect(
+    actions.getByRole("region", { name: "Review vault action" }),
+  ).toContainText("4.9");
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.screenshot({
+    path: info.outputPath("owner-withdrawal-review.png"),
+    fullPage: true,
+  });
+  const overflow = () =>
+    page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+  expect(await overflow()).toBeLessThanOrEqual(1);
+  // Controlled text enlargement, distinct from native browser zoom.
+  await actions.evaluate((section) => {
+    const sizes = [...section.querySelectorAll<HTMLElement>("*")].map(
+      (element) => ({
+        element,
+        font: getComputedStyle(element).fontSize,
+        line: getComputedStyle(element).lineHeight,
+        original: element.getAttribute("style"),
+      }),
+    );
+    for (const { element, font, line, original } of sizes) {
+      element.dataset.vaultOriginalStyle = original ?? "";
+      element.style.fontSize = `${parseFloat(font) * 2}px`;
+      if (line !== "normal")
+        element.style.lineHeight = `${parseFloat(line) * 2}px`;
+    }
+  });
+  expect(await overflow()).toBeLessThanOrEqual(1);
+  await page.screenshot({
+    path: info.outputPath("owner-withdrawal-200-percent-text.png"),
+    fullPage: true,
+  });
+  await actions.evaluate((section) => {
+    for (const element of section.querySelectorAll<HTMLElement>(
+      "[data-vault-original-style]",
+    )) {
+      element.setAttribute("style", element.dataset.vaultOriginalStyle ?? "");
+      delete element.dataset.vaultOriginalStyle;
+    }
+  });
+  const confirmWithdrawal = actions.getByRole("button", {
+    name: "Confirm withdrawal in wallet",
+  });
+  await confirmWithdrawal.focus();
+  await expect(confirmWithdrawal).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect.poll(() => sends.length).toBe(3);
+  await rpc("anvil_mine", ["0x40"]);
+  await actions
+    .getByRole("button", { name: "Check transaction", exact: true })
+    .click();
+  await expect(actions.getByRole("status")).toContainText(
+    "Withdrawal verified",
+  );
+  expect(sends).toHaveLength(3);
+  const balance = await rpc("eth_call", [
+    {
+      to: deployment.asset,
+      data: encodeFunctionData({
+        abi,
+        functionName: "balanceOf",
+        args: [owner],
+      }),
+    },
+    "latest",
+  ]);
+  expect(BigInt(balance)).toBe(4_900_000n);
+  // A real included transaction that runs out of gas must not count as a withdrawal.
+  await actions.getByLabel("Token amount", { exact: true }).fill("1");
+  await actions
+    .getByRole("button", { name: "Review withdrawal", exact: true })
+    .click();
+  await expect(
+    actions.getByRole("button", { name: "Confirm withdrawal in wallet" }),
+  ).toBeVisible();
+  forceFailedTransaction = true;
+  await actions
+    .getByRole("button", { name: "Confirm withdrawal in wallet" })
+    .click();
+  await expect.poll(() => sends.length).toBe(4);
+  await rpc("anvil_mine", ["0x40"]);
+  await actions
+    .getByRole("button", { name: "Check transaction", exact: true })
+    .click();
+  await expect(actions.getByRole("status")).toContainText(
+    "failed on the finalized chain",
+  );
+  expect((await rpc("eth_getTransactionReceipt", [sends[3]])).status).toBe(
+    "0x0",
+  );
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
+  expect(errors).toEqual([]);
+});

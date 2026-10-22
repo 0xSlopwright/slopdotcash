@@ -4843,3 +4843,36 @@ small {
 .admin-project-summary p {
   margin: 0;
 }
+
+.vault-actions code {
+  overflow-wrap: anywhere;
+}
+
+.vault-actions label {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.vault-actions input:not([type="radio"]) {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  font: inherit;
+}
+
+.vault-operation {
+  border: 0;
+  padding: 0;
+  margin: 0 0 12px;
+  min-width: 0;
+}
+.vault-operation label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.vault-operation input[type="radio"] {
+  flex: 0 0 auto;
+  margin-top: 0.3em;
+}
