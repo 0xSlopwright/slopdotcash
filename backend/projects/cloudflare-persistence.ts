@@ -1,4 +1,3 @@
-import { MAX_PENDING_APPLICATIONS_PER_APPLICANT } from "./contracts";
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
 import type {
   D1QueryStatement as D1Statement,
@@ -22,6 +21,7 @@ import type {
   ProjectRevision,
   ProjectRevisionInput,
 } from "./contracts";
+import { MAX_PENDING_APPLICATIONS_PER_APPLICANT } from "./contracts";
 export type ProjectD1Database = D1TransactionalDatabase<D1Statement>;
 
 type ProjectRow = {
