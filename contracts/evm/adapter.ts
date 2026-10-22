@@ -3,10 +3,16 @@ import { keccak_256 } from "@noble/hashes/sha3.js";
 import { type PayoutPolicy, payoutFee } from "../../src/lib/payments/contracts";
 import type { VaultTotals } from "../vault-totals";
 /** Finalized escrow events from a reviewed deployment. The configured RPC and vault are trust roots. */
-export interface EvmEscrowConfig {
+export type EvmRpc =
+  | { rpcUrl: string; request?: never }
+  | {
+      rpcUrl?: never;
+      request: (method: string, params: unknown[]) => Promise<unknown>;
+    };
+
+export type EvmEscrowConfig = EvmRpc & {
   /** Selected from the approved private settlement, never inferred from event amounts. */
   payoutPolicy?: PayoutPolicy;
-  rpcUrl: string;
   chainId: bigint;
   vault: string;
   asset: string;
@@ -24,7 +30,7 @@ export interface EvmEscrowConfig {
   factoryCodeSha256: string;
   /** The factory registrar, the only account that can propose an authority rotation. */
   registrar: string;
-}
+};
 
 /** Amount fields keep their historical `*Micro` names; they carry token base units of any decimals as
  * decimal strings up to uint128. */
@@ -110,11 +116,8 @@ function uint128(word: string): bigint {
   if (value > U128) throw new Error("Invalid uint128 event field");
   return value;
 }
-async function rpc(
-  config: { rpcUrl: string },
-  method: string,
-  params: unknown[],
-) {
+async function rpc(config: EvmRpc, method: string, params: unknown[]) {
+  if (config.request) return config.request(method, params);
   const response = await fetch(config.rpcUrl, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -147,7 +150,7 @@ async function runtimeSha256(
   ).join("");
 }
 async function getter(
-  config: { rpcUrl: string },
+  config: EvmRpc,
   to: string,
   signature: string,
   blockTag: unknown,
@@ -680,6 +683,47 @@ export function buildClaimFeesCalldata() {
 export function buildWithdrawCalldata(grossMicro: string | bigint) {
   return `0x${selector("withdrawUnused(uint128)")}${amountWord(grossMicro)}`;
 }
+/** Reconcile a user's deposit or free-fund withdrawal against its finalized vault event. */
+export async function verifyVaultFundingAction(
+  config: EvmEscrowConfig,
+  transactionId: string,
+  eventIndex: number,
+  expected: {
+    operation: "deposit" | "withdraw";
+    address: string;
+    gross: string;
+  },
+) {
+  const { log, blockId, transactionHash } = await finalizedLog(
+    config,
+    transactionId,
+    eventIndex,
+  );
+  const withdrawing = expected.operation === "withdraw";
+  const gross = BigInt(expected.gross);
+  if (!ADDRESS.test(expected.address) || gross <= 0n || gross > U128)
+    throw new Error("Invalid funding action");
+  const topic =
+    EVM_ESCROW_EVENT_TOPICS[withdrawing ? "UnusedWithdrawn" : "Deposited"];
+  const fee = withdrawing ? gross / 50n : 0n;
+  const data = `0x${amountWord(gross)}${withdrawing ? `${amountWord(gross - fee)}${fee.toString(16).padStart(64, "0")}` : ""}`;
+  if (
+    !Array.isArray(log.topics) ||
+    log.topics.length !== 2 ||
+    hash(log.topics[0]) !== topic ||
+    hash(log.topics[1]) !== addressWord(expected.address) ||
+    typeof log.data !== "string" ||
+    log.data.toLowerCase() !== data
+  )
+    throw new Error("The finalized vault event does not match this action");
+  return {
+    transactionId: transactionHash,
+    blockId,
+    gross: gross.toString(),
+    fee: fee.toString(),
+    net: (gross - fee).toString(),
+  };
+}
 /** Owner-only PAY-10 charge from free funds, once per invoice digest. */
 export function buildChargeServiceCalldata(
   amount: string | bigint,
@@ -706,13 +750,12 @@ export function buildCreateVaultCalldata(input: {
 }
 
 export type { VaultTotals } from "../vault-totals";
-export interface EvmVaultTotalsConfig {
-  rpcUrl: string;
+export type EvmVaultTotalsConfig = EvmRpc & {
   /** The registry network key, echoed in the result. */
   network: string;
   vault: string;
   chainId: bigint;
-}
+};
 /**
  * Reads every counter of a vault with one totals() call, plus its token and decimals, all at one
  * pinned finalized block number. It checks the chain and the conservation identity

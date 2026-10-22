@@ -361,7 +361,7 @@ textarea:focus-visible {
 
 .payment-stages {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   margin: 28px 0 0;
   padding: 0;
   list-style: none;
@@ -4830,4 +4830,85 @@ small {
   .standings-scroll-hint {
     display: block;
   }
+}
+
+.admin-project-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.admin-project-summary h3,
+.admin-project-summary p {
+  margin: 0;
+}
+
+.vault-actions code {
+  overflow-wrap: anywhere;
+}
+
+.vault-actions label {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.vault-actions input:not([type="radio"]) {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  font: inherit;
+}
+
+.vault-operation {
+  border: 0;
+  padding: 0;
+  margin: 0 0 12px;
+  min-width: 0;
+}
+.vault-operation label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.vault-operation input[type="radio"] {
+  flex: 0 0 auto;
+  margin-top: 0.3em;
+}
+
+.owner-awards-page form {
+  display: grid;
+  gap: 1rem;
+  justify-items: start;
+  margin-block: 1.5rem 2rem;
+}
+
+.owner-awards-page form label {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.owner-award-list {
+  display: grid;
+  gap: 1.5rem;
+  padding-inline-start: 1.25rem;
+  margin-block: 1.5rem 2rem;
+}
+
+.owner-award-list li {
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.owner-award-list dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.5rem 1rem;
+  max-width: 36rem;
+}
+
+.owner-award-list dd {
+  margin: 0;
 }

@@ -22,13 +22,19 @@ type InboxState =
 const UNAVAILABLE =
   "The inbox is unavailable. Your account and payouts are unchanged. Please retry.";
 
-async function loadInbox(signal: AbortSignal): Promise<InboxState> {
-  const response = await fetchWithDeadline("/api/v1/notifications", {
-    credentials: "same-origin",
-    cache: "no-store",
-    redirect: "error",
-    signal,
-  });
+async function loadInbox(
+  signal: AbortSignal,
+  cursor: string | null = null,
+): Promise<InboxState> {
+  const response = await fetchWithDeadline(
+    `/api/v1/notifications${cursor ? `?${new URLSearchParams({ cursor })}` : ""}`,
+    {
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error",
+      signal,
+    },
+  );
   if (response.status === 401) return { status: "signed-out" };
   if (!response.ok) throw new Error(UNAVAILABLE);
   return {
@@ -75,6 +81,8 @@ async function acknowledgeSecurity(
 }
 
 export function InboxPage() {
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [previousPages, setPreviousPages] = useState<(string | null)[]>([]);
   const [state, setState] = useState<InboxState>({ status: "loading" });
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
@@ -84,7 +92,7 @@ export function InboxPage() {
     const current = ++generation.current;
     const controller = new AbortController();
     setState({ status: "loading" });
-    loadInbox(controller.signal).then(
+    loadInbox(controller.signal, cursor).then(
       (next) => {
         if (generation.current === current) setState(next);
       },
@@ -94,7 +102,7 @@ export function InboxPage() {
       },
     );
     return () => controller.abort();
-  }, []);
+  }, [cursor]);
   useEffect(() => load(), [load]);
 
   async function act(action: () => Promise<"ok" | "signed-out">, done: string) {
@@ -107,7 +115,7 @@ export function InboxPage() {
         return;
       }
       const current = ++generation.current;
-      const next = await loadInbox(new AbortController().signal);
+      const next = await loadInbox(new AbortController().signal, cursor);
       if (generation.current === current) {
         setState(next);
         setMessage(done);
@@ -163,6 +171,35 @@ export function InboxPage() {
           }
         />
       ) : null}
+      {state.status === "ready" &&
+      (previousPages.length > 0 || state.value.nextCursor) ? (
+        <nav aria-label="Notification pages" className="handoff-actions">
+          <button
+            type="button"
+            className="button secondary-button"
+            disabled={busy || previousPages.length === 0}
+            onClick={() => {
+              setCursor(previousPages.at(-1) ?? null);
+              setPreviousPages((pages) => pages.slice(0, -1));
+              setMessage("");
+            }}
+          >
+            Newer notifications
+          </button>
+          <button
+            type="button"
+            className="button secondary-button"
+            disabled={busy || !state.value.nextCursor}
+            onClick={() => {
+              setPreviousPages((pages) => [...pages, cursor]);
+              setCursor(state.value.nextCursor ?? null);
+              setMessage("");
+            }}
+          >
+            Older notifications
+          </button>
+        </nav>
+      ) : null}
       {message ? <p role="status">{message}</p> : null}
       {actionError ? (
         <p className="form-error" role="alert">
@@ -207,7 +244,7 @@ function InboxList({
               onMark(unreadKeys, "All shown notifications are read.")
             }
           >
-            Mark all as read
+            Mark shown as read
           </button>
         ) : null}
       </div>

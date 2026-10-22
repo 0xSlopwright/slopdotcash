@@ -283,3 +283,65 @@ export function ContributorIdentity({
     </section>
   );
 }
+
+/** Current vault lifecycle shared by contributor and sponsor guidance (PAY-01). */
+export function PaymentLifecycle() {
+  return (
+    <>
+      <h3>Award review</h3>
+      <ol className="payment-stages" aria-label="Award review stages">
+        <li>
+          <strong>Projected</strong>
+          <span>An estimate from accepted work, not an approved award.</span>
+        </li>
+        <li>
+          <strong>Under review</strong>
+          <span>A frozen proposal in its public review window.</span>
+        </li>
+        <li>
+          <strong>Approved</strong>
+          <span>
+            The owner approved the amount. Funding and payment are separate.
+          </span>
+        </li>
+      </ol>
+      <div className="payment-branches">
+        <h3>Payment of an approved award</h3>
+        <dl>
+          <div>
+            <dt>Underfunded</dt>
+            <dd>The vault has not reserved enough funds.</dd>
+          </div>
+          <div>
+            <dt>Funded, awaiting wallet</dt>
+            <dd>Funds are reserved. Add or confirm a payout wallet.</dd>
+          </div>
+          <div>
+            <dt>Funded, ready</dt>
+            <dd>Funds and the wallet binding are ready for execution.</dd>
+          </div>
+          <div>
+            <dt>Submitted</dt>
+            <dd>A transaction was sent. Chain verification is pending.</dd>
+          </div>
+          <div>
+            <dt>Paid</dt>
+            <dd>Finalized evidence reconciles the recipient amount and fee.</dd>
+          </div>
+          <div>
+            <dt>Held</dt>
+            <dd>
+              A requirement or failed attempt needs attention. The award remains
+              unpaid.
+            </dd>
+          </div>
+        </dl>
+        <p>
+          Unclaimed awards need a usable wallet; their records show whether
+          funds are reserved. Excluded awards keep the decision and reason and
+          do not enter payment.
+        </p>
+      </div>
+    </>
+  );
+}
