@@ -4,7 +4,7 @@
  * serves a project (PRD VET-01, VET-06, VET-07).
  */
 
-import { canonicalJson } from "../../scripts/readme-proof-binding";
+import { canonicalJson } from "../../src/lib/canonical-json";
 import type {
   AssessmentState,
   AssessmentSummary,
