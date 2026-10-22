@@ -1045,7 +1045,8 @@ export function ContributorStandings({
     };
   }, [projectId]);
   const [filters, setFilters] = useState(readFilters);
-  const { sort, period, query, project, page } = filters;
+  const { sort, period, query, page } = filters;
+  const project = projectId ?? filters.project;
   const setSort = (sort: StandingsSort) =>
     setFilters((v) => ({ ...v, sort, page: 0 }));
   const setPeriod = (period: string) =>
