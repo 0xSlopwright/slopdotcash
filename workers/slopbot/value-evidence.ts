@@ -301,7 +301,7 @@ async function relatedPullRequests(
   const candidates = new Map<string, { repository: string; number: number }>();
   for (const text of sourceTexts) {
     for (const match of text.matchAll(
-      /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:pull|issues)\/(\d+)\b|(?<![\w/])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+))?#(\d+)\b/gu,
+      /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:pull|issues)\/(\d+)\b|(?<![\w/])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)[ \t]*)?#(\d+)\b/gu,
     )) {
       const targetRepository = match[1] ?? match[3] ?? repository;
       const targetNumber = Number(match[2] ?? match[4]);
