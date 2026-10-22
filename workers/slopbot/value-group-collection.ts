@@ -89,7 +89,10 @@ export async function collectValueGroup(
     )
       return null;
     const occurred = Date.parse(
-      evidence.pull.merged_at ?? evidence.pull.closed_at ?? "",
+      evidence.pull.merged_at ??
+        evidence.indirectAcceptance?.observedOnBranchAt ??
+        evidence.pull.closed_at ??
+        "",
     );
     if (!Number.isFinite(occurred) || occurred < startAt) return null;
     const previous = await currentWorkUnitRecord(

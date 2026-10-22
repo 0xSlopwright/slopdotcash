@@ -105,18 +105,24 @@ export async function prepareWorkUnitEvidence(
       pullRequestNodeId: pull.node_id,
       digest: await valueSourceDigest(evidence, policy),
     });
-    // Closed-unmerged sources can carry review findings but never implementation.
-    if (pull.merged_at === null) continue;
-    const mergedAt = Date.parse(pull.merged_at);
+    // A closed PR may have been accepted through an integration branch. Its
+    // historical scope is independently proved; never rewrite merged_at.
+    const indirect = evidence.indirectAcceptance;
+    const acceptedAt = pull.merged_at ?? indirect?.observedOnBranchAt;
+    if (acceptedAt === undefined) continue;
+    const mergedAt = Date.parse(acceptedAt);
+    const acceptedFiles = indirect?.integrationFiles ?? evidence.files;
     const changedPaths = new Set(
-      evidence.files.flatMap((file) => [
+      acceptedFiles.flatMap((file) => [
         file.filename,
         ...(file.previous_filename ? [file.previous_filename] : []),
       ]),
     );
     const covered = new Set<string>();
     for (const commit of evidence.commits.filter(
-      (entry) => entry.parents.length <= 1,
+      (entry) =>
+        entry.parents.length <= 1 &&
+        (!indirect || indirect.acceptedCommitShas.includes(entry.sha)),
     )) {
       const attribution = evidence.commitAttribution.filter(
         (entry) => entry.sha === commit.sha,
@@ -202,7 +208,7 @@ export async function prepareWorkUnitEvidence(
         };
         claim.carriers.push({
           source,
-          occurredAt: Date.parse(pull.merged_at),
+          occurredAt: mergedAt,
           actorNodeIds: ordered(actors),
         });
         claims.set(key, claim);

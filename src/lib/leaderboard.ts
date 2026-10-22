@@ -3313,19 +3313,23 @@ function createSnapshotWithReviewCutoff(
         )
       )
         continue;
+      const acceptanceTime = (
+        source: (typeof decision.evidence.sources)[number]["evidence"],
+      ) =>
+        source.pull.merged_at ?? source.indirectAcceptance?.observedOnBranchAt;
       const sources = [
         ...new Set(scoped.map((claim) => claim.creditPullRequestId)),
       ]
         .map((id) => {
           const source = members.get(id);
-          if (!source || !source.pull.merged_at)
+          if (!source || !acceptanceTime(source))
             throw new Error("Joint claim has no accepted source");
           return source;
         })
         .sort(
           (a, b) =>
-            parseIsoTime(a.pull.merged_at as string) -
-              parseIsoTime(b.pull.merged_at as string) ||
+            parseIsoTime(acceptanceTime(a) as string) -
+              parseIsoTime(acceptanceTime(b) as string) ||
             compareCodeUnits(a.pull.node_id, b.pull.node_id),
         );
       if (
@@ -3336,19 +3340,27 @@ function createSnapshotWithReviewCutoff(
         continue;
       const first = sources[0];
       const completion = sources.at(-1);
-      const completedAt = completion?.pull.merged_at;
+      const completedAt = completion ? acceptanceTime(completion) : undefined;
       if (!first || !completion || !completedAt)
         throw new Error("Joint implementation has no occurrence time");
       const occurred = parseIsoTime(completedAt);
       if (occurred < parseIsoTime(input.windowFrom) || occurred >= windowTo)
         continue;
       if (
-        !mergedPullRequestOutcomes.some(
-          (outcome) =>
-            outcome.id === completion.pull.node_id &&
-            outcome.headRefOid === completion.pull.head.sha &&
-            outcome.mergedAt === completedAt,
-        )
+        !(completion.indirectAcceptance
+          ? closedUnmergedPullRequests.some(
+              (outcome) =>
+                outcome.id === completion.pull.node_id &&
+                outcome.headRefOid === completion.pull.head.sha &&
+                outcome.mergedAt === null &&
+                outcome.closedAt === completion.pull.closed_at,
+            )
+          : mergedPullRequestOutcomes.some(
+              (outcome) =>
+                outcome.id === completion.pull.node_id &&
+                outcome.headRefOid === completion.pull.head.sha &&
+                outcome.mergedAt === completedAt,
+            ))
       )
         throw new Error(
           "Joint completion source is absent from the accepted outcome census",
@@ -3399,7 +3411,7 @@ function createSnapshotWithReviewCutoff(
             title: completion.pull.title,
             url: completion.pull.html_url,
           },
-          reason: `Provisional joint value assessment (${tier}): ${unit.assessment.rationale} Shared among ${actors.length} scoped implementation actors.`,
+          reason: `Provisional joint value assessment (${tier})${completion.indirectAcceptance ? " of work accepted through indirect integration" : ""}: ${unit.assessment.rationale} Shared among ${actors.length} scoped implementation actors.`,
         });
       }
     }

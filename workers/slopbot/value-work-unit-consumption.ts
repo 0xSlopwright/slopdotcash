@@ -87,6 +87,20 @@ function assertRecord(
       ids.has(key)
     )
       throw new Error("Joint history source identity is invalid");
+    const indirect = source.indirectAcceptance;
+    if (
+      indirect !== undefined &&
+      (source.mergeSha !== null ||
+        !sha(indirect.historicalHeadSha) ||
+        !sha(indirect.integrationSha) ||
+        !sha(indirect.acceptedTipSha) ||
+        indirect.branch !== repository.integrationBranch ||
+        !Number.isSafeInteger(indirect.observationRunId) ||
+        indirect.observationRunId <= 0 ||
+        !time(indirect.observedOnBranchAt) ||
+        source.occurredAt !== indirect.observedOnBranchAt)
+    )
+      throw new Error("Joint indirect acceptance binding is invalid");
     ids.add(key);
   }
   if (

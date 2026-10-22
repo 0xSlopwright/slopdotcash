@@ -11,6 +11,10 @@ import {
   needsFullValueComparison,
   recoverFullValueComparisons,
 } from "./value-full-file";
+import {
+  collectIndirectValueAcceptance,
+  type IndirectValueAcceptance,
+} from "./value-indirect";
 import { addedValuePatchRecovery, hasCompleteValuePatch } from "./value-patch";
 import { recoverUnchangedValueRenames } from "./value-rename";
 
@@ -414,6 +418,7 @@ export interface ValueEvidence {
   files: FileChange[];
   mergeCommitEvidence: CommitChangeEvidence | null;
   acceptedRange?: AcceptedValueRange;
+  indirectAcceptance?: IndirectValueAcceptance;
   commits: Commit[];
   reviews: Review[];
   comments: Comment[];
@@ -777,6 +782,32 @@ export async function collectValueEvidence(
     };
     commitAttribution.push(attribution);
   }
+  const indirect = await collectIndirectValueAcceptance(
+    client,
+    {
+      repository,
+      repositoryNodeId: repositoryIdentity.node_id,
+      repositoryPolicy,
+      pull,
+      commits,
+      comments,
+    },
+    (sha) =>
+      collectCommitChanges(client, root, sha, "Indirect integration commit"),
+  );
+  limitations.push(...indirect.limitations);
+  if (indirect.acceptance !== null) {
+    evidenceUrls.push(
+      indirect.acceptance.observationUrl,
+      `https://github.com/${repository}/commit/${indirect.acceptance.integrationSha}`,
+      `https://github.com/${repository}/commit/${indirect.acceptance.acceptedTipSha}`,
+    );
+    for (const file of indirect.acceptance.integrationFiles)
+      if (!hasCompleteValuePatch(file) && file.fullComparison === undefined)
+        limitations.push(
+          `Full indirect integration diff required: ${file.filename}`,
+        );
+  }
   // Trailer identities are source text, not credit authority under SCR-04.
   const implementationActors = new Set<string>();
   if (pull.user.type !== "Bot") implementationActors.add(pull.user.node_id);
@@ -784,6 +815,8 @@ export async function collectValueEvidence(
     for (const commit of commits) {
       if (
         commit.parents.length <= 1 &&
+        (!indirect.acceptance ||
+          indirect.acceptance.acceptedCommitShas.includes(commit.sha)) &&
         commit.author &&
         isCreditEligibleCommitAuthor({
           id: commit.author.node_id,
@@ -807,7 +840,8 @@ export async function collectValueEvidence(
     after.merge_commit_sha !== pull.merge_commit_sha
   )
     limitations.push("PR changed during evidence collection");
-  const outcomeAt = pull.merged_at ?? pull.closed_at;
+  const outcomeAt =
+    pull.merged_at ?? indirect.acceptance?.observedOnBranchAt ?? pull.closed_at;
   const eligibleReviewIds = reviews
     .filter(
       (review) =>
@@ -838,6 +872,9 @@ export async function collectValueEvidence(
     files,
     mergeCommitEvidence,
     ...(acceptedRange === null ? {} : { acceptedRange }),
+    ...(indirect.acceptance === null
+      ? {}
+      : { indirectAcceptance: indirect.acceptance }),
     commits,
     reviews,
     comments,
