@@ -96,9 +96,7 @@ test("history navigation keeps contributor standings scoped to the current proje
     .getByRole("link", { name: "Projects", exact: true })
     .click();
   await page.locator('a.project-card[href="/projects/eliza"]').click();
-  await standings
-    .getByRole("combobox", { name: "Sort by" })
-    .selectOption("money");
+  await standings.getByRole("button", { name: "Paid", exact: true }).click();
   await expect(eliza).toContainText("$111.11");
   await page.evaluate(() => history.go(-2));
   await expect(page.locator(".breadcrumb")).toHaveText("Projects/Slop");
@@ -167,11 +165,14 @@ test("global standings still accept project, sort and contributor filters", asyn
     standings.getByRole("row").filter({ hasText: "synthetic-slop" }),
   ).toBeVisible();
   await expect(page).toHaveURL(/q=synthetic-slop/);
-  const sort = standings.getByRole("combobox", { name: "Sort by" });
-  await sort.selectOption("score");
-  await expect(sort).toHaveValue("score");
-  await sort.selectOption("money");
-  await expect(sort).toHaveValue("money");
+  await standings.getByRole("button", { name: "Score", exact: true }).click();
+  await expect(
+    standings.getByRole("columnheader", { name: "Score", exact: true }),
+  ).toHaveAttribute("aria-sort", "descending");
+  await standings.getByRole("button", { name: "Paid", exact: true }).click();
+  await expect(
+    standings.getByRole("columnheader", { name: "Paid", exact: true }),
+  ).toHaveAttribute("aria-sort", "descending");
   await expect(page).toHaveURL(/sort=money/);
   expect(
     (
