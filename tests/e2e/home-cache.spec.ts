@@ -22,15 +22,18 @@ test("renders bundled projects with data stalled and GitHub blocked", async ({
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route(/\/(?:data|api)\//, async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    if (
-      path !== "/api/v1/projects" &&
-      path !== "/data/fixture-project-registry.json"
-    )
-      await held;
-    await route.fallback();
-  });
+  await page.route(
+    /\/(?:data|api)\/|\/\.well-known\/slop\/projects\.json$/,
+    async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (
+        path !== "/api/v1/projects" &&
+        path !== "/data/fixture-project-registry.json"
+      )
+        await held;
+      await route.fallback();
+    },
+  );
   await page.route(/https:\/\/[^/]*github[^/]*\//, (route) => route.abort());
   try {
     await page.goto("/", { waitUntil: "domcontentloaded" });
