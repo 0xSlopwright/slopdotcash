@@ -228,7 +228,7 @@ real GitHub OAuth or public testnet deployment result.
 `GET /api/v1/payments/projects/:projectId/awards/:YYYY-MM` requires the current
 project steward's site session and current GitHub maintainer permission. The
 repository's immutable ID must match the D1 policy. The endpoint loads frozen
-cycle artifacts from a pinned commit of the canonical repository and uses the
+cycle artifacts from a pinned `main` commit of the canonical repository and uses the
 same proposal reconstruction and publication-review checks as the owner CLI.
 It rechecks the D1 revision before returning the result.
 

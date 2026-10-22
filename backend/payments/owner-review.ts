@@ -4,6 +4,7 @@ import { resolveEscrowIdentities } from "../../src/lib/payments/escrow-identitie
 import {
   assertEscrowDecisions,
   assertEscrowFinancialPolicy,
+  ESCROW_PUBLICATION_BRANCH,
   EscrowReviewPendingError,
   verifyEscrowReview,
 } from "../../src/lib/payments/escrow-review";
@@ -102,7 +103,7 @@ export async function reviewOwnerAwards(input: {
       "Current GitHub maintainer authority could not be verified.",
     );
   const head = (await readBoundedJson(
-    await github(`repos/${repository}/commits/development`),
+    await github(`repos/${repository}/commits/${ESCROW_PUBLICATION_BRANCH}`),
     1048576,
     "Canonical review revision",
   )) as { sha?: string };
