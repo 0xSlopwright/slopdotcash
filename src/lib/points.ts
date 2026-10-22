@@ -532,6 +532,12 @@ export function pointMembers(
   projectId?: string,
 ): PointsMember[] {
   const groups = new Map<string, PointAward>();
+  const actors = new Map<string, PointRevision>();
+  for (const revision of journal.revisions) {
+    const prior = actors.get(revision.award.actor.id);
+    if (!prior || revision.recordedAt >= prior.recordedAt)
+      actors.set(revision.award.actor.id, revision);
+  }
   const firstContributionAt = new Map<string, string>();
   const revisions = [...latestPoints(journal).values()];
   const valueAwardKeys = new Set(
@@ -637,6 +643,7 @@ export function pointMembers(
     }
   }
   for (const m of members.values()) {
+    m.actor = actors.get(m.actor.id)?.award.actor ?? m.actor;
     m.awards.sort(
       (a, b) =>
         b.occurredAt.localeCompare(a.occurredAt) || a.key.localeCompare(b.key),
