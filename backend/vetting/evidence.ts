@@ -1,3 +1,7 @@
+import {
+  bindProvenanceSource,
+  parseProvenanceReport,
+} from "../../workers/vetting/provenance-report";
 /** Separate private vetting evidence. Policy and external controls have no defaults. */
 
 import {
@@ -432,6 +436,37 @@ export class VettingEvidence {
       const entry = assemblyRecord(item);
       if (entry.type === "commit" && entry.sha256 === null) continue;
       required(entry.sha256, entry.bytes);
+    }
+    if (
+      roles.has("source-release-comparison") ||
+      roles.has("provenance-source-archive") ||
+      roles.has("provenance-release-archive")
+    ) {
+      try {
+        const report = parseProvenanceReport(
+          await read(role("source-release-comparison").sha256),
+        );
+        bindProvenanceSource(
+          report,
+          source,
+          String(queue.sourceInventorySha256),
+        );
+        for (const descriptor of report.inputs) {
+          required(descriptor.sha256, descriptor.bytes);
+          role(
+            descriptor.role === "source-inventory"
+              ? descriptor.role
+              : `provenance-${descriptor.role}`,
+            descriptor.sha256,
+          );
+        }
+      } catch {
+        fail(
+          409,
+          "assembly_mismatch",
+          "Source and release comparison does not bind retained inputs",
+        );
+      }
     }
     const vm = await read(role("offline-vm").sha256);
     if (

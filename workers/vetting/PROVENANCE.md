@@ -47,6 +47,16 @@ input refusals and lack of execution. Run it with:
 python3 workers/vetting/provenance_workflow_test.py
 ```
 
-Canonical assembly and private retention integration must bind this report and
-all three exact inputs before it can become evidence for a scan. The current
-component alone does not complete VET-04 or permit a clean result.
+Canonical assembly accepts a private `provenanceEvidence` directory with
+`report.json`, `source.tar` and `release.tar`, plus the exact report digest.
+The archive names identify transport slots; either archive may use a supported
+format. The assembler binds the source side to its existing acquisition inventory,
+checks each archive's digest and size, and retains the report and both archives.
+The review includes the comparison and all its visibility gaps. Private storage
+requires the same report and input roles; an omitted archive invalidates closure.
+
+The existing assembly and storage workflow commands accept an optional final
+provenance directory. They exercise missing or changed archive refusal and the
+retained console against actual captured comparison outputs. These checks use a
+harmless controlled release, not an independently authenticated public release.
+The comparison does not complete VET-04 or permit a clean result.

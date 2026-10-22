@@ -25,6 +25,7 @@ export async function retainActualAssembly(input: {
   guestProfile: string;
   dependencyDirectory: string;
   outputDirectory: string;
+  provenanceDirectory?: string;
 }) {
   const artifactInventories = await Promise.all(
     (await readdir(join(input.acquisitionDirectory, "objects"))).map(
@@ -63,6 +64,14 @@ export async function retainActualAssembly(input: {
         await readFile(join(input.dependencyDirectory, "profile.json")),
       ),
     },
+    provenanceEvidence: input.provenanceDirectory
+      ? {
+          directory: input.provenanceDirectory,
+          reportSha256: digest(
+            await readFile(join(input.provenanceDirectory, "report.json")),
+          ),
+        }
+      : undefined,
     outputDirectory: input.outputDirectory,
   });
   const manifestBytes = await readFile(
@@ -101,6 +110,7 @@ export async function retainActualAssembly(input: {
     assembled.directory,
   ])
     await collect(path);
+  if (input.provenanceDirectory) await collect(input.provenanceDirectory);
   // Review items are exact canonical text bytes, not generated replacement evidence.
   const review = JSON.parse(
     (await readFile(join(assembled.directory, "review-input.json"))).toString(
@@ -226,7 +236,7 @@ export async function retainActualAssembly(input: {
   );
   await assert.rejects(
     retained.evidence.assemblyClosure(assessmentId, "missing-reference"),
-    /canonical assembly reference is absent/i,
+    /canonical assembly reference is absent|Source and release comparison does not bind retained inputs/i,
   );
   const changedAssembly = Buffer.from(
     JSON.stringify({
@@ -267,6 +277,9 @@ export async function retainActualAssembly(input: {
     manifest.files.find((file) => file.role === "syscall-index")!,
     manifest.files.find((file) => file.role === "untrusted-output")!,
     ...manifest.files.filter((file) => file.role === "raw-filesystem-capture"),
+    ...manifest.files.filter(
+      (file) => file.role === "provenance-release-archive",
+    ),
     ...manifest.files
       .filter((file) => file.role.startsWith("captured-filesystem-object:"))
       .slice(0, 1),
@@ -345,7 +358,7 @@ export async function retainActualAssembly(input: {
       await send("PUT", `${omittedOutputPath}/${sha256}`, bytes);
     await assert.rejects(
       retained.evidence.assemblyClosure(assessmentId, missingRunId),
-      /canonical.*(?:absent|missing)/i,
+      /canonical.*(?:absent|missing)|Source and release comparison does not bind retained inputs/i,
     );
   }
   const overview = await retained.evidence.handle(
@@ -561,6 +574,7 @@ if (import.meta.main) {
     guestProfile,
     dependencyDirectory,
     outputDirectory,
+    provenanceDirectory,
   ] = process.argv.slice(2);
   if (
     !sourceDirectory ||
@@ -598,6 +612,7 @@ if (import.meta.main) {
       guestProfile,
       dependencyDirectory,
       outputDirectory,
+      provenanceDirectory,
     });
     const assessment = fixture.assessment;
     // Deliberately false signed clean claim: a negative admission test, not a scan receipt.

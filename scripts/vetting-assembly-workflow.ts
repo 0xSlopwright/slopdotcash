@@ -22,6 +22,7 @@ const [
   guestProfile,
   dependencyDirectory,
   dependencyFailureDirectory,
+  provenanceDirectory,
 ] = process.argv.slice(2);
 if (
   !acquisitionDirectory ||
@@ -30,7 +31,7 @@ if (
   !outputDirectory
 )
   throw new Error(
-    "usage: bun scripts/vetting-assembly-workflow.ts ACQUISITION ARTIFACT_REPORTS VM_OUTPUT PRIVATE_OUTPUT_PARENT [APPROVED_GUEST_PROFILE_OR_DASH] [DEPENDENCY_DIRECTORY] [FAILED_DEPENDENCY_DIRECTORY]",
+    "usage: bun scripts/vetting-assembly-workflow.ts ACQUISITION ARTIFACT_REPORTS VM_OUTPUT PRIVATE_OUTPUT_PARENT [APPROVED_GUEST_PROFILE_OR_DASH] [DEPENDENCY_DIRECTORY] [FAILED_DEPENDENCY_DIRECTORY] [PROVENANCE_DIRECTORY]",
   );
 const digest = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -53,6 +54,14 @@ const input = {
     sha256: digest(await readFile(join(vmDirectory, "evidence.json"))),
   },
   outputDirectory,
+  provenanceEvidence: provenanceDirectory
+    ? {
+        directory: provenanceDirectory,
+        reportSha256: digest(
+          await readFile(join(provenanceDirectory, "report.json")),
+        ),
+      }
+    : undefined,
   dependencyEvidence: dependencyDirectory
     ? {
         directory: dependencyDirectory,
@@ -228,6 +237,33 @@ if (input.guestEvidence) {
 }
 for (const item of review.items)
   assert.equal(digest(Buffer.from(item.text)), item.sha256);
+if (provenanceDirectory && input.provenanceEvidence) {
+  assert(
+    manifest.files.some(
+      (file: { role: string }) => file.role === "source-release-comparison",
+    ),
+  );
+  const copy = await mkdtemp(join(outputDirectory, "provenance-negative-"));
+  try {
+    await cp(provenanceDirectory, copy, { recursive: true });
+    await rm(join(copy, "release.tar"));
+    await assert.rejects(
+      assembleEvidence({
+        ...input,
+        provenanceEvidence: { ...input.provenanceEvidence, directory: copy },
+      }),
+    );
+    await writeFile(join(copy, "release.tar"), "changed retained bytes");
+    await assert.rejects(
+      assembleEvidence({
+        ...input,
+        provenanceEvidence: { ...input.provenanceEvidence, directory: copy },
+      }),
+    );
+  } finally {
+    await rm(copy, { recursive: true, force: true });
+  }
+}
 const before = (await readdir(outputDirectory)).sort();
 let filesystemRefusals = 0;
 if (input.dependencyEvidence) {
@@ -465,6 +501,7 @@ console.log(
     publications: 0,
     rejectedCorruptOrMissingInputs:
       filesystemRefusals +
+      (provenanceDirectory ? 2 : 0) +
       (input.guestEvidence ? 7 : 4) +
       (dependencyDirectory
         ? 5 + Number(Boolean(dependencyFailureDirectory))

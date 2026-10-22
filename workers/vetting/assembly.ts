@@ -6,6 +6,10 @@ import { join } from "node:path";
 import { parseAssemblyManifest } from "./assembly-manifest";
 import { indexSyscalls, syscallEvidence } from "./events";
 import { assertFilesystemReferences } from "./filesystem-capture";
+import {
+  bindProvenanceSource,
+  parseProvenanceReport,
+} from "./provenance-report";
 
 const hash = (bytes: Uint8Array | string) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -95,6 +99,7 @@ export async function assembleEvidence(input: {
     inventorySha256: string;
     profileSha256: string;
   };
+  provenanceEvidence?: { directory: string; reportSha256: string };
   outputDirectory: string;
 }) {
   const queueBytes = await bytes(
@@ -147,6 +152,43 @@ export async function assembleEvidence(input: {
   }
   add("queue", queueBytes);
   add("source-inventory", sourceBytes);
+  if (input.provenanceEvidence) {
+    const evidence = input.provenanceEvidence;
+    const raw = await bytes(
+      join(evidence.directory, "report.json"),
+      evidence.reportSha256,
+      2 * 1024 * 1024,
+    );
+    const report = parseProvenanceReport(JSON.parse(raw.toString("utf8")));
+    bindProvenanceSource(report, source, String(queue.sourceInventorySha256));
+    if (report.inputs[0].bytes !== sourceBytes.length)
+      throw new Error("Provenance source size mismatch");
+    for (const [index, name] of [
+      [1, "source.tar"],
+      [2, "release.tar"],
+    ] as const) {
+      const descriptor = report.inputs[index];
+      const content = await bytes(
+        join(evidence.directory, name),
+        descriptor.sha256,
+        32 * 1024 * 1024,
+      );
+      if (content.length !== descriptor.bytes)
+        throw new Error("Provenance archive size mismatch");
+      files.push({
+        role: `provenance-${descriptor.role}`,
+        sha256: descriptor.sha256,
+        bytes: content.length,
+      });
+    }
+    add("source-release-comparison", raw);
+    for (const gap of [
+      ...report.visibilityGaps,
+      ...report.sourceVisibilityGaps,
+    ])
+      visibility.add(gap);
+  }
+
   const objects = new Set<string>();
   for (const value of [...source.records, ...queue.inputs]) {
     const entry = record(value);
