@@ -88,6 +88,10 @@ async function submit(id: string): Promise<{ status: number; body: unknown }> {
       ).db,
     ),
     adminGithubIds: new Set(["900000001"]),
+    moderatorGithubIds: new Set(),
+    vettingClearance: async () => {
+      throw new Error("Application submission must not activate a project");
+    },
     now: () => new Date("2026-10-19T12:00:00.000Z"),
     randomId: () => "00000000-0000-4000-8000-000000000001",
     sessionActor: async () => ({
