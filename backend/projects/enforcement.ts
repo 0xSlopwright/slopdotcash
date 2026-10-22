@@ -40,6 +40,12 @@ export class EnforcementRefusal extends Error {
 
 export type ProjectRestriction = {
   projectId: string;
+  /**
+   * Project whose records hold the restriction, and so the project an appeal
+   * names: another project's when the restriction binds a repository this
+   * project claims.
+   */
+  sourceProjectId: string;
   state: RestrictionState;
   appeal: AppealState;
   /** When the restriction in force began; null when the project is clear. */
@@ -65,6 +71,7 @@ export function projectRestriction(
     .sort((left, right) => left.sequence - right.sequence);
   const restriction: ProjectRestriction = {
     projectId,
+    sourceProjectId: projectId,
     state: "clear",
     appeal: "none",
     since: null,
@@ -134,6 +141,20 @@ export function repositoryIdentity(manifest: ProjectDefinition): {
   };
 }
 
+/** True when both manifests claim the same GitHub id and repository paths. */
+export function sameRepositoryIdentity(
+  left: ProjectDefinition,
+  right: ProjectDefinition,
+): boolean {
+  const a = repositoryIdentity(left);
+  const b = repositoryIdentity(right);
+  return (
+    a.githubId === b.githubId &&
+    a.keys.length === b.keys.length &&
+    a.keys.every((key) => b.keys.includes(key))
+  );
+}
+
 /** The restriction in force on any repository this manifest claims. */
 export function restrictionForRepository(
   manifest: ProjectDefinition,
@@ -147,6 +168,21 @@ export function restrictionForRepository(
         restriction.repositoryKeys.some((key) => identity.keys.includes(key)),
     ) ?? null
   );
+}
+
+/**
+ * The restriction a project's public routes obey: its own, else one in force
+ * on a repository it claims. A restriction binds the repository, so another
+ * project listed for it earlier closes with it (PRD ADM-06).
+ */
+export function publicRestrictionOf(
+  project: { id: string; manifest: ProjectDefinition },
+  records: ProjectEnforcement[],
+): ProjectRestriction {
+  const own = projectRestriction(project.id, records);
+  if (own.state !== "clear") return own;
+  const shared = restrictionForRepository(project.manifest, records);
+  return shared === null ? own : { ...shared, projectId: project.id };
 }
 
 /** A restricted project must stay paused and out of every listing. */

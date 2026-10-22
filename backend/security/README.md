@@ -52,7 +52,8 @@ revision, so a revision or a revoked session removes access at once.
 A reporter never acts on their own case. The financial approver cannot be the
 technical decider. The technical decider cannot decide the appeal or the
 related-party review, and the related-party reviewer cannot decide an appeal
-of that review.
+of that review, or review the same case again once an appeal has returned it
+for a new decision.
 
 ## States
 

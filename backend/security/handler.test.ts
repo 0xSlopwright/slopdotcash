@@ -19,6 +19,9 @@ const FINANCE = { githubId: "900000104", githubLogin: "finance" };
 const FINANCE_2 = { githubId: "900000107", githubLogin: "finance-two" };
 const DISPUTE = { githubId: "900000105", githubLogin: "dispute" };
 const DISPUTE_2 = { githubId: "900000106", githubLogin: "dispute-two" };
+const DISPUTE_3 = { githubId: "900000108", githubLogin: "dispute-three" };
+const DISPUTE_4 = { githubId: "900000109", githubLogin: "dispute-four" };
+const DISPUTE_5 = { githubId: "900000110", githubLogin: "dispute-five" };
 const ADVISORY = "GHSA-7c8f-9g2h-3j4m";
 const RECEIVED = "2026-10-19T09:00:00.000Z";
 
@@ -51,7 +54,7 @@ const OPEN_PROGRAM = {
   approvers: {
     technical: [MAINTAINER],
     financial: [FINANCE, FINANCE_2],
-    dispute: [DISPUTE, DISPUTE_2],
+    dispute: [DISPUTE, DISPUTE_2, DISPUTE_3, DISPUTE_4, DISPUTE_5],
   },
   capacity: { awards: 1, closesAt: null },
 };
@@ -737,5 +740,106 @@ describe("security cases", () => {
         .query("SELECT COUNT(*) AS n FROM security_award_reservations")
         .get(),
     ).toEqual({ n: 0 });
+  });
+
+  test("an appealed related-party refusal cannot be re-reviewed by the same reviewer", async () => {
+    const env = open(OPEN_PROGRAM);
+    const { act, decide, record } = awardSteps(env);
+    const related = await record("2026-10-19T09:10:00.000Z");
+    expect(
+      (await decide(related.id, "insider-cause", true)).body.case.awardState,
+    ).toBe("pending");
+    const refused = await act(DISPUTE, related.id, {
+      action: "decide-related-party",
+      outcome: "refuse",
+      reason: "Refused after independent review.",
+    });
+    expect(refused.body.case.awardState).toBe("ineligible");
+    expect(
+      (
+        await act(REPORTER, related.id, {
+          action: "appeal",
+          reason: "The related-party refusal used the wrong facts.",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await act(DISPUTE_2, related.id, {
+          action: "decide-appeal",
+          outcome: "return",
+          reason: "Return for a new technical decision.",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (await decide(related.id, "insider-cause", false)).body.case.awardState,
+    ).toBe("pending");
+    // The reviewer whose refusal the reporter appealed is not independent of
+    // the re-decided case, exactly as `decide-appeal` already treats them.
+    const again = await act(DISPUTE, related.id, {
+      action: "decide-related-party",
+      outcome: "approve",
+      reason: "Approved after independent review.",
+    });
+    expect(again.status).toBe(403);
+    expect(again.body.error).toBe("conflicted");
+    // The reviewer who decided the appeal took a position on the same case:
+    // returning it for a new decision is not independence from the approval
+    // that follows (SEC-12). The seat is checked from the case journal.
+    const appealDecider = await act(DISPUTE_2, related.id, {
+      action: "decide-related-party",
+      outcome: "approve",
+      reason: "Approved after independent review.",
+    });
+    expect(appealDecider.status).toBe(403);
+    expect(appealDecider.body.error).toBe("conflicted");
+    // A second refusal and appeal must not erase the earlier reviewers.
+    expect(
+      (
+        await act(DISPUTE_3, related.id, {
+          action: "decide-related-party",
+          outcome: "refuse",
+          reason: "The revised finding still needs independent review.",
+        })
+      ).body.case.awardState,
+    ).toBe("ineligible");
+    expect(
+      (
+        await act(REPORTER, related.id, {
+          action: "appeal",
+          reason: "Please review the additional evidence for this refusal.",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await act(DISPUTE_4, related.id, {
+          action: "decide-appeal",
+          outcome: "return",
+          reason: "Return the revised finding for a new decision.",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (await decide(related.id, "insider-cause", false)).body.case.awardState,
+    ).toBe("pending");
+    for (const prior of [DISPUTE, DISPUTE_2, DISPUTE_3, DISPUTE_4]) {
+      const reused = await act(prior, related.id, {
+        action: "decide-related-party",
+        outcome: "approve",
+        reason: "Approved after independent review.",
+      });
+      expect(reused.status).toBe(403);
+      expect(reused.body.error).toBe("conflicted");
+    }
+    // A reviewer with no part in either refusal or appeal can still approve it.
+    const approved = await act(DISPUTE_5, related.id, {
+      action: "decide-related-party",
+      outcome: "approve",
+      reason: "Approved after independent review.",
+    });
+    expect(approved.status).toBe(200);
+    expect(approved.body.case.awardState).toBe("reserved");
   });
 });

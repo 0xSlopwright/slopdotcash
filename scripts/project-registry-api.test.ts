@@ -31,8 +31,12 @@ import {
   vettedContentSha256,
 } from "../backend/vetting/persistence";
 import { parseVettingResult } from "../backend/vetting/result";
+import { slugify } from "../src/lib/project-proposal";
 import { PROJECT_SKILL_TEMPLATES } from "../src/lib/project-schema.mjs";
-import { sha256Hex } from "../src/lib/project-skill-publication.mjs";
+import {
+  buildProjectPublication,
+  sha256Hex,
+} from "../src/lib/project-skill-publication.mjs";
 import type { ProjectDefinition } from "../src/lib/projects.mjs";
 import {
   applicationManifest,
@@ -40,6 +44,7 @@ import {
 } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 import { vettingResult } from "../tests/vetting-fixtures";
+import { fetchProjectRegistry } from "./sync-project-registry.mjs";
 
 const ORIGIN = "https://slop.cash";
 const ADMIN = { githubId: "900000001", githubLogin: "e2e-admin" };
@@ -363,6 +368,20 @@ describe("project registry API", () => {
     expect(await persistence.listApplications("pending")).toEqual([]);
   });
 
+  test("refuses a project id too long for its reviewer skill name", async () => {
+    const id = "reproducible-research-toolkit-for-everyone-x";
+    expect(`review-${id}-contributions`).toHaveLength(65);
+    const response = await call("POST", "project-applications", "applicant", {
+      manifest: applicationManifest(id, "example/open-registry"),
+    });
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      error: "invalid_manifest",
+      message: "project.id is invalid",
+    });
+    expect(await persistence.listApplications("pending")).toEqual([]);
+  });
+
   test("refuses activation when historical clean metadata lacks canonical closure", async () => {
     await listProject();
     const current = await persistence.getProject("open-registry");
@@ -553,6 +572,31 @@ async function publicationRequests() {
 }
 
 describe("generated skill publication", () => {
+  test("an id derived from a long project name renders the reviewer skill", async () => {
+    // /projects/new derives the id from the name. The reviewer skill is
+    // `review-<id>-contributions`, and a skill name has at most 64 characters.
+    const id = slugify(
+      "Reproducible Research Toolkit for Everyone, Everywhere",
+    );
+    await listProject(applicationManifest(id, "example/open-registry"));
+    const project = await persistence.getProject(id);
+    if (project === null) throw new Error("project was not listed");
+    const { index } = await publicationRequests();
+    const root = resolve(import.meta.dir, "..");
+    const files = await buildProjectPublication({
+      template: index,
+      readFile: async (path: string) =>
+        new Uint8Array(readFileSync(join(root, path))),
+      project: project.manifest,
+      revision: project.revision,
+      manifestSha256: project.manifestSha256,
+      generatedAt: project.updatedAt,
+    });
+    const reviewer = `review-${id}-contributions`;
+    expect(reviewer.length).toBeLessThanOrEqual(64);
+    expect(Object.keys(files ?? {})).toContain(`downloads/${reviewer}.skill`);
+  });
+
   test("historical clean metadata cannot publish skills without canonical closure", async () => {
     const { publication, get } = await publicationRequests();
     expect(
@@ -985,6 +1029,147 @@ describe("project enforcement (ADM-06)", () => {
         aliases: ["example/open-registry"],
       })),
     }));
+  });
+
+  test("a ban closes the public routes of another project listed for the repository", async () => {
+    const { publication } = await publicationRequests();
+    // Vetting is a separate gate; a clean scan lets this test reach the
+    // restriction gate on every artifact route.
+    const get = (path: string) =>
+      handleProjectArtifactRequest(new Request(`${ORIGIN}${path}`), {
+        ...publication,
+        vettingClearance: async () => ({
+          state: "cleared",
+          assessment: {
+            id: `vet_${"0".repeat(32)}`,
+            revision: 1,
+            state: "clean",
+            commitSha: livePin.commitSha,
+            templateSha256: livePin.templateSha256,
+            policyVersion: null,
+            requestedAt: "2026-10-18T12:00:00.000Z",
+            completedAt: "2026-10-18T12:00:01.000Z",
+            modelRuns: [],
+            artifacts: 0,
+            heldArtifacts: 0,
+          },
+        }),
+      }) as Promise<Response>;
+    const routes = [
+      "/projects/renamed-registry/skill.md",
+      "/projects/renamed-registry/downloads/contribute-to-renamed-registry.skill",
+    ];
+    await listProject();
+    // Listed before the ban: the renamed repository, same GitHub id.
+    await listProject(
+      applicationManifest("renamed-registry", "example/renamed-registry"),
+    );
+    for (const route of routes) expect((await get(route)).status).toBe(200);
+    expect((await enforce("admin", "quarantine")).status).toBe(200);
+    expect((await enforce("admin", "ban")).status).toBe(200);
+
+    for (const route of routes) expect((await get(route)).status).toBe(410);
+    expect(
+      (await (await get("/.well-known/slop/projects.json")).json()).projects,
+    ).toEqual([]);
+    const single = await call("GET", "projects/renamed-registry");
+    expect(single.status).toBe(410);
+    const closed = await single.json();
+    // The record, and so the only appeal, lives on the banned project.
+    expect(closed.restriction).toMatchObject({
+      projectId: "renamed-registry",
+      sourceProjectId: "open-registry",
+      state: "banned",
+    });
+    expect(closed.message).toContain("open-registry");
+    expect((await (await call("GET", "projects")).json()).restrictions).toEqual(
+      [
+        expect.objectContaining({
+          projectId: "open-registry",
+          sourceProjectId: "open-registry",
+          state: "banned",
+        }),
+        expect.objectContaining({
+          projectId: "renamed-registry",
+          sourceProjectId: "open-registry",
+          state: "banned",
+        }),
+      ],
+    );
+  });
+
+  test("another project listed for a banned repository can still be retired", async () => {
+    await listProject();
+    // Listed before the ban: the renamed repository, same GitHub id.
+    await listProject(
+      applicationManifest("renamed-registry", "example/renamed-registry"),
+    );
+    expect((await enforce("admin", "quarantine")).status).toBe(200);
+    expect((await enforce("admin", "ban")).status).toBe(200);
+    const registry = async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (input: string | URL | Request) =>
+        handleProjectApi(new Request(input), deps)) as typeof fetch;
+      try {
+        return await fetchProjectRegistry(ORIGIN);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    };
+    // projects:sync asks an admin to append B's paused, retired revision.
+    expect((await registry()).withheld).toEqual(["renamed-registry"]);
+    async function revise(
+      change: (manifest: ProjectDefinition) => Record<string, unknown>,
+    ) {
+      const project = await persistence.getProject("renamed-registry");
+      if (project === null) throw new Error("renamed-registry is not listed");
+      return call("PUT", "admin/projects/renamed-registry/manifest", "admin", {
+        manifest: change(project.manifest),
+        expectedRevision: project.revision,
+        reason: "Retire the project of the banned repository",
+      });
+    }
+    const retire = (manifest: ProjectDefinition) => ({
+      ...manifest,
+      status: "paused",
+      listingTier: "retired",
+    });
+    // Every other revision still cannot claim the banned repository.
+    for (const change of [
+      (manifest: ProjectDefinition) => ({ ...manifest, status: "active" }),
+      (manifest: ProjectDefinition) => ({
+        ...manifest,
+        listingTier: "featured",
+      }),
+      (manifest: ProjectDefinition) => ({
+        ...retire(manifest),
+        repositories: manifest.repositories.map((repository) => ({
+          ...repository,
+          aliases: ["example/open-registry"],
+        })),
+      }),
+    ]) {
+      const refused = await revise(change);
+      expect(refused.status).toBe(403);
+      expect((await refused.json()).error).toBe("repository_restricted");
+    }
+    expect(await persistence.getProject("renamed-registry")).toMatchObject({
+      revision: 1,
+    });
+
+    expect((await revise(retire)).status).toBe(200);
+    expect(await persistence.getProject("renamed-registry")).toMatchObject({
+      revision: 2,
+      manifest: { status: "paused", listingTier: "retired" },
+    });
+    expect((await registry()).withheld).toEqual([]);
+    // The retired project cannot be listed again while the ban holds.
+    const restored = await revise((manifest) => ({
+      ...manifest,
+      listingTier: "community",
+    }));
+    expect(restored.status).toBe(403);
+    expect((await restored.json()).error).toBe("repository_restricted");
   });
 
   test("reinstatement is refused while the restriction revision is pending", async () => {

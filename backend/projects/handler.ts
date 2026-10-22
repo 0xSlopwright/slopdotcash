@@ -41,8 +41,10 @@ import {
   type ProjectRestriction,
   planEnforcement,
   projectRestriction,
+  publicRestrictionOf,
   repositoryIdentity,
   restrictionForRepository,
+  sameRepositoryIdentity,
 } from "./enforcement";
 import {
   type GithubFetch,
@@ -724,11 +726,18 @@ async function replaceProjectManifest(
     );
   }
   // Nor can a revision move a restricted repository, renamed or not, into
-  // another project. The project's own restriction is checked above.
-  assertRepositoryUnrestricted(
-    manifest,
-    enforcements.filter((record) => record.projectId !== projectId),
-  );
+  // another project. The project's own restriction is checked above. A
+  // project already listed for a restricted repository may still append the
+  // paused, retired revision that restriction imposes, if it claims the same
+  // repositories as before.
+  if (
+    !enforcedManifest(manifest) ||
+    !sameRepositoryIdentity(current.manifest, manifest)
+  )
+    assertRepositoryUnrestricted(
+      manifest,
+      enforcements.filter((record) => record.projectId !== projectId),
+    );
   try {
     assertProjectPolicyTransition(current.manifest, manifest);
   } catch (error) {
@@ -801,6 +810,7 @@ function publicRestriction(
 ): Record<string, unknown> {
   return {
     projectId: restriction.projectId,
+    sourceProjectId: restriction.sourceProjectId,
     state: restriction.state,
     appeal: restriction.appeal,
     since: restriction.since,
@@ -808,12 +818,21 @@ function publicRestriction(
 }
 
 function activePublicRestrictions(
+  projects: ProjectRecord[],
   records: ProjectEnforcement[],
 ): Record<string, unknown>[] {
-  return [...new Set(records.map((record) => record.projectId))]
+  const restricted = [...new Set(records.map((record) => record.projectId))]
     .map((projectId) => projectRestriction(projectId, records))
-    .filter((restriction) => restriction.state !== "clear")
-    .map(publicRestriction);
+    .filter((restriction) => restriction.state !== "clear");
+  // A project listed for a restricted repository is closed with it.
+  const shared = projects
+    .filter(
+      (project) =>
+        !restricted.some((restriction) => restriction.projectId === project.id),
+    )
+    .map((project) => publicRestrictionOf(project, records))
+    .filter((restriction) => restriction.state !== "clear");
+  return [...restricted, ...shared].map(publicRestriction);
 }
 
 /**
@@ -1173,7 +1192,7 @@ async function listPublicProjects(
     projects: projects.map((project) => project.manifest),
     // Restricted projects stay in the list for history; every reader must
     // treat them as paused and retired, even before the revision lands.
-    restrictions: activePublicRestrictions(records),
+    restrictions: activePublicRestrictions(projects, records),
   });
 }
 
@@ -1184,16 +1203,22 @@ async function readPublicProject(
   if (!PROJECT_ID.test(projectId)) fail(404, "not_found", "Project not found");
   const project = await deps.persistence.getProject(projectId);
   if (project === null) fail(404, "not_found", "Project not found");
-  const restriction = projectRestriction(
-    projectId,
+  const restriction = publicRestrictionOf(
+    project,
     await deps.persistence.listEnforcements(),
   );
-  if (restriction.state !== "clear")
+  if (restriction.state !== "clear") {
+    // An appeal names the project whose records hold the restriction.
+    const appeal =
+      restriction.sourceProjectId === project.id
+        ? "The project steward or applicant may request reinstatement"
+        : `The restriction is recorded on project ${restriction.sourceProjectId}, which claims the same repository; its steward or applicant may request reinstatement of ${restriction.sourceProjectId}`;
     return json(410, {
       error: "project_restricted",
-      message: `This project is ${restriction.state}. Its history stays public; its skills and participation are closed. The project steward or applicant may request reinstatement with POST /api/v1/project-appeals.`,
+      message: `This project is ${restriction.state}. Its history stays public; its skills and participation are closed. ${appeal} with POST /api/v1/project-appeals.`,
       restriction: publicRestriction(restriction),
     });
+  }
   if (project.manifest.listingTier === "retired")
     fail(404, "not_found", "Project not found");
   const vetting = await deps.vettingClearance(

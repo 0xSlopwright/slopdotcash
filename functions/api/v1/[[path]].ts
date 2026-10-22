@@ -242,10 +242,42 @@ function githubHeaders(token: string | undefined): Record<string, string> {
   };
 }
 
+type GithubRepositoryFacts = {
+  id?: unknown;
+  node_id?: unknown;
+  full_name?: unknown;
+  private?: unknown;
+  owner?: { id?: unknown; login?: unknown; type?: unknown };
+};
+
+/** Reads a repository from GitHub; null when GitHub has no such repository. */
+async function githubRepository(
+  api: string,
+  token: string | undefined,
+  path: string,
+): Promise<GithubRepositoryFacts | null> {
+  const response = await fetch(`${api}/repos/${path}`, {
+    headers: githubHeaders(token),
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
+  return (await readBoundedJson(response, 512 * 1024)) as GithubRepositoryFacts;
+}
+
+/**
+ * Repositories and aliases one application may name, so a submission makes a
+ * bounded number of GitHub reads. Listed projects name one repository and at
+ * most one alias, and `/projects/new` sends one repository.
+ */
+const MAX_APPLICATION_GITHUB_NAMES = 5;
+
 /**
  * Proves control from public GitHub facts only: the applicant owns a user
  * repository, or is a public member of the owning organization. The manifest's
- * repository and steward identities must match GitHub exactly.
+ * repository and steward identities must match GitHub exactly. Every other
+ * repository and every alias must be a public GitHub repository, an alias the
+ * repository it names, and control is proven only for every owner.
  */
 async function repositoryControl(
   manifest: ProjectDefinition,
@@ -257,43 +289,90 @@ async function repositoryControl(
   const repository = manifest.repositories[0];
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository.id))
     return { state: "mismatch", reason: "Repository must be owner/name" };
-  const response = await fetch(`${api}/repos/${repository.id}`, {
-    headers: githubHeaders(token),
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (response.status === 404)
+  const names = manifest.repositories.flatMap((entry) => [
+    entry.id,
+    ...(entry.aliases ?? []),
+  ]);
+  if (names.length > MAX_APPLICATION_GITHUB_NAMES)
+    return {
+      state: "mismatch",
+      reason: `An application may name at most ${MAX_APPLICATION_GITHUB_NAMES} repositories and aliases`,
+    };
+  const facts = await githubRepository(api, token, repository.id);
+  if (!facts)
     return {
       state: "mismatch",
       reason: "GitHub has no public repository with that name",
     };
-  if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
-  const facts = (await readBoundedJson(response, 512 * 1024)) as {
-    id?: unknown;
-    node_id?: unknown;
-    full_name?: unknown;
-    private?: unknown;
-    owner?: { id?: unknown; login?: unknown; type?: unknown };
-  };
   if (
     String(facts.id) !== manifest.authority.repositoryId ||
     facts.node_id !== manifest.authority.repositoryNodeId ||
     String(facts.full_name).toLowerCase() !== repository.id.toLowerCase() ||
     facts.private !== false ||
-    String(facts.owner?.id) !== manifest.steward.github.actorId
+    !stewardIsOwner(facts.owner, manifest.steward.github)
   )
     return {
       state: "mismatch",
       reason: "Repository or steward facts do not match GitHub",
     };
+  // The other names are independent reads, so they run together.
+  const read = new Map(
+    await Promise.all(
+      names
+        .slice(1)
+        .map(
+          async (path) =>
+            [path, await githubRepository(api, token, path)] as const,
+        ),
+    ),
+  );
+  read.set(repository.id, facts);
+  let control = await ownerControl(api, token, facts, repository.id, actor);
+  const missing = (path: string): RepositoryControl => ({
+    state: "mismatch",
+    reason: `GitHub has no public repository named ${path}`,
+  });
+  for (const [index, entry] of manifest.repositories.entries()) {
+    const named = read.get(entry.id);
+    if (named?.private !== false) return missing(entry.id);
+    if (String(named.full_name).toLowerCase() !== entry.id.toLowerCase())
+      return {
+        state: "mismatch",
+        reason: `GitHub names ${entry.id} ${String(named.full_name)}`,
+      };
+    for (const alias of entry.aliases ?? []) {
+      const aliased = read.get(alias);
+      if (aliased?.private !== false) return missing(alias);
+      if (String(aliased.id) !== String(named.id))
+        return {
+          state: "mismatch",
+          reason: `Alias ${alias} is not a name of ${entry.id} on GitHub`,
+        };
+    }
+    if (index > 0 && control.state === "proven") {
+      const owned = await ownerControl(api, token, named, entry.id, actor);
+      if (owned.state !== "proven") control = owned;
+    }
+  }
+  return control;
+}
+
+async function ownerControl(
+  api: string,
+  token: string | undefined,
+  facts: GithubRepositoryFacts,
+  repository: string,
+  actor: { githubId: string; githubLogin: string },
+): Promise<RepositoryControl> {
   if (facts.owner?.type === "User")
     return String(facts.owner.id) === actor.githubId
       ? {
           state: "proven",
-          reason: `@${actor.githubLogin} owns ${repository.id}`,
+          reason: `@${actor.githubLogin} owns ${repository}`,
         }
       : {
           state: "unproven",
-          reason: `@${actor.githubLogin} does not own ${repository.id}`,
+          reason: `@${actor.githubLogin} does not own ${repository}`,
         };
   const membership = await fetch(
     `${api}/orgs/${encodeURIComponent(String(facts.owner?.login))}/public_members/${encodeURIComponent(actor.githubLogin)}`,
@@ -310,6 +389,22 @@ async function repositoryControl(
       reason: `@${actor.githubLogin} is not a public member of ${String(facts.owner?.login)}`,
     };
   throw new Error(`GitHub returned ${membership.status}`);
+}
+
+/**
+ * The steward is the account GitHub reports as the repository owner: the same
+ * numeric id, node id and login (GitHub logins are case-insensitive). Pages
+ * show the steward by login and attribute the project to its node id.
+ */
+function stewardIsOwner(
+  owner: { id?: unknown; node_id?: unknown; login?: unknown } | undefined,
+  steward: ProjectDefinition["steward"]["github"],
+): boolean {
+  return (
+    String(owner?.id) === steward.actorId &&
+    owner?.node_id === steward.nodeId &&
+    String(owner?.login).toLowerCase() === steward.login.toLowerCase()
+  );
 }
 
 export async function onRequest(context: PagesContext): Promise<Response> {

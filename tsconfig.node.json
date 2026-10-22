@@ -38,6 +38,7 @@
     "src/lib/cycle-index.ts",
     "src/lib/site-routes.ts",
     "src/lib/project-links.ts",
+    "src/lib/project-proposal.ts",
     "src/lib/evaluator-awards.ts",
     "src/lib/external-sources.ts",
     "src/lib/sha256.ts",
