@@ -1290,6 +1290,18 @@ function ActionForm({
   );
 }
 
+const PAYMENT_LABELS: Record<string, string> = {
+  "not-applicable": "No approved award",
+  "awaiting-owner-commitment": "Waiting for the vault owner",
+  "needs-wallet": "Wallet required",
+  uncertain: "Submission outcome not yet confirmed",
+  ready: "Ready for payment",
+  processing: "Payment in progress",
+  submitted: "Waiting for finality",
+  held: "Payment held",
+  paid: "Paid",
+};
+
 const EVENT_LABELS: Record<string, string> = {
   claim: "Reporter linked the GitHub report",
   record: "Maintainer recorded the GitHub report",
@@ -1391,7 +1403,7 @@ function CaseDetail({
         <Fact term="Payment">
           {record.paymentState === "rail-unavailable"
             ? "Approved, not paid. Payment preparation requires a reviewed rail and the reporter’s consent."
-            : record.paymentState}
+            : (PAYMENT_LABELS[record.paymentState] ?? record.paymentState)}
           {record.paymentDeadline
             ? ` Deadline ${formatUtc(record.paymentDeadline)}.`
             : ""}
@@ -1460,7 +1472,8 @@ function CaseDetail({
           ) : null}
           <p>
             Network: {record.settlement.network}. State:{" "}
-            {record.settlement.state}.
+            {PAYMENT_LABELS[record.settlement.state] ?? record.settlement.state}
+            .
           </p>
           {record.settlement.transactionId ? (
             <p>

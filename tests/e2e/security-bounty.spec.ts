@@ -1541,7 +1541,7 @@ test("private settlement requires visibility consent and produces an unsigned re
   const caseId = await recordCase(
     request,
     id,
-    `https://github.com/${repository}/security/advisories/GHSA-2345-6789-cfgh`,
+    "GHSA-2345-6789-cfgh",
     "reporter-a",
     new Date().toISOString(),
   );
@@ -1621,10 +1621,11 @@ test("private settlement requires visibility consent and produces an unsigned re
     .click();
   await expect(
     page.getByRole("region", { name: "Private payment" }),
-  ).toContainText("awaiting-owner-commitment");
+  ).toContainText("Waiting for the vault owner");
   await page.getByText("Unsigned owner request", { exact: true }).click();
   const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Download unsigned request" }).click();
+  await page.getByRole("button", { name: "Download unsigned request" }).focus();
+  await page.keyboard.press("Enter");
   const file = await download;
   expect(file.suggestedFilename()).toBe("private-payment-request.json");
   await file.saveAs(test.info().outputPath("unsigned-request.json"));
@@ -1634,6 +1635,14 @@ test("private settlement requires visibility consent and produces an unsigned re
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await page.screenshot({
     path: test.info().outputPath("private-settlement.png"),
+    fullPage: true,
+  });
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = "2";
+  });
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.screenshot({
+    path: test.info().outputPath("private-settlement-zoom.png"),
     fullPage: true,
   });
   expect(errors).toEqual([]);
