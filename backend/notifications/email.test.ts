@@ -225,3 +225,55 @@ test("optional-mail ambiguity retries only with attempt-bound independent eviden
   expect(h.rows()[0].attempts).toBe(5);
   h.sqlite.close();
 });
+
+test("scheduled drains finish activity delivery and report a failed security queue", async () => {
+  // Cloudflare owns this binding in production; the local test sends no email.
+  const { plugin } = await import("bun");
+  await plugin({
+    name: "notification-test-email-binding",
+    setup(build) {
+      build.module("cloudflare:email", () => ({
+        exports: { EmailMessage: class {} },
+        loader: "object",
+      }));
+    },
+  });
+  const { default: worker } = await import("../../workers/notify/index");
+  const h = setup();
+  try {
+    h.event("scheduled-wallet-change", "wallet_changed");
+    let accepted = 0;
+    const recipient = h.mail.config.recipients["101"];
+    const env = {
+      SLOP_DB: {
+        ...h.db,
+        prepare(query: string) {
+          if (query.startsWith("UPDATE security_notification_outbox"))
+            throw new Error("Security outbox unavailable");
+          return h.db.prepare(query);
+        },
+      },
+      NOTIFY_FROM_ADDRESS: h.mail.fromAddress,
+      NOTIFY_INBOX_URL: h.mail.config.inboxUrl,
+      SECURITY_MAIL_PILOT: JSON.stringify({
+        inboxUrl: h.mail.config.inboxUrl,
+        recipients: { "101": { ...recipient, backupGithubId: "102" } },
+      }),
+      ACTIVITY_MAIL_PILOT: JSON.stringify(h.mail.config),
+      ADMIN_EMAIL: {
+        async send() {
+          accepted++;
+        },
+      },
+    };
+    await expect(worker.scheduled({}, env)).rejects.toThrow();
+    expect(accepted).toBe(1);
+    expect(
+      h.rows().map(({ state, attempts }) => ({ state, attempts })),
+    ).toEqual([{ state: "provider-accepted", attempts: 1 }]);
+    await expect(worker.scheduled({}, env)).rejects.toThrow();
+    expect(accepted).toBe(1);
+  } finally {
+    h.sqlite.close();
+  }
+});

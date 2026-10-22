@@ -62,9 +62,13 @@ function activityDependencies(env: Env): ActivityMailDependencies | null {
 export default {
   async scheduled(_event: unknown, env: Env): Promise<void> {
     const deps = securityDependencies(env);
-    if (deps) await dispatchSecurityMail(deps);
     const activity = activityDependencies(env);
-    if (activity) await dispatchActivityMail(activity);
+    const results = await Promise.allSettled([
+      deps ? dispatchSecurityMail(deps) : Promise.resolve(),
+      activity ? dispatchActivityMail(activity) : Promise.resolve(),
+    ]);
+    if (results.some((result) => result.status === "rejected"))
+      throw new Error("Notification queue dispatch failed");
   },
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
