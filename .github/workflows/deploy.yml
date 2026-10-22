@@ -1093,6 +1093,10 @@ jobs:
             --message="slop.cash release $GITHUB_SHA" \
             --yes
 
+          # Version deployments do not apply the scheduler or queue triggers.
+          ./node_modules/.bin/wrangler triggers deploy \
+            --config workers/slopbot/wrangler.toml
+
           slopbot_versions="$RUNNER_TEMP/slopbot-versions.json"
           slopbot_deployment="$RUNNER_TEMP/slopbot-deployment.json"
           ./node_modules/.bin/wrangler versions list --name slop-slopbot --json > "$slopbot_versions"
