@@ -39,6 +39,7 @@
     "src/lib/site-routes.ts",
     "src/lib/project-links.ts",
     "src/lib/project-contracts.ts",
+    "src/lib/vetting-contracts.ts",
     "src/lib/project-proposal.ts",
     "src/lib/evaluator-awards.ts",
     "src/lib/external-sources.ts",

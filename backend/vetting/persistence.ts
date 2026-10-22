@@ -5,6 +5,12 @@
  */
 
 import { canonicalJson } from "../../scripts/readme-proof-binding";
+import type {
+  AssessmentState,
+  AssessmentSummary,
+  VettingClearance,
+  VettingPin,
+} from "../../src/lib/vetting-contracts";
 import {
   notifyProjectEnforcement,
   notifyVettingBanAudience,
@@ -21,13 +27,14 @@ import {
   repositoryIdentity,
 } from "../projects/enforcement";
 import { sha256Hex } from "../trace/validation";
-import type {
-  VettingArtifact,
-  VettingDisposition,
-  VettingResult,
-} from "./result";
+import type { VettingArtifact, VettingResult } from "./result";
 
-export type AssessmentState = "pending" | VettingDisposition;
+export type {
+  AssessmentState,
+  AssessmentSummary,
+  VettingClearance,
+  VettingPin,
+} from "../../src/lib/vetting-contracts";
 
 export type VettingAssessment = {
   id: string;
@@ -50,49 +57,8 @@ export type VettingAssessment = {
   completedAt: string | null;
 };
 
-/** The safe public summary of one assessment (VET-01 display fields). */
-export type AssessmentSummary = {
-  id: string;
-  revision: number;
-  state: AssessmentState;
-  commitSha: string;
-  templateSha256: string;
-  policyVersion: string | null;
-  requestedAt: string;
-  completedAt: string | null;
-  modelRuns: { reviewer: string; provider: string; model: string }[];
-  artifacts: number;
-  heldArtifacts: number;
-};
-
-/**
- * The exact code a clearance binds (PRD VET-07): the head commit of the
- * project's integration branch and the content digest of the skill template
- * inputs Slop renders the project skills from.
- */
-export type VettingPin = { commitSha: string; templateSha256: string };
-
 /** Reads the live pin; throws when GitHub or the template cannot be read. */
 export type VettingPinReader = () => Promise<VettingPin>;
-
-/**
- * What a revision may do. Only "cleared" lets Slop serve skills, list the
- * project for discovery, or activate the revision. "stale" means a scan of
- * this content exists, but for another branch head or template digest;
- * "unverified" means Slop could not read the live pin to compare.
- */
-export type VettingClearance =
-  | { state: "unscanned" }
-  | { state: "unverified"; reason: string }
-  | { state: "queued"; assessment: AssessmentSummary }
-  | { state: "quarantined"; assessment: AssessmentSummary }
-  | { state: "stale"; assessment: AssessmentSummary; live: VettingPin }
-  | {
-      state: "cleared";
-      assessment: AssessmentSummary;
-      reviewedMaliciousAssessmentIds?: string[];
-    }
-  | { state: "banned"; assessment: AssessmentSummary };
 
 type AssessmentRow = {
   id: string;

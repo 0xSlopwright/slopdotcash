@@ -38,9 +38,6 @@ export declare const REWARD_ASSET_NETWORKS: Readonly<
 >;
 export declare const REWARD_ASSET_NETWORK_IDS: readonly RewardAssetNetwork[];
 export declare const MAX_REWARD_ASSET_DECIMALS: number;
-export declare function isRewardAssetNetwork(
-  value: unknown,
-): value is RewardAssetNetwork;
 export declare function canonicalRewardAssetAddress(
   network: string,
   value: unknown,

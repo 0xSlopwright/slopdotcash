@@ -9,6 +9,7 @@ import {
 import { isHistoricalRepositoryId } from "../src/lib/projects.mjs";
 import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
 import { GitHubGraphqlClient } from "./generate-leaderboard";
+import type { ConnectionPage } from "./github-pagination";
 import {
   type CensusRequest,
   collectProfileIssues,
@@ -17,20 +18,16 @@ import {
 type PullRequestPage = {
   repository: {
     id: string;
-    pullRequests: {
-      totalCount: number;
-      pageInfo: { hasNextPage: boolean; endCursor: string | null };
-      nodes: {
-        id: string;
-        state: string;
-        author: {
-          __typename: string;
-          id?: string;
-          login: string;
-          avatarUrl: string;
-        } | null;
-      }[];
-    };
+    pullRequests: ConnectionPage<{
+      id: string;
+      state: string;
+      author: {
+        __typename: string;
+        id?: string;
+        login: string;
+        avatarUrl: string;
+      } | null;
+    }>;
   } | null;
 };
 

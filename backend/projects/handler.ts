@@ -22,6 +22,7 @@ import {
   rewardAssetChoice,
   sameRewardAsset,
 } from "../../src/lib/reward-asset.mjs";
+import { type ApiError, fail } from "../api-error";
 import { readJsonObject, sha256Hex } from "../trace/validation";
 import type { VettingClearance } from "../vetting/persistence";
 import {
@@ -105,17 +106,8 @@ export type ProjectApiDependencies = {
   ) => Promise<RepositoryControl>;
 };
 
-type ApiError = Error & { status?: number; code?: string };
-
 const APPLICATION_ID = /^app_[A-Za-z0-9_-]{8,72}$/u;
 const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
-
-function fail(status: number, code: string, message: string): never {
-  const error: ApiError = new Error(message);
-  error.status = status;
-  error.code = code;
-  throw error;
-}
 
 function json(
   status: number,

@@ -9,6 +9,7 @@
  */
 
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
+import { type ApiError, fail } from "../api-error";
 import type { ProjectPersistence, WebSession } from "../projects/contracts";
 import { type EdgeCache, purgeProjectCache } from "../projects/edge-cache";
 import {
@@ -60,15 +61,6 @@ export type VettingApiDependencies = {
   randomId: () => string;
   cache?: EdgeCache;
 };
-
-type ApiError = Error & { status?: number; code?: string };
-
-function fail(status: number, code: string, message: string): never {
-  const error: ApiError = new Error(message);
-  error.status = status;
-  error.code = code;
-  throw error;
-}
 
 function json(status: number, body: Record<string, unknown>): Response {
   return new Response(JSON.stringify(body), {

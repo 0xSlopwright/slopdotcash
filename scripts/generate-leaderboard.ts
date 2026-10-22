@@ -5,6 +5,7 @@
  * becoming a plausible-looking empty snapshot.
  */
 
+import type { ConnectionPage, PageInfo } from "./github-pagination";
 import { resolveGitHubToken } from "./github-token";
 
 export { resolveGitHubToken } from "./github-token";
@@ -124,17 +125,6 @@ type FetchLike = (
   input: RequestInfo | URL,
   init?: RequestInit,
 ) => Promise<Response>;
-
-interface PageInfo {
-  hasNextPage: boolean;
-  endCursor: string | null;
-}
-
-interface ConnectionPage<T> {
-  totalCount: number;
-  nodes: T[];
-  pageInfo: PageInfo;
-}
 
 interface NestedPageState {
   totalCount: number;

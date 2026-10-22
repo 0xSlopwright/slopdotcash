@@ -21,6 +21,7 @@ import {
   isWalletChain,
   type WalletChain,
 } from "../../src/lib/wallets";
+import { type ApiError, fail } from "../api-error";
 import { canonicalWalletClaimDigests } from "../payments/wallet-registration";
 import { signApiToken, verifyApiToken } from "./auth";
 import {
@@ -69,17 +70,8 @@ export type TraceApiDependencies = {
   >;
 };
 
-type ApiError = Error & { status?: number; code?: string };
-
 export const TRACE_API_CONTRACT_VERSION = "private-trace-v1-opaque-hmac-v1";
 const MAX_EVENT_CLOCK_SKEW_MS = 5 * 60 * 1000;
-
-function fail(status: number, code: string, message: string): never {
-  const error: ApiError = new Error(message);
-  error.status = status;
-  error.code = code;
-  throw error;
-}
 
 function json(status: number, body: Record<string, unknown> | null): Response {
   return new Response(JSON.stringify(body), {

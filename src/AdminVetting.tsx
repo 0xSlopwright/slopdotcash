@@ -9,35 +9,11 @@
 import { CircleAlert, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { projectApiRequest } from "./lib/project-api";
-
-type AssessmentState = "pending" | "incomplete" | "clean" | "malicious";
-
-type AssessmentSummary = {
-  id: string;
-  revision: number;
-  state: AssessmentState;
-  commitSha: string;
-  templateSha256: string;
-  policyVersion: string | null;
-  requestedAt: string;
-  completedAt: string | null;
-  modelRuns: { reviewer: string; provider: string; model: string }[];
-  artifacts: number;
-  heldArtifacts: number;
-};
-
-type Clearance =
-  | { state: "unscanned" }
-  | { state: "unverified"; reason: string }
-  | {
-      state: "stale";
-      assessment: AssessmentSummary;
-      live: { commitSha: string; templateSha256: string };
-    }
-  | {
-      state: "queued" | "quarantined" | "cleared" | "banned";
-      assessment: AssessmentSummary;
-    };
+import type {
+  AssessmentState,
+  AssessmentSummary,
+  VettingClearance as Clearance,
+} from "./lib/vetting-contracts";
 
 type AdminAssessment = AssessmentSummary & {
   projectId: string;

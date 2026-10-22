@@ -8,11 +8,13 @@
  * Platform admins have no implicit access. No route here is cached, listed
  * publicly, or exported to builds, leaderboards, points or cycles.
  */
+import type { GithubActor as Actor } from "../../src/lib/project-contracts";
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
 import {
   type SecurityBountyTerms,
   securityBountySplit,
 } from "../../src/lib/security-bounty.mjs";
+import { type ApiError, fail } from "../api-error";
 import type {
   D1Result,
   D1QueryStatement as D1Statement,
@@ -22,8 +24,6 @@ import { notifySecurityCase } from "../notifications/events";
 import { cachedPublicResponse, type EdgeCache } from "../projects/edge-cache";
 import { readJsonObject } from "../trace/validation";
 export type SecurityD1Database = D1TransactionalDatabase<D1Statement>;
-
-type Actor = { githubId: string; githubLogin: string };
 
 export type SecurityApiDependencies = {
   db: SecurityD1Database;
@@ -123,8 +123,6 @@ type FrozenTerms = {
   capacityAwards: number;
 };
 
-type ApiError = Error & { status?: number; code?: string };
-
 const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
 const CASE_ID = /^sc_[A-Za-z0-9_-]{8,72}$/u;
 const GHSA =
@@ -142,13 +140,6 @@ const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 const RECEIVED_AT_SOURCE = "maintainer-attested";
 /** A browser that kept an older readiness answer must check again. */
 export const INTAKE_READINESS_TTL_SECONDS = 30;
-
-function fail(status: number, code: string, message: string): never {
-  const error: ApiError = new Error(message);
-  error.status = status;
-  error.code = code;
-  throw error;
-}
 
 function json(
   status: number,
