@@ -300,7 +300,8 @@ describe("community security vetting", () => {
     const preparedResult = parseVettingResult(JSON.parse(prepared.body));
     expect(await retained.evidence.complete(preparedResult)).toBe(false);
     await retained.retain(id, observation.environment.runId, retainedBytes);
-    expect(await retained.evidence.complete(preparedResult)).toBe(true);
+    // Retention alone cannot authorize a clean result without canonical closure.
+    expect(await retained.evidence.complete(preparedResult)).toBe(false);
     expect(prepared.disposition).toBe("incomplete");
     expect(JSON.parse(prepared.body).telemetry.visibilityGaps).toContain(
       "runtime-download-not-reviewed",
@@ -396,7 +397,7 @@ describe("community security vetting", () => {
         await retained.evidence.complete(
           parseVettingResult(JSON.parse(next.body)),
         ),
-      ).toBe(true);
+      ).toBe(false);
       const uncertain = await publishResult({
         ...options,
         body: next.body,

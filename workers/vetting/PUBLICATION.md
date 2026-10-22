@@ -57,7 +57,9 @@ The existing signed API workflow uses an actual local HTTP server, the real
 intake handler, SQLite migrations, local workerd R2 storage and an ephemeral
 Ed25519 key. It registers and uploads the exact publisher evidence through the
 signed storage routes, and checks that the evidence is incomplete before those
-uploads. It proves
+uploads and remains incomplete afterward without an authorized canonical
+assembly. An incomplete result can record the gap; it cannot clear the project.
+It proves
 inventory-gap retention, model-disagreement quarantine, digest mismatch
 refusal, signed result acceptance and no second submission after a lost
 response. These fixtures verify publication mechanics. They do not establish
