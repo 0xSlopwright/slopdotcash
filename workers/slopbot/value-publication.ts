@@ -8,6 +8,7 @@ import {
 import type { Job } from "./contracts";
 import { GitHubClient } from "./github";
 import { type D1Database, installation } from "./persistence";
+import { requireRegisteredRepository } from "./registry";
 import { loadPolicy, type ReviewEnv } from "./review";
 import { readValueDecision } from "./value-consumption";
 import { collectValueContext, valueContextSelections } from "./value-context";
@@ -119,6 +120,7 @@ export async function publishValueAssessment(
     job.number !== evidence.pull.number
   )
     throw new Error("Value publication job does not match its source");
+  await requireRegisteredRepository(env.SLOPBOT_DB, job);
   await assertValueInstallation(env.SLOPBOT_DB, job.installationId);
   // A public repository read alone does not prove installation membership.
   // Verify the token-scoped repository list before reading public source.
@@ -155,6 +157,7 @@ export async function publishValueAssessment(
   // after source reads, just as grouped publication does.
   await assertValueInstallationRepositories(github, [current.evidence]);
   // A removal or suspension received while inference/source reads ran wins.
+  await requireRegisteredRepository(env.SLOPBOT_DB, job);
   await assertValueInstallation(env.SLOPBOT_DB, job.installationId);
   return appendValueRecord(env.SLOPBOT_DB, prepared, job.installationId);
 }

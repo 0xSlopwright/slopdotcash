@@ -735,3 +735,19 @@ restricting a project stops later work even if selection cleanup is delayed.
 If the App was installed while its webhook was inactive, recover its installation
 delivery after protected deployment; a missing installation row must not be
 invented as proof of a qualified shadow period.
+
+
+### Live registry at value publication
+
+Single and grouped provisional publishers check the live D1 registry before
+source validation and again before append. Every grouped source must remain
+active and unrestricted. Historical intake checks the same registry before
+collecting source evidence. App selection and a bundled registry alone do not
+authorize publication. Database failures stop publication.
+
+A local replay of the actual publisher with captured public GitHub evidence
+and all SQLite migrations reproduced an append with an empty live registry
+before this fix. Afterward, absent and paused projects append zero records,
+including a pause recorded during source reads. The active-project control
+appends one record; installation deselection still appends none. These checks
+make no model calls and do not publish production scores.

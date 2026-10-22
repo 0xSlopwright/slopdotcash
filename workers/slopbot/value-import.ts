@@ -1,5 +1,6 @@
 import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
 import { GitHubClient } from "./github";
+import { requireRegisteredRepository } from "./registry";
 import type { ReviewEnv } from "./review";
 import {
   collectValueContext,
@@ -110,6 +111,12 @@ export async function importSubscriptionAssessment(
     }>(`/repos/${selection.repository.id}`);
     if (identity?.private !== false)
       throw new Error("Historical repository is unavailable");
+    const [registryOwner, registryRepo] = selection.repository.id.split("/");
+    await requireRegisteredRepository(env.SLOPBOT_DB, {
+      owner: registryOwner,
+      repo: registryRepo,
+      repositoryId: identity.id,
+    });
     await assertValueInstallationRepositories(github, [
       { repositoryDatabaseId: identity.id, repositoryNodeId: identity.node_id },
     ]);

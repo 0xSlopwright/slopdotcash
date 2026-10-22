@@ -4,6 +4,7 @@ import {
 } from "../../src/lib/repositories.mjs";
 import type { Job } from "./contracts";
 import { GitHubClient } from "./github";
+import { requireRegisteredRepository } from "./registry";
 import type { ReviewEnv } from "./review";
 import { latestValueRecord } from "./value-journal";
 import {
@@ -96,6 +97,14 @@ export async function publishWorkUnitAssessment(
     )
   )
     throw new Error("Joint publication job does not match a source member");
+  for (const { evidence: source } of evidence.sources) {
+    const [owner, repo] = source.repository.split("/");
+    await requireRegisteredRepository(env.SLOPBOT_DB, {
+      owner,
+      repo,
+      repositoryId: source.repositoryDatabaseId,
+    });
+  }
   await assertValueInstallation(env.SLOPBOT_DB, job.installationId);
   const github = await GitHubClient.forInstallation(
     env.SLOPBOT_APP_ID,
@@ -153,6 +162,14 @@ export async function publishWorkUnitAssessment(
     github,
     current.sources.map((source) => source.evidence),
   );
+  for (const { evidence: source } of evidence.sources) {
+    const [owner, repo] = source.repository.split("/");
+    await requireRegisteredRepository(env.SLOPBOT_DB, {
+      owner,
+      repo,
+      repositoryId: source.repositoryDatabaseId,
+    });
+  }
   await assertValueInstallation(env.SLOPBOT_DB, job.installationId);
   return appendWorkUnitRecord(env.SLOPBOT_DB, prepared, job.installationId);
 }
