@@ -8,6 +8,7 @@ import {
   collectAcceptedValueRange,
 } from "./value-accepted-range";
 import { addedValuePatchRecovery, hasCompleteValuePatch } from "./value-patch";
+import { recoverUnchangedValueRenames } from "./value-rename";
 
 // Shared by the installation worker and the historical reviewer. Missing or
 // moving evidence prevents assessment; pagination limits never imply coverage.
@@ -67,6 +68,7 @@ export interface FileChange {
   deletions: number;
   patch?: string;
   blob_url: string | null;
+  unchangedRename?: { baseSha: string; headSha: string; blobSha: string };
 }
 interface Commit {
   sha: string;
@@ -590,6 +592,27 @@ export async function collectValueEvidence(
     limitations.push("Registered repository scoring policy is unavailable");
   const recoverAddedPatches = addedValuePatchRecovery(client, repository);
   await recoverAddedPatches(files, pull.head.sha);
+  if (
+    files.some(
+      (file) =>
+        file.status === "renamed" &&
+        file.patch === undefined &&
+        file.additions === 0 &&
+        file.deletions === 0,
+    )
+  ) {
+    const comparison = await client.get<{
+      merge_base_commit?: { sha: string };
+    }>(`${root}/compare/${pull.base.sha}...${pull.head.sha}`);
+    if (comparison?.merge_base_commit?.sha)
+      await recoverUnchangedValueRenames(
+        client,
+        repository,
+        files,
+        comparison.merge_base_commit.sha,
+        pull.head.sha,
+      );
+  }
   let mergeCommitEvidence: CommitChangeEvidence | null = null;
   let acceptedRange: AcceptedValueRange | null = null;
   if (pull.merged_at !== null) {
@@ -611,6 +634,14 @@ export async function collectValueEvidence(
           mergeCommitEvidence.files,
           pull.merge_commit_sha,
         );
+        if (mergeCommitEvidence.parents.length > 0)
+          await recoverUnchangedValueRenames(
+            client,
+            repository,
+            mergeCommitEvidence.files,
+            mergeCommitEvidence.parents[0].sha,
+            mergeCommitEvidence.sha,
+          );
         const directMerge =
           mergeCommitEvidence.parents.length === 2 &&
           mergeCommitEvidence.parents[1]?.sha === pull.head.sha;

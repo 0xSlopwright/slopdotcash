@@ -397,6 +397,15 @@ files keep their missing-diff limitation. Publication uses the same collector
 and rechecks the recovered source. The recovered bodies stay in private source
 evidence; journal records contain their source digest, not the patch bodies.
 
+For a rename with no patch and zero added or deleted lines, the collector
+checks the old path at the submitted merge base and the new path at the head.
+For the accepted range, it checks the first parent and merge commit instead.
+Only identical verified Git blob bytes permit an empty patch. Both paths and
+the proof refs remain in private evidence and its source digest. The shared
+blob reader permits at most 48 reads, 512 KiB per file and 2 MiB per recovery
+range. Missing, changed or invalid bytes retain the limitation; zero line
+counts alone are insufficient. A rename proves no new content or extra award.
+
 An unchanged file can prove or disprove a review claim. Pass its repository path
 after the output directory in `scripts/collect-value-evidence.ts`. The collector
 reads the full UTF-8 file at the PR head and binds its bytes, path and immutable
