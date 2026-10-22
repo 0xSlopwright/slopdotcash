@@ -292,15 +292,15 @@ export async function loadQualityEvidence(
     const result: QualityEvidence[] = [];
     // Bounded intake, never an exhaustive claim: omitted evidence cannot close.
     const comments =
-      commentId === undefined
-        ? await github.get<{ body: string | null }[]>(
-            `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`,
-          )
-        : [
-            await github.get<{ body: string | null }>(
-              `/repos/${owner}/${repo}/issues/comments/${commentId}`,
-            ),
-          ];
+      (await github.get<{ body: string | null }[]>(
+        `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`,
+      )) ?? [];
+    if (commentId !== undefined) {
+      const direct = await github.get<{ body: string | null }>(
+        `/repos/${owner}/${repo}/issues/comments/${commentId}`,
+      );
+      if (direct !== null) comments.push(direct);
+    }
     for (const comment of comments ?? []) {
       if (!comment?.body?.startsWith(`${QUALITY_MARKER}\n`)) continue;
       const proof = await verifyQualityReceipt(

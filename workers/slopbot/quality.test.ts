@@ -546,3 +546,37 @@ test("a signed-evidence comment queues only identifiers and can arrive after the
     ),
   ).toBeNull();
 });
+
+test("receipt webhook reads preserve the same deduplication identity as ordinary intake", async () => {
+  const { loadQualityEvidence } = await import("./quality");
+  const { GitHubClient } = await import("./github");
+  const first = { body: `${QUALITY_MARKER}\n${await sign(removal)}` };
+  const second = { body: `${QUALITY_MARKER}\n${await sign(regression)}` };
+  const reader = {
+    ...github,
+    async get(path: string) {
+      return path.includes("/issues/comments/") ? first : [first, second];
+    },
+  } as unknown as InstanceType<typeof GitHubClient>;
+  const ordinary = await loadQualityEvidence(
+    reader,
+    trust,
+    subject,
+    "example",
+    "project",
+    1,
+  );
+  const repeated = await loadQualityEvidence(
+    reader,
+    trust,
+    subject,
+    "example",
+    "project",
+    1,
+    55,
+  );
+  expect(ordinary.length).toBe(2);
+  expect(repeated.map((r) => r.id).sort()).toEqual(
+    ordinary.map((r) => r.id).sort(),
+  );
+});
