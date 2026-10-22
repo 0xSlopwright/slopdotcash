@@ -7,13 +7,13 @@
 
 import { CircleAlert } from "lucide-react";
 import { type FormEvent, useId, useState } from "react";
-import { errorMessage, formatTime } from "./Admin";
 import {
   type AdminProject,
   type EnforcementAction,
   type EnforcementPreview,
   projectApiRequest,
 } from "./lib/project-api";
+import { errorMessage, formatTime } from "./Presentation";
 
 const ACTION_LABELS: Record<EnforcementAction, string> = {
   quarantine: "Quarantine",

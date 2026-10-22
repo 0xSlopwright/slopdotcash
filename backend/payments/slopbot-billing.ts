@@ -1,5 +1,5 @@
 /** Monthly Slopbot cost statement. Vault service settlement is not active. */
-import type { D1Database } from "../trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 
 export interface SlopbotInvoice {
   installationId: number;

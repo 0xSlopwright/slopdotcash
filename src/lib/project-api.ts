@@ -4,113 +4,22 @@
  */
 
 import { useEffect, useState } from "react";
+import { fetchWithDeadline } from "./browser-json";
+import type {
+  PublicProjectApplication as ProjectApplication,
+  WebSession as ProjectSession,
+} from "./project-contracts";
 import type { ProjectDefinition } from "./projects.mjs";
 
-export interface ProjectSession {
-  githubId: string;
-  githubLogin: string;
-  admin: boolean;
-}
-
-export interface ProjectApplication {
-  expectedRevision?: number;
-  changeReason?: string;
-  id: string;
-  projectId: string;
-  repository: string | null;
-  manifest: ProjectDefinition;
-  /** Approval appends this exact manifest as revision 1 with this digest. */
-  manifestSha256: string;
-  acceptanceCriteria: string;
-  applicant: { githubId: string; githubLogin: string };
-  submittedAt: string;
-  status: "pending" | "approved" | "rejected";
-  adminNotification: "pending" | "sent" | "failed";
-  adminNotificationAt: string | null;
-  decidedAt: string | null;
-  decidedBy: { githubId: string; githubLogin: string } | null;
-  decisionReason: string | null;
-  /** What public GitHub facts showed about the applicant's control. */
-  githubCheck: string | null;
-}
-
-export interface AdminProject {
-  id: string;
-  status: "active" | "paused";
-  revision: number;
-  manifestSha256: string;
-  createdAt: string;
-  updatedAt: string;
-  sourceApplicationId: string | null;
-  manifest: ProjectDefinition;
-  enforcement: ProjectEnforcementState;
-}
-
-export type EnforcementAction =
-  | "quarantine"
-  | "ban"
-  | "request_reinstatement"
-  | "reinstate"
-  | "deny_reinstatement";
-
-/** One append-only ADM-06 record with its ADM-05 audit fields. */
-export interface ProjectEnforcementRecord {
-  id: string;
-  sequence: number;
-  action: EnforcementAction;
-  stateAfter: "clear" | "quarantined" | "banned";
-  appealAfter: "none" | "requested" | "granted" | "denied";
-  reason: string;
-  evidenceReference: string;
-  actor: { githubId: string; githubLogin: string } | null;
-  systemIssuer?: {
-    kind: "vetting-service";
-    keySha256: string;
-    assessmentId: string;
-    policyVersion: string;
-    rule: string;
-  };
-  actorRole: string;
-  decisionSource: string;
-  beforeRevision: number;
-  afterRevision: number | null;
-  result: "revision_appended" | "revision_pending" | "no_revision_needed";
-  createdAt: string;
-}
-
-export interface ProjectEnforcementState {
-  state: "clear" | "quarantined" | "banned";
-  appeal: "none" | "requested" | "granted" | "denied";
-  since: string | null;
-  restrictedBy: { githubId: string; githubLogin: string }[];
-  nextSequence: number;
-  /** The restriction holds but its paused, retired revision has not landed. */
-  revisionPending: boolean;
-  moderation: "unconfigured" | "moderator" | "not-moderator";
-  records: ProjectEnforcementRecord[];
-}
-
-/** The server's plan for one action; the confirmed write must match it. */
-export interface EnforcementPreview {
-  projectId: string;
-  projectName: string;
-  action: EnforcementAction;
-  sequence: number;
-  stateBefore: ProjectEnforcementState["state"];
-  stateAfter: ProjectEnforcementState["state"];
-  appealBefore: ProjectEnforcementState["appeal"];
-  appealAfter: ProjectEnforcementState["appeal"];
-  result: ProjectEnforcementRecord["result"];
-  pendingReason: string | null;
-  revision: {
-    before: number;
-    after: number | null;
-    statusBefore: string;
-    statusAfter: string;
-    listingTierBefore: string;
-    listingTierAfter: string;
-  };
-}
+export type {
+  AdminProject,
+  EnforcementAction,
+  EnforcementPreview,
+  ProjectEnforcement as ProjectEnforcementRecord,
+  ProjectEnforcementState,
+  PublicProjectApplication as ProjectApplication,
+  WebSession as ProjectSession,
+} from "./project-contracts";
 
 export class ProjectApiError extends Error {
   constructor(
@@ -122,22 +31,17 @@ export class ProjectApiError extends Error {
   }
 }
 
-const REQUEST_TIMEOUT_MS = 15_000;
-
 export async function projectApiRequest<T>(
   method: "GET" | "POST" | "PUT",
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(`/api/v1/${path}`, {
+    response = await fetchWithDeadline(`/api/v1/${path}`, {
       method,
       cache: "no-store",
       credentials: "same-origin",
-      signal: controller.signal,
       headers: {
         accept: "application/json",
         ...(body === undefined ? {} : { "content-type": "application/json" }),
@@ -148,17 +52,25 @@ export async function projectApiRequest<T>(
     throw new ProjectApiError(
       0,
       "network_error",
-      error instanceof DOMException && error.name === "AbortError"
+      error instanceof DOMException &&
+        (error.name === "AbortError" || error.name === "TimeoutError")
         ? "The request timed out. Try again."
         : "The network request failed. Try again.",
     );
-  } finally {
-    window.clearTimeout(timer);
   }
   let parsed: unknown;
   try {
     parsed = await response.json();
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof DOMException &&
+      (error.name === "TimeoutError" || error.name === "AbortError")
+    )
+      throw new ProjectApiError(
+        0,
+        "network_error",
+        "The request timed out. Try again.",
+      );
     throw new ProjectApiError(
       response.status,
       "invalid_response",

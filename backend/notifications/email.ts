@@ -69,11 +69,7 @@ export async function handleEmailPreferences(
   }
   let body: Record<string, unknown>;
   try {
-    const value = await readBoundedJson(
-      request as unknown as Response,
-      2048,
-      "email preference",
-    );
+    const value = await readBoundedJson(request, 2048, "email preference");
     if (!value || typeof value !== "object" || Array.isArray(value))
       return json(400, { error: "invalid_request" });
     body = value as Record<string, unknown>;

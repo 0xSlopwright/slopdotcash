@@ -1,4 +1,4 @@
-import type { D1Database } from "../trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 
 /** Public per-repository Slopbot aggregates (PRD BOT-07, LDR-04). */
 export interface SlopbotRepositorySummary {

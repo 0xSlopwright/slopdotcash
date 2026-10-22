@@ -4,7 +4,7 @@ import {
   verifyReserve,
 } from "../../contracts/evm/adapter";
 import type { PaymentChain } from "../../src/lib/payments/contracts";
-import type { D1Database } from "../trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import type { PaymentChainAdapter } from "./ledger";
 /** Deployment configuration must come from the reviewed project manifest, including its chain. */
 export function evmPaymentAdapter(

@@ -1,4 +1,5 @@
 import { type FormEvent, useState } from "react";
+import { sha256Hex } from "./lib/async-sha256.mjs";
 import { fetchWithDeadline } from "./lib/browser-json";
 import { projectApiRequest } from "./lib/project-api";
 
@@ -182,10 +183,7 @@ function EvidenceItem({ run, object }: { run: Run; object: EvidenceObject }) {
         throw new Error(
           "Evidence length differs from the immutable inventory.",
         );
-      const digest = Array.from(
-        new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)),
-        (v) => v.toString(16).padStart(2, "0"),
-      ).join("");
+      const digest = await sha256Hex(new Uint8Array(bytes));
       if (digest !== object.sha256)
         throw new Error(
           "Evidence digest differs from the immutable inventory.",

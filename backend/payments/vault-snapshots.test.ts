@@ -2,7 +2,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import type { D1Database } from "../trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import { handlePaymentsApi } from "./handler";
 import {
   refreshVaultSnapshots,
@@ -357,4 +357,77 @@ describe("indexPaymentEvent asset", () => {
       ),
     ).rejects.toThrow(/Conflicting/);
   });
+});
+
+test("concurrent finalized refreshes cannot decrease cumulative vault counters", async () => {
+  for (const [key, column] of [
+    ["totalDeposited", "total_deposited"],
+    ["totalPaid", "total_paid"],
+    ["totalPayoutFees", "total_payout_fees"],
+    ["totalGrossWithdrawn", "total_gross_withdrawn"],
+    ["totalWithdrawalFees", "total_withdrawal_fees"],
+    ["totalServiceFees", "total_service_fees"],
+  ] as const) {
+    const db = open();
+    const initial = "999999999999999999999999999999";
+    const higher = "1000000000000000000000000000001";
+    const lower = "1000000000000000000000000000000";
+    await storeVaultSnapshot(
+      db,
+      deployment,
+      totals({ [key]: initial }),
+      observed,
+    );
+    const results = await Promise.allSettled([
+      storeVaultSnapshot(
+        db,
+        deployment,
+        totals({ blockNumber: "1001", [key]: higher }),
+        observed,
+      ),
+      storeVaultSnapshot(
+        db,
+        deployment,
+        totals({ blockNumber: "1002", [key]: lower }),
+        observed,
+      ),
+    ]);
+    expect(results[0]).toEqual({ status: "fulfilled", value: "stored" });
+    expect(results[1].status).toBe("rejected");
+    expect(
+      await db
+        .prepare(`SELECT ${column} amount,block_number FROM vault_snapshots`)
+        .first<unknown>(),
+    ).toEqual({ amount: higher, block_number: "1001" });
+  }
+});
+
+test("concurrent initial refreshes preserve asset identity and report superseded blocks", async () => {
+  const db = open();
+  const initial = await Promise.allSettled([
+    storeVaultSnapshot(db, deployment, totals(), observed),
+    storeVaultSnapshot(db, deployment, totals({ decimals: 18 }), observed),
+  ]);
+  expect(initial[0]).toEqual({ status: "fulfilled", value: "stored" });
+  expect(initial[1].status).toBe("rejected");
+  const refreshed = await Promise.all([
+    storeVaultSnapshot(
+      db,
+      deployment,
+      totals({ blockNumber: "1002" }),
+      observed,
+    ),
+    storeVaultSnapshot(
+      db,
+      deployment,
+      totals({ blockNumber: "1001" }),
+      observed,
+    ),
+  ]);
+  expect(refreshed).toEqual(["stored", "older"]);
+  expect(
+    await db
+      .prepare("SELECT asset_decimals,block_number FROM vault_snapshots")
+      .first<unknown>(),
+  ).toEqual({ asset_decimals: 6, block_number: "1002" });
 });

@@ -1,21 +1,20 @@
 // D1 access for Slopbot (migrations/0013_slopbot.sql and
 // 0018_slopbot_delivery_processing.sql). Cost and credit rows are append-only;
 // the balance is always derived, never stored.
+
+import type {
+  D1Database,
+  D1Statement,
+  D1TransactionalDatabase,
+} from "../../backend/d1";
 import { PRICE_VERSION, priceUsage } from "./contracts";
 import type { CallRecord } from "./models";
 
-type D1Result = { success: boolean; meta?: { changes?: number } };
-export type D1Statement = {
-  bind(...values: unknown[]): D1Statement;
-  first<T>(): Promise<T | null>;
-  run(): Promise<D1Result>;
-};
-export type D1Database = {
-  prepare(query: string): D1Statement;
-};
-export type D1TransactionalDatabase = D1Database & {
-  batch(statements: D1Statement[]): Promise<D1Result[]>;
-};
+export type {
+  D1Database,
+  D1Statement,
+  D1TransactionalDatabase,
+} from "../../backend/d1";
 
 const now = () => new Date().toISOString();
 

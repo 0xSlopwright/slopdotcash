@@ -1,4 +1,4 @@
-import { exactKeys, readRecord } from "./record-validation";
+import { exactKeys, readRecord } from "./record-validation.mjs";
 /**
  * Validates the maintainer-approved bridge between an evaluator finding and a
  * capped public score event. Raw model output never reaches the ledger: only a

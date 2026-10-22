@@ -207,6 +207,11 @@ describe("slop notify worker", () => {
       400,
     ],
     [
+      "staging review URL in production",
+      post({ ...NOTICE, reviewUrl: "https://staging.slop.cash/admin" }),
+      400,
+    ],
+    [
       "foreign review URL",
       post({ ...NOTICE, reviewUrl: "https://slop.cash.evil/admin" }),
       400,

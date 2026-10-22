@@ -44,6 +44,7 @@ import {
 } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 import { vettingResult } from "../tests/vetting-fixtures";
+import { handleNotifyRequest } from "../workers/notify/handler";
 import { fetchProjectRegistry } from "./sync-project-registry.mjs";
 
 const ORIGIN = "https://slop.cash";
@@ -1430,3 +1431,65 @@ test("cached skill and public clearance cannot survive loss of retained evidence
     (await (await get("/.well-known/slop/projects.json")).json()).projects,
   ).toEqual([]);
 });
+
+test.each(["production", "staging"] as const)(
+  "%s applications email admins a review link in their own environment",
+  async (tier) => {
+    const origin = tier === "staging" ? "https://staging.slop.cash" : ORIGIN;
+    const delivered: string[] = [];
+    const notificationDependencies = {
+      tier,
+      adminEmails: "admin@example.test",
+      fromAddress: "notifications@slop.cash",
+      now: deps.now,
+      randomId: deps.randomId,
+      sendEmail: async (_from: string, _to: string, raw: string) => {
+        delivered.push(raw);
+      },
+    };
+    const projectDependencies = {
+      ...deps,
+      tier,
+      notifyAdmins: async (notice: Parameters<typeof deps.notifyAdmins>[0]) => {
+        const response = await handleNotifyRequest(
+          new Request("https://notify.internal/v1/project-applications", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(notice),
+          }),
+          notificationDependencies,
+        );
+        return response.status === 202;
+      },
+    };
+    const response = await handleProjectApi(
+      new Request(`${origin}/api/v1/project-applications`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin,
+          "x-test-actor": "applicant",
+        },
+        body: JSON.stringify({
+          manifest: applicationManifest(
+            "open-registry",
+            "example/open-registry",
+          ),
+        }),
+      }),
+      projectDependencies,
+    );
+    if (!response) throw new Error("Application route did not respond");
+    expect(response.status).toBe(201);
+    const { application } = await response.json();
+    expect(application.adminNotification).toBe("sent");
+    expect(delivered).toHaveLength(1);
+    // Unfold quoted-printable MIME before checking the actual review link.
+    expect(delivered[0].replace(/=\r\n/gu, "")).toContain(
+      `${origin}/admin/applications/${application.id}`,
+    );
+    expect(
+      (await persistence.getApplication(application.id))?.adminNotification,
+    ).toBe("sent");
+  },
+);

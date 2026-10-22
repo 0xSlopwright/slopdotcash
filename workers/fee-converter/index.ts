@@ -94,6 +94,7 @@ export async function runOnce(
   if (config.mode === "off") return [];
   const store = new D1ConversionStore(env.FEE_DB);
   const results: NetworkRunResult[] = [];
+  const failures: Error[] = [];
   for (const network of config.networks) {
     try {
       results.push(
@@ -118,16 +119,23 @@ export async function runOnce(
         }),
       );
     } catch (error) {
-      // One network's fault never stops another network's run.
+      // Attempt the other networks, but do not report this run as successful.
+      const reason = message(error);
+      failures.push(new Error(`${network.network}: ${reason}`));
       console.error(
         JSON.stringify({
           event: "fee_converter_network_error",
           network: network.network,
-          error: message(error),
+          error: reason,
         }),
       );
     }
   }
+  if (failures.length > 0)
+    throw new AggregateError(
+      failures,
+      `fee conversion failed on ${failures.length} networks`,
+    );
   return results;
 }
 

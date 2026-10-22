@@ -1,4 +1,8 @@
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
+import type {
+  D1QueryStatement as D1Statement,
+  D1TransactionalDatabase,
+} from "../d1";
 import {
   notifyApplicationDecision,
   notifyProjectEnforcement,
@@ -16,23 +20,7 @@ import type {
   ProjectRevision,
   ProjectRevisionInput,
 } from "./contracts";
-
-type D1Result<T = unknown> = {
-  success: boolean;
-  results?: T[];
-  meta?: { changes?: number };
-};
-type D1Statement = {
-  bind(...values: unknown[]): D1Statement;
-  first<T>(): Promise<T | null>;
-  all<T>(): Promise<D1Result<T>>;
-  run(): Promise<D1Result>;
-};
-
-export type ProjectD1Database = {
-  batch(statements: D1Statement[]): Promise<D1Result[]>;
-  prepare(query: string): D1Statement;
-};
+export type ProjectD1Database = D1TransactionalDatabase<D1Statement>;
 
 type ProjectRow = {
   id: string;

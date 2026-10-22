@@ -58,7 +58,10 @@ enabled network:
    reconciliation that reads the finalized chain.
 
 An unchanged skip (same token, amount, reason and mode) is recorded once, not
-on every run.
+on every run. A network startup or storage failure is logged, and the other
+networks are still attempted. After those attempts, the scheduled promise
+rejects so the cron failure remains visible; it does not publish a successful
+`fee_converter_run` event with missing networks.
 
 ## Routes per network
 

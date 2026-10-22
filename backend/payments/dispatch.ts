@@ -1,8 +1,8 @@
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import {
   notifyPayoutException,
   notifyPayoutHeld,
 } from "../notifications/events";
-import type { D1Database } from "../trace/cloudflare-persistence";
 
 export interface DispatchPayment {
   obligationId: string;
@@ -49,26 +49,17 @@ export async function dispatchPayment(
     )
     .bind(obligationId)
     .first<DispatchPayment>();
-  if (!payment) {
-    await db.batch([
-      db
+  const previous = payment
+    ? await db
         .prepare(
-          "UPDATE payment_outbox SET state='held',lease_token=NULL,lease_until=NULL,updated_at=? WHERE obligation_id=? AND lease_token=?",
+          "SELECT id,claim_id FROM payment_attempts WHERE obligation_id=? AND state IN ('prepared','unknown','submitted') ORDER BY created_at LIMIT 1",
         )
-        .bind(timestamp, obligationId, lease),
-      notifyPayoutHeld(db, obligationId, timestamp),
-      notifyPayoutException(db, obligationId, timestamp),
-    ]);
-    return "unavailable";
-  }
-  const previous = await db
-    .prepare(
-      "SELECT id,claim_id FROM payment_attempts WHERE obligation_id=? AND state IN ('prepared','unknown','submitted') ORDER BY created_at LIMIT 1",
-    )
-    .bind(obligationId)
-    .first<{ id: string; claim_id: string }>();
+        .bind(obligationId)
+        .first<{ id: string; claim_id: string }>()
+    : null;
+  // Missing wallet authorization and a changed destination share the held transition.
   // A changed destination never starts a competing transfer while the old attempt is uncertain.
-  if (previous && previous.claim_id !== payment.claimId) {
+  if (!payment || (previous && previous.claim_id !== payment.claimId)) {
     await db.batch([
       db
         .prepare(

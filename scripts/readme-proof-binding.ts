@@ -18,18 +18,9 @@
  * The rule is the same for scored and carried rows (PRD ACC-01, WAL-01).
  * Proposal generation, proposal validation and the payment import use it.
  */
-import type { ProfileReadmeWalletProof } from "../src/lib/rewards";
+import { canonicalJson } from "../src/lib/canonical-json";
 
-export function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
+import type { ProfileReadmeWalletProof } from "../src/lib/rewards";
 
 /**
  * README proofs in cycle proposals merged before this rule. They are pinned by

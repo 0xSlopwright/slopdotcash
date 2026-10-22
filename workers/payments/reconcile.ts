@@ -1,4 +1,4 @@
-import type { D1Database } from "../../backend/trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import { chainFamily } from "../../src/lib/escrow-policy.mjs";
 import type { PaymentDeployment } from "./index";
 

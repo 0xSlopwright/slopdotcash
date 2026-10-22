@@ -7,13 +7,13 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { privateKeyToAccount } from "viem/accounts";
+import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import { dispatchPayment } from "../../backend/payments/dispatch";
 import {
   type FinalizedPaymentEvent,
   indexPaymentEvent,
 } from "../../backend/payments/ledger";
 import { buildPaymentWalletMessage } from "../../backend/payments/possession";
-import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import { authorizeWalletRotation } from "./core";
 
 const registered = "2026-10-01T00:00:00.000Z";

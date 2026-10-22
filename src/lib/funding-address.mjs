@@ -1,32 +1,13 @@
+import {
+  exactKeys as exactFundingKeys,
+  readRecord as fundingRecord,
+  timestamp as fundingTimestamp,
+} from "./record-validation.mjs";
+
 /** Validates canonical public receiving addresses for each funding network. */
 
 const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 export const MAX_FUNDING_ROUTES = 32;
-
-function fundingTimestamp(value, field) {
-  if (
-    typeof value !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
-  ) {
-    throw new TypeError(`${field} is invalid`);
-  }
-  return value;
-}
-
-function fundingRecord(value, field) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value;
-}
-
-function exactFundingKeys(value, keys, field) {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
-}
 
 function decodedBase58Length(value, minimumLength, maximumLength) {
   if (

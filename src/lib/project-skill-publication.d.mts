@@ -30,7 +30,7 @@ export declare const SOURCE_REPOSITORY: "SlopDotCash/slopdotcash";
 export declare const PUBLIC_SITE_ORIGIN: "https://slop.cash";
 export declare const GUIDE_RENDERER_PATHS: readonly string[];
 export declare const ACCEPTED_SKILL_REVISIONS: readonly string[];
-export declare function sha256Hex(bytes: Uint8Array | string): Promise<string>;
+export { sha256Hex } from "./async-sha256.mjs";
 export declare function storedZip(
   entries: readonly { path: string; bytes: Uint8Array }[],
 ): Uint8Array;

@@ -3,7 +3,7 @@
  * failed capture cannot mix partial output with a previously complete bundle.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -15,6 +15,7 @@ import {
   rmSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { sha256Hex as sha256 } from "./sha256.mjs";
 
 const ARTIFACT_NAMES = [
   "after-desktop.jpg",
@@ -33,10 +34,6 @@ const MAXIMUM_ARTIFACT_BYTES = Object.freeze({
   "walkthrough.mp4": 128 * 1024 * 1024,
 });
 const MAXIMUM_BUNDLE_BYTES = 169 * 1024 * 1024;
-
-function sha256(contents) {
-  return createHash("sha256").update(contents).digest("hex");
-}
 
 function parseJson(path, context) {
   try {

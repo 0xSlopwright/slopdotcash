@@ -1,3 +1,4 @@
+import { compareActors } from "./github-actor";
 /**
  * Derives one project's cycle leaderboard, diagnostic compute evidence, and
  * reward simulation from the canonical GitHub snapshot. A finalized private
@@ -122,16 +123,6 @@ interface UniqueRun {
   receipt: ProjectRunReceipt;
 }
 
-function compareActors(left: GitHubActor, right: GitHubActor): number {
-  const leftLogin = left.login.toLowerCase();
-  const rightLogin = right.login.toLowerCase();
-  return (
-    leftLogin.localeCompare(rightLogin) ||
-    left.login.localeCompare(right.login) ||
-    left.id.localeCompare(right.id)
-  );
-}
-
 function iso(value: number): string {
   return new Date(value).toISOString();
 }
@@ -202,7 +193,7 @@ function opportunityPointsWithinCap(
   return opportunity.potentialPoints;
 }
 
-function cycleBounds(cycleId: string): { from: number; to: number } {
+export function cycleBounds(cycleId: string): { from: number; to: number } {
   if (!/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(cycleId)) {
     throw new TypeError(`Invalid reward cycle id: ${cycleId}`);
   }

@@ -60,11 +60,6 @@ export interface FundingReview
   capMinor: string | null;
   contributors: FundingReviewContributor[];
 }
-export interface FundingReviewIndex {
-  schemaVersion: "1";
-  generatedAt: string;
-  reviews: FundingReview[];
-}
 const integer = /^(0|[1-9][0-9]{0,19})$/u;
 const hash = /^[a-f0-9]{64}$/u;
 export function exactRecord(
@@ -314,56 +309,4 @@ export function createFundingReview(input: FundingPreparation): FundingReview {
         : (amounts.get(r.actor.id) ?? "0"),
     })),
   };
-}
-export function assertFundingReviewIndex(value: unknown): FundingReviewIndex {
-  const v = exactRecord(value, "schemaVersion,generatedAt,reviews");
-  if (v.schemaVersion !== "1")
-    throw new TypeError("Invalid funding review version");
-  date(v.generatedAt);
-  if (!Array.isArray(v.reviews) || v.reviews.length > 1000)
-    throw new TypeError("Invalid funding reviews");
-  const ids = new Set<string>();
-  for (const raw of v.reviews) {
-    const r = exactRecord(
-      raw,
-      `${preparationKeys},status,paymentAuthorized,proposalPublished,rewardKind,capMinor`,
-    );
-    if (!Array.isArray(r.contributors))
-      throw new TypeError("Invalid contributors");
-    const base = Object.fromEntries(
-      preparationKeys.split(",").map((k) => [k, r[k]]),
-    );
-    base.contributors = r.contributors.map((rawRow) => {
-      const row = exactRecord(
-        rawRow,
-        `${contributorKeys},simulatedMinor,externalSharePartsPerMillion`,
-      );
-      return Object.fromEntries(
-        contributorKeys.split(",").map((k) => [k, row[k]]),
-      );
-    });
-    const expected = createFundingReview(assertFundingPreparation(base));
-    for (const key of [
-      "status",
-      "paymentAuthorized",
-      "proposalPublished",
-      "rewardKind",
-      "capMinor",
-    ] as const)
-      if (r[key] !== expected[key])
-        throw new TypeError("Noncanonical preparation status or cap");
-    r.contributors.forEach((row, i) => {
-      if (
-        row.simulatedMinor !== expected.contributors[i].simulatedMinor ||
-        row.externalSharePartsPerMillion !==
-          expected.contributors[i].externalSharePartsPerMillion
-      )
-        throw new TypeError("Incorrect largest remainder allocation");
-    });
-    const id = `${expected.projectId}/${expected.cycleId}`;
-    if (ids.has(id) || expected.observedAt > v.generatedAt)
-      throw new TypeError("Duplicate or future preparation");
-    ids.add(id);
-  }
-  return value as FundingReviewIndex;
 }

@@ -1,3 +1,4 @@
+import { parseFencedRecord } from "./fenced-record";
 import { findProject, type ProjectId } from "./projects.mjs";
 
 const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/u;
@@ -151,37 +152,15 @@ export function assertScoreRatificationRecord(
 }
 
 export function parseScoreRatificationBlock(body: string): unknown | null {
-  const matches = [
-    ...body.matchAll(
-      /^ {0,3}```slop-score[\t ]*\r?\n([^\r\n]{1,32768})\r?\n {0,3}```[\t ]*$/gmu,
-    ),
-  ];
-  if (matches.length > 1)
-    throw new TypeError("source must contain at most one slop-score record");
-  if (matches.length === 0) return null;
-  try {
-    return JSON.parse(matches[0][1]);
-  } catch {
-    throw new TypeError("slop-score record JSON is malformed");
-  }
+  return parseFencedRecord(body, "slop-score");
 }
 
 export function parseScoreApprovalBlock(body: string): unknown | null {
-  const matches = [
-    ...body.matchAll(
-      /^ {0,3}```slop-score-approval[\t ]*\r?\n([^\r\n]{1,32768})\r?\n {0,3}```[\t ]*$/gmu,
-    ),
-  ];
-  if (matches.length > 1)
-    throw new TypeError(
-      "source must contain at most one slop-score-approval record",
-    );
-  if (matches.length === 0) return null;
-  try {
-    return JSON.parse(matches[0][1]);
-  } catch {
-    throw new TypeError("slop-score-approval JSON is malformed");
-  }
+  return parseFencedRecord(
+    body,
+    "slop-score-approval",
+    "slop-score-approval JSON is malformed",
+  );
 }
 
 export function assertScoreApprovalRecord(

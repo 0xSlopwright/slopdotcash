@@ -1,16 +1,20 @@
 import {
+  type DeploymentTier,
+  deploymentOrigins,
+} from "../../src/lib/deployment";
+import {
   MAX_ADMIN_RECIPIENTS,
   MAX_NOTICE_BODY_BYTES,
   NOTIFY_INTERNAL_HOST,
   PROJECT_APPLICATION_NOTICE_PATH,
   type ProjectApplicationNotice,
-  REVIEW_URL_PREFIX,
   SLOPBOT_SPEND_NOTICE_PATH,
   type SlopbotSpendNotice,
   validSpendNotice,
 } from "./contracts";
 
 export type NotifyWorkerDependencies = {
+  tier?: DeploymentTier;
   /** Raw `ADMIN_EMAILS` secret: comma-separated admin addresses. */
   adminEmails: string | undefined;
   fromAddress: string;
@@ -136,8 +140,8 @@ function validSubmittedAt(value: string): boolean {
   return Number.isFinite(time) && new Date(time).toISOString() === value;
 }
 
-function validReviewUrl(value: string): boolean {
-  if (value.length > 512 || !value.startsWith(REVIEW_URL_PREFIX)) return false;
+function validReviewUrl(value: string, tier?: DeploymentTier): boolean {
+  if (value.length > 512) return false;
   let url: URL;
   try {
     url = new URL(value);
@@ -148,14 +152,17 @@ function validReviewUrl(value: string): boolean {
   // embedded tabs or newlines that it silently drops.
   return (
     url.href === value &&
-    url.origin === "https://slop.cash" &&
+    url.origin === deploymentOrigins(tier).site &&
     url.username === "" &&
     url.password === "" &&
     (url.pathname === "/admin" || url.pathname.startsWith("/admin/"))
   );
 }
 
-function parseNotice(value: unknown): ProjectApplicationNotice {
+function parseNotice(
+  value: unknown,
+  tier?: DeploymentTier,
+): ProjectApplicationNotice {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new InvalidRequest("body must be a JSON object");
   }
@@ -181,7 +188,7 @@ function parseNotice(value: unknown): ProjectApplicationNotice {
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(notice.repository) ||
     !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/u.test(notice.applicantLogin) ||
     !validSubmittedAt(notice.submittedAt) ||
-    !validReviewUrl(notice.reviewUrl)
+    !validReviewUrl(notice.reviewUrl, tier)
   ) {
     throw new InvalidRequest("notice field is invalid");
   }
@@ -360,7 +367,7 @@ export async function handleNotifyRequest(
       if (!validSpendNotice(body))
         throw new InvalidRequest("Invalid cost notice");
       notice = body;
-    } else notice = parseNotice(body);
+    } else notice = parseNotice(body, deps.tier);
   } catch (error) {
     if (error instanceof InvalidRequest) {
       return json(400, { error: "invalid_request" });

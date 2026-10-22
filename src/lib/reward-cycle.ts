@@ -14,7 +14,7 @@ import {
 } from "./allocation-funding";
 import { fundingAssetForNetwork } from "./funding-address.mjs";
 import type { LeaderboardSnapshot } from "./leaderboard";
-import { createPaymentProjectView } from "./project-view";
+import { createPaymentProjectView, cycleBounds } from "./project-view";
 import type { ProjectDefinition, ProjectId } from "./projects.mjs";
 import { findProject } from "./projects.mjs";
 import {
@@ -147,19 +147,6 @@ export function additiveReviewBudgetWeights(
     actorId,
     scoreThirds,
   }));
-}
-
-function cycleBounds(cycleId: string): { from: number; to: number } {
-  if (!/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(cycleId)) {
-    throw new TypeError(`Invalid reward cycle id: ${cycleId}`);
-  }
-  const [yearText, monthText] = cycleId.split("-");
-  const year = Number(yearText);
-  const monthIndex = Number(monthText) - 1;
-  return {
-    from: Date.UTC(year, monthIndex, 1),
-    to: Date.UTC(year, monthIndex + 1, 1),
-  };
 }
 
 function intentComponent(value: string): string {

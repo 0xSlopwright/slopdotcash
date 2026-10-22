@@ -1,5 +1,4 @@
 /** Bounded remote artifact retrieval and byte-level verification. */
-import { createHash } from "node:crypto";
 import {
   artifactCanBeEvidenceFile,
   EVIDENCE_FILE_EXTENSIONS,
@@ -12,6 +11,7 @@ import {
   trustedArtifacts,
   VIDEO_EXTENSIONS,
 } from "./pr-evidence-policy.mjs";
+import { sha256Hex } from "./sha256.mjs";
 
 const ARTIFACT_READ_LIMIT_BYTES = 64 * 1024;
 const DOCUMENT_READ_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -1213,9 +1213,7 @@ async function verifyArtifact(
     }
     return {
       status: "ok",
-      contentSha256: complete
-        ? createHash("sha256").update(bytes).digest("hex")
-        : null,
+      contentSha256: complete ? sha256Hex(bytes) : null,
     };
   } catch (error) {
     // error-policy:J1 the CLI boundary translates transport failures into a

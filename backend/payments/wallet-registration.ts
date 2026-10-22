@@ -1,7 +1,7 @@
 import type { WalletChain } from "../../src/lib/wallets";
 import { sha256Hex } from "../../workers/identity/crypto";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import { notifyWalletChanged } from "../notifications/events";
-import type { D1Database } from "../trace/cloudflare-persistence";
 /** Canonical registry bytes preserve the original Solana layout and Base chain field. */
 export async function registerPaymentWallet(
   db: D1Database,

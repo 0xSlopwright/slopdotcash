@@ -1,15 +1,17 @@
+import { readRecord as asObject } from "../src/lib/record-validation.mjs";
+
 /**
  * Defines the fail-closed artifact, ledger, and network checks shared by local
  * and production evidence capture. Network I/O stays injected so the contract
  * can be tested without substituting fixtures for the production recording.
  */
 
-import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import {
   PRIMARY_REPOSITORY,
   TARGET_REPOSITORIES,
 } from "../src/lib/repositories.mjs";
+import { sha256Hex as sha256 } from "./sha256.mjs";
 
 export const PRODUCTION_ORIGIN = "https://slop.cash";
 export const PRODUCTION_HOSTNAME = "slop.cash";
@@ -53,17 +55,6 @@ function artifactContentType(path) {
   if (path.endsWith(".json")) return "application/json";
   if (path.endsWith(".md")) return "text/markdown";
   throw new TypeError(`remote artifact has no MIME contract: ${path}`);
-}
-
-function sha256(contents) {
-  return createHash("sha256").update(contents).digest("hex");
-}
-
-function asObject(value, path) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an object`);
-  }
-  return value;
 }
 
 function asNonEmptyArray(value, path) {

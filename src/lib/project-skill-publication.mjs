@@ -10,11 +10,14 @@
  */
 
 import { renderInstallGuide } from "../../scripts/render-install-guide.mjs";
+import { sha256Hex } from "./async-sha256.mjs";
 import { PROJECT_SKILL_TEMPLATES } from "./project-schema.mjs";
 import {
   publishesGeneratedSkills,
   renderProjectSkill,
 } from "./project-skill.mjs";
+
+export { sha256Hex } from "./async-sha256.mjs";
 
 export const SOURCE_REPOSITORY = "SlopDotCash/slopdotcash";
 /** Generated skills always name the canonical site as their authority. */
@@ -34,16 +37,6 @@ export const ACCEPTED_SKILL_REVISIONS = Object.freeze([
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
-
-export async function sha256Hex(bytes) {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    typeof bytes === "string" ? encoder.encode(bytes) : bytes,
-  );
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
 
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);

@@ -7,12 +7,8 @@ import {
   type ProfileRecord,
 } from "../src/lib/profiles";
 import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
+import type { ConnectionPage as Page } from "./github-pagination";
 
-type Page<T> = {
-  totalCount: number;
-  pageInfo: { hasNextPage: boolean; endCursor: string | null };
-  nodes: T[];
-};
 type Event = {
   __typename: string;
   id: string;

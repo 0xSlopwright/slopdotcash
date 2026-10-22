@@ -7,9 +7,12 @@ export function fetchWithDeadline(url: string, init: RequestInit = {}) {
   });
 }
 
-/** Bounded public JSON transport shared by app views. */
+/** Headers and a stream are shared by HTTP requests and responses. */
+type HttpBody = Pick<Response, "headers" | "body">;
+
+/** Bounded UTF-8 transport shared by app views and API request readers. */
 export async function readBoundedText(
-  response: Response,
+  response: HttpBody,
   maxBytes: number,
   label: string,
 ): Promise<string> {
@@ -58,7 +61,7 @@ export async function readBoundedText(
 }
 
 export async function readBoundedJson(
-  response: Response,
+  response: HttpBody,
   maxBytes: number,
   label: string,
 ): Promise<unknown> {

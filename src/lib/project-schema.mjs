@@ -1,4 +1,5 @@
 import { assertEscrowPolicy } from "./escrow-policy.mjs";
+import { exactKeys, readRecord as record } from "./record-validation.mjs";
 /**
  * Validates untrusted project folders before they enter discovery, ingestion,
  * skills, or money-shaped views. The schema is intentionally narrow so a pull
@@ -92,19 +93,6 @@ export function formatMonthlyCapDisplay(value) {
     .replace(/\B(?=(\d{3})+(?!\d))/gu, ",");
   const cents = Number((amount % 1_000_000n) / 10_000n);
   return `$${whole}${cents === 0 ? "" : `.${String(cents).padStart(2, "0")}`}`;
-}
-
-function record(value, field) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value;
-}
-
-function exactKeys(value, keys, field) {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
 }
 
 function text(value, field, { max = 500, min = 1, pattern } = {}) {

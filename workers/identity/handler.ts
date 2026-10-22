@@ -1,3 +1,4 @@
+import { type ApiError, fail } from "../../backend/api-error";
 import brand from "../../brand/tokens.json" with { type: "json" };
 import {
   type DeploymentTier,
@@ -40,15 +41,6 @@ export type IdentityWorkerDependencies = {
     githubNodeId?: string;
   } | null>;
 };
-
-type ApiError = Error & { status?: number; code?: string };
-
-function fail(status: number, code: string, message: string): never {
-  const error: ApiError = new Error(message);
-  error.status = status;
-  error.code = code;
-  throw error;
-}
 
 function securityHeaders(contentType: string): Headers {
   return new Headers({

@@ -36,10 +36,7 @@ import {
   rewardAssetChoice,
 } from "./lib/reward-asset.mjs";
 import { loginHref } from "./Points";
-
-export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong.";
-}
+import { errorMessage, formatTime } from "./Presentation";
 
 export function SignInPanel({
   state,
@@ -70,15 +67,6 @@ export function SignInPanel({
       </a>
     </div>
   );
-}
-
-export function formatTime(value: string | null): string {
-  if (value === null) return "—";
-  return new Date(value).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  });
 }
 
 type LoadState<T> =
