@@ -2916,6 +2916,15 @@ function createSnapshotWithReviewCutoff(
           parseIsoTime(left.createdAt) - parseIsoTime(right.createdAt) ||
           left.id.localeCompare(right.id),
       )) {
+      // Only a maintainer can ratify. A fenced block in any other comment is
+      // data, not a record: it must not fail snapshot generation for the
+      // whole network, and it must not be parsed as a decision.
+      if (
+        !["OWNER", "MEMBER", "COLLABORATOR"].includes(
+          source.authorAssociation ?? "",
+        )
+      )
+        continue;
       const raw = parseScoreRatificationBlock(source.body);
       if (raw === null) continue;
       const record = assertScoreRatificationContext(raw, {
