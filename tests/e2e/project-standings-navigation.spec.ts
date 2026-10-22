@@ -27,6 +27,10 @@ async function fixtures(page: Page) {
       ),
     }),
   );
+  // Preview has no executable agent discovery; D1 coverage is in registry.spec.ts.
+  await page.route("**/.well-known/slop/projects.json", (route) =>
+    route.fulfill({ json: { schemaVersion: "1", projects: [] } }),
+  );
   await page.route("**/data/cycles/index.json*", (route) =>
     route.fulfill({ json: cycleIndexFixture() }),
   );
