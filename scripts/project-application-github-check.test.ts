@@ -318,3 +318,14 @@ test.each(["unchanged", "changed", "unavailable"])(
     }
   },
 );
+test("an application cannot claim a different GitHub owner account type", async () => {
+  const manifest = manifestWith({});
+  manifest.steward.github.type = "Organization";
+  const { status, body } = await submit(manifest);
+  expect(lookups).toContain(`${API}/repos/example/open-registry`);
+  expect(status).toBe(422);
+  expect(body).toMatchObject({
+    error: "invalid_manifest",
+    message: "Repository or steward facts do not match GitHub",
+  });
+});
