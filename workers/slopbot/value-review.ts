@@ -36,6 +36,7 @@ export async function assessValue(
       item: JSON.stringify(evidence),
     },
     {
+      sourceDigest,
       name: "slop_value_assessment",
       schema: VALUE_ASSESSMENT_SCHEMA,
       validate: (value) => validateEvidenceAssessment(value, evidence),
@@ -49,7 +50,8 @@ export async function assessValue(
     pullRequestNodeId: evidence.pull.node_id,
     headSha: evidence.pull.head.sha,
     policySha: policy.sha,
-    assessedAt: new Date().toISOString(),
+    assessedAt:
+      "inferredAt" in result ? result.inferredAt : new Date().toISOString(),
     ...result,
   };
 }

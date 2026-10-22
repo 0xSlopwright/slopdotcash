@@ -171,6 +171,7 @@ Joint assessment: return units under the supplied joint schema. Partition EVERY 
       item: JSON.stringify(evidence),
     },
     {
+      sourceDigest: evidence.sourceDigest,
       name: "slop_joint_value_assessment",
       schema: WORK_UNIT_SCHEMA,
       validate: (value) => validateWorkUnitAssessment(value, evidence),
@@ -182,7 +183,8 @@ Joint assessment: return units under the supplied joint schema. Partition EVERY 
     ...result,
     rubricVersion: VALUE_RUBRIC_VERSION,
     sourceDigest: evidence.sourceDigest,
-    assessedAt: new Date().toISOString(),
+    assessedAt:
+      "inferredAt" in result ? result.inferredAt : new Date().toISOString(),
   };
 }
 

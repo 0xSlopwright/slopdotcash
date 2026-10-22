@@ -873,8 +873,8 @@ their pinned policies and prior joint membership. All members must belong to
 the same registered project, be closed, be within the API start boundary, and
 have complete evidence. Collection stops at 32 sources and leaves a larger
 group pending; it does not assign zero or split that group. Failures retain a
-retry state without provider exception bodies. Restart reuse of unpublished
-model results remains incomplete.
+retry state without provider exception bodies. Validated results are retained before publication, so a restart can reuse them
+without another model call.
 
 Required operator settings have no defaults:
 `SLOPBOT_VALUE_MONTHLY_BUDGET_MICRO_USD`,
@@ -927,3 +927,27 @@ causes reassessment of both retained members, with two total joint records, two
 cost receipts and no single-source rows. The unmodified linked group rooted at
 proximityprize #195 stays pending because #206 has an unavailable or private
 reference. These are orchestration checks, not live-provider valuation evidence.
+
+### Retained inference before publication
+
+Migration `0054_slopbot_value_inference_results.sql` retains only validated
+proposals and safe call metadata after usage receipts are recorded. It does not
+store prompts, source bodies or raw provider responses. Immutable keys bind the
+installation, source digest, system and project policy, output schema and model
+route. Both single-source and joint assessment use this boundary.
+
+A retry checks current authority, verifies retained bytes, runs the current
+source validator, and reuses the original inference time. It makes no new
+reservation or provider call. Existing exact-cost receipts can reconcile a
+reservation interrupted before reconciliation; unknown cost remains held.
+Publication still requires the ordinary current source, project, installation,
+lease and journal predecessor checks. A changed source or policy gets a new key.
+
+File-backed SQLite workflows interrupt single and joint publication after
+inference, close and reopen the database, then resume the request. Each publishes
+with one total model-response fixture, one cost receipt and the original
+assessment time. Mutation and invalid-verdict reuse are rejected; a changed
+source is reassessed. These checks use local HTTP model fixtures and captured
+GitHub evidence, not live model acceptance. A crash before result retention is
+still an ambiguous provider outcome: a stored reservation cannot reconstruct
+an unrecorded response, and its unknown cost must not be released on a timer.

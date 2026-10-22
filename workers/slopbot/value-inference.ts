@@ -1,3 +1,4 @@
+import { sha256Hex } from "./github";
 import {
   type ModelEnv,
   type Prompt,
@@ -6,6 +7,10 @@ import {
 } from "./models";
 import { type D1Database, recordCalls } from "./persistence";
 import { reconcileValueBudget, reserveValueBudget } from "./value-budget";
+import {
+  readValueInference,
+  retainValueInference,
+} from "./value-inference-results";
 
 /** Supplied by the trusted consumer, never repository/model input. The maximum
  * must cover every permitted route attempt. No default authorizes expenditure.
@@ -22,6 +27,7 @@ export async function runValueInference<T>(
   env: ModelEnv,
   prompt: Prompt,
   output: {
+    sourceDigest: string;
     name: string;
     schema: Record<string, unknown>;
     validate(value: unknown): T | null;
@@ -44,6 +50,21 @@ export async function runValueInference<T>(
       blocked: true,
       blockReason: "authority" as const,
     };
+  if (!/^[a-f0-9]{64}$/.test(output.sourceDigest))
+    throw new Error("Inference source digest is invalid");
+  const key = await sha256Hex(
+    JSON.stringify({
+      installationId: budget.installationId,
+      sourceDigest: output.sourceDigest,
+      system: prompt.system,
+      policy: prompt.policy,
+      name: output.name,
+      schema: output.schema,
+      route: TRIAGE_ROUTE,
+    }),
+  );
+  const retained = await readValueInference(budget.db, key, output.validate);
+  if (retained) return { ...retained, blockReason: null };
   if (
     !(await reserveValueBudget(
       budget.db,
@@ -77,14 +98,30 @@ export async function runValueInference<T>(
     result.calls,
     false,
   );
+  const inferredAt = new Date().toISOString();
+  if (!result.blocked && result.verdict && result.servedBy) {
+    await retainValueInference(budget.db, key, budget.attemptId, {
+      verdict: result.verdict,
+      calls: result.calls,
+      servedBy: result.servedBy,
+      blocked: false,
+      inferredAt,
+    });
+  }
   if (result.calls.length)
     await reconcileValueBudget(
       budget.db,
       budget.attemptId,
       result.calls.length,
     );
+  if (!result.blocked && result.verdict && result.servedBy) {
+    const completed = await readValueInference(budget.db, key, output.validate);
+    if (!completed) throw new Error("Validated inference was not retained");
+    return { ...completed, blockReason: null };
+  }
   return {
     ...result,
+    inferredAt,
     blockReason: result.blocked ? ("authority" as const) : null,
   };
 }
