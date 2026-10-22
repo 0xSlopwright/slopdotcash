@@ -3402,6 +3402,9 @@ function createSnapshotWithReviewCutoff(
           workUnitId: unit.workUnitId,
           scoreDecisionSourceId: `value:${decision.latestDigest}`,
           scoreDecisionAt: decision.history.at(-1)?.recorded_at,
+          ...(completion.indirectAcceptance
+            ? { acceptanceKind: "indirect-integration" as const }
+            : {}),
           occurredAt: completedAt,
           repository: repositoryIdFromUrl(completion.pull.html_url),
           source: {
@@ -5463,6 +5466,16 @@ function assertLedgerValue(
     event.scoreDecisionAt === undefined
   )
     throw new Error("Value score event requires its decision time");
+  if (
+    event.acceptanceKind !== undefined &&
+    (event.acceptanceKind !== "indirect-integration" ||
+      event.category !== "merged-pull-request" ||
+      typeof event.scoreDecisionSourceId !== "string" ||
+      !/^value:[a-f0-9]{64}$/u.test(event.scoreDecisionSourceId) ||
+      typeof event.id !== "string" ||
+      !event.id.includes(":joint:"))
+  )
+    throw new Error("Indirect acceptance requires a joint value award");
   assertString(event.reason, `${path}.reason`);
   if ("continuity" in event) {
     if (
@@ -6747,7 +6760,16 @@ export function assertLeaderboardSnapshot(
   // Shared merge credit emits one event per commit author of one source.
   const mergedOutcomeSourceIds = new Set(
     validatedLedger
-      .filter((event) => event.category === "merged-pull-request")
+      .filter(
+        (event) =>
+          event.category === "merged-pull-request" &&
+          event.acceptanceKind !== "indirect-integration",
+      )
+      .map((event) => event.source.id),
+  );
+  const indirectOutcomeSourceIds = new Set(
+    validatedLedger
+      .filter((event) => event.acceptanceKind === "indirect-integration")
       .map((event) => event.source.id),
   );
   const detailedPullRequestIds = new Set(
@@ -6794,6 +6816,11 @@ export function assertLeaderboardSnapshot(
   );
   if (
     mergedOutcomeSourceIds.size > mergedPullRequestCount ||
+    indirectOutcomeSourceIds.size >
+      Number(counts.closedUnmergedPullRequests ?? 0) ||
+    [...indirectOutcomeSourceIds].some((id) =>
+      mergedOutcomeSourceIds.has(id),
+    ) ||
     detailedPullRequestIds.size > detailedMergedPullRequestCount ||
     reviewedPullRequestIds.size >
       mergedPullRequestCount + Number(counts.closedUnmergedPullRequests ?? 0) ||
