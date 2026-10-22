@@ -263,13 +263,17 @@ export async function retainActualAssembly(input: {
   );
   // Keep the actual guest receipt unchanged while trying to omit its output
   // from both the declared file list and review inputs. Retention must refuse.
-  for (const [omittedRole, omittedRunId] of [
-    ["untrusted-output", "omitted-guest-output"],
-    ["syscall-index", "omitted-syscall-index"],
-  ]) {
-    const outputSha = manifest.files.find(
-      (file) => file.role === omittedRole,
-    )!.sha256;
+  const omittedFiles = [
+    manifest.files.find((file) => file.role === "syscall-index")!,
+    manifest.files.find((file) => file.role === "untrusted-output")!,
+    ...manifest.files.filter((file) => file.role === "raw-filesystem-capture"),
+    ...manifest.files
+      .filter((file) => file.role.startsWith("captured-filesystem-object:"))
+      .slice(0, 1),
+  ];
+  for (const [index, omittedFile] of omittedFiles.entries()) {
+    const outputSha = omittedFile.sha256;
+    const missingRunId = `omitted-evidence-${index}`;
     const truncatedReview = Buffer.from(
       JSON.stringify({
         ...review,
@@ -287,7 +291,7 @@ export async function retainActualAssembly(input: {
       }),
     );
     const truncatedManifestSha = digest(truncatedManifest);
-    const omittedOutputPath = `/api/v1/vetting/evidence/${assessmentId}/${omittedRunId}`;
+    const omittedOutputPath = `/api/v1/vetting/evidence/${assessmentId}/${missingRunId}`;
     const omittedObjects = objects.filter(
       (object) =>
         ![
@@ -340,8 +344,8 @@ export async function retainActualAssembly(input: {
     for (const [sha256, bytes] of replacementObjects)
       await send("PUT", `${omittedOutputPath}/${sha256}`, bytes);
     await assert.rejects(
-      retained.evidence.assemblyClosure(assessmentId, omittedRunId),
-      /canonical (assembly reference is absent|evidence role is missing)/i,
+      retained.evidence.assemblyClosure(assessmentId, missingRunId),
+      /canonical.*(?:absent|missing)/i,
     );
   }
   const overview = await retained.evidence.handle(

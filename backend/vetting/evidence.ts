@@ -5,6 +5,7 @@ import {
   assemblyRecord,
   parseAssemblyManifest,
 } from "../../workers/vetting/assembly-manifest";
+import { assertFilesystemReferences } from "../../workers/vetting/filesystem-capture";
 import { fail } from "../api-error";
 import type { ProjectD1Database } from "../projects/cloudflare-persistence";
 import type { WebSession } from "../projects/contracts";
@@ -486,6 +487,97 @@ export class VettingEvidence {
       ] as const) {
         required(digest);
         role(name, digest);
+      }
+      if (guest.filesystemSha256 !== undefined) {
+        if (guest.filesystemEncoding !== "json-utf8")
+          fail(409, "assembly_mismatch", "Unknown filesystem transport");
+        role("raw-filesystem-capture", guest.filesystemSha256);
+        const capture = await read(guest.filesystemSha256);
+        if (
+          capture.schema !== "slop-filesystem-capture-v1" ||
+          capture.state !== "incomplete" ||
+          capture.executionAuthorized !== false ||
+          capture.root !== "/tmp/slop-quarantine"
+        )
+          fail(
+            409,
+            "assembly_mismatch",
+            "Invalid captured filesystem inventory",
+          );
+        const objects = assemblyRecord(capture.objects);
+        if (Object.keys(objects).length > 256)
+          fail(
+            409,
+            "assembly_mismatch",
+            "Filesystem object count exceeds bound",
+          );
+        const descriptors: { sha256: string; bytes: number }[] = [];
+        let total = 0;
+        for (const [sha, encoded] of Object.entries(objects)) {
+          if (
+            !HEX.test(sha) ||
+            typeof encoded !== "string" ||
+            encoded.length > 1024 * 1024
+          )
+            fail(
+              409,
+              "assembly_mismatch",
+              "Invalid filesystem content reference",
+            );
+          let binary: string;
+          try {
+            binary = atob(encoded);
+          } catch {
+            fail(
+              409,
+              "assembly_mismatch",
+              "Invalid filesystem content encoding",
+            );
+          }
+          if (btoa(binary) !== encoded)
+            fail(
+              409,
+              "assembly_mismatch",
+              "Noncanonical filesystem content encoding",
+            );
+          const bytes = Uint8Array.from(binary, (character) =>
+            character.charCodeAt(0),
+          );
+          total += bytes.length;
+          if (total > 672 * 1024 || (await sha256Hex(bytes)) !== sha)
+            fail(
+              409,
+              "assembly_mismatch",
+              "Filesystem bytes differ or exceed bound",
+            );
+          required(sha, bytes.length);
+          role(`captured-filesystem-object:${sha}`, sha);
+          descriptors.push({ sha256: sha, bytes: bytes.length });
+        }
+        try {
+          assertFilesystemReferences(
+            capture,
+            new Map(descriptors.map((item) => [item.sha256, item.bytes])),
+          );
+        } catch {
+          fail(
+            409,
+            "assembly_incomplete",
+            "Filesystem entries do not bind retained content",
+          );
+        }
+        const summary = await read(
+          role("untrusted-filesystem-inventory").sha256,
+        );
+        if (
+          JSON.stringify(summary) !==
+          JSON.stringify({ ...capture, objects: descriptors })
+        )
+          fail(
+            409,
+            "assembly_mismatch",
+            "Filesystem review metadata differs from capture",
+          );
       }
       if (
         guest.kernelArtifactGate !== undefined ||

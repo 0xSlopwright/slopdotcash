@@ -163,7 +163,11 @@ def collect_guest(*, directory, profile, profile_sha256, source_inventory_sha256
                 safe = entry.get('path')
                 from guest import safe_path
                 safe_path(safe)
+                if ('sha256' in entry) != ('capturedBytes' in entry) or (entry.get('stable') is True and ('sha256' not in entry or entry.get('kind') != 'file')):
+                    raise ValueError('Filesystem capture reference is incomplete')
                 if 'sha256' in entry:
+                    if entry.get('kind') != 'file':
+                        raise ValueError('Filesystem content is not a regular-file observation')
                     data = files.get('filesystem-object-' + entry['sha256'])
                     if data is None or len(data) != entry.get('capturedBytes'):
                         raise ValueError('Missing filesystem content')
