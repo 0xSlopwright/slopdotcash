@@ -37,7 +37,10 @@ export async function reviewOwnerAwards(input: {
 }) {
   const { project: record, actor, cycleId } = input;
   const project = assertProjectDefinition(record.manifest);
-  if (actor.githubId !== project.steward.github.actorId)
+  if (
+    project.steward.github.type === "User" &&
+    actor.githubId !== project.steward.github.actorId
+  )
     throw new OwnerAwardReviewError(
       403,
       "Only the current project steward can review owner awards.",
@@ -77,10 +80,19 @@ export async function reviewOwnerAwards(input: {
     await github(`repos/${target}`),
     1048576,
     "Project repository identity",
-  )) as { id?: number; node_id?: string };
+  )) as {
+    id?: number;
+    node_id?: string;
+    owner?: { id?: number; node_id?: string; login?: string; type?: string };
+  };
+  const steward = project.steward.github;
   if (
     String(repositoryIdentity.id) !== project.authority.repositoryId ||
-    repositoryIdentity.node_id !== project.authority.repositoryNodeId
+    repositoryIdentity.node_id !== project.authority.repositoryNodeId ||
+    String(repositoryIdentity.owner?.id) !== steward.actorId ||
+    repositoryIdentity.owner?.node_id !== steward.nodeId ||
+    repositoryIdentity.owner?.type !== steward.type ||
+    repositoryIdentity.owner?.login?.toLowerCase() !== steward.login.toLowerCase()
   )
     throw new OwnerAwardReviewError(
       409,
