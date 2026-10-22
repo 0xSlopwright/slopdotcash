@@ -43,13 +43,6 @@ export interface QualityEvidence {
     flags: string[];
   }[];
 }
-export interface QualityDecision {
-  /** One logical accepted outcome. All constituent event IDs must be listed. */
-  eventIds: string[];
-  tier: QualityTier;
-  reason: string;
-  evidenceUrls: string[];
-}
 const integer = /^(0|[1-9][0-9]{0,19})$/u;
 const github =
   /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/(?:pull|issues)\/[1-9][0-9]*(?:#[A-Za-z0-9_-]+)?$/u;

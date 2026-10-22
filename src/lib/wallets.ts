@@ -6,10 +6,7 @@
 
 import { chainFamily } from "./escrow-policy.mjs";
 
-export const WALLET_MARKER_VERSION = "1" as const;
-export const WALLET_MARKER_PREFIX = "slop-wallet:v1" as const;
 export const WALLET_CLAIM_REPOSITORY = "SlopDotCash/slopdotcash" as const;
-export const WALLET_CLAIM_TITLE = "Slop wallet claim" as const;
 
 /** Networks a contributor may publish a payout wallet for, one claim each. */
 export const WALLET_CHAINS = [

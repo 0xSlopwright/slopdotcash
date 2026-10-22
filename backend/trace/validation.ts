@@ -1,3 +1,7 @@
+import { isRecord } from "../../src/lib/record-validation";
+
+export { isRecord } from "../../src/lib/record-validation";
+
 import {
   isExactClientIdentifier,
   isExactClientVersion,
@@ -28,10 +32,6 @@ class RequestBodyError extends Error {
     this.status = status;
     this.code = code;
   }
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function validIdentifier(value: unknown): value is string {

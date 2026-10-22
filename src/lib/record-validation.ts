@@ -34,15 +34,3 @@ export function timestamp(value: unknown, field: string): string {
   }
   return value;
 }
-
-export function canonicalMinor(value: unknown, field: string): string {
-  if (
-    typeof value !== "string" ||
-    value.length > 40 ||
-    !/^(?:0|[1-9]\d*)$/u.test(value)
-  ) {
-    throw new TypeError(`${field} must be canonical integer minor units`);
-  }
-  if (BigInt(value) === 0n) throw new TypeError(`${field} must be positive`);
-  return value;
-}

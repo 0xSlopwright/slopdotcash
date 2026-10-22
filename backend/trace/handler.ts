@@ -1534,5 +1534,3 @@ async function handleTraceApiInternal(
       : response;
   }
 }
-
-export const traceLimits = { maxTraceBytes: MAX_TRACE_BYTES } as const;

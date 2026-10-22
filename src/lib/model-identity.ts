@@ -112,19 +112,3 @@ export function isExactClientIdentifier(value: unknown): value is string {
 export function isExactClientVersion(value: unknown): value is string {
   return exactIdentity(value, 128, VERSION_PLACEHOLDERS);
 }
-
-export function assertExactModelIdentity(input: {
-  provider: unknown;
-  model: unknown;
-  client: unknown;
-}): asserts input is { provider: string; model: string; client: string } {
-  if (!isExactProviderIdentifier(input.provider)) {
-    throw new TypeError("provider must be an exact non-placeholder identifier");
-  }
-  if (!isExactModelIdentifier(input.model)) {
-    throw new TypeError("model must be an exact non-placeholder identifier");
-  }
-  if (!isExactClientIdentifier(input.client)) {
-    throw new TypeError("client must be an exact non-placeholder identifier");
-  }
-}

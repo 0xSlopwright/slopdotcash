@@ -40,7 +40,6 @@ const RESERVED_PATHS = new Set([
   "_routes.json",
   MANIFEST_FILENAME,
 ]);
-export const MAXIMUM_BUNDLE_FILES = MAXIMUM_FILES + RESERVED_PATHS.size;
 const digestPattern = /^[0-9a-f]{64}$/u;
 const verificationTokenPattern = /^[A-Za-z0-9._-]{1,128}$/u;
 

@@ -234,13 +234,6 @@ export function monthlyPoolPointsOnly(
   return reward.kind === "monthly-pool" && reward.monthlyCapMinor === "0";
 }
 
-export function formatCompact(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: 1,
-    notation: value >= 1_000 ? "compact" : "standard",
-  }).format(value);
-}
-
 export function formatScore(value: number): string {
   return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 2,

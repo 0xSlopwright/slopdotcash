@@ -60,7 +60,6 @@ export type AllocationState =
  * `review-lapsed` records that the public review window closed with no creator
  * decision on the row, so the row was never decided rather than declined.
  */
-export type HoldKind = "review-lapsed" | "unsafe-destination";
 
 export type AllocationHold =
   | { kind: "review-lapsed"; lapsedAt: string }

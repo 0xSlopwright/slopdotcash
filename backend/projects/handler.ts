@@ -1,3 +1,8 @@
+import type {
+  EnforcementPreview,
+  ProjectEnforcementState,
+  PublicProjectApplication,
+} from "../../src/lib/project-contracts";
 import { assertProjectPolicyTransition } from "../../src/lib/project-policy.mjs";
 import {
   assertProjectDefinition,
@@ -35,6 +40,7 @@ import {
   purgeProjectCache,
 } from "./edge-cache";
 import {
+  activeRestrictions,
   ENFORCEMENT_ACTIONS,
   enforcedManifest,
   enforcementRevisionReason,
@@ -380,7 +386,7 @@ function assertRegistryWith(
 
 function publicApplication(
   application: ProjectApplication,
-): Record<string, unknown> {
+): PublicProjectApplication {
   return {
     id: application.id,
     projectId: application.projectId,
@@ -402,7 +408,7 @@ function publicApplication(
   };
 }
 
-function adminProject(project: ProjectRecord): Record<string, unknown> {
+function adminProject(project: ProjectRecord): ProjectRecord {
   return {
     id: project.id,
     status: project.status,
@@ -882,9 +888,7 @@ function activePublicRestrictions(
   projects: ProjectRecord[],
   records: ProjectEnforcement[],
 ): Record<string, unknown>[] {
-  const restricted = [...new Set(records.map((record) => record.projectId))]
-    .map((projectId) => projectRestriction(projectId, records))
-    .filter((restriction) => restriction.state !== "clear");
+  const restricted = activeRestrictions(records);
   // A project listed for a restricted repository is closed with it.
   const shared = projects
     .filter(
@@ -916,8 +920,8 @@ function assertRepositoryUnrestricted(
 function adminEnforcement(
   project: ProjectRecord,
   restriction: ProjectRestriction,
-  moderation: "unconfigured" | "moderator" | "not-moderator",
-): Record<string, unknown> {
+  moderation: ProjectEnforcementState["moderation"],
+): ProjectEnforcementState {
   return {
     state: restriction.state,
     appeal: restriction.appeal,
@@ -1182,7 +1186,7 @@ async function recordEnforcement(
     ...(vettingReview ? { vettingReview } : {}),
     createdAt: at,
   };
-  const preview = {
+  const preview: EnforcementPreview = {
     projectId,
     projectName: project.manifest.name,
     action,
