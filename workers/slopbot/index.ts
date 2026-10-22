@@ -4,6 +4,7 @@
 import type { Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import * as store from "./persistence";
+import { QUALITY_MARKER } from "./quality";
 import { registeredRepository } from "./registry";
 import { type ReviewEnv, recordHumanSignal, reviewItem } from "./review";
 import { readWebhookBody } from "./webhook-body";
@@ -42,10 +43,10 @@ type Payload = {
   sender?: { id: number; type: string };
   issue?: { number: number; pull_request?: unknown };
   pull_request?: { number: number };
-  comment?: { body: string };
+  comment?: { body: string; id?: number };
 };
 
-function jobFor(
+export function jobFor(
   event: string,
   deliveryId: string,
   payload: Payload,
@@ -60,7 +61,13 @@ function jobFor(
     action === undefined
   )
     return null;
-  if (String(sender.id) === appUserId) return null;
+  const qualityReceipt =
+    event === "issue_comment" &&
+    action === "created" &&
+    payload.comment?.body.startsWith(`${QUALITY_MARKER}\n`) &&
+    Number.isSafeInteger(payload.comment.id) &&
+    Number(payload.comment.id) > 0;
+  if (String(sender.id) === appUserId && !qualityReceipt) return null;
   const base = {
     deliveryId,
     installationId: installation.id,
@@ -85,6 +92,13 @@ function jobFor(
         : null;
   if (item === null) return null;
   if (event === "issue_comment") {
+    if (qualityReceipt && item.itemKind === "pull_request")
+      return {
+        kind: "review",
+        ...base,
+        ...item,
+        qualityCommentId: payload.comment?.id,
+      };
     if (
       action !== "created" ||
       !(payload.comment?.body ?? "").trim().startsWith("/slopbot appeal")

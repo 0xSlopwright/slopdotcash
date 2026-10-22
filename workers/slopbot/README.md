@@ -174,3 +174,8 @@ restricting a project stops later work even if selection cleanup is delayed.
 If the App was installed while its webhook was inactive, recover its installation
 delivery after protected deployment; a missing installation row must not be
 invented as proof of a qualified shadow period.
+
+## Objective quality verification
+
+The [trusted evidence contract](QUALITY.md) implements the approved objective
+criteria and shadow admission. Production closure remains disabled.

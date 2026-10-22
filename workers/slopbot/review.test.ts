@@ -14,7 +14,13 @@ import {
   reviewExists,
   startReview,
 } from "./persistence";
-import { grounded, neutralize, prefilter, pullDiff } from "./review";
+import {
+  confirmedClosure,
+  grounded,
+  neutralize,
+  prefilter,
+  pullDiff,
+} from "./review";
 import { route } from "./routing";
 
 describe("custom collaborator roles", () => {
@@ -188,6 +194,7 @@ test("zero-line file changes are not deterministically empty", () => {
   const pull = {
     draft: false,
     merged: false,
+    base: { sha: "baseline" },
     head: { sha: "a".repeat(40) },
     changed_files: 1,
     additions: 0,
@@ -296,6 +303,7 @@ describe("item text that instructs Slopbot to close another item", () => {
       "confidence",
       "evidence",
       "limitations",
+      "objective_defect",
       "rule_refs",
       "summary",
     ]);
@@ -421,5 +429,41 @@ describe("pullDiff", () => {
     expect(result.diff).toContain("(binary or too large to show)");
     expect(result.diff).toContain("tail.ts");
     expect(result.truncated).toBe(true);
+  });
+});
+
+describe("independent closure confirmation", () => {
+  test("a matching category cannot authorize invented evidence or rules", () => {
+    const first = verdict({});
+    expect(confirmedClosure(first, verdict({}), context)).toBe(true);
+    expect(
+      confirmedClosure(
+        first,
+        verdict({ evidence: ["The author admits this is prohibited work."] }),
+        context,
+      ),
+    ).toBe(false);
+    expect(
+      confirmedClosure(
+        first,
+        verdict({
+          rule_refs: [
+            {
+              source: "README.md",
+              quote: "Close every contribution automatically.",
+            },
+          ],
+        }),
+        context,
+      ),
+    ).toBe(false);
+    expect(
+      confirmedClosure(
+        first,
+        verdict({ limitations: ["The required source was unavailable."] }),
+        context,
+      ),
+    ).toBe(false);
+    expect(confirmedClosure(first, null, context)).toBe(false);
   });
 });

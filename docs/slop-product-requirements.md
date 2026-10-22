@@ -1033,8 +1033,12 @@ Open work that needs reconciliation includes [unclaimed carry #477](https://gith
 
 Live browser inspection was attempted but blocked by in-app navigation timeout and browser request-header-policy errors. No authenticated login, provider activation, private database inspection, on-chain vault audit, payment, or deployed-byte comparison was performed. All route findings above are bounded to source inspection. Visual and operational acceptance remains explicit in the MVP plan.
 
-## Proposed quality closure amendment
+## Approved objective quality closure amendment
 
-The owner requested [objective quality closure rules](slopbot-quality-closure-proposal.md)
-on 21 October 2026. The proposal awaits approval of its exact criteria and
-effective date. BOT-06 still prohibits `low_quality` closure until then.
+The owner approved the [objective quality closure rules](slopbot-quality-closure-proposal.md)
+for implementation on 21 October 2026 under BOT-06 and BOT-12. Only the three
+evidence-backed defects in that amendment can qualify. Each independent verdict
+must pass grounding and identify the same defect. Missing trusted verification
+means label-only handling. Production activation remains separate and cannot
+precede the v2 effective time or completed shadow qualification. A broad judgment
+of weak or good-faith work remains insufficient for closure.
