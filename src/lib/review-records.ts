@@ -1,3 +1,4 @@
+import { parseFencedRecord } from "./fenced-record";
 import {
   isExactClientIdentifier,
   isExactModelIdentifier,
@@ -349,20 +350,7 @@ export function assertReviewRecord(value: unknown): ReviewRecord {
 
 /** Parses at most one unquoted, one-line fenced review record from a source. */
 export function parseReviewRecordBlock(body: string): unknown | null {
-  const matches = [
-    ...body.matchAll(
-      /^ {0,3}```slop-review[\t ]*\r?\n([^\r\n]{1,32768})\r?\n {0,3}```[\t ]*$/gmu,
-    ),
-  ];
-  if (matches.length > 1) {
-    throw new TypeError("source must contain at most one slop-review record");
-  }
-  if (matches.length === 0) return null;
-  try {
-    return JSON.parse(matches[0][1]);
-  } catch {
-    throw new TypeError("slop-review record JSON is malformed");
-  }
+  return parseFencedRecord(body, "slop-review");
 }
 
 /** Joins a review record to its terminal finalized run receipt and PR head. */
