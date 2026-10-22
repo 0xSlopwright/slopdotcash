@@ -174,6 +174,7 @@ Do these in order. Each step names who does it and how to verify it.
    The next protected release runs these steps:
    - checks the secret inventory;
    - uploads and promotes the version bound to the release SHA;
+   - applies the checked-in five-minute schedule and queue triggers;
    - probes `https://slopbot.slop.cash/health`.
 
    Then set the App webhook URL to `https://slopbot.slop.cash/github/webhook`
