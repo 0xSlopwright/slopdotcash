@@ -1,0 +1,176 @@
+import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+import { GitHubClient } from "./github";
+import type { ReviewEnv } from "./review";
+import {
+  collectValueContext,
+  validValueContextSelections,
+} from "./value-context";
+import { collectValueEvidence } from "./value-evidence";
+import {
+  isSubscriptionProvenance,
+  valueResultProducerIdentity,
+} from "./value-producer";
+import {
+  assertValueInstallation,
+  assertValueInstallationRepositories,
+  loadValuePolicy,
+  publishValueAssessment,
+} from "./value-publication";
+import type { ValueAssessmentResult } from "./value-review";
+import {
+  prepareWorkUnitEvidence,
+  type WorkUnitSource,
+} from "./value-work-unit";
+import { publishWorkUnitAssessment } from "./value-work-unit-publication";
+import type { WorkUnitAssessmentResult } from "./value-work-unit-review";
+
+const object = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
+const digest = (value: unknown): value is string =>
+  typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
+const digests = (value: unknown): value is string[] =>
+  Array.isArray(value) &&
+  value.every(digest) &&
+  new Set(value).size === value.length;
+
+/** Only the private service binding calls this function. Publication identity
+ * comes from the deployed release, not the uploaded assessment or a local tree.
+ * The existing publishers re-read GitHub and enforce journal predecessors.
+ */
+export async function importSubscriptionAssessment(
+  env: ReviewEnv & { SLOPBOT_PRODUCER_REVISION?: string },
+  input: unknown,
+) {
+  const revision = env.SLOPBOT_PRODUCER_REVISION;
+  if (!revision || !/^[a-f0-9]{40}$/u.test(revision))
+    throw new Error("Historical intake requires a deployed producer revision");
+  if (
+    !object(input) ||
+    !["single", "work-unit"].includes(String(input.mode)) ||
+    !Number.isSafeInteger(input.installationId) ||
+    Number(input.installationId) <= 0 ||
+    !object(input.result) ||
+    !Array.isArray(input.sources) ||
+    input.sources.length === 0 ||
+    !(
+      input.revisionReason === null ||
+      (typeof input.revisionReason === "string" &&
+        input.revisionReason.trim().length > 0)
+    )
+  )
+    throw new Error("Invalid historical assessment envelope");
+  const expected =
+    input.mode === "single"
+      ? "installationId,mode,result,revisionReason,sources,supersedes"
+      : "installationId,legacyPredecessors,mode,result,revisionReason,sources,supersedes";
+  if (Object.keys(input).sort().join() !== expected)
+    throw new Error("Unexpected historical assessment fields");
+  if (!isSubscriptionProvenance(input.result.provenance))
+    throw new Error("Historical intake accepts subscription assessments only");
+  valueResultProducerIdentity(input.result as unknown as ValueAssessmentResult);
+  const joint = input.mode === "work-unit";
+  if (!joint && input.sources.length !== 1)
+    throw new Error("Single publication requires one source");
+  const selections = input.sources.map((value: unknown) => {
+    if (
+      !object(value) ||
+      Object.keys(value).sort().join() !==
+        "contextPaths,pullRequestNumber,repository" ||
+      typeof value.repository !== "string" ||
+      !Number.isSafeInteger(value.pullRequestNumber) ||
+      Number(value.pullRequestNumber) <= 0 ||
+      !validValueContextSelections(value.contextPaths)
+    )
+      throw new Error("Invalid historical source selection");
+    const repository = findRegisteredRepositoryById(value.repository);
+    if (!repository) throw new Error("Historical source is not registered");
+    return {
+      repository,
+      number: Number(value.pullRequestNumber),
+      contextPaths: value.contextPaths,
+    };
+  });
+  if (
+    new Set(selections.map((s) => `${s.repository.id}#${s.number}`)).size !==
+    selections.length
+  )
+    throw new Error("Historical source selection is repeated");
+  await assertValueInstallation(env.SLOPBOT_DB, Number(input.installationId));
+  const github = await GitHubClient.forInstallation(
+    env.SLOPBOT_APP_ID,
+    env.SLOPBOT_APP_PRIVATE_KEY,
+    Number(input.installationId),
+  );
+  const sources: WorkUnitSource[] = [];
+  for (const selection of selections) {
+    const identity = await github.get<{
+      id: number;
+      node_id: string;
+      private: boolean;
+    }>(`/repos/${selection.repository.id}`);
+    if (identity?.private !== false)
+      throw new Error("Historical repository is unavailable");
+    await assertValueInstallationRepositories(github, [
+      { repositoryDatabaseId: identity.id, repositoryNodeId: identity.node_id },
+    ]);
+    const collected = await collectValueEvidence(
+      github,
+      selection.repository.id,
+      selection.number,
+      selection.repository,
+    );
+    const evidence = await collectValueContext(
+      github,
+      collected,
+      selection.contextPaths,
+    );
+    const [owner, repo] = selection.repository.id.split("/");
+    sources.push({
+      evidence,
+      policy: await loadValuePolicy(
+        github,
+        owner,
+        repo,
+        evidence.pull.base.sha,
+      ),
+    });
+  }
+  const source = sources[0].evidence;
+  const [owner, repo] = source.repository.split("/");
+  const job = {
+    installationId: Number(input.installationId),
+    repositoryId: source.repositoryDatabaseId,
+    owner,
+    repo,
+    number: source.pull.number,
+    itemKind: "pull_request" as const,
+  };
+  let stored: { record_digest: string; sequence: number };
+  if (joint) {
+    if (!digests(input.supersedes) || !digests(input.legacyPredecessors))
+      throw new Error("Invalid joint predecessors");
+    stored = await publishWorkUnitAssessment(
+      env,
+      job,
+      input.result as unknown as WorkUnitAssessmentResult,
+      await prepareWorkUnitEvidence(sources),
+      revision,
+      input.supersedes,
+      input.legacyPredecessors,
+      input.revisionReason as string | null,
+    );
+  } else {
+    if (input.supersedes !== null && !digest(input.supersedes))
+      throw new Error("Invalid single predecessor");
+    stored = await publishValueAssessment(
+      env,
+      job,
+      input.result as unknown as ValueAssessmentResult,
+      source,
+      revision,
+      input.supersedes,
+      input.revisionReason as string | null,
+    );
+  }
+  return { recordDigest: stored.record_digest, sequence: stored.sequence };
+}

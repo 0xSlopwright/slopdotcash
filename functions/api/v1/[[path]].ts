@@ -34,6 +34,10 @@ import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata
 import { handleSecurityApi } from "../../../backend/security/handler";
 import { handleSlopbotApi } from "../../../backend/slopbot/summary";
 import {
+  type HistoricalValueBinding,
+  handleHistoricalValueImport,
+} from "../../../backend/slopbot/value-import";
+import {
   CloudflareTracePersistence,
   type D1Database,
   type R2Bucket,
@@ -88,6 +92,7 @@ type Env = {
   SLOP_GITHUB_READ_TOKEN?: string;
   /** Admin email Worker; absent where no notifier is deployed. */
   SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
+  SLOPBOT_VALUE_IMPORT?: HistoricalValueBinding;
   ASSETS?: { fetch(request: Request): Promise<Response> };
   /** Secure-VM vetting service Ed25519 public keys (base64, comma separated). */
   VETTING_RESULT_PUBLIC_KEYS?: string;
@@ -640,6 +645,17 @@ export async function onRequest(context: PagesContext): Promise<Response> {
               clientSecret: context.env.X_CLIENT_SECRET,
             }
           : undefined,
+    });
+  if (new URL(context.request.url).pathname === "/api/v1/slopbot/value-import")
+    return handleHistoricalValueImport(context.request, {
+      adminGithubIds: githubIdSet(context.env.ADMIN_GITHUB_IDS),
+      sessionActor: (request) =>
+        sessionGithubActor(
+          request,
+          context.env.SLOP_DB,
+          new Date().toISOString(),
+        ),
+      publisher: context.env.SLOPBOT_VALUE_IMPORT,
     });
   if (new URL(context.request.url).pathname.startsWith("/api/v1/slopbot/"))
     return handleSlopbotApi(context.request, context.env.SLOP_DB);

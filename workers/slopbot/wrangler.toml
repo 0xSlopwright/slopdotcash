@@ -2,7 +2,7 @@
 # checked-in GitHub Actions workflow after owner approval and the deploy lever
 # is claimed. No route is declared until then.
 name = "slop-slopbot"
-main = "index.ts"
+main = "entrypoint.ts"
 compatibility_date = "2026-07-30"
 workers_dev = false
 

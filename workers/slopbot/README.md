@@ -647,9 +647,9 @@ Both forms use the same source, rubric, occurrence, predecessor and journal
 checks. Readers preserve the distinct provenance. Single-source preparation,
 like joint preparation, can use an independently verified active D1 registry.
 Publication still requires the installation's repository authority and a fresh
-source read. This change adds no public import endpoint, operator credentials,
-production activation, human ratification or payout authority. The authenticated
-historical intake and ongoing automatic dispatch remain separate delivery gates.
+source read. The authenticated admin intake below adds no new operator
+credentials, human ratification or payout authority. Production intake activation
+and ongoing automatic dispatch remain separate delivery gates.
 
 Single-source publication rechecks installation repository selection after the
 source read, as grouped publication does. Removing one repository does not
@@ -658,3 +658,39 @@ public GitHub evidence and the migrated SQLite journal: before the fix, removal
 during the source read still appended a row; after the fix, it appends no row.
 An unchanged selection still appends one row. This is controlled local evidence,
 not proof of a live App permission change.
+
+### Authenticated historical intake
+
+`POST /api/v1/slopbot/value-import` uses the existing site session and
+`ADMIN_GITHUB_IDS`. It accepts only same-origin JSON from a signed-in admin.
+The optional `SLOPBOT_VALUE_IMPORT` service binding must target the
+`HistoricalValuePublisher` named entrypoint of `slop-slopbot`. No public Worker
+fetch route exposes that entrypoint. Without the binding, intake returns 503.
+Configure the binding only as part of the protected release; this source change
+does not configure or activate a production binding.
+
+The envelope has `mode` (`single` or `work-unit`), `installationId`, `result`,
+`sources`, `supersedes`, and `revisionReason`. Grouped imports also require
+`legacyPredecessors`. Each source contains `repository`, `pullRequestNumber`, and
+`contextPaths`. The Worker collects the evidence from GitHub; callers do not
+upload diff bodies. Results use the existing subscription result format.
+Single predecessors are a
+digest or null; grouped predecessors are digest arrays. A successor requires a
+reason. Unknown envelope fields, API receipt claims and caller-supplied producer
+revisions are refused. Requests are bounded to 25 MiB. Large PR diffs do not count toward the
+request size because they are read inside the Worker. Source bodies are
+processed transiently and are not returned or logged by this path.
+
+The protected workflow supplies `SLOPBOT_PRODUCER_REVISION` from its checked-out
+main SHA. The importer requires that value, reuses installation selection,
+fresh source and predecessor checks, and returns only a record digest and
+sequence. It invokes no model and creates no API costs. Publication remains
+provisional; the existing human decision and payout boundaries remain in force.
+A failed publication returns a generic error without source or upstream detail.
+
+A local HTTP replay used the actual Pages route, database-backed sessions, all
+D1 migrations and the production importer/publisher with captured public GitHub
+source reads. It checked admin authorization, same-origin enforcement, absent
+binding, invalid provenance, exact source, replay and repository deselection.
+The local replay replaces the Cloudflare RPC transport with direct dispatch;
+it is not production binding or live installation acceptance.

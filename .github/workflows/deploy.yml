@@ -1055,6 +1055,7 @@ jobs:
           slopbot_upload="$RUNNER_TEMP/slopbot-upload.log"
           ./node_modules/.bin/wrangler versions upload \
             --config workers/slopbot/wrangler.toml \
+            --var="SLOPBOT_PRODUCER_REVISION:$GITHUB_SHA" \
             --minify \
             --tag="$GITHUB_SHA" \
             --message="slop.cash release $GITHUB_SHA" 2>&1 | tee "$slopbot_upload"
