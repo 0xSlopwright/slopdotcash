@@ -6,9 +6,9 @@ safe under hostile input.
 
 ## MVP scope and phase gate
 
-The [canonical Slop PRD](https://docs.google.com/document/d/1on3Ge018mShloCpxVMs62ZCA81YA1U3HUv2s-VV7cWo/edit) in Google Docs defines
+The [canonical Slop PRD](docs/slop-product-requirements.md) defines
 product scope, MVP delivery packages, acceptance, and completion.
-`docs/slop-product-requirements.md` is a link to that document, not another copy.
+The Google Docs version mirrors the repository PRD. The repository governs.
 Read the PRD before selecting work, proposing a change, reviewing a PR, or
 implementing a feature. Link the exact PRD requirement and MVP work-package ID
 in every implementation PR. Existing code, an open issue, a model suggestion,

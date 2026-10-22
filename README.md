@@ -16,9 +16,9 @@
 
 ## Product requirements
 
-Read the [canonical Slop PRD](https://docs.google.com/document/d/1on3Ge018mShloCpxVMs62ZCA81YA1U3HUv2s-VV7cWo/edit) before selecting work.
+Read the [canonical Slop PRD](docs/slop-product-requirements.md) before selecting work.
 It includes MVP delivery, acceptance, open decisions, and issue coverage.
-The repository PRD file is only a link to it.
+The repository PRD is authoritative. Google Docs provides a formatted mirror.
 
 ## What is Slop?
 
@@ -248,6 +248,6 @@ and Ethereum test networks. Projects select one chain and one asset. A gross
 100-USDC award pays 98 to the contributor and 2 in fees. Unused vault
 withdrawals incur 2% and go only to the owner's refund destination, while
 funded unpaid awards remain reserved until their recipients register a wallet. GitHub remains the
-only login. See [the canonical PRD](https://docs.google.com/document/d/1on3Ge018mShloCpxVMs62ZCA81YA1U3HUv2s-VV7cWo/edit) for the authority model,
+only login. See [the canonical PRD](docs/slop-product-requirements.md) for the authority model,
 acceptance tests and deployment gates. Existing project payment history and
 production activation are not changed by adding this implementation.

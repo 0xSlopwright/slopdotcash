@@ -18,7 +18,7 @@ This is a new financial protocol, not an additional chain selector. Existing pro
 - Fetched `origin/develop`: `4c657a4737b498b43847db0c2e5202f383a9ef24`. The findings below use this newer source unless explicitly labeled local.
 - Read the supplied repository instructions, local CONTRIBUTING.md and README, current upstream identity, wallet, funding, cycle, settlement, and deployment code, and relevant live GitHub issues and PR metadata.
 - The current local checkout is substantially behind upstream. In particular, Base wallet registration and additional payment controls already exist upstream. Implement from a fresh current canonical branch, not this dirty checkout.
-- Historical research note: the original review could not locate the requirements. The [canonical PRD](https://docs.google.com/document/d/1on3Ge018mShloCpxVMs62ZCA81YA1U3HUv2s-VV7cWo/edit) now defines scope, delivery and open decisions. This research does not override it.
+- Historical research note: the original review could not locate the requirements. The [canonical PRD](slop-product-requirements.md) now defines scope, delivery and open decisions. This research does not override it.
 - This was a source and architecture review. It did not run application tests, complete real GitHub login, inspect production D1, verify existing on-chain vaults, or deploy contracts. Source availability does not prove deployed availability.
 - New testnet deployment and application validation are deliverables of the implementation phases below. No mainnet migration is authorized by this plan.
 

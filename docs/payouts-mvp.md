@@ -2,7 +2,7 @@
 
 Implementation authority: the maintainer requested the Base/Solana migration and then instructed subagents to implement and test the plan on 6 October 2026. The subsequent explicit fee instruction replaces the initial on-top assumption.
 
-This is a historical implementation record. The [canonical PRD](https://docs.google.com/document/d/1on3Ge018mShloCpxVMs62ZCA81YA1U3HUv2s-VV7cWo/edit) defines current scope, fees, funding and delivery. It includes WAL-01–05, PAY-01–08, FND-05 and packages MVP-02, MVP-06 and MVP-07. Earlier restrictions and network lists below are historical; they do not override the PRD.
+This is a historical implementation record. The [canonical PRD](slop-product-requirements.md) defines current scope, fees, funding and delivery. It includes WAL-01–05, PAY-01–08, FND-05 and packages MVP-02, MVP-06 and MVP-07. Earlier restrictions and network lists below are historical; they do not override the PRD.
 
 ## Product contract
 
