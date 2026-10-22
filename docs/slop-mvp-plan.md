@@ -136,8 +136,8 @@ Deliver in dependency order:
 1. Adopt program terms and resolve SEC-01–06/15 launch decisions. Extend canonical registry-backed project setup with bounty-only and separate reward modes. Preserve existing projects and historical terms.
 2. Add public terms and verified private-intake handoff. Add restricted case metadata, case membership and minimal notifications. Reuse account identity; separate public ingestion credentials and prevent all case exports.
 3. Add human triage, evidence references, duplicate/appeal decisions and separate remediation/award/disclosure state. Qualify private reproduction and exact-head fix review without relying on public CI.
-4. Add gross funding capacity, exact 75/25 reservation and private settlement evidence. Reuse supported financial verifiers only after the selected rail and confidentiality contract are approved. Keep the case available without a wallet.
-5. Complete the matrix below on isolated staging and an authorized GitHub test repository. Use synthetic security examples. Record private evidence privately and provide only sanitized walkthroughs in public PRs. Then qualify authorized Umia intake and actual funding separately before opening the program.
+4. Add gross funding capacity, exact 75/25 reservation and private settlement evidence. Reuse the existing rails and finality rules under the owner’s 22 October 2026 private bounty payment decision in the PRD. Keep private ledgers and vault counters separate from ordinary payments. Keep the case available without a wallet.
+5. Complete the matrix below on isolated staging and an authorized GitHub test repository. Use synthetic security examples. Record private evidence privately and provide only sanitized walkthroughs in public PRs. Qualify each real program’s authorized intake and actual funding separately before opening it. Umia is an example, not an implementation dependency.
 
 | Scenario | Required outcome and evidence |
 | --- | --- |

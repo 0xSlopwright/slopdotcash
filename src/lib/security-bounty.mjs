@@ -1,3 +1,8 @@
+import {
+  assertEscrowTransition,
+  assertSecurityEscrowPolicy,
+  ESCROW_NETWORKS,
+} from "./escrow-policy.mjs";
 /**
  * Public terms of a private security bounty program (PRD SEC-01, SEC-05,
  * SEC-06, SEC-18). The terms live in the project's D1 manifest revision as
@@ -163,7 +168,11 @@ function validateApprovers(value) {
  */
 export function assertSecurityBountyTerms(value, { repositories, reward }) {
   const terms = record(value, "");
-  exactKeys(terms, KEYS, "");
+  exactKeys(
+    terms,
+    terms.settlement === undefined ? KEYS : [...KEYS, "settlement"],
+    "",
+  );
   if (terms.version !== "1") fail("version");
   if (!SECURITY_PROGRAM_STATUSES.includes(terms.status)) fail("status");
   if (!SECURITY_REWARD_MODES.includes(terms.rewardMode)) fail("rewardMode");
@@ -285,6 +294,25 @@ export function assertSecurityBountyTerms(value, { repositories, reward }) {
     1,
     60,
   );
+  if (terms.settlement !== undefined) {
+    const settlement = assertSecurityEscrowPolicy(terms.settlement);
+    if (amount.currency !== "USDC" || settlement.chain !== amount.network)
+      fail("settlement", "requires matching USDC program terms");
+    for (const deployment of settlement.deployments) {
+      const network = ESCROW_NETWORKS[deployment.network];
+      if (
+        !network.assets.some(
+          (asset) =>
+            asset.symbol === "USDC" &&
+            asset.decimals === amount.decimals &&
+            (network.family === "evm"
+              ? asset.address.toLowerCase() === deployment.asset.toLowerCase()
+              : asset.address === deployment.asset),
+        )
+      )
+        fail("settlement", "requires the reviewed USDC asset on this network");
+    }
+  }
   validateApprovers(terms.approvers);
   const dispute = record(terms.dispute, "dispute");
   exactKeys(dispute, ["authority", "process"], "dispute");
@@ -319,6 +347,7 @@ export function assertSecurityBountyTerms(value, { repositories, reward }) {
  * are never read from later revisions.
  */
 export function assertSecurityBountyTransition(previous, next) {
+  assertEscrowTransition(previous?.settlement, next?.settlement);
   if (previous === undefined) return;
   if (next === undefined)
     throw new TypeError(

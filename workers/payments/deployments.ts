@@ -1,6 +1,7 @@
 import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import {
   assertEscrowPolicy,
+  assertSecurityEscrowPolicy,
   ESCROW_NETWORKS,
   type EscrowDeployment,
   paymentDeploymentRecord,
@@ -54,6 +55,7 @@ export interface RegistryDeployments {
 export async function loadRegistryPaymentDeployments(
   db: D1Database,
   networks: readonly PaymentNetwork[],
+  scope: "ordinary" | "security-bounty" = "ordinary",
 ): Promise<RegistryDeployments> {
   const row = await db
     .prepare(
@@ -61,6 +63,48 @@ export async function loadRegistryPaymentDeployments(
     )
     .first<{ items: string }>();
   if (!row) throw new Error("Project registry unavailable");
+  const inventory = JSON.parse(row.items) as { id: string; manifest: string }[];
+  // Sharing a vault would leak private amounts through ordinary counters.
+  // Validate both inventories even when this worker serves only one scope.
+  const vaultScopes = new Map<string, string>();
+  for (const project of inventory) {
+    let policies: ReadonlyArray<
+      readonly [
+        string,
+        { deployments: readonly EscrowDeployment[] } | undefined,
+      ]
+    >;
+    try {
+      const manifest = JSON.parse(project.manifest);
+      policies = [
+        [
+          "ordinary",
+          manifest.escrow === undefined
+            ? undefined
+            : assertEscrowPolicy(manifest.escrow),
+        ],
+        [
+          "security-bounty",
+          manifest.securityBounty?.settlement === undefined
+            ? undefined
+            : assertSecurityEscrowPolicy(manifest.securityBounty.settlement),
+        ],
+      ] as const;
+    } catch {
+      // The scoped read below reports malformed policy without dropping other projects.
+      continue;
+    }
+    for (const [scopeName, policy] of policies) {
+      for (const d of policy?.deployments ?? []) {
+        const key = `${d.network}:${d.programId ? d.vault : d.vault.toLowerCase()}`;
+        if (vaultScopes.has(key))
+          throw new Error(
+            "A payment vault cannot be shared between registry programs",
+          );
+        vaultScopes.set(key, `${project.id}:${scopeName}`);
+      }
+    }
+  }
   const selected = new Set<string>(networks);
   const deployments: PaymentDeployment[] = [];
   const failures: Error[] = [];
@@ -72,19 +116,28 @@ export async function loadRegistryPaymentDeployments(
       const manifest = JSON.parse(project.manifest) as {
         id?: unknown;
         escrow?: unknown;
+        securityBounty?: { settlement?: unknown };
       };
       if (manifest.id !== project.id)
         throw new Error("Project manifest identity mismatch");
-      if (manifest.escrow === undefined) continue;
-      for (const deployment of assertEscrowPolicy(manifest.escrow).deployments)
+      const policy =
+        scope === "security-bounty"
+          ? manifest.securityBounty?.settlement
+          : manifest.escrow;
+      if (policy === undefined) continue;
+      const approved =
+        scope === "security-bounty"
+          ? assertSecurityEscrowPolicy(policy)
+          : assertEscrowPolicy(policy);
+      for (const deployment of approved.deployments)
         if (selected.has(deployment.network))
           deployments.push(
             // The record keeps the manifest's null fields; the adapters treat
             // a null field as absent, as they did for the generated variable.
-            paymentDeploymentRecord(
-              project.id,
-              deployment,
-            ) as unknown as PaymentDeployment,
+            {
+              ...paymentDeploymentRecord(project.id, deployment),
+              ...(scope === "security-bounty" ? { payoutPolicy: scope } : {}),
+            } as unknown as PaymentDeployment,
           );
     } catch (error) {
       failures.push(

@@ -2,6 +2,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { privateKeyToAccount } from "viem/accounts";
 import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import type { PaymentExecutor } from "../../backend/payments/dispatch";
+import { securityPaymentDatabase } from "../../backend/security/payment-database";
 import { solanaBase58 } from "../../contracts/solana/adapter";
 import { readBoundedJson } from "../../src/lib/browser-json";
 import {
@@ -35,6 +36,7 @@ interface Namespace {
   get(id: unknown): Fetcher;
 }
 interface Environment {
+  PAYMENT_SCOPE?: "security-bounty";
   PAYMENTS_DB: D1Database;
   PAYMENT_DEPLOYMENTS: string;
   PAYMENT_RPC_URLS: string;
@@ -62,6 +64,10 @@ export class PaymentSignerJournal {
     private readonly env: Environment,
   ) {}
   async fetch(request: Request): Promise<Response> {
+    const database =
+      this.env.PAYMENT_SCOPE === "security-bounty"
+        ? securityPaymentDatabase(this.env.PAYMENTS_DB)
+        : this.env.PAYMENTS_DB;
     const pathname = new URL(request.url).pathname;
     if (
       request.method !== "POST" ||
@@ -97,7 +103,7 @@ export class PaymentSignerJournal {
             : retireUnsignedAttempt;
         return Response.json(
           await operation(
-            { PAYMENTS_DB: this.env.PAYMENTS_DB, JOURNAL: this.state.storage },
+            { PAYMENTS_DB: database, JOURNAL: this.state.storage },
             input,
           ),
         );
@@ -137,7 +143,7 @@ export class PaymentSignerJournal {
           }
         : undefined;
       const common = {
-        PAYMENTS_DB: this.env.PAYMENTS_DB,
+        PAYMENTS_DB: database,
         PAYMENT_DEPLOYMENTS: this.env.PAYMENT_DEPLOYMENTS,
         PAYMENT_RPC_URLS: this.env.PAYMENT_RPC_URLS,
         JOURNAL: this.state.storage,

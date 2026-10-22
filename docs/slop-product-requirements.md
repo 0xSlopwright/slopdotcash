@@ -1088,3 +1088,27 @@ The independent audit and counsel gate (#903) remains before the mainnet tasks
 acceptance scenario uses the approved 2% withdrawal fee, as well as the 2% payout
 fee. An older issue's 5% instruction does not override that decision. Neither a
 source merge nor this close-out direction is an MVP completion record.
+
+## Private bounty payment implementation decision — 22 October 2026
+
+For issue #910, the repository owner approved using the application's existing
+payment rails for private bounty awards. Reuse destination authorization,
+execution recovery and canonical finalized receipt verification. The bounty
+split is 75% researcher and 25% Slop, with no additional ordinary payout fee.
+Use the same finality rules as ordinary payments: unresolved sends remain held;
+only proved finalized failure permits a fresh attempt. A finalized successful
+payment is immutable and cannot be reversed by an application toggle.
+
+Case records, decisions, payment records, queues, counters and notices stay
+restricted. Use a separate bounty vault and private ledger so ordinary public
+balances, cycles and account views reveal no case-related amounts or deltas.
+The reporter accepts the selected rail's public chain visibility before a
+financial approver prepares the unsigned owner commitment. Public chain data
+includes actor number, addresses, timing and amounts; no case reference or report
+digest is submitted on chain. Existing USD-denominated obligations do not
+silently become USDC obligations.
+
+Umia is an example only. It is not an implementation dependency, a special
+payment route, or an activation target. This decision permits implementation
+and synthetic testing; it does not open a program, approve an award, deploy a
+mainnet contract, send a live payment or authorize public disclosure.

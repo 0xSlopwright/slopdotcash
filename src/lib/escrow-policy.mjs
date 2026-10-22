@@ -246,6 +246,15 @@ function keys(value, expected) {
     throw new TypeError("Invalid escrow policy fields");
 }
 export function assertEscrowPolicy(value) {
+  return validateEscrowPolicy(value, ESCROW_PAYOUT_FEE_BASIS_POINTS);
+}
+
+/** SEC-05: same reviewed rails, with the separately approved exact 75/25 split. */
+export function assertSecurityEscrowPolicy(value) {
+  return validateEscrowPolicy(value, 2500);
+}
+
+function validateEscrowPolicy(value, feeBasisPoints) {
   keys(value, [
     "schemaVersion",
     "effectiveCycle",
@@ -259,7 +268,7 @@ export function assertEscrowPolicy(value) {
     value.schemaVersion !== "1" ||
     !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(value.effectiveCycle) ||
     !isEscrowChain(value.chain) ||
-    value.feeBasisPoints !== ESCROW_PAYOUT_FEE_BASIS_POINTS ||
+    value.feeBasisPoints !== feeBasisPoints ||
     // Escrow v2 (PRD section 18): the unused-fund withdrawal fee equals the
     // 2% payout fee, floor(gross / 50) per withdrawal (#907). The contracts
     // enforce both.

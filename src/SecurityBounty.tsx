@@ -18,6 +18,7 @@ import {
 } from "react";
 import { SignInPanel } from "./Admin";
 import { Link } from "./Link";
+import { copyText } from "./lib/copy-text";
 import {
   ProjectApiError,
   projectApiRequest,
@@ -35,6 +36,49 @@ import {
   formatNullableUtc as formatUtc,
   NotFound,
 } from "./Presentation";
+
+function UnsignedPaymentRequest({ request }: { request: unknown }) {
+  const [feedback, setFeedback] = useState("");
+  const text = JSON.stringify(request, null, 2);
+  return (
+    <details>
+      <summary>Unsigned owner request</summary>
+      <p>
+        The vault owner reviews and signs this request in their wallet. Never
+        include case evidence in it.
+      </p>
+      <button
+        type="button"
+        onClick={() => {
+          void copyText(text).then(
+            () => setFeedback("Request copied."),
+            () => setFeedback("Copy failed. Select the request text below."),
+          );
+        }}
+      >
+        Copy unsigned request
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          const url = URL.createObjectURL(
+            new Blob([`${text}\n`], { type: "application/json" }),
+          );
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = "private-payment-request.json";
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          setFeedback("Request download started.");
+        }}
+      >
+        Download unsigned request
+      </button>
+      <p role="status">{feedback}</p>
+      <pre className="code-block">{text}</pre>
+    </details>
+  );
+}
 
 function amounts(terms: SecurityBountyTerms) {
   const split = securityBountySplit(terms.amount.grossMinor);
@@ -398,7 +442,15 @@ type SecurityCase = {
   relatedParty: "not-assessed" | "unrelated" | "related";
   relatedPartyReview: "not-applicable" | "pending" | "approved" | "refused";
   paymentState: string;
-  paymentRail: "unavailable";
+  paymentRail: "unavailable" | "escrow";
+  paymentNetworks: string[];
+  settlement: {
+    state: string;
+    network: string;
+    transactionId: string | null;
+    privacyNotice: string;
+    ownerRequest: Record<string, unknown> | null;
+  } | null;
   paymentDeadline: string | null;
   advisory?: { repository: string; ghsa: string; url: string };
   receiptState?: string;
@@ -1030,6 +1082,35 @@ function actionSpec(action: string, record: SecurityCase): ActionSpec | null {
           },
         ],
       };
+    case "consent-payment":
+    case "prepare-payment":
+      if (!record.paymentNetworks.length) return null;
+      return {
+        title:
+          action === "consent-payment"
+            ? "Accept payment visibility"
+            : "Prepare private payment",
+        submit:
+          action === "consent-payment"
+            ? "Accept visibility"
+            : "Prepare unsigned payment",
+        fields: [
+          {
+            name: "network",
+            label: "Payment network",
+            kind: "select",
+            options: record.paymentNetworks.map((n) => [n, n]),
+          },
+          {
+            name: "confirmation",
+            label:
+              action === "consent-payment"
+                ? "I understand that chain transactions reveal my GitHub actor number, wallet, time and amounts. My report stays private."
+                : `I approve ${caseMoney(record.terms)} on this network. The reporter must have accepted chain visibility. This prepares an unsigned owner request; it does not pay.`,
+            kind: "checkbox",
+          },
+        ],
+      };
     case "approve-award":
       return {
         title: "Approve the award",
@@ -1225,6 +1306,8 @@ const EVENT_LABELS: Record<string, string> = {
   appeal: "Appeal sent",
   "decide-appeal": "Appeal decided",
   "approve-award": "Award approved",
+  "consent-payment": "Reporter accepted chain visibility",
+  "prepare-payment": "Unsigned payment prepared",
   "decide-related-party": "Related-party award reviewed",
   "reserve-award": "Award reserved with raised capacity",
 };
@@ -1307,8 +1390,8 @@ function CaseDetail({
         ) : null}
         <Fact term="Payment">
           {record.paymentState === "rail-unavailable"
-            ? "Approved, not paid. No private payment rail is approved yet, so Slop cannot pay or mark this paid."
-            : "Not applicable"}
+            ? "Approved, not paid. Payment preparation requires a reviewed rail and the reporter’s consent."
+            : record.paymentState}
           {record.paymentDeadline
             ? ` Deadline ${formatUtc(record.paymentDeadline)}.`
             : ""}
@@ -1365,6 +1448,32 @@ function CaseDetail({
           </>
         ) : null}
       </dl>
+      {record.settlement ? (
+        <section aria-label="Private payment">
+          <p>{record.settlement.privacyNotice}</p>
+          {record.viewerRoles.includes("reporter") &&
+          record.settlement.state !== "paid" ? (
+            <p>
+              <Link href="/account#wallets">Review your payout wallet</Link>.
+              Wallet proof and the existing binding delay still apply.
+            </p>
+          ) : null}
+          <p>
+            Network: {record.settlement.network}. State:{" "}
+            {record.settlement.state}.
+          </p>
+          {record.settlement.transactionId ? (
+            <p>
+              Finalized transaction:{" "}
+              <code>{record.settlement.transactionId}</code>
+            </p>
+          ) : null}
+          {record.settlement.ownerRequest &&
+          record.viewerRoles.includes("financial") ? (
+            <UnsignedPaymentRequest request={record.settlement.ownerRequest} />
+          ) : null}
+        </section>
+      ) : null}
       {record.events && record.events.length > 0 ? (
         <details>
           <summary>History ({record.events.length})</summary>

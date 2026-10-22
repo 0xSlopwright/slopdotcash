@@ -33,6 +33,7 @@ import {
 import { assetTemplateSource } from "../../../backend/projects/skill-publication";
 import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata";
 import { handleSecurityApi } from "../../../backend/security/handler";
+import { securityPaymentDatabase } from "../../../backend/security/payment-database";
 import { handleSlopbotApi } from "../../../backend/slopbot/summary";
 import {
   type HistoricalValueBinding,
@@ -73,6 +74,10 @@ type Env = {
    * every binding closed.
    */
   PAYMENT_NETWORKS?: string;
+  SOLANA_IDENTITY_ATTESTER?: { fetch(request: Request): Promise<Response> };
+  SECURITY_SOLANA_IDENTITY_ATTESTER?: {
+    fetch(request: Request): Promise<Response>;
+  };
   PRIVATE_TRACES: R2Bucket;
   TRACE_AUTH_SECRET: string;
   X_CLIENT_ID?: string;
@@ -599,6 +604,11 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   if (new URL(context.request.url).pathname.startsWith("/api/v1/payments/"))
     return handlePaymentsApi(context.request, {
       db: context.env.SLOP_DB,
+      solanaAttester: context.env.SOLANA_IDENTITY_ATTESTER,
+      securityPayments: {
+        db: securityPaymentDatabase(context.env.SLOP_DB),
+        solanaAttester: context.env.SECURITY_SOLANA_IDENTITY_ATTESTER,
+      },
       // Cloudflare's per-colo edge cache; absent outside the Workers runtime.
       edgeCache: (
         globalThis as {
@@ -613,13 +623,18 @@ export async function onRequest(context: PagesContext): Promise<Response> {
         .filter((id) => /^[1-9][0-9]*$/.test(id)),
       // Binding consent names a vault recorded in the D1 project registry for
       // a served network; a vault of any other network is unknown.
-      paymentDeployments: async () =>
-        (
-          await loadRegistryPaymentDeployments(
+      paymentDeployments: async () => {
+        const networks = parsePaymentNetworks(context.env.PAYMENT_NETWORKS);
+        const [ordinary, security] = await Promise.all([
+          loadRegistryPaymentDeployments(context.env.SLOP_DB, networks),
+          loadRegistryPaymentDeployments(
             context.env.SLOP_DB,
-            parsePaymentNetworks(context.env.PAYMENT_NETWORKS),
-          )
-        ).deployments,
+            networks,
+            "security-bounty",
+          ),
+        ]);
+        return [...ordinary.deployments, ...security.deployments];
+      },
       ...([
         "https://staging.slop.cash",
         "https://slop-staging.pages.dev",

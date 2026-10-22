@@ -2,9 +2,10 @@ import { chainFamily } from "../../src/lib/escrow-policy.mjs";
 import {
   isBaseUnits,
   type PaymentChain,
+  type PayoutPolicy,
   payoutFee,
 } from "../../src/lib/payments/contracts";
-import type { D1TransactionalDatabase as D1Database } from "../d1";
+import type { D1TransactionalDatabase as D1Database, D1Statement } from "../d1";
 import {
   notifyAwardReserved,
   notifyPaymentPaid,
@@ -57,12 +58,24 @@ export interface PaymentChainAdapter {
     obligationId: string;
   }): Promise<FinalizedPaymentEvent>;
 }
+export interface PaymentLedgerPolicy {
+  payoutPolicy: PayoutPolicy;
+  authorize: (
+    event: FinalizedPaymentEvent,
+    asset: { asset_address: string; asset_decimals: number },
+  ) => Promise<void>;
+  notices: (
+    event: FinalizedPaymentEvent,
+    now: string,
+  ) => Promise<D1Statement[]>;
+}
 /** Only an adapter result may enter the ledger. Public handlers cannot call this with a body. */
 export async function indexPaymentEvent(
   db: D1Database,
   adapter: PaymentChainAdapter,
   input: Parameters<PaymentChainAdapter["verifyFinalized"]>[0],
   now: string,
+  policy?: PaymentLedgerPolicy,
 ): Promise<void> {
   const event = await adapter.verifyFinalized(input);
   if (
@@ -73,7 +86,8 @@ export async function indexPaymentEvent(
     !/^[1-9]\d*$/.test(event.githubUserId) ||
     !isBaseUnits(event.grossMicro) ||
     event.grossMicro === "0" ||
-    payoutFee(BigInt(event.grossMicro)).toString() !== event.feeMicro ||
+    payoutFee(BigInt(event.grossMicro), policy?.payoutPolicy).toString() !==
+      event.feeMicro ||
     (BigInt(event.grossMicro) - BigInt(event.feeMicro)).toString() !==
       event.netMicro ||
     !/^[a-f0-9]{64}$/.test(event.sourceDigest)
@@ -88,6 +102,7 @@ export async function indexPaymentEvent(
     .bind(event.projectId, event.network, event.vault)
     .first<{ asset_address: string; asset_decimals: number }>();
   if (!asset) throw new Error("Finalized vault asset snapshot required");
+  await policy?.authorize(event, asset);
   const existing = await db
     .prepare("SELECT * FROM payment_obligations WHERE id=?")
     .bind(event.obligationId)
@@ -210,7 +225,8 @@ export async function indexPaymentEvent(
         )
         .bind(now, event.obligationId),
     );
-    statements.push(notifyAwardReserved(db, event.obligationId, now));
+    if (!policy)
+      statements.push(notifyAwardReserved(db, event.obligationId, now));
   } else {
     statements.push(
       db
@@ -233,10 +249,12 @@ export async function indexPaymentEvent(
         )
         .bind(event.obligationId, event.transactionId),
     );
-    statements.push(
-      notifyPaymentPaid(db, event.obligationId, event.transactionId, now),
-    );
+    if (!policy)
+      statements.push(
+        notifyPaymentPaid(db, event.obligationId, event.transactionId, now),
+      );
   }
+  if (policy) statements.push(...(await policy.notices(event, now)));
   const result = await db.batch(statements);
   if (result.some((r) => !r.success))
     throw new Error("Payment event transaction failed");

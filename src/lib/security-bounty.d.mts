@@ -1,3 +1,4 @@
+import type { SecurityEscrowPolicy } from "./escrow-policy.mjs";
 /** Types for the public terms of a private security bounty program. */
 
 export type SecurityProgramStatus =
@@ -20,6 +21,7 @@ export interface SecurityBountyAmount {
 }
 
 export interface SecurityBountyTerms {
+  readonly settlement?: SecurityEscrowPolicy;
   readonly version: "1";
   readonly status: SecurityProgramStatus;
   readonly rewardMode: "bounty-only" | "separate";
