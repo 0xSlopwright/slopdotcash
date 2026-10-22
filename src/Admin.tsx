@@ -788,6 +788,7 @@ function ProjectEditor({
         <label>
           Other manifest fields
           <textarea
+            className="admin-manifest"
             onChange={(event) => setText(event.target.value)}
             spellCheck={false}
             value={text}

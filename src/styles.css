@@ -4617,7 +4617,7 @@ small {
   font-weight: 400;
 }
 
-.admin-editor textarea {
+.admin-editor .admin-manifest {
   min-height: 360px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
