@@ -91,7 +91,16 @@ test.beforeAll(async () => {
       const expectedIdentity = web3.Keypair.fromSecretKey(
         Uint8Array.from(JSON.parse(readFileSync(identityPath, "utf8"))),
       ).publicKey.toBase58();
-      if ((await connection.getIdentity()).identity !== expectedIdentity)
+      const response = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getIdentity" }),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (
+        !response.ok ||
+        (await response.json()).result?.identity !== expectedIdentity
+      )
         throw new Error("The RPC endpoint belongs to another validator");
       break;
     } catch {
