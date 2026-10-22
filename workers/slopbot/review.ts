@@ -204,6 +204,14 @@ type Context = {
   diffTruncated: boolean;
 };
 
+async function publicRepository(
+  github: GitHubClient,
+  job: Job,
+): Promise<Repo | null> {
+  const repo = await github.get<Repo>(`/repos/${job.owner}/${job.repo}`);
+  return repo?.private === false && repo.id === job.repositoryId ? repo : null;
+}
+
 async function loadContext(
   env: ReviewEnv,
   job: Extract<Job, { kind: "review" }>,
@@ -213,11 +221,12 @@ async function loadContext(
     env.SLOPBOT_APP_PRIVATE_KEY,
     job.installationId,
   );
-  const repo = await github.get<Repo>(`/repos/${job.owner}/${job.repo}`);
+  const repo = await publicRepository(github, job);
+  if (repo === null) return null;
   const issue = await github.get<Issue>(
     `/repos/${job.owner}/${job.repo}/issues/${job.number}`,
   );
-  if (repo === null || issue === null) return null;
+  if (issue === null) return null;
   const branch = await github.get<{ commit: { sha: string } }>(
     `/repos/${job.owner}/${job.repo}/branches/${encodeURIComponent(repo.default_branch)}`,
   );
@@ -926,15 +935,12 @@ export async function recordHumanSignal(
     env.SLOPBOT_APP_PRIVATE_KEY,
     job.installationId,
   );
-  const repo = await github.get<Repo>(`/repos/${job.owner}/${job.repo}`);
+  const repo = await publicRepository(github, job);
+  if (repo === null) return "ignored";
   const issue = await github.get<Issue>(
     `/repos/${job.owner}/${job.repo}/issues/${job.number}`,
   );
-  if (
-    repo === null ||
-    issue === null ||
-    String(job.senderId) === env.SLOPBOT_APP_USER_ID
-  )
+  if (issue === null || String(job.senderId) === env.SLOPBOT_APP_USER_ID)
     return "ignored";
   const pull =
     job.itemKind === "pull_request"

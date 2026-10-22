@@ -1,12 +1,13 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { findProject } from "../../src/lib/projects.mjs";
 import { sqliteD1 } from "../../tests/sqlite-d1";
+import type { Job } from "./contracts";
 import worker from "./index";
 
-test("appeal queue retries unconfirmed labels and acknowledges confirmed retry once", async () => {
+test("Slopbot queue confirms appeal labels and refuses private or replaced repositories", async () => {
   const { db, sqlite } = sqliteD1(
     readdirSync(new URL("../../migrations/", import.meta.url))
       .filter((p) => p.endsWith(".sql"))
@@ -32,7 +33,13 @@ test("appeal queue retries unconfirmed labels and acknowledges confirmed retry o
     "INSERT INTO project_repositories(repository_key,project_id) VALUES (?,?)",
     [`${owner}/${repo}`.toLowerCase(), project.id],
   );
+  sqlite.run(
+    "INSERT INTO slopbot_installations(installation_id, account_id, account_login, account_type, created_at) VALUES (1,77,?,'Organization',?)",
+    [owner, at],
+  );
   let labelStatus = 404;
+  let repositoryPrivate = false;
+  let repositoryId = Number(project.authority.repositoryId);
   const calls: string[] = [];
   const server = Bun.serve({
     port: 0,
@@ -57,8 +64,8 @@ test("appeal queue retries unconfirmed labels and acknowledges confirmed retry o
         });
       if (path === `/repos/${owner}/${repo}`)
         return Response.json({
-          id: Number(project.authority.repositoryId),
-          private: false,
+          id: repositoryId,
+          private: repositoryPrivate,
           default_branch: "main",
           owner: { login: owner, id: 77, type: "Organization" },
         });
@@ -79,13 +86,18 @@ test("appeal queue retries unconfirmed labels and acknowledges confirmed retry o
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
     publicKeyEncoding: { type: "spki", format: "pem" },
   });
+  const queued: Job[] = [];
   const env = {
     SLOPBOT_DB: db,
     SLOPBOT_APP_ID: "1",
     SLOPBOT_APP_PRIVATE_KEY: privateKey,
     SLOPBOT_APP_USER_ID: "999",
     SLOPBOT_WEBHOOK_SECRET: "local-only",
-    SLOPBOT_QUEUE: { async send() {} },
+    SLOPBOT_QUEUE: {
+      async send(job: Job) {
+        queued.push(job);
+      },
+    },
   };
   const outcomes = [];
   try {
@@ -131,6 +143,74 @@ test("appeal queue retries unconfirmed labels and acknowledges confirmed retry o
       { status: 302, ack: 0, retry: 1 },
       { status: 200, ack: 1, retry: 0 },
     ]);
+    for (const scope of ["private", "replaced"] as const) {
+      repositoryPrivate = scope === "private";
+      repositoryId =
+        Number(project.authority.repositoryId) + (scope === "replaced" ? 1 : 0);
+      for (const kind of ["appeal", "review"] as const) {
+        const before = calls.length;
+        let acknowledged = false;
+        await worker.queue(
+          {
+            messages: [
+              {
+                body: {
+                  kind,
+                  deliveryId: scope,
+                  installationId: 1,
+                  repositoryId: Number(project.authority.repositoryId),
+                  owner,
+                  repo,
+                  itemKind: "issue",
+                  number: 1,
+                  senderId: 42,
+                },
+                ack() {
+                  acknowledged = true;
+                },
+                retry() {
+                  assert.fail("out-of-scope job must be ignored");
+                },
+              },
+            ],
+          },
+          env,
+        );
+        assert.equal(acknowledged, true);
+        assert.deepEqual(calls.slice(before), [
+          "POST /app/installations/1/access_tokens",
+          `GET /repos/${owner}/${repo}`,
+        ]);
+      }
+    }
+    for (const visibility of [true, undefined, false]) {
+      const body = JSON.stringify({
+        action: "opened",
+        installation: { id: 1 },
+        repository: {
+          id: Number(project.authority.repositoryId),
+          name: repo,
+          private: visibility,
+          owner: { login: owner },
+        },
+        sender: { id: 42, type: "User" },
+        issue: { number: 1 },
+      });
+      const response = await worker.fetch(
+        new Request("https://slopbot.example/github/webhook", {
+          method: "POST",
+          body,
+          headers: {
+            "x-github-event": "issues",
+            "x-github-delivery": `scope-${visibility}`,
+            "x-hub-signature-256": `sha256=${createHmac("sha256", env.SLOPBOT_WEBHOOK_SECRET).update(body).digest("hex")}`,
+          },
+        }),
+        env,
+      );
+      assert.equal(response.status, 202);
+      assert.equal(queued.length, visibility === false ? 1 : 0);
+    }
   } finally {
     globalThis.fetch = nativeFetch;
     server.stop(true);
