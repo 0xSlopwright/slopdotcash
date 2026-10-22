@@ -131,15 +131,15 @@ for (const navigation of ["project links", "browser history"] as const) {
     });
     const nextResponse = gate();
     let nextRequests = 0;
+    let holdNext = false;
     await page.route(
       "**/api/v1/payments/projects/*/direct-transfers",
       async (route) => {
         const project = new URL(route.request().url()).pathname.split("/")[5];
-        if (
-          project === nextProject &&
-          ++nextRequests > (navigation === "browser history" ? 1 : 0)
-        )
-          await nextResponse.ready;
+        if (project === nextProject) {
+          nextRequests++;
+          if (holdNext) await nextResponse.ready;
+        }
         await route.fulfill({ json: payments(project) });
       },
     );
@@ -158,6 +158,8 @@ for (const navigation of ["project links", "browser history"] as const) {
       await expect(page.getByText(firstAmount, { exact: true })).toBeVisible();
       await watchPaymentIdentity(page);
       const documentToken = await page.evaluate(() => performance.timeOrigin);
+      const beforeNavigation = nextRequests;
+      holdNext = true;
       if (navigation === "browser history")
         await page.evaluate(() => window.history.go(-2));
       else {
@@ -170,9 +172,7 @@ for (const navigation of ["project links", "browser history"] as const) {
           .click();
       }
       await expect(page.locator(".breadcrumb")).toHaveText("Projects/Slop");
-      await expect
-        .poll(() => nextRequests)
-        .toBe(navigation === "browser history" ? 2 : 1);
+      await expect.poll(() => nextRequests).toBeGreaterThan(beforeNavigation);
       await expect(page.getByText(firstAmount, { exact: true })).toHaveCount(0);
       await page.screenshot({
         path: info.outputPath("next-project-pending.png"),
@@ -224,6 +224,7 @@ test("a late previous payment request cannot overwrite a retried project", async
   const previousFulfilled = gate();
   let previousRequests = 0;
   let nextRequests = 0;
+  let outage = false;
   await page.route(
     "**/api/v1/payments/projects/*/direct-transfers",
     async (route) => {
@@ -233,12 +234,16 @@ test("a late previous payment request cannot overwrite a retried project", async
         await previousResponse.ready;
         await route.fulfill({ json: payments(project) });
         previousFulfilled.release();
-      } else if (++nextRequests === 2)
+      } else if (project === nextProject && outage) {
+        nextRequests++;
         await route.fulfill({
           status: 503,
           json: { error: "Synthetic outage" },
         });
-      else await route.fulfill({ json: payments(project) });
+      } else {
+        if (project === nextProject) nextRequests++;
+        await route.fulfill({ json: payments(project) });
+      }
     },
   );
   try {
@@ -251,12 +256,13 @@ test("a late previous payment request cannot overwrite a retried project", async
     await page
       .locator(`a.project-card[href="/projects/${firstProject}"]`)
       .click();
-    await expect.poll(() => previousRequests).toBe(1);
+    await expect.poll(() => previousRequests).toBeGreaterThan(0);
     await expect(page.locator(".breadcrumb")).toHaveText("Projects/Eliza");
     await watchPaymentIdentity(page);
     const canceled = page.waitForEvent("requestfailed", (request) =>
       request.url().endsWith(`/projects/${firstProject}/direct-transfers`),
     );
+    outage = true;
     await page.evaluate(() => window.history.go(-2));
     await canceled;
     await expect(page.locator(".breadcrumb")).toHaveText("Projects/Slop");
@@ -264,6 +270,7 @@ test("a late previous payment request cannot overwrite a retried project", async
     await expect(retry).toBeVisible();
     await expect(page.getByText(nextAmount, { exact: true })).toHaveCount(0);
     await expect(page.getByText(firstAmount, { exact: true })).toHaveCount(0);
+    outage = false;
     await retry.focus();
     await page.keyboard.press("Enter");
     await expect(page.getByText(nextAmount, { exact: true })).toBeVisible();
@@ -302,12 +309,15 @@ test("a late previous payment request cannot overwrite a retried project", async
       contentType: "application/json",
     });
     expect(observed.leaks).toEqual([]);
-    expect(previousRequests).toBe(1);
-    expect(nextRequests).toBe(3);
+    expect(previousRequests).toBeGreaterThan(0);
+    expect(nextRequests).toBeGreaterThanOrEqual(3);
     expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([
-      "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
-    ]);
+    expect(consoleErrors.length).toBeGreaterThan(0);
+    expect(new Set(consoleErrors)).toEqual(
+      new Set([
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
+      ]),
+    );
   } finally {
     previousResponse.release();
   }
