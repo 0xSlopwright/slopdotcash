@@ -92,7 +92,8 @@ export async function reviewOwnerAwards(input: {
     String(repositoryIdentity.owner?.id) !== steward.actorId ||
     repositoryIdentity.owner?.node_id !== steward.nodeId ||
     repositoryIdentity.owner?.type !== steward.type ||
-    repositoryIdentity.owner?.login?.toLowerCase() !== steward.login.toLowerCase()
+    repositoryIdentity.owner?.login?.toLowerCase() !==
+      steward.login.toLowerCase()
   )
     throw new OwnerAwardReviewError(
       409,
