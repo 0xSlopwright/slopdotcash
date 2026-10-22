@@ -23,6 +23,7 @@ import {
   sameRewardAsset,
 } from "../../src/lib/reward-asset.mjs";
 import { type ApiError, fail } from "../api-error";
+import { pathParts } from "../api-path";
 import { readJsonObject, sha256Hex } from "../trace/validation";
 import type { VettingClearance } from "../vetting/persistence";
 import {
@@ -1407,12 +1408,6 @@ function isProjectRoute(parts: string[]): boolean {
     (parts[0] === "admin" &&
       (parts[1] === "projects" || parts[1] === "project-applications"))
   );
-}
-
-function pathParts(request: Request): string[] {
-  const path = new URL(request.url).pathname;
-  if (!path.startsWith("/api/v1/")) return [];
-  return path.slice("/api/v1/".length).split("/").filter(Boolean);
 }
 
 /** Returns null when the path belongs to another API module. */

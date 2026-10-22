@@ -5,7 +5,7 @@ import {
   isExactProviderIdentifier,
 } from "./model-identity";
 import { findProject, type ProjectId } from "./projects.mjs";
-import { isRecord } from "./record-validation";
+import { isRecord } from "./record-validation.mjs";
 import type { ProjectRunReceipt } from "./run-receipts";
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;

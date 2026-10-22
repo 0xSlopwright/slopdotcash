@@ -1,3 +1,4 @@
+import { pathParts } from "../api-path";
 /**
  * Community project security vetting API (PRD VET-01 to VET-08, MVP-12).
  *
@@ -430,12 +431,6 @@ async function serviceResult(
   const stored = await deps.vetting.getAssessment(result.assessmentId);
   if (stored === null) fail(500, "internal_error", "Assessment vanished");
   return json(200, { assessment: summarize(stored) });
-}
-
-function pathParts(request: Request): string[] {
-  const path = new URL(request.url).pathname;
-  if (!path.startsWith("/api/v1/")) return [];
-  return path.slice("/api/v1/".length).split("/").filter(Boolean);
 }
 
 /** Returns null when the path belongs to another API module. */

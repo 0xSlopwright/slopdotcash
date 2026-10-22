@@ -1,3 +1,4 @@
+import { readRecord as asObject } from "../src/lib/record-validation.mjs";
 /**
  * Defines the fail-closed artifact, ledger, and network checks shared by local
  * and production evidence capture. Network I/O stays injected so the contract
@@ -57,13 +58,6 @@ function artifactContentType(path) {
 
 function sha256(contents) {
   return createHash("sha256").update(contents).digest("hex");
-}
-
-function asObject(value, path) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an object`);
-  }
-  return value;
 }
 
 function asNonEmptyArray(value, path) {

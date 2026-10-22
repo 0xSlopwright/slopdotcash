@@ -202,7 +202,7 @@ function opportunityPointsWithinCap(
   return opportunity.potentialPoints;
 }
 
-function cycleBounds(cycleId: string): { from: number; to: number } {
+export function cycleBounds(cycleId: string): { from: number; to: number } {
   if (!/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(cycleId)) {
     throw new TypeError(`Invalid reward cycle id: ${cycleId}`);
   }

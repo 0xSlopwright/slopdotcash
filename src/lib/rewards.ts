@@ -7,7 +7,7 @@ export type {
   WalletProof,
 } from "./wallet-proof";
 
-import { exactKeys, readRecord as record } from "./record-validation";
+import { exactKeys, readRecord as record } from "./record-validation.mjs";
 /**
  * Validates public reward-allocation and external-share manifests.
  * All monetary values remain canonical integer minor units and every approved

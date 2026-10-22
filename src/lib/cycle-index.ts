@@ -7,7 +7,7 @@ export type {
   WalletProof as CycleWalletProof,
 } from "./wallet-proof";
 
-import { readRecord } from "./record-validation";
+import { readRecord } from "./record-validation.mjs";
 /**
  * Defines the small browser-safe index of immutable reward-cycle artifacts.
  * Detailed allocations and transaction receipts remain separate public JSON

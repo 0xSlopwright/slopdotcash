@@ -1,4 +1,4 @@
-import { exactKeys, isRecord } from "./record-validation";
+import { exactKeys, isRecord } from "./record-validation.mjs";
 /**
  * Defines the public, device-signed project-run receipt embedded in a GitHub
  * contribution footer. The receipt proves stable bytes and device continuity;

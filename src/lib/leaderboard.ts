@@ -41,7 +41,7 @@ import type {
   WorkItemModelStatus,
   WorkItemSelection,
 } from "./leaderboard-types";
-import { isRecord } from "./record-validation";
+import { isRecord } from "./record-validation.mjs";
 
 export type {
   AttributionAssessment,

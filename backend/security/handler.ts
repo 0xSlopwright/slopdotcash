@@ -15,6 +15,7 @@ import {
   securityBountySplit,
 } from "../../src/lib/security-bounty.mjs";
 import { type ApiError, fail } from "../api-error";
+import { pathParts } from "../api-path";
 import type {
   D1Result,
   D1QueryStatement as D1Statement,
@@ -2010,12 +2011,6 @@ async function intakeReadiness(
     },
     `public, max-age=0, s-maxage=${INTAKE_READINESS_TTL_SECONDS}`,
   );
-}
-
-function pathParts(request: Request): string[] {
-  const path = new URL(request.url).pathname;
-  if (!path.startsWith("/api/v1/")) return [];
-  return path.slice("/api/v1/".length).split("/").filter(Boolean);
 }
 
 /** Returns null when the path belongs to another API module. */

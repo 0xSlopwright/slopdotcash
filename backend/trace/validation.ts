@@ -1,6 +1,6 @@
-import { isRecord } from "../../src/lib/record-validation";
+import { isRecord } from "../../src/lib/record-validation.mjs";
 
-export { isRecord } from "../../src/lib/record-validation";
+export { isRecord } from "../../src/lib/record-validation.mjs";
 
 import {
   isExactClientIdentifier,

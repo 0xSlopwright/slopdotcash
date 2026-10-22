@@ -22,6 +22,7 @@ import {
   type WalletChain,
 } from "../../src/lib/wallets";
 import { type ApiError, fail } from "../api-error";
+import { pathParts } from "../api-path";
 import { canonicalWalletClaimDigests } from "../payments/wallet-registration";
 import { signApiToken, verifyApiToken } from "./auth";
 import {
@@ -198,12 +199,6 @@ async function ensureOwner(
   // Do not reveal whether another contributor's run exists.
   if (run.githubId !== actor.githubId) fail(404, "not_found", "Run not found");
   return run;
-}
-
-function pathParts(request: Request): string[] {
-  const path = new URL(request.url).pathname;
-  if (!path.startsWith("/api/v1/")) return [];
-  return path.slice("/api/v1/".length).split("/").filter(Boolean);
 }
 
 function publicBrowserResponse(
