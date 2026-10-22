@@ -281,11 +281,17 @@ jobs:
         with:
           name: slop-source-${{ needs.source.outputs.sha }}
           path: dist
+      - name: Install Playwright system dependencies
+        run: |
+          # Run the timeout as root so it can terminate apt and its children.
+          # Do not retry an interrupted package transaction on the same runner.
+          sudo timeout --signal=TERM --kill-after=15s 10m \
+            "$(command -v node)" ./node_modules/playwright/cli.js install-deps chromium firefox
       - name: Install Playwright Chromium and Firefox
         run: |
           set -euo pipefail
           for attempt in 1 2; do
-            if timeout --signal=TERM 10m ./node_modules/.bin/playwright install --with-deps chromium firefox; then
+            if timeout --signal=TERM --kill-after=15s 10m ./node_modules/.bin/playwright install chromium firefox; then
               exit 0
             fi
             if [ "$attempt" -eq 2 ]; then
