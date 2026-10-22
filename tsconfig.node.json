@@ -60,6 +60,7 @@
     "src/lib/score-records.ts",
     "src/lib/run-receipts.ts",
     "src/lib/wallets.ts",
+    "src/lib/wallet-proof.ts",
     "src/lib/leaderboard-types.ts",
     "src/lib/reviewer-leaders.ts",
     "src/lib/profiles.ts",

@@ -1,3 +1,12 @@
+import type { WalletProof as CycleWalletProof } from "./wallet-proof";
+
+export type {
+  GithubIssueWalletProof as CycleGithubIssueWalletProof,
+  ProfileReadmeWalletProof as CycleProfileReadmeWalletProof,
+  SlopDatabaseWalletProof as CycleSlopDatabaseWalletProof,
+  WalletProof as CycleWalletProof,
+} from "./wallet-proof";
+
 import { readRecord } from "./record-validation";
 /**
  * Defines the small browser-safe index of immutable reward-cycle artifacts.
@@ -16,7 +25,6 @@ import {
   isWalletAddress,
   isWalletChain,
   WALLET_CLAIM_REPOSITORY,
-  type WalletChain,
 } from "./wallets";
 
 export const CYCLE_INDEX_SCHEMA_VERSION = "1" as const;
@@ -25,41 +33,6 @@ export interface CycleFileReference {
   sha256: string;
   url: string;
 }
-
-export interface CycleProfileReadmeWalletProof {
-  address: string;
-  chain: WalletChain;
-  observedAt: string;
-  sourceCommit: string;
-  sourceUrl: string;
-}
-
-export interface CycleGithubIssueWalletProof {
-  address: string;
-  chain: WalletChain;
-  observedAt: string;
-  sourceActorId: string;
-  sourceBodySha256: string;
-  sourceIssueId: string;
-  sourceIssueNumber: number;
-  sourceUpdatedAt: string;
-  sourceUrl: string;
-}
-
-export interface CycleSlopDatabaseWalletProof {
-  address: string;
-  chain: WalletChain;
-  observedAt: string;
-  sourceActorId: string;
-  sourceClaimId: string;
-  sourceRecordSha256: string;
-  sourceUrl: string;
-}
-
-export type CycleWalletProof =
-  | CycleProfileReadmeWalletProof
-  | CycleGithubIssueWalletProof
-  | CycleSlopDatabaseWalletProof;
 
 export type CycleIndexState =
   | "closed-no-awards"

@@ -1,3 +1,12 @@
+import type { SlopDatabaseWalletProof, WalletProof } from "./wallet-proof";
+
+export type {
+  GithubIssueWalletProof,
+  ProfileReadmeWalletProof,
+  SlopDatabaseWalletProof,
+  WalletProof,
+} from "./wallet-proof";
+
 import { exactKeys, readRecord as record } from "./record-validation";
 /**
  * Validates public reward-allocation and external-share manifests.
@@ -64,41 +73,6 @@ export type AllocationState =
 export type AllocationHold =
   | { kind: "review-lapsed"; lapsedAt: string }
   | { kind: "unsafe-destination"; sourceCommit: string };
-
-export interface ProfileReadmeWalletProof {
-  address: string;
-  chain: SettlementNetwork;
-  observedAt: string;
-  sourceCommit: string;
-  sourceUrl: string;
-}
-
-export interface GithubIssueWalletProof {
-  address: string;
-  chain: SettlementNetwork;
-  observedAt: string;
-  sourceActorId: string;
-  sourceBodySha256: string;
-  sourceIssueId: string;
-  sourceIssueNumber: number;
-  sourceUpdatedAt: string;
-  sourceUrl: string;
-}
-
-export interface SlopDatabaseWalletProof {
-  address: string;
-  chain: SettlementNetwork;
-  observedAt: string;
-  sourceActorId: string;
-  sourceClaimId: string;
-  sourceRecordSha256: string;
-  sourceUrl: string;
-}
-
-export type WalletProof =
-  | ProfileReadmeWalletProof
-  | GithubIssueWalletProof
-  | SlopDatabaseWalletProof;
 
 /** Public evidence from a contributor-signed GitHub commit, never hold authority. */
 export interface UnsafeDestinationReport {
