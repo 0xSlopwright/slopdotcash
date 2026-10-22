@@ -47,35 +47,45 @@ function UnsignedPaymentRequest({ request }: { request: unknown }) {
         The vault owner reviews and signs this request in their wallet. Never
         include case evidence in it.
       </p>
-      <button
-        type="button"
-        onClick={() => {
-          void copyText(text).then(
-            () => setFeedback("Request copied."),
-            () => setFeedback("Copy failed. Select the request text below."),
-          );
-        }}
-      >
-        Copy unsigned request
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          const url = URL.createObjectURL(
-            new Blob([`${text}\n`], { type: "application/json" }),
-          );
-          const link = document.createElement("a");
-          link.href = url;
-          link.download = "private-payment-request.json";
-          link.click();
-          setTimeout(() => URL.revokeObjectURL(url), 1000);
-          setFeedback("Request download started.");
-        }}
-      >
-        Download unsigned request
-      </button>
+      <div className="inbox-actions">
+        <button
+          className="text-button"
+          type="button"
+          onClick={() => {
+            void copyText(text).then(
+              () => setFeedback("Request copied."),
+              () => setFeedback("Copy failed. Select the request text below."),
+            );
+          }}
+        >
+          Copy unsigned request
+        </button>
+        <button
+          className="text-button"
+          type="button"
+          onClick={() => {
+            const url = URL.createObjectURL(
+              new Blob([`${text}\n`], { type: "application/json" }),
+            );
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "private-payment-request.json";
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            setFeedback("Request download started.");
+          }}
+        >
+          Download unsigned request
+        </button>
+      </div>
       <p role="status">{feedback}</p>
-      <pre className="code-block">{text}</pre>
+      <textarea
+        className="security-payment-request"
+        aria-label="Unsigned transaction request"
+        readOnly
+        rows={9}
+        value={text}
+      />
     </details>
   );
 }

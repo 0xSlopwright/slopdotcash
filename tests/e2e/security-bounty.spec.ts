@@ -1568,6 +1568,7 @@ test("private settlement requires visibility consent and produces an unsigned re
     viewport: test.info().project.use.viewport,
     recordVideo: { dir: test.info().outputPath("settlement-video") },
   });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const page = await context.newPage();
   const errors = observe(page);
   await signIn(page, TOKENS["reporter-a"]);
@@ -1623,6 +1624,15 @@ test("private settlement requires visibility consent and produces an unsigned re
     page.getByRole("region", { name: "Private payment" }),
   ).toContainText("Waiting for the vault owner");
   await page.getByText("Unsigned owner request", { exact: true }).click();
+  await page.getByRole("button", { name: "Copy unsigned request" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Request copied." }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download unsigned request" }).focus();
   await page.keyboard.press("Enter");
@@ -1645,6 +1655,16 @@ test("private settlement requires visibility consent and produces an unsigned re
     path: test.info().outputPath("private-settlement-zoom.png"),
     fullPage: true,
   });
+  // The existing site supports a minimum layout width of 320 CSS pixels.
+  // At 200% on a 320px viewport it scrolls to that minimum; the request
+  // must not expand the page beyond it.
+  expect(
+    await page.evaluate(
+      () =>
+        document.documentElement.scrollWidth <=
+        Math.max(window.innerWidth, 640) + 1,
+    ),
+  ).toBe(true);
   expect(errors).toEqual([]);
   await context.close();
 });
