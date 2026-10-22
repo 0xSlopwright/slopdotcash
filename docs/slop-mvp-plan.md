@@ -207,8 +207,11 @@ failed before browser tests because a timed-out privileged package installer kep
 its lock. #1006 fixes cleanup on development. Development runs
 [39804797146](https://github.com/SlopDotCash/slopdotcash/actions/runs/39804797146)
 and [39819912288](https://github.com/SlopDotCash/slopdotcash/actions/runs/39819912288)
-still exceeded the ten-minute dependency-download deadline. Extend that bounded
-installation window while retaining privileged cleanup and no package retry.
+still exceeded the ten-minute dependency-download deadline. PR run
+[39847362140](https://github.com/SlopDotCash/slopdotcash/actions/runs/39847362140)
+also exceeded twenty minutes while the Azure package mirror stalled. Use the
+primary Ubuntu archive with the existing signing keys, suites and components.
+Retain the bounded installation window, privileged cleanup and no package retry.
 Require successful exact-head browser lanes and staging acceptance before
 promotion. Do not treat a previous production deployment as evidence for newer
 source.
