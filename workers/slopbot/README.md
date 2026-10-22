@@ -768,3 +768,21 @@ initial denial made no request; revocation or a guard error before fallback made
 one request and retained its usage and provider cost. The allowed control made
 both requests. Responses were local schema-invalid fixtures, not real inference
 or provider acceptance. No paid model request or score publication occurred.
+
+### Pending closed-outcome requests
+
+Migration `0050_slopbot_value_requests.sql` retains identifier-only requests for
+signed `pull_request.closed` deliveries from active registered repositories.
+Both merged and unmerged closures can carry useful review outcomes. Intake does
+not decide value from the webhook. It returns `valuation pending` only after
+the immutable request is stored. Delivery retries cannot change its identities.
+The assessment consumer remains incomplete; a receipt does not prove a model
+call, a score or a completed rollout. Source collection, installation authority,
+budget reservation, leases, current-source publication and retry disposition
+must run before these requests can be completed.
+
+The actual HTTP webhook and SQLite migrations pass a local replay for signature
+rejection, accepted closure, duplicate delivery, wrong repository identity and
+changed retry identity. The request survives an unavailable queue without using
+it. The replay writes one request and zero costs or score records. No live
+webhook or provider acceptance is claimed.

@@ -10,6 +10,7 @@ import { registeredRepository } from "./registry";
 import { type ReviewEnv, recordHumanSignal, reviewItem } from "./review";
 import { dispatchSpendAlert } from "./spend-alerts";
 import { valueHistory } from "./value-journal";
+import { recordValueRequest } from "./value-requests";
 import { workUnitHistory } from "./value-work-unit-journal";
 import { readWebhookBody } from "./webhook-body";
 
@@ -282,6 +283,29 @@ export default {
       return new Response("duplicate delivery", { status: 202 });
     }
     try {
+      // A closed outcome must survive queue outages and process restarts.
+      // This receipt is pending assessment, never a successful valuation.
+      if (
+        event === "pull_request" &&
+        payload.action === "closed" &&
+        payload.installation &&
+        payload.repository &&
+        payload.pull_request
+      ) {
+        const request = {
+          deliveryId,
+          installationId: payload.installation.id,
+          repositoryId: payload.repository.id,
+          owner: payload.repository.owner.login,
+          repo: payload.repository.name,
+          number: payload.pull_request.number,
+        };
+        if (await registeredRepository(env.SLOPBOT_DB, request)) {
+          await recordValueRequest(env.SLOPBOT_DB, request);
+          await store.completeDelivery(env.SLOPBOT_DB, deliveryId);
+          return new Response("valuation pending", { status: 202 });
+        }
+      }
       const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
       if (job !== null) {
         if (!(await registeredRepository(env.SLOPBOT_DB, job))) {
