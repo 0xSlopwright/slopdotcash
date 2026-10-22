@@ -1112,3 +1112,10 @@ Umia is an example only. It is not an implementation dependency, a special
 payment route, or an activation target. This decision permits implementation
 and synthetic testing; it does not open a program, approve an award, deploy a
 mainnet contract, send a live payment or authorize public disclosure.
+
+Any registered user may submit a report. Each project's designated maintainers
+review that project's reports through its current program roles. A reporter
+cannot review their own report, and technical and financial decisions remain
+independent. The owner authorized `lalalune` and `SlopDotCash/slopdotcash` for
+synthetic hosted testing. A single account can test reporting and refusal of
+self-approval; it cannot prove a completed independent approval workflow.

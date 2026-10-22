@@ -41,6 +41,7 @@ Roles are computed on every request from the session and the current project
 revision, so a revision or a revoked session removes access at once.
 
 - Reporter: their own cases, never another report, root cause or triager.
+- Any registered user may report; project membership is not required.
 - Technical approver (security maintainer): every case of the project.
 - Triager: only assigned cases; triage, next action and remediation.
 - Financial approver: only cases with a reserved, exhausted or approved
