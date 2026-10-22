@@ -2123,6 +2123,11 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
           Edit project proposal <span className="draft-badge">Draft</span>
         </h1>
         <p>{project.name} · A Slop admin reviews every change.</p>
+        {project.escrow && (
+          <p>
+            <Link href={`/projects/${project.slug}/awards`}>Review awards</Link>
+          </p>
+        )}
       </div>
       <form
         className="proposal-form"

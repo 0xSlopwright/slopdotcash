@@ -48,6 +48,7 @@
     "src/lib/evaluator-awards.ts",
     "src/lib/external-sources.ts",
     "src/lib/sha256.ts",
+    "src/lib/source-repository.ts",
     "src/lib/fenced-record.ts",
     "src/lib/wallet-possession.ts",
     "src/lib/solana-signature.ts",

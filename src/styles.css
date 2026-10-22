@@ -4876,3 +4876,39 @@ small {
   flex: 0 0 auto;
   margin-top: 0.3em;
 }
+
+.owner-awards-page form {
+  display: grid;
+  gap: 1rem;
+  justify-items: start;
+  margin-block: 1.5rem 2rem;
+}
+
+.owner-awards-page form label {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.owner-award-list {
+  display: grid;
+  gap: 1.5rem;
+  padding-inline-start: 1.25rem;
+  margin-block: 1.5rem 2rem;
+}
+
+.owner-award-list li {
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.owner-award-list dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.5rem 1rem;
+  max-width: 36rem;
+}
+
+.owner-award-list dd {
+  margin: 0;
+}
