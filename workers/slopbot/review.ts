@@ -720,6 +720,8 @@ async function runReview(
       result.calls,
       billable,
     );
+    if (result.blocked)
+      throw new Error("Model call blocked by the live project registry");
     if (result.verdict === null) {
       throw new Error("every model route step failed");
     }
@@ -764,6 +766,8 @@ async function runReview(
         second.calls,
         billable,
       );
+      if (second.blocked)
+        throw new Error("Model call blocked by the live project registry");
       confirm = second.servedBy;
       if (
         second.verdict?.category === category &&

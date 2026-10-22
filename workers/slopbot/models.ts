@@ -62,11 +62,18 @@ export async function runRoute(
   verdict: Verdict | null;
   calls: CallRecord[];
   servedBy: CallRecord | null;
+  blocked: boolean;
 }> {
   const calls: CallRecord[] = [];
   for (const [index, step] of route.entries()) {
     // Recheck after a failed provider call, before starting the fallback.
-    if (!(await mayCall())) break;
+    try {
+      if (!(await mayCall()))
+        return { verdict: null, calls, servedBy: null, blocked: true };
+    } catch {
+      // Return prior usage so the caller records it before retrying the job.
+      return { verdict: null, calls, servedBy: null, blocked: true };
+    }
     const record: CallRecord = {
       routeStep: index + 1,
       provider: step.provider,
@@ -93,7 +100,7 @@ export async function runRoute(
       }
       record.outcome = "ok";
       calls.push(record);
-      return { verdict, calls, servedBy: record };
+      return { verdict, calls, servedBy: record, blocked: false };
     } catch (error) {
       record.failure =
         error instanceof Error
@@ -102,7 +109,7 @@ export async function runRoute(
       calls.push(record);
     }
   }
-  return { verdict: null, calls, servedBy: null };
+  return { verdict: null, calls, servedBy: null, blocked: false };
 }
 
 type CallResult = {
