@@ -1,6 +1,5 @@
 /** Complete repository connection census. Never uses GitHub's capped search. */
 
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { readBoundedJson } from "../src/lib/browser-json";
@@ -13,6 +12,7 @@ import {
 } from "../src/lib/points";
 import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
 import type { ConnectionPage as Page } from "./github-pagination";
+import { resolveGitHubToken } from "./github-token";
 
 const query = `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){id createdAt pullRequests(first:100,after:$after,states:MERGED,orderBy:{field:CREATED_AT,direction:ASC}){totalCount pageInfo{hasNextPage endCursor} nodes{id number url mergedAt author{__typename login ... on User{id}} reviews(first:100){totalCount pageInfo{hasNextPage endCursor} nodes{id url state submittedAt body author{__typename login ... on User{id}} comments{totalCount}}}}}} rateLimit{remaining resetAt}}`;
 const reviewQuery = `query($id:ID!,$after:String){node(id:$id){... on PullRequest{reviews(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id url state submittedAt body author{__typename login ... on User{id}} comments{totalCount}}}}} rateLimit{remaining resetAt}}`;
@@ -45,10 +45,11 @@ type VerificationHistory = {
     pullRequests: Pick<Page<Pick<PR, "id" | "mergedAt">>, "nodes" | "pageInfo">;
   };
 };
-async function github<T>(queryText: string, variables: object): Promise<T> {
-  const token = execFileSync("gh", ["auth", "token"], {
-    encoding: "utf8",
-  }).trim();
+async function github<T>(
+  token: string,
+  queryText: string,
+  variables: object,
+): Promise<T> {
   const response = await fetch("https://api.github.com/graphql", {
     method: "POST",
     headers: {
@@ -83,6 +84,7 @@ function user(actor: Actor | null): actor is Actor & { id: string } {
   );
 }
 if (import.meta.main) {
+  const token = TARGET_REPOSITORIES.length ? await resolveGitHubToken() : "";
   const now = new Date().toISOString();
   let journal = emptyPointsJournal(now);
   const report: object[] = [];
@@ -96,7 +98,7 @@ if (import.meta.main) {
     const awards: PointAward[] = [];
     const sourceHash = createHash("sha256");
     do {
-      const data = await github<RepositoryHistory>(query, {
+      const data = await github<RepositoryHistory>(token, query, {
         owner: repo.owner,
         name: repo.name,
         after: cursor,
@@ -119,7 +121,7 @@ if (import.meta.main) {
         let reviewCursor = pr.reviews.pageInfo.endCursor;
         let more = pr.reviews.pageInfo.hasNextPage;
         while (more) {
-          const result = await github<ReviewHistory>(reviewQuery, {
+          const result = await github<ReviewHistory>(token, reviewQuery, {
             id: pr.id,
             after: reviewCursor,
           });
@@ -182,6 +184,7 @@ if (import.meta.main) {
     let verifyCursor: string | null = null;
     do {
       const result: VerificationHistory = await github<VerificationHistory>(
+        token,
         `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){pullRequests(first:100,after:$after,states:MERGED,orderBy:{field:CREATED_AT,direction:ASC}){pageInfo{hasNextPage endCursor} nodes{id mergedAt}}}rateLimit{remaining resetAt}}`,
         { owner: repo.owner, name: repo.name, after: verifyCursor },
       );

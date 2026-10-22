@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
 import {
@@ -10,6 +9,7 @@ import { isHistoricalRepositoryId } from "../src/lib/projects.mjs";
 import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
 import { GitHubGraphqlClient } from "./generate-leaderboard";
 import type { ConnectionPage } from "./github-pagination";
+import { resolveGitHubToken } from "./github-token";
 import {
   type CensusRequest,
   collectProfileIssues,
@@ -51,10 +51,7 @@ async function publish(path: string, value: ProfileIndex) {
   await rename(`${path}.tmp`, path);
 }
 if (values.live) {
-  const token =
-    process.env.GITHUB_TOKEN ??
-    process.env.GH_TOKEN ??
-    execFileSync("gh", ["auth", "token"], { encoding: "utf8" }).trim();
+  const token = await resolveGitHubToken();
   if (!values.previous)
     throw Error(
       "Live profile collection requires --previous with the last published census (or the reviewed seed for the first publication)",
