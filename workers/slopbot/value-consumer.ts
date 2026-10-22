@@ -165,9 +165,16 @@ export async function consumePendingValueRequest(env: ValueConsumerEnv) {
        r.repository_id AS repositoryId,r.owner,r.repo,r.pull_request_number AS number
      FROM slopbot_value_requests r LEFT JOIN slopbot_value_processing p
        ON p.delivery_id=r.delivery_id
-     WHERE p.delivery_id IS NULL
+     WHERE (p.delivery_id IS NULL
        OR (p.state='waiting' AND p.retry_at<=?1)
-       OR (p.state='running' AND p.lease_until<=?1)
+       OR (p.state='running' AND p.lease_until<=?1))
+       AND NOT EXISTS (
+         SELECT 1 FROM slopbot_value_processing busy
+         JOIN slopbot_value_requests other ON other.delivery_id=busy.delivery_id
+         WHERE busy.state='running' AND busy.lease_until>?1
+           AND other.repository_id=r.repository_id
+           AND other.pull_request_number=r.pull_request_number
+       )
      ORDER BY r.received_at,r.delivery_id LIMIT 1`,
   )
     .bind(new Date().toISOString())

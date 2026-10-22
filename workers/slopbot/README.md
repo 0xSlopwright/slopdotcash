@@ -889,3 +889,14 @@ publishes one local record; another delivery returns current without inference.
 Missing configuration, historical cutoff and open-source paths make no model
 call. Totals: one model-response fixture, one cost receipt, one journal row and
 zero contributor charges. This is not live provider or production acceptance.
+
+Claims also exclude another live delivery for the same immutable repository ID
+and PR number. The scheduler skips those busy sources so a repeated webhook
+does not block other available work. A completed request does not suppress a
+later event: its consumer re-reads the current source and journal.
+
+A concurrent two-delivery replay reproduced two provider requests and two cost
+receipts for one journal row before this repair. Afterward it makes one request,
+stores one receipt and one journal row, and the other delivery returns current
+when retried. The file-backed claim replay also confirms that a different PR
+can acquire a lease while the first remains active.

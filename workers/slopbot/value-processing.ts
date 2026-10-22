@@ -28,6 +28,14 @@ export async function claimValueRequest(
        (delivery_id,claim_token,lease_until,state,updated_at)
        SELECT ?1,?2,?3,'running',?4
        WHERE EXISTS(SELECT 1 FROM slopbot_value_requests WHERE delivery_id=?1)
+       AND NOT EXISTS (
+         SELECT 1 FROM slopbot_value_processing busy
+         JOIN slopbot_value_requests other ON other.delivery_id=busy.delivery_id
+         JOIN slopbot_value_requests requested ON requested.delivery_id=?1
+         WHERE busy.delivery_id<>?1 AND busy.state='running' AND busy.lease_until>?4
+           AND other.repository_id=requested.repository_id
+           AND other.pull_request_number=requested.pull_request_number
+       )
        ON CONFLICT(delivery_id) DO UPDATE SET claim_token=?2,lease_until=?3,
          state='running',outcome=NULL,retry_at=NULL,updated_at=?4
        WHERE (slopbot_value_processing.state='running' AND slopbot_value_processing.lease_until<=?4)
