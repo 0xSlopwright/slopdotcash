@@ -108,6 +108,12 @@ export async function storeVaultSnapshot(
   }
   const blockTime = new Date(totals.blockTime).toISOString();
   const keys = [...CUMULATIVE, ...CURRENT];
+  // Compare canonical decimal text exactly, including values above SQLite int64.
+  // These write-time guards also cover refreshes that read the same prior row.
+  const monotonicCounters = CUMULATIVE.map((key) => {
+    const column = COLUMNS[key];
+    return `(length(excluded.${column}) > length(vault_snapshots.${column}) OR (length(excluded.${column}) = length(vault_snapshots.${column}) AND excluded.${column} >= vault_snapshots.${column}))`;
+  }).join(" AND ");
   const result = await db
     .prepare(
       `INSERT INTO vault_snapshots(project_id,network,chain,vault,asset_address,asset_decimals,${keys.map((k) => COLUMNS[k]).join(",")},block_number,block_time,observed_at) VALUES(${Array(
@@ -116,7 +122,7 @@ export async function storeVaultSnapshot(
         .fill("?")
         .join(
           ",",
-        )}) ON CONFLICT(project_id,network,vault) DO UPDATE SET ${keys.map((k) => `${COLUMNS[k]}=excluded.${COLUMNS[k]}`).join(",")},block_number=excluded.block_number,block_time=excluded.block_time,observed_at=excluded.observed_at WHERE CAST(excluded.block_number AS INTEGER)>=CAST(vault_snapshots.block_number AS INTEGER)`,
+        )}) ON CONFLICT(project_id,network,vault) DO UPDATE SET ${keys.map((k) => `${COLUMNS[k]}=excluded.${COLUMNS[k]}`).join(",")},block_number=excluded.block_number,block_time=excluded.block_time,observed_at=excluded.observed_at WHERE CAST(excluded.block_number AS INTEGER)>=CAST(vault_snapshots.block_number AS INTEGER) AND excluded.asset_address=vault_snapshots.asset_address AND excluded.asset_decimals=vault_snapshots.asset_decimals AND excluded.chain=vault_snapshots.chain AND ${monotonicCounters}`,
     )
     .bind(
       deployment.projectId,
@@ -132,6 +138,17 @@ export async function storeVaultSnapshot(
     )
     .run();
   if (!result.success) throw new Error("Vault snapshot write failed");
+  if (result.meta?.changes !== 1) {
+    const latest = await db
+      .prepare(
+        "SELECT block_number FROM vault_snapshots WHERE project_id=? AND network=? AND vault=?",
+      )
+      .bind(deployment.projectId, deployment.network, deployment.vault)
+      .first<{ block_number: string }>();
+    if (latest && BigInt(totals.blockNumber) < BigInt(latest.block_number))
+      return "older";
+    throw new Error("Vault snapshot conflicts with stored counters or asset");
+  }
   return "stored";
 }
 
