@@ -4,7 +4,7 @@
  * snapshot generation for every collected repository, and it must not be
  * read as a decision. A maintainer's malformed record still fails closed.
  */
-import { expect, setSystemTime, test } from "bun:test";
+import { afterAll, expect, setSystemTime, test } from "bun:test";
 import type {
   GitHubActor,
   LeaderboardInput,
@@ -21,6 +21,7 @@ const HEAD = "a".repeat(40);
 
 // The scorer refuses a snapshot generated in the future of the wall clock.
 setSystemTime(new Date(AT));
+afterAll(() => setSystemTime());
 
 function actor(login: string, id: string): GitHubActor {
   return {
