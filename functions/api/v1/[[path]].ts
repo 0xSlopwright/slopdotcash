@@ -16,6 +16,10 @@ import {
   type PaymentsDependencies,
 } from "../../../backend/payments/handler";
 import {
+  OwnerAwardReviewError,
+  reviewOwnerAwards,
+} from "../../../backend/payments/owner-review";
+import {
   handlePointsApi,
   sessionGithubActor,
 } from "../../../backend/points/handler";
@@ -617,6 +621,29 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       securityPayments: {
         db: securityPaymentDatabase(context.env.SLOP_DB),
         solanaAttester: context.env.SECURITY_SOLANA_IDENTITY_ATTESTER,
+      },
+      ownerAwardReview: async (projectId, cycleId, actor) => {
+        const project = await projectPersistence.getProject(projectId);
+        if (!project)
+          throw new OwnerAwardReviewError(404, "Project not found.");
+        const result = await reviewOwnerAwards({
+          project,
+          cycleId,
+          actor,
+          token: context.env.SLOP_GITHUB_READ_TOKEN,
+          now: new Date(),
+        });
+        const current = await projectPersistence.getProject(projectId);
+        if (
+          !current ||
+          current.revision !== project.revision ||
+          current.manifestSha256 !== project.manifestSha256
+        )
+          throw new OwnerAwardReviewError(
+            409,
+            "The project changed during review. Reload its current awards.",
+          );
+        return result;
       },
       solanaFundingConfig: async (projectId, network, vault) => {
         const networks = parsePaymentNetworks(context.env.PAYMENT_NETWORKS);

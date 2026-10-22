@@ -222,3 +222,18 @@ and an isolated Anvil chain. It exposes `/fixture`, the account login read, and
 the actual payments API. Wallet registration and signing trigger real local
 binding, payout, and finality indexing. This is local product evidence, not a
 real GitHub OAuth or public testnet deployment result.
+
+### Owner award review
+
+`GET /api/v1/payments/projects/:projectId/awards/:YYYY-MM` requires the current
+project steward's site session and current GitHub maintainer permission. The
+repository's immutable ID must match the D1 policy. The endpoint loads frozen
+cycle artifacts from a pinned commit of the canonical repository and uses the
+same proposal reconstruction and publication-review checks as the owner CLI.
+It rechecks the D1 revision before returning the result.
+
+The response separates published decisions from verified review completion.
+Missing decisions, the 14-day review period, and unavailable approval evidence
+cannot produce a verified review. Held and excluded awards remain visible.
+This read route neither approves awards nor reserves or transfers funds.
+`reviewVerified` does not establish current funding or wallet authority.

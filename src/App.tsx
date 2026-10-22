@@ -96,6 +96,7 @@ import { fetchWithDeadline, readBoundedJson } from "./lib/browser-json";
 
 export { readBoundedJson } from "./lib/browser-json";
 
+const OwnerAwardsPage = lazy(() => import("./OwnerAwards"));
 const ProjectProposalPage = lazy(() => import("./ProjectProposalPage"));
 const AdminPage = lazy(() => import("./Admin"));
 const InboxPage = lazy(() => import("./Inbox"));
@@ -139,6 +140,7 @@ interface Route {
     | "funding-project"
     | "home"
     | "how-it-works"
+    | "owner-awards"
     | "manage-project"
     | "new-project"
     | "profile"
@@ -179,6 +181,12 @@ function internalRoute(pathname: string): Route {
     return { kind: "vetting-evidence" };
   if (segments.length === 1 && segments[0] === "security")
     return { kind: "security-cases" };
+  if (
+    segments.length === 3 &&
+    segments[0] === "projects" &&
+    segments[2] === "awards"
+  )
+    return { kind: "owner-awards", projectId: segments[1] };
   // The admin email deep-links one application at /admin/applications/<id>.
   if (
     segments[0] === "admin" &&
@@ -279,6 +287,7 @@ function useRoute(): Route {
 
 const PRIVATE_PAGE_TITLES = new Map<Route["kind"], string>([
   ["admin", "Admin"],
+  ["owner-awards", "Review awards"],
   ["account", "Account"],
   ["login", "Log in"],
   ["earnings", "Your payouts"],
@@ -294,7 +303,12 @@ function routeHead(route: Route): { title: string; path: string | null } {
   if (privateTitle) {
     return {
       title: pageTitle(privateTitle),
-      path: route.kind === "security-cases" ? "/security" : `/${route.kind}`,
+      path:
+        route.kind === "owner-awards"
+          ? null
+          : route.kind === "security-cases"
+            ? "/security"
+            : `/${route.kind}`,
     };
   }
   if (route.kind === "profile") {
@@ -1091,6 +1105,9 @@ function ProjectPaymentHistory({
         <Link href={`/projects/${project.slug}/manage`}>
           Draft a project update
         </Link>
+        {project.escrow && (
+          <Link href={`/projects/${project.slug}/awards`}>Review awards</Link>
+        )}
       </div>
       {directState.status === "error" && !externalPrize ? (
         <p role="status">
@@ -2904,6 +2921,7 @@ function AppContent({ route }: { route: Route }) {
     "how-it-works",
     "new-project",
     "manage-project",
+    "owner-awards",
     "security-cases",
     "vetting-evidence",
     "security-program",
@@ -2960,6 +2978,13 @@ function AppContent({ route }: { route: Route }) {
     const project = findProject(route.projectId ?? "");
     content = project ? (
       <SecurityProgramPage project={project} />
+    ) : (
+      <NotFound title="Project not found" />
+    );
+  } else if (route.kind === "owner-awards") {
+    const project = findProject(route.projectId ?? "");
+    content = project ? (
+      <OwnerAwardsPage key={project.id} project={project} />
     ) : (
       <NotFound title="Project not found" />
     );

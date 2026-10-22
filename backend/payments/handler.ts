@@ -27,6 +27,7 @@ import { parseVaultAmount } from "../../src/lib/payments/vault-amount";
 import { isWalletAddress, isWalletChain } from "../../src/lib/wallets";
 import { sha256Hex } from "../../workers/identity/crypto";
 import type { D1TransactionalDatabase as D1Database } from "../d1";
+import { OwnerAwardReviewError, type reviewOwnerAwards } from "./owner-review";
 import {
   buildPaymentWalletMessage,
   canonicalEvmSignature,
@@ -38,6 +39,11 @@ import { projectVaultSnapshots } from "./vault-snapshots";
 import { registerPaymentWallet } from "./wallet-registration";
 
 export interface PaymentsDependencies {
+  ownerAwardReview?: (
+    projectId: string,
+    cycleId: string,
+    actor: { githubId: string; githubLogin: string },
+  ) => Promise<Awaited<ReturnType<typeof reviewOwnerAwards>>>;
   db: D1Database;
   now?: () => Date;
   /** Additional trusted deployment origins; never sourced from request input. */
@@ -347,6 +353,31 @@ export async function handlePaymentsApi(
       .bind(await sha256Hex(token), now)
       .first<{ github_id: string; login: string }>();
     if (!member) return json(401, { error: "session_expired" });
+    const ownerAwardsRoute =
+      /^\/projects\/([a-z0-9][a-z0-9-]*)\/awards\/(\d{4}-(?:0[1-9]|1[0-2]))$/.exec(
+        path,
+      );
+    if (ownerAwardsRoute && request.method === "GET") {
+      if (!deps.ownerAwardReview)
+        return json(503, { error: "owner_review_unavailable" });
+      try {
+        return json(
+          200,
+          await deps.ownerAwardReview(
+            ownerAwardsRoute[1],
+            ownerAwardsRoute[2],
+            { githubId: member.github_id, githubLogin: member.login },
+          ),
+        );
+      } catch (error) {
+        if (error instanceof OwnerAwardReviewError)
+          return json(error.status, {
+            error: "owner_review_unavailable",
+            message: error.message,
+          });
+        throw error;
+      }
+    }
     if (path === "/admin/wallet-proposals" && request.method === "POST") {
       if (!deps.operatorIds?.includes(member.github_id))
         return json(403, { error: "operator_required" });
