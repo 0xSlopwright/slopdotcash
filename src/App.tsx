@@ -570,7 +570,11 @@ function ProjectCard({ project }: { project: ProjectDefinition }) {
         </p>
         {monthlyPoolPointsOnly(project.reward) ? (
           <small className="project-money-state">Points only</small>
-        ) : project.reward.kind === "monthly-pool" ? null : (
+        ) : project.reward.kind === "monthly-pool" ? (
+          project.reward.paymentMode !== "enabled" ? (
+            <small className="project-money-state">Payments not active</small>
+          ) : null
+        ) : (
           <small className="project-money-state">External prize</small>
         )}
         {project.reward.reviewBudget ? (
@@ -596,9 +600,16 @@ function ProjectRow({ project }: { project: ProjectDefinition }) {
         <span className="project-row-name">
           <strong>{project.name}</strong>
           <small>{project.description}</small>
+          {project.status === "paused" ? (
+            <small className="project-money-state">Paused</small>
+          ) : project.reward.kind === "monthly-pool" &&
+            !monthlyPoolPointsOnly(project.reward) &&
+            project.reward.paymentMode !== "enabled" ? (
+            <small className="project-money-state">Payments not active</small>
+          ) : null}
         </span>
         <span className="project-row-amount">
-          {project.status === "paused" ? "Paused" : amount}
+          {project.status === "paused" ? null : amount}
         </span>
         <ChevronRight aria-hidden="true" />
       </Link>
@@ -1294,6 +1305,8 @@ function ProjectPage({
             <div>
               <h1>
                 {project.status === "paused" ||
+                (project.reward.kind === "monthly-pool" &&
+                  project.reward.paymentMode !== "enabled") ||
                 monthlyPoolPointsOnly(project.reward) ? (
                   project.name
                 ) : headlineAction ? (
@@ -1318,7 +1331,7 @@ function ProjectPage({
                 {monthlyPoolPointsOnly(project.reward)
                   ? "Points only · no cash rewards"
                   : project.reward.kind === "monthly-pool"
-                    ? `${project.reward.monthlyCapDisplay} monthly target · ${formatMicroUsdc(project.reward.committedMinor)} committed · payouts ${project.reward.paymentMode}`
+                    ? `${project.reward.monthlyCapDisplay} monthly target · ${formatMicroUsdc(project.reward.committedMinor)} committed · ${project.reward.paymentMode === "enabled" ? "payments enabled" : "payments not active"}`
                     : "External prize · organizer decides awards"}
               </p>
               {project.status === "paused" ? (
