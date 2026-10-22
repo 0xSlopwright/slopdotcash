@@ -786,3 +786,16 @@ rejection, accepted closure, duplicate delivery, wrong repository identity and
 changed retry identity. The request survives an unavailable queue without using
 it. The replay writes one request and zero costs or score records. No live
 webhook or provider acceptance is claimed.
+
+Review submissions, edits and dismissals, inline comment changes, PR discussion
+changes, and PR reopen/edit/synchronize events also retain a valuation request.
+The processor must re-read GitHub before deciding whether a closed accepted
+outcome exists; an open PR event is not permission to award implementation
+credit. Ordinary issue comments do not enter this intake. Appeals, human reopen
+signals and ordinary review jobs keep their existing queue behavior. A failed
+queue send leaves the delivery retryable while the valuation receipt remains
+idempotent.
+
+An extended signed HTTP/SQLite replay retained 14 expected source-change
+requests, compared with one before this repair. It preserved five queue sends
+including an appeal retry after a failed send, with zero score or cost rows.

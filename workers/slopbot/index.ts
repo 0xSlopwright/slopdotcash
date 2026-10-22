@@ -33,6 +33,13 @@ const REVIEW_ACTIONS: Record<string, ReadonlySet<string>> = {
   ]),
 };
 
+const VALUE_ACTIONS: Record<string, ReadonlySet<string>> = {
+  pull_request: new Set(["closed", "reopened", "edited", "synchronize"]),
+  pull_request_review: new Set(["submitted", "edited", "dismissed"]),
+  pull_request_review_comment: new Set(["created", "edited", "deleted"]),
+  issue_comment: new Set(["created", "edited", "deleted"]),
+};
+
 type Payload = {
   action?: string;
   installation?: {
@@ -283,14 +290,21 @@ export default {
       return new Response("duplicate delivery", { status: 202 });
     }
     try {
-      // A closed outcome must survive queue outages and process restarts.
+      // Changes to accepted outcomes and their reviews must survive restarts.
       // This receipt is pending assessment, never a successful valuation.
+      let valuationPending = false;
+      const valueNumber =
+        event === "issue_comment"
+          ? payload.issue?.pull_request
+            ? payload.issue.number
+            : undefined
+          : payload.pull_request?.number;
       if (
-        event === "pull_request" &&
-        payload.action === "closed" &&
+        payload.action &&
+        VALUE_ACTIONS[event]?.has(payload.action) &&
         payload.installation &&
         payload.repository &&
-        payload.pull_request
+        valueNumber !== undefined
       ) {
         const request = {
           deliveryId,
@@ -298,12 +312,11 @@ export default {
           repositoryId: payload.repository.id,
           owner: payload.repository.owner.login,
           repo: payload.repository.name,
-          number: payload.pull_request.number,
+          number: valueNumber,
         };
         if (await registeredRepository(env.SLOPBOT_DB, request)) {
           await recordValueRequest(env.SLOPBOT_DB, request);
-          await store.completeDelivery(env.SLOPBOT_DB, deliveryId);
-          return new Response("valuation pending", { status: 202 });
+          valuationPending = true;
         }
       }
       const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
@@ -317,9 +330,16 @@ export default {
         await env.SLOPBOT_QUEUE.send(job);
       }
       await store.completeDelivery(env.SLOPBOT_DB, deliveryId);
-      return new Response(job === null ? "ignored" : "queued", {
-        status: 202,
-      });
+      return new Response(
+        job === null
+          ? valuationPending
+            ? "valuation pending"
+            : "ignored"
+          : "queued",
+        {
+          status: 202,
+        },
+      );
     } catch (error) {
       await store.releaseDelivery(env.SLOPBOT_DB, deliveryId);
       throw error;
