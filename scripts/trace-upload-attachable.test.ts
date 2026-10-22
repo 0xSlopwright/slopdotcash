@@ -5,13 +5,11 @@
  * bytes are retained with no D1 object, upload, or audit row, invisible to
  * every audited read path, while the client was told the upload failed.
  */
-import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { signApiToken } from "../backend/trace/auth";
 import {
   CloudflareTracePersistence,
-  type D1Database,
   type R2Bucket,
 } from "../backend/trace/cloudflare-persistence";
 import {
@@ -19,41 +17,11 @@ import {
   type TraceApiDependencies,
 } from "../backend/trace/handler";
 import { sha256Hex } from "../backend/trace/validation";
+import { sqliteD1 } from "../tests/sqlite-d1";
 
 const SECRET = "trace-upload-test-secret-0123456789abcdef-0123456789";
 const ACTOR = "777001";
 const T0 = Date.parse("2026-10-19T00:00:00.000Z");
-
-function database(sql: Database): D1Database {
-  const statement = (
-    query: string,
-    args: unknown[] = [],
-  ): ReturnType<D1Database["prepare"]> => ({
-    bind: (...values: unknown[]) => statement(query, values),
-    async first<T>() {
-      return (sql.query(query).get(...(args as string[])) ?? null) as T | null;
-    },
-    async run() {
-      const result = sql.query(query).run(...(args as string[]));
-      return { success: true, meta: { changes: result.changes } };
-    },
-  });
-  return {
-    prepare: statement,
-    async batch(statements) {
-      sql.exec("BEGIN IMMEDIATE");
-      try {
-        const results = [];
-        for (const item of statements) results.push(await item.run());
-        sql.exec("COMMIT");
-        return results;
-      } catch (error) {
-        sql.exec("ROLLBACK");
-        throw error;
-      }
-    },
-  };
-}
 
 /** A create-only bucket that records every object it was asked to keep. */
 function r2() {
@@ -92,16 +60,16 @@ function r2() {
 }
 
 function api() {
-  const sql = new Database(":memory:");
-  sql.exec("PRAGMA foreign_keys=ON");
-  for (const file of readdirSync("migrations")
-    .filter((name) => name.endsWith(".sql"))
-    .sort())
-    sql.exec(readFileSync(`migrations/${file}`, "utf8"));
+  const { db, sqlite } = sqliteD1(
+    readdirSync(new URL("../migrations/", import.meta.url))
+      .filter((name) => name.endsWith(".sql"))
+      .sort(),
+  );
+  sqlite.exec("PRAGMA foreign_keys=ON");
   const store = r2();
   let counter = 0;
   const deps: TraceApiDependencies = {
-    persistence: new CloudflareTracePersistence(database(sql), store.bucket),
+    persistence: new CloudflareTracePersistence(db, store.bucket),
     authSecret: SECRET,
     operatorGithubIds: new Set<string>(),
     now: () => new Date(T0),
