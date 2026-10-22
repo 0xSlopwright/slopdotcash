@@ -96,6 +96,8 @@ try {
   }, signer.address);
   await page.goto("http://127.0.0.1:18549/earnings");
   await page.getByRole("heading", { name: "Your payouts" }).waitFor();
+  await page.getByRole("link", { name: "Manage payout wallets" }).click();
+  await page.getByRole("heading", { name: "Account", exact: true }).waitFor();
   await page.getByRole("button", { name: "Connect Base wallet" }).waitFor();
   await page
     .getByRole("button", { name: "Connect Robinhood Chain wallet" })
@@ -114,6 +116,10 @@ try {
   await page
     .getByText("Base wallet confirmed.", { exact: false })
     .waitFor({ timeout: 60000 });
+  await page
+    .getByRole("navigation", { name: "Account sections" })
+    .getByRole("link", { name: "Payouts", exact: true })
+    .click();
   for (let attempt = 0; attempt < 15; attempt++) {
     await page.getByRole("button", { name: "Refresh payments" }).click();
     await page
@@ -138,6 +144,7 @@ try {
     paid.payments[0].state !== "paid"
   )
     throw new Error("Wrong payment result");
+  await page.getByRole("link", { name: "Manage payout wallets" }).click();
   // The same signer registers a separate Robinhood Chain claim from the
   // keyboard; the Base lineage and its paid receipt stay unchanged.
   await page
@@ -166,6 +173,11 @@ try {
     both.balances.some((b) => b.chain === "robinhood")
   )
     throw new Error("Robinhood Chain wallet registration changed Base state");
+  await page
+    .getByRole("navigation", { name: "Account sections" })
+    .getByRole("link", { name: "Payouts", exact: true })
+    .click();
+  await page.getByText("Paid, verified on chain", { exact: true }).waitFor();
   await page.screenshot({
     path: "evidence/payout-desktop-paid.png",
     fullPage: true,

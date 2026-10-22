@@ -293,6 +293,120 @@ describe("project registry API", () => {
     expect((await call("GET", "projects/missing")).status).toBe(404);
   });
 
+  test("a maintainer update reaches the review queue and appends only its expected revision", async () => {
+    control = () => ({
+      state: "proven",
+      reason: "Verified repository maintainer",
+    });
+    await listProject();
+    const current = await persistence.getProject("open-registry");
+    if (!current) throw new Error("Missing listed project");
+    const manifest = {
+      ...current.manifest,
+      headline: "Updated scope for the open registry",
+    };
+    const body = {
+      manifest,
+      expectedRevision: 1,
+      reason: "Clarify the accepted project scope",
+    };
+    const submitted = await call(
+      "POST",
+      "project-applications",
+      "applicant",
+      body,
+    );
+    const submissionBody = await submitted.json();
+    expect({
+      status: submitted.status,
+      body: submissionBody.error ?? null,
+    }).toEqual({ status: 201, body: null });
+    const { application } = submissionBody;
+    const mine = await call("GET", "project-applications/mine", "applicant");
+    expect((await mine.json()).applications).toContainEqual(
+      expect.objectContaining({
+        id: application.id,
+        expectedRevision: 1,
+        status: "pending",
+      }),
+    );
+    expect((await persistence.getProject("open-registry"))?.revision).toBe(1);
+    const approved = await call(
+      "POST",
+      `admin/project-applications/${application.id}/approve`,
+      "admin",
+      {},
+    );
+    expect(approved.status).toBe(200);
+    expect(await persistence.getProject("open-registry")).toMatchObject({
+      revision: 2,
+      manifest: { headline: manifest.headline, status: "paused" },
+    });
+    expect(await persistence.getApplication(application.id)).toMatchObject({
+      status: "approved",
+    });
+    expect(
+      (
+        await call(
+          "POST",
+          `admin/project-applications/${application.id}/approve`,
+          "admin",
+          {},
+        )
+      ).status,
+    ).toBe(409);
+    expect(
+      (await call("POST", "project-applications", "applicant", body)).status,
+    ).toBe(409);
+    const newer = {
+      ...body,
+      expectedRevision: 2,
+      manifest: { ...manifest, headline: "Second scope update for review" },
+    };
+    const waitingResponse = await call(
+      "POST",
+      "project-applications",
+      "applicant",
+      newer,
+    );
+    expect(waitingResponse.status).toBe(201);
+    const waiting = (await waitingResponse.json()).application;
+    expect(
+      (
+        await call("PUT", "admin/projects/open-registry/manifest", "admin", {
+          ...newer,
+          manifest: { ...manifest, headline: "Intervening admin revision" },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await call(
+          "POST",
+          `admin/project-applications/${waiting.id}/approve`,
+          "admin",
+          {},
+        )
+      ).status,
+    ).toBe(409);
+    expect(await persistence.getApplication(waiting.id)).toMatchObject({
+      status: "pending",
+    });
+    expect((await persistence.getProject("open-registry"))?.revision).toBe(3);
+    control = () => ({
+      state: "unproven",
+      reason: "No verified repository authority",
+    });
+    expect(
+      (
+        await call("POST", "project-applications", "applicant", {
+          ...body,
+          expectedRevision: 3,
+        })
+      ).status,
+    ).toBe(422);
+  });
+
   test("reads token decimals from chain once and keeps them on later revisions", async () => {
     await listProject(
       applicationManifest("open-registry", "example/open-registry", {

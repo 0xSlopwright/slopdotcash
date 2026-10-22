@@ -120,7 +120,7 @@ export default defineConfig({
     contextOptions: { reducedMotion: "reduce" },
     trace: "retain-on-failure",
     screenshot: "on",
-    video: "retain-on-failure",
+    video: process.env.SLOP_E2E_VIDEO === "1" ? "on" : "retain-on-failure",
   },
   webServer: externalBaseUrl
     ? undefined

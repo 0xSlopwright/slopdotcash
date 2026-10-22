@@ -13,6 +13,8 @@ export interface ProjectSession {
 }
 
 export interface ProjectApplication {
+  expectedRevision?: number;
+  changeReason?: string;
   id: string;
   projectId: string;
   repository: string | null;

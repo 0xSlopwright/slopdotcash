@@ -33,11 +33,11 @@ test(
     await expect(
       page.getByRole("columnheader", { name: "Score", exact: true }),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Amount", exact: true }).click();
+    await page.getByRole("button", { name: "Paid", exact: true }).click();
     await expect(page).toHaveURL(/sort=money/);
     await page.reload();
     await expect(
-      page.getByRole("columnheader", { name: "Amount", exact: true }),
+      page.getByRole("columnheader", { name: "Paid", exact: true }),
     ).toHaveAttribute("aria-sort", "descending");
     await expect(
       page.getByRole("button", { name: "Recorded history", exact: true }),

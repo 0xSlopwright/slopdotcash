@@ -32,7 +32,7 @@ function bytes(value) {
  * @param {{
  *   role: "contributor" | "reviewer",
  *   templateFiles: Record<string, string | Uint8Array>,
- *   manifest: import("./projects.mjs").ProjectDefinition,
+ *   manifest: Pick<import("./projects.mjs").ProjectDefinition, "id" | "skill" | "reviewSkill" | "repositories" | "contribution">,
  *   registry: { revision: number, manifestSha256: string },
  * }} input
  * @returns {Record<string, Uint8Array>} rendered files, sorted by path

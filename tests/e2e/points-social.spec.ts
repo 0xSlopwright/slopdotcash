@@ -51,13 +51,26 @@ test("social membership shows connection points, respects privacy and survives d
       ),
     });
   });
+  await page.route(`${site}/api/v1/payments/me`, (route) =>
+    route.fulfill({
+      json: {
+        githubUserId: "123",
+        wallets: [],
+        payments: [],
+        balances: [],
+        directTransfers: [],
+        walletObservations: [],
+      },
+    }),
+  );
   await page.route(`${site}/api/v1/payments/**/direct-transfers`, (route) =>
     route.fulfill({ json: { transfers: [], totalMicro: "0" } }),
   );
   await page.route(`${site}/api/v1/points/**`, async (route) => {
     const path = new URL(route.request().url()).pathname;
     let value: unknown;
-    if (path.endsWith("/x/me"))
+    if (path.endsWith("/sessions")) value = { sessions: [] };
+    else if (path.endsWith("/x/me"))
       value = {
         configured: true,
         account,

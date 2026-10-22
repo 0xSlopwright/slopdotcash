@@ -91,6 +91,8 @@ export {
  * validated before money, score, work, or usage is presented as healthy data.
  */
 
+import { fetchWithDeadline, readBoundedJson } from "./lib/browser-json";
+
 export { readBoundedJson } from "./lib/browser-json";
 
 const ProjectProposalPage = lazy(() => import("./ProjectProposalPage"));
@@ -400,6 +402,18 @@ function Footer() {
           <SlopMark inverse size={104} />
           <div className="wordmark footer-wordmark">{domain}</div>
         </div>
+        <nav className="footer-links" aria-label="Product">
+          <Link href="/">Projects</Link>
+          <Link href="/how-it-works">How it works</Link>
+          <Link href="/projects/new">Add a project</Link>
+          <Link href="/account">Account</Link>
+        </nav>
+        <nav className="footer-links" aria-label="Records">
+          <Link href="/points">Leaderboard</Link>
+          <Link href="/cycles">Cycles</Link>
+          <Link href="/models">Models</Link>
+          <Link href="/receipts">Run receipts</Link>
+        </nav>
         <nav className="footer-links" aria-label="Community">
           <ExternalLinkAnchor href={SOURCE_REPOSITORY}>
             GitHub
@@ -934,14 +948,78 @@ export function ProjectParticipation({
 }
 
 function InstallPanel({ project }: { project: ProjectDefinition }) {
+  const [eligibility, setEligibility] = useState<
+    "loading" | "ready" | "blocked" | "error"
+  >("loading");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setEligibility("loading");
+    fetchWithDeadline("/.well-known/slop/projects.json", {
+      cache: attempt > 0 ? "reload" : "default",
+      headers: { accept: "application/json" },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Discovery unavailable");
+        const body = (await readBoundedJson(
+          response,
+          4 * 1024 * 1024,
+          "Agent setup",
+        )) as { schemaVersion?: unknown; projects?: { project_id: string }[] };
+        if (body.schemaVersion !== "1" || !Array.isArray(body.projects))
+          throw new Error("Invalid discovery registry");
+        if (active)
+          setEligibility(
+            body.projects.some((entry) => entry.project_id === project.id)
+              ? "ready"
+              : "blocked",
+          );
+      })
+      .catch(() => {
+        if (active) setEligibility("error");
+      });
+    return () => {
+      active = false;
+    };
+  }, [project.id, attempt]);
   return (
     <div className="install-panel" id="start">
-      <div className="install-heading">
-        <div>
-          <h2>Copy this into your agent.</h2>
-        </div>
-      </div>
-      <AgentPromptBox prompt={projectAgentPrompt(project)} />
+      {eligibility === "ready" ? (
+        <>
+          <div className="install-heading">
+            <h2>Copy this into your agent.</h2>
+          </div>
+          <AgentPromptBox prompt={projectAgentPrompt(project)} />
+        </>
+      ) : (
+        <>
+          <h2>
+            {eligibility === "loading"
+              ? "Checking agent setup…"
+              : eligibility === "blocked"
+                ? "Agent setup awaiting security review"
+                : "Agent setup unavailable"}
+          </h2>
+          {eligibility === "blocked" ? (
+            <p>
+              The current project revision is not cleared for agent
+              installation.{" "}
+              <Link href={`/projects/${project.slug}/manage`}>
+                Project owner: review setup
+              </Link>
+            </p>
+          ) : null}
+          {eligibility !== "loading" ? (
+            <button
+              className="button secondary-button"
+              type="button"
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              Check again
+            </button>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
@@ -1123,7 +1201,13 @@ function ProjectFundingPage({ project }: { project: ProjectDefinition }) {
         {project.escrow ? (
           <EscrowFunding project={project} />
         ) : (
-          <EmptyState text="Funding unavailable. This project has no reviewed escrow deployment." />
+          <div>
+            <EmptyState text="Funding setup requires a reviewed project vault." />
+            <p>
+              Ask a Slop admin to review the vault deployment and funding
+              authority. <a href={CONTACT_MAILTO}>Contact Slop</a>
+            </p>
+          </div>
         )}
         <p className="funding-records-note">
           A GitHub login does not prove wallet ownership or payment. Monthly
@@ -1169,7 +1253,8 @@ function ProjectPage({
           <div className="project-hero-grid">
             <div>
               <h1>
-                {project.status === "paused" ? (
+                {project.status === "paused" ||
+                monthlyPoolPointsOnly(project.reward) ? (
                   project.name
                 ) : headlineAction ? (
                   <>
@@ -1182,7 +1267,20 @@ function ProjectPage({
                   project.headline
                 )}
               </h1>
-              <p className="hero-copy">{project.description}</p>
+              <p className="hero-copy">
+                {monthlyPoolPointsOnly(project.reward)
+                  ? project.contribution?.approvedScope ||
+                    headlineAction ||
+                    project.headline
+                  : project.description}
+              </p>
+              <p className="project-reward-status">
+                {monthlyPoolPointsOnly(project.reward)
+                  ? "Points only · no cash rewards"
+                  : project.reward.kind === "monthly-pool"
+                    ? `${project.reward.monthlyCapDisplay} monthly target · ${formatMicroUsdc(project.reward.committedMinor)} committed · payouts ${project.reward.paymentMode}`
+                    : "External prize · organizer decides awards"}
+              </p>
               {project.status === "paused" ? (
                 <ProjectParticipation
                   project={project}
@@ -1231,11 +1329,6 @@ function ProjectPage({
                   {project.rewardAsset.decimals} decimals
                 </p>
               ) : null}
-              {project.terms.externalPrize ? (
-                <p className="project-policy-warning">
-                  Organizer rules decide eligibility, amount, and payment.
-                </p>
-              ) : null}
             </div>
             {project.status === "paused" ? null : state.status !== "ready" ? (
               <aside className="reward-card">
@@ -1259,31 +1352,50 @@ function ProjectPage({
                       : undefined
                   }
                 >
-                  {monthlyPoolPointsOnly(project.reward)
-                    ? "$0 + points"
-                    : project.reward.kind === "monthly-pool"
-                      ? monthlyPoolUnfunded(project.reward)
-                        ? UNFUNDED_POOL_HEADLINE
-                        : `${monthlyPoolCapLabel(project.reward)} / mo`
-                      : `${project.reward.externalOpportunity?.advertisedAmountDisplay} + points`}
+                  {monthlyPoolPointsOnly(project.reward) ? (
+                    "$0 + points"
+                  ) : project.reward.kind === "monthly-pool" ? (
+                    monthlyPoolUnfunded(project.reward) ? (
+                      UNFUNDED_POOL_HEADLINE
+                    ) : (
+                      `${monthlyPoolCapLabel(project.reward)} / mo`
+                    )
+                  ) : (
+                    <>
+                      <span className="reward-exact-amount">
+                        {
+                          project.reward.externalOpportunity
+                            ?.advertisedAmountDisplay
+                        }
+                      </span>
+                      {" + points"}
+                    </>
+                  )}
                 </strong>
-                <p>
-                  {monthlyPoolPointsOnly(project.reward)
-                    ? "Points only. Accepted work earns Slop points. This project has no money pool."
-                    : project.reward.kind === "monthly-pool"
-                      ? monthlyPoolUnfunded(project.reward)
-                        ? `Target ${project.reward.monthlyCapDisplay} per month. No payments scheduled.`
-                        : `${formatMicroUsdc(project.reward.committedMinor)} committed against a ${project.reward.monthlyCapDisplay} monthly target. Accessibility is unknown; no payment is enabled.`
-                      : project.terms.externalPrize?.allocationAuthority}
-                </p>
+                {project.reward.kind === "external-prize-share" ? (
+                  <details>
+                    <summary>Prize allocation terms</summary>
+                    <p>{project.terms.externalPrize?.allocationAuthority}</p>
+                    <a href={`/projects/${project.id}/terms.json`}>
+                      Full prize terms
+                    </a>
+                  </details>
+                ) : (
+                  <p>
+                    {monthlyPoolPointsOnly(project.reward)
+                      ? "Points only. Accepted work earns Slop points. This project has no money pool."
+                      : project.reward.kind === "monthly-pool"
+                        ? monthlyPoolUnfunded(project.reward)
+                          ? `Target ${project.reward.monthlyCapDisplay} per month. No payments scheduled.`
+                          : `${formatMicroUsdc(project.reward.committedMinor)} committed against a ${project.reward.monthlyCapDisplay} monthly target. Accessibility is unknown; no payment is enabled.`
+                        : null}
+                  </p>
+                )}
                 <div>
                   {project.reward.reviewBudget ? (
                     <small>
                       + {reviewBudgetLabel(project.reward.reviewBudget)}
                     </small>
-                  ) : null}
-                  {project.reward.kind === "external-prize-share" ? (
-                    <small>No platform pool · no dollar projection</small>
                   ) : null}
                   <div className="reward-actions">
                     <ExternalLinkAnchor href={project.links.repository}>
@@ -1391,8 +1503,11 @@ function HowItWorksPage() {
             <li>
               <strong>1. Propose a project</strong>
               <p>
-                <Link href="/projects/new">Add a project</Link> through a
-                reviewed manifest PR. New projects start paused.
+                <Link href="/projects/new">
+                  Submit your repository and reward terms
+                </Link>
+                . An admin reviews the application. Approved projects start
+                paused.
               </p>
             </li>
             <li>
@@ -2587,33 +2702,36 @@ function ModelOutcomes({ summary }: { summary: ModelOutcomeSummary }) {
           {count.format(totals.mergedPullRequestsWithModel)} of{" "}
           {count.format(totals.mergedPullRequests)})
         </span>
-        <span>
-          <strong>
-            {count.format(totals.mergedPullRequestsWithSignedRun)}
-          </strong>{" "}
-          of those carry a signed receipt
-        </span>
-        <span>
-          <strong>
-            {percent(totals.acceptedReviewsWithModel, totals.acceptedReviews)}
-          </strong>{" "}
-          of accepted reviews name a model
-        </span>
-        <span>
-          <strong>{count.format(totals.declarations)}</strong> declarations by{" "}
-          {count.format(totals.declaringContributors)} contributors,{" "}
-          {count.format(totals.signedDeclarations)} signed across{" "}
-          {count.format(totals.distinctClients)} harnesses
-        </span>
-        {totals.declarationsWithoutExactModel > 0 ? (
+        <details>
+          <summary>Declaration coverage</summary>
           <span>
             <strong>
-              {count.format(totals.declarationsWithoutExactModel)}
+              {count.format(totals.mergedPullRequestsWithSignedRun)}
             </strong>{" "}
-            more state that the exact model was unavailable and count toward no
-            model
+            of those carry a signed receipt
           </span>
-        ) : null}
+          <span>
+            <strong>
+              {percent(totals.acceptedReviewsWithModel, totals.acceptedReviews)}
+            </strong>{" "}
+            of accepted reviews name a model
+          </span>
+          <span>
+            <strong>{count.format(totals.declarations)}</strong> declarations by{" "}
+            {count.format(totals.declaringContributors)} contributors,{" "}
+            {count.format(totals.signedDeclarations)} signed across{" "}
+            {count.format(totals.distinctClients)} harnesses
+          </span>
+          {totals.declarationsWithoutExactModel > 0 ? (
+            <span>
+              <strong>
+                {count.format(totals.declarationsWithoutExactModel)}
+              </strong>{" "}
+              more state that the exact model was unavailable and count toward
+              no model
+            </span>
+          ) : null}
+        </details>
       </div>
 
       <section className="model-outcomes-section">
@@ -2826,11 +2944,26 @@ function ModelOutcomes({ summary }: { summary: ModelOutcomeSummary }) {
   );
 }
 
+const REGISTRY_INDEPENDENT_ROUTES: Route["kind"][] = [
+  "login",
+  "account",
+  "admin",
+  "inbox",
+  "earnings",
+  "security-cases",
+  "vetting-evidence",
+  "new-project",
+  "how-it-works",
+];
+
 export function App() {
   const route = useRoute();
   return (
     <PointsProvider
-      enabled={["home", "project", "profile", "points"].includes(route.kind)}
+      enabled={
+        !globalThis.__SLOP_PROJECT_REGISTRY_ERROR__ &&
+        ["home", "project", "profile", "points"].includes(route.kind)
+      }
     >
       <AppContent route={route} />
     </PointsProvider>
@@ -2857,11 +2990,34 @@ function AppContent({ route }: { route: Route }) {
     "unknown",
     "cycle-archive",
   ];
-  const needsSnapshot = !snapshotFree.includes(route.kind);
+  const registryError = globalThis.__SLOP_PROJECT_REGISTRY_ERROR__;
+  const blocked =
+    Boolean(registryError) && !REGISTRY_INDEPENDENT_ROUTES.includes(route.kind);
+  const needsSnapshot = !blocked && !snapshotFree.includes(route.kind);
   const [state, retry] = useSnapshot(needsSnapshot);
   const [archive, retryArchive] = useCycleIndex(route.kind === "cycle-archive");
   let content: ReactNode;
-  if (route.kind === "home") content = <HomePage />;
+  if (blocked)
+    content = (
+      <main className="shell route-main">
+        <h1>Projects are unavailable</h1>
+        <div role="alert">
+          <p>{registryError}</p>
+          <button
+            className="button primary-button"
+            type="button"
+            onClick={() => window.location.reload()}
+          >
+            Try again
+          </button>
+        </div>
+        <p>
+          <Link href="/login">Sign in</Link> ·{" "}
+          <Link href="/account">Account</Link>
+        </p>
+      </main>
+    );
+  else if (route.kind === "home") content = <HomePage />;
   else if (route.kind === "points") content = <PointsPage />;
   else if (route.kind === "account") content = <AccountPage />;
   else if (route.kind === "login") content = <LoginPage />;

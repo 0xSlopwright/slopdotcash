@@ -416,3 +416,49 @@ export function VettingSection() {
     </section>
   );
 }
+
+/** The same revision-bound clearance used by the full security review panel. */
+export function ActivationClearance({
+  projectId,
+  revision,
+}: {
+  projectId: string;
+  revision: number;
+}) {
+  const [clearance, setClearance] = useState<string>(
+    "Checking security clearance…",
+  );
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    projectApiRequest<Overview>("GET", `admin/vetting?refresh=${attempt}`).then(
+      (body) => {
+        if (!active) return;
+        const project = body.projects.find((entry) => entry.id === projectId);
+        setClearance(
+          !project || project.revision !== revision
+            ? "Project revision changed. Reload before activation."
+            : `Revision ${revision}: ${LABELS[project.clearance.state]}.`,
+        );
+      },
+      (error) => {
+        if (active) setClearance(message(error));
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [projectId, revision, attempt]);
+  return (
+    <div>
+      <p role="status">{clearance}</p>
+      <button
+        type="button"
+        className="text-button"
+        onClick={() => setAttempt((value) => value + 1)}
+      >
+        Refresh clearance
+      </button>
+    </div>
+  );
+}
