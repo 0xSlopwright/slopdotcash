@@ -1,10 +1,13 @@
 /** Capture public closure context privately; this file is not a site input. */
 import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
 import {
   type CapturedDiscussion,
   completeDiscussionConnections,
 } from "./complete-quality-discussions";
+
+const execFileAsync = promisify(execFile);
 
 const [source, output] = process.argv.slice(2);
 if (!output)
@@ -21,29 +24,14 @@ const rows: {
 const query = `query($ids:[ID!]!){nodes(ids:$ids){... on PullRequest{id closedAt mergedAt headRefOid comments(first:20){totalCount pageInfo{hasNextPage endCursor} nodes{id url body createdAt updatedAt authorAssociation author{login}}} reviews(first:10){totalCount pageInfo{hasNextPage endCursor} nodes{id url body state submittedAt author{login}}}}}}`;
 const observations: unknown[] = [];
 async function request(batch: typeof rows) {
-  const child = execFile(
-    "gh",
-    ["api", "graphql", "--input", "-"],
-    { timeout: 30_000, maxBuffer: 64 * 1024 * 1024 },
-    () => {},
-  );
-  const text = await new Promise<string>((resolve, reject) => {
-    let stdout = "",
-      stderr = "";
-    child.stdout?.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr?.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.on("error", reject);
-    child.on("close", (code) =>
-      code === 0 ? resolve(stdout) : reject(new Error(stderr)),
-    );
-    child.stdin?.end(
-      JSON.stringify({ query, variables: { ids: batch.map((row) => row.id) } }),
-    );
+  const pending = execFileAsync("gh", ["api", "graphql", "--input", "-"], {
+    timeout: 30_000,
+    maxBuffer: 64 * 1024 * 1024,
   });
+  pending.child.stdin?.end(
+    JSON.stringify({ query, variables: { ids: batch.map((row) => row.id) } }),
+  );
+  const { stdout: text } = await pending;
   const response = JSON.parse(text);
   if (response.errors?.length || response.data?.nodes?.length !== batch.length)
     throw new Error("Incomplete discussion response");
