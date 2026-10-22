@@ -31,6 +31,12 @@ const MODERATOR_TOKEN = process.env.SLOP_E2E_MODERATOR_TOKEN ?? "";
 const VETTING_PUBLIC_KEY = process.env.SLOP_E2E_VETTING_PUBLIC_KEY ?? "";
 const VETTING_PRIVATE_KEY = process.env.SLOP_E2E_VETTING_PRIVATE_KEY ?? "";
 
+function walkthroughOptions() {
+  return process.env.SLOP_E2E_VIDEO === "1"
+    ? { recordVideo: { dir: test.info().outputPath("walkthrough-videos") } }
+    : {};
+}
+
 /** Posts a harmless signed scan result for the project's queued scan. */
 async function postVettingResult(
   request: APIRequestContext,
@@ -301,7 +307,7 @@ test("an unproven application waits for an admin, who lists it paused @registry"
   browser,
 }) => {
   const project = fixtureProjects().queued;
-  const applicantContext = await browser.newContext();
+  const applicantContext = await browser.newContext(walkthroughOptions());
   const applicant = await applicantContext.newPage();
   const applicantErrors = observe(applicant);
   await signIn(applicant, APPLICANT_TOKEN);
@@ -325,7 +331,7 @@ test("an unproven application waits for an admin, who lists it paused @registry"
   expect(applicantErrors).toEqual([]);
   await applicantContext.close();
 
-  const adminContext = await browser.newContext();
+  const adminContext = await browser.newContext(walkthroughOptions());
   const admin = await adminContext.newPage();
   const adminErrors = observe(admin);
   await signIn(admin, ADMIN_TOKEN);
@@ -372,7 +378,7 @@ test("an owner's proof and generated skills reach the admin, who lists and delis
   browser,
 }) => {
   const project = fixtureProjects().owned;
-  const ownerContext = await browser.newContext();
+  const ownerContext = await browser.newContext(walkthroughOptions());
   const owner = await ownerContext.newPage();
   const ownerErrors = observe(owner);
   await signIn(owner, OWNER_TOKEN);
@@ -442,7 +448,7 @@ test("an owner's proof and generated skills reach the admin, who lists and delis
   expect(ownerErrors).toEqual([]);
   await ownerContext.close();
 
-  const adminContext = await browser.newContext();
+  const adminContext = await browser.newContext(walkthroughOptions());
   const admin = await adminContext.newPage();
   const adminErrors = observe(admin);
   await signIn(admin, ADMIN_TOKEN);
@@ -485,7 +491,7 @@ test("an owner's proof and generated skills reach the admin, who lists and delis
   });
 
   // A maintainer submits a real update; approval publishes one paused revision.
-  const returningContext = await browser.newContext();
+  const returningContext = await browser.newContext(walkthroughOptions());
   const returningOwner = await returningContext.newPage();
   await signIn(returningOwner, OWNER_TOKEN);
   await returningOwner.goto(`/projects/${project.id}/manage`, {
@@ -544,7 +550,7 @@ test("an admin cannot activate or publish skills without canonical scan closure 
   request,
 }) => {
   const project = fixtureProjects().queued;
-  const adminContext = await browser.newContext();
+  const adminContext = await browser.newContext(walkthroughOptions());
   const admin = await adminContext.newPage();
   const errors = observe(admin);
   await signIn(admin, ADMIN_TOKEN);
@@ -710,7 +716,7 @@ test("the applicant's inbox lists each decision and revision once and keeps the 
   browser,
 }) => {
   const project = fixtureProjects().queued;
-  const context = await browser.newContext();
+  const context = await browser.newContext(walkthroughOptions());
   const page = await context.newPage();
   const errors = observe(page);
   await signIn(page, APPLICANT_TOKEN);
@@ -772,7 +778,7 @@ test("moderators restrict a project and refuse reinstatement without canonical s
 }) => {
   const project = fixtureProjects().queued;
   const evidence = `https://github.com/${project.repository}/security/advisories/GHSA-e2e`;
-  const adminContext = await browser.newContext();
+  const adminContext = await browser.newContext(walkthroughOptions());
   const admin = await adminContext.newPage();
   const adminErrors = observe(admin);
   await signIn(admin, ADMIN_TOKEN);
@@ -1055,7 +1061,7 @@ test("moderators restrict a project and refuse reinstatement without canonical s
 
   // The applicant who listed the project sees each enforcement record once,
   // without the private reason or evidence reference.
-  const applicantContext = await browser.newContext();
+  const applicantContext = await browser.newContext(walkthroughOptions());
   const applicant = await applicantContext.newPage();
   const applicantErrors = observe(applicant);
   await signIn(applicant, APPLICANT_TOKEN);
