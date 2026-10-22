@@ -280,7 +280,7 @@ test.each(["unchanged", "changed", "unavailable"])(
     if (state === "unavailable")
       globalThis.fetch = (async () => {
         throw new Error("GitHub unavailable");
-      }) as typeof fetch;
+      }) as unknown as typeof fetch;
     try {
       const response = await onRequest({
         request: new Request(
