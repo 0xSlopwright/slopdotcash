@@ -545,6 +545,25 @@ export function commentBody(input: {
     .join("\n");
 }
 
+async function addLabels(
+  env: ReviewEnv,
+  job: Job,
+  github: GitHubClient,
+  labels: string[],
+): Promise<void> {
+  await requireRegisteredRepository(env.SLOPBOT_DB, job);
+  const result = await github.request(
+    "POST",
+    `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
+    { labels },
+  );
+  if (result.status !== 200 || result.data === null)
+    throw new GitHubError(
+      result.status,
+      "GitHub did not confirm the label addition",
+    );
+}
+
 async function upsertComment(
   env: ReviewEnv,
   job: Job,
@@ -832,19 +851,9 @@ async function runReview(
     "comment",
     category,
   );
-  await requireRegisteredRepository(db, job);
-  const labeled = await context.github.request(
-    "POST",
-    `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
-    {
-      labels: [`slopbot: ${category.replaceAll("_", " ")}`],
-    },
-  );
-  if (labeled.status !== 200 || labeled.data === null)
-    throw new GitHubError(
-      labeled.status,
-      "GitHub did not confirm the label addition",
-    );
+  await addLabels(env, job, context.github, [
+    `slopbot: ${category.replaceAll("_", " ")}`,
+  ]);
   await store.recordAction(
     db,
     reviewKey,
@@ -961,13 +970,6 @@ export async function recordHumanSignal(
     kind,
     String(job.senderId),
   );
-  if (kind === "appeal") {
-    await requireRegisteredRepository(db, job);
-    await github.request(
-      "POST",
-      `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
-      { labels: ["slopbot: appeal"] },
-    );
-  }
+  if (kind === "appeal") await addLabels(env, job, github, ["slopbot: appeal"]);
   return kind;
 }
