@@ -326,11 +326,17 @@ function ApplicationCard({
 }
 
 function ApplicationsSection({ onDecided }: { onDecided: () => void }) {
+  const [focusedId, setFocusedId] = useState(
+    () =>
+      /^\/admin\/applications\/([A-Za-z0-9_-]+)\/?$/u.exec(
+        window.location.pathname,
+      )?.[1] ?? null,
+  );
   const [status, setStatus] = useState<"pending" | "approved" | "rejected">(
     "pending",
   );
   const [state, reload] = useAdminData(
-    `admin/project-applications?status=${status}`,
+    `admin/project-applications?${focusedId ? `id=${encodeURIComponent(focusedId)}` : `status=${status}`}`,
     selectApplications,
   );
   // The admin email links to /admin/applications/<id>; bring that card into view.
@@ -339,8 +345,9 @@ function ApplicationsSection({ onDecided }: { onDecided: () => void }) {
     const id = /^\/admin\/applications\/([A-Za-z0-9_-]+)\/?$/u.exec(
       window.location.pathname,
     )?.[1];
+    if (focusedId && state.value[0]) setStatus(state.value[0].status);
     if (id) document.getElementById(`application-${id}`)?.scrollIntoView();
-  }, [state]);
+  }, [state, focusedId]);
   return (
     <section aria-labelledby="admin-applications" className="admin-section">
       <div className="admin-section-heading">
@@ -352,7 +359,15 @@ function ApplicationsSection({ onDecided }: { onDecided: () => void }) {
               <input
                 checked={status === value}
                 name="application-status"
-                onChange={() => setStatus(value)}
+                onChange={() => {
+                  setFocusedId(null);
+                  setStatus(value);
+                  window.history.replaceState(
+                    window.history.state,
+                    "",
+                    "/admin",
+                  );
+                }}
                 type="radio"
               />
               {value[0].toUpperCase() + value.slice(1)}
@@ -422,6 +437,7 @@ function ProjectEditor({
         text: string;
         skill: Record<ContributionField, string>;
         asset: AssetDraft;
+        assetSelected?: boolean;
         status: AdminProject["status"];
         reason: string;
       } | null;
@@ -449,22 +465,29 @@ function ProjectEditor({
         ]),
       ) as Record<ContributionField, string>),
   );
-  const [asset, setAsset] = useState<AssetDraft>(
+  const [assetSelected, setAssetSelected] = useState(
+    restored?.assetSelected ?? !!project.manifest.rewardAsset,
+  );
+  const [asset, updateAsset] = useState<AssetDraft>(
     () => restored?.asset ?? initialAsset(project),
   );
+  const setAsset: typeof updateAsset = (value) => {
+    setAssetSelected(true);
+    updateAsset(value);
+  };
   const [status, setStatus] = useState(restored?.status ?? project.status);
   const [reason, setReason] = useState(restored?.reason ?? "");
   useEffect(() => {
     try {
       sessionStorage.setItem(
         draftKey,
-        JSON.stringify({ text, skill, asset, status, reason }),
+        JSON.stringify({ text, skill, asset, assetSelected, status, reason }),
       );
       setDraftError(false);
     } catch {
       setDraftError(true);
     }
-  }, [draftKey, text, skill, asset, status, reason]);
+  }, [draftKey, text, skill, asset, assetSelected, status, reason]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const skillStarted = CONTRIBUTION_FIELDS.some(
@@ -544,7 +567,7 @@ function ProjectEditor({
           }
         : {}),
       ...((rest.reward as { kind?: unknown } | undefined)?.kind ===
-      "monthly-pool"
+        "monthly-pool" && assetSelected
         ? {
             rewardAsset:
               project.manifest.rewardAsset &&
@@ -703,6 +726,18 @@ function ProjectEditor({
       </details>
       <fieldset className="admin-fieldset">
         <legend>Reward asset</legend>
+        {!assetSelected ? (
+          <p>
+            No reward asset is set. The values below are suggestions.{" "}
+            <button
+              type="button"
+              className="button secondary-button"
+              onClick={() => setAssetSelected(true)}
+            >
+              Use this reward asset
+            </button>
+          </p>
+        ) : null}
         <label>
           Network
           <select

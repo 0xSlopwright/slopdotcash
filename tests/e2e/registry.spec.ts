@@ -470,6 +470,7 @@ test("an owner's proof and generated skills reach the admin, who lists and delis
     application.getByLabel("Contributor skill project.json"),
   ).toHaveValue(/"approvedScope": "Merged pull requests/u);
   await expectAccessible(admin);
+  const applicationElementId = await application.getAttribute("id");
   await application
     .getByRole("button", { name: "Approve as paused project" })
     .click();
@@ -477,6 +478,20 @@ test("an owner's proof and generated skills reach the admin, who lists and delis
     has: admin.getByText(project.id, { exact: true }),
   });
   await expect(card).toContainText("Generated from revision 1");
+  if (!applicationElementId) throw new Error("Application link is missing");
+  await admin.goto(
+    `/admin/applications/${applicationElementId.replace(/^application-/, "")}`,
+    { waitUntil: "networkidle" },
+  );
+  await expect(
+    admin.getByRole("radio", { name: "Approved", exact: true }),
+  ).toBeChecked();
+  await expect(admin.locator(`#${applicationElementId}`)).toBeVisible();
+  await admin.screenshot({
+    path: test.info().outputPath("approved-application-deep-link.png"),
+    fullPage: true,
+  });
+  await admin.goto("/admin", { waitUntil: "networkidle" });
 
   // The installer's trust root: the exact approved bytes and their digest.
   const revision = await (

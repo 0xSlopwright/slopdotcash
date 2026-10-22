@@ -2179,7 +2179,7 @@ function SponsorsPage({
                 return (
                   <tr key={project.id}>
                     <th scope="row">
-                      <Link href={`/projects/${project.id}`}>
+                      <Link href={`/projects/${project.slug}/funding`}>
                         {project.name}
                       </Link>
                     </th>
@@ -2238,7 +2238,7 @@ function SponsorsPage({
       </section>
       <section className="worked-example sponsor-start">
         <div>
-          <h2>Start with an application.</h2>
+          <h2>Add your own project.</h2>
           <p>
             Sign in with GitHub and add a project. A Slop admin reviews it, and
             new projects start paused. Escrow deployments change only through a
@@ -2250,10 +2250,8 @@ function SponsorsPage({
             <Link href="/projects/new">Add a project</Link>
           </li>
           <li>
-            <ExternalLinkAnchor
-              href={`${SOURCE_REPOSITORY}/tree/${browserDeployment.branch}/projects`}
-            >
-              Reviewed manifests
+            <ExternalLinkAnchor href="/api/v1/project-revisions">
+              Reviewed project revisions
             </ExternalLinkAnchor>
           </li>
           <li>
@@ -2266,7 +2264,7 @@ function SponsorsPage({
           </li>
           <li>
             <ExternalLinkAnchor href={SOURCE_REPOSITORY}>
-              Open an issue on GitHub
+              View the repository on GitHub
             </ExternalLinkAnchor>
           </li>
         </ul>
@@ -2516,23 +2514,28 @@ function ReceiptsPage({
     <main className="shell evidence-page receipt-page">
       <section className="evidence-page-hero">
         <h1>Run receipts</h1>
-        <p>
-          Device signatures attest byte continuity. Model and usage declarations
-          are self-reported; private traces stay private.
-        </p>
+        <details>
+          <summary>About receipts</summary>
+          <p>
+            Device signatures attest byte continuity. Model and usage
+            declarations are self-reported; private traces stay private.
+          </p>
+        </details>
         <DataNotice retry={retry} state={state} />
       </section>
-      <label className="receipt-search">
-        Find a receipt
-        <input
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Contributor, model, client or run ID"
-          disabled={state.status !== "ready"}
-        />
-      </label>
-      {state.status === "ready" ? (
+      {state.status === "ready" && receipts.length > 0 ? (
+        <label className="receipt-search">
+          Find a receipt
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Contributor, model, client or run ID"
+            disabled={state.status !== "ready"}
+          />
+        </label>
+      ) : null}
+      {state.status === "ready" && receipts.length > 0 ? (
         <p className="receipt-count" role="status">
           {matching.length} of {receipts.length} receipts
         </p>
@@ -2541,10 +2544,13 @@ function ReceiptsPage({
         <EmptyState
           text={
             receipts.length === 0
-              ? "No publishable signed receipts in this snapshot."
+              ? "No receipts published yet."
               : "No receipts match this search."
           }
         />
+      ) : null}
+      {state.status === "ready" && receipts.length === 0 ? (
+        <Link href="/#projects">Browse projects</Link>
       ) : null}
       <div className="receipt-list">
         {matching.map((entry) => {
