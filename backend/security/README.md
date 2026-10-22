@@ -128,7 +128,7 @@ disclosure without an exact content approval.
 
 The 22 October 2026 product decision uses the existing escrow rails with a
 75% reporter share and 25% Slop share. Migration
-`0055_private_security_payments.sql` separates settlement intents, payment
+`0057_private_security_payments.sql` separates settlement intents, payment
 records, attempts and finalized vault snapshots from ordinary payments.
 Canonical wallet possession and binding authorizations remain shared.
 
