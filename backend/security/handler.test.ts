@@ -19,6 +19,7 @@ const FINANCE = { githubId: "900000104", githubLogin: "finance" };
 const FINANCE_2 = { githubId: "900000107", githubLogin: "finance-two" };
 const DISPUTE = { githubId: "900000105", githubLogin: "dispute" };
 const DISPUTE_2 = { githubId: "900000106", githubLogin: "dispute-two" };
+const DISPUTE_3 = { githubId: "900000108", githubLogin: "dispute-three" };
 const ADVISORY = "GHSA-7c8f-9g2h-3j4m";
 const RECEIVED = "2026-10-19T09:00:00.000Z";
 
@@ -51,7 +52,7 @@ const OPEN_PROGRAM = {
   approvers: {
     technical: [MAINTAINER],
     financial: [FINANCE, FINANCE_2],
-    dispute: [DISPUTE, DISPUTE_2],
+    dispute: [DISPUTE, DISPUTE_2, DISPUTE_3],
   },
   capacity: { awards: 1, closesAt: null },
 };
@@ -781,8 +782,18 @@ describe("security cases", () => {
     });
     expect(again.status).toBe(403);
     expect(again.body.error).toBe("conflicted");
-    // A reviewer with no part in the earlier refusal can still approve it.
-    const approved = await act(DISPUTE_2, related.id, {
+    // The reviewer who decided the appeal took a position on the same case:
+    // returning it for a new decision is not independence from the approval
+    // that follows (SEC-12). The seat is checked from the case journal.
+    const appealDecider = await act(DISPUTE_2, related.id, {
+      action: "decide-related-party",
+      outcome: "approve",
+      reason: "Approved after independent review.",
+    });
+    expect(appealDecider.status).toBe(403);
+    expect(appealDecider.body.error).toBe("conflicted");
+    // A reviewer with no part in the refusal or the appeal can still approve it.
+    const approved = await act(DISPUTE_3, related.id, {
       action: "decide-related-party",
       outcome: "approve",
       reason: "Approved after independent review.",
