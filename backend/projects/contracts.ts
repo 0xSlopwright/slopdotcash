@@ -2,7 +2,6 @@ import type {
   AdminNotification,
   ApplicationStatus,
   DecisionInput,
-  GithubActor,
   ProjectApplication,
   ProjectEnforcement,
   ProjectRecord,
@@ -55,11 +54,8 @@ export interface ProjectPersistence {
   listApplications(status: ApplicationStatus): Promise<ProjectApplication[]>;
   listApplicantApplications(githubId: string): Promise<ProjectApplication[]>;
   countPendingApplications(githubId: string): Promise<number>;
-  /**
-   * The GitHub actor behind a login that has signed in to slop.cash at least
-   * once, with the login as the account last used it; null otherwise.
-   */
-  findSignedInActor(login: string): Promise<GithubActor | null>;
+  /** Membership is keyed by the immutable current GitHub actor ID. */
+  hasSignedInActor(githubId: string): Promise<boolean>;
   /** Returns "conflict" when the project or repository already has an open application. */
   createApplication(
     application: ProjectApplication & { manifestText: string },

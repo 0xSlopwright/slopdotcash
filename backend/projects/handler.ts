@@ -64,6 +64,7 @@ import {
   type GithubFetch,
   GithubLookupError,
   listOwnedRepositories,
+  lookupGitHubActor,
   lookupGitHubRepository,
   validGithubLogin,
 } from "./github-lookup";
@@ -467,8 +468,16 @@ async function resolveReferrer(
   if (value === undefined || value === null) return null;
   if (typeof value !== "string" || !validGithubLogin(value))
     fail(422, "invalid_referrer", "The referrer must be a GitHub login.");
-  const referrer = await deps.persistence.findSignedInActor(value);
-  if (referrer === null)
+  const referrer = await lookupGitHubActor(
+    deps.github.fetch,
+    deps.github.token,
+    value,
+    deps.github.apiOrigin,
+  );
+  if (
+    referrer === null ||
+    !(await deps.persistence.hasSignedInActor(referrer.githubId))
+  )
     fail(
       422,
       "invalid_referrer",
@@ -556,8 +565,14 @@ async function submitApplication(
     githubLogin: session.githubLogin,
   };
   if (current && body.referrer !== undefined)
-    fail(422, "invalid_referrer", "A project update cannot change its referrer.");
-  const referrer = current ? current.referrer : await resolveReferrer(body.referrer, manifest, actor, deps);
+    fail(
+      422,
+      "invalid_referrer",
+      "A project update cannot change its referrer.",
+    );
+  const referrer = current
+    ? current.referrer
+    : await resolveReferrer(body.referrer, manifest, actor, deps);
   if (
     (await deps.persistence.countPendingApplications(session.githubId)) >=
     MAX_PENDING_APPLICATIONS_PER_APPLICANT

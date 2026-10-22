@@ -1495,8 +1495,29 @@ test.each(["production", "staging"] as const)(
 );
 describe("referral attribution (PRJ-05)", () => {
   const REFERRER = { githubId: "900000010", githubLogin: "e2e-referrer" };
+  const liveActors = new Map<
+    string,
+    { githubId: string; githubLogin: string }
+  >();
+  beforeEach(() => {
+    liveActors.clear();
+    const fetcher = deps.github.fetch;
+    deps.github.fetch = async (url, init) => {
+      const match = /^https:\/\/api.github.com\/users\/([^/?]+)$/.exec(url);
+      if (!match) return fetcher(url, init);
+      const actor = liveActors.get(match[1].toLowerCase());
+      return actor
+        ? Response.json({
+            id: Number(actor.githubId),
+            login: actor.githubLogin,
+            type: "User",
+          })
+        : new Response(null, { status: 404 });
+    };
+  });
   /** A signed-in slop.cash account, as the points sign-in records one. */
   function joinMember(actor: { githubId: string; githubLogin: string }) {
+    liveActors.set(actor.githubLogin.toLowerCase(), actor);
     sqlite
       .prepare(
         "INSERT INTO points_members(actor_id,github_id,login,joined_at,public) VALUES(?,?,?,?,1)",
@@ -1518,7 +1539,7 @@ describe("referral attribution (PRJ-05)", () => {
     });
     expect(submitted.status).toBe(201);
     const { application } = await submitted.json();
-    // The login is stored as the account last used it, not as typed.
+    // Store the current canonical GitHub login, not the input casing.
     expect(application.referrer).toEqual(REFERRER);
     expect(
       (
@@ -1555,6 +1576,32 @@ describe("referral attribution (PRJ-05)", () => {
         "UPDATE projects SET referrer_github_id = NULL WHERE id = 'referred'",
       ),
     ).toThrow(/project referrer is immutable/u);
+  });
+
+  test("a recycled login cannot attribute the applicant to an older cached member", async () => {
+    joinMember({ githubId: "900000020", githubLogin: APPLICANT.githubLogin });
+    joinMember(APPLICANT);
+    const manifest = applicationManifest("recycled", "example/recycled");
+    const response = await call("POST", "project-applications", "applicant", {
+      manifest,
+      referrer: APPLICANT.githubLogin,
+    });
+    expect(response.status).toBe(422);
+    expect((await response.json()).message).toMatch(
+      /cannot refer your own project/u,
+    );
+    expect(await persistence.listApplications("pending")).toEqual([]);
+    // Even one stale cached row is insufficient if the current holder has never joined.
+    liveActors.set(APPLICANT.githubLogin.toLowerCase(), {
+      githubId: "900000030",
+      githubLogin: APPLICANT.githubLogin,
+    });
+    const unknown = await call("POST", "project-applications", "applicant", {
+      manifest,
+      referrer: APPLICANT.githubLogin,
+    });
+    expect(unknown.status).toBe(422);
+    expect((await unknown.json()).message).toMatch(/has not signed in/u);
   });
 
   test("an application that names nobody records no referrer", async () => {

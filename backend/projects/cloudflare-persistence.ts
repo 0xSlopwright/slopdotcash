@@ -344,17 +344,13 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
     return row?.count ?? 0;
   }
 
-  async findSignedInActor(login: string): Promise<GithubActor | null> {
-    const row = await this.db
-      .prepare(
-        `SELECT github_id, login FROM points_members
-          WHERE lower(login) = lower(?) ORDER BY joined_at LIMIT 1`,
-      )
-      .bind(login)
-      .first<{ github_id: string; login: string }>();
-    return row === null
-      ? null
-      : { githubId: row.github_id, githubLogin: row.login };
+  async hasSignedInActor(githubId: string): Promise<boolean> {
+    return (
+      (await this.db
+        .prepare("SELECT github_id FROM points_members WHERE github_id = ?")
+        .bind(githubId)
+        .first()) !== null
+    );
   }
 
   async createApplication(
