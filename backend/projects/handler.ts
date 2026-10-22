@@ -355,14 +355,20 @@ function assertReviewBudgetTransition(
   }
 }
 
+/**
+ * Checks the candidate against the live registry. Only a manifest revision or a reviewed update application
+ * replaces the listed project with the same id; a new application or an
+ * approval must conflict with a listed project that already has that id.
+ */
 function assertRegistryWith(
   projects: ProjectRecord[],
   candidate: ProjectDefinition,
+  { replaces }: { replaces: boolean },
 ): void {
   try {
     assertProjectRegistry([
       ...projects
-        .filter((project) => project.id !== candidate.id)
+        .filter((project) => !replaces || project.id !== candidate.id)
         .map((project) => project.manifest),
       candidate,
     ]);
@@ -583,7 +589,9 @@ async function submitApplication(
       `You already have ${MAX_PENDING_APPLICATIONS_PER_APPLICANT} applications awaiting review`,
     );
   }
-  assertRegistryWith(await deps.persistence.listProjects(), manifest);
+  assertRegistryWith(await deps.persistence.listProjects(), manifest, {
+    replaces: current !== null,
+  });
   const control = await repositoryControl(deps, manifest, actor);
   if (control.state === "mismatch" || (current && control.state !== "proven"))
     fail(422, "invalid_manifest", control.reason);
@@ -769,6 +777,7 @@ async function decideApplication(
     assertRegistryWith(
       await deps.persistence.listProjects(),
       application.manifest,
+      { replaces: false },
     );
     const result = await deps.persistence.approveApplication({
       applicationId,
@@ -892,7 +901,7 @@ async function replaceProjectManifest(
     invalidManifest(error);
   }
   assertReviewBudgetTransition(current.manifest, manifest, deps.now());
-  assertRegistryWith(projects, manifest);
+  assertRegistryWith(projects, manifest, { replaces: true });
   // Project skills are generated from this manifest and the reviewed
   // template, so a project goes live only with complete skill content.
   if (manifest.status === "active" && !publishesGeneratedSkills(manifest)) {
