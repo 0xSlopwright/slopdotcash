@@ -37,33 +37,36 @@ function RegistryBoot() {
   const [state, setState] = useState<BootState>({ status: "loading" });
   useEffect(() => {
     let active = true;
-    loadProjectRegistry()
-      .then(async (projects) => {
-        installProjectRegistry(projects);
-        try {
-          const { App } = await import("./App");
-          return App;
-        } catch (error) {
-          // error-policy:J1 an invalid registry is a visible error, never an empty list.
-          console.error(error);
-          throw new Error("The project registry did not pass validation.");
-        }
-      })
-      .then(
-        (App) => {
-          if (active) setState({ status: "ready", App });
-        },
-        (error: unknown) => {
-          if (active)
-            setState({
-              status: "error",
-              message:
-                error instanceof Error
-                  ? error.message
-                  : "The project registry could not be read.",
-            });
-        },
-      );
+    void (async () => {
+      let projects: unknown[];
+      let registryError: string | undefined;
+      try {
+        projects = await loadProjectRegistry();
+      } catch (error) {
+        // Account routes remain available; project routes show the outage.
+        projects = [];
+        registryError =
+          error instanceof Error
+            ? error.message
+            : "The project registry could not be read.";
+      }
+      if (!active) return;
+      globalThis.__SLOP_PROJECT_REGISTRY_ERROR__ = registryError;
+      installProjectRegistry(projects);
+      try {
+        const { App } = await import("./App");
+        if (active) setState({ status: "ready", App });
+      } catch (error) {
+        if (active)
+          setState({
+            status: "error",
+            message:
+              error instanceof Error
+                ? error.message
+                : "The application could not load.",
+          });
+      }
+    })();
     return () => {
       active = false;
     };

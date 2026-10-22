@@ -68,3 +68,14 @@ and rubric provenance, and an append-only successor record. Existing scores
 remain visible. Maintainer ratification overrides automation. Payout approval
 remains human. An incomplete assessment cannot imply a low-value outcome.
 Bot activity itself receives no contributor credit.
+
+## Registered repository scope
+
+Owner decision, 21 October 2026: the hosted rollout operates only on public
+repositories of active D1 projects. This restriction also applies before v2's
+effective date. App installation alone grants no review authority. Paused,
+retired, quarantined, banned and unregistered projects are outside the rollout.
+Read the live registry before queue intake, job execution, inference and each
+GitHub write. A read failure stops that action. A stale installation or queued
+job cannot override the registry. Protection-only operation is superseded for
+this rollout. Closure activation and financial decisions remain separate.

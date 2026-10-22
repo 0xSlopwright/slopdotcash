@@ -6,6 +6,7 @@ import { resumeBudgetBlocks } from "./budget-blocks";
 import type { Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import * as store from "./persistence";
+import { registeredRepository } from "./registry";
 import { type ReviewEnv, recordHumanSignal, reviewItem } from "./review";
 import { dispatchSpendAlert } from "./spend-alerts";
 import { valueHistory } from "./value-journal";
@@ -282,7 +283,15 @@ export default {
     }
     try {
       const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
-      if (job !== null) await env.SLOPBOT_QUEUE.send(job);
+      if (job !== null) {
+        if (!(await registeredRepository(env.SLOPBOT_DB, job))) {
+          await store.completeDelivery(env.SLOPBOT_DB, deliveryId);
+          return new Response("repository is not active in the Slop registry", {
+            status: 202,
+          });
+        }
+        await env.SLOPBOT_QUEUE.send(job);
+      }
       await store.completeDelivery(env.SLOPBOT_DB, deliveryId);
       return new Response(job === null ? "ignored" : "queued", {
         status: 202,

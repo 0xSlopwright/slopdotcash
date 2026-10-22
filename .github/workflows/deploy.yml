@@ -242,6 +242,7 @@ jobs:
     env:
       VITE_SLOP_ENVIRONMENT: ${{ (github.ref == 'refs/heads/development' || github.base_ref == 'development') && 'staging' || 'production' }}
       SLOP_E2E_PREBUILT: '1'
+      SLOP_E2E_VIDEO: '1'
       SLOP_E2E_LANE: ${{ matrix.server }}
     steps:
       - name: Checkout exact checked source

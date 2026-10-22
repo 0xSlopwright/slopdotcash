@@ -33,6 +33,7 @@ import {
   TRIAGE_ROUTE,
 } from "./models";
 import * as store from "./persistence";
+import { registeredRepository, requireRegisteredRepository } from "./registry";
 import { route } from "./routing";
 
 export type ReviewEnv = ModelEnv & {
@@ -555,6 +556,7 @@ async function upsertComment(
 ) {
   const db = env.SLOPBOT_DB;
   await store.assertReviewClaim(db, claim);
+  await requireRegisteredRepository(db, job);
   let existing = await store.commentId(db, context.issue.node_id);
   for (let attempt = 0; attempt < 2; attempt++) {
     if (existing === null) {
@@ -574,6 +576,7 @@ async function upsertComment(
       );
     }
     await store.assertReviewClaim(db, claim);
+    await requireRegisteredRepository(db, job);
     const updated = await context.github.request<{ id: number }>(
       "PATCH",
       `/repos/${job.owner}/${job.repo}/issues/comments/${existing}`,
@@ -592,6 +595,7 @@ async function upsertComment(
       throw new Error("GitHub review comment changed during recovery");
   }
   await store.assertReviewClaim(db, claim);
+  await requireRegisteredRepository(db, job);
   const created = await context.github.request<{ id: number }>(
     "POST",
     `/repos/${job.owner}/${job.repo}/issues/${job.number}/comments`,
@@ -620,6 +624,8 @@ export async function reviewItem(
   job: Extract<Job, { kind: "review" }>,
 ): Promise<string> {
   const db = env.SLOPBOT_DB;
+  if (!(await registeredRepository(db, job)))
+    return "repository is not active in the Slop registry";
   const install = await store.installation(db, job.installationId);
   const installationActive =
     install !== null &&
@@ -733,6 +739,7 @@ async function runReview(
   const { issue, config } = context;
   const claim = { reviewKey, token: claimToken };
   await store.assertReviewClaim(db, claim);
+  await requireRegisteredRepository(db, job);
   if (!routing.review) {
     await store.finishReview(db, reviewKey, claimToken, "skipped", {
       skipReason: routing.reason,
@@ -746,11 +753,13 @@ async function runReview(
   let triage: CallRecord | null = null;
   if (verdict === null) {
     await store.assertReviewClaim(db, claim);
+    await requireRegisteredRepository(db, job);
     const result = await runRoute(
       env,
       TRIAGE_ROUTE,
       buildPrompt(context, job.itemKind),
       "medium",
+      () => registeredRepository(db, job),
     );
     await store.recordCalls(
       db,
@@ -760,6 +769,8 @@ async function runReview(
       result.calls,
       billable && (await store.ownsReviewClaim(db, claim)),
     );
+    if (result.blocked)
+      throw new Error("Model call blocked by the live project registry");
     if (result.budgetResetAt) {
       await recordBudgetBlock(db, claim, job, result.budgetResetAt);
       return `blocked: provider budget until ${result.budgetResetAt}`;
@@ -796,11 +807,13 @@ async function runReview(
     else if (deterministic) close = true;
     else {
       await store.assertReviewClaim(db, claim);
+      await requireRegisteredRepository(db, job);
       const second = await runRoute(
         env,
         CONFIRM_ROUTE,
         buildPrompt(context, job.itemKind),
         "high",
+        () => registeredRepository(db, job),
       );
       await store.recordCalls(
         db,
@@ -810,6 +823,8 @@ async function runReview(
         second.calls,
         billable && (await store.ownsReviewClaim(db, claim)),
       );
+      if (second.blocked)
+        throw new Error("Model call blocked by the live project registry");
       if (second.budgetResetAt) {
         await recordBudgetBlock(db, claim, job, second.budgetResetAt);
         return `blocked: provider budget until ${second.budgetResetAt}`;
@@ -900,6 +915,7 @@ async function runReview(
     category,
   );
   await store.assertReviewClaim(db, claim);
+  await requireRegisteredRepository(db, job);
   const label = `slopbot: ${category.replaceAll("_", " ")}`;
   const labeled = await context.github.request<{ name: string }[]>(
     "POST",
@@ -927,6 +943,7 @@ async function runReview(
   );
   if (close) {
     await store.assertReviewClaim(db, claim);
+    await requireRegisteredRepository(db, job);
     const closed =
       job.itemKind === "pull_request"
         ? await context.github.request<{ state: string }>(
@@ -997,6 +1014,8 @@ export async function recordHumanSignal(
   job: Extract<Job, { kind: "appeal" | "human_reopen" }>,
 ) {
   const db = env.SLOPBOT_DB;
+  if (!(await registeredRepository(db, job)))
+    return "repository is not active in the Slop registry";
   const github = await GitHubClient.forInstallation(
     env.SLOPBOT_APP_ID,
     env.SLOPBOT_APP_PRIVATE_KEY,
@@ -1047,6 +1066,7 @@ export async function recordHumanSignal(
     String(job.senderId),
   );
   if (kind === "appeal") {
+    await requireRegisteredRepository(db, job);
     await github.request(
       "POST",
       `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,

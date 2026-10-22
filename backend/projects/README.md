@@ -73,6 +73,15 @@ serves these public artifacts from the current D1 revision:
 | `/projects/:id/[review-]skill-manifest.json` | Template revision, registry binding, guide renderer and archive routing |
 | `/projects/:id/downloads/<skill>.skill` and `.skill.sha256` | Deterministic skill archive and checksum |
 
+Project updates use `POST /api/v1/project-applications` with `manifest`,
+`expectedRevision`, and a public `reason`. Migration
+`0039_project_update_applications.sql` stores the base revision and reason.
+An update needs proven repository control and cannot change repository identity.
+It stays pending until an admin approves it. Approval appends a paused revision
+and records the application decision in the same D1 transaction. A changed base
+revision returns `409`; the applicant must review the current project and submit
+again. Activation still requires clearance for the new revision.
+
 ## Caching
 
 Public reads and artifacts use the Workers Cache API with a 30 second TTL

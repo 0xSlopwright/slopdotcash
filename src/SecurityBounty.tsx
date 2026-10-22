@@ -1536,13 +1536,16 @@ export function SecurityCasesPage() {
     <main className="shell route-main admin-page security-page">
       <div className="admin-intro">
         <h1>Security cases</h1>
-        <p>
-          Private. Only the reporter, the program's security maintainers,
-          assigned triagers, its finance approvers (award fields only) and its
-          independent dispute reviewers (appealed cases only) can see a case.
-          Slop admins have no automatic access. Slop never publishes cases or
-          counts them.
-        </p>
+        <details>
+          <summary>Who can access a case?</summary>
+          <p>
+            Private. Only the reporter, the program's security maintainers,
+            assigned triagers, its finance approvers (award fields only) and its
+            independent dispute reviewers (appealed cases only) can see a case.
+            Slop admins have no automatic access. Slop never publishes cases or
+            counts them.
+          </p>
+        </details>
         {session.status === "signed-in" ? (
           <p>Signed in as @{session.session.githubLogin}.</p>
         ) : null}

@@ -46,6 +46,8 @@ type ProjectRow = {
 };
 
 type ApplicationRow = {
+  expected_revision: number | null;
+  change_reason: string | null;
   id: string;
   project_id: string;
   repository_key: string;
@@ -68,7 +70,7 @@ type ApplicationRow = {
 const PROJECT_COLUMNS =
   "id, status, revision, manifest, manifest_sha256, created_at, updated_at, source_application_id";
 const APPLICATION_COLUMNS =
-  "id, project_id, repository_key, manifest, manifest_sha256, acceptance_criteria, applicant_github_id, applicant_github_login, submitted_at, status, admin_notification, admin_notification_at, decided_at, decided_by_github_id, decided_by_github_login, decision_reason, github_check";
+  "id, project_id, repository_key, manifest, manifest_sha256, acceptance_criteria, applicant_github_id, applicant_github_login, submitted_at, status, admin_notification, admin_notification_at, decided_at, decided_by_github_id, decided_by_github_login, decision_reason, github_check, expected_revision, change_reason";
 
 function projectFromRow(row: ProjectRow): ProjectRecord {
   return {
@@ -88,6 +90,12 @@ function applicationFromRow(row: ApplicationRow): ProjectApplication {
     id: row.id,
     projectId: row.project_id,
     repositoryKey: row.repository_key,
+    ...(row.expected_revision === null
+      ? {}
+      : {
+          expectedRevision: row.expected_revision,
+          changeReason: row.change_reason ?? "",
+        }),
     manifest: JSON.parse(row.manifest) as ProjectDefinition,
     manifestSha256: row.manifest_sha256,
     acceptanceCriteria: row.acceptance_criteria,
@@ -338,8 +346,8 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           `INSERT INTO project_applications (
              id, project_id, repository_key, manifest, manifest_sha256,
              acceptance_criteria, applicant_github_id, applicant_github_login,
-             submitted_at, status, admin_notification, github_check
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?)`,
+             submitted_at, status, admin_notification, github_check, expected_revision, change_reason
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?)`,
         )
         .bind(
           application.id,
@@ -352,6 +360,8 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           application.applicant.githubLogin,
           application.submittedAt,
           application.githubCheck,
+          application.expectedRevision ?? null,
+          application.changeReason ?? null,
         )
         .run();
       return "created";
@@ -489,7 +499,13 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
     // The revision applies only while no enforcement record has landed since
     // the caller read the restrictions it checked.
     const unrestricted =
-      "(SELECT COALESCE(MAX(rowid), 0) FROM project_enforcements) = ?";
+      "(SELECT COALESCE(MAX(rowid), 0) FROM project_enforcements) = ?" +
+      (input.applicationId
+        ? " AND EXISTS (SELECT 1 FROM project_applications WHERE id = ? AND status = 'pending' AND expected_revision = ?)"
+        : "");
+    const applicationBindings = input.applicationId
+      ? [input.applicationId, input.expectedRevision]
+      : [];
     const current = `EXISTS (SELECT 1 FROM projects WHERE id = ? AND revision = ?) AND ${unrestricted}`;
     try {
       const results = await this.db.batch([
@@ -512,6 +528,7 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
             input.projectId,
             input.expectedRevision,
             expectedEnforcementGeneration,
+            ...applicationBindings,
           ),
         this.db
           .prepare(
@@ -529,7 +546,28 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
             input.projectId,
             input.expectedRevision,
             expectedEnforcementGeneration,
+            ...applicationBindings,
           ),
+        ...(input.applicationId
+          ? [
+              this.db
+                .prepare(
+                  `UPDATE project_applications SET status = 'approved', decided_at = ?, decided_by_github_id = ?, decided_by_github_login = ?, decision_reason = ? WHERE id = ? AND status = 'pending' AND changes() = 1 AND EXISTS (SELECT 1 FROM project_revisions WHERE project_id = ? AND revision = ? AND manifest_sha256 = ? AND created_at = ?)`,
+                )
+                .bind(
+                  input.at,
+                  input.actor.githubId,
+                  input.actor.githubLogin,
+                  input.reason,
+                  input.applicationId,
+                  input.projectId,
+                  nextRevision,
+                  input.manifestSha256,
+                  input.at,
+                ),
+              notifyApplicationDecision(this.db, input.applicationId, input.at),
+            ]
+          : []),
         notifyProjectRevision(
           this.db,
           input.projectId,

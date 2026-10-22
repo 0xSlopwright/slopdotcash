@@ -1,5 +1,6 @@
 import { ExternalLink, Wallet as WalletIcon, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { browserDeployment } from "./lib/browser-deployment";
 import { readBoundedJson } from "./lib/browser-json";
 import {
   chainFamily,
@@ -156,7 +157,11 @@ function account(value: unknown): PaymentsAccount {
   return data;
 }
 
-export function EarningsPage() {
+export function EarningsPage({
+  walletsOnly = false,
+}: {
+  walletsOnly?: boolean;
+} = {}) {
   const wallets = usePayoutWallets();
   const [picker, setPicker] = useState<PaymentChain | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -324,13 +329,31 @@ export function EarningsPage() {
     );
   }
 
+  const Root = walletsOnly ? "section" : "main";
   return (
-    <main className="shell route-main earnings-page" aria-labelledby={heading}>
-      <h1 id={heading}>Your payouts</h1>
-      <p>
-        This page shows escrow payouts after the 2% fee deduction. Legacy
-        project cycles keep their recorded fee policy.
-      </p>
+    <Root
+      className={
+        walletsOnly ? "earnings-page" : "shell route-main earnings-page"
+      }
+      aria-labelledby={heading}
+      id={walletsOnly ? "wallets" : undefined}
+    >
+      {walletsOnly ? (
+        <h2 id={heading}>Wallets</h2>
+      ) : (
+        <h1 id={heading}>Your payouts</h1>
+      )}
+      {walletsOnly ? (
+        <p>
+          Connect and confirm a wallet for payouts. An address recorded without
+          wallet confirmation is not ready for payouts.
+        </p>
+      ) : (
+        <p>
+          Payouts after the 2% fee deduction.{" "}
+          <a href="/account#wallets">Manage payout wallets</a>
+        </p>
+      )}
       <dialog
         ref={dialog}
         className="wallet-picker"
@@ -414,8 +437,18 @@ export function EarningsPage() {
       {loading && <p role="status">Checking your payouts…</p>}
       {signedOut && !loading && (
         <div>
-          <p>Sign in with GitHub to view your payouts.</p>
-          <a className="button" href="/login?next=earnings">
+          <p>
+            Sign in with GitHub to{" "}
+            {walletsOnly ? "manage payout wallets" : "view your payouts"}.
+          </p>
+          <a
+            className="button"
+            href={
+              walletsOnly
+                ? "/login?next=%2Faccount%23wallets"
+                : "/login?next=earnings"
+            }
+          >
             Sign in with GitHub
           </a>
         </div>
@@ -432,315 +465,347 @@ export function EarningsPage() {
       {data && (
         <>
           {error && <p>Showing the last verified account response.</p>}
-          <section aria-label="Payout wallets" className="earnings-wallets">
-            {ESCROW_CHAINS.map((chain) => {
-              const wallet = data.wallets.find((w) => w.chain === chain);
-              // Each network and asset keeps its own balance; never summed.
-              const unpaid = data.balances.filter(
-                (b) => b.chain === chain && b.netBase !== "0",
-              );
-              const defaultNetwork = chainDefaultNetwork(chain);
-              return (
-                <article key={chain} className="funding-workbench">
-                  <h2>{networkName[chain]}</h2>
-                  {unpaid.length === 0 ? (
-                    <p>No unpaid awards</p>
-                  ) : (
-                    unpaid.map((b) => (
-                      <p key={`${b.network}:${b.assetAddress}`}>
-                        <strong>{formatAssetAmount(b.netBase, b)}</strong>{" "}
-                        unpaid
-                        {b.network === defaultNetwork
-                          ? ""
-                          : ` on ${networkLabels[b.network] ?? b.network}`}
-                      </p>
-                    ))
-                  )}
-                  {wallet ? (
-                    <p className="wallet-address">{wallet.address}</p>
-                  ) : (
-                    <p>
-                      Add a {networkName[chain]} wallet to receive awards on
-                      this network.
-                      {EVM_CHAINS.includes(chain)
-                        ? " Signing this consent does not require your wallet to be switched to this network."
-                        : ""}
-                    </p>
-                  )}
-                  {!wallet?.authorized &&
-                    data.walletObservations
-                      .filter(
-                        (o) =>
-                          o.chain === chain && o.address !== wallet?.address,
-                      )
-                      .slice(0, 1)
-                      .map((o) => (
-                        <p key={o.sourceUrl}>
-                          Your{" "}
+          {walletsOnly ? (
+            <>
+              <section aria-label="Payout wallets" className="earnings-wallets">
+                {ESCROW_CHAINS.map((chain) => {
+                  const wallet = data.wallets.find((w) => w.chain === chain);
+                  // Each network and asset keeps its own balance; never summed.
+                  const unpaid = data.balances.filter(
+                    (b) => b.chain === chain && b.netBase !== "0",
+                  );
+                  const defaultNetwork = chainDefaultNetwork(chain);
+                  return (
+                    <article key={chain} className="funding-workbench">
+                      <h2>{networkName[chain]}</h2>
+                      {unpaid.length === 0 ? (
+                        <p>No unpaid awards</p>
+                      ) : (
+                        unpaid.map((b) => (
+                          <p key={`${b.network}:${b.assetAddress}`}>
+                            <strong>{formatAssetAmount(b.netBase, b)}</strong>{" "}
+                            unpaid
+                            {b.network === defaultNetwork
+                              ? ""
+                              : ` on ${networkLabels[b.network] ?? b.network}`}
+                          </p>
+                        ))
+                      )}
+                      {wallet ? (
+                        <p>
+                          <span className="wallet-address">
+                            {wallet.address}
+                          </span>{" "}
                           <a
-                            href={o.sourceUrl}
+                            href={`${browserDeployment.api}/api/v1/wallet-claims/${encodeURIComponent(wallet.claimId)}`}
                             target="_blank"
                             rel="noreferrer"
                           >
-                            GitHub profile README
-                          </a>{" "}
-                          listed{" "}
-                          <span className="wallet-address">{o.address}</span> on{" "}
-                          {formatDate(o.observedAt)}. That record is history
-                          only. Connect and confirm a wallet to receive escrow
-                          payments.
-                        </p>
-                      ))}
-                  {wallet && (
-                    <p>
-                      {wallet.authorized
-                        ? "Confirmed for automatic payments"
-                        : "Confirm this wallet to enable automatic payments"}
-                    </p>
-                  )}
-                  {wallet?.activationEligibleAt &&
-                    Date.parse(wallet.activationEligibleAt) > Date.now() && (
-                      <p>
-                        Wallet change becomes eligible after{" "}
-                        {formatDateTime(wallet.activationEligibleAt)}. Existing
-                        awards remain reserved.
-                      </p>
-                    )}
-                  <button
-                    id={`${heading}-${chain}`}
-                    className="button secondary-button"
-                    type="button"
-                    disabled={busy !== null || pendingChange !== null}
-                    onClick={() => setPicker(chain)}
-                  >
-                    {busy === chain
-                      ? "Confirm in your wallet…"
-                      : `${wallet?.authorized ? "Change" : "Connect"} ${networkName[chain]} wallet`}
-                  </button>
-                  {pendingChange?.chain === chain && (
-                    <section
-                      className="wallet-confirmation"
-                      aria-labelledby={`${heading}-${chain}-change`}
-                    >
-                      <h3
-                        id={`${heading}-${chain}-change`}
-                        className="wallet-heading"
-                        ref={changeHeading}
-                        tabIndex={-1}
-                      >
-                        Register a different {networkName[chain]} address?
-                      </h3>
-                      <p>
-                        Your wallet returned a different account from your saved{" "}
-                        {networkName[chain]} address. Nothing has been
-                        registered yet.
-                      </p>
-                      <dl>
-                        <div>
-                          <dt>Saved address</dt>
-                          <dd>
-                            <code className="wallet-address">
-                              {pendingChange.saved}
-                            </code>
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>Wallet account</dt>
-                          <dd>
-                            <code className="wallet-address">
-                              {pendingChange.address}
-                            </code>
-                          </dd>
-                        </div>
-                      </dl>
-                      <p className="wallet-consequence">
-                        <strong>
-                          Your GitHub identity and this address become a public,
-                          permanent record.
-                        </strong>{" "}
-                        The new address appends a successor record; the earlier
-                        record stays public.
-                      </p>
-                      <div className="wallet-change-actions">
-                        <button
-                          className="button primary-button"
-                          type="button"
-                          onClick={confirmChange}
-                        >
-                          Register wallet account
-                        </button>
-                        <button
-                          className="button secondary-button"
-                          type="button"
-                          onClick={keepSaved}
-                        >
-                          Keep saved address
-                        </button>
-                      </div>
-                    </section>
-                  )}
-                </article>
-              );
-            })}
-          </section>
-          <p>
-            Payments publish your destination on chain. Wallet confirmation
-            authorizes that address to receive your awards; it does not transfer
-            funds from your wallet.
-          </p>
-          <section aria-labelledby={`${heading}-payments`}>
-            <h2 id={`${heading}-payments`}>Payment history</h2>
-            <button
-              className="button secondary-button"
-              type="button"
-              onClick={refresh}
-              disabled={loading}
-            >
-              Refresh payments
-            </button>
-            {data.payments.length === 0 ? (
-              <p>
-                No funded escrow awards yet. Proposed rewards appear on project
-                pages until they are approved and funded.
-              </p>
-            ) : (
-              <section
-                className="points-table"
-                aria-label="Payment history details; scroll horizontally for all columns"
-                // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll the payment history on narrow screens.
-                tabIndex={0}
-              >
-                <table>
-                  <caption>
-                    Approved, funded awards and verified payments
-                  </caption>
-                  <thead>
-                    <tr>
-                      <th>Project</th>
-                      <th>Network</th>
-                      <th>Gross award</th>
-                      <th>Fee</th>
-                      <th>You receive</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.payments.map((payment) => (
-                      <tr key={payment.id}>
-                        <td>
-                          <a
-                            href={`/projects/${encodeURIComponent(payment.projectId)}`}
-                          >
-                            {payment.projectId}
+                            View public record
                           </a>
-                        </td>
-                        <td>
-                          {networkLabels[payment.network] ?? payment.network}
-                        </td>
-                        <td>{formatAssetAmount(payment.grossBase, payment)}</td>
-                        <td>{formatAssetAmount(payment.feeBase, payment)}</td>
-                        <td>{formatAssetAmount(payment.netBase, payment)}</td>
-                        <td>
-                          {
-                            {
-                              paid: "Paid, verified on chain",
-                              needs_wallet: `Add or confirm ${networkName[payment.chain]} wallet`,
-                              awaiting_binding: "Awaiting automatic payment",
-                              submitted:
-                                "Submitted, waiting for chain verification",
-                              held: "Payment held, funds remain reserved",
-                            }[payment.deliveryState]
-                          }
-                          {transactionUrl(
-                            payment.network,
-                            payment.transactionId,
-                          ) && (
-                            <p>
+                        </p>
+                      ) : (
+                        <p>
+                          Add a {networkName[chain]} wallet to receive awards on
+                          this network.
+                          {EVM_CHAINS.includes(chain)
+                            ? " Signing this consent does not require your wallet to be switched to this network."
+                            : ""}
+                        </p>
+                      )}
+                      {!wallet?.authorized &&
+                        data.walletObservations
+                          .filter(
+                            (o) =>
+                              o.chain === chain &&
+                              o.address !== wallet?.address,
+                          )
+                          .slice(0, 1)
+                          .map((o) => (
+                            <p key={o.sourceUrl}>
+                              Your{" "}
                               <a
-                                href={
-                                  transactionUrl(
-                                    payment.network,
-                                    payment.transactionId,
-                                  ) ?? undefined
-                                }
+                                href={o.sourceUrl}
                                 target="_blank"
                                 rel="noreferrer"
                               >
-                                View verified transaction
-                              </a>
+                                GitHub profile README
+                              </a>{" "}
+                              listed{" "}
+                              <span className="wallet-address">
+                                {o.address}
+                              </span>{" "}
+                              on {formatDate(o.observedAt)}. That record is
+                              history only. Connect and confirm a wallet to
+                              receive escrow payments.
                             </p>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </section>
-            )}
-          </section>
-          {data.directTransfers.length > 0 && (
-            <section aria-labelledby={`${heading}-direct`}>
-              <h2 id={`${heading}-direct`}>Sent outside escrow</h2>
-              <p>
-                A project creator sent these transfers directly, before escrow
-                payouts. Each one is in a published disclosure and on chain. No
-                payout fee was deducted.
-              </p>
-              <section
-                className="points-table"
-                aria-label="Direct payment details; scroll horizontally for all columns"
-                // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll the payment history on narrow screens.
-                tabIndex={0}
-              >
-                <table>
-                  <caption>Direct transfers by contribution month</caption>
-                  <thead>
-                    <tr>
-                      <th>Project</th>
-                      <th>Month</th>
-                      <th>Network</th>
-                      <th>Received</th>
-                      <th>Transaction</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.directTransfers.map((t) => (
-                      <tr key={`${t.network}:${t.transactionId}`}>
-                        <td>
-                          <a
-                            href={`/projects/${encodeURIComponent(t.projectId)}`}
+                          ))}
+                      {wallet && (
+                        <p>
+                          {wallet.authorized
+                            ? "Confirmed for automatic payments"
+                            : "Confirm this wallet to enable automatic payments"}
+                        </p>
+                      )}
+                      {wallet?.activationEligibleAt &&
+                        Date.parse(wallet.activationEligibleAt) >
+                          Date.now() && (
+                          <p>
+                            Wallet change becomes eligible after{" "}
+                            {formatDateTime(wallet.activationEligibleAt)}.
+                            Existing awards remain reserved.
+                          </p>
+                        )}
+                      <button
+                        id={`${heading}-${chain}`}
+                        className="button secondary-button"
+                        type="button"
+                        disabled={busy !== null || pendingChange !== null}
+                        onClick={() => setPicker(chain)}
+                      >
+                        {busy === chain
+                          ? "Confirm in your wallet…"
+                          : `${wallet?.authorized ? "Change" : "Connect"} ${networkName[chain]} wallet`}
+                      </button>
+                      {pendingChange?.chain === chain && (
+                        <section
+                          className="wallet-confirmation"
+                          aria-labelledby={`${heading}-${chain}-change`}
+                        >
+                          <h3
+                            id={`${heading}-${chain}-change`}
+                            className="wallet-heading"
+                            ref={changeHeading}
+                            tabIndex={-1}
                           >
-                            {t.projectId}
-                          </a>
-                        </td>
-                        <td>{t.contributionMonth}</td>
-                        <td>{networkLabels[t.network] ?? t.network}</td>
-                        <td>{usdcAmount(t.amountMicro)}</td>
-                        <td>
-                          {transactionUrl(t.network, t.transactionId) ? (
-                            <a
-                              href={
-                                transactionUrl(t.network, t.transactionId) ??
-                                undefined
-                              }
-                              target="_blank"
-                              rel="noreferrer"
+                            Register a different {networkName[chain]} address?
+                          </h3>
+                          <p>
+                            Your wallet returned a different account from your
+                            saved {networkName[chain]} address. Nothing has been
+                            registered yet.
+                          </p>
+                          <dl>
+                            <div>
+                              <dt>Saved address</dt>
+                              <dd>
+                                <code className="wallet-address">
+                                  {pendingChange.saved}
+                                </code>
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>Wallet account</dt>
+                              <dd>
+                                <code className="wallet-address">
+                                  {pendingChange.address}
+                                </code>
+                              </dd>
+                            </div>
+                          </dl>
+                          <p className="wallet-consequence">
+                            <strong>
+                              Your GitHub identity and this address become a
+                              public, permanent record.
+                            </strong>{" "}
+                            The new address appends a successor record; the
+                            earlier record stays public.
+                          </p>
+                          <div className="wallet-change-actions">
+                            <button
+                              className="button primary-button"
+                              type="button"
+                              onClick={confirmChange}
                             >
-                              View transfer
-                            </a>
-                          ) : (
-                            t.transactionId
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                              Register wallet account
+                            </button>
+                            <button
+                              className="button secondary-button"
+                              type="button"
+                              onClick={keepSaved}
+                            >
+                              Keep saved address
+                            </button>
+                          </div>
+                        </section>
+                      )}
+                    </article>
+                  );
+                })}
               </section>
-            </section>
+              <p>
+                Payments publish your destination on chain. Wallet confirmation
+                authorizes that address to receive your awards; it does not
+                transfer funds from your wallet.
+              </p>
+            </>
+          ) : (
+            <>
+              <section aria-labelledby={`${heading}-payments`}>
+                <h2 id={`${heading}-payments`}>Payment history</h2>
+                <button
+                  className="button secondary-button"
+                  type="button"
+                  onClick={refresh}
+                  disabled={loading}
+                >
+                  Refresh payments
+                </button>
+                {data.payments.length === 0 ? (
+                  <p>
+                    No funded escrow awards yet. Proposed rewards appear on
+                    project pages until they are approved and funded.
+                  </p>
+                ) : (
+                  <section
+                    className="points-table"
+                    aria-label="Payment history details; scroll horizontally for all columns"
+                    // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll the payment history on narrow screens.
+                    tabIndex={0}
+                  >
+                    <table>
+                      <caption>
+                        Approved, funded awards and verified payments
+                      </caption>
+                      <thead>
+                        <tr>
+                          <th>Project</th>
+                          <th>Network</th>
+                          <th>Gross award</th>
+                          <th>Fee</th>
+                          <th>You receive</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.payments.map((payment) => (
+                          <tr key={payment.id}>
+                            <td>
+                              <a
+                                href={`/projects/${encodeURIComponent(payment.projectId)}`}
+                              >
+                                {payment.projectId}
+                              </a>
+                            </td>
+                            <td>
+                              {networkLabels[payment.network] ??
+                                payment.network}
+                            </td>
+                            <td>
+                              {formatAssetAmount(payment.grossBase, payment)}
+                            </td>
+                            <td>
+                              {formatAssetAmount(payment.feeBase, payment)}
+                            </td>
+                            <td>
+                              {formatAssetAmount(payment.netBase, payment)}
+                            </td>
+                            <td>
+                              {
+                                {
+                                  paid: "Paid, verified on chain",
+                                  needs_wallet: `Add or confirm ${networkName[payment.chain]} wallet`,
+                                  awaiting_binding:
+                                    "Awaiting automatic payment",
+                                  submitted:
+                                    "Submitted, waiting for chain verification",
+                                  held: "Payment held, funds remain reserved",
+                                }[payment.deliveryState]
+                              }
+                              {transactionUrl(
+                                payment.network,
+                                payment.transactionId,
+                              ) && (
+                                <p>
+                                  <a
+                                    href={
+                                      transactionUrl(
+                                        payment.network,
+                                        payment.transactionId,
+                                      ) ?? undefined
+                                    }
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    View verified transaction
+                                  </a>
+                                </p>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </section>
+                )}
+              </section>
+              {data.directTransfers.length > 0 && (
+                <section aria-labelledby={`${heading}-direct`}>
+                  <h2 id={`${heading}-direct`}>Sent outside escrow</h2>
+                  <p>
+                    A project creator sent these transfers directly, before
+                    escrow payouts. Each one is in a published disclosure and on
+                    chain. No payout fee was deducted.
+                  </p>
+                  <section
+                    className="points-table"
+                    aria-label="Direct payment details; scroll horizontally for all columns"
+                    // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard users must be able to scroll the payment history on narrow screens.
+                    tabIndex={0}
+                  >
+                    <table>
+                      <caption>Direct transfers by contribution month</caption>
+                      <thead>
+                        <tr>
+                          <th>Project</th>
+                          <th>Month</th>
+                          <th>Network</th>
+                          <th>Received</th>
+                          <th>Transaction</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.directTransfers.map((t) => (
+                          <tr key={`${t.network}:${t.transactionId}`}>
+                            <td>
+                              <a
+                                href={`/projects/${encodeURIComponent(t.projectId)}`}
+                              >
+                                {t.projectId}
+                              </a>
+                            </td>
+                            <td>{t.contributionMonth}</td>
+                            <td>{networkLabels[t.network] ?? t.network}</td>
+                            <td>{usdcAmount(t.amountMicro)}</td>
+                            <td>
+                              {transactionUrl(t.network, t.transactionId) ? (
+                                <a
+                                  href={
+                                    transactionUrl(
+                                      t.network,
+                                      t.transactionId,
+                                    ) ?? undefined
+                                  }
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  View transfer
+                                </a>
+                              ) : (
+                                t.transactionId
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </section>
+                </section>
+              )}
+            </>
           )}
         </>
       )}
-    </main>
+    </Root>
   );
 }

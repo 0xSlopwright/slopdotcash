@@ -8,7 +8,12 @@ disabled by `SLOPBOT_CLOSURE_ENABLED = "false"`.
 
 1. `POST /github/webhook` verifies `X-Hub-Signature-256`, records the delivery
    ID once, updates installation state, and enqueues identifiers only.
-2. The queue consumer gets an installation token and re-reads the
+2. Intake and the queue consumer check the live D1 project registry. Only active,
+   listed, unrestricted repositories proceed. `registry.ts` uses the existing
+   project repository index, validates the current manifest, and checks current
+   enforcement records. Missing registry rows skip; database errors retry.
+   Registry checks repeat before inference and GitHub writes. The queue consumer
+   then gets an installation token and re-reads the
    repository, the item, `.github/slopbot.json`, and `AGENTS.md`,
    `CONTRIBUTING.md` and `README.md` from the default branch at its current
    SHA.
@@ -716,3 +721,17 @@ Overlapping schedules claim each month/milestone once. Missing receipts and
 `ambiguous` receipts require operator reconciliation; do not delete claims or
 blindly resend. `accepted` means the email service accepted all recipients,
 not inbox delivery. Production activation and inbox receipt remain unverified.
+
+## Installation scope
+
+Use **Only select repositories** in each GitHub App installation. Read the
+current inventory from `GET /api/v1/projects`; select active, non-retired,
+unrestricted public repositories belonging to the installation account. Do not
+copy this inventory into source code or a second configuration list.
+
+On an approved registry change, reconcile the App selection. Adding App access
+alone cannot activate reviews. The Worker checks current D1 state, so pausing or
+restricting a project stops later work even if selection cleanup is delayed.
+If the App was installed while its webhook was inactive, recover its installation
+delivery after protected deployment; a missing installation row must not be
+invented as proof of a qualified shadow period.

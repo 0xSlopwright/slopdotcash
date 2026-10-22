@@ -4596,6 +4596,10 @@ small {
   gap: 10px;
 }
 
+.admin-fieldset {
+  min-width: 0;
+}
+
 .admin-actions label,
 .admin-editor label {
   display: grid;
@@ -4617,7 +4621,7 @@ small {
   font-weight: 400;
 }
 
-.admin-editor textarea {
+.admin-editor .admin-manifest {
   min-height: 360px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
@@ -4781,4 +4785,18 @@ small {
 .points-revisions dt {
   font-weight: 600;
   margin-block-start: 0.5rem;
+}
+
+.reward-exact-amount {
+  display: inline-block;
+  white-space: nowrap;
+  font-size: clamp(28px, 3.4vw, 44px);
+}
+.standings-scroll-hint {
+  display: none;
+}
+@media (max-width: 640px) {
+  .standings-scroll-hint {
+    display: block;
+  }
 }

@@ -397,6 +397,8 @@ function publicApplication(
     decidedBy: application.decidedBy,
     decisionReason: application.decisionReason,
     githubCheck: application.githubCheck,
+    expectedRevision: application.expectedRevision,
+    changeReason: application.changeReason,
   };
 }
 
@@ -457,11 +459,49 @@ async function submitApplication(
 ): Promise<Response> {
   const session = await requireSession(request, deps);
   const body = await readJsonObject(request);
-  exactKeys(body, ["manifest"]);
+  exactKeys(body, ["manifest"], ["expectedRevision", "reason"]);
+  const proposedId = (body.manifest as { id?: unknown } | null)?.id;
+  const current =
+    body.expectedRevision === undefined
+      ? null
+      : typeof proposedId === "string"
+        ? await deps.persistence.getProject(proposedId)
+        : null;
+  if (
+    body.expectedRevision !== undefined &&
+    (!current || current.revision !== body.expectedRevision)
+  )
+    fail(
+      409,
+      "stale_revision",
+      "Reload the project before proposing an update",
+    );
   const { manifest, text } = canonicalManifest(
-    await verifiedRewardAsset(body.manifest, undefined, deps),
+    await verifiedRewardAsset(
+      body.manifest,
+      current?.manifest.rewardAsset,
+      deps,
+    ),
   );
-  assertApplicationManifest(manifest);
+  if (current) {
+    if (manifest.status !== "paused")
+      fail(
+        422,
+        "invalid_manifest",
+        "Content updates must be reviewed while paused",
+      );
+    if (!sameRepositoryIdentity(current.manifest, manifest))
+      fail(
+        422,
+        "invalid_manifest",
+        "A project update cannot change repository identity",
+      );
+    try {
+      assertProjectPolicyTransition(current.manifest, manifest);
+    } catch (error) {
+      invalidManifest(error);
+    }
+  } else assertApplicationManifest(manifest);
   assertRepositoryUnrestricted(
     manifest,
     await deps.persistence.listEnforcements(),
@@ -482,10 +522,16 @@ async function submitApplication(
   }
   assertRegistryWith(await deps.persistence.listProjects(), manifest);
   const control = await repositoryControl(deps, manifest, actor);
-  if (control.state === "mismatch")
+  if (control.state === "mismatch" || (current && control.state !== "proven"))
     fail(422, "invalid_manifest", control.reason);
   const repository = manifest.repositories[0].id;
   const application: ProjectApplication & { manifestText: string } = {
+    ...(current
+      ? {
+          expectedRevision: current.revision,
+          changeReason: boundedText(body.reason, "reason", 1, 1000),
+        }
+      : {}),
     id: `app_${deps.randomId().replaceAll("-", "")}`,
     projectId: manifest.id,
     repositoryKey: repository.toLowerCase(),
@@ -612,6 +658,18 @@ async function decideApplication(
     if (result === "conflict") {
       fail(409, "already_decided", "Application was already decided");
     }
+  } else if (application.expectedRevision !== undefined) {
+    await replaceProjectManifest(
+      request,
+      deps,
+      application.projectId,
+      {
+        manifest: application.manifest,
+        expectedRevision: application.expectedRevision,
+        reason: application.changeReason,
+      },
+      application.id,
+    );
   } else {
     // Re-check against the live registry: another approval may have claimed
     // the id or repository since this application was submitted.
@@ -683,10 +741,12 @@ async function replaceProjectManifest(
   request: Request,
   deps: ProjectApiDependencies,
   projectId: string,
+  submittedBody?: Record<string, unknown>,
+  applicationId?: string,
 ): Promise<Response> {
   const session = await requireAdmin(request, deps);
   if (!PROJECT_ID.test(projectId)) fail(404, "not_found", "Project not found");
-  const body = await readJsonObject(request);
+  const body = submittedBody ?? (await readJsonObject(request));
   exactKeys(body, ["manifest", "expectedRevision", "reason"]);
   if (
     typeof body.expectedRevision !== "number" ||
@@ -778,6 +838,7 @@ async function replaceProjectManifest(
   const result = await deps.persistence.appendProjectRevision(
     {
       projectId,
+      applicationId,
       expectedRevision: current.revision,
       manifest,
       manifestText: text,

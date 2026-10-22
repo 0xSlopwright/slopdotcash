@@ -85,6 +85,27 @@ export function startGitHubApiFixture(port) {
       response.end(JSON.stringify({ enabled: state === "enabled" }));
       return;
     }
+    const ownedRepositories = /^\/users\/([^/]+)\/repos$/u.exec(path);
+    if (request.method === "GET" && ownedRepositories) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify(
+          ownedRepositories[1] === E2E_OWNER.login
+            ? ["wide-desktop", "desktop", "tablet", "narrow-mobile"].map(
+                (suffix) => ({
+                  ...fixtureRepository(
+                    `${E2E_OWNER.login}/owned-registry-${suffix}`,
+                  ),
+                  private: false,
+                  fork: false,
+                  archived: false,
+                }),
+              )
+            : [],
+        ),
+      );
+      return;
+    }
     const repository = /^\/repos\/([^/]+\/[^/]+)$/u.exec(path);
     const branch = /^\/repos\/([^/]+\/[^/]+)\/branches\/([^/]+)$/u.exec(path);
     // A stable integration-branch head, which security vetting pins.

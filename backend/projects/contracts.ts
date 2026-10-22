@@ -41,6 +41,8 @@ export type ApplicationStatus = "pending" | "approved" | "rejected";
 export type AdminNotification = "pending" | "sent" | "failed";
 
 export type ProjectApplication = {
+  expectedRevision?: number;
+  changeReason?: string;
   id: string;
   projectId: string;
   repositoryKey: string;
@@ -60,6 +62,7 @@ export type ProjectApplication = {
 };
 
 export type ProjectRevisionInput = {
+  applicationId?: string;
   projectId: string;
   /** Revision the caller read; the write fails if another write landed. */
   expectedRevision: number;

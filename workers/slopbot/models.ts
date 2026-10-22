@@ -53,12 +53,20 @@ export async function runRoute(
   route: Step[],
   prompt: Prompt,
   effort: "medium" | "high",
+  mayCall: () => Promise<boolean>,
 ) {
-  return runStructuredRoute(env, route, prompt, effort, {
-    name: "slopbot_verdict",
-    schema: VERDICT_SCHEMA,
-    validate: validateVerdict,
-  });
+  return runStructuredRoute(
+    env,
+    route,
+    prompt,
+    effort,
+    {
+      name: "slopbot_verdict",
+      schema: VERDICT_SCHEMA,
+      validate: validateVerdict,
+    },
+    mayCall,
+  );
 }
 
 // The Anthropic wire reports budget exhaustion as invalid_request_error,
@@ -101,14 +109,24 @@ export async function runStructuredRoute<T>(
     schema: Record<string, unknown>;
     validate(value: unknown): T | null;
   },
+  mayCall?: () => Promise<boolean>,
 ): Promise<{
   verdict: T | null;
   calls: CallRecord[];
   servedBy: CallRecord | null;
   budgetResetAt?: string;
+  blocked: boolean;
 }> {
   const calls: CallRecord[] = [];
   for (const [index, step] of route.entries()) {
+    // Recheck after a failed provider call, before starting the fallback.
+    try {
+      if (mayCall && !(await mayCall()))
+        return { verdict: null, calls, servedBy: null, blocked: true };
+    } catch {
+      // Return prior usage so the caller records it before retrying the job.
+      return { verdict: null, calls, servedBy: null, blocked: true };
+    }
     const record: CallRecord = {
       routeStep: index + 1,
       provider: step.provider,
@@ -141,7 +159,7 @@ export async function runStructuredRoute<T>(
       }
       record.outcome = "ok";
       calls.push(record);
-      return { verdict, calls, servedBy: record };
+      return { verdict, calls, servedBy: record, blocked: false };
     } catch (error) {
       // SDK errors can include provider response bodies. Never persist those
       // bodies: they may echo credentials or repository prompt material.
@@ -155,7 +173,13 @@ export async function runStructuredRoute<T>(
       if (resetAt !== null) {
         record.failure = "provider budget exhausted";
         calls.push(record);
-        return { verdict: null, calls, servedBy: null, budgetResetAt: resetAt };
+        return {
+          verdict: null,
+          calls,
+          servedBy: null,
+          blocked: false,
+          budgetResetAt: resetAt,
+        };
       }
       record.failure =
         typeof status === "number" && Number.isInteger(status)
@@ -164,7 +188,7 @@ export async function runStructuredRoute<T>(
       calls.push(record);
     }
   }
-  return { verdict: null, calls, servedBy: null };
+  return { verdict: null, calls, servedBy: null, blocked: false };
 }
 
 type CallResult = {

@@ -244,6 +244,19 @@ This is an explicit target change from `protocol/slopbot-v1.md`, which currently
 
 *Slopbot v2 amendment (approved by the repository owner on 9 October 2026, proposal Q10 and Q14):* Slopbot is billed at metered cost plus 10%. The billed amount for a run is `ceil(cost × 1.10)` in integer micro-USDC, where cost is the actual model charge for that run, including any confirmation call, priced from a reviewed price table that changes only at a future UTC month boundary. Pre-filtered items, Slop-caused retries, and failed provider calls are not billed. Charges are per review, never per closure. There is no free allowance (owner decision, 9 October 2026): an installation reviews nothing until it has a prepaid balance. Exhausted budget sets Suspended; nothing is reviewed or closed without budget. Publish a deterministic monthly invoice per installation.
 
+### Registered repository scope (owner decision, 21 October 2026)
+
+Slopbot runs only on public repositories of active projects in the live D1 registry.
+Installing the App does not register or activate a project. Paused, retired,
+quarantined, banned, and unregistered projects receive no automatic review.
+Check this rule before queueing, consuming a job, calling a model, or writing to
+GitHub. A registry read failure stops the action and permits a retry.
+Use selected-repository App installations. Compare their selection with the
+registry when a project activates, pauses, retires, or changes repository.
+The live check must stop stale queued work even before installation access changes.
+This decision replaces BOT-08 protection-only operation for the current rollout.
+It changes no score, payment, inference budget, or closure activation authority.
+
 ### Slopbot v2 requirements (approved by the repository owner on 9 October 2026)
 
 These requirements come from `docs/slopbot-v2-proposal.md`. Approval of the requirements does not activate closure: the protocol takes effect at its published effective time, and production still needs the protected deploy workflow, a registered App, and counsel review of prepaid balances.
@@ -1021,3 +1034,9 @@ Primary source map, all paths at the baseline above:
 Open work that needs reconciliation includes [unclaimed carry #477](https://github.com/SlopDotCash/slopdotcash/issues/477), [direct-payment reconciliation #455](https://github.com/SlopDotCash/slopdotcash/issues/455), [installer reauthorization #463](https://github.com/SlopDotCash/slopdotcash/issues/463), [work queue #456](https://github.com/SlopDotCash/slopdotcash/issues/456), [review policy #413](https://github.com/SlopDotCash/slopdotcash/issues/413), [private security credit #452](https://github.com/SlopDotCash/slopdotcash/issues/452), and [release separation #534](https://github.com/SlopDotCash/slopdotcash/issues/534). Their existence does not establish approval or completion. [Base settlement #472](https://github.com/SlopDotCash/slopdotcash/issues/472) and [vault RFC #500](https://github.com/SlopDotCash/slopdotcash/issues/500) concern the removed legacy modes. PRs [508](https://github.com/SlopDotCash/slopdotcash/pull/508), [509](https://github.com/SlopDotCash/slopdotcash/pull/509), [510](https://github.com/SlopDotCash/slopdotcash/pull/510), and [511](https://github.com/SlopDotCash/slopdotcash/pull/511) merged a legacy committed-instrument mode (a 2-of-3 Squads project vault with a 1% fee that the creator paid separately). The 18 October 2026 decision removes that mode; its records stay in git history.
 
 Live browser inspection was attempted but blocked by in-app navigation timeout and browser request-header-policy errors. No authenticated login, provider activation, private database inspection, on-chain vault audit, payment, or deployed-byte comparison was performed. All route findings above are bounded to source inspection. Visual and operational acceptance remains explicit in the MVP plan.
+
+## Proposed quality closure amendment
+
+The owner requested [objective quality closure rules](slopbot-quality-closure-proposal.md)
+on 21 October 2026. The proposal awaits approval of its exact criteria and
+effective date. BOT-06 still prohibits `low_quality` closure until then.
