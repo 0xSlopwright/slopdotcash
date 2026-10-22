@@ -1423,9 +1423,24 @@ async function planChange(
     case "decide-related-party": {
       exactKeys(body, [...common, "outcome", "reason"]);
       requireAction(row, roles, action);
-      // The reviewer is independent of the technical decision (SEC-12).
-      if (row.technical_decider_github_id === actor.githubId)
-        fail(403, "conflicted", "You decided this case; another reviewer must");
+      // A later appeal must not erase an earlier reviewer's conflict. The
+      // immutable journal retains every related-party and appeal decision.
+      const priorReview = await deps.db
+        .prepare(
+          "SELECT 1 AS found FROM security_case_events WHERE case_id = ? AND actor_github_id = ? AND kind IN ('decide-related-party', 'decide-appeal') LIMIT 1",
+        )
+        .bind(row.id, actor.githubId)
+        .first<{ found: number }>();
+      if (
+        row.technical_decider_github_id === actor.githubId ||
+        row.related_party_reviewer_github_id === actor.githubId ||
+        priorReview !== null
+      )
+        fail(
+          403,
+          "conflicted",
+          "You already reviewed this case; another reviewer must",
+        );
       const outcome = choice(body, "outcome", ["approve", "refuse"] as const);
       const reason = textField(body, "reason", 8, 2000);
       const reviewed = {
