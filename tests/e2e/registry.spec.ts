@@ -492,7 +492,7 @@ test("an owner's proof and generated skills reach the admin, who lists and delis
     waitUntil: "networkidle",
   });
   await returningOwner
-    .getByLabel("Short description", { exact: true })
+    .getByRole("textbox", { name: "Short description", exact: true })
     .fill("Useful accepted outcomes with a clearer project scope");
   await returningOwner
     .getByLabel("Reason for the change", { exact: true })
@@ -510,6 +510,7 @@ test("an owner's proof and generated skills reach the admin, who lists and delis
   await admin.reload({ waitUntil: "networkidle" });
   const update = admin.locator(".admin-card", {
     has: admin.getByRole("button", { name: "Approve paused revision" }),
+    hasText: project.repository,
   });
   await expect(update).toContainText(
     "Clarify the project scope for contributors",
@@ -668,9 +669,16 @@ test("an admin cannot activate or publish skills without canonical scan closure 
   await expect(
     card.getByRole("button", { name: "Save revision 2" }),
   ).toBeDisabled();
-  pausedManifest.headline =
-    "A reviewed paused project awaiting complete security evidence.";
   await manifestEditor.fill(JSON.stringify(pausedManifest, null, 2));
+  await card
+    .getByRole("textbox", { name: "Short description", exact: true })
+    .fill("A reviewed paused project awaiting complete security evidence.");
+  expect(JSON.parse(await manifestEditor.inputValue()).headline).toBe(
+    "A reviewed paused project awaiting complete security evidence.",
+  );
+  await card
+    .getByText("Advanced project settings (revision 1)", { exact: true })
+    .click();
   await card
     .getByLabel("Reason for this revision (public history)")
     .fill("Clarify paused project description");
@@ -682,6 +690,15 @@ test("an admin cannot activate or publish skills without canonical scan closure 
   await expect(
     card.getByRole("region", { name: "Revision changes" }),
   ).toContainText("headline");
+  await expect(
+    card.getByRole("textbox", { name: "Short description", exact: true }),
+  ).toHaveValue(
+    "A reviewed paused project awaiting complete security evidence.",
+  );
+  await admin.screenshot({
+    path: test.info().outputPath("admin-routine-edit.png"),
+    fullPage: true,
+  });
   await card.getByRole("button", { name: "Save revision 2" }).click();
   await expect(card).toContainText("2 · updated");
   await expectAccessible(admin);

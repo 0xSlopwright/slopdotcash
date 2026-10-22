@@ -479,15 +479,17 @@ function ProjectEditor({
     }),
   ) as Record<ContributionField, string | null>;
   const network = REWARD_ASSET_NETWORKS[asset.network];
+  let projectFields: Record<string, unknown> | null = null;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      projectFields = parsed;
+  } catch {
+    // Keep invalid advanced input editable without replacing it.
+  }
   const buildManifest = () => {
-    let manifest: Record<string, unknown>;
-    try {
-      manifest = JSON.parse(text) as Record<string, unknown>;
-      if (!manifest || typeof manifest !== "object" || Array.isArray(manifest))
-        throw new Error("Expected an object");
-    } catch {
-      throw new Error("The manifest is not valid JSON.");
-    }
+    const manifest = projectFields;
+    if (!manifest) throw new Error("The manifest is not a valid JSON object.");
     if (
       ["status", "contribution", "rewardAsset"].some((key) =>
         Object.hasOwn(manifest, key),
@@ -607,6 +609,38 @@ function ProjectEditor({
           ? "This browser cannot preserve your draft. Keep this editor open until saved."
           : "Draft kept in this browser tab for this project revision."}
       </p>
+      <fieldset className="admin-fieldset" disabled={projectFields === null}>
+        <legend>Project details</legend>
+        {(
+          [
+            ["name", "Project name", 80],
+            ["headline", "Short description", 120],
+            ["description", "Goal", 600],
+          ] as const
+        ).map(([field, label, maxLength]) => (
+          <label key={field}>
+            {label}
+            <textarea
+              rows={field === "description" ? 3 : 1}
+              maxLength={maxLength}
+              value={
+                typeof projectFields?.[field] === "string"
+                  ? projectFields[field]
+                  : ""
+              }
+              onChange={(event) =>
+                setText(
+                  JSON.stringify(
+                    { ...projectFields, [field]: event.target.value },
+                    null,
+                    2,
+                  ),
+                )
+              }
+            />
+          </label>
+        ))}
+      </fieldset>
       <fieldset className="admin-fieldset">
         <legend>Status</legend>
         <ActivationClearance
@@ -632,36 +666,37 @@ function ProjectEditor({
           <a href="#admin-vetting">security review</a> before activation.
         </p>
       </fieldset>
-      <fieldset className="admin-fieldset">
-        <legend>Generated skill contribution fields</legend>
-        <p className="admin-status">
-          The generated skills carry these fields as data in project.json; they
-          never become skill instructions.
-        </p>
-        {CONTRIBUTION_FIELDS.map((field) => (
-          <label key={field}>
-            {CONTRIBUTION_LABELS[field].label}
-            <textarea
-              aria-invalid={skillErrors[field] ? true : undefined}
-              onChange={(event) =>
-                setSkill((current) => ({
-                  ...current,
-                  [field]: event.target.value,
-                }))
-              }
-              rows={field === "securityContact" ? 1 : 4}
-              value={skill[field]}
-            />
-            {skillErrors[field] ? (
-              <small className="field-error">{skillErrors[field]}</small>
-            ) : (
-              <small className="field-hint">
-                {CONTRIBUTION_LABELS[field].hint}
-              </small>
-            )}
-          </label>
-        ))}
-      </fieldset>
+      <details
+        open={Object.values(skillErrors).some((value) => value !== null)}
+      >
+        <summary>Customize contributor instructions</summary>
+        <fieldset className="admin-fieldset">
+          <legend>Contribution fields</legend>
+          {CONTRIBUTION_FIELDS.map((field) => (
+            <label key={field}>
+              {CONTRIBUTION_LABELS[field].label}
+              <textarea
+                aria-invalid={skillErrors[field] ? true : undefined}
+                onChange={(event) =>
+                  setSkill((current) => ({
+                    ...current,
+                    [field]: event.target.value,
+                  }))
+                }
+                rows={field === "securityContact" ? 1 : 4}
+                value={skill[field]}
+              />
+              {skillErrors[field] ? (
+                <small className="field-error">{skillErrors[field]}</small>
+              ) : (
+                <small className="field-hint">
+                  {CONTRIBUTION_LABELS[field].hint}
+                </small>
+              )}
+            </label>
+          ))}
+        </fieldset>
+      </details>
       <fieldset className="admin-fieldset">
         <legend>Reward asset</legend>
         <label>
