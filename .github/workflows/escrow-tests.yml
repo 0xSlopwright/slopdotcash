@@ -69,6 +69,16 @@ jobs:
         with:
           version: v1.7.1
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Install pinned skill validator dependency
+        run: |
+          printf '%s\n' \
+            'PyYAML==6.0.3 --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6' \
+            > "$RUNNER_TEMP/slop-python-requirements.txt"
+          python -m pip install \
+            --disable-pip-version-check \
+            --require-hashes \
+            --requirement "$RUNNER_TEMP/slop-python-requirements.txt"
+
       - run: forge fmt --root contracts/evm --check
       - run: forge build --root contracts/evm --sizes
       - run: forge test --root contracts/evm
@@ -115,6 +125,16 @@ jobs:
         with:
           bun-version: '1.3.14'
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Install pinned skill validator dependency
+        run: |
+          printf '%s\n' \
+            'PyYAML==6.0.3 --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6' \
+            > "$RUNNER_TEMP/slop-python-requirements.txt"
+          python -m pip install \
+            --disable-pip-version-check \
+            --require-hashes \
+            --requirement "$RUNNER_TEMP/slop-python-requirements.txt"
+
       - run: bash contracts/solana/scripts/bootstrap-linux.sh
       - run: bun run test:contracts:solana
       - run: bunx playwright install --with-deps chromium
