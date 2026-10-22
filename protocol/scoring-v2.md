@@ -152,3 +152,30 @@ the underlying accepted outcome and any finalized private-trace bonus remain.
 No KYC is required. Abuse resistance comes from immutable GitHub actor and
 artifact IDs, work-unit grouping, exact-head decisions, public human authority,
 and append-only corrections—not identity documents.
+
+## Owner-approved provisional valuation extension (SCR-06)
+
+On 9 October 2026 the owner approved automatic provisional value assessments
+for all active projects and a separate September/October reassessment. The
+implementation and acceptance gates are in
+[`slop-value-scoring-plan.md`](../docs/slop-value-scoring-plan.md). This
+extension does not authorize payout, exclusions, penalties or closure powers.
+
+An authenticated, complete, exact-revision value assessment replaces the flat
+provisional merge default for its covered work unit. Maintainer ratification
+still takes precedence. The old default is an unassessed state, not a claim
+that all work has equal value. Missing evidence is unresolved. Demonstrated
+absence of an independent retained outcome can have zero provisional value.
+
+Assess related implementations, follow-up repairs and integrations together.
+Conserve the assessed work-unit total across its credited contributors and
+source PRs: adding another PR or actor must not create an extra minimum award.
+Show the distinct implementation, validation and integration reasons. Neither
+line count nor an unexplained merge or approval establishes that contribution.
+
+Publish each revision with its source digest, head, policy/rubric version,
+model provenance, rationale, predecessor and effective time. Retain the prior
+published score. Do not rewrite a frozen cycle or change an approved, funded,
+scheduled or paid obligation through this provisional extension. Review
+activity keeps its actual source date; a later merge does not move an August
+review into the September or October activity ledger.

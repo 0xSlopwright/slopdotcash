@@ -36,11 +36,20 @@ function env(): never {
 /** Env with an in-memory delivery table and a queue that records sends. */
 function trackedEnv() {
   const deliveries = new Set<string>();
+  const processed = new Set<string>();
   const queued: unknown[] = [];
   const db = {
     batch: async () => [],
     prepare: (sql: string) => ({
       bind: (...args: unknown[]) => ({
+        first: async () =>
+          deliveries.has(String(args[0]))
+            ? {
+                processed_at: processed.has(String(args[0]))
+                  ? "complete"
+                  : null,
+              }
+            : null,
         run: async () => {
           if (sql.startsWith("INSERT OR IGNORE INTO slopbot_deliveries")) {
             const id = String(args[0]);
@@ -48,6 +57,8 @@ function trackedEnv() {
             deliveries.add(id);
             return { meta: { changes: fresh ? 1 : 0 } };
           }
+          if (sql.startsWith("UPDATE slopbot_deliveries SET processed_at"))
+            processed.add(String(args[1]));
           if (sql.startsWith("DELETE FROM slopbot_deliveries")) {
             deliveries.delete(String(args[0]));
           }

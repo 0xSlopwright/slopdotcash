@@ -550,6 +550,14 @@ export function ProfilePoints({
       <ProfileActivity
         work={work}
         awards={m?.awards}
+        revisions={
+          state.status === "ready" && (resolvedActorId ?? m?.actor.id)
+            ? state.journal.revisions.filter(
+                (revision) =>
+                  revision.award.actor.id === (resolvedActorId ?? m?.actor.id),
+              )
+            : undefined
+        }
         login={login}
         actorId={resolvedActorId ?? m?.actor.id}
         census={census}

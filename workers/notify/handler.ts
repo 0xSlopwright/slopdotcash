@@ -8,6 +8,9 @@ import {
   NOTIFY_INTERNAL_HOST,
   PROJECT_APPLICATION_NOTICE_PATH,
   type ProjectApplicationNotice,
+  SLOPBOT_SPEND_NOTICE_PATH,
+  type SlopbotSpendNotice,
+  validSpendNotice,
 } from "./contracts";
 
 export type NotifyWorkerDependencies = {
@@ -270,7 +273,25 @@ function rfc5322Date(date: Date): string {
   return date.toUTCString().replace(/ GMT$/u, " +0000");
 }
 
-function noticeText(notice: ProjectApplicationNotice): string {
+function spendDollars(micro: number): string {
+  const value = BigInt(micro);
+  return `$${value / 1_000_000n}.${String((value % 1_000_000n) / 10_000n).padStart(2, "0")}`;
+}
+
+function noticeText(
+  notice: ProjectApplicationNotice | SlopbotSpendNotice,
+): string {
+  if ("month" in notice)
+    return [
+      `Slopbot recorded API cost crossed ${spendDollars(notice.thresholdMicroUsd)} for ${notice.month} (UTC).`,
+      `Recorded total: ${spendDollars(notice.recordedMicroUsd)}.`,
+      `Calls priced from estimates rather than provider-reported charges: ${notice.estimatedCalls}.`,
+      "Provider-reported charges are used where available; estimates are not a settled invoice.",
+      "This includes failed provider calls. Contributor charges and the service markup are not API cost.",
+      "This alert does not change a budget, authorize spending, or approve a payout.",
+      "Review Slopbot costs: https://slop.cash/admin",
+      "",
+    ].join("\n");
   const name = stripControls(notice.projectName);
   return [
     "A person submitted a new project application to Slop.",
@@ -288,7 +309,7 @@ function noticeText(notice: ProjectApplicationNotice): string {
 }
 
 export function buildNoticeMime(
-  notice: ProjectApplicationNotice,
+  notice: ProjectApplicationNotice | SlopbotSpendNotice,
   from: string,
   to: string,
   date: Date,
@@ -300,7 +321,9 @@ export function buildNoticeMime(
     [
       "Subject",
       encodeHeaderValue(
-        `New Slop project application: ${stripControls(notice.projectName)}`,
+        "month" in notice
+          ? `Slopbot API cost: ${notice.month} crossed ${spendDollars(notice.thresholdMicroUsd)}`
+          : `New Slop project application: ${stripControls(notice.projectName)}`,
       ),
     ],
     ["Date", rfc5322Date(date)],
@@ -327,7 +350,9 @@ export async function handleNotifyRequest(
   if (
     url.protocol !== "https:" ||
     url.host !== NOTIFY_INTERNAL_HOST ||
-    url.pathname !== PROJECT_APPLICATION_NOTICE_PATH ||
+    ![PROJECT_APPLICATION_NOTICE_PATH, SLOPBOT_SPEND_NOTICE_PATH].includes(
+      url.pathname,
+    ) ||
     url.search !== ""
   ) {
     return json(404, { error: "not_found" });
@@ -335,9 +360,14 @@ export async function handleNotifyRequest(
   if (request.method !== "POST") {
     return json(405, { error: "method_not_allowed" }, { allow: "POST" });
   }
-  let notice: ProjectApplicationNotice;
+  let notice: ProjectApplicationNotice | SlopbotSpendNotice;
   try {
-    notice = parseNotice(await readBoundedJson(request), deps.tier);
+    const body = await readBoundedJson(request);
+    if (url.pathname === SLOPBOT_SPEND_NOTICE_PATH) {
+      if (!validSpendNotice(body))
+        throw new InvalidRequest("Invalid cost notice");
+      notice = body;
+    } else notice = parseNotice(body, deps.tier);
   } catch (error) {
     if (error instanceof InvalidRequest) {
       return json(400, { error: "invalid_request" });

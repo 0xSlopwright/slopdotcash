@@ -1,3 +1,5 @@
+import type { readValueDecision } from "../../workers/slopbot/value-consumption";
+import type { consumeWorkUnitHistory } from "../../workers/slopbot/value-work-unit-consumption";
 /** Public snapshot contracts. Historical records retain their original semantics. */
 
 import type {
@@ -99,6 +101,7 @@ export interface PullRequestRecord {
    */
   editor: GitHubActor | null;
   mergedAt: string | null;
+  closedAt?: string | null;
   headRefOid: string;
   isDraft: boolean;
   reviewDecision: string | null;
@@ -141,6 +144,8 @@ export type MergedPullRequestReviewRecord = Pick<
 >;
 
 export interface MergedPullRequestOutcome {
+  /** Exact source head; older saved inputs can omit it but cannot use valuations. */
+  headRefOid?: string;
   id: string;
   number: number;
   title: string;
@@ -283,6 +288,7 @@ export interface ScoreEvent {
   evidenceBonusBasisPoints?: 0 | 1_000 | 1_500 | 2_500;
   workUnitId?: string;
   scoreDecisionSourceId?: string;
+  scoreDecisionAt?: string;
   occurredAt: string;
   repository: RepositoryId;
   source: {
@@ -500,6 +506,7 @@ export interface LeaderboardSourceMetadata {
     resetAt: string;
   };
   counts: {
+    closedUnmergedPullRequests?: number;
     mergedPullRequests: number;
     detailedMergedPullRequests: number;
     closedIssues: number;
@@ -539,6 +546,13 @@ export interface LeaderboardSnapshot {
   source: LeaderboardSourceMetadata;
   leaders: LeaderboardEntry[];
   ledger: ScoreEvent[];
+  valueAssessmentCoverage?: {
+    pullRequestId: string;
+    repository: RepositoryId;
+    pullRequestNumber: number;
+    status: string;
+    recordDigest: string | null;
+  }[];
   reviewExclusions?: ReviewExclusion[];
   /** Separate allocation weights; never consumed by Score or Points. */
   paymentReviewBasis?: {
@@ -567,6 +581,20 @@ export interface LeaderboardSnapshot {
 }
 
 export interface LeaderboardInput {
+  /** GitHub-resolved identities for assessment coauthors absent from ordinary hydration. */
+  valueActors?: ReadonlyMap<string, GitHubActor>;
+  /** Trusted journal decisions verified against fresh complete source evidence. */
+  valueDecisions?: ReadonlyMap<
+    string,
+    Awaited<ReturnType<typeof readValueDecision>>
+  >;
+  /** A shared decision is indexed by each member PR, but scored once per unit. */
+  jointValueDecisions?: ReadonlyMap<
+    string,
+    Awaited<ReturnType<typeof consumeWorkUnitHistory>>
+  >;
+  /** Complete human context for joint members outside the census; never counted as new outcomes. */
+  valueContextPullRequests?: MergedPullRequestReviewRecord[];
   generatedAt: string;
   windowFrom: string;
   windowTo: string;
@@ -575,6 +603,7 @@ export interface LeaderboardInput {
   mergedPullRequestOutcomes: MergedPullRequestOutcome[];
   mergedPullRequests: PullRequestRecord[];
   reviewedMergedPullRequests?: MergedPullRequestReviewRecord[];
+  closedUnmergedPullRequests?: PullRequestRecord[];
   detailEligibleMergedPullRequestIds: string[];
   closedIssueCount: number;
   resolvedIssues: IssueRecord[];
