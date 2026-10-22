@@ -151,6 +151,9 @@ export async function publishValueAssessment(
     throw new Error(
       "Value publication must supersede the current journal record",
     );
+  // Repository deselection leaves the installation active. Recheck membership
+  // after source reads, just as grouped publication does.
+  await assertValueInstallationRepositories(github, [current.evidence]);
   // A removal or suspension received while inference/source reads ran wins.
   await assertValueInstallation(env.SLOPBOT_DB, job.installationId);
   return appendValueRecord(env.SLOPBOT_DB, prepared, job.installationId);

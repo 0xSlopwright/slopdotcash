@@ -650,3 +650,11 @@ Publication still requires the installation's repository authority and a fresh
 source read. This change adds no public import endpoint, operator credentials,
 production activation, human ratification or payout authority. The authenticated
 historical intake and ongoing automatic dispatch remain separate delivery gates.
+
+Single-source publication rechecks installation repository selection after the
+source read, as grouped publication does. Removing one repository does not
+suspend the whole installation. A local check used the real publisher, captured
+public GitHub evidence and the migrated SQLite journal: before the fix, removal
+during the source read still appended a row; after the fix, it appends no row.
+An unchanged selection still appends one row. This is controlled local evidence,
+not proof of a live App permission change.
