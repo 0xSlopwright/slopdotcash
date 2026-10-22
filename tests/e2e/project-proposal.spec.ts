@@ -16,7 +16,10 @@ import {
   lookupGitHubRepository,
 } from "../../backend/projects/github-lookup";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
-import { assertProjectDefinition } from "../../src/lib/project-schema.mjs";
+import {
+  assertProjectDefinition,
+  MAX_PROJECT_ID_LENGTH,
+} from "../../src/lib/project-schema.mjs";
 import { REWARD_ASSET_NETWORKS } from "../../src/lib/reward-asset.mjs";
 
 const deployment = deploymentOrigins(
@@ -688,7 +691,10 @@ test("a signed-in maintainer picks an owned repository and gets suggested text",
 
 for (const [name, expectedId] of [
   ["한글 프로젝트", "open-protein"],
-  [`${"a".repeat(47)} b`, "a".repeat(47)],
+  [
+    `${"a".repeat(MAX_PROJECT_ID_LENGTH - 1)} b`,
+    "a".repeat(MAX_PROJECT_ID_LENGTH - 1),
+  ],
 ]) {
   test(`submits a valid project identity for ${name}`, async ({ page }) => {
     const errors = observe(page);
