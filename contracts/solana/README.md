@@ -144,16 +144,26 @@ Identity key compromised: the owner proposes the replacement at once; the
 exposure window is the rotation delay. During it the attacker can submit only
 bindings that a wallet co-signs, each activating after `binding_delay`. The
 owner watches `WalletBound` and vetoes any binding it did not expect with
-`veto_binding`, which costs the contributor a delay and nothing else. After
-execution the old key cannot bind. Rotation never vetoes or re-points a
-binding by itself, so review every binding made during the window. The owner
-vetoes late in each binding's delay, so three vetoes and the fourth binding's
-own delay cover at least four binding delays: 8 days at the 48-hour production
-minimum, longer than a 7-day rotation delay. After execution the new authority
-co-signs the contributor's binding as the next version before the attacker's
-last binding activates, and only the latest binding pays. A project whose
-rotation delay is longer than four binding delays must choose a longer binding
-delay.
+`veto_binding`, which costs the contributor a delay and nothing else. The fee
+recipient confirms the proposal at once: while a confirmed proposal is
+pending, `MAX_VETOES_BETWEEN_PAYMENTS` does not apply and vetoes are not
+counted, so the owner's cover does not depend on how many vetoes it had spent
+on that actor before the compromise. Until the confirmation lands the cap
+still applies, so the fee recipient must confirm within one binding delay of
+the proposal (48 hours in production) for an actor whose vetoes are already
+spent. The owner vetoes late in each binding's delay; each veto forces the
+attacker to bind again with a fresh delay, so the attacker's last binding,
+made before execution, activates at least `binding_delay` after it was made,
+and the new authority co-signs the contributor's binding as the next version
+at execution, before that binding activates. The old key cannot bind after
+execution, and only the latest binding pays. Rotation never vetoes or
+re-points a binding by itself, so review every binding made during the
+window. The end-to-end test "veto cap is waived during a confirmed authority
+rotation and resumes after it" in `integration/escrow.e2e.mjs` runs this
+sequence starting with one earlier veto on the actor. The registry still
+requires the rotation delay to be shorter than four binding delays, so that
+with no earlier veto the capped vetoes alone outlast the notice even before
+the confirmation lands.
 
 Owner key lost: awards, withdrawals and rotation proposals for that project
 stop (other parties can still deposit, but nobody can commit or withdraw the

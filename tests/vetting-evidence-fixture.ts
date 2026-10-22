@@ -65,7 +65,7 @@ export async function localVettingEvidence(
       new Promise<never>((_, reject) => {
         startupTimer = setTimeout(
           () => reject(new Error("Local R2 startup timed out")),
-          4000,
+          15000,
         );
       }),
     ]);

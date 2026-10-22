@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { assembleEvidence } from "../workers/vetting/assembly";
+import { indexSyscalls, syscallEvidence } from "../workers/vetting/events";
 
 const [
   acquisitionDirectory,
@@ -21,6 +22,7 @@ const [
   guestProfile,
   dependencyDirectory,
   dependencyFailureDirectory,
+  provenanceDirectory,
 ] = process.argv.slice(2);
 if (
   !acquisitionDirectory ||
@@ -29,7 +31,7 @@ if (
   !outputDirectory
 )
   throw new Error(
-    "usage: bun scripts/vetting-assembly-workflow.ts ACQUISITION ARTIFACT_REPORTS VM_OUTPUT PRIVATE_OUTPUT_PARENT [APPROVED_GUEST_PROFILE_OR_DASH] [DEPENDENCY_DIRECTORY] [FAILED_DEPENDENCY_DIRECTORY]",
+    "usage: bun scripts/vetting-assembly-workflow.ts ACQUISITION ARTIFACT_REPORTS VM_OUTPUT PRIVATE_OUTPUT_PARENT [APPROVED_GUEST_PROFILE_OR_DASH] [DEPENDENCY_DIRECTORY] [FAILED_DEPENDENCY_DIRECTORY] [PROVENANCE_DIRECTORY]",
   );
 const digest = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
@@ -52,6 +54,14 @@ const input = {
     sha256: digest(await readFile(join(vmDirectory, "evidence.json"))),
   },
   outputDirectory,
+  provenanceEvidence: provenanceDirectory
+    ? {
+        directory: provenanceDirectory,
+        reportSha256: digest(
+          await readFile(join(provenanceDirectory, "report.json")),
+        ),
+      }
+    : undefined,
   dependencyEvidence: dependencyDirectory
     ? {
         directory: dependencyDirectory,
@@ -97,9 +107,165 @@ assert(
   ),
 );
 assert(review.visibilityGaps.includes("complete-collector-not-attached"));
+if (input.guestEvidence) {
+  const raw = await readFile(join(vmDirectory, "guest-events.log"));
+  const guest = JSON.parse(
+    (
+      await readFile(join(vmDirectory, "guest-source-evidence.json"))
+    ).toString(),
+  );
+  const vm = JSON.parse(
+    (await readFile(join(vmDirectory, "evidence.json"))).toString(),
+  );
+  const context = {
+    expectedSha256: guest.traceSha256,
+    collectorExitCode: guest.exitCode,
+    collectorTermination: guest.termination,
+    vmTermination: vm.termination,
+  };
+  const indexed = indexSyscalls(raw, context);
+  const structured = syscallEvidence(indexed);
+  assert.equal(digest(structured.bytes), structured.indexSha256);
+  assert.deepEqual(
+    await readFile(join(result.directory, "syscall-index.json")),
+    structured.bytes,
+  );
+  assert.equal(
+    manifest.files.find(
+      (file: { role: string }) => file.role === "syscall-index",
+    ).sha256,
+    structured.indexSha256,
+  );
+  assert.equal(
+    review.items.find((item: { id: string }) => item.id === "syscall-review")
+      .text,
+    structured.review.toString("utf8"),
+  );
+  assert(structured.review.length <= 64 * 1024);
+  const summary = JSON.parse(structured.review.toString());
+  assert.equal(summary.indexSha256, structured.indexSha256);
+  assert.equal(
+    summary.omittedEvents,
+    indexed.events.length - summary.events.length,
+  );
+  assert(
+    summary.visibilityGaps.includes(
+      "structured-index-not-fully-in-model-review",
+    ),
+  );
+  assert.equal(indexed.state, "incomplete");
+  assert.equal(indexed.kernelLostEventCount, null);
+  assert.equal(indexed.publicationAuthorized, false);
+  assert.equal(indexed.indexedBytes, raw.length);
+  assert(indexed.events.some((event) => event.operation === "execve"));
+  assert(indexed.events.some((event) => event.family === "file"));
+  assert(indexed.events.some((event) => event.family === "memoryMap"));
+  assert(indexed.childObservations.length > 0);
+  let end = 0;
+  for (const event of indexed.events) {
+    assert.equal(event.spans[0].start, end);
+    end = event.spans[0].end;
+    assert(end <= raw.length);
+    if (event.pairedOrdinal !== undefined) {
+      const other = indexed.events[event.pairedOrdinal];
+      assert.equal(other.pid, event.pid);
+      assert.equal(other.operation, event.operation);
+      assert.equal(other.pairedOrdinal, event.ordinal);
+    }
+  }
+  assert.equal(end, raw.length);
+  assert.throws(() =>
+    indexSyscalls(raw, { ...context, expectedSha256: "0".repeat(64) }),
+  );
+  const reindex = (value: Buffer) =>
+    indexSyscalls(value, { ...context, expectedSha256: digest(value) });
+  const truncated = raw.subarray(0, raw.length - 1);
+  assert(reindex(truncated).visibilityGaps.includes("unterminated-final-line"));
+  const resumed = indexed.events.find(
+    (event) => event.kind === "resumed" && event.pairedOrdinal !== undefined,
+  );
+  assert(resumed);
+  const isolatedResume = raw.subarray(
+    resumed.spans[0].start,
+    resumed.spans[0].end,
+  );
+  assert(
+    reindex(isolatedResume).visibilityGaps.includes("unmatched-resumed-call"),
+  );
+  assert.equal(reindex(isolatedResume).childObservations.length, 0);
+  const invalid = Buffer.concat([raw, Buffer.from([255, 10])]);
+  assert(reindex(invalid).visibilityGaps.includes("invalid-utf8-line"));
+  const unknown = Buffer.concat([
+    raw,
+    Buffer.from("\nunknown collector record\n"),
+  ]);
+  assert(reindex(unknown).visibilityGaps.includes("unrecognized-trace-line"));
+  assert(
+    reindex(Buffer.alloc(16_385, 10)).visibilityGaps.includes(
+      "event-index-limit-unindexed-tail",
+    ),
+  );
+  // Expand actual observed lines to exercise the consumer budget, not a new VM run.
+  const short = indexed.events.find(
+    (event) =>
+      event.kind === "syscall" &&
+      event.spans[0].end - event.spans[0].start <= 60,
+  );
+  assert(short);
+  const line = raw.subarray(short.spans[0].start, short.spans[0].end);
+  const dense = reindex(
+    Buffer.concat(Array.from({ length: 16_385 }, () => line)),
+  );
+  const bounded = syscallEvidence(dense);
+  assert.equal(dense.events.length, 16_384);
+  assert(dense.visibilityGaps.includes("event-index-limit-unindexed-tail"));
+  assert(bounded.review.length <= 64 * 1024);
+  assert(bounded.bytes.length <= 8 * 1024 * 1024);
+  console.log(
+    JSON.stringify({
+      structuredTrace: {
+        rawBytes: raw.length,
+        events: indexed.events.length,
+        privateIndexBytes: structured.bytes.length,
+        reviewBytes: structured.review.length,
+        denseIndexBytes: bounded.bytes.length,
+        denseReviewBytes: bounded.review.length,
+        state: "incomplete",
+      },
+    }),
+  );
+}
 for (const item of review.items)
   assert.equal(digest(Buffer.from(item.text)), item.sha256);
+if (provenanceDirectory && input.provenanceEvidence) {
+  assert(
+    manifest.files.some(
+      (file: { role: string }) => file.role === "source-release-comparison",
+    ),
+  );
+  const copy = await mkdtemp(join(outputDirectory, "provenance-negative-"));
+  try {
+    await cp(provenanceDirectory, copy, { recursive: true });
+    await rm(join(copy, "release.tar"));
+    await assert.rejects(
+      assembleEvidence({
+        ...input,
+        provenanceEvidence: { ...input.provenanceEvidence, directory: copy },
+      }),
+    );
+    await writeFile(join(copy, "release.tar"), "changed retained bytes");
+    await assert.rejects(
+      assembleEvidence({
+        ...input,
+        provenanceEvidence: { ...input.provenanceEvidence, directory: copy },
+      }),
+    );
+  } finally {
+    await rm(copy, { recursive: true, force: true });
+  }
+}
 const before = (await readdir(outputDirectory)).sort();
+let filesystemRefusals = 0;
 if (input.dependencyEvidence) {
   assert(
     review.visibilityGaps.includes(
@@ -188,6 +354,106 @@ await assert.rejects(
   assembleEvidence({ ...input, queuedInputsSha256: "0".repeat(64) }),
 );
 if (input.guestEvidence) {
+  const receipt = JSON.parse(
+    await readFile(join(vmDirectory, "guest-source-evidence.json"), "utf8"),
+  );
+  if (receipt.filesystemSha256) {
+    assert(
+      review.visibilityGaps.includes(
+        "captured-filesystem-artifacts-not-inspected-or-released",
+      ),
+    );
+    assert(
+      manifest.files.some((file: { role: string }) =>
+        file.role.startsWith("captured-filesystem-object:"),
+      ),
+    );
+    const negative = await mkdtemp(
+      join(outputDirectory, "filesystem-negative-"),
+    );
+    try {
+      const copy = join(negative, "vm");
+      await cp(vmDirectory, copy, { recursive: true });
+      const capture = JSON.parse(
+        await readFile(join(copy, "guest-filesystem.json"), "utf8"),
+      );
+      const sha = Object.keys(capture.objects)[0];
+      await rm(join(copy, `filesystem-object-${sha}`));
+      await assert.rejects(
+        assembleEvidence({
+          ...input,
+          vmEvidence: { ...input.vmEvidence, directory: copy },
+        }),
+      );
+      await cp(
+        join(vmDirectory, `filesystem-object-${sha}`),
+        join(copy, `filesystem-object-${sha}`),
+      );
+      // Change a declared phase reference while retaining actual object bytes.
+      // Rebind outer hashes so this specifically tests content-reference closure.
+      for (const alteration of ["unknown", "missing"]) {
+        if (alteration === "missing")
+          delete capture.phases[1].entries[0].sha256;
+        else capture.phases[1].entries[0].sha256 = "0".repeat(64);
+        const captureBytes = Buffer.from(JSON.stringify(capture));
+        const serial = await readFile(join(copy, "serial.log"), "utf8");
+        const prefix = "SLOP_GUEST_EVIDENCE_V1:";
+        const frameLine = serial
+          .split("\n")
+          .find((line) => line.startsWith(prefix));
+        assert(frameLine);
+        const frame = JSON.parse(
+          Buffer.from(
+            frameLine.slice(prefix.length).trim(),
+            "base64",
+          ).toString(),
+        );
+        frame.filesystem = captureBytes.toString();
+        frame.filesystemSha256 = digest(captureBytes);
+        const changedSerial = Buffer.from(
+          serial.replace(
+            frameLine,
+            prefix + Buffer.from(JSON.stringify(frame)).toString("base64"),
+          ),
+        );
+        const vm = JSON.parse(
+          await readFile(join(copy, "evidence.json"), "utf8"),
+        );
+        vm.serialSha256 = digest(changedSerial);
+        const vmBytes = Buffer.from(JSON.stringify(vm));
+        const changedReceipt = {
+          ...receipt,
+          filesystemSha256: frame.filesystemSha256,
+          serialSha256: vm.serialSha256,
+          vmEvidenceSha256: digest(vmBytes),
+        };
+        const receiptBytes = Buffer.from(JSON.stringify(changedReceipt));
+        for (const [name, body] of [
+          ["guest-filesystem.json", captureBytes],
+          ["serial.log", changedSerial],
+          ["evidence.json", vmBytes],
+          ["guest-source-evidence.json", receiptBytes],
+        ] as const) {
+          await rm(join(copy, name));
+          await writeFile(join(copy, name), body);
+        }
+        await assert.rejects(
+          assembleEvidence({
+            ...input,
+            vmEvidence: { directory: copy, sha256: digest(vmBytes) },
+            guestEvidence: {
+              ...input.guestEvidence,
+              receiptSha256: digest(receiptBytes),
+            },
+          }),
+          /Filesystem entry refers to missing content/,
+        );
+      }
+      filesystemRefusals = 3;
+    } finally {
+      await rm(negative, { recursive: true, force: true });
+    }
+  }
   for (const key of [
     "profileSha256",
     "collectorSha256",
@@ -234,6 +500,8 @@ console.log(
     providerCalls: 0,
     publications: 0,
     rejectedCorruptOrMissingInputs:
+      filesystemRefusals +
+      (provenanceDirectory ? 2 : 0) +
       (input.guestEvidence ? 7 : 4) +
       (dependencyDirectory
         ? 5 + Number(Boolean(dependencyFailureDirectory))

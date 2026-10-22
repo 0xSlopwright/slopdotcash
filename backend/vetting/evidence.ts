@@ -1,3 +1,7 @@
+import {
+  bindProvenanceSource,
+  parseProvenanceReport,
+} from "../../workers/vetting/provenance-report";
 /** Separate private vetting evidence. Policy and external controls have no defaults. */
 
 import {
@@ -5,6 +9,7 @@ import {
   assemblyRecord,
   parseAssemblyManifest,
 } from "../../workers/vetting/assembly-manifest";
+import { assertFilesystemReferences } from "../../workers/vetting/filesystem-capture";
 import { fail } from "../api-error";
 import type { ProjectD1Database } from "../projects/cloudflare-persistence";
 import type { WebSession } from "../projects/contracts";
@@ -432,6 +437,37 @@ export class VettingEvidence {
       if (entry.type === "commit" && entry.sha256 === null) continue;
       required(entry.sha256, entry.bytes);
     }
+    if (
+      roles.has("source-release-comparison") ||
+      roles.has("provenance-source-archive") ||
+      roles.has("provenance-release-archive")
+    ) {
+      try {
+        const report = parseProvenanceReport(
+          await read(role("source-release-comparison").sha256),
+        );
+        bindProvenanceSource(
+          report,
+          source,
+          String(queue.sourceInventorySha256),
+        );
+        for (const descriptor of report.inputs) {
+          required(descriptor.sha256, descriptor.bytes);
+          role(
+            descriptor.role === "source-inventory"
+              ? descriptor.role
+              : `provenance-${descriptor.role}`,
+            descriptor.sha256,
+          );
+        }
+      } catch {
+        fail(
+          409,
+          "assembly_mismatch",
+          "Source and release comparison does not bind retained inputs",
+        );
+      }
+    }
     const vm = await read(role("offline-vm").sha256);
     if (
       vm.schema !== "slop-offline-vm-evidence-v1" ||
@@ -487,6 +523,97 @@ export class VettingEvidence {
         required(digest);
         role(name, digest);
       }
+      if (guest.filesystemSha256 !== undefined) {
+        if (guest.filesystemEncoding !== "json-utf8")
+          fail(409, "assembly_mismatch", "Unknown filesystem transport");
+        role("raw-filesystem-capture", guest.filesystemSha256);
+        const capture = await read(guest.filesystemSha256);
+        if (
+          capture.schema !== "slop-filesystem-capture-v1" ||
+          capture.state !== "incomplete" ||
+          capture.executionAuthorized !== false ||
+          capture.root !== "/tmp/slop-quarantine"
+        )
+          fail(
+            409,
+            "assembly_mismatch",
+            "Invalid captured filesystem inventory",
+          );
+        const objects = assemblyRecord(capture.objects);
+        if (Object.keys(objects).length > 256)
+          fail(
+            409,
+            "assembly_mismatch",
+            "Filesystem object count exceeds bound",
+          );
+        const descriptors: { sha256: string; bytes: number }[] = [];
+        let total = 0;
+        for (const [sha, encoded] of Object.entries(objects)) {
+          if (
+            !HEX.test(sha) ||
+            typeof encoded !== "string" ||
+            encoded.length > 1024 * 1024
+          )
+            fail(
+              409,
+              "assembly_mismatch",
+              "Invalid filesystem content reference",
+            );
+          let binary: string;
+          try {
+            binary = atob(encoded);
+          } catch {
+            fail(
+              409,
+              "assembly_mismatch",
+              "Invalid filesystem content encoding",
+            );
+          }
+          if (btoa(binary) !== encoded)
+            fail(
+              409,
+              "assembly_mismatch",
+              "Noncanonical filesystem content encoding",
+            );
+          const bytes = Uint8Array.from(binary, (character) =>
+            character.charCodeAt(0),
+          );
+          total += bytes.length;
+          if (total > 672 * 1024 || (await sha256Hex(bytes)) !== sha)
+            fail(
+              409,
+              "assembly_mismatch",
+              "Filesystem bytes differ or exceed bound",
+            );
+          required(sha, bytes.length);
+          role(`captured-filesystem-object:${sha}`, sha);
+          descriptors.push({ sha256: sha, bytes: bytes.length });
+        }
+        try {
+          assertFilesystemReferences(
+            capture,
+            new Map(descriptors.map((item) => [item.sha256, item.bytes])),
+          );
+        } catch {
+          fail(
+            409,
+            "assembly_incomplete",
+            "Filesystem entries do not bind retained content",
+          );
+        }
+        const summary = await read(
+          role("untrusted-filesystem-inventory").sha256,
+        );
+        if (
+          JSON.stringify(summary) !==
+          JSON.stringify({ ...capture, objects: descriptors })
+        )
+          fail(
+            409,
+            "assembly_mismatch",
+            "Filesystem review metadata differs from capture",
+          );
+      }
       if (
         guest.kernelArtifactGate !== undefined ||
         profile.kernelPolicySha256 !== undefined
@@ -497,6 +624,32 @@ export class VettingEvidence {
         required(gate.postCollectorOutputSha256);
         role("untrusted-post-collector-probe", gate.postCollectorOutputSha256);
       }
+    }
+    if (roles.has("syscall-review") || roles.has("syscall-index")) {
+      const summary = await read(role("syscall-review").sha256);
+      const indexFile = role("syscall-index", summary.indexSha256);
+      required(summary.indexSha256, summary.indexBytes);
+      const index = await read(indexFile.sha256);
+      const raw = role("untrusted-trace");
+      if (
+        summary.schema !== "slop-syscall-review-v1" ||
+        index.schema !== "slop-syscall-index-v1" ||
+        summary.rawSha256 !== raw.sha256 ||
+        index.rawSha256 !== raw.sha256 ||
+        summary.rawBytes !== raw.bytes ||
+        index.rawBytes !== raw.bytes ||
+        summary.state !== "incomplete" ||
+        index.state !== "incomplete" ||
+        summary.providerCallsAuthorized !== false ||
+        index.providerCallsAuthorized !== false ||
+        summary.publicationAuthorized !== false ||
+        index.publicationAuthorized !== false
+      )
+        fail(
+          409,
+          "assembly_mismatch",
+          "Structured observations do not bind the retained trace",
+        );
     }
     const dependency = roles.get("dependency-inventory");
     if (dependency) {

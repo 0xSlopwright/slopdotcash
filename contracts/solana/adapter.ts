@@ -2,9 +2,11 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import type { PaymentChainAdapter } from "../../backend/payments/ledger";
 import { decodeBase58Bytes } from "../../src/lib/base58";
+import { type PayoutPolicy, payoutFee } from "../../src/lib/payments/contracts";
 import type { VaultTotals } from "../vault-totals";
 
 export interface SolanaEscrowConfig {
+  payoutPolicy?: PayoutPolicy;
   rpcUrl: string;
   genesisHash: string;
   programId: string;
@@ -65,6 +67,7 @@ const encoder = new TextEncoder();
 const anchorDiscriminator = (name: string) =>
   hex(sha256(encoder.encode(`global:${name}`)).slice(0, 8));
 const COMMIT = anchorDiscriminator("commit"),
+  COMMIT_BOUNTY = anchorDiscriminator("commit_bounty"),
   PAY = anchorDiscriminator("pay");
 export const CONFIG_DISCRIMINATOR = hex(
   sha256(encoder.encode("account:Config")).slice(0, 8),
@@ -408,7 +411,7 @@ export function escrowInvocations(
     if (entry.ix.programId !== programId) return;
     const data = decodeBase58Bytes(string(entry.ix.data));
     const tag = hex(data.slice(0, 8));
-    if (tag !== COMMIT && tag !== PAY) return;
+    if (tag !== COMMIT && tag !== COMMIT_BOUNTY && tag !== PAY) return;
     const children: Obj[] = [];
     for (let next = index + 1; next < flat.length; next++) {
       const candidate = flat[next];
@@ -418,7 +421,7 @@ export function escrowInvocations(
     }
     found.push({
       index,
-      kind: tag === COMMIT ? "reserved" : "paid",
+      kind: tag === PAY ? "paid" : "reserved",
       accounts: list(entry.ix.accounts).map(string),
       data,
       children,
@@ -506,7 +509,7 @@ export function solanaPaymentAdapter(
         gross === 0n ||
         actor === 0n ||
         gross !== net + fee ||
-        fee !== gross / 50n ||
+        fee !== payoutFee(gross, config.payoutPolicy) ||
         solanaAwardId(config.projectPda, source) !== hex(award)
       )
         throw new Error("Invalid award accounting");
@@ -515,6 +518,10 @@ export function solanaPaymentAdapter(
       if (input.kind === "reserved") {
         // commit(award_id, source_digest, actor_id, gross); accounts: owner, project, vault, origin, obligation.
         if (
+          hex(data.slice(0, 8)) !==
+            (config.payoutPolicy === "security-bounty"
+              ? COMMIT_BOUNTY
+              : COMMIT) ||
           data.length !== 88 ||
           accounts[1] !== config.projectPda ||
           accounts[4] !== awardAddress ||

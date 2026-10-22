@@ -229,6 +229,38 @@ function awardSteps({ call, key, sqlite }: ReturnType<typeof open>) {
 }
 
 describe("security cases", () => {
+  test("listing cases records only the cases disclosed and refuses an unaudited response", async () => {
+    const state = open(OPEN_PROGRAM);
+    const { record } = awardSteps(state);
+    const first = await record(RECEIVED);
+    const second = await record(RECEIVED);
+    const reads = () =>
+      state.sqlite
+        .query(
+          "SELECT case_id, actor_github_id, actor_role FROM security_case_access_log WHERE action = 'read' ORDER BY case_id",
+        )
+        .all();
+    const listed = await state.call(REPORTER, "GET", "security-cases");
+    expect(listed.status).toBe(200);
+    expect(reads()).toEqual(
+      [first, second].map((row) => ({
+        case_id: row.id,
+        actor_github_id: REPORTER.githubId,
+        actor_role: "reporter",
+      })),
+    );
+    const outsider = await state.call(TRIAGER, "GET", "security-cases");
+    expect(outsider.status).toBe(200);
+    expect(reads()).toHaveLength(2);
+    state.sqlite.exec(
+      "CREATE TRIGGER refuse_access_read BEFORE INSERT ON security_case_access_log BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END",
+    );
+    const unavailable = await state.call(REPORTER, "GET", "security-cases");
+    expect(unavailable.status).toBe(500);
+    expect(unavailable.body).not.toHaveProperty("cases");
+    expect(reads()).toHaveLength(2);
+  });
+
   test("a rejected link can be corrected by a new claim or a record", async () => {
     const { call, key, inbox } = open();
     const claim = () =>

@@ -48,7 +48,7 @@ class Inventory:
             raise ValueError("unsafe-member-path")
         return name
 
-    def visit(self, data, path, parent=None, depth=0):
+    def visit(self, data, path, parent=None, depth=0, executable=None):
         if len(self.records) >= MAX_RECORDS:
             raise ValueError("record-limit")
         digest = hashlib.sha256(data).hexdigest()
@@ -63,7 +63,8 @@ class Inventory:
                 b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe"):
             kind = "native"
         record = {"sha256": digest, "parentSha256": parent, "path": path,
-                  "bytes": len(data), "kind": kind, "state": "quarantined"}
+                  "bytes": len(data), "kind": kind, "state": "quarantined",
+                  "executable": executable}
         self.records.append(record)
         archive = None
         try:
@@ -90,7 +91,8 @@ class Inventory:
                         raise ValueError("record-limit")
                     with archive.open(info) as stream:
                         payload = self.member(stream, info.file_size)
-                    self.visit(payload, name, digest, depth + 1)
+                    self.visit(payload, name, digest, depth + 1,
+                               bool(mode & 0o111) if info.create_system == 3 and mode else None)
             else:
                 # Only recognized containers are unpacked. Unknown bytes stay quarantined.
                 try:
@@ -117,7 +119,7 @@ class Inventory:
                     stream = archive.extractfile(info)
                     with stream:
                         payload = self.member(stream, info.size)
-                    self.visit(payload, name, digest, depth + 1)
+                    self.visit(payload, name, digest, depth + 1, bool(info.mode & 0o111))
         except (ValueError, OSError, EOFError, RuntimeError, zipfile.BadZipFile,
                 tarfile.TarError, NotImplementedError) as error:
             # Exceptions can contain artifact content. Emit only fixed reason identifiers.

@@ -4713,6 +4713,37 @@ small {
 }
 
 /* Private security bounty pages (SecurityBounty.tsx). */
+.security-case,
+.security-case > * {
+  min-width: 0;
+}
+
+.security-case .admin-facts {
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+}
+
+.security-case h3 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.security-payment-request {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin-top: 8px;
+  padding: 12px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--brand-font-data);
+  font-size: 12px;
+  white-space: pre;
+  overflow: auto;
+}
+
 .admin-intro .security-lead {
   color: var(--ink);
   font-size: 18px;

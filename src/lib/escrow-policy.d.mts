@@ -96,3 +96,10 @@ export declare function paymentDeploymentRecord(
   projectId: string,
   deployment: EscrowDeployment,
 ): PaymentDeploymentRecord;
+
+export type SecurityEscrowPolicy = Omit<EscrowPolicy, "feeBasisPoints"> & {
+  feeBasisPoints: 2500;
+};
+export declare function assertSecurityEscrowPolicy(
+  value: unknown,
+): SecurityEscrowPolicy;

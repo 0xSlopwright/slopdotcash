@@ -41,6 +41,7 @@ Roles are computed on every request from the session and the current project
 revision, so a revision or a revoked session removes access at once.
 
 - Reporter: their own cases, never another report, root cause or triager.
+- Any registered user may report; project membership is not required.
 - Technical approver (security maintainer): every case of the project.
 - Triager: only assigned cases; triage, next action and remediation.
 - Financial approver: only cases with a reserved, exhausted or approved
@@ -123,10 +124,47 @@ These records do not publish content or schedule disclosure. Reporter recognitio
 consent stays separate. Older events remain unchanged and cannot authorize a new
 disclosure without an exact content approval.
 
-## Not available
+## Private settlement
 
-- Payment: no private settlement rail is approved. An approved award has
-  `paymentState: "rail-unavailable"` and nothing can mark it paid.
+The 22 October 2026 product decision uses the existing escrow rails with a
+75% reporter share and 25% Slop share. Migration
+`0057_private_security_payments.sql` separates settlement intents, payment
+records, attempts and finalized vault snapshots from ordinary payments.
+Canonical wallet possession and binding authorizations remain shared.
+
+An admin must record a reviewed `securityBounty.settlement` policy with a
+separate vault and `feeBasisPoints: 2500`. The vault must not appear in
+any other payment program. USDC awards require a matching reviewed USDC rail;
+USD awards cannot be converted implicitly. The reporter accepts the selected
+rail's public chain visibility before a financial approver prepares an
+immutable unsigned commitment. Onchain records expose actor numbers, addresses,
+times and amounts. They contain a random source commitment, never report data.
+
+The owner submits the unsigned commitment outside Slop. The private worker
+uses the existing finalized-event verifier and recovery engine, with the
+25% fee policy and the exact approved private intent. Public payment queries,
+notifications and aggregates never use these tables. A lost response is
+uncertain until verified chain evidence resolves it. No action can manually
+mark an award paid. Missing wallets retain their award; the canonical wallet
+proof and delay apply when a wallet is added or changed.
+
+Generate the reviewed private deployment inventory with
+`bun scripts/prepare-payment-deployments.ts testnet <network> --security-bounty`
+and the existing stack generator with `--scope security-bounty`.
+Production retains the existing attester-only policy; this change does not
+authorize a Slop signer or mainnet dispatch. Test stacks use isolated databases.
+Without an approved and verified matching vault, the case shows
+`rail-unavailable` and cannot prepare settlement.
+
+Solana wallet co-signing uses the existing authenticated
+`/api/v1/payments/wallets/solana-bind/prepare` and `complete` endpoints.
+The lookup resolves the signed-in reporter's private obligation and records
+an audited access. Private binding requests use the separate
+`SECURITY_SOLANA_IDENTITY_ATTESTER` service binding; they never fall back to
+the ordinary attester. Missing service configuration fails closed.
+
+## Remaining hosted acceptance
+
 - Email: the restricted verified-destination pilot is implemented in
   `workers/notify/security.ts`; deployment and inbox delivery remain launch
   gates. See `workers/notify/README.md`. Every case inbox insert also queues

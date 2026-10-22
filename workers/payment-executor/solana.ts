@@ -21,6 +21,7 @@ import {
 } from "../../contracts/solana/adapter";
 import { decodeBase58Bytes } from "../../src/lib/base58";
 import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
+import { payoutFee } from "../../src/lib/payments/contracts";
 import {
   authorizeRegistry,
   authorizeWalletRotation,
@@ -316,7 +317,8 @@ async function authorized(
     solanaUint(obligation, 8).toString() !== authorization.grossBase ||
     solanaUint(obligation, 128).toString() !== authorization.feeBase ||
     hex(obligation.slice(16, 48)) !== authorization.sourceDigest ||
-    solanaUint(obligation, 128) !== solanaUint(obligation, 8) / 50n ||
+    solanaUint(obligation, 128) !==
+      payoutFee(solanaUint(obligation, 8), config.payoutPolicy) ||
     solanaUint(obligation, 120) + solanaUint(obligation, 128) !==
       solanaUint(obligation, 8)
   )

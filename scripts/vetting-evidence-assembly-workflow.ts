@@ -25,6 +25,7 @@ export async function retainActualAssembly(input: {
   guestProfile: string;
   dependencyDirectory: string;
   outputDirectory: string;
+  provenanceDirectory?: string;
 }) {
   const artifactInventories = await Promise.all(
     (await readdir(join(input.acquisitionDirectory, "objects"))).map(
@@ -63,6 +64,14 @@ export async function retainActualAssembly(input: {
         await readFile(join(input.dependencyDirectory, "profile.json")),
       ),
     },
+    provenanceEvidence: input.provenanceDirectory
+      ? {
+          directory: input.provenanceDirectory,
+          reportSha256: digest(
+            await readFile(join(input.provenanceDirectory, "report.json")),
+          ),
+        }
+      : undefined,
     outputDirectory: input.outputDirectory,
   });
   const manifestBytes = await readFile(
@@ -101,6 +110,7 @@ export async function retainActualAssembly(input: {
     assembled.directory,
   ])
     await collect(path);
+  if (input.provenanceDirectory) await collect(input.provenanceDirectory);
   // Review items are exact canonical text bytes, not generated replacement evidence.
   const review = JSON.parse(
     (await readFile(join(assembled.directory, "review-input.json"))).toString(
@@ -226,7 +236,7 @@ export async function retainActualAssembly(input: {
   );
   await assert.rejects(
     retained.evidence.assemblyClosure(assessmentId, "missing-reference"),
-    /canonical assembly reference is absent/i,
+    /canonical assembly reference is absent|Source and release comparison does not bind retained inputs/i,
   );
   const changedAssembly = Buffer.from(
     JSON.stringify({
@@ -263,82 +273,94 @@ export async function retainActualAssembly(input: {
   );
   // Keep the actual guest receipt unchanged while trying to omit its output
   // from both the declared file list and review inputs. Retention must refuse.
-  const outputSha = manifest.files.find(
-    (file) => file.role === "untrusted-output",
-  )!.sha256;
-  const truncatedReview = Buffer.from(
-    JSON.stringify({
-      ...review,
-      items: review.items.filter(
-        (item: { sha256: string }) => item.sha256 !== outputSha,
-      ),
-    }),
-  );
-  const truncatedReviewSha = digest(truncatedReview);
-  const truncatedManifest = Buffer.from(
-    JSON.stringify({
-      ...manifest,
-      reviewInputSha256: truncatedReviewSha,
-      files: manifest.files.filter((file) => file.sha256 !== outputSha),
-    }),
-  );
-  const truncatedManifestSha = digest(truncatedManifest);
-  const omittedOutputPath = `/api/v1/vetting/evidence/${assessmentId}/omitted-guest-output`;
-  const omittedObjects = objects.filter(
-    (object) =>
-      ![
-        outputSha,
-        assembled.manifestSha256,
-        manifest.reviewInputSha256,
-      ].includes(object.sha256),
-  );
-  const replacementObjects = [
-    [truncatedManifestSha, truncatedManifest, "manifest"],
-    [truncatedReviewSha, truncatedReview, "artifact"],
-  ] as const;
-  await send(
-    "POST",
-    omittedOutputPath,
-    JSON.stringify({
-      assemblySha256: truncatedManifestSha,
-      traceSha256,
-      objects: [
-        ...omittedObjects,
-        ...replacementObjects.map(([sha256, bytes, kind]) => ({
-          sha256,
-          sizeBytes: bytes.length,
-          kind,
-          label: "Deliberately incomplete captured inventory",
-          contentType: "application/json",
-        })),
-      ],
-    }),
-  );
-  for (const object of omittedObjects) {
-    const bytes = candidates.get(object.sha256)!;
-    if (object.chunks) {
-      for (const chunk of object.chunks)
+  const omittedFiles = [
+    manifest.files.find((file) => file.role === "syscall-index")!,
+    manifest.files.find((file) => file.role === "untrusted-output")!,
+    ...manifest.files.filter((file) => file.role === "raw-filesystem-capture"),
+    ...manifest.files.filter(
+      (file) => file.role === "provenance-release-archive",
+    ),
+    ...manifest.files
+      .filter((file) => file.role.startsWith("captured-filesystem-object:"))
+      .slice(0, 1),
+  ];
+  for (const [index, omittedFile] of omittedFiles.entries()) {
+    const outputSha = omittedFile.sha256;
+    const missingRunId = `omitted-evidence-${index}`;
+    const truncatedReview = Buffer.from(
+      JSON.stringify({
+        ...review,
+        items: review.items.filter(
+          (item: { sha256: string }) => item.sha256 !== outputSha,
+        ),
+      }),
+    );
+    const truncatedReviewSha = digest(truncatedReview);
+    const truncatedManifest = Buffer.from(
+      JSON.stringify({
+        ...manifest,
+        reviewInputSha256: truncatedReviewSha,
+        files: manifest.files.filter((file) => file.sha256 !== outputSha),
+      }),
+    );
+    const truncatedManifestSha = digest(truncatedManifest);
+    const omittedOutputPath = `/api/v1/vetting/evidence/${assessmentId}/${missingRunId}`;
+    const omittedObjects = objects.filter(
+      (object) =>
+        ![
+          outputSha,
+          assembled.manifestSha256,
+          manifest.reviewInputSha256,
+        ].includes(object.sha256),
+    );
+    const replacementObjects = [
+      [truncatedManifestSha, truncatedManifest, "manifest"],
+      [truncatedReviewSha, truncatedReview, "artifact"],
+    ] as const;
+    await send(
+      "POST",
+      omittedOutputPath,
+      JSON.stringify({
+        assemblySha256: truncatedManifestSha,
+        traceSha256,
+        objects: [
+          ...omittedObjects,
+          ...replacementObjects.map(([sha256, bytes, kind]) => ({
+            sha256,
+            sizeBytes: bytes.length,
+            kind,
+            label: "Deliberately incomplete captured inventory",
+            contentType: "application/json",
+          })),
+        ],
+      }),
+    );
+    for (const object of omittedObjects) {
+      const bytes = candidates.get(object.sha256)!;
+      if (object.chunks) {
+        for (const chunk of object.chunks)
+          await send(
+            "PUT",
+            `${omittedOutputPath}/${object.sha256}/chunks/${chunk.index}`,
+            bytes.subarray(
+              chunk.index * EVIDENCE_CHUNK_BYTES,
+              chunk.index * EVIDENCE_CHUNK_BYTES + chunk.sizeBytes,
+            ),
+          );
         await send(
-          "PUT",
-          `${omittedOutputPath}/${object.sha256}/chunks/${chunk.index}`,
-          bytes.subarray(
-            chunk.index * EVIDENCE_CHUNK_BYTES,
-            chunk.index * EVIDENCE_CHUNK_BYTES + chunk.sizeBytes,
-          ),
+          "POST",
+          `${omittedOutputPath}/${object.sha256}/finalize`,
+          "{}",
         );
-      await send(
-        "POST",
-        `${omittedOutputPath}/${object.sha256}/finalize`,
-        "{}",
-      );
-    } else await send("PUT", `${omittedOutputPath}/${object.sha256}`, bytes);
+      } else await send("PUT", `${omittedOutputPath}/${object.sha256}`, bytes);
+    }
+    for (const [sha256, bytes] of replacementObjects)
+      await send("PUT", `${omittedOutputPath}/${sha256}`, bytes);
+    await assert.rejects(
+      retained.evidence.assemblyClosure(assessmentId, missingRunId),
+      /canonical.*(?:absent|missing)|Source and release comparison does not bind retained inputs/i,
+    );
   }
-  for (const [sha256, bytes] of replacementObjects)
-    await send("PUT", `${omittedOutputPath}/${sha256}`, bytes);
-  await assert.rejects(
-    retained.evidence.assemblyClosure(assessmentId, "omitted-guest-output"),
-    /canonical assembly reference is absent/i,
-  );
   const overview = await retained.evidence.handle(
     new Request(
       `https://slop.cash/api/v1/operator/vetting-evidence?assessmentId=${assessmentId}&runId=${runId}`,
@@ -552,6 +574,7 @@ if (import.meta.main) {
     guestProfile,
     dependencyDirectory,
     outputDirectory,
+    provenanceDirectory,
   ] = process.argv.slice(2);
   if (
     !sourceDirectory ||
@@ -589,6 +612,7 @@ if (import.meta.main) {
       guestProfile,
       dependencyDirectory,
       outputDirectory,
+      provenanceDirectory,
     });
     const assessment = fixture.assessment;
     // Deliberately false signed clean claim: a negative admission test, not a scan receipt.

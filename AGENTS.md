@@ -300,7 +300,8 @@ exclude, or move money.
 Slop Points are nonfinancial participation records governed by
 `protocol/points-v1.md`. Welcome and verified X-connection awards are not accepted-work score.
 Verified payout recognition is fixed per recipient/project/cycle, never per dollar
-or transfer. X control never confers GitHub, organization, or payment authority.
+or transfer. X or Telegram control never confers GitHub, organization, or payment
+authority; a Telegram connection earns no points (PRD SOC-02).
 Never feed points into rewards or settlement. Preserve the append-only journal,
 source coverage, original contribution dates, and distinct recording dates.
 Generated points projections are build outputs; do not edit them by hand.

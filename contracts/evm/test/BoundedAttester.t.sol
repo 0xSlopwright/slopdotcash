@@ -289,6 +289,8 @@ contract BoundedAttesterTest {
     /// cannot take an award at the production minimums (48-hour binding delay, 7-day rotation). The registrar
     /// proposes a new authority at once, the owner cancels each attacker binding late in its delay, and the
     /// new authority replaces the last attacker binding before it activates. Only the contributor is paid.
+    /// While the rotation is pending the cancels are not counted, so the owner could cancel the fourth
+    /// binding too; it need not, because the rotation executes before that binding activates.
     function test_H1_stolenAuthorityCannotTakeAnAward() public {
         bytes32 id = commit(keccak256("h1"), 100e6);
         vm.prank(REGISTRAR);
@@ -305,12 +307,10 @@ contract BoundedAttesterTest {
             vault.cancelBinding(ACTOR, version);
             vm.warp(block.timestamp + 1);
         }
-        // The owner's cancels are spent, so the attacker's next binding cannot be cancelled.
+        // Three cancels during the notice period, none counted against the cap.
+        assertEq(vault.cancelCount(ACTOR), 0);
         bindWallet(AUTHORITY, ATTACKER_KEY, version);
         version++;
-        vm.prank(OWNER);
-        vm.expectRevert(ProjectEscrow.CancelLimit.selector);
-        vault.cancelBinding(ACTOR, version);
         (,,, uint64 attackerActivatesAt,) = vault.bindings(ACTOR);
         require(rotationAt < attackerActivatesAt, "rotation executes before the attacker binding activates");
         vm.warp(rotationAt);
@@ -332,6 +332,112 @@ contract BoundedAttesterTest {
         vault.pay(id, version + 1);
         assertEq(usdc.balanceOf(attacker), 0);
         assertEq(usdc.balanceOf(contributor), 98e6);
+    }
+
+    /// Outside report (20 October 2026): the H-1 sequence above assumes cancelCount is 0 when the key is
+    /// stolen. With one earlier cancel on the actor and no payment since, the owner has two cancels left, so
+    /// two cancels and the third binding's delay cover 6 days, under the 7-day rotation, and the attacker's
+    /// third binding pays. The cap must not apply while the factory has a pending rotation, and a waived
+    /// cancel must not spend the count.
+    function test_H1_stolenAuthorityCannotTakeAnAwardAfterPriorCancel() public {
+        bytes32 id = commit(keccak256("h1-prior"), 100e6);
+        // One ordinary cancel before the compromise: the contributor's own binding, retracted by the owner.
+        bindWallet(AUTHORITY, CONTRIBUTOR_KEY, 0);
+        vm.prank(OWNER);
+        vault.cancelBinding(ACTOR, 1);
+        assertEq(vault.cancelCount(ACTOR), 1);
+        uint64 version = 1;
+        // The key is stolen; the registrar proposes a replacement at once.
+        vm.prank(REGISTRAR);
+        factory.proposeIdentityAuthority(NEXT_AUTHORITY);
+        uint64 rotationAt = factory.identityAuthorityEffectiveAt();
+        // Three attacker bindings, each cancelled late in its delay: cancels 2, 3 and 4 since the last
+        // payment, more than the cap allows outside a rotation.
+        for (uint256 i = 0; i < vault.MAX_CANCELS_BETWEEN_PAYMENTS(); i++) {
+            bindWallet(AUTHORITY, ATTACKER_KEY, version);
+            version++;
+            vm.warp(block.timestamp + DELAY - 1);
+            (, uint64 payable_) = vault.payableBinding(ACTOR);
+            assertEq(payable_, 0);
+            vm.prank(OWNER);
+            vault.cancelBinding(ACTOR, version);
+            vm.warp(block.timestamp + 1);
+        }
+        // Waived cancels are not counted.
+        assertEq(vault.cancelCount(ACTOR), 1);
+        // The fourth attacker binding activates after the rotation executes.
+        bindWallet(AUTHORITY, ATTACKER_KEY, version);
+        version++;
+        (,,, uint64 attackerActivatesAt,) = vault.bindings(ACTOR);
+        require(rotationAt < attackerActivatesAt, "rotation executes before the attacker binding activates");
+        vm.warp(rotationAt);
+        factory.executeIdentityAuthorityRotation();
+        // The new authority replaces the attacker binding with the contributor's before it activates.
+        bindWallet(NEXT_AUTHORITY, CONTRIBUTOR_KEY, version);
+        vm.warp(attackerActivatesAt);
+        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
+        vault.pay(id, version);
+        vm.warp(rotationAt + DELAY);
+        vault.pay(id, version + 1);
+        assertEq(usdc.balanceOf(vm.addr(ATTACKER_KEY)), 0);
+        assertEq(usdc.balanceOf(contributor), 98e6);
+        assertEq(vault.cancelCount(ACTOR), 0);
+    }
+
+    /// Without a pending rotation the cap is unchanged: three cancels since the last payment, then the next
+    /// binding cannot be cancelled.
+    function test_cancelCapStillAppliesWithoutPendingRotation() public {
+        commit(keccak256("cap"), 100e6);
+        uint64 version = 0;
+        for (uint256 i = 0; i < vault.MAX_CANCELS_BETWEEN_PAYMENTS(); i++) {
+            bindWallet(AUTHORITY, CONTRIBUTOR_KEY, version);
+            version++;
+            vm.prank(OWNER);
+            vault.cancelBinding(ACTOR, version);
+            assertEq(vault.cancelCount(ACTOR), i + 1);
+        }
+        bindWallet(AUTHORITY, CONTRIBUTOR_KEY, version);
+        version++;
+        vm.prank(OWNER);
+        vm.expectRevert(ProjectEscrow.CancelLimit.selector);
+        vault.cancelBinding(ACTOR, version);
+        assertEq(vault.cancelCount(ACTOR), vault.MAX_CANCELS_BETWEEN_PAYMENTS());
+    }
+
+    /// The waiver lasts exactly as long as the proposal is pending: once the registrar withdraws it, the cap
+    /// applies again with the count the owner had before, because waived cancels never counted.
+    function test_cancelCapResumesWhenRotationIsCancelled() public {
+        commit(keccak256("resume"), 100e6);
+        uint64 version = 0;
+        for (uint256 i = 0; i < vault.MAX_CANCELS_BETWEEN_PAYMENTS(); i++) {
+            bindWallet(AUTHORITY, CONTRIBUTOR_KEY, version);
+            version++;
+            vm.prank(OWNER);
+            vault.cancelBinding(ACTOR, version);
+        }
+        bindWallet(AUTHORITY, CONTRIBUTOR_KEY, version);
+        version++;
+        vm.prank(OWNER);
+        vm.expectRevert(ProjectEscrow.CancelLimit.selector);
+        vault.cancelBinding(ACTOR, version);
+        // A pending proposal lifts the cap; the cancel is not counted.
+        vm.prank(REGISTRAR);
+        factory.proposeIdentityAuthority(NEXT_AUTHORITY);
+        vm.prank(OWNER);
+        vault.cancelBinding(ACTOR, version);
+        assertEq(vault.cancelCount(ACTOR), vault.MAX_CANCELS_BETWEEN_PAYMENTS());
+        // Withdrawing the proposal restores the cap at once.
+        vm.prank(REGISTRAR);
+        factory.cancelIdentityAuthorityRotation();
+        bindWallet(AUTHORITY, CONTRIBUTOR_KEY, version);
+        version++;
+        vm.prank(OWNER);
+        vm.expectRevert(ProjectEscrow.CancelLimit.selector);
+        vault.cancelBinding(ACTOR, version);
+        // The binding then pays after its delay, as the cap intends.
+        vm.warp(block.timestamp + DELAY);
+        (, uint64 payable_) = vault.payableBinding(ACTOR);
+        assertEq(payable_, version);
     }
 
     function test_vaultsAreCreatedOnlyByTheFactory() public {

@@ -1,8 +1,11 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
+import { type PayoutPolicy, payoutFee } from "../../src/lib/payments/contracts";
 import type { VaultTotals } from "../vault-totals";
 /** Finalized escrow events from a reviewed deployment. The configured RPC and vault are trust roots. */
 export interface EvmEscrowConfig {
+  /** Selected from the approved private settlement, never inferred from event amounts. */
+  payoutPolicy?: PayoutPolicy;
   rpcUrl: string;
   chainId: bigint;
   vault: string;
@@ -361,7 +364,7 @@ async function verify(
   if (
     actor === 0n ||
     gross === 0n ||
-    fee !== gross / 50n ||
+    fee !== payoutFee(gross, config.payoutPolicy) ||
     net !== gross - fee
   ) {
     throw new Error("Invalid award accounting");
@@ -641,6 +644,7 @@ export function buildDepositCalldata(grossMicro: string | bigint) {
   return `0x${selector("deposit(uint128)")}${amountWord(grossMicro)}`;
 }
 export function buildCommitAwardCalldata(input: {
+  payoutPolicy?: PayoutPolicy;
   obligationId: string;
   githubUserId: string;
   grossMicro: string | bigint;
@@ -652,7 +656,12 @@ export function buildCommitAwardCalldata(input: {
     BigInt(hash(input.sourceDigest)) === 0n
   )
     throw new Error("Invalid award input");
-  return `0x${selector("commitAward(bytes32,uint64,uint128,bytes32)")}${hash(input.obligationId).slice(2)}${word(input.githubUserId)}${amountWord(input.grossMicro)}${hash(input.sourceDigest).slice(2)}`;
+  payoutFee(BigInt(input.grossMicro), input.payoutPolicy);
+  const method =
+    input.payoutPolicy === "security-bounty"
+      ? "commitBountyAward"
+      : "commitAward";
+  return `0x${selector(`${method}(bytes32,uint64,uint128,bytes32)`)}${hash(input.obligationId).slice(2)}${word(input.githubUserId)}${amountWord(input.grossMicro)}${hash(input.sourceDigest).slice(2)}`;
 }
 /** Owner-only: stops a pending binding before it can pay. */
 export function buildCancelBindingCalldata(

@@ -1218,6 +1218,22 @@ function validateProjectDefinition(
       repositories,
       reward: project.reward,
     });
+  if (project.escrow && project.securityBounty?.settlement) {
+    for (const privateVault of project.securityBounty.settlement.deployments)
+      if (
+        project.escrow.deployments.some(
+          (ordinary) =>
+            ordinary.network === privateVault.network &&
+            (privateVault.programId
+              ? ordinary.vault === privateVault.vault
+              : ordinary.vault.toLowerCase() ===
+                privateVault.vault.toLowerCase()),
+        )
+      )
+        throw new TypeError(
+          "Private bounties must use a separate vault so public totals reveal no private payments",
+        );
+  }
   // Escrow is the only funding mode, and the escrow vault holds the balance.
   // No manifest instrument can back a committed amount or an enabled payment.
   if (

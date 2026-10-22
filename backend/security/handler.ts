@@ -1,3 +1,4 @@
+import { paymentDeploymentRecord } from "../../src/lib/escrow-policy.mjs";
 /**
  * Private security bounty cases (PRD SEC-02 to SEC-14, SEC-17, MVP-13).
  *
@@ -24,6 +25,7 @@ import type {
 import { notifySecurityCase } from "../notifications/events";
 import { cachedPublicResponse, type EdgeCache } from "../projects/edge-cache";
 import { readJsonObject } from "../trace/validation";
+import { prepareSecuritySettlement, securitySettlementView } from "./payments";
 export type SecurityD1Database = D1TransactionalDatabase<D1Statement>;
 
 export type SecurityApiDependencies = {
@@ -382,6 +384,8 @@ const REPORTER_EVENT_KINDS = new Set([
   "decide",
   "remediation",
   "approve-award",
+  "consent-payment",
+  "prepare-payment",
   "appeal",
   "decide-appeal",
   "decide-related-party",
@@ -392,6 +396,10 @@ const REPORTER_EVENT_KINDS = new Set([
 
 function allowedActions(row: CaseRow, roles: Set<Role>): string[] {
   const actions: string[] = [];
+  if (roles.has("reporter") && row.award_state === "approved")
+    actions.push("consent-payment");
+  if (roles.has("financial") && row.award_state === "approved")
+    actions.push("prepare-payment");
   const verified = row.submission_state === "verified";
   const open = ["received", "needs-information", "triaging"].includes(
     row.receipt_state,
@@ -468,12 +476,20 @@ async function caseView(
 ): Promise<Record<string, unknown>> {
   const now = deps.now();
   const terms = frozenTerms(row);
+  const settlement = await securitySettlementView(deps.db, row.id);
+  const current = await currentProgram(deps, row.project_id);
   const base = {
     id: row.id,
     projectId: row.project_id,
     revision: row.revision,
     viewerRoles: [...roles].sort(),
-    allowedActions: allowedActions(row, roles),
+    allowedActions: allowedActions(row, roles).filter(
+      (action) =>
+        !["prepare-payment", "consent-payment"].includes(action) ||
+        (!settlement &&
+          (current?.manifest.securityBounty?.settlement?.deployments.length ??
+            0) > 0),
+    ),
     submissionState: row.submission_state,
     receivedAt: row.received_at,
     receivedAtSource: row.received_at === null ? null : RECEIVED_AT_SOURCE,
@@ -482,8 +498,13 @@ async function caseView(
     awardState: row.award_state,
     relatedParty: row.related_party,
     relatedPartyReview: row.related_party_review,
-    paymentState: row.payment_state,
-    paymentRail: "unavailable",
+    paymentState: settlement?.state ?? row.payment_state,
+    paymentRail: settlement ? "escrow" : "unavailable",
+    settlement,
+    paymentNetworks:
+      current?.manifest.securityBounty?.settlement?.deployments.map(
+        (d) => d.network,
+      ) ?? [],
     paymentDeadline: row.payment_deadline,
   };
   const reservation = includeHistory
@@ -665,11 +686,16 @@ async function listCases(
     .bind(actor.githubId, actor.githubId, ...projectIds)
     .all<CaseRow>();
   const cases: Record<string, unknown>[] = [];
+  const reads: D1Statement[] = [];
   for (const row of result.results ?? []) {
     const roles = await caseRoles(deps, row, actor, all.get(row.project_id));
     if (roles.size === 0) continue;
     cases.push(await caseView(deps, row, roles, false));
+    reads.push(accessLog(deps, row.id, actor, roles, "read"));
   }
+  // The list discloses private case fields too. Persist its read audit before
+  // returning any cases, just as the individual case route does.
+  if (reads.length > 0) await deps.db.batch(reads);
   const programsForActor = projectIds.map((id) => ({
     projectId: id,
     roles: [...programRoles(all.get(id), actor.githubId)].sort(),
@@ -1476,6 +1502,111 @@ async function planChange(
           message:
             "The program has no unreserved capacity. Raise capacity by a project revision first",
         },
+      };
+    }
+    case "consent-payment": {
+      exactKeys(body, [...common, "network", "confirmation"]);
+      requireAction(row, roles, action);
+      if (body.confirmation !== true)
+        fail(
+          400,
+          "confirmation_required",
+          "Accept public chain visibility before payment",
+        );
+      const program = await currentProgram(deps, row.project_id);
+      const deployment =
+        program?.manifest.securityBounty?.settlement?.deployments.find(
+          (d) => d.network === body.network,
+        );
+      if (!deployment)
+        fail(
+          409,
+          "rail_unavailable",
+          "The program has no reviewed settlement on this network",
+        );
+      const approved = {
+        ...paymentDeploymentRecord(row.project_id, deployment),
+        payoutPolicy: "security-bounty",
+      };
+      return {
+        kind: action,
+        role: "reporter",
+        reason: null,
+        evidenceReference: null,
+        detail: {
+          network: deployment.network,
+          publicChainVisibilityAccepted: true,
+        },
+        set: {},
+        after: [
+          deps.db
+            .prepare(`INSERT INTO security_payment_consents
+          SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM security_case_events WHERE case_id=? AND case_revision=? AND idempotency_key=?)`)
+            .bind(
+              row.id,
+              JSON.stringify(approved),
+              actor.githubId,
+              at,
+              row.revision + 1,
+              row.id,
+              row.revision + 1,
+              idempotencyKey,
+            ),
+        ],
+      };
+    }
+    case "prepare-payment": {
+      exactKeys(body, [...common, "network", "confirmation"]);
+      requireAction(row, roles, action);
+      if (actor.githubId === row.technical_decider_github_id)
+        fail(
+          403,
+          "conflicted",
+          "The technical decider cannot prepare the payment",
+        );
+      if (body.confirmation !== true)
+        fail(
+          400,
+          "confirmation_required",
+          "Confirm the exact 75/25 payout and public chain visibility",
+        );
+      const program = await currentProgram(deps, row.project_id);
+      const deployment =
+        program?.manifest.securityBounty?.settlement?.deployments.find(
+          (d) => d.network === body.network,
+        );
+      const terms = frozenTerms(row);
+      if (!deployment || !terms)
+        fail(
+          409,
+          "rail_unavailable",
+          "The program has no reviewed settlement on this network",
+        );
+      const statement = await prepareSecuritySettlement(deps.db, {
+        caseId: row.id,
+        idempotencyKey,
+        projectId: row.project_id,
+        reporterId: row.reporter_github_id,
+        approverId: actor.githubId,
+        revision: row.revision + 1,
+        grossMinor: terms.grossMinor,
+        decimals: terms.decimals,
+        currency: terms.currency,
+        chain: terms.network,
+        deployment,
+        at,
+      });
+      return {
+        kind: action,
+        role: "financial",
+        reason: null,
+        evidenceReference: null,
+        detail: {
+          network: deployment.network,
+          publicChainVisibilityAccepted: true,
+        },
+        set: {},
+        after: [statement],
       };
     }
     case "approve-award": {

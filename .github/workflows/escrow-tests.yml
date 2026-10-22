@@ -6,9 +6,12 @@ on:
     paths:
       - 'contracts/**'
       - 'backend/payments/**'
+      - 'backend/security/**'
       - 'workers/payments/**'
+      - 'workers/security-payments/**'
       - 'workers/payment-executor/**'
       - 'src/lib/payments/**'
+      - 'src/lib/security-bounty.*'
       - 'src/lib/escrow-policy.*'
       - 'src/Earnings.tsx'
       - 'src/EscrowFunding.tsx'

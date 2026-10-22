@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
-use solana_sha256_hasher::hashv;
 use anchor_spl::associated_token::get_associated_token_address;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, TransferChecked};
+use solana_sha256_hasher::hashv;
 declare_id!("4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj");
 /// Bounds on the binding delay. Below one hour the owner cannot react; above 30 days a
 /// binding or a committed award waits too long to be useful. The local end-to-end suite
@@ -21,7 +21,9 @@ const MAX_ROTATION_DELAY: i64 = 90 * 86400;
 pub const LEGACY_PROJECT_SIZE: usize = 265;
 /// Vetoes a project owner may record for an actor between two payments to that actor in
 /// the project. Each veto can only delay the actor by one more binding delay, so this
-/// bounds the owner's delay power.
+/// bounds the owner's delay power. The cap is waived, and the count untouched, while the
+/// project has a confirmed pending authority rotation, so an earlier veto never shortens
+/// the cover the owner can give during a key compromise.
 const MAX_VETOES_BETWEEN_PAYMENTS: u8 = 3;
 /// Each award and each unused-funds withdrawal pays 1/50 (2%) of its gross to the fee
 /// recipient, rounded down once per award or withdrawal (PRD section 18). One rate for both
@@ -191,7 +193,10 @@ pub mod slop_escrow {
     pub fn cancel_authority_rotation(ctx: Context<CancelAuthorityRotation>) -> Result<()> {
         let p = &mut ctx.accounts.project;
         let proposed = p.pending_identity_authority;
-        require!(proposed != Pubkey::default(), EscrowError::NoRotationPending);
+        require!(
+            proposed != Pubkey::default(),
+            EscrowError::NoRotationPending
+        );
         p.pending_identity_authority = Pubkey::default();
         p.rotation_effective_at = 0;
         p.rotation_confirmed = false;
@@ -256,42 +261,27 @@ pub mod slop_escrow {
         actor_id: u64,
         gross: u64,
     ) -> Result<()> {
-        require!(gross > 0 && actor_id > 0, EscrowError::InvalidAmount);
-        // Binding the project to the ID stops another project from claiming it first.
-        require!(
-            award_id == award_id_for(&ctx.accounts.project.key(), &source_digest),
-            EscrowError::InvalidAward
-        );
-        let fee = fee_for(gross);
-        let principal = gross - fee;
-        let reserve = gross;
-        let p = &mut ctx.accounts.project;
-        require!(
-            ctx.accounts.vault.amount >= add(p.reserved, reserve)? && free(p)? >= reserve,
-            EscrowError::InsufficientFreeBalance
-        );
-        p.reserved = add(p.reserved, reserve)?;
-        let a = &mut ctx.accounts.obligation;
-        a.project = p.key();
-        a.award_id = award_id;
-        a.source_digest = source_digest;
-        ctx.accounts.origin.obligation = a.key();
-        a.actor_id = actor_id;
-        a.gross = gross;
-        a.principal = principal;
-        a.fee = fee;
-        a.committed_at = Clock::get()?.unix_timestamp;
-        emit!(AwardCommitted {
-            project: p.key(),
+        commit_with_fee(
+            ctx,
             award_id,
             source_digest,
             actor_id,
             gross,
-            principal,
-            fee
-        });
-        Ok(())
+            fee_for(gross),
+        )
     }
+    /// Bounties reuse ordinary reserves, destination authorization and recovery.
+    pub fn commit_bounty(
+        ctx: Context<Commit>,
+        award_id: [u8; 32],
+        source_digest: [u8; 32],
+        actor_id: u64,
+        gross: u64,
+    ) -> Result<()> {
+        require!(gross % 4 == 0, EscrowError::InvalidAmount);
+        commit_with_fee(ctx, award_id, source_digest, actor_id, gross, gross / 4)
+    }
+
     // The attester and the destination keypair both sign this exact transaction, including
     // deployment, project and predecessor. The destination is a co-signer, so the authority
     // alone cannot bind a wallet it does not hold. `expires_at` limits submission, not claim
@@ -347,7 +337,10 @@ pub mod slop_escrow {
     // out its own delay, or while an unpaid award to the actor (passed as `obligation`) is
     // still inside its commit delay. A binding that has paid cannot be vetoed, and the
     // owner can veto at most MAX_VETOES_BETWEEN_PAYMENTS times between two payments to the
-    // actor. A new authority binding (next version) is required afterwards.
+    // actor, except while a pending authority rotation has the fee recipient's confirmation:
+    // then every veto is allowed and none is counted, because the owner cannot open that
+    // window alone and needs an unbounded number of vetoes to outlast a stolen key's notice
+    // period. A new authority binding (next version) is required afterwards.
     pub fn veto_binding(ctx: Context<VetoBinding>, actor_id: u64, version: u64) -> Result<()> {
         let p = &ctx.accounts.project;
         let b = &ctx.accounts.binding;
@@ -365,11 +358,15 @@ pub mod slop_escrow {
             now < activates_at(b, p)? || commit_window,
             EscrowError::BindingActive
         );
-        require!(
-            b.veto_count < MAX_VETOES_BETWEEN_PAYMENTS,
-            EscrowError::VetoLimit
-        );
-        ctx.accounts.binding.veto_count += 1;
+        let rotation_pending =
+            p.pending_identity_authority != Pubkey::default() && p.rotation_confirmed;
+        if !rotation_pending {
+            require!(
+                b.veto_count < MAX_VETOES_BETWEEN_PAYMENTS,
+                EscrowError::VetoLimit
+            );
+            ctx.accounts.binding.veto_count += 1;
+        }
         emit!(BindingVetoed {
             project: ctx.accounts.project.key(),
             actor_id,
@@ -528,6 +525,50 @@ pub mod slop_escrow {
 pub fn award_id_for(project: &Pubkey, source_digest: &[u8; 32]) -> [u8; 32] {
     hashv(&[b"slop-escrow-award", project.as_ref(), source_digest]).to_bytes()
 }
+fn commit_with_fee(
+    ctx: Context<Commit>,
+    award_id: [u8; 32],
+    source_digest: [u8; 32],
+    actor_id: u64,
+    gross: u64,
+    fee: u64,
+) -> Result<()> {
+    require!(gross > 0 && actor_id > 0, EscrowError::InvalidAmount);
+    // Binding the project to the ID stops another project from claiming it first.
+    require!(
+        award_id == award_id_for(&ctx.accounts.project.key(), &source_digest),
+        EscrowError::InvalidAward
+    );
+    let principal = gross - fee;
+    let reserve = gross;
+    let p = &mut ctx.accounts.project;
+    require!(
+        ctx.accounts.vault.amount >= add(p.reserved, reserve)? && free(p)? >= reserve,
+        EscrowError::InsufficientFreeBalance
+    );
+    p.reserved = add(p.reserved, reserve)?;
+    let a = &mut ctx.accounts.obligation;
+    a.project = p.key();
+    a.award_id = award_id;
+    a.source_digest = source_digest;
+    ctx.accounts.origin.obligation = a.key();
+    a.actor_id = actor_id;
+    a.gross = gross;
+    a.principal = principal;
+    a.fee = fee;
+    a.committed_at = Clock::get()?.unix_timestamp;
+    emit!(AwardCommitted {
+        project: p.key(),
+        award_id,
+        source_digest,
+        actor_id,
+        gross,
+        principal,
+        fee
+    });
+    Ok(())
+}
+
 /// The 2% fee on one award or one withdrawal of `gross`, rounded down. It depends only on
 /// this amount, so a project that paid an earlier withdrawal schedule is not affected. An
 /// amount under 50 base units pays no fee; a split saves under one unit per transaction.

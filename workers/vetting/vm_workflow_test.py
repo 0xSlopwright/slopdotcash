@@ -81,6 +81,22 @@ runcmd:
                     assert observed["artifacts"]["native"]["executeErrno"] == 13
                     assert observed["artifacts"]["library"]["loadDenied"] is True
                     assert observed["artifacts"]["script"]["interpreterExit"] != 0
+                capture = json.loads((completed / "guest-filesystem.json").read_text())
+                assert capture["state"] == "incomplete" and capture["executionAuthorized"] is False
+                assert [phase["phase"] for phase in capture["phases"]] == ["before-command", "after-traced-command", "after-post-collector-probe"]
+                assert capture["phases"][0]["entries"] == []
+                assert len(capture["phases"][1]["entries"]) == 4
+                assert len(capture["phases"][2]["entries"]) == 8
+                assert len(capture["objects"]) == 4  # phase copies share bytes, not rename authority
+                for phase in capture["phases"][1:]:
+                    assert not phase["visibilityGaps"]
+                    for entry in phase["entries"]:
+                        assert entry["stable"] is True
+                        saved = completed / ("filesystem-object-" + entry["sha256"])
+                        assert saved.stat().st_size == entry["capturedBytes"]
+                        assert sha256(saved) == entry["sha256"]
+                        assert saved.read_bytes() == base64.b64decode(capture["objects"][entry["sha256"]])
+                assert all(change["observed"] == "added" for change in capture["changes"])
                 wrong_policy = json.loads(Path(args.profile).read_text())
                 wrong_policy["kernelPolicySha256"] = "0" * 64
                 wrong_profile = root / "wrong-policy-profile.json"

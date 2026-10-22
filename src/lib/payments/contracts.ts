@@ -66,10 +66,19 @@ export interface DirectTransfer {
 }
 /** The largest vault amount: EVM and Solana counters are uint128. */
 export const MAX_BASE_UNITS = (1n << 128n) - 1n;
+export type PayoutPolicy = "ordinary" | "security-bounty";
 /** The 2% payout fee is deducted from the gross award, in base units of the award asset. */
-export function payoutFee(gross: bigint): bigint {
+export function payoutFee(
+  gross: bigint,
+  policy: PayoutPolicy = "ordinary",
+): bigint {
   if (gross <= 0n || gross > MAX_BASE_UNITS)
     throw new Error("Invalid gross award");
+  if (policy === "security-bounty") {
+    if (gross % 4n !== 0n) throw new Error("Bounty split must be exact");
+    return gross / 4n;
+  }
+  if (policy !== "ordinary") throw new Error("Unknown payout policy");
   return gross / 50n;
 }
 export function isBaseUnits(value: unknown): value is string {
