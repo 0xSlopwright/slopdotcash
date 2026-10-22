@@ -116,6 +116,9 @@ export async function prepareE2eFixture() {
   );
   run("bun", ["run", "build"], workspace, {
     ...process.env,
+    // The caller may build the live registry with a different profile input.
+    // This isolated workspace must use the matching frozen profile inventory.
+    SLOP_PROFILES_INPUT: join(workspace, "data", "profiles", "seed.json"),
     VITE_SLOP_PROJECT_REGISTRY_URL: "/data/fixture-project-registry.json",
   });
   return workspace;

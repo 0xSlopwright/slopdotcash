@@ -1,6 +1,7 @@
 // Review pipeline for one issue or pull request revision (PRD BOT-04 to BOT-13).
 // The model only classifies. Every GitHub action is decided here, in code,
 // after independent state checks.
+import { activeBudgetBlock, recordBudgetBlock } from "./budget-blocks";
 import {
   AUTHOR_DAILY_CAP,
   type Category,
@@ -19,6 +20,7 @@ import {
 import {
   authorExemption,
   type Exemption,
+  findReviewComment,
   GitHubClient,
   GitHubError,
   sha256Hex,
@@ -130,8 +132,8 @@ export function neutralize(text: string): string {
     .slice(0, 1500);
 }
 
-async function loadPolicy(
-  github: GitHubClient,
+export async function loadPolicy(
+  github: Pick<GitHubClient, "fileText">,
   owner: string,
   repo: string,
   ref: string,
@@ -619,30 +621,61 @@ async function upsertComment(
   job: Job,
   context: Context,
   body: string,
+  claim: store.ReviewClaim,
 ) {
   const db = env.SLOPBOT_DB;
+  await store.assertReviewClaim(db, claim);
   await requireRegisteredRepository(db, job);
-  const existing = await store.commentId(db, context.issue.node_id);
-  if (existing !== null) {
-    const updated = await context.github.request(
+  let existing = await store.commentId(db, context.issue.node_id);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (existing === null) {
+      existing = await findReviewComment(
+        context.github,
+        job.owner,
+        job.repo,
+        job.number,
+        env.SLOPBOT_APP_USER_ID,
+      );
+      if (existing === null) break;
+      await store.saveCommentId(
+        db,
+        context.issue.node_id,
+        job.repositoryId,
+        existing,
+      );
+    }
+    await store.assertReviewClaim(db, claim);
+    await requireRegisteredRepository(db, job);
+    const updated = await context.github.request<{ id: number }>(
       "PATCH",
       `/repos/${job.owner}/${job.repo}/issues/comments/${existing}`,
       { body },
     );
-    if (updated.status === 200 && updated.data !== null) return;
-    if (updated.status !== 404)
-      throw new GitHubError(
-        updated.status,
-        "GitHub did not confirm the comment update",
-      );
+    if (updated.status !== 404) {
+      if (updated.status !== 200 || updated.data?.id !== existing)
+        throw new GitHubError(
+          updated.status,
+          "GitHub did not confirm the comment update",
+        );
+      return;
+    }
+    existing = null;
+    if (attempt === 1)
+      throw new Error("GitHub review comment changed during recovery");
   }
+  await store.assertReviewClaim(db, claim);
   await requireRegisteredRepository(db, job);
   const created = await context.github.request<{ id: number }>(
     "POST",
     `/repos/${job.owner}/${job.repo}/issues/${job.number}/comments`,
     { body },
   );
-  if (created.status !== 201 || created.data === null)
+  if (
+    created.status !== 201 ||
+    created.data === null ||
+    !Number.isSafeInteger(created.data.id) ||
+    created.data.id <= 0
+  )
     throw new GitHubError(
       created.status,
       "GitHub did not confirm the comment creation",
@@ -684,6 +717,10 @@ export async function reviewItem(
   if (await store.reviewExists(db, reviewKey))
     return "already reviewed at this revision and policy";
 
+  const budgetBlock = await activeBudgetBlock(db, reviewKey);
+  if (budgetBlock)
+    return `blocked: provider budget until ${budgetBlock.retry_at}`;
+
   const exemption: Exemption = await authorExemption(
     context.github,
     repo.owner,
@@ -697,7 +734,7 @@ export async function reviewItem(
   );
   const authorReviewsToday = await store.count(
     db,
-    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND status = 'completed' AND created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')",
+    "SELECT COUNT(*) AS n FROM slopbot_reviews WHERE repository_id = ? AND author_id = ? AND status = 'completed' AND completed_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')",
     job.repositoryId,
     issue.user.id,
   );
@@ -727,19 +764,24 @@ export async function reviewItem(
   });
 
   const contentDigest = await sha256Hex(context.itemText);
-  const started = await store.startReview(db, {
-    reviewKey,
-    installationId: job.installationId,
-    repositoryId: job.repositoryId,
-    itemKind: job.itemKind,
-    itemNumber: job.number,
-    itemNodeId: issue.node_id,
-    authorId: issue.user.id,
-    revision: context.revision,
-    contentDigest,
-    policyDigest: context.policyDigest,
-  });
-  if (started === "exists") return "review already started";
+  const claimToken = crypto.randomUUID();
+  const started = await store.startReview(
+    db,
+    {
+      reviewKey,
+      installationId: job.installationId,
+      repositoryId: job.repositoryId,
+      itemKind: job.itemKind,
+      itemNumber: job.number,
+      itemNodeId: issue.node_id,
+      authorId: issue.user.id,
+      revision: context.revision,
+      contentDigest,
+      policyDigest: context.policyDigest,
+    },
+    claimToken,
+  );
+  if (started === "exists") return "review already completed";
   try {
     return await runReview(
       env,
@@ -748,10 +790,11 @@ export async function reviewItem(
       routing,
       reviewKey,
       contentDigest,
+      claimToken,
       started === "new",
     );
   } catch (error) {
-    await store.finishReview(db, reviewKey, "failed", {
+    await store.finishReview(db, reviewKey, claimToken, "failed", {
       skipReason: String(error).slice(0, 300),
     });
     throw error;
@@ -765,12 +808,16 @@ async function runReview(
   routing: ReturnType<typeof route>,
   reviewKey: string,
   contentDigest: string,
+  claimToken: string,
   billable: boolean,
 ): Promise<string> {
   const db = env.SLOPBOT_DB;
   const { issue, config } = context;
+  const claim = { reviewKey, token: claimToken };
+  await store.assertReviewClaim(db, claim);
+  await requireRegisteredRepository(db, job);
   if (!routing.review) {
-    await store.finishReview(db, reviewKey, "skipped", {
+    await store.finishReview(db, reviewKey, claimToken, "skipped", {
       skipReason: routing.reason,
     });
     return routing.reason;
@@ -781,6 +828,8 @@ async function runReview(
   const deterministic = verdict !== null;
   let triage: CallRecord | null = null;
   if (verdict === null) {
+    await store.assertReviewClaim(db, claim);
+    await requireRegisteredRepository(db, job);
     const result = await runRoute(
       env,
       TRIAGE_ROUTE,
@@ -794,11 +843,17 @@ async function runReview(
       job.installationId,
       "triage",
       result.calls,
-      billable,
+      billable && (await store.ownsReviewClaim(db, claim)),
     );
     if (result.blocked)
       throw new Error("Model call blocked by the live project registry");
+    if (result.budgetResetAt) {
+      await recordBudgetBlock(db, claim, job, result.budgetResetAt);
+      return `blocked: provider budget until ${result.budgetResetAt}`;
+    }
     if (result.verdict === null) {
+      // Let reviewItem persist the failure and the queue schedule a retry.
+      // Returning normally would acknowledge the job and lose recovery.
       throw new Error("every model route step failed");
     }
     verdict = result.verdict;
@@ -808,7 +863,7 @@ async function runReview(
   const category: Category = verdict.category;
   const mode = category === "none" ? "off" : config.config.categories[category];
   if (mode === "off") {
-    await store.finishReview(db, reviewKey, "completed", {
+    await store.finishReview(db, reviewKey, claimToken, "completed", {
       verdict,
       action: "none",
     });
@@ -833,6 +888,8 @@ async function runReview(
       blockedClose = state.why;
     else if (deterministic) close = true;
     else {
+      await store.assertReviewClaim(db, claim);
+      await requireRegisteredRepository(db, job);
       const second = await runRoute(
         env,
         CONFIRM_ROUTE,
@@ -846,10 +903,14 @@ async function runReview(
         job.installationId,
         "confirm",
         second.calls,
-        billable,
+        billable && (await store.ownsReviewClaim(db, claim)),
       );
       if (second.blocked)
         throw new Error("Model call blocked by the live project registry");
+      if (second.budgetResetAt) {
+        await recordBudgetBlock(db, claim, job, second.budgetResetAt);
+        return `blocked: provider budget until ${second.budgetResetAt}`;
+      }
       confirm = second.servedBy;
       if (confirmedClosure(verdict, second.verdict, context)) {
         if (category === "low_quality") {
@@ -890,6 +951,63 @@ async function runReview(
     }
   }
 
+  // A queued review has no authority to post after the repository, source,
+  // policy or installation changes. Apply this to advisory actions too.
+  const fresh = await loadContext(env, job);
+  const freshInstall = await store.installation(db, job.installationId);
+  if (
+    fresh === null ||
+    fresh.repo.id !== job.repositoryId ||
+    fresh.repo.private ||
+    fresh.issue.state !== "open" ||
+    fresh.revision !== context.revision ||
+    (await sha256Hex(fresh.itemText)) !== contentDigest ||
+    fresh.policyDigest !== context.policyDigest ||
+    (fresh.pull?.merged ?? false) ||
+    (fresh.pull?.draft ?? false) ||
+    freshInstall === null ||
+    freshInstall.removed_at !== null ||
+    freshInstall.suspended_at !== null
+  ) {
+    const reason = "review source or authorization changed before action";
+    await store.finishReview(db, reviewKey, claimToken, "failed", {
+      verdict,
+      action: "none",
+      skipReason: reason,
+    });
+    return reason;
+  }
+  if (close && fresh.issue.assignees.length > 0) {
+    close = false;
+    blockedClose = "the item was assigned before closure";
+  }
+  if (close) {
+    const exemption = await authorExemption(
+      fresh.github,
+      fresh.repo.owner,
+      job.repo,
+      fresh.issue.user,
+    );
+    const reopened = await store.count(
+      db,
+      "SELECT COUNT(*) AS n FROM slopbot_actions WHERE review_key = ?",
+      `reopen:${issue.node_id}:${context.revision}`,
+    );
+    const currentClosure = await closureState(
+      env,
+      job,
+      fresh,
+      exemption === "not-exempt" && reopened === 0,
+    );
+    if (!currentClosure.allowed) {
+      close = false;
+      blockedClose =
+        reopened > 0
+          ? "a human reopened this revision; maintainer decision stands"
+          : currentClosure.why;
+    }
+  }
+
   if (close && !(await stillMayClose(env, job, context, verdict))) {
     close = false;
     blockedClose =
@@ -898,13 +1016,14 @@ async function runReview(
 
   const body = commentBody({
     verdict,
-    action: close ? "close" : "label",
+    // Publish the review first. A closure claim requires GitHub's response.
+    action: "label",
     blockedClose,
     context,
     triage,
     confirm,
   });
-  await upsertComment(env, job, context, body);
+  await upsertComment(env, job, context, body, claim);
   await store.recordAction(
     db,
     reviewKey,
@@ -913,9 +1032,25 @@ async function runReview(
     "comment",
     category,
   );
-  await addLabels(env, job, context.github, [
-    `slopbot: ${category.replaceAll("_", " ")}`,
-  ]);
+  await store.assertReviewClaim(db, claim);
+  await requireRegisteredRepository(db, job);
+  const label = `slopbot: ${category.replaceAll("_", " ")}`;
+  const labeled = await context.github.request<{ name: string }[]>(
+    "POST",
+    `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
+    {
+      labels: [label],
+    },
+  );
+  if (
+    labeled.status !== 200 ||
+    !Array.isArray(labeled.data) ||
+    !labeled.data.some((entry) => entry.name === label)
+  )
+    throw new GitHubError(
+      labeled.status,
+      "GitHub did not confirm the review label",
+    );
   await store.recordAction(
     db,
     reviewKey,
@@ -939,9 +1074,11 @@ async function runReview(
         triage,
         confirm,
       }),
+      claim,
     );
   }
   if (close) {
+    await store.assertReviewClaim(db, claim);
     await requireRegisteredRepository(db, job);
     const closed =
       job.itemKind === "pull_request"
@@ -971,6 +1108,7 @@ async function runReview(
           triage,
           confirm,
         }),
+        claim,
       );
     }
   }
@@ -986,8 +1124,22 @@ async function runReview(
         penaltyEligible: category !== "low_quality" && routing.penaltyEligible,
       }),
     );
+    await upsertComment(
+      env,
+      job,
+      context,
+      commentBody({
+        verdict,
+        action: "close",
+        blockedClose: null,
+        context,
+        triage,
+        confirm,
+      }),
+      claim,
+    );
   }
-  await store.finishReview(db, reviewKey, "completed", {
+  await store.finishReview(db, reviewKey, claimToken, "completed", {
     verdict,
     action: close ? "close" : "label",
   });

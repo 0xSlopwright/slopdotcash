@@ -2,7 +2,7 @@
 # checked-in GitHub Actions workflow after owner approval and the deploy lever
 # is claimed. No route is declared until then.
 name = "slop-slopbot"
-main = "index.ts"
+main = "entrypoint.ts"
 compatibility_date = "2026-07-30"
 workers_dev = false
 
@@ -11,6 +11,10 @@ binding = "SLOPBOT_DB"
 database_name = "slop-private"
 database_id = "1b453124-2709-45af-8389-151a8105c461"
 migrations_dir = "../../migrations"
+
+[[services]]
+binding = "SLOP_NOTIFY"
+service = "slop-notify"
 
 [[queues.producers]]
 binding = "SLOPBOT_QUEUE"
@@ -21,6 +25,9 @@ queue = "slopbot-jobs"
 max_batch_size = 5
 max_retries = 5
 dead_letter_queue = "slopbot-jobs-dlq"
+
+[triggers]
+crons = ["*/5 * * * *"]
 
 [vars]
 # Off until the owner approves Slopbot v2 closures (PRD BOT-06, BOT-12).

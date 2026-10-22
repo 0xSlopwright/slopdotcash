@@ -106,3 +106,11 @@ changed retroactively.
 Autonomous merging, closing, banning, or excluding. Replacing or discounting
 human review. Any score or payment for bot activity. Identity checks beyond
 the existing immutable GitHub actor and artifact IDs.
+
+## SCR-06 extension
+
+The owner-approved 9 October 2026 SCR-06 extension permits automatic
+provisional value assessments under `scoring-v2.md` and the value-scoring
+delivery plan. That separate permission does not activate v2 closure powers
+or grant payout, exclusion or penalty authority. Original advisory review
+records do not become score records merely because this extension exists.

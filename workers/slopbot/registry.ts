@@ -49,7 +49,10 @@ export async function registeredRepository(
   return restricted === null;
 }
 
-export async function requireRegisteredRepository(db: D1Database, job: Job) {
+export async function requireRegisteredRepository(
+  db: D1Database,
+  job: Pick<Job, "owner" | "repo" | "repositoryId">,
+) {
   if (!(await registeredRepository(db, job)))
     throw new Error("Repository is not active in the Slop project registry");
 }

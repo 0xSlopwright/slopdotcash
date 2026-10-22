@@ -1,3 +1,5 @@
+import { GitHubClient } from "../workers/slopbot/github";
+import { loadValueInputs } from "./value-ingestion";
 /**
  * Collects the rolling contribution ledger and current work queues from the
  * authenticated GitHub GraphQL API. Time slicing, cursor pagination, runtime
@@ -29,6 +31,7 @@ import {
   type IssueRecord,
   isBotActor,
   isMergedPullRequestBodyEligibleForEvidence,
+  type LeaderboardInput,
   type LeaderboardSnapshot,
   type LeaderboardSourceMetadata,
   type MergedPullRequestOutcome,
@@ -255,6 +258,12 @@ export interface GenerationProgress {
 }
 
 export interface GenerateOptions {
+  /** Enable the authoritative hosted value feed; failures prevent publication. */
+  valueAssessments?: boolean;
+  valueActors?: LeaderboardInput["valueActors"];
+  valueDecisions?: LeaderboardInput["valueDecisions"];
+  jointValueDecisions?: LeaderboardInput["jointValueDecisions"];
+  valueContextPullRequests?: LeaderboardInput["valueContextPullRequests"];
   now?: Date;
   actualNow?: Date;
   onProgress?: (progress: GenerationProgress) => void;
@@ -379,6 +388,7 @@ const PULL_REQUEST_FRAGMENT = `
     lastEditedAt
     editor { ...LeaderboardActor }
     mergedAt
+    closedAt
     isDraft
     headRefOid
     reviewDecision
@@ -417,7 +427,7 @@ const MERGED_PULL_REQUEST_REVIEW_FRAGMENT = `
     headRefOid
     author { ...LeaderboardActor }
     comments(first: 100) { ${COMMENT_FIELDS} }
-    reviews(states: [APPROVED, CHANGES_REQUESTED], first: 100) { ${REVIEW_FIELDS} }
+    reviews(states: $reviewStates, first: 100) { ${REVIEW_FIELDS} }
   }
 `;
 
@@ -475,7 +485,7 @@ const RATE_LIMIT_QUERY = `
 
 const PREFLIGHT_QUERY = `
   query LeaderboardPreflight($owner: String!, $name: String!) {
-    repository(owner: $owner, name: $name) { id updatedAt }
+    repository(owner: $owner, name: $name) { id isPrivate updatedAt }
     rateLimit { cost limit remaining resetAt }
   }
 `;
@@ -559,7 +569,7 @@ const PULL_REQUEST_DETAILS_QUERY = `
 `;
 
 const MERGED_PULL_REQUEST_REVIEWS_QUERY = `
-  query LeaderboardMergedPullRequestReviews($ids: [ID!]!) {
+  query LeaderboardMergedPullRequestReviews($ids: [ID!]!, $reviewStates: [PullRequestReviewState!]) {
     nodes(ids: $ids) {
       __typename
       ... on PullRequest { ...LeaderboardMergedPullRequestReview }
@@ -1089,6 +1099,9 @@ function parsePullRequest(value: unknown, path: string): ParsedPullRequest {
       lastEditedAt: asNullableString(node.lastEditedAt, `${path}.lastEditedAt`),
       editor: parseActor(node.editor, `${path}.editor`),
       mergedAt: asNullableString(node.mergedAt, `${path}.mergedAt`),
+      ...(node.closedAt === undefined
+        ? {}
+        : { closedAt: asNullableString(node.closedAt, `${path}.closedAt`) }),
       isDraft: asBoolean(node.isDraft, `${path}.isDraft`),
       headRefOid: asFullCommitSha(node.headRefOid, `${path}.headRefOid`),
       reviewDecision: asNullableString(
@@ -1703,11 +1716,22 @@ function parseIsoDate(value: Date, path: string): Date {
 export function parseGenerationArguments(
   values: string[],
   currentTime = new Date(),
-): Pick<GenerateOptions, "now"> {
+): Pick<GenerateOptions, "now" | "valueAssessments"> {
+  const valueFlags = values.filter((value) => value === "--value-assessments");
+  if (valueFlags.length > 1)
+    throw new TypeError("--value-assessments may appear only once");
+  if (valueFlags.length === 1)
+    return {
+      ...parseGenerationArguments(
+        values.filter((value) => value !== "--value-assessments"),
+        currentTime,
+      ),
+      valueAssessments: true,
+    };
   if (values.length === 0) return {};
   if (values.length !== 2 || values[0] !== "--cutoff") {
     throw new TypeError(
-      "Usage: generate-leaderboard.ts [--cutoff YYYY-MM-DDTHH:mm:ss.sssZ]",
+      "Usage: generate-leaderboard.ts [--cutoff YYYY-MM-DDTHH:mm:ss.sssZ] [--value-assessments]",
     );
   }
   const cutoffText = values[1];
@@ -1783,6 +1807,7 @@ function parseSearchReference(
   value: unknown,
   path: string,
   expectedKind: NodeReference["kind"],
+  merged = true,
 ): NodeReference {
   const node = asRecord(value, path);
   const kind = asString(node.__typename, `${path}.__typename`);
@@ -1793,9 +1818,11 @@ function parseSearchReference(
     id: asString(node.id, `${path}.id`),
     kind,
     outcome:
-      kind === "PullRequest" ? parsePullRequestOutcome(node, path) : null,
+      kind === "PullRequest" && merged
+        ? parsePullRequestOutcome(node, path)
+        : null,
     openVersion: null,
-    ...(kind === "PullRequest"
+    ...(kind === "PullRequest" && merged
       ? {
           commitPage: {
             baseRefOid: asFullCommitSha(node.baseRefOid, `${path}.baseRefOid`),
@@ -1924,6 +1951,8 @@ async function preflightRepository(
     name: targetRepository.name,
   });
   const repository = child(data, "repository", "data");
+  if (repository.isPrivate !== false)
+    throw new Error("Leaderboard ingestion requires a public repository");
   const repositoryNodeId = asString(repository.id, "data.repository.id");
   if (
     targetRepository.expectedNodeId !== null &&
@@ -1957,7 +1986,10 @@ export async function collectSearchReferences(
   from: Date,
   to: Date,
   qualifier: "closed" | "merged",
-  kindQualifier: "is:issue is:closed" | "is:pr is:merged",
+  kindQualifier:
+    | "is:issue is:closed"
+    | "is:pr is:merged"
+    | "is:pr is:closed is:unmerged",
   expectedKind: NodeReference["kind"],
   stats: { searchSliceCount: number },
 ): Promise<NodeReference[]> {
@@ -1969,7 +2001,7 @@ export async function collectSearchReferences(
     pageSize: GRAPHQL_PAGE_SIZE,
   });
   const firstPage = parseSearchPage(firstData, (value, path) =>
-    parseSearchReference(value, path, expectedKind),
+    parseSearchReference(value, path, expectedKind, qualifier === "merged"),
   );
   async function collectSplitRange() {
     if (to.getTime() - from.getTime() <= MINIMUM_SEARCH_SLICE_MS) {
@@ -2023,7 +2055,7 @@ export async function collectSearchReferences(
       pageSize: GRAPHQL_PAGE_SIZE,
     });
     const page = parseSearchPage(data, (value, path) =>
-      parseSearchReference(value, path, expectedKind),
+      parseSearchReference(value, path, expectedKind, qualifier === "merged"),
     );
     if (page.totalCount !== expectedCount) {
       throw new Error(
@@ -2178,7 +2210,10 @@ async function countSearchResults(
   from: Date,
   to: Date,
   qualifier: "closed" | "merged",
-  kindQualifier: "is:issue is:closed" | "is:pr is:merged",
+  kindQualifier:
+    | "is:issue is:closed"
+    | "is:pr is:merged"
+    | "is:pr is:closed is:unmerged",
   expectedKind: NodeReference["kind"],
   stats: { searchSliceCount: number },
 ): Promise<number> {
@@ -2190,7 +2225,7 @@ async function countSearchResults(
     pageSize: 1,
   });
   return parseSearchPage(data, (value, path) =>
-    parseSearchReference(value, path, expectedKind),
+    parseSearchReference(value, path, expectedKind, qualifier === "merged"),
   ).totalCount;
 }
 
@@ -2289,6 +2324,7 @@ function parsePullRequestOutcome(
     createdAt: asString(node.createdAt, `${path}.createdAt`),
     updatedAt: asString(node.updatedAt, `${path}.updatedAt`),
     mergedAt,
+    headRefOid: asFullCommitSha(node.headRefOid, `${path}.headRefOid`),
     author: parseActor(node.author, `${path}.author`),
     additions: asNumber(node.additions, `${path}.additions`),
     deletions: asNumber(node.deletions, `${path}.deletions`),
@@ -2503,12 +2539,13 @@ async function completePullRequestConnections(
 async function completeMergedPullRequestReviewConnections(
   client: GraphqlExecutor,
   parsed: ParsedMergedPullRequestReview,
+  allReviews: boolean,
 ): Promise<PendingMergedPullRequestReviewRecord> {
   return await completePullRequestTextConnections(
     client,
     parsed.record,
     parsed.pages,
-    MORE_FORMAL_REVIEWS_QUERY,
+    allReviews ? MORE_REVIEWS_QUERY : MORE_FORMAL_REVIEWS_QUERY,
   );
 }
 
@@ -2855,12 +2892,15 @@ async function hydrateReviewedMergedPullRequests(
   client: GraphqlExecutor,
   references: NodeReference[],
   onProgress: (progress: GenerationProgress) => void,
+  allReviews = false,
+  expectedState: "merged" | "closed" = "merged",
 ): Promise<MergedPullRequestReviewRecord[]> {
   const pending: PendingMergedPullRequestReviewRecord[] = [];
   for (const batch of chunks(references, DETAIL_BATCH_SIZE)) {
     const ids = batch.map((reference) => reference.id);
     const data = await client.execute(MERGED_PULL_REQUEST_REVIEWS_QUERY, {
       ids,
+      reviewStates: allReviews ? null : ["APPROVED", "CHANGES_REQUESTED"],
     });
     const parsed = parseDetailBatch(
       data,
@@ -2869,9 +2909,15 @@ async function hydrateReviewedMergedPullRequests(
       parseMergedPullRequestReview,
     );
     for (const value of parsed) {
-      validateRecordState(value, "merged");
+      if (expectedState === "merged") validateRecordState(value, "merged");
+      else if (value.state !== "CLOSED" || value.record.mergedAt !== null)
+        throw new Error("Joint context source changed its closed state");
       pending.push(
-        await completeMergedPullRequestReviewConnections(client, value),
+        await completeMergedPullRequestReviewConnections(
+          client,
+          value,
+          allReviews,
+        ),
       );
       onProgress({
         phase: "merged-pull-requests",
@@ -3648,6 +3694,7 @@ export async function generateLeaderboardFromGitHub(
   const mergedPullRequestOutcomes: MergedPullRequestOutcome[] = [];
   const mergedPullRequests: PullRequestRecord[] = [];
   const reviewedMergedPullRequests: MergedPullRequestReviewRecord[] = [];
+  const closedUnmergedPullRequests: PullRequestRecord[] = [];
   const closedIssues: IssueRecord[] = [];
   let closedIssueCount = 0;
 
@@ -3675,6 +3722,29 @@ export async function generateLeaderboardFromGitHub(
       "PullRequest",
       stats,
     );
+    if (options.valueAssessments) {
+      const closedReferences = await collectSearchReferences(
+        client,
+        repository,
+        windowFrom,
+        now,
+        "closed",
+        "is:pr is:closed is:unmerged",
+        "PullRequest",
+        stats,
+      );
+      await ensureEstimatedBudget(client, closedReferences.length, 0, 0);
+      const closed = await hydratePullRequests(
+        client,
+        closedReferences,
+        "closed",
+        onProgress,
+        "merged-pull-requests",
+      );
+      if (closed.some((pull) => pull.mergedAt !== null || !pull.closedAt))
+        throw new Error("Closed unmerged census changed during hydration");
+      closedUnmergedPullRequests.push(...closed);
+    }
     closedIssueCount += await countSearchResults(
       client,
       repository,
@@ -3746,7 +3816,8 @@ export async function generateLeaderboardFromGitHub(
     );
     const reviewedReferences = collection.mergedPullRequestReferences.filter(
       (reference) =>
-        hydrationPlan.hydratedIds.has(reference.id) &&
+        (options.valueAssessments ||
+          hydrationPlan.hydratedIds.has(reference.id)) &&
         !detailedReferenceIds.has(reference.id),
     );
     await ensureEstimatedBudget(
@@ -3767,6 +3838,7 @@ export async function generateLeaderboardFromGitHub(
       client,
       reviewedReferences,
       onProgress,
+      options.valueAssessments,
     );
     await reconcileHydratedReviewCensus(client, hydrationPlan.reviewCounts, [
       ...detailedPullRequests,
@@ -3873,11 +3945,28 @@ export async function generateLeaderboardFromGitHub(
     hydrationCandidates.map(({ outcome }) => ({ id: outcome.id })),
   );
   assertReviewCensusStable(hydrationPlan.reviewCounts, finalReviewCounts);
+  if (closedUnmergedPullRequests.length) {
+    const closedCounts = new Map(
+      closedUnmergedPullRequests.map((pull) => [
+        pull.id,
+        {
+          reviewCount: formalDecisionReviewCount(pull.reviews),
+          updatedAt: pull.updatedAt,
+        },
+      ]),
+    );
+    const finalClosedCounts = await collectPullRequestReviewCounts(
+      client,
+      closedUnmergedPullRequests,
+    );
+    assertReviewCensusStable(closedCounts, finalClosedCounts);
+  }
 
   const allRecords = [
     ...dedupedOutcomes,
     ...dedupedMergedPullRequests,
     ...dedupedReviewedMergedPullRequests,
+    ...closedUnmergedPullRequests,
     ...dedupedClosedIssues,
     ...openIssues,
     ...openPullRequests,
@@ -3890,6 +3979,84 @@ export async function generateLeaderboardFromGitHub(
           .reduce((latest, current) =>
             Date.parse(current) > Date.parse(latest) ? current : latest,
           );
+  let valueRestRequests = 0;
+  let valueInputs: Pick<
+    LeaderboardInput,
+    | "valueDecisions"
+    | "jointValueDecisions"
+    | "valueActors"
+    | "valueContextPullRequests"
+  > = {
+    valueDecisions: options.valueDecisions,
+    jointValueDecisions: options.jointValueDecisions,
+    valueContextPullRequests: options.valueContextPullRequests,
+    valueActors: options.valueActors,
+  };
+  if (options.valueAssessments) {
+    if (
+      options.valueDecisions ||
+      options.jointValueDecisions ||
+      options.valueContextPullRequests ||
+      options.valueActors
+    )
+      throw new Error(
+        "Hosted value ingestion cannot mix supplied decisions or actors",
+      );
+    const github = GitHubClient.forToken(options.evidenceToken ?? "");
+    valueInputs = await loadValueInputs(
+      {
+        get: <T>(path: string) => {
+          valueRestRequests += 1;
+          return github.get<T>(path);
+        },
+        fileText: (...args: Parameters<GitHubClient["fileText"]>) => {
+          valueRestRequests += 1;
+          return github.fileText(...args);
+        },
+        graphql: async <T>(query: string, variables: Record<string, unknown>) =>
+          (await client.execute(query, variables as GraphqlVariables)) as T,
+      },
+      [...dedupedOutcomes, ...closedUnmergedPullRequests],
+    );
+  }
+  if (options.valueAssessments) {
+    const censusIds = new Set(
+      [...dedupedOutcomes, ...closedUnmergedPullRequests].map(
+        (source) => source.id,
+      ),
+    );
+    const contexts = new Map<string, "merged" | "closed">();
+    for (const decision of valueInputs.jointValueDecisions?.values() ?? []) {
+      if (decision.status !== "assessed") continue;
+      for (const { evidence } of decision.evidence.sources)
+        if (!censusIds.has(evidence.pull.node_id))
+          contexts.set(
+            evidence.pull.node_id,
+            evidence.pull.merged_at ? "merged" : "closed",
+          );
+    }
+    await ensureEstimatedBudget(client, 0, 0, 0, contexts.size);
+    valueInputs.valueContextPullRequests = [];
+    for (const state of ["merged", "closed"] as const) {
+      const references: NodeReference[] = [...contexts]
+        .filter(([, expected]) => expected === state)
+        .map(([id]) => ({
+          id,
+          kind: "PullRequest",
+          outcome: null,
+          openVersion: null,
+        }));
+      valueInputs.valueContextPullRequests.push(
+        ...(await hydrateReviewedMergedPullRequests(
+          client,
+          references,
+          onProgress,
+          true,
+          state,
+        )),
+      );
+    }
+  }
   const fetchedAt = new Date().toISOString();
   const rateLimit = client.getRateLimit();
   const source: LeaderboardSourceMetadata = {
@@ -3901,7 +4068,7 @@ export async function generateLeaderboardFromGitHub(
       id: collection.repository.id,
       repositoryId: collection.preflight.id,
     })),
-    requestCount: client.getRequestCount(),
+    requestCount: client.getRequestCount() + valueRestRequests,
     searchSliceCount: stats.searchSliceCount,
     rateLimit,
     counts: {
@@ -3927,6 +4094,7 @@ export async function generateLeaderboardFromGitHub(
     },
   };
   const snapshot = createLeaderboardSnapshot({
+    ...valueInputs,
     generatedAt: fetchedAt,
     windowFrom: windowFrom.toISOString(),
     windowTo: now.toISOString(),
@@ -3935,6 +4103,7 @@ export async function generateLeaderboardFromGitHub(
     mergedPullRequestOutcomes: dedupedOutcomes,
     mergedPullRequests: dedupedMergedPullRequests,
     reviewedMergedPullRequests: dedupedReviewedMergedPullRequests,
+    closedUnmergedPullRequests,
     detailEligibleMergedPullRequestIds: [...hydrationPlan.detailEligibleIds],
     closedIssueCount,
     resolvedIssues: dedupedClosedIssues,

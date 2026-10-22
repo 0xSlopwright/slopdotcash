@@ -1,21 +1,15 @@
 // Model route (PRD BOT-09). The model gets no tools, secrets or network access;
 // it returns one schema-valid verdict about the item it was shown, nothing else.
 import Anthropic from "@anthropic-ai/sdk";
-import {
-  type Usage,
-  VERDICT_SCHEMA,
-  type Verdict,
-  validateVerdict,
-} from "./contracts";
+import { type Usage, VERDICT_SCHEMA, validateVerdict } from "./contracts";
 
 export type ModelEnv = {
   SURPLUS_API_KEY?: string;
   SURPLUS_BASE_URL?: string;
-  OPENAI_API_KEY?: string;
 };
 
 type Step = {
-  provider: "surplus" | "openai";
+  provider: "surplus";
   model: string;
   priceKey: string;
 };
@@ -25,17 +19,17 @@ const SURPLUS: Step = {
   model: "claude-opus-5.5",
   priceKey: "surplus/claude-opus-5.5",
 };
-const OPENAI: Step = {
-  provider: "openai",
+const FALLBACK: Step = {
+  provider: "surplus",
   model: "gpt-6.1-sol",
-  priceKey: "openai/gpt-6.1-sol",
+  priceKey: "surplus/gpt-6.1-sol",
 };
 
-// Owner decision (9 October 2026): Surplus serves triage and closure
-// confirmation; GPT-6.1 Sol is the fallback. Confirmation is a second,
+// Owner decision (10 October 2026): Surplus serves both Opus 5.5 and
+// the GPT-6.1 Sol fallback. Confirmation is a second,
 // independent call at higher effort, not a different seller guarantee.
-export const TRIAGE_ROUTE = [SURPLUS, OPENAI];
-export const CONFIRM_ROUTE = [SURPLUS, OPENAI];
+export const TRIAGE_ROUTE = [SURPLUS, FALLBACK];
+export const CONFIRM_ROUTE = [SURPLUS, FALLBACK];
 
 export type CallRecord = {
   routeStep: number;
@@ -46,6 +40,8 @@ export type CallRecord = {
   outcome: "ok" | "failed";
   failure: string | null;
   usage: Usage;
+  providerCostMicroUsd: number | null;
+  providerRequestId: string | null;
 };
 
 export type Prompt = { system: string; policy: string; item: string };
@@ -58,10 +54,67 @@ export async function runRoute(
   prompt: Prompt,
   effort: "medium" | "high",
   mayCall: () => Promise<boolean>,
+) {
+  return runStructuredRoute(
+    env,
+    route,
+    prompt,
+    effort,
+    {
+      name: "slopbot_verdict",
+      schema: VERDICT_SCHEMA,
+      validate: validateVerdict,
+    },
+    mayCall,
+  );
+}
+
+// The Anthropic wire reports budget exhaustion as invalid_request_error,
+// with structured budget detail rather than the OpenAI budget_exceeded code.
+// Do not retry another model when the provider has denied spending.
+function budgetResetAt(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null;
+  const value = error as {
+    status?: unknown;
+    error?: { error?: { type?: unknown; detail?: unknown } };
+  };
+  const payload = value.error?.error;
+  if (
+    value.status !== 400 ||
+    payload?.type !== "invalid_request_error" ||
+    typeof payload.detail !== "object" ||
+    payload.detail === null
+  )
+    return null;
+  const detail = payload.detail as Record<string, unknown>;
+  const valid =
+    typeof detail.window === "string" &&
+    detail.window.length > 0 &&
+    Number.isSafeInteger(detail.limit_micro) &&
+    Number(detail.limit_micro) >= 0 &&
+    Number.isSafeInteger(detail.spent_micro) &&
+    Number(detail.spent_micro) >= 0 &&
+    typeof detail.resets_at === "string" &&
+    Number.isFinite(Date.parse(detail.resets_at));
+  return valid ? new Date(detail.resets_at as string).toISOString() : null;
+}
+
+export async function runStructuredRoute<T>(
+  env: ModelEnv,
+  route: Step[],
+  prompt: Prompt,
+  effort: "medium" | "high",
+  output: {
+    name: string;
+    schema: Record<string, unknown>;
+    validate(value: unknown): T | null;
+  },
+  mayCall: () => Promise<boolean>,
 ): Promise<{
-  verdict: Verdict | null;
+  verdict: T | null;
   calls: CallRecord[];
   servedBy: CallRecord | null;
+  budgetResetAt?: string;
   blocked: boolean;
 }> {
   const calls: CallRecord[] = [];
@@ -83,16 +136,22 @@ export async function runRoute(
       outcome: "failed",
       failure: null,
       usage: ZERO,
+      providerCostMicroUsd: null,
+      providerRequestId: null,
     };
     try {
-      const result =
-        step.provider === "openai"
-          ? await callOpenAI(env, step, prompt, effort)
-          : await callClaude(env, step, prompt, effort);
+      const result = await callClaude(env, step, prompt, effort, output);
       record.usage = result.usage;
+      record.providerCostMicroUsd = result.providerCostMicroUsd;
+      record.providerRequestId = result.providerRequestId;
       record.servedModel = result.servedModel;
+      if (result.servedModel !== step.model) {
+        record.failure = "provider did not report the requested model";
+        calls.push(record);
+        continue;
+      }
       const verdict =
-        result.json === null ? null : validateVerdict(result.json);
+        result.json === null ? null : output.validate(result.json);
       if (verdict === null) {
         record.failure = result.failure ?? "schema-invalid verdict";
         calls.push(record);
@@ -102,9 +161,29 @@ export async function runRoute(
       calls.push(record);
       return { verdict, calls, servedBy: record, blocked: false };
     } catch (error) {
+      // SDK errors can include provider response bodies. Never persist those
+      // bodies: they may echo credentials or repository prompt material.
+      const status = (error as { status?: unknown })?.status;
+      const headers = (error as { headers?: unknown })?.headers;
+      if (headers instanceof Headers) {
+        record.providerCostMicroUsd = providerCost(headers);
+        record.providerRequestId = providerRequestId(headers);
+      }
+      const resetAt = budgetResetAt(error);
+      if (resetAt !== null) {
+        record.failure = "provider budget exhausted";
+        calls.push(record);
+        return {
+          verdict: null,
+          calls,
+          servedBy: null,
+          blocked: false,
+          budgetResetAt: resetAt,
+        };
+      }
       record.failure =
-        error instanceof Error
-          ? error.message.slice(0, 300)
+        typeof status === "number" && Number.isInteger(status)
+          ? `provider returned HTTP ${status}`
           : "provider call failed";
       calls.push(record);
     }
@@ -117,6 +196,8 @@ type CallResult = {
   usage: Usage;
   servedModel: string | null;
   failure: string | null;
+  providerCostMicroUsd: number | null;
+  providerRequestId: string | null;
 };
 
 function parseJson(text: string | undefined): unknown {
@@ -128,11 +209,28 @@ function parseJson(text: string | undefined): unknown {
   }
 }
 
+function providerCost(headers: Headers): number | null {
+  const cost = headers.get("x-si-buyer-cost-micro");
+  return cost !== null &&
+    /^(0|[1-9][0-9]*)$/u.test(cost) &&
+    Number.isSafeInteger(Number(cost))
+    ? Number(cost)
+    : null;
+}
+
+function providerRequestId(headers: Headers): string | null {
+  // This is Surplus's receipt identity. The model response body's id identifies
+  // a different upstream object and cannot be used for cost reconciliation.
+  const id = headers.get("x-request-id");
+  return id !== null && /^[A-Za-z0-9_-]{1,128}$/u.test(id) ? id : null;
+}
+
 async function callClaude(
   env: ModelEnv,
   step: Step,
   prompt: Prompt,
   effort: "medium" | "high",
+  output: { name: string; schema: Record<string, unknown> },
 ): Promise<CallResult> {
   const key = env.SURPLUS_API_KEY;
   if (key === undefined || key === "")
@@ -142,38 +240,50 @@ async function callClaude(
   const client = new Anthropic({
     apiKey: null,
     authToken: key,
-    baseURL: env.SURPLUS_BASE_URL ?? "https://api.surplusintelligence.ai",
-    maxRetries: 1,
+    baseURL:
+      env.SURPLUS_BASE_URL ?? "https://api.surplusintelligence.ai/anthropic",
+    // Each explicit route attempt gets its own cost record. SDK retries hide
+    // extra provider requests from that ledger.
+    maxRetries: 0,
     timeout: 120_000,
   });
-  const response = await client.messages.create({
-    model: step.model,
-    max_tokens: 16000,
-    system: [
-      {
-        type: "text",
-        text: prompt.system,
-        cache_control: { type: "ephemeral" },
+  const { data: response, response: transport } = await client.messages
+    .create({
+      model: step.model,
+      max_tokens: 16000,
+      system: [
+        {
+          type: "text",
+          // The marketplace can translate the Anthropic wire to another
+          // provider. Include the contract in the prompt as well as the API
+          // option; otherwise a transport that drops output_config leaves the
+          // model unaware of the required schema. Local validation stays strict.
+          text: `${prompt.system}\n\nReturn one raw JSON object, without Markdown fences, matching this exact JSON Schema:\n${JSON.stringify(output.schema)}`,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: prompt.policy,
+              cache_control: { type: "ephemeral" },
+            },
+            { type: "text", text: prompt.item },
+          ],
+        },
+      ],
+      output_config: {
+        effort,
+        format: { type: "json_schema", schema: output.schema },
       },
-    ],
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: prompt.policy,
-            cache_control: { type: "ephemeral" },
-          },
-          { type: "text", text: prompt.item },
-        ],
-      },
-    ],
-    output_config: {
-      effort,
-      format: { type: "json_schema", schema: VERDICT_SCHEMA },
-    },
-  } as unknown as Anthropic.MessageCreateParamsNonStreaming);
+    } as unknown as Anthropic.MessageCreateParamsNonStreaming)
+    .withResponse();
+  const providerCostMicroUsd = providerCost(transport.headers);
+  const requestId = providerRequestId(transport.headers);
+  const truncated = transport.headers.get("x-si-truncated") === "1";
   const usage: Usage = {
     input: response.usage.input_tokens,
     cacheWrite: response.usage.cache_creation_input_tokens ?? 0,
@@ -181,6 +291,7 @@ async function callClaude(
     output: response.usage.output_tokens,
   };
   if (
+    truncated ||
     response.stop_reason === "refusal" ||
     response.stop_reason === "max_tokens"
   ) {
@@ -188,7 +299,11 @@ async function callClaude(
       json: null,
       usage,
       servedModel: response.model,
-      failure: response.stop_reason,
+      failure: truncated
+        ? "provider deadline truncated the response"
+        : response.stop_reason,
+      providerCostMicroUsd,
+      providerRequestId: requestId,
     };
   }
   const text = (response.content as { type: string; text?: string }[]).find(
@@ -199,74 +314,7 @@ async function callClaude(
     usage,
     servedModel: response.model,
     failure: null,
-  };
-}
-
-async function callOpenAI(
-  env: ModelEnv,
-  step: Step,
-  prompt: Prompt,
-  effort: "medium" | "high",
-): Promise<CallResult> {
-  if (env.OPENAI_API_KEY === undefined || env.OPENAI_API_KEY === "")
-    throw new Error("openai key not configured");
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: step.model,
-      reasoning: { effort },
-      input: [
-        { role: "system", content: prompt.system },
-        { role: "user", content: `${prompt.policy}\n\n${prompt.item}` },
-      ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "slopbot_verdict",
-          strict: true,
-          schema: VERDICT_SCHEMA,
-        },
-      },
-    }),
-    signal: AbortSignal.timeout(120_000),
-  });
-  if (!response.ok) throw new Error(`openai returned ${response.status}`);
-  const body = (await response.json()) as {
-    model?: string;
-    status?: string;
-    output?: { type: string; content?: { type: string; text?: string }[] }[];
-    usage?: {
-      input_tokens: number;
-      output_tokens: number;
-      input_tokens_details?: { cached_tokens?: number };
-    };
-  };
-  const cached = body.usage?.input_tokens_details?.cached_tokens ?? 0;
-  const usage: Usage = {
-    input: (body.usage?.input_tokens ?? 0) - cached,
-    cacheWrite: 0,
-    cacheRead: cached,
-    output: body.usage?.output_tokens ?? 0,
-  };
-  if (body.status !== "completed") {
-    return {
-      json: null,
-      usage,
-      servedModel: body.model ?? null,
-      failure: `status ${body.status}`,
-    };
-  }
-  const text = body.output
-    ?.find((item) => item.type === "message")
-    ?.content?.find((part) => part.type === "output_text")?.text;
-  return {
-    json: parseJson(text),
-    usage,
-    servedModel: body.model ?? null,
-    failure: null,
+    providerCostMicroUsd,
+    providerRequestId: requestId,
   };
 }

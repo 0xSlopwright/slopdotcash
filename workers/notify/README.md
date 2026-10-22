@@ -268,3 +268,15 @@ for release inspection. They contain names, immutable version IDs and public
 configuration only; private recipient secrets remain in Cloudflare. Real
 provider acceptance, inbox receipt, failures, scheduled invocation, and bounty
 acknowledgment/escalation still require controlled acceptance evidence.
+
+
+## Slopbot API cost notices
+
+`POST https://notify.internal/v1/slopbot-spend` accepts exactly `month`,
+`thresholdMicroUsd`, `recordedMicroUsd`, and `estimatedCalls`. The month is UTC;
+the positive threshold is a multiple of 500,000,000 integer micro-USD. The
+private Slopbot binding derives these fields from its cost ledger and claims
+each milestone before sending. The existing `ADMIN_EMAILS` secret supplies
+recipients. No public route, recipient override or model content is accepted.
+The response has the same acceptance/failure contract as project notices.
+Slopbot retains ambiguous outcomes rather than retrying accepted recipients.

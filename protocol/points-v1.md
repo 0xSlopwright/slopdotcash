@@ -25,7 +25,11 @@ multiply points. Required source evidence and project participation rules apply.
 Historical merged PRs initially receive 10 provisional points each, including
 work before the project's payment program. A Score v2 merge from
 2026-10-01T00:00:00Z without a ratified tier is provisional small credit and
-receives 30 provisional points. This is a recognition backfill and
+receives 30 provisional points in the legacy projection. When source-bound value
+assessments are enabled, missing, stale, incomplete, or unresolved assessments
+do not create fallback awards or remove prior recorded points. A verified bot
+assessment remains provisional until a maintainer decision supersedes it. An
+assessed zero creates a zero-amount revision. This is a recognition backfill and
 never retroactive cash eligibility. Verified archived and current scoring
 records supersede provisional amounts, including exclusions and work grouping
 within their complete source windows. Historical review credit is limited to
@@ -66,12 +70,18 @@ Projects and repositories come only from the canonical manifest registry.
 retaining earlier revisions and source digests. Source IDs, actor IDs and
 categories determine award identity; a rule upgrade cannot mint another copy.
 Revisions carry predecessor hashes. A corrected outcome replaces its former
-amount in the projection rather than adding another full award.
+amount in the projection rather than adding another full award. Source-bound
+score decisions also record the decision source, effective time, reason, and
+exact signed change from the previous amount. A new decision with the same
+amount records a zero change; replaying that decision creates no revision.
+Distinct assessed review findings retain their separate work-unit identities.
 
 The permanent D1 points tables are logically separate from trace tables in the
 existing deployment database. This avoids a new credential or provisioning
 boundary; the points handler never constructs trace persistence or reads trace
-records. Journal rows reject updates/deletions and branching successors. A batch
+records. Journal rows reject updates, deletions, changed-row replacement, and
+branching successors. Completed batch metadata is immutable. Exact imports and
+replays preserve the original bytes. A batch
 is publishable only when its full revision count reconciles. Trusted Actions
 checkpoints the tested journal into D1 during every protected production
 release, including the scheduled ones, under the existing publication lock.

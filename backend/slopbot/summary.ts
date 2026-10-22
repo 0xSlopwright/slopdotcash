@@ -5,6 +5,7 @@ export interface SlopbotRepositorySummary {
   installationIds: number[];
   repositoryId: number;
   itemsReviewed: number;
+  itemsBlocked: number;
   itemsLabeled: number;
   itemsClosed: number;
   closuresReopened: number;
@@ -39,6 +40,11 @@ SELECT json_group_array(json_object(
   'repositoryId', r.repository_id,
   'itemsReviewed', (SELECT COUNT(DISTINCT b.item_node_id) FROM base b
     WHERE b.repository_id = r.repository_id AND b.status = 'completed'),
+  'itemsBlocked', (SELECT COUNT(DISTINCT v.item_node_id) FROM slopbot_reviews v
+    JOIN slopbot_budget_blocks b ON b.review_key=v.review_key AND b.claim_token=v.claim_token
+    WHERE v.repository_id=r.repository_id AND v.status='failed'
+      AND NOT EXISTS(SELECT 1 FROM slopbot_reviews newer
+        WHERE newer.repository_id=v.repository_id AND newer.item_node_id=v.item_node_id AND newer.rowid>v.rowid)),
   'itemsLabeled', (SELECT COUNT(DISTINCT a.item_node_id) FROM slopbot_actions a
     WHERE a.repository_id = r.repository_id AND a.action = 'label'),
   'itemsClosed', (SELECT COUNT(*) FROM closed c WHERE c.repository_id = r.repository_id),
