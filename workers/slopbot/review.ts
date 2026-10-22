@@ -31,6 +31,7 @@ import {
   TRIAGE_ROUTE,
 } from "./models";
 import * as store from "./persistence";
+import { registeredRepository, requireRegisteredRepository } from "./registry";
 import { route } from "./routing";
 
 export type ReviewEnv = ModelEnv & {
@@ -551,6 +552,7 @@ async function upsertComment(
   body: string,
 ) {
   const db = env.SLOPBOT_DB;
+  await requireRegisteredRepository(db, job);
   const existing = await store.commentId(db, context.issue.node_id);
   if (existing !== null) {
     const updated = await context.github.request(
@@ -565,6 +567,7 @@ async function upsertComment(
         "GitHub did not confirm the comment update",
       );
   }
+  await requireRegisteredRepository(db, job);
   const created = await context.github.request<{ id: number }>(
     "POST",
     `/repos/${job.owner}/${job.repo}/issues/${job.number}/comments`,
@@ -588,6 +591,8 @@ export async function reviewItem(
   job: Extract<Job, { kind: "review" }>,
 ): Promise<string> {
   const db = env.SLOPBOT_DB;
+  if (!(await registeredRepository(db, job)))
+    return "repository is not active in the Slop registry";
   const install = await store.installation(db, job.installationId);
   const installationActive =
     install !== null &&
@@ -705,6 +710,7 @@ async function runReview(
       TRIAGE_ROUTE,
       buildPrompt(context, job.itemKind),
       "medium",
+      () => registeredRepository(db, job),
     );
     await store.recordCalls(
       db,
@@ -748,6 +754,7 @@ async function runReview(
         CONFIRM_ROUTE,
         buildPrompt(context, job.itemKind),
         "high",
+        () => registeredRepository(db, job),
       );
       await store.recordCalls(
         db,
@@ -821,6 +828,7 @@ async function runReview(
     "comment",
     category,
   );
+  await requireRegisteredRepository(db, job);
   const labeled = await context.github.request(
     "POST",
     `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
@@ -842,6 +850,7 @@ async function runReview(
     category,
   );
   if (close) {
+    await requireRegisteredRepository(db, job);
     const closed =
       job.itemKind === "pull_request"
         ? await context.github.request<{ state: string }>(
@@ -897,6 +906,8 @@ export async function recordHumanSignal(
   job: Extract<Job, { kind: "appeal" | "human_reopen" }>,
 ) {
   const db = env.SLOPBOT_DB;
+  if (!(await registeredRepository(db, job)))
+    return "repository is not active in the Slop registry";
   const github = await GitHubClient.forInstallation(
     env.SLOPBOT_APP_ID,
     env.SLOPBOT_APP_PRIVATE_KEY,
@@ -947,6 +958,7 @@ export async function recordHumanSignal(
     String(job.senderId),
   );
   if (kind === "appeal") {
+    await requireRegisteredRepository(db, job);
     await github.request(
       "POST",
       `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,

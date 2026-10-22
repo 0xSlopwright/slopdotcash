@@ -57,6 +57,7 @@ export async function runRoute(
   route: Step[],
   prompt: Prompt,
   effort: "medium" | "high",
+  mayCall: () => Promise<boolean>,
 ): Promise<{
   verdict: Verdict | null;
   calls: CallRecord[];
@@ -64,6 +65,8 @@ export async function runRoute(
 }> {
   const calls: CallRecord[] = [];
   for (const [index, step] of route.entries()) {
+    // Recheck after a failed provider call, before starting the fallback.
+    if (!(await mayCall())) break;
     const record: CallRecord = {
       routeStep: index + 1,
       provider: step.provider,
