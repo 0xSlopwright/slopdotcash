@@ -61,6 +61,8 @@ export async function prepareWorkUnitEvidence(
   const limitations = new Set<string>();
   const sourceDigests: WorkUnitEvidence["sourceDigests"] = [];
   const commits = new Map<string, string>();
+  const importedPaths: { sourceId: string; originId: string; path: string }[] =
+    [];
   const claims = new Map<
     string,
     {
@@ -105,6 +107,7 @@ export async function prepareWorkUnitEvidence(
     });
     // Closed-unmerged sources can carry review findings but never implementation.
     if (pull.merged_at === null) continue;
+    const mergedAt = Date.parse(pull.merged_at);
     const changedPaths = new Set(
       evidence.files.flatMap((file) => [
         file.filename,
@@ -136,6 +139,42 @@ export async function prepareWorkUnitEvidence(
       if (commits.has(commitKey) && commits.get(commitKey) !== identity)
         throw new Error("Joint sources disagree about an immutable commit");
       commits.set(commitKey, identity);
+      // A squash commit can reappear in a later PR after a branch sync. Its
+      // original PR already supplies implementation claims; importing it must
+      // not create a second identity or add the later PR author to its credit.
+      const origins = sources.filter(
+        ({ evidence: origin }) =>
+          origin.repositoryNodeId === evidence.repositoryNodeId &&
+          origin.pull.node_id !== pull.node_id &&
+          origin.pull.merge_commit_sha === commit.sha &&
+          origin.mergeCommitEvidence?.sha === commit.sha &&
+          origin.mergeCommitEvidence.parents.length === 1 &&
+          origin.pull.merged_at !== null &&
+          Date.parse(origin.pull.merged_at) < mergedAt,
+      );
+      if (
+        origins.length > 0 ||
+        evidence.acceptedRange?.parentSha === commit.sha
+      ) {
+        for (const path of paths.filter((path) => changedPaths.has(path))) {
+          covered.add(path);
+          if (
+            origins.length !== 1 ||
+            origins[0].evidence.limitations.length > 0
+          ) {
+            limitations.add(
+              `${pull.node_id}: imported squash ${commit.sha} needs one complete original PR source`,
+            );
+          } else {
+            importedPaths.push({
+              sourceId: pull.node_id,
+              originId: origins[0].evidence.pull.node_id,
+              path,
+            });
+          }
+        }
+        continue;
+      }
       const actors = new Set<string>();
       if (pull.user.type !== "Bot") actors.add(pull.user.node_id);
       if (
@@ -196,6 +235,19 @@ export async function prepareWorkUnitEvidence(
       creditPullRequestId: first.source.evidence.pull.node_id,
       implementationActorNodeIds: first.actorNodeIds,
     });
+  }
+  for (const imported of importedPaths) {
+    if (
+      !prepared.some(
+        (claim) =>
+          claim.path === imported.path &&
+          claim.carrierPullRequestIds.includes(imported.originId),
+      )
+    ) {
+      limitations.add(
+        `${imported.sourceId}: original squash source does not cover ${imported.path}`,
+      );
+    }
   }
   prepared.sort((a, b) => compare(a.id, b.id));
   const projectId = [...projects][0];
