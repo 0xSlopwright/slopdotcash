@@ -797,11 +797,7 @@ async function runReview(
       if (second.blocked)
         throw new Error("Model call blocked by the live project registry");
       confirm = second.servedBy;
-      if (
-        second.verdict?.category === category &&
-        second.verdict.confidence >= CLOSE_CONFIDENCE
-      )
-        close = true;
+      if (confirmedClosure(verdict, second.verdict, context)) close = true;
       else blockedClose = "a second, independent review did not confirm";
     }
   }
@@ -919,6 +915,26 @@ async function runReview(
     action: close ? "close" : "label",
   });
   return close ? `closed (${category})` : `labeled (${category})`;
+}
+
+/** Agreement on a category is insufficient: both independent decisions must
+ * cite actual source evidence and the applicable published rule.
+ */
+export function confirmedClosure(
+  first: Verdict,
+  second: Verdict | null,
+  context: Pick<Context, "itemText" | "policy">,
+): boolean {
+  return (
+    second !== null &&
+    first.category === second.category &&
+    first.confidence >= CLOSE_CONFIDENCE &&
+    second.confidence >= CLOSE_CONFIDENCE &&
+    first.limitations.length === 0 &&
+    second.limitations.length === 0 &&
+    grounded(first, context, false).ok &&
+    grounded(second, context, false).ok
+  );
 }
 
 // Appeals and human reopens both stop Slopbot from re-closing this revision.

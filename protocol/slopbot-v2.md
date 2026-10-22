@@ -66,3 +66,16 @@ Read the live registry before queue intake, job execution, inference and each
 GitHub write. A read failure stops that action. A stale installation or queued
 job cannot override the registry. Protection-only operation is superseded for
 this rollout. Closure activation and financial decisions remain separate.
+
+## Objective quality closure amendment
+
+The owner approved the criteria in
+[`docs/slopbot-quality-closure-proposal.md`](../docs/slopbot-quality-closure-proposal.md)
+for implementation on 21 October 2026. They take effect no earlier than this
+protocol's 2026-11-01T00:00:00Z effective time. A quality closure requires a
+published rejection rule and two grounded verdicts identifying the same
+verified defect: removal of required behavior, a reproduced patch regression,
+or a result claim contradicted by its cited artifact. Missing verification
+requires label-only handling. This amendment grants no production activation,
+penalty, score or payment authority. Existing shadow qualification, explicit
+enablement, caps, appeals and reopen controls remain required.

@@ -165,5 +165,8 @@ reviews, consume stale jobs, call a model or receive GitHub writes. Prove that
 registered public repositories still reach the review queue. Fail closed on a
 registry outage. Installation and local checks do not prove production delivery.
 
-The [quality closure proposal](slopbot-quality-closure-proposal.md) is prepared
-for MVP-05a review. Its criteria and activation are not yet approved.
+The [objective quality closure amendment](slopbot-quality-closure-proposal.md)
+is approved for MVP-05a implementation (owner decision, 21 October 2026).
+Acceptance requires trusted evidence for the three defined defects, two grounded
+verdicts for the same defect, useful counterexamples, and the existing appeal,
+source-change and shadow controls. Production activation is not approved.
