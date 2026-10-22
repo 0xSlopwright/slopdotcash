@@ -21,7 +21,10 @@ const attester = "0x70997970c51812dc3a010c7d01b50e0d17dc79c8";
 const registrar = "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc";
 const fee = "0x90f79bf6eb2c4f870365e785982e1f101e93b906";
 const donor = "0x15d34aaf54267db7d7c367839aaF71a00a2C6A65".toLowerCase();
-const rpcUrl = "http://127.0.0.1:18761";
+const anvilPort = Number(process.env.SLOP_E2E_ANVIL_PORT ?? "18761");
+if (!Number.isInteger(anvilPort) || anvilPort < 1024 || anvilPort > 65535)
+  throw new Error("SLOP_E2E_ANVIL_PORT must be an unprivileged TCP port");
+const rpcUrl = `http://127.0.0.1:${anvilPort}`;
 let anvil: ChildProcess;
 let deployment: EscrowDeployment;
 let project: (typeof PROJECTS)[number];
@@ -43,20 +46,33 @@ const abi = parseAbi([
 ]);
 
 test.beforeAll(async () => {
-  anvil = spawn(
-    "anvil",
-    ["--port", "18761", "--chain-id", "84532", "--silent"],
-    { stdio: "ignore" },
-  );
+  let listening = false;
+  let output = "";
+  let startupError: Error | undefined;
+  anvil = spawn("anvil", ["--port", String(anvilPort), "--chain-id", "84532"], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  anvil.on("error", (error) => {
+    startupError = error;
+  });
+  anvil.stdout?.on("data", (chunk) => {
+    output = (output + String(chunk)).slice(-4096);
+    listening = output.includes(`Listening on 127.0.0.1:${anvilPort}`);
+  });
+  anvil.stderr?.on("data", (chunk) => {
+    output = (output + String(chunk)).slice(-4096);
+  });
   for (let i = 0; i < 100; i++) {
-    try {
+    if (startupError || anvil.exitCode !== null || anvil.signalCode !== null)
+      throw new Error(
+        `Local Anvil startup failed: ${startupError?.message ?? output}`,
+      );
+    if (listening) {
       await rpc("eth_chainId", []);
       break;
-    } catch {
-      if (anvil.exitCode !== null || i === 99)
-        throw new Error("Local Anvil startup failed");
-      await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    if (i === 99) throw new Error(`Local Anvil startup timed out: ${output}`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
   const deploy = (contract: string, args: string[] = []) =>
     JSON.parse(
