@@ -799,3 +799,29 @@ idempotent.
 An extended signed HTTP/SQLite replay retained 14 expected source-change
 requests, compared with one before this repair. It preserved five queue sends
 including an appeal retry after a failed send, with zero score or cost rows.
+
+### Valuation budget admission (consumer integration pending)
+
+Migration `0051_slopbot_value_budget.sql` stores immutable attempt reservations
+and reconciliations. `reserveValueBudget` requires an explicit approved monthly
+allowance and a conservative maximum attempt cost. It atomically counts the
+current month's recorded provider costs (or estimates) across installations and
+all unreconciled reservations. Prior-month reservations remain held because an
+unresolved provider request can be charged later. A repeated attempt ID does
+not authorize another call. These primitives are not yet wired into automatic
+consumption and do not configure or enforce a production spending limit.
+
+The consumer must use its unique `value:<UUID>` attempt ID as the cost ledger's
+review key, record every attempted route including failures, and pass the full
+expected call count to reconciliation. Capacity is released only when every
+expected receipt has a provider-reported amount within the reserved maximum.
+Missing, estimated or over-reservation costs require reconciliation; there is
+no timeout-based release. A denied pre-call guard does not by itself prove that
+an interrupted attempt never sent a request. Existing review calls outside this
+admission mechanism are not capped by it; their recorded costs are included
+when admitting valuation work. The $500 email rule remains separate.
+
+The real SQLite replay covers overlapping admission, retry refusal, exact
+remaining allowance, missing and partial receipts, provider reconciliation,
+uncertain estimates, month rollover, absent approval and immutable history.
+No production allowance, provider request, contributor debit or payout changes.
