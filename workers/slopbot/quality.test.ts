@@ -549,7 +549,6 @@ test("a signed-evidence comment queues only identifiers and can arrive after the
 
 test("receipt webhook reads preserve the same deduplication identity as ordinary intake", async () => {
   const { loadQualityEvidence } = await import("./quality");
-  const { GitHubClient } = await import("./github");
   const first = { body: `${QUALITY_MARKER}\n${await sign(removal)}` };
   const second = { body: `${QUALITY_MARKER}\n${await sign(regression)}` };
   const reader = {
@@ -557,7 +556,7 @@ test("receipt webhook reads preserve the same deduplication identity as ordinary
     async get(path: string) {
       return path.includes("/issues/comments/") ? first : [first, second];
     },
-  } as unknown as InstanceType<typeof GitHubClient>;
+  } as unknown as Parameters<typeof loadQualityEvidence>[0];
   const ordinary = await loadQualityEvidence(
     reader,
     trust,
