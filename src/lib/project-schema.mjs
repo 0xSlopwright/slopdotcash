@@ -1,4 +1,5 @@
 import { assertEscrowPolicy } from "./escrow-policy.mjs";
+import { exactKeys, readRecord as record } from "./record-validation.mjs";
 /**
  * Validates untrusted project folders before they enter discovery, ingestion,
  * skills, or money-shaped views. The schema is intentionally narrow so a pull
@@ -23,6 +24,14 @@ export const PROJECT_SKILL_TEMPLATES = Object.freeze({
   contributor: "skills/project-contributor-template",
   reviewer: "skills/project-reviewer-template",
 });
+
+/**
+ * The longest project id. The generated reviewer skill is named
+ * `review-<id>-contributions`, and a skill name has at most 64 characters
+ * (`scripts/skill-validation/quick_validate.py`).
+ */
+export const MAX_PROJECT_ID_LENGTH = 43;
+const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,41}[a-z0-9])?$/u;
 
 /** Maintainer-authored fields, in render order, that generate project skills. */
 export const CONTRIBUTION_FIELDS = Object.freeze([
@@ -84,19 +93,6 @@ export function formatMonthlyCapDisplay(value) {
     .replace(/\B(?=(\d{3})+(?!\d))/gu, ",");
   const cents = Number((amount % 1_000_000n) / 10_000n);
   return `$${whole}${cents === 0 ? "" : `.${String(cents).padStart(2, "0")}`}`;
-}
-
-function record(value, field) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${field} must be an object`);
-  }
-  return value;
-}
-
-function exactKeys(value, keys, field) {
-  if (Object.keys(value).sort().join("\0") !== [...keys].sort().join("\0")) {
-    throw new TypeError(`${field} has unexpected or missing fields`);
-  }
 }
 
 function text(value, field, { max = 500, min = 1, pattern } = {}) {
@@ -1114,8 +1110,8 @@ function validateProjectDefinition(
   if (project.schemaVersion !== "1")
     throw new TypeError("project schemaVersion is unsupported");
   const id = text(project.id, "project.id", {
-    max: 48,
-    pattern: /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u,
+    max: MAX_PROJECT_ID_LENGTH,
+    pattern: PROJECT_ID,
   });
   if (project.slug !== id)
     throw new TypeError("project.slug must equal project.id");
@@ -1154,10 +1150,7 @@ function validateProjectDefinition(
       text(
         participation.successorProjectId,
         "project.participation.successorProjectId",
-        {
-          max: 48,
-          pattern: /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u,
-        },
+        { max: MAX_PROJECT_ID_LENGTH, pattern: PROJECT_ID },
       );
       if (participation.successorProjectId === id)
         throw new TypeError("archived project cannot be its own successor");

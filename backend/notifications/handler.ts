@@ -49,6 +49,8 @@ interface Row {
   source_at: string;
   created_at: string;
   read_at: string | null;
+  acknowledged_at: string | null;
+  security_notice_id: string | null;
 }
 
 /** Returns null when the request is not for this route. */
@@ -78,7 +80,13 @@ export async function handleNotificationsApi(
         deps.db
           .prepare(
             `SELECT event_key, kind, subject, detail, action_path, source_at,
-                    created_at, read_at
+                    created_at, read_at,
+                    (SELECT id FROM security_notification_outbox s
+                      WHERE s.event_key = notifications.event_key AND s.recipient_github_id = notifications.recipient_github_id
+                        AND s.template_version = 'security-inbox-v1') AS security_notice_id,
+                    (SELECT acknowledged_at FROM security_notification_outbox s
+                      WHERE s.event_key = notifications.event_key AND s.recipient_github_id = notifications.recipient_github_id
+                        AND s.template_version = 'security-inbox-v1') AS acknowledged_at
                FROM notifications WHERE recipient_github_id = ?
               ORDER BY source_at DESC, event_key LIMIT ?`,
           )
@@ -102,6 +110,9 @@ export async function handleNotificationsApi(
           sourceAt: row.source_at,
           createdAt: row.created_at,
           readAt: row.read_at,
+          ...(row.kind === "security_case" && row.security_notice_id !== null
+            ? { acknowledgedAt: row.acknowledged_at }
+            : {}),
         })),
         unread: unread.results[0]?.count ?? 0,
       };
@@ -110,7 +121,7 @@ export async function handleNotificationsApi(
     let body: unknown;
     try {
       body = await readBoundedJson(
-        request as unknown as Response,
+        request,
         32 * 1024,
         "notification read request",
       );

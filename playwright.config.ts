@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
+
 /**
  * Drives desktop and mobile browser verification against the built site.
  */
 
 import { defineConfig, devices } from "@playwright/test";
+import { localEvidencePolicy } from "./tests/vetting-evidence-fixture";
 
 const externalBaseUrl =
   process.env.SLOP_BASE_URL ??
@@ -24,6 +26,12 @@ const requestedWorkers = process.env.SLOP_E2E_WORKERS;
 
 // The registry lane gives Pages a fresh local D1, test-only admins and
 // test-only project moderators.
+const registryNotify = process.env.SLOP_E2E_NOTIFY_SERVICE;
+if (
+  registryNotify !== undefined &&
+  !/^slop-notify-e2e-[0-9]{4,5}$/u.test(registryNotify)
+)
+  throw new Error("Invalid local notification Worker name");
 const registryPersistTo = process.env.SLOP_E2E_PERSIST_TO;
 const registryAdmins = process.env.SLOP_E2E_ADMIN_GITHUB_IDS;
 const registryModerators = process.env.SLOP_E2E_MODERATOR_GITHUB_IDS;
@@ -58,9 +66,9 @@ const registryArguments = registryPersistTo
         : ""
     }${
       registryVettingKey
-        ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey}`
+        ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey} --r2 VETTING_EVIDENCE --binding 'VETTING_EVIDENCE_POLICY=${JSON.stringify({ ...localEvidencePolicy(new Date()), maxObjectBytes: 32 * 1024 * 1024 }).replaceAll("'", "'\\''")}'`
         : ""
-    }`
+    }${registryNotify ? ` --service SLOP_NOTIFY=${registryNotify}` : ""}`
   : "";
 const outputName = process.env.SLOP_E2E_OUTPUT ?? localServer;
 
@@ -112,7 +120,7 @@ export default defineConfig({
     contextOptions: { reducedMotion: "reduce" },
     trace: "retain-on-failure",
     screenshot: "on",
-    video: "retain-on-failure",
+    video: process.env.SLOP_E2E_VIDEO === "1" ? "on" : "retain-on-failure",
   },
   webServer: externalBaseUrl
     ? undefined
@@ -130,7 +138,33 @@ export default defineConfig({
       },
   projects: [
     {
+      name: "evidence-firefox",
+      testMatch: "**/evidence-download.spec.ts",
+      use: {
+        ...devices["Desktop Firefox"],
+        viewport: { width: 1440, height: 1000 },
+      },
+    },
+    // Observed no-store stream EOF + ERR_ABORTED matches this Chromium report:
+    // https://github.com/microsoft/playwright/issues/42742
+    // Keep the bounded private reader and strict failure assertions. Exercise
+    // the new email workflow in Firefox; existing Chromium coverage is unchanged.
+    ...[
+      ["wide-desktop", 1440, 1000],
+      ["desktop", 1024, 768],
+      ["tablet", 768, 1024],
+      ["narrow-mobile", 320, 800],
+    ].map(([name, width, height]) => ({
+      name: `${name}-email-firefox`,
+      testMatch: "**/email-preferences.spec.ts",
+      use: {
+        ...devices["Desktop Firefox"],
+        viewport: { width: Number(width), height: Number(height) },
+      },
+    })),
+    {
       name: "wide-desktop-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 1440, height: 1000 },
@@ -138,6 +172,7 @@ export default defineConfig({
     },
     {
       name: "desktop-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 1024, height: 768 },
@@ -145,6 +180,7 @@ export default defineConfig({
     },
     {
       name: "tablet-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 768, height: 1024 },
@@ -152,6 +188,7 @@ export default defineConfig({
     },
     {
       name: "narrow-mobile-chromium",
+      testIgnore: "**/email-preferences.spec.ts",
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 320, height: 800 },

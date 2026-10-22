@@ -1,5 +1,5 @@
 /** Complete repository connection census. Never uses GitHub's capped search. */
-import { execFileSync } from "node:child_process";
+
 import { createHash } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { readBoundedJson } from "../src/lib/browser-json";
@@ -11,6 +11,8 @@ import {
   pointMembers,
 } from "../src/lib/points";
 import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
+import type { ConnectionPage as Page } from "./github-pagination";
+import { resolveGitHubToken } from "./github-token";
 
 const query = `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){id createdAt pullRequests(first:100,after:$after,states:MERGED,orderBy:{field:CREATED_AT,direction:ASC}){totalCount pageInfo{hasNextPage endCursor} nodes{id number url mergedAt author{__typename login ... on User{id}} reviews(first:100){totalCount pageInfo{hasNextPage endCursor} nodes{id url state submittedAt body author{__typename login ... on User{id}} comments{totalCount}}}}}} rateLimit{remaining resetAt}}`;
 const reviewQuery = `query($id:ID!,$after:String){node(id:$id){... on PullRequest{reviews(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id url state submittedAt body author{__typename login ... on User{id}} comments{totalCount}}}}} rateLimit{remaining resetAt}}`;
@@ -24,11 +26,7 @@ type Review = {
   author: Actor | null;
   comments: { totalCount: number };
 };
-type Page<T> = {
-  totalCount: number;
-  pageInfo: { hasNextPage: boolean; endCursor: string | null };
-  nodes: T[];
-};
+
 type PR = {
   id: string;
   url: string;
@@ -37,10 +35,21 @@ type PR = {
   author: Actor | null;
   reviews: Page<Review>;
 };
-async function github(queryText: string, variables: object) {
-  const token = execFileSync("gh", ["auth", "token"], {
-    encoding: "utf8",
-  }).trim();
+type RateLimit = { remaining: number; resetAt: string };
+type RepositoryHistory = {
+  repository: { id: string; createdAt: string; pullRequests: Page<PR> } | null;
+};
+type ReviewHistory = { node: { reviews: Page<Review> } | null };
+type VerificationHistory = {
+  repository: {
+    pullRequests: Pick<Page<Pick<PR, "id" | "mergedAt">>, "nodes" | "pageInfo">;
+  };
+};
+async function github<T>(
+  token: string,
+  queryText: string,
+  variables: object,
+): Promise<T> {
   const response = await fetch("https://api.github.com/graphql", {
     method: "POST",
     headers: {
@@ -56,7 +65,7 @@ async function github(queryText: string, variables: object) {
     response,
     64 * 1024 * 1024,
     "GitHub history",
-  )) as { errors?: unknown; data?: any };
+  )) as { errors?: unknown; data?: T & { rateLimit: RateLimit } };
   if (result.errors || !result.data)
     throw new Error(
       `Incomplete GitHub history: ${JSON.stringify(result.errors)}`,
@@ -75,6 +84,7 @@ function user(actor: Actor | null): actor is Actor & { id: string } {
   );
 }
 if (import.meta.main) {
+  const token = TARGET_REPOSITORIES.length ? await resolveGitHubToken() : "";
   const now = new Date().toISOString();
   let journal = emptyPointsJournal(now);
   const report: object[] = [];
@@ -88,7 +98,7 @@ if (import.meta.main) {
     const awards: PointAward[] = [];
     const sourceHash = createHash("sha256");
     do {
-      const data = await github(query, {
+      const data = await github<RepositoryHistory>(token, query, {
         owner: repo.owner,
         name: repo.name,
         after: cursor,
@@ -111,11 +121,11 @@ if (import.meta.main) {
         let reviewCursor = pr.reviews.pageInfo.endCursor;
         let more = pr.reviews.pageInfo.hasNextPage;
         while (more) {
-          const result = await github(reviewQuery, {
+          const result = await github<ReviewHistory>(token, reviewQuery, {
             id: pr.id,
             after: reviewCursor,
           });
-          const next: Page<Review> = result.node?.reviews;
+          const next = result.node?.reviews;
           if (!next || next.totalCount !== pr.reviews.totalCount)
             throw new Error("Incomplete review history");
           reviews = reviews.concat(next.nodes);
@@ -173,7 +183,8 @@ if (import.meta.main) {
     const verified = new Set<string>();
     let verifyCursor: string | null = null;
     do {
-      const result = await github(
+      const result: VerificationHistory = await github<VerificationHistory>(
+        token,
         `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){pullRequests(first:100,after:$after,states:MERGED,orderBy:{field:CREATED_AT,direction:ASC}){pageInfo{hasNextPage endCursor} nodes{id mergedAt}}}rateLimit{remaining resetAt}}`,
         { owner: repo.owner, name: repo.name, after: verifyCursor },
       );

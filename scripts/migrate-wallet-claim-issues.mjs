@@ -6,8 +6,8 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { parsePublishedWallet } from "../src/lib/wallets.ts";
+import { sha256Hex } from "./sha256.mjs";
 
 const REPOSITORY = "SlopDotCash/slopdotcash";
 const API_ORIGIN = "https://api.slop.cash";
@@ -60,7 +60,7 @@ function claimFromIssue(issue) {
     githubLogin: issue.user.login,
     issueNumber: issue.number,
     observedAt: issue.updated_at,
-    sourceBodySha256: createHash("sha256").update(issue.body).digest("hex"),
+    sourceBodySha256: sha256Hex(issue.body),
     sourceUrl: issue.html_url,
   };
 }

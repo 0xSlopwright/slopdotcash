@@ -21,6 +21,8 @@ import {
   isWalletChain,
   type WalletChain,
 } from "../../src/lib/wallets";
+import { type ApiError, fail } from "../api-error";
+import { pathParts } from "../api-path";
 import { canonicalWalletClaimDigests } from "../payments/wallet-registration";
 import { signApiToken, verifyApiToken } from "./auth";
 import {
@@ -69,17 +71,8 @@ export type TraceApiDependencies = {
   >;
 };
 
-type ApiError = Error & { status?: number; code?: string };
-
 export const TRACE_API_CONTRACT_VERSION = "private-trace-v1-opaque-hmac-v1";
 const MAX_EVENT_CLOCK_SKEW_MS = 5 * 60 * 1000;
-
-function fail(status: number, code: string, message: string): never {
-  const error: ApiError = new Error(message);
-  error.status = status;
-  error.code = code;
-  throw error;
-}
 
 function json(status: number, body: Record<string, unknown> | null): Response {
   return new Response(JSON.stringify(body), {
@@ -206,12 +199,6 @@ async function ensureOwner(
   // Do not reveal whether another contributor's run exists.
   if (run.githubId !== actor.githubId) fail(404, "not_found", "Run not found");
   return run;
-}
-
-function pathParts(request: Request): string[] {
-  const path = new URL(request.url).pathname;
-  if (!path.startsWith("/api/v1/")) return [];
-  return path.slice("/api/v1/".length).split("/").filter(Boolean);
 }
 
 function publicBrowserResponse(
@@ -1534,5 +1521,3 @@ async function handleTraceApiInternal(
       : response;
   }
 }
-
-export const traceLimits = { maxTraceBytes: MAX_TRACE_BYTES } as const;

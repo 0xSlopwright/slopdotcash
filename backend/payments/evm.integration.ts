@@ -31,7 +31,7 @@ import {
 } from "../../workers/payment-executor/core";
 import { readDeploymentVaultTotals } from "../../workers/payments/index";
 import { scanEvmPayments } from "../../workers/payments/scanner";
-import type { D1Database } from "../trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import { dispatchPayment } from "./dispatch";
 import { evmPaymentAdapter } from "./evm-adapter";
 import { handlePaymentsApi, type PaymentDeploymentIdentity } from "./handler";
@@ -894,6 +894,9 @@ try {
     `bind:${bindingAttempt.id}`,
   );
   assert(rejectedBinding);
+  // A send response can precede Anvil mining. Include the revert in one
+  // block before reading its receipt; it must still be below finality.
+  await rpc("anvil_mine", ["0x1"]);
   const rejectedReceipt = (await rpc("eth_getTransactionReceipt", [
     rejectedBinding.transactionId,
   ])) as { status: string };
@@ -1895,6 +1898,24 @@ try {
             actor: { id: "browser-node", login: "browser-fixture" },
             public: false,
             welcome: 0,
+          });
+        // Account-only panels use explicit fixture data; payment routes below
+        // still execute their real handlers against SQLite and Anvil.
+        if (url.pathname === "/api/v1/points/sessions")
+          return Response.json({
+            sessions: [
+              {
+                id: (await sha256Hex(browserSession)).slice(0, 24),
+                current: true,
+                expiresAt: new Date(Date.now() + 3600000).toISOString(),
+              },
+            ],
+          });
+        if (url.pathname === "/api/v1/points/x/me")
+          return Response.json({
+            configured: false,
+            account: null,
+            award: null,
           });
         if (url.pathname.startsWith("/api/v1/payments/")) {
           const headers = new Headers(incoming.headers);

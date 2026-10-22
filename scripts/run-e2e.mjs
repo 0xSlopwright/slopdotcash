@@ -1,3 +1,8 @@
+import {
+  E2E_EMAIL_ACCOUNTS,
+  startNotifyWorkerFixture,
+} from "../tests/notify-worker-fixture.mjs";
+
 /**
  * Runs the complete browser matrix against the stable built-site preview and,
  * at the same time, checks redirects, artifacts, and contributor API access
@@ -17,7 +22,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -30,6 +35,7 @@ import {
 import { childEnvironment } from "./child-environment.mjs";
 import { prepareE2eFixture } from "./prepare-e2e-fixture.mjs";
 import { runE2ePhase } from "./run-e2e-phase.mjs";
+import { sha256Hex } from "./sha256.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const playwright = join(packageRoot, "node_modules", ".bin", "playwright");
@@ -118,6 +124,12 @@ function prepareRegistryDatabase() {
     applicant: { token: sessionToken(), githubId: "900000002" },
     moderator: { token: sessionToken(), githubId: E2E_MODERATOR_GITHUB_ID },
     owner: { token: sessionToken(), githubId: E2E_OWNER.githubId },
+    ...Object.fromEntries(
+      Object.entries(E2E_EMAIL_ACCOUNTS).map(([role, githubId]) => [
+        role,
+        { token: sessionToken(), githubId },
+      ]),
+    ),
     // Private security bounty roles (tests/e2e/security-bounty.spec.ts).
     ...Object.fromEntries(
       Object.entries(E2E_SECURITY_ACCOUNTS).map(([role, githubId]) => [
@@ -130,7 +142,7 @@ function prepareRegistryDatabase() {
   const sql = Object.entries(sessions)
     .map(([role, { token, githubId }]) => {
       const actor = `U_e2e_${role}`;
-      const hash = createHash("sha256").update(token).digest("hex");
+      const hash = sha256Hex(token);
       return `INSERT INTO points_members(actor_id,github_id,login,joined_at,public) VALUES('${actor}','${githubId}','e2e-${role}','2026-01-01T00:00:00.000Z',0); INSERT INTO points_sessions(token_hash,actor_id,expires_at) VALUES('${hash}','${actor}','${expires}');`;
     })
     .join(" ");
@@ -160,6 +172,14 @@ function prepareRegistryDatabase() {
       SLOP_E2E_MODERATOR_GITHUB_IDS: `${E2E_ADMIN_GITHUB_ID},${E2E_MODERATOR_GITHUB_ID}`,
       SLOP_E2E_ADMIN_TOKEN: sessions.admin.token,
       SLOP_E2E_APPLICANT_TOKEN: sessions.applicant.token,
+      SLOP_E2E_EMAIL_TOKENS: JSON.stringify(
+        Object.fromEntries(
+          Object.keys(E2E_EMAIL_ACCOUNTS).map((role) => [
+            role,
+            sessions[role].token,
+          ]),
+        ),
+      ),
       SLOP_E2E_MODERATOR_TOKEN: sessions.moderator.token,
       SLOP_E2E_OWNER_TOKEN: sessions.owner.token,
       SLOP_E2E_SECURITY_TOKENS: JSON.stringify(
@@ -178,6 +198,11 @@ async function runRegistryPhase() {
   const database = prepareRegistryDatabase();
   const githubPort = basePort + 3;
   const github = await startGitHubApiFixture(githubPort);
+  const notify = await startNotifyWorkerFixture(
+    packageRoot,
+    database.persistTo,
+    basePort + 4,
+  );
   try {
     return await runPhase(
       "registry",
@@ -188,10 +213,15 @@ async function runRegistryPhase() {
         ...database.env,
         SLOP_E2E_GITHUB_API_ORIGIN: `http://127.0.0.1:${githubPort}`,
         SLOP_E2E_OUTPUT: "registry",
+        SLOP_E2E_NOTIFY_SERVICE: notify.name,
+        ...(process.env.SLOP_VETTING_OVERLAY_PATH
+          ? { SLOP_VETTING_OVERLAY_PATH: process.env.SLOP_VETTING_OVERLAY_PATH }
+          : {}),
       },
     );
   } finally {
     github.close();
+    notify.close();
     rmSync(database.persistTo, { force: true, recursive: true });
   }
 }

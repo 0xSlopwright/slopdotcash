@@ -1,3 +1,7 @@
+import {
+  errorMessage as message,
+  formatNullableUtc as time,
+} from "./Presentation";
 /**
  * The admin view of community project security vetting (PRD VET-01 to
  * VET-08). It shows each project's revision-bound clearance, the restricted
@@ -9,41 +13,18 @@
 import { CircleAlert, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { projectApiRequest } from "./lib/project-api";
-
-type AssessmentState = "pending" | "incomplete" | "clean" | "malicious";
-
-type AssessmentSummary = {
-  id: string;
-  revision: number;
-  state: AssessmentState;
-  commitSha: string;
-  templateSha256: string;
-  policyVersion: string | null;
-  requestedAt: string;
-  completedAt: string | null;
-  modelRuns: { reviewer: string; provider: string; model: string }[];
-  artifacts: number;
-  heldArtifacts: number;
-};
-
-type Clearance =
-  | { state: "unscanned" }
-  | { state: "unverified"; reason: string }
-  | {
-      state: "stale";
-      assessment: AssessmentSummary;
-      live: { commitSha: string; templateSha256: string };
-    }
-  | {
-      state: "queued" | "quarantined" | "cleared" | "banned";
-      assessment: AssessmentSummary;
-    };
+import type {
+  AssessmentState,
+  AssessmentSummary,
+  VettingClearance as Clearance,
+} from "./lib/vetting-contracts";
 
 type AdminAssessment = AssessmentSummary & {
   projectId: string;
   requestedBy: { githubLogin: string };
   requestReason: string;
   result: {
+    environment: { runId: string };
     telemetry: { visibilityGaps: string[]; tamperDetected: boolean };
     artifacts: {
       sha256: string;
@@ -58,7 +39,10 @@ type AdminAssessment = AssessmentSummary & {
 };
 
 type Overview = {
-  service: { state: "available" } | { state: "unavailable"; reason: string };
+  service: { queueRegistrationAvailable: boolean } & (
+    | { state: "available" }
+    | { state: "unavailable"; reason: string }
+  );
   projects: {
     id: string;
     name: string;
@@ -85,19 +69,6 @@ const STATE_TEXT: Record<AssessmentState, string> = {
   clean: "Clean",
   malicious: "Confirmed malicious",
 };
-
-function time(value: string | null): string {
-  if (value === null) return "—";
-  return `${new Date(value).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  })} UTC`;
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong.";
-}
 
 function QueueScan({
   project,
@@ -191,6 +162,19 @@ function AssessmentDetails({ assessment }: { assessment: AdminAssessment }) {
                   .join(", ")}
           </dd>
         </div>
+        {result ? (
+          <div>
+            <dt>Retained evidence</dt>
+            <dd>
+              <a
+                href={`/vetting-evidence?assessmentId=${encodeURIComponent(assessment.id)}&runId=${encodeURIComponent(result.environment.runId)}`}
+              >
+                Open restricted evidence console
+              </a>
+              <p>Separate designated-operator access is required.</p>
+            </dd>
+          </div>
+        ) : null}
         {result ? (
           <div>
             <dt>Telemetry</dt>
@@ -368,7 +352,7 @@ export function VettingSection() {
                       cannot lift a ban.
                     </p>
                   ) : null}
-                  {state.value.service.state === "available" && !queued ? (
+                  {state.value.service.queueRegistrationAvailable && !queued ? (
                     <QueueScan
                       onQueued={() => {
                         setNote(
@@ -397,5 +381,51 @@ export function VettingSection() {
         </>
       )}
     </section>
+  );
+}
+
+/** The same revision-bound clearance used by the full security review panel. */
+export function ActivationClearance({
+  projectId,
+  revision,
+}: {
+  projectId: string;
+  revision: number;
+}) {
+  const [clearance, setClearance] = useState<string>(
+    "Checking security clearance…",
+  );
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    projectApiRequest<Overview>("GET", `admin/vetting?refresh=${attempt}`).then(
+      (body) => {
+        if (!active) return;
+        const project = body.projects.find((entry) => entry.id === projectId);
+        setClearance(
+          !project || project.revision !== revision
+            ? "Project revision changed. Reload before activation."
+            : `Revision ${revision}: ${LABELS[project.clearance.state]}.`,
+        );
+      },
+      (error) => {
+        if (active) setClearance(message(error));
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [projectId, revision, attempt]);
+  return (
+    <div>
+      <p role="status">{clearance}</p>
+      <button
+        type="button"
+        className="text-button"
+        onClick={() => setAttempt((value) => value + 1)}
+      >
+        Refresh clearance
+      </button>
+    </div>
   );
 }

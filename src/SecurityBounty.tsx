@@ -29,20 +29,12 @@ import {
   type SecurityBountyTerms,
   securityBountySplit,
 } from "./lib/security-bounty.mjs";
-import { ExternalLinkAnchor, NotFound } from "./Presentation";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong.";
-}
-
-function formatUtc(value: string | null): string {
-  if (value === null) return "—";
-  return `${new Date(value).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  })} UTC`;
-}
+import {
+  ExternalLinkAnchor,
+  errorMessage,
+  formatNullableUtc as formatUtc,
+  NotFound,
+} from "./Presentation";
 
 function amounts(terms: SecurityBountyTerms) {
   const split = securityBountySplit(terms.amount.grossMinor);
@@ -383,6 +375,10 @@ type CaseEvent = {
   reason: string | null;
   actorRole?: string;
   evidenceReference?: string | null;
+  detail?: {
+    redactedContentDigest?: string | null;
+    embargoChange?: string | null;
+  };
 };
 
 type SecurityCase = {
@@ -932,6 +928,26 @@ function actionSpec(action: string, record: SecurityCase): ActionSpec | null {
               ["disclosed", "Disclosed by the security maintainer"],
             ],
           },
+          {
+            name: "evidenceReference",
+            label: "Private disclosure approval evidence",
+            kind: "text",
+            hint: "Reference the human approval and exact content version in the private advisory. Do not paste the content here.",
+          },
+          {
+            name: "redactedContentDigest",
+            label: "Approved redacted content SHA-256",
+            kind: "text",
+            optional: true,
+            hint: "Required when approving redacted text or recording disclosure. Use the digest of the exact approved content.",
+          },
+          {
+            name: "embargoChange",
+            label: "Approved embargo change",
+            kind: "textarea",
+            optional: true,
+            hint: "Record any approved deadline or terms change. Leave blank if unchanged. This does not publish content or schedule disclosure.",
+          },
           REASON,
         ],
       };
@@ -1360,6 +1376,13 @@ function CaseDetail({
                 {event.evidenceReference
                   ? ` (evidence: ${event.evidenceReference})`
                   : ""}
+                {event.kind === "disclosure" &&
+                event.detail?.redactedContentDigest
+                  ? ` (approved content SHA-256: ${event.detail.redactedContentDigest})`
+                  : ""}
+                {event.kind === "disclosure" && event.detail?.embargoChange
+                  ? ` (embargo change: ${event.detail.embargoChange})`
+                  : ""}
               </li>
             ))}
           </ol>
@@ -1505,13 +1528,16 @@ export function SecurityCasesPage() {
     <main className="shell route-main admin-page security-page">
       <div className="admin-intro">
         <h1>Security cases</h1>
-        <p>
-          Private. Only the reporter, the program's security maintainers,
-          assigned triagers, its finance approvers (award fields only) and its
-          independent dispute reviewers (appealed cases only) can see a case.
-          Slop admins have no automatic access. Slop never publishes cases or
-          counts them.
-        </p>
+        <details>
+          <summary>Who can access a case?</summary>
+          <p>
+            Private. Only the reporter, the program's security maintainers,
+            assigned triagers, its finance approvers (award fields only) and its
+            independent dispute reviewers (appealed cases only) can see a case.
+            Slop admins have no automatic access. Slop never publishes cases or
+            counts them.
+          </p>
+        </details>
         {session.status === "signed-in" ? (
           <p>Signed in as @{session.session.githubLogin}.</p>
         ) : null}

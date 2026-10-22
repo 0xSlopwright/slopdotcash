@@ -4,6 +4,7 @@
 import type { Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import * as store from "./persistence";
+import { registeredRepository } from "./registry";
 import { type ReviewEnv, recordHumanSignal, reviewItem } from "./review";
 import { readWebhookBody } from "./webhook-body";
 
@@ -32,7 +33,12 @@ type Payload = {
     account?: { id: number; login: string; type: string };
     updated_at?: string | number;
   };
-  repository?: { id: number; name: string; owner: { login: string } };
+  repository?: {
+    id: number;
+    name: string;
+    private: boolean;
+    owner: { login: string };
+  };
   sender?: { id: number; type: string };
   issue?: { number: number; pull_request?: unknown };
   pull_request?: { number: number };
@@ -49,6 +55,7 @@ function jobFor(
   if (
     installation === undefined ||
     repository === undefined ||
+    repository.private !== false ||
     sender === undefined ||
     action === undefined
   )
@@ -201,7 +208,13 @@ export default {
     try {
       const payload = JSON.parse(text) as Payload;
       const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
-      if (job !== null) await env.SLOPBOT_QUEUE.send(job);
+      if (job !== null) {
+        if (!(await registeredRepository(env.SLOPBOT_DB, job)))
+          return new Response("repository is not active in the Slop registry", {
+            status: 202,
+          });
+        await env.SLOPBOT_QUEUE.send(job);
+      }
       return new Response(job === null ? "ignored" : "queued", {
         status: 202,
       });

@@ -5,7 +5,8 @@ project in `/.well-known/slop/projects.json`, and activates no revision unless
 a secure-VM scan cleared that exact revision content. The VM, its collectors
 and the two model scanners are external services. This module stores their
 signed results and enforces the gate. It fails closed when the service is
-absent.
+absent. [Private evidence storage and inspection](EVIDENCE.md) use a separate
+R2 binding and an explicit operator-attested policy with inactive defaults.
 
 ## Tables
 
@@ -53,31 +54,32 @@ queue a scan, and Slop serves no skill for it.
 | State | Meaning | Skills, discovery, activation |
 |---|---|---|
 | `unscanned` | No scan of this content | Blocked |
-| `unverified` | Slop could not read the live branch head or template digest, or the manifest names more than one repository | Blocked; skill routes return HTTP 503 |
+| `unverified` | Slop could not read the live pin, the manifest names more than one repository, or the retained evidence is missing, changed, expired or outside current policy | Blocked; skill routes return HTTP 503 |
 | `stale` | Scans of this content exist, but none of the live branch head and template | Blocked |
 | `queued` | A scan of the live pin waits for a result | Blocked |
 | `quarantined` | The newest finished scan of the live pin is `incomplete` | Blocked |
-| `cleared` | The newest finished scan of the live pin is `clean` | Allowed |
-| `banned` | Any scan of the project is `malicious` | Blocked; a new scan or commit cannot lift it |
+| `cleared` | The newest finished scan of the live pin is `clean` and its required retained objects pass verification | Allowed |
+| `banned` | A malicious scan has no independent reinstatement decision covering it | Blocked; a new scan or commit alone cannot lift it |
 
 Merging to the integration branch therefore pauses skills and discovery for
 the project until an admin queues a scan of the new head and its clean result
-lands. Slop keeps each branch head in the edge cache for 30 seconds, and edge
-copies of public skill responses expire within another 30 seconds.
+lands. Slop keeps each branch head in the edge cache for 30 seconds. Dynamic
+skills, discovery and public clearance responses use no-store. Each request
+checks current private evidence; an old cache cannot bypass access expiry.
 
 A queued rescan keeps the last finished decision until its result lands.
-Reinstatement after a ban belongs to the ADM-06 path (issue #911) and is not
-in this module.
+Reinstatement after a ban uses the ADM-06 path and the exact reviewed scan
+records described in [Independent reinstatement](#independent-reinstatement).
 
 ## Routes
 
-| Route | Access | Purpose |
-|---|---|---|
-| `GET /api/v1/admin/vetting` | admin | Service state, clearance of every project, full results |
-| `POST /api/v1/admin/vetting/assessments` | admin | Queues a scan of the current revision (`projectId`, `revision`, `reason`) at the live branch head and template digest; HTTP 503 `pin_unavailable` when either cannot be read |
-| `GET /api/v1/vetting/requests` | signed service | Queued scans with the assigned `commitSha` and `templateSha256`, the revision URL and the template index URL |
-| `POST /api/v1/vetting/results` | signed service | Records one `slop-vetting-result-v1` result |
-| `GET /api/v1/projects/:id` | public | Adds the safe `vetting` summary; `skillsPublished` needs `cleared` |
+| Route                                    | Access         | Purpose                                                                                                                                                                      |
+| ---------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/v1/admin/vetting`              | admin          | Service state, clearance of every project, full results                                                                                                                      |
+| `POST /api/v1/admin/vetting/assessments` | admin          | Queues a scan of the current revision (`projectId`, `revision`, `reason`) at the live branch head and template digest; HTTP 503 `pin_unavailable` when either cannot be read |
+| `GET /api/v1/vetting/requests`           | signed service | Queued scans with the assigned `commitSha` and `templateSha256`, the revision URL and the template index URL                                                                 |
+| `POST /api/v1/vetting/results`           | signed service | Records one `slop-vetting-result-v1` result                                                                                                                                  |
+| `GET /api/v1/projects/:id`               | public         | Adds the safe `vetting` summary; `skillsPublished` needs `cleared`                                                                                                           |
 
 ## Service signature
 
@@ -118,10 +120,26 @@ The API never upgrades a result:
   label alone is refused (VET-06).
 - `incomplete` records anything else, without a confirmation.
 
-## What the operator must provide
+## Remaining service implementation and operation
 
-The repository cannot provide these. Until they exist, no community project
-can be cleared, so no project skill is served.
+The result intake does not implement the external execution service. These
+are source and integration requirements, not only missing credentials or
+deployment settings. Until the complete service exists and passes acceptance,
+no community project can be cleared, so no project skill is served.
+
+The [isolated artifact inventory](../../workers/vetting/README.md) implements
+bounded recursive inspection of a supplied file. It keeps every file in
+quarantine. It does not intercept guest execution, release artifacts, or
+replace the remaining requirements below.
+
+[Source acquisition](../../workers/vetting/ACQUISITION.md) verifies immutable
+Git objects without checkout or execution. The [signed queue reader and template
+acquisition](../../workers/vetting/QUEUE.md) bind those objects to the assigned
+manifest and template inputs. Both retain visibility gaps and leave assessments
+pending. Independent provider transports are under review in
+[PR #953](https://github.com/SlopDotCash/slopdotcash/pull/953); actual provider
+acceptance is still required. These components do not complete execution,
+telemetry, artifact release or trusted publication.
 
 1. A hardware-isolated VM or microVM service that meets VET-02 and VET-03:
    fresh disposable guest, no host mounts or credentials, default-deny egress
@@ -134,7 +152,30 @@ can be cleared, so no project skill is served.
    the Ed25519 private key, decides the disposition, and signs the result.
 5. The public key in the Pages variable `VETTING_RESULT_PUBLIC_KEYS` for each
    environment.
-6. A restricted operator console for the full traces, stdout and network
-   evidence, with published retention, access and size limits (VET-03).
+6. The [restricted operator console](EVIDENCE.md) now verifies bounded retained
+   objects. Full assembly-reference closure and large overlay integration remain
+   missing source work. Approved published policy, physical retention, legal holds,
+   backup and recovery controls, and live acceptance remain required (VET-03).
 7. The VET-08 acceptance run of the harmless fixture classes on that
    infrastructure, with its coverage and blind-spot report.
+
+## Independent reinstatement
+
+A confirmed malicious signed result atomically records the result, a repository-bound
+Ban and the owner inbox event. The issuer is the signing-key digest, assessment,
+policy version and confirmation rule. A model label alone cannot create this record.
+The record immediately closes cached lists, direct skills and repository aliases.
+If the manifest is not already paused and retired, the record says `revision_pending`;
+an admin must append that canonical revision before reinstatement. No GitHub actor
+or revision author is invented for the service.
+
+A clean scan alone does not clear a confirmed malicious finding. An owner or
+moderator files an appeal. An independent human moderator may decide it only after
+a fresh complete scan of the restricted revision. Migration 0031 stores the exact
+clean scan and reviewed malicious assessment IDs with that append-only decision.
+Every later malicious assessment remains a new ban; no old decision covers it.
+The changed listing revision still needs clearance before its skills can publish.
+Migration 0032 preserves human enforcement history and admits the signed service
+issuer only for standing-rule Ban records.
+
+Confirmed-malicious bans notify the configured administrators and project moderators, the applicant and steward, and known affected contributors. Contributor recipients come from current positive contribution records resolved through immutable membership IDs, plus project payment obligations and imported transfers. Reversed awards and unrelated projects do not select recipients. People without a resolvable inbox identity cannot receive a direct notice. The private inbox notice contains no security reason, trace, or evidence reference. The result, ban, and notices commit together; a repeated signed result cannot duplicate them.

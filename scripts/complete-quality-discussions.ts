@@ -2,12 +2,9 @@ import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ConnectionPage } from "./github-pagination";
 
-type Connection = {
-  totalCount: number;
-  pageInfo: { hasNextPage: boolean; endCursor: string | null };
-  nodes: { id: string; body: string }[];
-};
+type Connection = ConnectionPage<{ id: string; body: string }>;
 export interface CapturedDiscussion {
   id: string;
   closedAt: string;

@@ -119,8 +119,19 @@ async function routeGitHub(
 
 // The preview lane has no Pages Functions; the registry lane tests the API.
 test.beforeEach(async ({ page }) => {
+  await page.route("**/api/v1/project-applications/mine?*", (route) =>
+    route.fulfill({ json: { applications: [] } }),
+  );
   await page.route("**/api/v1/project-session", (route) =>
-    route.fulfill({ json: { session: null } }),
+    route.fulfill({
+      json: {
+        session: {
+          githubId: "4242",
+          githubLogin: "example-maintainer",
+          admin: false,
+        },
+      },
+    }),
   );
 });
 
@@ -188,13 +199,7 @@ test("drafts a project through the setup steps and submits it for review", async
   });
   await page.goto("/projects/new", { waitUntil: "networkidle" });
   const steps = page.getByRole("navigation", { name: "Setup steps" });
-  for (const label of [
-    "Repository",
-    "Contribution rules",
-    "Rewards",
-    "Funding",
-    "Review",
-  ])
+  for (const label of ["Repository", "Contribution rules", "Rewards", "Review"])
     await expect(steps.getByRole("button", { name: label })).toBeVisible();
   await page
     .getByLabel("Public GitHub repository")
@@ -255,9 +260,8 @@ test("drafts a project through the setup steps and submits it for review", async
   await expect(page.getByLabel("Monthly review budget, USD")).toHaveCount(0);
   await page.getByLabel("Add a separate review budget").check();
   await page.getByLabel("Monthly review budget, USD").fill("50");
-  await page.getByRole("button", { name: "Next: Funding" }).click();
-  await expect(page.locator(".activation-gates")).toContainText(
-    "Project vault: not deployed",
+  await expect(page.locator(".fee-preview")).toContainText(
+    "Payout fee: 2%. Unused-fund withdrawal fee: 2%.",
   );
   await page.getByRole("button", { name: "Next: Review" }).click();
 
@@ -357,6 +361,13 @@ test("drafts a project through the setup steps and submits it for review", async
   // The draft persists on this device without credentials and never claims
   // to be a listing. Clearing it needs a second confirmation.
   await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "4. Review", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "Setup steps" })
+    .getByRole("button", { name: "Repository" })
+    .click();
   await expect(page.getByLabel("Public GitHub repository")).toHaveValue(
     "example/open-protein",
   );
@@ -479,7 +490,6 @@ test("Robinhood Chain drafts a USDG escrow manifest", async ({ page }) => {
   const network = page.getByLabel("Payout network");
   await network.selectOption("robinhood");
   await page.getByLabel("Monthly pool target, USD").fill("1000");
-  await page.getByRole("button", { name: "Next: Funding" }).click();
   await page.getByRole("button", { name: "Next: Review" }).click();
   const preview = page.getByRole("article", { name: "Listing preview" });
   await expect(preview).toContainText("Robinhood Chain · payments disabled");
@@ -559,6 +569,20 @@ test("a signed-in maintainer picks an owned repository and gets suggested text",
   let signedIn = false;
   await page.route(`${deployment.site}/**`, async (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/project-session") {
+      await route.fulfill({
+        json: {
+          session: signedIn
+            ? { githubId: "987654321", githubLogin: "example", admin: false }
+            : null,
+        },
+      });
+      return;
+    }
+    if (url.pathname === "/api/v1/project-applications/mine") {
+      await route.fulfill({ json: { applications: [] } });
+      return;
+    }
     if (url.pathname === "/api/v1/points/me") {
       if (signedIn)
         await route.fulfill({

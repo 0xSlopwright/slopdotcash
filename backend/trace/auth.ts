@@ -1,3 +1,4 @@
+import { encodeBase64Url, ownedBuffer } from "../../src/lib/byte-encoding";
 import type { ApiRole, AuthenticatedActor } from "./contracts";
 
 export type ApiTokenClaims = {
@@ -19,26 +20,11 @@ const CLOCK_SKEW_SECONDS = 30;
 const MAX_TOKEN_PAYLOAD_CHARS = 4096;
 const HMAC_SHA256_BASE64URL_CHARS = 43;
 
-function encodeBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(/=+$/u, "");
-}
-
 function decodeBase64Url(value: string): Uint8Array {
   const normalized = value.replaceAll("-", "+").replaceAll("_", "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
   const binary = atob(padded);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
-function ownedBuffer(bytes: Uint8Array): ArrayBuffer {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer;
 }
 
 function secretBytes(secret: string): Uint8Array {

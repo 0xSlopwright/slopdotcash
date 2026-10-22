@@ -4,11 +4,11 @@ import {
   type PaymentChain,
   payoutFee,
 } from "../../src/lib/payments/contracts";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import {
   notifyAwardReserved,
   notifyPaymentPaid,
 } from "../notifications/events";
-import type { D1Database } from "../trace/cloudflare-persistence";
 
 export interface FinalizedPaymentEvent {
   kind: "reserved" | "paid";

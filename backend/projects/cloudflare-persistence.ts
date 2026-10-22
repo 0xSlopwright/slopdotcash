@@ -1,4 +1,8 @@
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
+import type {
+  D1QueryStatement as D1Statement,
+  D1TransactionalDatabase,
+} from "../d1";
 import {
   notifyApplicationDecision,
   notifyProjectEnforcement,
@@ -16,23 +20,7 @@ import type {
   ProjectRevision,
   ProjectRevisionInput,
 } from "./contracts";
-
-type D1Result<T = unknown> = {
-  success: boolean;
-  results?: T[];
-  meta?: { changes?: number };
-};
-type D1Statement = {
-  bind(...values: unknown[]): D1Statement;
-  first<T>(): Promise<T | null>;
-  all<T>(): Promise<D1Result<T>>;
-  run(): Promise<D1Result>;
-};
-
-export type ProjectD1Database = {
-  batch(statements: D1Statement[]): Promise<D1Result[]>;
-  prepare(query: string): D1Statement;
-};
+export type ProjectD1Database = D1TransactionalDatabase<D1Statement>;
 
 type ProjectRow = {
   id: string;
@@ -46,6 +34,8 @@ type ProjectRow = {
 };
 
 type ApplicationRow = {
+  expected_revision: number | null;
+  change_reason: string | null;
   id: string;
   project_id: string;
   repository_key: string;
@@ -68,7 +58,7 @@ type ApplicationRow = {
 const PROJECT_COLUMNS =
   "id, status, revision, manifest, manifest_sha256, created_at, updated_at, source_application_id";
 const APPLICATION_COLUMNS =
-  "id, project_id, repository_key, manifest, manifest_sha256, acceptance_criteria, applicant_github_id, applicant_github_login, submitted_at, status, admin_notification, admin_notification_at, decided_at, decided_by_github_id, decided_by_github_login, decision_reason, github_check";
+  "id, project_id, repository_key, manifest, manifest_sha256, acceptance_criteria, applicant_github_id, applicant_github_login, submitted_at, status, admin_notification, admin_notification_at, decided_at, decided_by_github_id, decided_by_github_login, decision_reason, github_check, expected_revision, change_reason";
 
 function projectFromRow(row: ProjectRow): ProjectRecord {
   return {
@@ -88,6 +78,12 @@ function applicationFromRow(row: ApplicationRow): ProjectApplication {
     id: row.id,
     projectId: row.project_id,
     repositoryKey: row.repository_key,
+    ...(row.expected_revision === null
+      ? {}
+      : {
+          expectedRevision: row.expected_revision,
+          changeReason: row.change_reason ?? "",
+        }),
     manifest: JSON.parse(row.manifest) as ProjectDefinition,
     manifestSha256: row.manifest_sha256,
     acceptanceCriteria: row.acceptance_criteria,
@@ -123,8 +119,9 @@ type EnforcementRow = {
   evidence_reference: string;
   repository_github_id: string;
   repository_keys: string;
-  actor_github_id: string;
-  actor_github_login: string;
+  actor_github_id: string | null;
+  actor_github_login: string | null;
+  system_issuer: string | null;
   actor_role: ProjectEnforcement["actorRole"];
   decision_source: ProjectEnforcement["decisionSource"];
   before_revision: number;
@@ -135,8 +132,8 @@ type EnforcementRow = {
   created_at: string;
 };
 
-const ENFORCEMENT_COLUMNS =
-  "id, project_id, sequence, action, state_after, appeal_after, reason, evidence_reference, repository_github_id, repository_keys, actor_github_id, actor_github_login, actor_role, decision_source, before_revision, before_manifest_sha256, after_revision, after_manifest_sha256, result, created_at";
+export const ENFORCEMENT_COLUMNS =
+  "id, project_id, sequence, action, state_after, appeal_after, reason, evidence_reference, repository_github_id, repository_keys, actor_github_id, actor_github_login, actor_role, decision_source, before_revision, before_manifest_sha256, after_revision, after_manifest_sha256, result, created_at, system_issuer";
 
 function enforcementFromRow(row: EnforcementRow): ProjectEnforcement {
   return {
@@ -150,10 +147,20 @@ function enforcementFromRow(row: EnforcementRow): ProjectEnforcement {
     evidenceReference: row.evidence_reference,
     repositoryGithubId: row.repository_github_id,
     repositoryKeys: JSON.parse(row.repository_keys) as string[],
-    actor: {
-      githubId: row.actor_github_id,
-      githubLogin: row.actor_github_login,
-    },
+    actor:
+      row.actor_github_id !== null && row.actor_github_login !== null
+        ? {
+            githubId: row.actor_github_id,
+            githubLogin: row.actor_github_login,
+          }
+        : null,
+    ...(row.system_issuer
+      ? {
+          systemIssuer: JSON.parse(
+            row.system_issuer,
+          ) as ProjectEnforcement["systemIssuer"],
+        }
+      : {}),
     actorRole: row.actor_role,
     decisionSource: row.decision_source,
     beforeRevision: row.before_revision,
@@ -165,11 +172,49 @@ function enforcementFromRow(row: EnforcementRow): ProjectEnforcement {
   };
 }
 
+export function enforcementStatement(
+  db: ProjectD1Database,
+  record: ProjectEnforcement,
+): D1Statement {
+  return db
+    .prepare(
+      `INSERT INTO project_enforcements (${ENFORCEMENT_COLUMNS})
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+       (SELECT revision FROM projects WHERE id = ? AND revision = ? AND manifest_sha256 = ?),
+       ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      record.id,
+      record.projectId,
+      record.sequence,
+      record.action,
+      record.stateAfter,
+      record.appealAfter,
+      record.reason,
+      record.evidenceReference,
+      record.repositoryGithubId,
+      JSON.stringify(record.repositoryKeys),
+      record.actor?.githubId ?? null,
+      record.actor?.githubLogin ?? null,
+      record.actorRole,
+      record.decisionSource,
+      record.projectId,
+      record.beforeRevision,
+      record.beforeManifestSha256,
+      record.beforeManifestSha256,
+      record.afterRevision,
+      record.afterManifestSha256,
+      record.result,
+      record.createdAt,
+      record.systemIssuer ? JSON.stringify(record.systemIssuer) : null,
+    );
+}
+
 /** Constraint failures are expected races; anything else is a real fault. */
 function isConstraintConflict(error: unknown): boolean {
   return (
     error instanceof Error &&
-    /UNIQUE constraint failed|PRIMARY KEY|project (?:row|update) requires|enforcement sequence/u.test(
+    /UNIQUE constraint failed|PRIMARY KEY|project (?:row|update) requires|enforcement sequence|NOT NULL constraint failed: project_enforcements.before_revision/u.test(
       error.message,
     )
   );
@@ -289,8 +334,8 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           `INSERT INTO project_applications (
              id, project_id, repository_key, manifest, manifest_sha256,
              acceptance_criteria, applicant_github_id, applicant_github_login,
-             submitted_at, status, admin_notification, github_check
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?)`,
+             submitted_at, status, admin_notification, github_check, expected_revision, change_reason
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?)`,
         )
         .bind(
           application.id,
@@ -303,6 +348,8 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           application.applicant.githubLogin,
           application.submittedAt,
           application.githubCheck,
+          application.expectedRevision ?? null,
+          application.changeReason ?? null,
         )
         .run();
       return "created";
@@ -440,7 +487,13 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
     // The revision applies only while no enforcement record has landed since
     // the caller read the restrictions it checked.
     const unrestricted =
-      "(SELECT COALESCE(MAX(rowid), 0) FROM project_enforcements) = ?";
+      "(SELECT COALESCE(MAX(rowid), 0) FROM project_enforcements) = ?" +
+      (input.applicationId
+        ? " AND EXISTS (SELECT 1 FROM project_applications WHERE id = ? AND status = 'pending' AND expected_revision = ?)"
+        : "");
+    const applicationBindings = input.applicationId
+      ? [input.applicationId, input.expectedRevision]
+      : [];
     const current = `EXISTS (SELECT 1 FROM projects WHERE id = ? AND revision = ?) AND ${unrestricted}`;
     try {
       const results = await this.db.batch([
@@ -463,6 +516,7 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
             input.projectId,
             input.expectedRevision,
             expectedEnforcementGeneration,
+            ...applicationBindings,
           ),
         this.db
           .prepare(
@@ -480,7 +534,28 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
             input.projectId,
             input.expectedRevision,
             expectedEnforcementGeneration,
+            ...applicationBindings,
           ),
+        ...(input.applicationId
+          ? [
+              this.db
+                .prepare(
+                  `UPDATE project_applications SET status = 'approved', decided_at = ?, decided_by_github_id = ?, decided_by_github_login = ?, decision_reason = ? WHERE id = ? AND status = 'pending' AND changes() = 1 AND EXISTS (SELECT 1 FROM project_revisions WHERE project_id = ? AND revision = ? AND manifest_sha256 = ? AND created_at = ?)`,
+                )
+                .bind(
+                  input.at,
+                  input.actor.githubId,
+                  input.actor.githubLogin,
+                  input.reason,
+                  input.applicationId,
+                  input.projectId,
+                  nextRevision,
+                  input.manifestSha256,
+                  input.at,
+                ),
+              notifyApplicationDecision(this.db, input.applicationId, input.at),
+            ]
+          : []),
         notifyProjectRevision(
           this.db,
           input.projectId,
@@ -503,7 +578,32 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           ORDER BY project_id, sequence`,
       )
       .all<EnforcementRow>();
-    return (result.results ?? []).map(enforcementFromRow);
+    const reviews = await this.db
+      .prepare(
+        "SELECT enforcement_id, assessment_id, malicious_assessment_ids FROM project_vetting_reinstatements",
+      )
+      .all<{
+        enforcement_id: string;
+        assessment_id: string;
+        malicious_assessment_ids: string;
+      }>();
+    const byEnforcement = new Map(
+      (reviews.results ?? []).map((review) => [
+        review.enforcement_id,
+        {
+          assessmentId: review.assessment_id,
+          maliciousAssessmentIds: JSON.parse(
+            review.malicious_assessment_ids,
+          ) as string[],
+        },
+      ]),
+    );
+    return (result.results ?? []).map((row) => ({
+      ...enforcementFromRow(row),
+      ...(byEnforcement.has(row.id)
+        ? { vettingReview: byEnforcement.get(row.id) }
+        : {}),
+    }));
   }
 
   async enforcementGeneration(): Promise<number> {
@@ -524,40 +624,22 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
     revision: ProjectRevisionInput | null,
     appealReviewers: readonly string[],
   ): Promise<"recorded" | "conflict"> {
-    const current = `EXISTS (SELECT 1 FROM projects WHERE id = ? AND revision = ? AND manifest_sha256 = ?)`;
-    const statements = [
-      this.db
-        .prepare(
-          `INSERT INTO project_enforcements (${ENFORCEMENT_COLUMNS})
-           SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            WHERE ${current}`,
-        )
-        .bind(
-          record.id,
-          record.projectId,
-          record.sequence,
-          record.action,
-          record.stateAfter,
-          record.appealAfter,
-          record.reason,
-          record.evidenceReference,
-          record.repositoryGithubId,
-          JSON.stringify(record.repositoryKeys),
-          record.actor.githubId,
-          record.actor.githubLogin,
-          record.actorRole,
-          record.decisionSource,
-          record.beforeRevision,
-          record.beforeManifestSha256,
-          record.afterRevision,
-          record.afterManifestSha256,
-          record.result,
-          record.createdAt,
-          record.projectId,
-          record.beforeRevision,
-          record.beforeManifestSha256,
-        ),
-    ];
+    const statements = [enforcementStatement(this.db, record)];
+    if (record.vettingReview) {
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT INTO project_vetting_reinstatements
+             (enforcement_id, assessment_id, malicious_assessment_ids)
+           VALUES (?, ?, ?)`,
+          )
+          .bind(
+            record.id,
+            record.vettingReview.assessmentId,
+            JSON.stringify(record.vettingReview.maliciousAssessmentIds),
+          ),
+      );
+    }
     if (revision !== null) {
       statements.push(
         this.db

@@ -6,7 +6,7 @@ import {
 import { POINTS_RULE } from "../../src/lib/points";
 import { randomToken, sha256Hex } from "../../workers/identity/crypto";
 import { consumeExactRateLimit } from "../../workers/identity/rate-limit";
-import type { D1Database } from "../trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import { handleX, type XConfiguration } from "./x";
 
 export interface PointsDependencies {
@@ -147,7 +147,7 @@ export async function handlePointsApi(
     }
     if (route === "/join" && request.method === "POST") {
       const value = (await readBoundedJson(
-        request as unknown as Response,
+        request,
         4096,
         "points join",
       )) as Record<string, unknown>;
@@ -221,7 +221,13 @@ export async function handlePointsApi(
       if (!member) throw new Error("Missing joined member");
       return json(200, publicMember(member), sessionCookie(token, 3600));
     }
-    if (route === "/me" || route === "/signout" || route === "/visibility") {
+    if (
+      route === "/me" ||
+      route === "/signout" ||
+      route === "/visibility" ||
+      route === "/sessions" ||
+      route === "/sessions/revoke"
+    ) {
       const token = cookie(request);
       if (!token || !/^[A-Za-z0-9_-]{40,128}$/.test(token))
         return route === "/me" && request.method === "GET"
@@ -240,6 +246,35 @@ export async function handlePointsApi(
           : json(401, { error: "session_expired" }, sessionCookie("", 0));
       if (route === "/me" && request.method === "GET")
         return json(200, publicMember(member));
+      if (route === "/sessions" && request.method === "GET") {
+        const row = await deps.db
+          .prepare(
+            "SELECT json_group_array(json_object('id', id, 'expiresAt', expiresAt, 'current', json(CASE WHEN is_current THEN 'true' ELSE 'false' END))) AS sessions FROM (SELECT substr(token_hash, 1, 24) AS id, expires_at AS expiresAt, token_hash = ? AS is_current FROM points_sessions WHERE actor_id = ? AND expires_at > ? ORDER BY expires_at DESC)",
+          )
+          .bind(hash, member.actor_id, now)
+          .first<{ sessions: string }>();
+        return json(200, { sessions: JSON.parse(row?.sessions ?? "[]") });
+      }
+      if (route === "/sessions/revoke" && request.method === "POST") {
+        const body = (await readBoundedJson(
+          request as unknown as Response,
+          1024,
+          "session",
+        )) as { id?: unknown };
+        if (typeof body.id !== "string" || !/^[a-f0-9]{24}$/.test(body.id))
+          return json(400, { error: "invalid_session" });
+        await deps.db
+          .prepare(
+            "DELETE FROM points_sessions WHERE actor_id = ? AND substr(token_hash, 1, 24) = ?",
+          )
+          .bind(member.actor_id, body.id)
+          .run();
+        return json(
+          200,
+          { revoked: true },
+          body.id === hash.slice(0, 24) ? sessionCookie("", 0) : undefined,
+        );
+      }
       if (route === "/signout" && request.method === "POST") {
         await deps.db
           .prepare("DELETE FROM points_sessions WHERE token_hash=?")
@@ -249,7 +284,7 @@ export async function handlePointsApi(
       }
       if (route === "/visibility" && request.method === "POST") {
         const body = (await readBoundedJson(
-          request as unknown as Response,
+          request,
           256,
           "visibility",
         )) as Record<string, unknown>;

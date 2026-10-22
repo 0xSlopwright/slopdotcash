@@ -1,4 +1,13 @@
-import type { ProjectDefinition } from "../../src/lib/projects.mjs";
+import type {
+  AdminNotification,
+  ApplicationStatus,
+  DecisionInput,
+  ProjectApplication,
+  ProjectEnforcement,
+  ProjectRecord,
+  ProjectRevision,
+  ProjectRevisionInput,
+} from "../../src/lib/project-contracts";
 
 export const PROJECT_API_CONTRACT_VERSION = "project-registry-v1";
 /** Bounds open applications so one account cannot flood the review queue. */
@@ -13,113 +22,23 @@ export type RepositoryControl =
   | { state: "unproven"; reason: string }
   | { state: "mismatch"; reason: string };
 
-export type GithubActor = { githubId: string; githubLogin: string };
-
-export type WebSession = GithubActor & { admin: boolean };
-
-export type ProjectRecord = {
-  id: string;
-  status: ProjectDefinition["status"];
-  revision: number;
-  manifest: ProjectDefinition;
-  manifestSha256: string;
-  createdAt: string;
-  updatedAt: string;
-  sourceApplicationId: string | null;
-};
-
-export type ProjectRevision = {
-  projectId: string;
-  revision: number;
-  manifest: ProjectDefinition;
-  manifestSha256: string;
-  reason: string;
-  createdAt: string;
-};
-
-export type ApplicationStatus = "pending" | "approved" | "rejected";
-export type AdminNotification = "pending" | "sent" | "failed";
-
-export type ProjectApplication = {
-  id: string;
-  projectId: string;
-  repositoryKey: string;
-  manifest: ProjectDefinition;
-  manifestSha256: string;
-  acceptanceCriteria: string;
-  applicant: GithubActor;
-  submittedAt: string;
-  status: ApplicationStatus;
-  adminNotification: AdminNotification;
-  adminNotificationAt: string | null;
-  decidedAt: string | null;
-  decidedBy: GithubActor | null;
-  decisionReason: string | null;
-  /** Public GitHub evidence about the applicant's repository control. */
-  githubCheck: string | null;
-};
-
-export type ProjectRevisionInput = {
-  projectId: string;
-  /** Revision the caller read; the write fails if another write landed. */
-  expectedRevision: number;
-  manifest: ProjectDefinition;
-  manifestText: string;
-  manifestSha256: string;
-  reason: string;
-  actor: GithubActor;
-  at: string;
-};
-
-export type DecisionInput = {
-  applicationId: string;
-  actor: GithubActor;
-  reason: string | null;
-  at: string;
-};
-
-export type EnforcementAction =
-  | "quarantine"
-  | "ban"
-  | "request_reinstatement"
-  | "reinstate"
-  | "deny_reinstatement";
-export type EnforcementActorRole =
-  | "project-moderator"
-  | "project-steward"
-  | "project-applicant";
-export type RestrictionState = "clear" | "quarantined" | "banned";
-export type AppealState = "none" | "requested" | "granted" | "denied";
-export type EnforcementResult =
-  | "revision_appended"
-  | "revision_pending"
-  | "no_revision_needed";
-
-/** One append-only ADM-06 record with the ADM-05 audit fields. */
-export type ProjectEnforcement = {
-  id: string;
-  projectId: string;
-  sequence: number;
-  action: EnforcementAction;
-  stateAfter: RestrictionState;
-  appealAfter: AppealState;
-  reason: string;
-  evidenceReference: string;
-  /** Immutable GitHub repository id from the manifest authority. */
-  repositoryGithubId: string;
-  /** Lowercase repository paths, including transfer aliases. */
-  repositoryKeys: string[];
-  actor: GithubActor;
-  /** A steward or applicant may only file a reinstatement request (ELG-02). */
-  actorRole: EnforcementActorRole;
-  decisionSource: "admin-panel" | "owner-request";
-  beforeRevision: number;
-  beforeManifestSha256: string;
-  afterRevision: number | null;
-  afterManifestSha256: string | null;
-  result: EnforcementResult;
-  createdAt: string;
-};
+export type {
+  AdminNotification,
+  AppealState,
+  ApplicationStatus,
+  DecisionInput,
+  EnforcementAction,
+  EnforcementActorRole,
+  EnforcementResult,
+  GithubActor,
+  ProjectApplication,
+  ProjectEnforcement,
+  ProjectRecord,
+  ProjectRevision,
+  ProjectRevisionInput,
+  RestrictionState,
+  WebSession,
+} from "../../src/lib/project-contracts";
 
 export interface ProjectPersistence {
   listProjects(): Promise<ProjectRecord[]>;

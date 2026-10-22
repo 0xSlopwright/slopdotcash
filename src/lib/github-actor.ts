@@ -1,3 +1,5 @@
+import type { GitHubActor } from "./leaderboard-types";
+
 /**
  * Returns the numeric GitHub user ID that a GitHub user node ID encodes, or
  * null. Legacy IDs are base64 of `04:User<id>`. Current IDs are `U_` plus
@@ -66,4 +68,18 @@ export function githubUserIdFromNodeId(nodeId: string): string | null {
   }
   if (!bytes.every((byte, i) => byte === canonicalBytes[i])) return null;
   return id.toString();
+}
+
+/** Preserve the login and immutable-ID tie order used by project and global standings. */
+export function compareActors(
+  left: Pick<GitHubActor, "id" | "login">,
+  right: Pick<GitHubActor, "id" | "login">,
+): number {
+  const leftLogin = left.login.toLowerCase();
+  const rightLogin = right.login.toLowerCase();
+  return (
+    leftLogin.localeCompare(rightLogin) ||
+    left.login.localeCompare(right.login) ||
+    left.id.localeCompare(right.id)
+  );
 }

@@ -11,7 +11,7 @@ import {
   runNetwork,
   type SendStatus,
 } from "./core";
-import { runOnce } from "./index";
+import worker, { runOnce } from "./index";
 import { sqliteD1 } from "./sqlite-d1";
 import { D1ConversionStore, projectRewardTokens } from "./store";
 
@@ -157,24 +157,45 @@ describe("release gates", () => {
     ).toThrow(/FEE_WALLET_ROBINHOOD/);
   });
 
-  test("live mode refuses a network whose key is missing, and dry_run never loads a key", async () => {
-    const { db } = sqliteD1();
+  test("scheduled startup failures reject after every enabled network is attempted", async () => {
+    const { db, sqlite } = sqliteD1();
     const errors: string[] = [];
     const original = console.error;
     console.error = (line: string) => errors.push(line);
     try {
-      expect(
-        await runOnce({
+      let work: Promise<unknown> | undefined;
+      await worker.scheduled(
+        undefined,
+        {
           FEE_DB: db,
           FEE_CONVERTER_MODE: "live",
-          FEE_CONVERTER_NETWORKS: "base",
+          FEE_CONVERTER_NETWORKS: "base,ethereum",
           FEE_WALLET_BASE: WALLET,
-        }),
-      ).toEqual([]);
+          FEE_WALLET_ETHEREUM: WALLET,
+        },
+        {
+          waitUntil(promise) {
+            work = promise;
+          },
+        },
+      );
+      expect(work).toBeDefined();
+      await expect(work!).rejects.toThrow(
+        "fee conversion failed on 2 networks",
+      );
+      expect(errors).toHaveLength(2);
+      expect(errors[0]).toContain("live mode needs FEE_WALLET_KEY_BASE");
+      expect(errors[1]).toContain("live mode needs FEE_WALLET_KEY_ETHEREUM");
+      expect(
+        sqlite.query("SELECT COUNT(*) AS n FROM fee_converter_locks").get(),
+      ).toEqual({ n: 0 });
+      expect(
+        sqlite.query("SELECT COUNT(*) AS n FROM fee_conversions").get(),
+      ).toEqual({ n: 0 });
     } finally {
       console.error = original;
+      sqlite.close();
     }
-    expect(errors.join("\n")).toContain("live mode needs FEE_WALLET_KEY_BASE");
   });
 
   test("a key that does not control the configured fee wallet is refused", async () => {

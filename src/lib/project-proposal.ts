@@ -1,11 +1,13 @@
-import type {
-  OwnedRepository,
-  RepositoryLookup,
-} from "../../backend/projects/github-lookup";
 import { fetchWithDeadline, readBoundedJson } from "./browser-json";
+import {
+  type OwnedRepository,
+  type RepositoryLookup,
+  validRepositoryPath,
+} from "./project-contracts";
 import {
   formatMonthlyCapDisplay,
   MAX_MONTHLY_CAP_MINOR,
+  MAX_PROJECT_ID_LENGTH,
 } from "./project-schema.mjs";
 
 export function safeProposalHttpsUrl(value: string): boolean {
@@ -44,7 +46,6 @@ const GITHUB_REPOSITORY_LINK =
   /^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/\s?#]+)\/([^/\s?#]+?)(?:\.git)?(?:\/[^\s]*)?(?:[?#][^\s]*)?$/iu;
 const GITHUB_REPOSITORY_SSH =
   /^(?:ssh:\/\/)?git@github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/iu;
-const REPOSITORY_PATH = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 
 /**
  * Turns a pasted github.com link (https, bare host, ssh, with .git, a
@@ -57,10 +58,6 @@ export function normalizeRepositoryInput(value: string): string {
   const match =
     GITHUB_REPOSITORY_LINK.exec(trimmed) ?? GITHUB_REPOSITORY_SSH.exec(trimmed);
   return match ? `${match[1]}/${match[2]}` : trimmed;
-}
-
-export function validRepositoryPath(value: string): boolean {
-  return value.length <= 201 && REPOSITORY_PATH.test(value);
 }
 
 export function boundedText(
@@ -78,7 +75,8 @@ export function slugify(value: string): string {
     .trim()
     .replace(/[^a-z0-9]+/gu, "-")
     .replace(/^-|-$/gu, "")
-    .slice(0, 48);
+    .slice(0, MAX_PROJECT_ID_LENGTH)
+    .replace(/-$/u, "");
 }
 
 export function monthlyPoolValue(value: string): {
@@ -103,11 +101,6 @@ export function monthlyPoolValue(value: string): {
     valid: true,
   };
 }
-
-export type {
-  OwnedRepository,
-  RepositoryLookup,
-} from "../../backend/projects/github-lookup";
 
 async function projectGithubRequest<T>(
   path: string,

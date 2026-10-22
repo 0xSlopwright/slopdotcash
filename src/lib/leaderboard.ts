@@ -41,7 +41,7 @@ import type {
   WorkItemModelStatus,
   WorkItemSelection,
 } from "./leaderboard-types";
-import { isRecord } from "./record-validation";
+import { isRecord } from "./record-validation.mjs";
 
 export type {
   AttributionAssessment,
@@ -539,6 +539,22 @@ export function assignLeaderboardRanks(
     entry.rank =
       previous?.scoreThirds === entry.scoreThirds ? previous.rank : index + 1;
   });
+}
+
+function compareReviews(
+  left: PullRequestReview,
+  right: PullRequestReview,
+): number {
+  if (left.submittedAt === right.submittedAt) {
+    return left.id.localeCompare(right.id);
+  }
+  if (left.submittedAt === null) {
+    return -1;
+  }
+  if (right.submittedAt === null) {
+    return 1;
+  }
+  return left.submittedAt.localeCompare(right.submittedAt);
 }
 
 export function dedupeByNodeId<T extends { id: string }>(records: T[]): T[] {
@@ -2470,18 +2486,7 @@ function collectOpenPullRequestOpportunities(
     );
     const seenReviewers = new Set<string>();
     for (const review of dedupeByNodeId(pullRequest.reviews).sort(
-      (left, right) => {
-        if (left.submittedAt === right.submittedAt) {
-          return left.id.localeCompare(right.id);
-        }
-        if (left.submittedAt === null) {
-          return -1;
-        }
-        if (right.submittedAt === null) {
-          return 1;
-        }
-        return left.submittedAt.localeCompare(right.submittedAt);
-      },
+      compareReviews,
     )) {
       if (
         !review.author ||
@@ -3395,18 +3400,7 @@ function createSnapshotWithReviewCutoff(
     }
 
     const orderedReviews = dedupeByNodeId(pullRequest.reviews).sort(
-      (left, right) => {
-        if (left.submittedAt === right.submittedAt) {
-          return left.id.localeCompare(right.id);
-        }
-        if (left.submittedAt === null) {
-          return -1;
-        }
-        if (right.submittedAt === null) {
-          return 1;
-        }
-        return left.submittedAt.localeCompare(right.submittedAt);
-      },
+      compareReviews,
     );
     const awardReview = (
       review: PullRequestReview,

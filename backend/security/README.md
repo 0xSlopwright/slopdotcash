@@ -52,7 +52,8 @@ revision, so a revision or a revoked session removes access at once.
 A reporter never acts on their own case. The financial approver cannot be the
 technical decider. The technical decider cannot decide the appeal or the
 related-party review, and the related-party reviewer cannot decide an appeal
-of that review.
+of that review, or review the same case again once an appeal has returned it
+for a new decision.
 
 ## States
 
@@ -111,17 +112,28 @@ root_cause_reserved` and is recorded as a duplicate. Once a case is related,
 it stays related. A redecision after a returned appeal needs a new review,
 and the earlier reviewer stays recorded.
 
+## Disclosure approval records
+
+A disclosure decision records its private human-approval evidence reference.
+Approving redacted text also binds the exact content SHA-256. Recording disclosure
+requires the latest disclosure decision to approve those same bytes, and retains
+that approval's case revision. Changed bytes need a new approval. Any approved
+embargo change is explicit in the immutable event; omission means no change.
+These records do not publish content or schedule disclosure. Reporter recognition
+consent stays separate. Older events remain unchanged and cannot authorize a new
+disclosure without an exact content approval.
+
 ## Not available
 
 - Payment: no private settlement rail is approved. An approved award has
   `paymentState: "rail-unavailable"` and nothing can mark it paid.
-- Email: no bounty notification sender exists. A case change adds a row to
-  the signed-in `/inbox` of the people it concerns (SEC-09): the reporter for
-  events their view shows, security maintainers for a new claim, dispute
-  reviewers for an appeal or a pending related-party review, an assigned
-  triager, and financial approvers when a decision, a related-party
-  approval or `reserve-award` reserves an award. The row holds only the private case id and a
-  link to `/security`; never the project, advisory, severity, amount or
-  reason. The actor is never notified of their own action.
+- Email: the restricted verified-destination pilot is implemented in
+  `workers/notify/security.ts`; deployment and inbox delivery remain launch
+  gates. See `workers/notify/README.md`. Every case inbox insert also queues
+  one private outbox row in the same transaction. Only current case roles
+  with operator-verified destinations receive generic notices. An email
+  never contains a case identifier, amount, project or advisory. The inbox
+  action **Acknowledge** records the recipient's authenticated response;
+  **Mark read** is a separate state and never acknowledges a notice.
 - GitHub advisory content is never fetched. Maintainers verify claims by
   hand on GitHub.

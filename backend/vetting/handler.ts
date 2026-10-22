@@ -1,3 +1,4 @@
+import { pathParts } from "../api-path";
 /**
  * Community project security vetting API (PRD VET-01 to VET-08, MVP-12).
  *
@@ -9,6 +10,7 @@
  */
 
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
+import { type ApiError, fail } from "../api-error";
 import type { ProjectPersistence, WebSession } from "../projects/contracts";
 import { type EdgeCache, purgeProjectCache } from "../projects/edge-cache";
 import {
@@ -17,6 +19,7 @@ import {
   readLimitedBody,
   sha256Hex,
 } from "../trace/validation";
+import type { VettingEvidence } from "./evidence";
 import {
   type CloudflareVettingPersistence,
   summarize,
@@ -38,12 +41,15 @@ const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
 
 export type VettingApiDependencies = {
   vetting: CloudflareVettingPersistence;
+  evidence?: VettingEvidence;
   projects: Pick<
     ProjectPersistence,
     "getProject" | "listProjects" | "enforcementGeneration"
   >;
   /** Raw 32-byte Ed25519 public keys of the vetting service, base64. */
   resultPublicKeys: string | undefined;
+  /** Configured administrators and project moderators; never inferred from scan content. */
+  operatorGithubIds?: readonly string[];
   /**
    * Reads the live pin of a project: its integration-branch head on GitHub
    * and the deployed skill template digest. Throws when either is unreadable
@@ -56,15 +62,6 @@ export type VettingApiDependencies = {
   randomId: () => string;
   cache?: EdgeCache;
 };
-
-type ApiError = Error & { status?: number; code?: string };
-
-function fail(status: number, code: string, message: string): never {
-  const error: ApiError = new Error(message);
-  error.status = status;
-  error.code = code;
-  throw error;
-}
 
 function json(status: number, body: Record<string, unknown>): Response {
   return new Response(JSON.stringify(body), {
@@ -141,9 +138,10 @@ export function vettingSignedMessage(
 }
 
 /** Verifies the service signature and returns the body bytes and key digest. */
-async function signedRequest(
+export async function signedVettingRequest(
   request: Request,
-  deps: VettingApiDependencies,
+  deps: Pick<VettingApiDependencies, "resultPublicKeys" | "now">,
+  maximum = MAX_VETTING_RESULT_BYTES,
 ): Promise<{ body: Uint8Array; keySha256: string }> {
   const keys = await serviceKeys(deps.resultPublicKeys);
   if (keys.length === 0)
@@ -167,7 +165,7 @@ async function signedRequest(
   const key = keys.find((candidate) => candidate.sha256 === keyId);
   if (key === undefined || signature === null || signature.length !== 64)
     fail(401, "invalid_signature", "The vetting signature is not valid");
-  const body = await readLimitedBody(request, MAX_VETTING_RESULT_BYTES);
+  const body = await readLimitedBody(request, maximum);
   const url = new URL(request.url);
   const valid = await crypto.subtle.verify(
     "Ed25519",
@@ -229,15 +227,21 @@ async function adminOverview(
       ),
     })),
   );
+  const queueRegistrationAvailable = await vettingServiceAvailable(
+    deps.resultPublicKeys,
+  );
   return json(200, {
     projects,
-    service: (await vettingServiceAvailable(deps.resultPublicKeys))
-      ? { state: "available" }
-      : {
-          state: "unavailable",
-          reason:
-            "No secure-VM vetting service key is configured. No revision can be cleared, so no project skill can be served or activated.",
-        },
+    service:
+      queueRegistrationAvailable && deps.evidence?.ready()
+        ? { state: "available", queueRegistrationAvailable }
+        : {
+            state: "unavailable",
+            queueRegistrationAvailable,
+            reason: queueRegistrationAvailable
+              ? "Private evidence storage or policy is unavailable. You may queue a scan, but acquisition and clean clearance must wait."
+              : "The secure-VM service key is unavailable. New scans cannot be queued, acquired or recorded. Existing decisions still require current retained evidence.",
+          },
     assessments: assessments.map(adminAssessment),
   });
 }
@@ -313,7 +317,13 @@ async function serviceQueue(
   request: Request,
   deps: VettingApiDependencies,
 ): Promise<Response> {
-  await signedRequest(request, deps);
+  await signedVettingRequest(request, deps);
+  if (!deps.evidence?.ready())
+    fail(
+      503,
+      "evidence_unavailable",
+      "Private evidence storage, access policy and current external-control attestation are required before acquisition",
+    );
   const origin = new URL(request.url).origin;
   const pending = await deps.vetting.pendingAssessments();
   return json(200, {
@@ -336,7 +346,7 @@ async function serviceResult(
   request: Request,
   deps: VettingApiDependencies,
 ): Promise<Response> {
-  const { body, keySha256 } = await signedRequest(request, deps);
+  const { body, keySha256 } = await signedVettingRequest(request, deps);
   let value: unknown;
   try {
     value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
@@ -381,16 +391,34 @@ async function serviceResult(
       "commit_mismatch",
       `The result must scan commit ${assessment.commitSha} with skill template ${assessment.templateSha256}, which the queue assigned`,
     );
+  if (
+    result.disposition === "clean" &&
+    !(await deps.evidence?.complete(result))
+  )
+    fail(
+      422,
+      "evidence_incomplete",
+      "Clean results require a complete authorized canonical assembly and its exact retained evidence",
+    );
   const resultText = JSON.stringify(result);
   const recorded = await deps.vetting.recordResult({
     result,
     resultText,
     resultSha256: await sha256Hex(new TextEncoder().encode(resultText)),
     signingKeySha256: keySha256,
+    operatorGithubIds: deps.operatorGithubIds,
     at: deps.now().toISOString(),
   });
-  if (recorded === "conflict")
+  if (recorded === "conflict") {
+    const current = await deps.vetting.getAssessment(result.assessmentId);
+    if (current?.state === "pending")
+      fail(
+        409,
+        "stale_project",
+        "The project changed while the result was recorded. Read the queued scan and retry.",
+      );
     fail(409, "already_recorded", "This assessment already has a result");
+  }
   // Skills and discovery change with the clearance, so drop cached copies.
   // Cache keys carry the enforcement generation (ADM-06), so purge that scope.
   await purgeProjectCache(
@@ -403,12 +431,6 @@ async function serviceResult(
   const stored = await deps.vetting.getAssessment(result.assessmentId);
   if (stored === null) fail(500, "internal_error", "Assessment vanished");
   return json(200, { assessment: summarize(stored) });
-}
-
-function pathParts(request: Request): string[] {
-  const path = new URL(request.url).pathname;
-  if (!path.startsWith("/api/v1/")) return [];
-  return path.slice("/api/v1/".length).split("/").filter(Boolean);
 }
 
 /** Returns null when the path belongs to another API module. */

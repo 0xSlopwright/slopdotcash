@@ -53,7 +53,8 @@ points and profiles still validate.
 | `POST /api/v1/admin/projects/:id/enforcement` | moderator | Records the previewed action (`action`, `reason`, `evidenceReference`, `expectedRevision`, `expectedSequence`) |
 
 `GET /api/v1/projects` also returns `restrictions`: the project id, state,
-appeal state and start time of every quarantined or banned project. A reader
+appeal state and start time of every quarantined or banned project, and
+`sourceProjectId`, the project whose records hold the restriction. A reader
 treats those projects as paused and retired. `GET /api/v1/projects/:id`
 answers HTTP 410 for a restricted project.
 
@@ -71,6 +72,15 @@ serves these public artifacts from the current D1 revision:
 | `/projects/:id/[review-]{mission,codex,claude,claude-code,manual}.md` | Workflow and per-client install guides |
 | `/projects/:id/[review-]skill-manifest.json` | Template revision, registry binding, guide renderer and archive routing |
 | `/projects/:id/downloads/<skill>.skill` and `.skill.sha256` | Deterministic skill archive and checksum |
+
+Project updates use `POST /api/v1/project-applications` with `manifest`,
+`expectedRevision`, and a public `reason`. Migration
+`0039_project_update_applications.sql` stores the base revision and reason.
+An update needs proven repository control and cannot change repository identity.
+It stays pending until an admin approves it. Approval appends a paused revision
+and records the application decision in the same D1 transaction. A changed base
+revision returns `409`; the applicant must review the current project and submit
+again. Activation still requires clearance for the new revision.
 
 ## Caching
 
@@ -147,8 +157,12 @@ rate limit, and caches each answer for five minutes. The browser never calls
   listing tier, and activation are added only by admin revisions.
 - The API reads public GitHub facts once per submission
   (`SLOP_GITHUB_READ_TOKEN` is optional). The repository id, node id, name,
-  and owner must match the manifest, or the application is refused. Whether
-  the applicant owns the user repository, or is a public member of the owning
+  and owner must match the manifest, or the application is refused. Every
+  other repository and every alias must also be a public GitHub repository,
+  and an alias must be a name of the repository it is listed under. An
+  application names at most 5 repositories and aliases in all, so one
+  submission makes a bounded number of GitHub reads. Whether the applicant
+  owns each user repository, or is a public member of each owning
   organization, is stored as `githubCheck` for the admin. Every application
   waits for an admin (PRD PRJ-02). One account may keep 3 applications
   waiting.
@@ -174,6 +188,10 @@ rate limit, and caches each answer for five minutes. The browser never calls
 - A restriction binds the GitHub repository id and every repository path. A
   restricted project cannot get a revision that is not paused and retired, and
   no application for the same repository can be submitted or approved.
+  Another project already listed for the same repository closes on public
+  routes with it. Its restriction names the restricted project as
+  `sourceProjectId`, and an appeal is filed on that project. The other project
+  can only get a paused, retired revision that claims the same repositories.
 - The project steward named in the manifest, or the applicant whose
   application listed the project, may file the reinstatement request with
   `POST /api/v1/project-appeals` (`projectId`, `reason`,
@@ -182,7 +200,17 @@ rate limit, and caches each answer for five minutes. The browser never calls
   (`0027_project_enforcement_owner_appeals.sql`). A moderator may also file
   it at `/admin`. Only a moderator decides it.
 - Reinstatement needs an open reinstatement request and a moderator who did
-  not place the restriction. It is refused with `revision_pending` while the
+  not place the restriction. Both preview and confirmation require a clean
+  scan of the current restricted revision, requested after the latest restriction,
+  at the live integration-branch head and current skill template. Missing,
+  stale or incomplete clearance returns `vetting_required`. For a confirmed
+  malicious finding, the signed scanner result records a Ban through this same
+  enforcement path. The issuer is the service signing-key digest and standing
+  rule, never a fabricated GitHub account. A clean scan alone never removes that finding. The independent decision
+  stores its exact clean scan and reviewed malicious scan IDs in
+  `project_vetting_reinstatements`, atomically with the reinstatement. Later
+  findings are not covered by that decision and block clearance again.
+  It is refused with `revision_pending` while the
   paused, `retired` revision of the restriction is still pending. It appends a paused `community` revision only if
   the project was listed when the restriction began; it never restores
   featuring, activation or money. A denial keeps the restriction.

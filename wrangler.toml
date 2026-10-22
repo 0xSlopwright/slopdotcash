@@ -22,9 +22,10 @@ bucket_name = "slop-private-traces"
 binding = "SLOP_IDENTITY"
 service = "slop-identity"
 
-# The admin email Worker (workers/notify) is bound only after it is released.
-# Cloudflare refuses to publish Pages with a binding to a missing Worker. Until
-# then, project applications save and record adminNotification "failed".
+# Released by the protected production workflow before Pages publication.
+[[services]]
+binding = "SLOP_NOTIFY"
+service = "slop-notify"
 
 # Cloudflare's non-inheritable bindings must be declared separately for every
 # environment. Keeping preview explicit and binding-free prevents preview

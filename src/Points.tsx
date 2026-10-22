@@ -11,19 +11,21 @@ import {
   useState,
 } from "react";
 import { identityPublicOrigin } from "../workers/identity/contracts";
+import { EarningsPage } from "./Earnings";
+import { Link } from "./Link";
 import { browserDeployment } from "./lib/browser-deployment";
 import {
   fetchWithDeadline,
   readBoundedJson,
   readBoundedText,
 } from "./lib/browser-json";
+import { CONTACT_MAILTO } from "./lib/contact";
 import {
   contributorStandings,
   type StandingsSort,
 } from "./lib/contributor-standings";
 import type { CycleIndex } from "./lib/cycle-index";
 import { deploymentTier } from "./lib/deployment";
-import { githubUserIdFromNodeId } from "./lib/github-actor";
 import { GithubIcon } from "./lib/github-icon";
 import { requestIdentityAssertion } from "./lib/identity-flow";
 import type { ScoreEvent } from "./lib/leaderboard";
@@ -46,7 +48,6 @@ import {
   NotFound,
 } from "./Presentation";
 import { ProfileActivity, useProfiles } from "./Profiles";
-import { WalletRegistration } from "./WalletRegistration";
 
 const productOrigin = () =>
   browserDeployment.browserOrigins.has(window.location.origin);
@@ -820,10 +821,7 @@ export function LoginPage() {
   );
 }
 export function AccountPage() {
-  const { me } = useContext(Context);
-  const githubActorId = me ? githubUserIdFromNodeId(me.actor.id) : null;
-  const walletOwner =
-    me && githubActorId ? { githubActorId, githubLogin: me.actor.login } : null;
+  const { me, session } = useContext(Context);
   return (
     <main className="shell route-main points-page">
       <h1>Account</h1>
@@ -833,6 +831,8 @@ export function AccountPage() {
         <a href="#wallets">Wallets</a>
         <a href="/earnings">Payouts</a>
         <a href="/inbox">Inbox</a>
+        {me ? <a href="#sessions">Sessions</a> : null}
+        <a href="#recovery">Recovery and closure</a>
       </nav>
       <div id="profile">
         <JoinPoints />
@@ -840,13 +840,112 @@ export function AccountPage() {
       <div id="connections">
         <SocialConnections />
       </div>
-      <WalletRegistration owner={walletOwner} />
+      {session === "loading" ? (
+        <section id="wallets">
+          <h2>Wallets</h2>
+          <p role="status">Checking your account…</p>
+        </section>
+      ) : (
+        <EarningsPage walletsOnly key={me?.actor.id ?? "signed-out"} />
+      )}
+      {me ? <AccountSessions /> : null}
+      <section id="recovery">
+        <h2>Recovery and closure</h2>
+        <p>
+          Lost access to GitHub?{" "}
+          <a href={`${CONTACT_MAILTO}?subject=Account%20recovery`}>
+            Request private account recovery
+          </a>
+          .
+        </p>
+        <p>
+          <a href={`${CONTACT_MAILTO}?subject=Account%20closure`}>
+            Request account closure
+          </a>
+          . Support reviews unpaid awards before closure. Public GitHub
+          contributions and finalized payment records remain.
+        </p>
+      </section>
       <p>
         <a href="/points#rules">Points and earning rules</a>
       </p>
     </main>
   );
 }
+function AccountSessions() {
+  const [sessions, setSessions] = useState<
+    { id: string; expiresAt: string; current: boolean }[] | null
+  >(null);
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    requestJson(`/api/v1/points/sessions?refresh=${attempt}`).then(
+      (body) => {
+        if (active) {
+          setSessions(
+            (body as { sessions: NonNullable<typeof sessions> }).sessions,
+          );
+          setError("");
+        }
+      },
+      (caught) => {
+        if (active)
+          setError(
+            caught instanceof Error ? caught.message : "Sessions unavailable",
+          );
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [attempt]);
+  return (
+    <section id="sessions">
+      <h2>Sessions</h2>
+      {error ? (
+        <p role="alert">{error}</p>
+      ) : sessions === null ? (
+        <p role="status">Loading sessions…</p>
+      ) : (
+        <ul>
+          {sessions.map((session) => (
+            <li key={session.id}>
+              {session.current ? "This session" : "Other session"} · expires{" "}
+              {new Date(session.expiresAt).toLocaleString()}{" "}
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await requestJson("/api/v1/points/sessions/revoke", {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ id: session.id }),
+                    });
+                    if (session.current) window.location.assign("/login");
+                    else setAttempt((value) => value + 1);
+                  } catch (caught) {
+                    setError(
+                      caught instanceof Error
+                        ? caught.message
+                        : "Could not revoke session",
+                    );
+                  }
+                }}
+              >
+                Sign out{session.current ? " here" : " this session"}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button type="button" onClick={() => setAttempt((value) => value + 1)}>
+        Refresh sessions
+      </button>
+    </section>
+  );
+}
+
 /** Categories from protocol/points-v1.md: activity, points, earned standings. */
 const POINT_CATEGORIES: readonly (readonly [string, string, boolean])[] = [
   [
@@ -1021,6 +1120,12 @@ export function ContributorStandings({
       aria-label={title ?? "Contributor standings"}
     >
       <h2>{title ?? "Contributor standings"}</h2>
+      {compact ? (
+        <p className="points-meta">
+          This month (UTC) · verified payments.{" "}
+          <Link href="/points">Full standings</Link>
+        </p>
+      ) : null}
       {!scoreState ? (
         <DataNotice state={scores} retry={retryScore ?? retryLoadedScore} />
       ) : null}
@@ -1092,6 +1197,9 @@ export function ContributorStandings({
             (sort !== "score" || projection.scoreAvailable)
       ) ? (
         <>
+          <p className="standings-scroll-hint">
+            Scroll the table to see Points and Paid.
+          </p>
           <section
             className="points-table"
             aria-label="Contributor standings table"
@@ -1107,7 +1215,7 @@ export function ContributorStandings({
                     [
                       ["score", "Score"],
                       ["points", "Points"],
-                      ["money", "Amount"],
+                      ["money", "Paid"],
                     ] as const
                   ).map(([key, label]) => (
                     <th
@@ -1174,26 +1282,28 @@ export function ContributorStandings({
           {rows.length === 0 ? (
             <p>No recorded contributions match this view.</p>
           ) : null}
-          <div className="points-controls points-pagination">
-            <button
-              type="button"
-              disabled={currentPage === 0}
-              onClick={() => setPage(currentPage - 1)}
-            >
-              Previous
-            </button>
-            <span>
-              Page {currentPage + 1} of{" "}
-              {Math.max(1, Math.ceil(rows.length / pageSize))}
-            </span>
-            <button
-              type="button"
-              disabled={(currentPage + 1) * pageSize >= rows.length}
-              onClick={() => setPage(currentPage + 1)}
-            >
-              Next
-            </button>
-          </div>
+          {rows.length > pageSize ? (
+            <div className="points-controls points-pagination">
+              <button
+                type="button"
+                disabled={currentPage === 0}
+                onClick={() => setPage(currentPage - 1)}
+              >
+                Previous
+              </button>
+              <span>
+                Page {currentPage + 1} of{" "}
+                {Math.max(1, Math.ceil(rows.length / pageSize))}
+              </span>
+              <button
+                type="button"
+                disabled={(currentPage + 1) * pageSize >= rows.length}
+                onClick={() => setPage(currentPage + 1)}
+              >
+                Next
+              </button>
+            </div>
+          ) : null}
         </>
       ) : null}
     </section>

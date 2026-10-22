@@ -439,7 +439,6 @@ Run from the repository root:
 bun run leaderboard:generate
 bun run projects:check
 bun run evaluations:check
-bun run funding:check
 bun run cycles:check
 bun run typecheck
 bun run lint:check

@@ -253,9 +253,28 @@ export async function preflight(projectId, options = {}) {
   }
   exact(
     policy,
-    ["authority", "projectId", "schemaVersion", "status", "steward", "terms"],
+    [
+      "authority",
+      "projectId",
+      "schemaVersion",
+      "status",
+      "steward",
+      "terms",
+      // Public bounty program terms; null when the project runs none.
+      ...(policy && Object.hasOwn(policy, "securityBounty")
+        ? ["securityBounty"]
+        : []),
+    ],
     "project policy",
   );
+  if (
+    policy.securityBounty !== undefined &&
+    policy.securityBounty !== null &&
+    (typeof policy.securityBounty !== "object" ||
+      Array.isArray(policy.securityBounty))
+  ) {
+    fail("project security bounty is invalid");
+  }
   if (policy.schemaVersion !== "1" || policy.projectId !== projectId) {
     fail("project policy identity is invalid");
   }

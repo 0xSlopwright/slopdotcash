@@ -195,7 +195,7 @@ test("modal routes Base and Robinhood Chain to MetaMask and Solana to Backpack d
 }, info) => {
   const writes = await payments(page);
   await providers(page);
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   expect(
     await page.evaluate(
       () => (window as unknown as { walletCalls: string[] }).walletCalls,
@@ -273,7 +273,7 @@ test("Escape and close cancel without wallet requests and return focus", async (
 }) => {
   const writes = await payments(page);
   await providers(page);
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   await openPicker(page, "Base");
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).not.toBeVisible();
@@ -296,7 +296,7 @@ test("wallet rejection stops registration and permits reopening the modal", asyn
 }) => {
   const writes = await payments(page);
   await providers(page, true);
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   const dialog = await openPicker(page, "Base");
   await dialog
     .getByRole("button", { name: "MetaMask Detected", exact: true })
@@ -311,7 +311,7 @@ test("repeated announcements do not duplicate options and removed Solana wallet 
 }) => {
   await payments(page);
   await providers(page);
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   const dialog = await openPicker(page, "Solana");
   await expect(
     dialog.getByRole("button", { name: "Backpack Detected", exact: true }),
@@ -341,7 +341,7 @@ test("no wallets offers official install links in either network modal", async (
   page,
 }) => {
   const writes = await payments(page);
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   for (const chain of ["Base", "Solana"] as const) {
     const dialog = await openPicker(page, chain);
     await expect(
@@ -374,7 +374,7 @@ test("legacy wallet browser remains connectable through the modal", async ({
     },
     { evmAddress },
   );
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   const dialog = await openPicker(page, "Base");
   await dialog
     .getByRole("button", { name: "MetaMask Detected", exact: true })
@@ -389,7 +389,7 @@ test("conflicting EIP-6963 UUID removes both providers without wallet requests",
 }) => {
   const writes = await payments(page);
   await providers(page);
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   const dialog = await openPicker(page, "Base");
   await expect(
     dialog.getByRole("button", { name: "MetaMask Detected", exact: true }),
@@ -509,7 +509,7 @@ test("mixed standard and legacy discovery keeps every distinct wallet", async ({
     },
     { evmAddress, solanaAddress },
   );
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   const base = await openPicker(page, "Base");
   await expect(base.getByRole("button", { name: /Detected$/u })).toHaveText([
     "MetaMaskDetected",
@@ -566,7 +566,7 @@ for (const scenario of [
     await providers(page);
     await page.setViewportSize({ width: scenario.width, height: 800 });
     for (const chain of ["Base", "Solana"] as const) {
-      await page.goto("/earnings");
+      await page.goto("/account#wallets");
       const dialog = await openPicker(page, chain);
       await expect(
         dialog.getByRole("button", { name: /Detected$/u }),
@@ -649,7 +649,7 @@ test("changing a confirmed Base wallet opens the account picker and asks before 
 }, info) => {
   const writes = await payments(page, [savedBase(true)]);
   await providers(page, false, { connected: savedAddress });
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   await chooseMetaMask(page, "Change");
   const confirmation = page.getByRole("region", {
     name: "Register a different Base address?",
@@ -700,7 +700,7 @@ test("keeping the saved address registers nothing and returns focus to the walle
 }) => {
   const writes = await payments(page, [savedBase(true)]);
   await providers(page, false, { connected: savedAddress });
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   await chooseMetaMask(page, "Change");
   await page
     .getByRole("button", { name: "Keep saved address", exact: true })
@@ -725,7 +725,7 @@ test("connecting with an unconfirmed saved address asks before registering a dif
 }) => {
   const writes = await payments(page, [savedBase(false)]);
   await providers(page);
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   await chooseMetaMask(page, "Connect");
   await expect(
     page.getByRole("region", { name: "Register a different Base address?" }),
@@ -740,7 +740,7 @@ test("connecting the saved address confirms it without an extra step", async ({
 }) => {
   const writes = await payments(page, [savedBase(false)]);
   await providers(page, false, { connected: savedAddress });
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   await chooseMetaMask(page, "Connect");
   await expect(
     page.getByRole("status").filter({ hasText: "Base wallet confirmed" }),
@@ -759,7 +759,7 @@ test("a wallet without an account picker falls back to its connected account", a
     connected: savedAddress,
     permissions: "unsupported",
   });
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   await chooseMetaMask(page, "Change");
   await expect(
     page.getByRole("status").filter({ hasText: "Base wallet confirmed" }),
@@ -778,7 +778,7 @@ test("rejecting the account picker stops the change", async ({ page }) => {
     connected: savedAddress,
     permissions: "rejected",
   });
-  await page.goto("/earnings");
+  await page.goto("/account#wallets");
   await chooseMetaMask(page, "Change");
   await expect(page.getByRole("alert")).toBeVisible();
   expect(await walletCalls(page)).toEqual([
@@ -801,7 +801,7 @@ for (const scenario of [
     await payments(page, [savedBase(true)]);
     await providers(page, false, { connected: savedAddress });
     await page.setViewportSize({ width: scenario.width, height: 800 });
-    await page.goto("/earnings");
+    await page.goto("/account#wallets");
     await chooseMetaMask(page, "Change");
     const confirmation = page.getByRole("region", {
       name: "Register a different Base address?",

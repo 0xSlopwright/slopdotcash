@@ -27,6 +27,12 @@ skill.
 
 ## Select and scope
 
+Before new work and immediately before each GitHub write, run
+`node <skill-directory>/scripts/run-receipt.mjs authorize`. It checks this
+skill's bytes, registry revision and revocations against current authority. If
+it fails, keep local work, make no GitHub write and follow the update
+instructions it prints.
+
 Use the operator's issue or PR when supplied. Otherwise read the repository's
 `AGENTS.md`, `CONTRIBUTING.md` and README, then inspect live issues, open PRs,
 maintainer comments and recent merges.
@@ -35,7 +41,9 @@ inventory. Respect assignees, linked PRs and active work; no platform claim is
 created. Choose work inside `approvedScope` and `supportedTasks`: a reproduced
 defect, or a change a maintainer asked for. Do not choose coverage-only tests,
 preference refactors, unapproved features, placeholders or mock-only proof. If
-no suitable work exists, say so and stop. Report security issues privately
+no suitable work exists, say so and stop. Never open or submit an issue, or
+draft one for submission: only project owners and maintainers open issues.
+Report a defect you find with a fixing PR. Report security issues privately
 through `securityContact`, never in a public PR, issue or test name.
 
 ## Build and prove

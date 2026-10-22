@@ -69,6 +69,22 @@ const test = base.extend<{ browserDiagnostics: undefined }>({
   ],
 });
 
+// Preview serves frozen data; registry.spec.ts exercises these routes on D1.
+test.beforeEach(async ({ page }) => {
+  await page.route("**/.well-known/slop/projects.json", (route) =>
+    route.fulfill({ json: { schemaVersion: "1", projects: [] } }),
+  );
+  await page.route("**/api/v1/project-session", (route) =>
+    route.fulfill({ json: { session: null } }),
+  );
+  await page.route("**/api/v1/projects/*", (route) => {
+    const id = new URL(route.request().url()).pathname.split("/").at(-1);
+    const project = PROJECTS.find((entry) => entry.id === id);
+    if (!project) throw new Error(`Unexpected fixture project ${id}`);
+    return route.fulfill({ json: { revision: 1, project } });
+  });
+});
+
 async function loadSnapshot(
   request: APIRequestContext,
 ): Promise<LeaderboardSnapshot> {
@@ -358,7 +374,7 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   ).toBe(true);
 });
 
-test("starts Eliza with one prompt and no separate payout form", async ({
+test("blocks uncleared agent setup and keeps contribution records available", async ({
   context,
   page,
   request,
@@ -370,16 +386,15 @@ test("starts Eliza with one prompt and no separate payout form", async ({
   await expect(homeLink).toHaveAttribute("href", "/");
   // An unfunded pool shows no funding card.
   await expect(page.locator(".reward-card")).toHaveCount(0);
-  const prompt = page.getByRole("status", { name: "Agent prompt" });
-  await expect(prompt).toContainText(/\/SKILL\.md/u);
-  await expect(prompt).toContainText(
-    /contribute to github\.com\/elizaOS\/eliza/u,
-  );
-  await page.getByRole("button", { name: "Copy agent prompt" }).click();
-  await expect(page.getByRole("button", { name: /Copied/u })).toBeVisible();
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(
-    "/SKILL.md",
-  );
+  await expect(
+    page.getByRole("heading", { name: "Agent setup awaiting security review" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Copy agent prompt" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "Project owner: review setup" }),
+  ).toHaveAttribute("href", "/projects/eliza/manage");
   await expect(page.getByLabel("Manual install command")).toHaveCount(0);
   await expect(page.getByLabel("Solana public address")).toHaveCount(0);
   await expect(page.getByText("Cycle allocation details")).toHaveCount(0);
@@ -662,11 +677,12 @@ test("makes the public project draft boundary unmistakable", async ({
 }) => {
   await page.goto("/projects/eliza/manage", { waitUntil: "networkidle" });
   await expect(
-    page.getByRole("link", { name: "Manage payouts" }),
-  ).toHaveAttribute("href", "/projects/eliza/funding#payouts");
+    page.getByRole("link", { name: "Funding setup" }),
+  ).toHaveAttribute("href", "/projects/eliza/funding");
   await expect(page.getByLabel("Draft total, USDC")).toHaveCount(0);
-  await page.getByRole("button", { name: /Open admin review/u }).click();
-  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Sign in to submit changes" }),
+  ).toHaveAttribute("href", /\/login\?next=%2Fprojects%2Feliza%2Fmanage$/u);
   await page.getByLabel("Short description").fill("Eliza-only draft");
   await page
     .getByLabel("Reason for the change")
@@ -677,8 +693,8 @@ test("makes the public project draft boundary unmistakable", async ({
     PROJECTS.find((project) => project.id === "eliza")?.headline ?? "",
   );
   await expect(
-    page.getByRole("link", { name: /Open admin review/u }),
-  ).toHaveAttribute("href", "/admin");
+    page.getByRole("button", { name: "Submit changes for review" }),
+  ).toHaveCount(0);
   await page.evaluate(() => {
     window.history.pushState({}, "", "/projects/asi/manage");
     window.dispatchEvent(new PopStateEvent("popstate"));
