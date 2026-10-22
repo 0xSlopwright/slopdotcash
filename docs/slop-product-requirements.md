@@ -90,7 +90,7 @@ FND-01–06; PAY-01–10; TOK-01–07
 
 Use one project vault, network, reward asset, and deposit balance. Anyone may deposit; only the owner withdraws free funds to the recorded refund destination. Explain this before signature. Depositors gain no separate refund right. Reserved awards and fees cannot be withdrawn. Retired funding modes remain historical.
 
-Support the approved stablecoin, ERC-20, or classic SPL token. Exclude transfer-fee, rebasing, and Token-2022 tokens. Verify identity, decimals, behavior, and finality. Freeze asset/network while obligations exist. Use integer base units; never add unlike assets or present tokens as dollars.
+Support the approved stablecoin, ERC-20, or classic SPL token. Exclude transfer-fee, rebasing, and Token-2022 tokens. Verify identity, decimals, behavior, and finality. Freeze asset/network while funds or obligations exist. Use integer base units; never add unlike assets or present tokens as dollars.
 
 Awards: projected, under review, approved, excluded. Payments: underfunded, awaiting wallet, ready, held, submitted, paid. A failed attempt preserves the award and reserve; one recipient's failure cannot block others.
 
