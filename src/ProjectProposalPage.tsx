@@ -17,16 +17,18 @@ import {
   useProjectSession,
 } from "./lib/project-api";
 import {
+  type OwnedRepository,
+  validRepositoryPath,
+} from "./lib/project-contracts";
+import {
   boundedText,
   immutableProposalTermsUrl,
   listOwnedRepositories,
   lookupGitHubRepository,
   monthlyPoolValue,
   normalizeRepositoryInput,
-  type OwnedRepository,
   safeProposalHttpsUrl,
   slugify,
-  validRepositoryPath,
 } from "./lib/project-proposal";
 import { PROJECT_SKILL_TEMPLATES } from "./lib/project-schema.mjs";
 import type { ProjectDefinition } from "./lib/projects.mjs";

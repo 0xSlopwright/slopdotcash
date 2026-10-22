@@ -9,7 +9,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { D1Database } from "../../backend/trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import type { PaymentDeployment } from "./index";
 import { reconcileFailedAttempts } from "./reconcile";
 

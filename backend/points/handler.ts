@@ -6,7 +6,7 @@ import {
 import { POINTS_RULE } from "../../src/lib/points";
 import { randomToken, sha256Hex } from "../../workers/identity/crypto";
 import { consumeExactRateLimit } from "../../workers/identity/rate-limit";
-import type { D1Database } from "../trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import { handleX, type XConfiguration } from "./x";
 
 export interface PointsDependencies {

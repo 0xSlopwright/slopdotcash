@@ -1,3 +1,4 @@
+import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import {
   dispatchPayment,
   type PaymentExecutor,
@@ -11,7 +12,6 @@ import {
   refreshVaultSnapshots,
   type VaultTotals,
 } from "../../backend/payments/vault-snapshots";
-import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import {
   readVaultTotals as readEvmVaultTotals,
   verifyEvmDeployment,

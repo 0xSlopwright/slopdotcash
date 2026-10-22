@@ -15,7 +15,7 @@ import {
 } from "../../src/lib/payments/contracts";
 import { isWalletAddress, isWalletChain } from "../../src/lib/wallets";
 import { sha256Hex } from "../../workers/identity/crypto";
-import type { D1Database } from "../trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import {
   buildPaymentWalletMessage,
   canonicalEvmSignature,

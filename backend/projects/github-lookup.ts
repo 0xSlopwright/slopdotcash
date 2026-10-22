@@ -1,3 +1,8 @@
+import {
+  type OwnedRepository,
+  type RepositoryLookup,
+  validRepositoryPath,
+} from "../../src/lib/project-contracts";
 /**
  * Server-side GitHub reads for the project setup form. The browser calls the
  * same-origin API with its site session; this module reads public GitHub
@@ -7,29 +12,6 @@
 
 import { readBoundedJson } from "../../src/lib/browser-json";
 import { sha256Hex } from "../../src/lib/sha256";
-
-export interface OwnedRepository {
-  repository: string;
-  /** The repository's own GitHub description, or null when it has none. */
-  description: string | null;
-}
-
-export interface RepositoryLookup {
-  repository: string;
-  description: string | null;
-  numericId: string;
-  nodeId: string;
-  defaultBranch: string;
-  owner: {
-    login: string;
-    actorId: string;
-    nodeId: string;
-    kind: "individual" | "organization";
-  };
-  license:
-    | { state: "verified"; spdx: string; commitSha: string; fileSha256: string }
-    | { state: "unknown"; reason: string };
-}
 
 export type GithubFetch = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -45,13 +27,8 @@ export class GithubLookupError extends Error {
 
 export const GITHUB_API = "https://api.github.com";
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
-const REPOSITORY_PATH = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const MAX_OWNED_REPOSITORY_PAGES = 20;
 const REQUEST_TIMEOUT_MS = 10_000;
-
-export function validRepositoryPath(value: string): boolean {
-  return value.length <= 201 && REPOSITORY_PATH.test(value);
-}
 
 export function validGithubLogin(value: string): boolean {
   return LOGIN.test(value);

@@ -1,8 +1,8 @@
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 import {
   notifyPayoutException,
   notifyPayoutHeld,
 } from "../notifications/events";
-import type { D1Database } from "../trace/cloudflare-persistence";
 
 export interface DispatchPayment {
   obligationId: string;

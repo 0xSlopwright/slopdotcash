@@ -1,3 +1,4 @@
+import type { D1TransactionalDatabase as D1Database } from "../../../backend/d1";
 import {
   type FeeConversionsDependencies,
   handleFeeConversionsApi,
@@ -35,7 +36,6 @@ import { handleSecurityApi } from "../../../backend/security/handler";
 import { handleSlopbotApi } from "../../../backend/slopbot/summary";
 import {
   CloudflareTracePersistence,
-  type D1Database,
   type R2Bucket,
 } from "../../../backend/trace/cloudflare-persistence";
 import { handleTraceApi } from "../../../backend/trace/handler";

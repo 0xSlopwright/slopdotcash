@@ -17,8 +17,6 @@ import type {
 } from "./contracts";
 import { sha256Hex } from "./validation";
 
-export type { D1TransactionalDatabase as D1Database } from "../d1";
-
 type R2Head = {
   size: number;
   customMetadata?: Record<string, string>;

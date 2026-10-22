@@ -1,4 +1,4 @@
-import type { D1Database } from "../../backend/trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import { EVM_ESCROW_EVENT_TOPICS } from "../../contracts/evm/adapter";
 import { escrowInvocations } from "../../contracts/solana/adapter";
 export interface ScanDeployment {

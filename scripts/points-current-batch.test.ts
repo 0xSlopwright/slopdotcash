@@ -2,8 +2,8 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
+import type { D1TransactionalDatabase as D1Database } from "../backend/d1";
 import { handlePointsApi } from "../backend/points/handler";
-import type { D1Database } from "../backend/trace/cloudflare-persistence";
 import type { PointsJournal } from "../src/lib/points";
 import { pointsSql } from "./generate-points";
 

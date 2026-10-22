@@ -174,3 +174,32 @@ export type ProjectApplicationNotice = {
   submittedAt: string;
   reviewUrl: string;
 };
+
+export interface OwnedRepository {
+  repository: string;
+  /** The repository's own GitHub description, or null when it has none. */
+  description: string | null;
+}
+
+export interface RepositoryLookup {
+  repository: string;
+  description: string | null;
+  numericId: string;
+  nodeId: string;
+  defaultBranch: string;
+  owner: {
+    login: string;
+    actorId: string;
+    nodeId: string;
+    kind: "individual" | "organization";
+  };
+  license:
+    | { state: "verified"; spdx: string; commitSha: string; fileSha256: string }
+    | { state: "unknown"; reason: string };
+}
+
+const REPOSITORY_PATH = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+
+export function validRepositoryPath(value: string): boolean {
+  return value.length <= 201 && REPOSITORY_PATH.test(value);
+}

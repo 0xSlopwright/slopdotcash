@@ -8,6 +8,7 @@ import type {
   ProjectEnforcementState,
   PublicProjectApplication,
 } from "../../src/lib/project-contracts";
+import { validRepositoryPath } from "../../src/lib/project-contracts";
 import { assertProjectPolicyTransition } from "../../src/lib/project-policy.mjs";
 import {
   assertProjectDefinition,
@@ -65,7 +66,6 @@ import {
   listOwnedRepositories,
   lookupGitHubRepository,
   validGithubLogin,
-  validRepositoryPath,
 } from "./github-lookup";
 import { TokenMetadataError, type TokenMetadataReader } from "./token-metadata";
 

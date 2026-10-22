@@ -15,13 +15,13 @@ import {
   renameSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import {
   dispatchPayment,
   type PaymentExecutor,
 } from "../../backend/payments/dispatch";
 import { handlePaymentsApi } from "../../backend/payments/handler";
 import { projectVaultSnapshots } from "../../backend/payments/vault-snapshots";
-import type { D1Database } from "../../backend/trace/cloudflare-persistence";
 import type { VaultTotals } from "../../contracts/vault-totals";
 import {
   ESCROW_NETWORKS,

@@ -6,7 +6,7 @@ import {
   type PaymentChain,
   type VaultSnapshot,
 } from "../../src/lib/payments/contracts";
-import type { D1Database } from "../trace/cloudflare-persistence";
+import type { D1TransactionalDatabase as D1Database } from "../d1";
 
 /** One finalized vault read, as both chain adapters' `readVaultTotals` return it. */
 export type { VaultTotals };
