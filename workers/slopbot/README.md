@@ -825,3 +825,22 @@ The real SQLite replay covers overlapping admission, retry refusal, exact
 remaining allowance, missing and partial receipts, provider reconciliation,
 uncertain estimates, month rollover, absent approval and immutable history.
 No production allowance, provider request, contributor debit or payout changes.
+
+The single and grouped assessment entry points now require a trusted
+`ValueInferenceBudget` and use the same reserved inference route. They check
+authority before reservation and again before each provider attempt. They
+persist all returned call receipts to the existing cost ledger under the
+unique attempt ID before returning a verdict, with contributor billing disabled.
+Receipt persistence failure prevents a result from reaching publication.
+Reservation retries return blocked and make no new provider request. The
+caller still must establish a conservative maximum covering its complete route;
+this is not a provider-side dollar cap or permission to invent an allowance.
+
+A real local HTTP/SDK and SQLite replay exercised both entry points with valid
+schema responses, invalid responses, fallback revocation, authority failures,
+insufficient budget and reservation replay. Valid single and joint results
+return after one stored receipt; invalid output uses the allowed fallback and
+stores both receipts. Every case records zero contributor charges. Responses
+are controlled local fixtures, not live model acceptance. Durable request
+consumption, approved production configuration and live publication remain
+unfinished.

@@ -5,7 +5,11 @@ import {
   type ValueAssessment,
   validateValueAssessment,
 } from "../../src/lib/value-assessment";
-import { type ModelEnv, runStructuredRoute, TRIAGE_ROUTE } from "./models";
+import type { ModelEnv } from "./models";
+import {
+  runValueInference,
+  type ValueInferenceBudget,
+} from "./value-inference";
 import type { SubscriptionResult } from "./value-producer";
 import {
   validateWorkUnitPartition,
@@ -150,14 +154,14 @@ export async function assessWorkUnits(
   env: ModelEnv,
   evidence: WorkUnitEvidence,
   mayCall: () => Promise<boolean>,
+  budget: ValueInferenceBudget,
 ) {
   if (evidence.limitations.length > 0)
     throw new Error(
       "Complete joint source evidence is required before valuation",
     );
-  const result = await runStructuredRoute(
+  const result = await runValueInference(
     env,
-    TRIAGE_ROUTE,
     {
       system: `${VALUE_SYSTEM_PROMPT}
 
@@ -166,13 +170,13 @@ Joint assessment: return units under the supplied joint schema. Partition EVERY 
         "Use each source's exact pinned project policy. Conflicting or incomplete authority is unresolved.",
       item: JSON.stringify(evidence),
     },
-    "high",
     {
       name: "slop_joint_value_assessment",
       schema: WORK_UNIT_SCHEMA,
       validate: (value) => validateWorkUnitAssessment(value, evidence),
     },
     mayCall,
+    budget,
   );
   return {
     ...result,

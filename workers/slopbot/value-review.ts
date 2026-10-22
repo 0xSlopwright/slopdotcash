@@ -5,7 +5,11 @@ import {
   validateValueAssessment,
 } from "../../src/lib/value-assessment";
 import { sha256Hex } from "./github";
-import { type ModelEnv, runStructuredRoute, TRIAGE_ROUTE } from "./models";
+import type { ModelEnv } from "./models";
+import {
+  runValueInference,
+  type ValueInferenceBudget,
+} from "./value-inference";
 import type { ValueEvidence } from "./value-evidence";
 import type { SubscriptionResult } from "./value-producer";
 
@@ -17,27 +21,27 @@ export async function assessValue(
   evidence: ValueEvidence,
   policy: { sha: string; text: string },
   mayCall: () => Promise<boolean>,
+  budget: ValueInferenceBudget,
 ) {
   if (evidence.limitations.length > 0)
     throw new Error("Complete source evidence is required before valuation");
   if (!/^[a-f0-9]{40}$/u.test(policy.sha) || !policy.text.trim())
     throw new Error("Pinned project policy is required");
   const sourceDigest = await valueSourceDigest(evidence, policy);
-  const result = await runStructuredRoute(
+  const result = await runValueInference(
     env,
-    TRIAGE_ROUTE,
     {
       system: VALUE_SYSTEM_PROMPT,
       policy: `Project policy at ${policy.sha}:\n${policy.text}`,
       item: JSON.stringify(evidence),
     },
-    "high",
     {
       name: "slop_value_assessment",
       schema: VALUE_ASSESSMENT_SCHEMA,
       validate: (value) => validateEvidenceAssessment(value, evidence),
     },
     mayCall,
+    budget,
   );
   return {
     rubricVersion: VALUE_RUBRIC_VERSION,
