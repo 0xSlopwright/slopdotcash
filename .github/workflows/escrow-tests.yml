@@ -17,6 +17,13 @@ on:
       - 'src/EscrowFunding.tsx'
       - 'src/ProjectProposalPage.tsx'
       - 'src/WalletRegistration.tsx'
+      - 'src/VaultActions.tsx'
+      - 'src/OwnerAwards.tsx'
+      - 'src/OwnerCommitment.tsx'
+      - 'src/lib/*vault-actions.ts'
+      - 'src/lib/*commitment-actions.ts'
+      - 'src/lib/use-payout-wallets.ts'
+      - 'tests/e2e/*vault-actions.spec.ts'
       - 'src/lib/wallets.ts'
       - 'src/lib/wallet-registration.ts'
       - 'src/lib/funding-address.*'
@@ -26,6 +33,10 @@ on:
       - 'scripts/prepare-payment-deployments.ts'
       - 'scripts/check-payout-readiness.ts'
       - 'scripts/test-payout-browser.mjs'
+      - 'scripts/child-environment.mjs'
+      - 'scripts/prepare-e2e-fixture.mjs'
+      - 'scripts/run-e2e*.mjs'
+      - 'playwright.config.ts'
       - 'migrations/**'
       - 'package.json'
       - 'bun.lock'
@@ -67,6 +78,12 @@ jobs:
       - run: bunx playwright install --with-deps chromium
       - run: bunx vite build
       - run: node scripts/test-payout-browser.mjs
+      - name: Exercise wallet funding and recovery in Chromium
+        env:
+          SLOP_E2E_VAULT_ACTIONS: '1'
+          SLOP_E2E_VIDEO: '1'
+          SLOP_E2E_LANE: preview
+        run: bun run test:e2e tests/e2e/vault-actions.spec.ts --workers=1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -76,6 +93,11 @@ jobs:
             evidence/payout-browser*.json
             evidence/payout-browser*.log
             evidence/payout-videos/*.webm
+            playwright-report
+            test-results/**/*.png
+            test-results/**/*.webm
+            test-results/**/*.zip
+            test-results/**/*.md
           retention-days: 30
 
   solana:
@@ -95,6 +117,24 @@ jobs:
       - run: bun install --frozen-lockfile --ignore-scripts
       - run: bash contracts/solana/scripts/bootstrap-linux.sh
       - run: bun run test:contracts:solana
+      - run: bunx playwright install --with-deps chromium
+      - name: Exercise wallet funding and recovery against the validator
+        env:
+          SLOP_E2E_SOLANA_VAULT: '1'
+          SLOP_E2E_VIDEO: '1'
+          SLOP_E2E_LANE: preview
+        run: bun run test:e2e tests/e2e/solana-vault-actions.spec.ts --workers=1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: solana-wallet-browser-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            playwright-report
+            test-results/**/*.png
+            test-results/**/*.webm
+            test-results/**/*.zip
+            test-results/**/*.md
+          retention-days: 30
 
 # These jobs use isolated local chains and public fixture keys. They receive no
 # environment secrets, create no public deployment, and do not use a paid RPC.

@@ -71,6 +71,14 @@ export async function prepareE2eFixture() {
     join(repositoryRoot, "node_modules"),
     join(workspace, "node_modules"),
   );
+  if (process.env.SLOP_E2E_SOLANA_VAULT === "1") {
+    for (const directory of ["node_modules", "target"]) {
+      symlinkSync(
+        join(repositoryRoot, "contracts", "solana", directory),
+        join(workspace, "contracts", "solana", directory),
+      );
+    }
+  }
   run("git", ["init", "-q"], workspace);
   run("git", ["add", "-A"], workspace);
   run(

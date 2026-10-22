@@ -1,8 +1,10 @@
 /** Real local validator and public fixture wallets. No live RPC or funds. */
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
@@ -21,7 +23,12 @@ const anchor = enabled ? requireSolana("@coral-xyz/anchor") : null;
 const web3 = enabled ? requireSolana("@solana/web3.js") : null;
 const spl = enabled ? requireSolana("@solana/spl-token") : null;
 const root = fileURLToPath(new URL("../..", import.meta.url));
-const rpcUrl = "http://127.0.0.1:18989";
+const rpcPort = Number(process.env.SLOP_E2E_SOLANA_RPC_PORT ?? "18989");
+if (!Number.isInteger(rpcPort) || rpcPort < 1024 || rpcPort > 65480)
+  throw new Error(
+    "SLOP_E2E_SOLANA_RPC_PORT must leave room for validator ports",
+  );
+const rpcUrl = `http://127.0.0.1:${rpcPort}`;
 const hash = (text: string) => createHash("sha256").update(text).digest();
 const owner = enabled
   ? web3.Keypair.fromSeed(hash("slop-browser-local-owner"))
@@ -37,6 +44,7 @@ const fee = enabled
   : null;
 const connection = enabled ? new web3.Connection(rpcUrl, "confirmed") : null;
 let validator: ChildProcess;
+let ledger = "";
 let deployment: EscrowDeployment;
 let config: SolanaEscrowConfig;
 let project: (typeof PROJECTS)[number];
@@ -47,25 +55,26 @@ test.skip(
 );
 test.describe.configure({ mode: "serial", timeout: 180_000 });
 test.use({ actionTimeout: 15_000 });
-test.beforeAll(async ({ browserName }, info) => {
+test.beforeAll(async () => {
   const idl = JSON.parse(
     readFileSync(`${root}/contracts/solana/idl/slop_escrow.json`, "utf8"),
   );
   const programId = new web3.PublicKey(idl.address);
   const binary = `${root}/contracts/solana/target/deploy/slop_escrow.so`;
+  ledger = mkdtempSync(join(tmpdir(), "slop-browser-validator-"));
   validator = spawn(
     "solana-test-validator",
     [
       "--reset",
       "--quiet",
       "--ledger",
-      info.outputPath(`validator-ledger-${browserName}`),
+      ledger,
       "--rpc-port",
-      "18989",
+      String(rpcPort),
       "--faucet-port",
-      "19040",
+      String(rpcPort + 51),
       "--dynamic-port-range",
-      "19001-19030",
+      `${rpcPort + 12}-${rpcPort + 41}`,
       "--upgradeable-program",
       idl.address,
       binary,
@@ -75,7 +84,15 @@ test.beforeAll(async ({ browserName }, info) => {
   );
   for (let i = 0; i < 60; i++) {
     try {
-      await connection.getVersion();
+      if (validator.exitCode !== null || validator.signalCode !== null)
+        throw new Error("Local validator exited during startup");
+      const identityPath = join(ledger, "validator-keypair.json");
+      if (!existsSync(identityPath)) throw new Error("Validator is starting");
+      const expectedIdentity = web3.Keypair.fromSecretKey(
+        Uint8Array.from(JSON.parse(readFileSync(identityPath, "utf8"))),
+      ).publicKey.toBase58();
+      if ((await connection.getIdentity()).identity !== expectedIdentity)
+        throw new Error("The RPC endpoint belongs to another validator");
       break;
     } catch {
       if (validator.exitCode !== null || i === 59)
@@ -238,6 +255,7 @@ test.afterAll(async () => {
     validator.kill("SIGTERM");
     await stopped;
   }
+  if (ledger) rmSync(ledger, { recursive: true, force: true });
 });
 
 test("Solana wallet deposits, recovers after reload, and owner withdraws with verified fee", async ({
