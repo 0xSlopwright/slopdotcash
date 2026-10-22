@@ -200,6 +200,8 @@ A fully automatic listing transition would require a separately approved, narrow
 
 **PRJ-04 — Project updates.** A maintainer edits the dashboard draft and sees a field-level diff, affected skills, effective date, and affected cycles. An admin approves the reviewed change at `/admin` as the next append-only registry revision; a stale revision fails instead of overwriting. Publish only the saved revision, and regenerate the project skills from it (SKL-03). Retry failed synchronization without creating duplicate projects. Preserve old skill and policy versions for open work.
 
+**PRJ-05 — Referral attribution (proposed 20 October 2026 by the operator; approved by the owner's merge).** An applicant may arrive by a referral link, `/projects/new?ref=<github-login>`. The form shows the named referrer and lets the applicant clear it. At submission the API resolves the login to an account that has signed in to slop.cash and records its immutable GitHub actor ID and login on the application; approval copies them to the project row, and neither row can change them afterwards. The applicant, the manifest steward and Slop team accounts (admins and moderators) are refused as referrers, with the reason, and the submission fails instead of dropping the referral silently. One referrer per project, for the life of the project. The record is attribution only: nothing in the registry, scoring, rewards, settlement or points reads it, and it carries no entitlement. Any program that pays for referrals is a separate decision with its own PRD rows, counsel review and funding line before it exists.
+
 Economic changes take effect at a future UTC month boundary. Do not lower an already funded award, retroactively exclude accepted work, or change the fee on existing obligations. Security pauses may stop new intake immediately, with a visible reason and a process for existing submissions. Repository transfers require renewed authority verification and immutable-ID continuity. Removing the App stops new bot work; it does not erase earned awards or receipts.
 
 ### Maintainer operating journey
@@ -1044,3 +1046,45 @@ must pass grounding and identify the same defect. Missing trusted verification
 means label-only handling. Production activation remains separate and cannot
 precede the v2 effective time or completed shadow qualification. A broad judgment
 of weak or good-faith work remains insufficient for closure.
+
+
+## 22 October 2026 MVP close-out direction
+
+The repository owner requested completion of the open issue queue and delegated
+implementation judgment on 22 October 2026. This work stays inside the approved
+MVP. The owner assigned private bounty work (#910, SEC-01–18 and MVP-13) to a
+separate workstream. Do not duplicate that work or change its payment rail or
+confidentiality terms in this close-out. It remains a dependency of MVP completion.
+
+Use the existing repository administrators for the initial moderation pilot:
+`lalalune` (GitHub actor `18633264`) and `drew-dot-com` (actor `202660855`). Both
+administrator roles and immutable IDs were checked through GitHub on 22 October.
+Configure these identities explicitly in isolated staging; administrator status
+alone does not grant moderation. A different moderator must review reinstatement.
+Production configuration follows successful staging evidence and a reviewed
+release. This selection grants no payment, score adjustment or signing authority.
+
+The same two identities are the selected initial vetting evidence operators.
+Access still requires the separate evidence policy, a current external-controls
+attestation, a reasoned read grant and an audit record. This selection does not
+attest that retention, backup, recovery or legal-hold controls exist. Do not copy
+these identities into the unrelated contributor-trace or payment operator lists.
+
+Community vetting must preserve VET-01–08. Complete the missing runtime and
+collector work before a clean result can open executable onboarding. Retaining
+captured bytes, running a harmless fixture, or merging scanner transports is not
+complete runtime coverage. Unsupported execution remains incomplete. An operator
+must qualify the isolated Linux/KVM host and exact runtime profile before live
+repository execution. No change to the security admission threshold is approved.
+
+For #797, preserve the accepted census while the competing attribution remains
+unresolved. Reuse the reviewed evaluations path for any later evidence-backed
+award. Do not introduce a second score-bearing recovery manifest or infer an
+award from an unavailable pull request. This direction grants no new credit and
+rejects no contributor claim; record the final attribution decision separately.
+
+The independent audit and counsel gate (#903) remains before the mainnet tasks
+#898–901 and #904. Humans retain keys and sign mainnet operations. The testnet
+acceptance scenario uses the approved 2% withdrawal fee, as well as the 2% payout
+fee. An older issue's 5% instruction does not override that decision. Neither a
+source merge nor this close-out direction is an MVP completion record.

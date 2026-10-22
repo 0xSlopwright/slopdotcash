@@ -13,6 +13,8 @@ export type ProjectRecord = {
   createdAt: string;
   updatedAt: string;
   sourceApplicationId: string | null;
+  /** Immutable referral attribution (PRJ-05). */
+  referrer: GithubActor | null;
 };
 
 export type ProjectRevision = {
@@ -46,6 +48,7 @@ export type ProjectApplication = {
   decisionReason: string | null;
   /** Public GitHub evidence about the applicant's repository control. */
   githubCheck: string | null;
+  referrer: GithubActor | null;
 };
 
 export type ProjectRevisionInput = {

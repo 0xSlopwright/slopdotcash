@@ -283,9 +283,17 @@ jobs:
           path: dist
       - name: Install Playwright system dependencies
         run: |
+          # The Azure mirror stalled across release and PR runners. Use Ubuntu's
+          # primary archive; the runner's URI normally points to apt-mirrors.txt.
+          # Keep its suites, components and signing keys unchanged.
+          sudo sed -i 's|^URIs:.*|URIs: https://archive.ubuntu.com/ubuntu/|' \
+            /etc/apt/sources.list.d/ubuntu.sources
+          grep -Fx 'URIs: https://archive.ubuntu.com/ubuntu/' \
+            /etc/apt/sources.list.d/ubuntu.sources
           # Run the timeout as root so it can terminate apt and its children.
           # Do not retry an interrupted package transaction on the same runner.
-          sudo timeout --signal=TERM --kill-after=15s 10m \
+          # Hosted package downloads exceeded ten minutes in two release runs.
+          sudo timeout --signal=TERM --kill-after=15s 20m \
             "$(command -v node)" ./node_modules/playwright/cli.js install-deps chromium firefox
       - name: Install Playwright Chromium and Firefox
         run: |

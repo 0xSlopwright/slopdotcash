@@ -39,6 +39,7 @@ async function served(path: string): Promise<Uint8Array> {
     createdAt: "2026-10-18T00:00:00.000Z",
     updatedAt: "2026-10-18T00:00:00.000Z",
     sourceApplicationId: null,
+    referrer: null,
   };
   const group = async (sourcePath: string) => ({
     sourcePath,

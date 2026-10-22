@@ -74,6 +74,7 @@ describe("notification events", () => {
           decidedBy: null,
           decisionReason: null,
           githubCheck: null,
+          referrer: null,
         }),
       ).toBe("created");
     }

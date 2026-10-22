@@ -25,7 +25,7 @@ The rest of the PRD is blocked until maintainers approve an explicit MVP complet
 | MVP-00 | PRD sections 3, 4, 22 | Approved scope, financial terms, deposit rights, authority, policy migration | Resolve conflicts before implementation; maintainers approve PRD and this plan |
 | MVP-01 | ACC-01–05, SOC-01 | One GitHub account with profile, optional X, sessions, privacy and recovery | Reuse identity/membership; real OAuth, rename and access tests |
 | MVP-02 | WAL-01–05 | Backend Base, Solana, Robinhood Chain and Ethereum wallet connections and safe changes | MVP-01; real wallet proof, unsupported paths, replay/concurrency and recovery |
-| MVP-03 | PRJ-01–04, SKL-03, ADM-02, ADM-06, UX-10 | Resumable project setup and updates stored as append-only D1 revisions; admin approval at `/admin` publishes; no GitHub PR and no project JSON or per-project skill folder in the repository; contributor and reviewer skills generated from the D1 revision (scope, contribution guide, supported tasks, required tests, review expectations, security contact, closure policy, maintainer notes) with one canonical generic template; optional Slopbot settings/health | MVP-00/01 for drafts; MVP-12 before executable activation; actual permissions; deterministic generation (same template revision and D1 revision give the same bytes); stale-revision refusal; maintainer notes cannot weaken template rules |
+| MVP-03 | PRJ-01–05, SKL-03, ADM-02, ADM-06, UX-10 | Resumable project setup and updates stored as append-only D1 revisions; admin approval at `/admin` publishes; no GitHub PR and no project JSON or per-project skill folder in the repository; contributor and reviewer skills generated from the D1 revision (scope, contribution guide, supported tasks, required tests, review expectations, security contact, closure policy, maintainer notes) with one canonical generic template; optional Slopbot settings/health | MVP-00/01 for drafts; MVP-12 before executable activation; actual permissions; deterministic generation (same template revision and D1 revision give the same bytes); stale-revision refusal; maintainer notes cannot weaken template rules |
 | MVP-04 | SKL-01–07 | Discovery/project skills, owner-and-maintainer-only issues, visible attribution and sandbox checks | MVP-03/12; genuine contribution; installer trust root (template revision on `main`, D1 revision digest) with mismatch refusal; exact approved-revision execution |
 | MVP-05 | BOT-01–07 | Optional Slopbot, marker/member routing, external opt-in, ignored actors, guideline-aware review and delegated closures | MVP-03/04/12; full eligibility matrix, health, stale revision, close confirmation, retry and uninstall |
 | MVP-05a | BOT-08–13 | Hosted `workers/slopbot` GitHub App: active registered repositories only (owner decision, 21 October 2026), Protection mode, model route, cost ledger, shadow mode, closure confirmation, appeals, prepaid credits and owner-requested $500 monthly API cost milestone emails | Approved 9 October 2026 (`docs/slopbot-v2-proposal.md`); registered App and provider keys; real PR/issue review, close, appeal, budget exhaustion, uninstall and invoice reconciliation on `SlopDotCash/slopdotcash` first |
@@ -174,3 +174,49 @@ is approved for MVP-05a implementation (owner decision, 21 October 2026).
 Acceptance requires trusted evidence for the three defined defects, two grounded
 verdicts for the same defect, useful counterexamples, and the existing appeal,
 source-change and shadow controls. Production activation is not approved.
+
+
+## Open-issue close-out plan — 22 October 2026
+
+This is a delivery plan under the owner's delegated implementation judgment,
+not the completion record required by #913. The [PRD close-out direction](slop-product-requirements.md#22-october-2026-mvp-close-out-direction)
+records the selected pilot identities and unchanged authority boundaries.
+The source baseline reviewed here is development
+`fc11230ea9c4a981c9cabeb0b51de29786c51d5e`.
+
+| Issues | Package | Remaining result and acceptance boundary |
+| --- | --- | --- |
+| #898, #899, #900, #901 | MVP-06/11 | Wait for #903, then human-signed mainnet deployment or upgrade. Verify exact deployed bytes, network, asset and authority independently. |
+| #902 | MVP-07/07b | Run the existing acceptance runner on all four approved test networks with funded test accounts and exact deployments. Reconcile the 2% payout and withdrawal fees, walletless dispatch, replay and cached balances. Local-chain evidence does not close this item. |
+| #903 | MVP-06/07c | Obtain the independent contract audit and counsel reviews. Resolve findings against exact code. An internal agent review cannot replace these reviews. |
+| #904 | MVP-07/11 | Qualify managed attestation and finalized reads after audit and testnet acceptance. Enable each network separately and reconcile an authorized payment. |
+| #905 | MVP-07c | Fee-wallet addresses are decided. Custody, allowed routes, slippage, minimum size, target asset and Solana role separation still need the reviewed activation record. Keep signing off before acceptance. |
+| #906 | MVP-03/10/11 | Worker source and Pages binding are merged. Verify the deployed binding, a real application notice, provider acceptance and receipt in each authorized inbox separately. |
+| #908 | MVP-03/04/12 | Read the live D1 registry. The old zero-project report is stale: the public registry returned 11 projects on 22 October. Existing rows are not proof of clean vetting, executable skill publication or payment readiness. Do not submit duplicate applications. |
+| #909 | MVP-12 | Complete command execution, structured telemetry and loss detection, runtime network inspection, filesystem differences and pre-execution artifact interception. Scanner transports (#953) and publication (#955) are merged, but real independent provider and complete runtime acceptance remain. Qualify incomplete, clean and malicious outcomes without weakening admission. |
+| #910 | MVP-13 | Separate owner workstream, excluded from this implementation sweep. Its full approved acceptance matrix still blocks final MVP completion. |
+| #911 | MVP-10/12 | Use the selected staging moderators. Prove ban, appeal and independent reinstatement, with fresh complete vetting and preserved obligations. #909 remains a dependency; configuring identities cannot close it. |
+| #912 | MVP-10 | Inbox and verified-email source are merged. Complete deployed preference, delivery and inbox receipt checks; preserve replay deduplication and distinct delivery states. |
+| #797 | MVP-09 | Keep existing accepted attribution. Resolve competing preserved review evidence through a separate decision before any evaluations award. No automatic score change. |
+| #640 | MVP-02/03/10/11 | Complete the named human, wallet-consent, installed-client and physical-device checks. Reuse verified repairs. Do not replace these checks with browser fixtures. |
+| #913, #914 | All | Assemble exact source, check, staging, production, provider and chain evidence. Close the tracker only after its dependencies pass and maintainers approve the completion record. |
+
+First restore the existing release validation path. Production run
+[39819905467](https://github.com/SlopDotCash/slopdotcash/actions/runs/39819905467)
+failed before browser tests because a timed-out privileged package installer kept
+its lock. #1006 fixes cleanup on development. Development runs
+[39804797146](https://github.com/SlopDotCash/slopdotcash/actions/runs/39804797146)
+and [39819912288](https://github.com/SlopDotCash/slopdotcash/actions/runs/39819912288)
+still exceeded the ten-minute dependency-download deadline. PR run
+[39847362140](https://github.com/SlopDotCash/slopdotcash/actions/runs/39847362140)
+also exceeded twenty minutes while the Azure package mirror stalled. Use the
+primary Ubuntu archive with the existing signing keys, suites and components.
+Retain the bounded installation window, privileged cleanup and no package retry.
+Require successful exact-head browser lanes and staging acceptance before
+promotion. Do not treat a previous production deployment as evidence for newer
+source.
+
+For every row, retain the exact revision, environment, command or user action,
+actual result and evidence link. Mark missing evidence explicitly. Record source
+completion separately from deployment and external acceptance. Do not close an
+issue by moving its unresolved checks into the completion record.

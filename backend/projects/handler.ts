@@ -64,6 +64,7 @@ import {
   type GithubFetch,
   GithubLookupError,
   listOwnedRepositories,
+  lookupGitHubActor,
   lookupGitHubRepository,
   validGithubLogin,
 } from "./github-lookup";
@@ -395,6 +396,7 @@ function publicApplication(
     githubCheck: application.githubCheck,
     expectedRevision: application.expectedRevision,
     changeReason: application.changeReason,
+    referrer: application.referrer,
   };
 }
 
@@ -407,6 +409,7 @@ function adminProject(project: ProjectRecord): ProjectRecord {
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     sourceApplicationId: project.sourceApplicationId,
+    referrer: project.referrer,
     manifest: project.manifest,
   };
 }
@@ -449,13 +452,68 @@ async function repositoryControl(
   }
 }
 
+/**
+ * Resolves the referrer an applicant named (PRJ-05). The login must belong
+ * to an account that has signed in to slop.cash, and it cannot be the
+ * applicant, the manifest steward or a Slop team account. A refused referral
+ * fails the submission with the reason, so the applicant can clear it or
+ * fix it; it is never dropped silently.
+ */
+async function resolveReferrer(
+  value: unknown,
+  manifest: ProjectDefinition,
+  applicant: GithubActor,
+  deps: ProjectApiDependencies,
+): Promise<GithubActor | null> {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !validGithubLogin(value))
+    fail(422, "invalid_referrer", "The referrer must be a GitHub login.");
+  const referrer = await lookupGitHubActor(
+    deps.github.fetch,
+    deps.github.token,
+    value,
+    deps.github.apiOrigin,
+  );
+  if (
+    referrer === null ||
+    !(await deps.persistence.hasSignedInActor(referrer.githubId))
+  )
+    fail(
+      422,
+      "invalid_referrer",
+      `@${value} has not signed in to slop.cash, so they cannot be recorded as the referrer. Clear the referral or ask them to sign in first.`,
+    );
+  if (referrer.githubId === applicant.githubId)
+    fail(422, "invalid_referrer", "You cannot refer your own project.");
+  if (
+    referrer.githubId === manifest.steward.github.actorId ||
+    referrer.githubLogin.toLowerCase() ===
+      manifest.steward.github.login.toLowerCase()
+  )
+    fail(
+      422,
+      "invalid_referrer",
+      "The project steward cannot be recorded as its referrer.",
+    );
+  if (
+    deps.adminGithubIds.has(referrer.githubId) ||
+    deps.moderatorGithubIds.has(referrer.githubId)
+  )
+    fail(
+      422,
+      "invalid_referrer",
+      "Slop team accounts cannot be recorded as referrers.",
+    );
+  return referrer;
+}
+
 async function submitApplication(
   request: Request,
   deps: ProjectApiDependencies,
 ): Promise<Response> {
   const session = await requireSession(request, deps);
   const body = await readJsonObject(request);
-  exactKeys(body, ["manifest"], ["expectedRevision", "reason"]);
+  exactKeys(body, ["manifest"], ["expectedRevision", "reason", "referrer"]);
   const proposedId = (body.manifest as { id?: unknown } | null)?.id;
   const current =
     body.expectedRevision === undefined
@@ -506,6 +564,15 @@ async function submitApplication(
     githubId: session.githubId,
     githubLogin: session.githubLogin,
   };
+  if (current && body.referrer !== undefined)
+    fail(
+      422,
+      "invalid_referrer",
+      "A project update cannot change its referrer.",
+    );
+  const referrer = current
+    ? current.referrer
+    : await resolveReferrer(body.referrer, manifest, actor, deps);
   if (
     (await deps.persistence.countPendingApplications(session.githubId)) >=
     MAX_PENDING_APPLICATIONS_PER_APPLICANT
@@ -552,6 +619,7 @@ async function submitApplication(
         0,
         300,
       ),
+    referrer,
   };
   if ((await deps.persistence.createApplication(application)) === "conflict") {
     fail(
