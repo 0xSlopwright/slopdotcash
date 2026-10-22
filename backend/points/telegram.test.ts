@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { sqliteD1 } from "../../tests/sqlite-d1";
 import { sha256Hex } from "../../workers/identity/crypto";
-import type { D1Database } from "../trace/cloudflare-persistence";
 import { handlePointsApi, type PointsDependencies } from "./handler";
 import { telegramConfiguration } from "./telegram";
 
@@ -31,7 +30,7 @@ function harness() {
   let clock = Date.parse(START);
   const deps: PointsDependencies = {
     tier: "production",
-    db: db as unknown as D1Database,
+    db,
     rateLimitSecret: "r".repeat(48),
     identity: { fetch: async () => new Response(null, { status: 500 }) },
     now: () => new Date(clock),
@@ -414,7 +413,7 @@ describe("Telegram connection", () => {
     const { db } = sqliteD1(migrations);
     const deps: PointsDependencies = {
       tier: "production",
-      db: db as unknown as D1Database,
+      db,
       rateLimitSecret: "r".repeat(48),
       identity: { fetch: async () => new Response(null, { status: 500 }) },
     };
