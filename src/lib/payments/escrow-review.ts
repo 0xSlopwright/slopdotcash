@@ -158,6 +158,9 @@ async function publicBytes(
   return new Uint8Array(await response.arrayBuffer());
 }
 /** Exact local bytes must be the live protected-branch bytes. PR merged_at is the clock. */
+/** Only reviewed main publication starts the financial review period. */
+export const ESCROW_PUBLICATION_BRANCH = "main";
+
 async function publication(
   repo: string,
   path: string,
@@ -166,13 +169,13 @@ async function publication(
 ): Promise<Publication> {
   const commits = await github<{ sha: string }[]>(
     repo,
-    `commits?sha=development&path=${encodeURIComponent(path)}&per_page=1`,
+    `commits?sha=${ESCROW_PUBLICATION_BRANCH}&path=${encodeURIComponent(path)}&per_page=1`,
     token,
   );
   if (commits.length !== 1 || !/^[a-f0-9]{40}$/.test(commits[0].sha))
     throw new Error("Publication commit unavailable");
   const commit = commits[0].sha;
-  for (const ref of ["development", commit]) {
+  for (const ref of [ESCROW_PUBLICATION_BRANCH, commit]) {
     if (!equalBytes(await publicBytes(repo, path, ref, token), bytes))
       throw new Error("Archive differs from public canonical bytes");
   }
@@ -189,7 +192,7 @@ async function publication(
   const candidates = pulls.filter(
     (p) =>
       p.merged_at &&
-      p.base.ref === "development" &&
+      p.base.ref === ESCROW_PUBLICATION_BRANCH &&
       p.base.repo.full_name.toLowerCase() === repo.toLowerCase(),
   );
   if (candidates.length !== 1)
@@ -344,11 +347,11 @@ export async function verifyEscrowReview(input: {
       }>(repo, `pulls/${approval.pullRequest}`, input.token);
       if (
         !pull.merged_at ||
-        pull.base.ref !== "development" ||
+        pull.base.ref !== ESCROW_PUBLICATION_BRANCH ||
         pull.base.repo.full_name.toLowerCase() !== repo.toLowerCase()
       )
         throw new Error(
-          "Platform approval PR must be merged into canonical development",
+          `Platform approval PR must be merged into canonical ${ESCROW_PUBLICATION_BRANCH}`,
         );
       // Approval PR must itself publish the exact decisions, preventing unrelated review reuse.
       if (
