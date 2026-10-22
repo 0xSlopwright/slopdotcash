@@ -72,6 +72,7 @@ import {
   monthlyPoolPointsOnly,
   monthlyPoolUnfunded,
   NotFound,
+  PaymentLifecycle,
   reviewBudgetLabel,
   UNFUNDED_POOL_HEADLINE,
 } from "./Presentation";
@@ -663,15 +664,13 @@ function bootstrapAgentPrompt(): string {
 }
 
 function HomePage() {
-  const featuredProjects = homeProjects().filter(
-    (project) => project.listingTier === "featured",
-  );
+  const featuredProjects = homeProjects();
+  const listedCommunityProjects = communityProjects();
   return (
     <main>
       <section className="hero shell">
         <TypewriterHeroHeading />
-        <p className="hero-copy">Paste this into your coding agent.</p>
-        <AgentPromptBox openIn prompt={bootstrapAgentPrompt()} />
+        <InstallPanel />
       </section>
 
       <section className="section shell home-projects-section" id="projects">
@@ -681,7 +680,7 @@ function HomePage() {
             <Plus aria-hidden="true" /> Add a project
           </Link>
         </div>
-        {homeProjects().length === 0 ? (
+        {featuredProjects.length + listedCommunityProjects.length === 0 ? (
           <p className="project-tier-note">
             No projects are listed yet. Maintainers add one with GitHub sign-in,
             and a Slop admin reviews each application.
@@ -701,7 +700,7 @@ function HomePage() {
                 </div>
               </section>
             ) : null}
-            <CommunityProjects projects={communityProjects()} />
+            <CommunityProjects projects={listedCommunityProjects} />
           </>
         )}
       </section>
@@ -947,7 +946,8 @@ export function ProjectParticipation({
   );
 }
 
-function InstallPanel({ project }: { project: ProjectDefinition }) {
+function InstallPanel({ project }: { project?: ProjectDefinition }) {
+  const projectId = project?.id;
   const [eligibility, setEligibility] = useState<
     "loading" | "ready" | "blocked" | "error"
   >("loading");
@@ -970,7 +970,11 @@ function InstallPanel({ project }: { project: ProjectDefinition }) {
           throw new Error("Invalid discovery registry");
         if (active)
           setEligibility(
-            body.projects.some((entry) => entry.project_id === project.id)
+            (
+              projectId
+                ? body.projects.some((entry) => entry.project_id === projectId)
+                : body.projects.length > 0
+            )
               ? "ready"
               : "blocked",
           );
@@ -981,15 +985,27 @@ function InstallPanel({ project }: { project: ProjectDefinition }) {
     return () => {
       active = false;
     };
-  }, [project.id, attempt]);
+  }, [projectId, attempt]);
   return (
-    <div className="install-panel" id="start">
+    <div
+      className={project ? "install-panel" : "home-agent-setup"}
+      id={project ? "start" : undefined}
+    >
       {eligibility === "ready" ? (
         <>
-          <div className="install-heading">
-            <h2>Copy this into your agent.</h2>
-          </div>
-          <AgentPromptBox prompt={projectAgentPrompt(project)} />
+          {project ? (
+            <div className="install-heading">
+              <h2>Copy this into your agent.</h2>
+            </div>
+          ) : (
+            <p className="hero-copy">Paste this into your coding agent.</p>
+          )}
+          <AgentPromptBox
+            openIn={!project}
+            prompt={
+              project ? projectAgentPrompt(project) : bootstrapAgentPrompt()
+            }
+          />
         </>
       ) : (
         <>
@@ -1001,13 +1017,20 @@ function InstallPanel({ project }: { project: ProjectDefinition }) {
                 : "Agent setup unavailable"}
           </h2>
           {eligibility === "blocked" ? (
-            <p>
-              The current project revision is not cleared for agent
-              installation.{" "}
-              <Link href={`/projects/${project.slug}/manage`}>
-                Project owner: review setup
-              </Link>
-            </p>
+            project ? (
+              <p>
+                The current project revision is not cleared for agent
+                installation.{" "}
+                <Link href={`/projects/${project.slug}/manage`}>
+                  Project owner: review setup
+                </Link>
+              </p>
+            ) : (
+              <p>
+                No projects are cleared for agent setup yet. Browse the projects
+                below.
+              </p>
+            )
           ) : null}
           {eligibility !== "loading" ? (
             <button
@@ -1653,66 +1676,7 @@ function HowItWorksPage() {
       </section>
       <section className="custody-proof money-states">
         <h2>Payment stages</h2>
-        <p>
-          Each stage needs its own evidence. A person or a verifier must act
-          before the next stage; nothing moves forward automatically.
-        </p>
-        <ol className="payment-stages" aria-label="Payment stages">
-          <li>
-            <strong>Projected</strong>
-            <span>
-              A live estimate from accepted score at the published cap. Not a
-              balance, wage, or guarantee.
-            </span>
-          </li>
-          <li>
-            <small className="payment-gate">Monthly freeze</small>
-            <strong>Under review</strong>
-            <span>A frozen monthly proposal in its 14-day public window.</span>
-          </li>
-          <li>
-            <small className="payment-gate">Maintainer approval</small>
-            <strong>Approved</strong>
-            <span>
-              Immutable payout intents after the maintainer signs off.
-            </span>
-          </li>
-          <li>
-            <small className="payment-gate">Unsigned plan</small>
-            <strong>Scheduled</strong>
-            <span>An unsigned transfer plan exists. No money has moved.</span>
-          </li>
-          <li>
-            <small className="payment-gate">Finalized evidence</small>
-            <strong>Paid</strong>
-            <span>
-              Finalized on-chain evidence reconciles the exact transfers and
-              fee.
-            </span>
-          </li>
-        </ol>
-        <section
-          className="payment-branches"
-          aria-labelledby="payment-branches-title"
-        >
-          <h3 className="payment-branches-title" id="payment-branches-title">
-            Unresolved outcomes: not steps toward payment
-          </h3>
-          <dl>
-            <div>
-              <dt>Held</dt>
-              <dd>A decision or requirement remains unresolved.</dd>
-            </div>
-            <div>
-              <dt>Unclaimed</dt>
-              <dd>A required wallet is missing. The row carries forward.</dd>
-            </div>
-            <div>
-              <dt>Excluded</dt>
-              <dd>The row keeps its public reason and is not paid.</dd>
-            </div>
-          </dl>
-        </section>
+        <PaymentLifecycle />
         <details>
           <summary>Funding and cycle rules</summary>
           <p>
@@ -1724,11 +1688,10 @@ function HowItWorksPage() {
             funding is committed.
           </p>
           <p>
-            For monthly v1 cycles, the first-of-month workflow freezes a
-            proposal for 14 days of public review. Only an amount change
-            restarts review; a wallet registered after the proposal applies to
-            the next cycle. Awards below $2 accrue to the next cycle. Historical
-            records keep their recorded fee and authority rules.
+            Monthly proposals have a 14-day public review. A funded award can
+            wait for a wallet; confirming one later does not require another
+            monthly cycle. Historical records keep their recorded fee and
+            authority rules.
           </p>
         </details>
       </section>
@@ -1832,23 +1795,21 @@ function HowItWorksPage() {
         <details>
           <summary>How do I get paid?</summary>
           <p>
-            Register a public Solana, Base or Robinhood Chain address in{" "}
-            <Link href="/account#wallets">Account wallets</Link> with your
-            GitHub account. No wallet connection or signing is needed. Payments
-            are USDC on the project's settlement network, Base or Solana, sent
-            by the project maintainer, never by Slop. A wallet must be
-            registered before a month freezes to apply to that month. Without
-            one, your row stays unclaimed and carries forward.
+            Connect and confirm a wallet in{" "}
+            <Link href="/account#wallets">Account wallets</Link> for your
+            award's network: Base, Solana, Robinhood Chain or Ethereum. Wallet
+            confirmation requires your signature. An approved award also needs
+            reserved funding and a verified wallet binding before payment.
+            Missing wallets do not erase awards.
           </p>
         </details>
         <details>
           <summary>When are payments sent?</summary>
           <p>
-            At 00:11 UTC on the first of each month, the previous month freezes
-            into a proposal. After 14 days of public review the maintainer
-            approves it and sends USDC from their own wallet. Slop shows a
-            payment as paid only after the transfers are confirmed on-chain.
-            Amounts below $2 carry to the next month.
+            The previous month becomes a proposal for public review. After owner
+            approval and funding, eligible awards can be executed from the
+            project vault. Submitted means verification is pending; paid means
+            finalized evidence reconciles the award and fee.
           </p>
         </details>
         <details>
@@ -2345,59 +2306,12 @@ function SponsorsPage({
           </div>
         </section>
         <section className="custody-proof money-states">
-          <h2>Your money has exact states.</h2>
-          <dl>
-            <div>
-              <dt>Pledged</dt>
-              <dd>
-                A public target with no money behind it. Contributors see
-                projections at the cap and the word unfunded next to them.
-              </dd>
-            </div>
-            <div>
-              <dt>Committed</dt>
-              <dd>
-                Funds deposited in the project escrow contract. Awards never
-                exceed its free balance.
-              </dd>
-            </div>
-            <div>
-              <dt>Under review</dt>
-              <dd>A frozen monthly proposal in its 14-day public window.</dd>
-            </div>
-            <div>
-              <dt>Approved</dt>
-              <dd>
-                Immutable payout intents after you sign off, with a public
-                reason attached to every change you made.
-              </dd>
-            </div>
-            <div>
-              <dt>Scheduled</dt>
-              <dd>
-                The owner reserved an approved award in the escrow. No money has
-                moved yet.
-              </dd>
-            </div>
-            <div>
-              <dt>Paid</dt>
-              <dd>
-                Finalized on-chain evidence reconciles the exact transfers and
-                the fee.
-              </dd>
-            </div>
-            <div>
-              <dt>Unclaimed, held, excluded</dt>
-              <dd>
-                Visible unresolved states with public reasons. A missing wallet
-                stays unclaimed. Rows below $2 accrue to the next cycle.
-              </dd>
-            </div>
-          </dl>
+          <h2>Awards and payments</h2>
+          <PaymentLifecycle />
           <p>
-            Unused committed funds roll over without raising the cap. A wallet
-            registered after a proposal is generated applies to the next cycle
-            and never touches the current one.
+            A target is not a balance. Deposits fund the vault; approved awards
+            require their own reservation. A wallet added later can unlock an
+            eligible reserved award without waiting for another cycle.
           </p>
         </section>
         <section className="custody-proof">
@@ -2911,8 +2825,8 @@ function ModelOutcomes({ summary }: { summary: ModelOutcomeSummary }) {
         )}
       </details>
 
-      <section className="model-outcomes-section">
-        <h2>Read before quoting</h2>
+      <details className="model-outcomes-section">
+        <summary>Methodology and limitations</summary>
         <ul className="model-outcomes-notes">
           <li>
             This is not a benchmark. Contributors choose their own tasks, repos
@@ -2940,12 +2854,12 @@ function ModelOutcomes({ summary }: { summary: ModelOutcomeSummary }) {
           </li>
           <li>
             The leaderboard is a rolling window and regenerates on a schedule,
-            so every figure moves. Nothing here describes money. PR points are
-            the scoring input; what any pool pays is decided in a separate
-            public review.
+            so every figure moves. Nothing here describes money. Slop Score
+            measures accepted work; awards require separate funding and
+            approval.
           </li>
         </ul>
-      </section>
+      </details>
     </>
   );
 }

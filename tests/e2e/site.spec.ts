@@ -914,6 +914,9 @@ test("an admin leaves an unset reward asset unchanged until choosing it", async 
     }),
   );
   await page.goto("/admin", { waitUntil: "networkidle" });
+  await page.getByRole("searchbox", { name: "Find a project" }).fill("ASI");
+  await page.getByRole("button", { name: "Open ASI", exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\?project=asi$/u);
   await page
     .getByRole("button", { name: "Edit manifest", exact: true })
     .click();
@@ -925,6 +928,8 @@ test("an admin leaves an unset reward asset unchanged until choosing it", async 
   await expect(changes).toContainText("headline");
   await expect(changes).not.toContainText("rewardAsset");
   await page.getByRole("button", { name: "Close and keep draft" }).click();
+  await page.getByRole("button", { name: "All projects", exact: true }).click();
+  await page.getByRole("button", { name: "Open ASI", exact: true }).click();
   await page
     .getByRole("button", { name: "Edit manifest", exact: true })
     .click();
@@ -935,6 +940,9 @@ test("an admin leaves an unset reward asset unchanged until choosing it", async 
   });
   await page.getByRole("button", { name: "Use this reward asset" }).click();
   await expect(changes).toContainText("rewardAsset");
+  await page.getByLabel("Discovery placement").selectOption("community");
+  await expect(page.getByLabel("Project status")).toHaveValue("paused");
+  await expect(changes).toContainText("listingTier");
 });
 
 test("project standings and sponsor links keep the intended destination", async ({
@@ -964,6 +972,40 @@ test("project standings and sponsor links keep the intended destination", async 
     path: test.info().outputPath("direct-sponsor-handoffs.png"),
     fullPage: true,
   });
+});
+
+test("current payment guidance separates award approval from vault payment", async ({
+  page,
+}) => {
+  await page.goto("/how-it-works", { waitUntil: "networkidle" });
+  await expect(
+    page.getByRole("list", { name: "Award review stages" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Funded, awaiting wallet", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Funded, ready", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("An unsigned transfer plan exists.", { exact: false }),
+  ).toHaveCount(0);
+  await page.getByText("How do I get paid?", { exact: true }).click();
+  await expect(
+    page.getByText("Wallet confirmation requires your signature.", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: test.info().outputPath("current-vault-payment-states.png"),
+    fullPage: true,
+  });
+  await page.goto("/sponsors", { waitUntil: "networkidle" });
+  await page
+    .getByText("Funding rules and payment stages", { exact: true })
+    .click();
+  await expect(
+    page.getByRole("list", { name: "Award review stages" }),
+  ).toBeVisible();
+  await expect(page.getByText("Funded, ready", { exact: true })).toBeVisible();
 });
 
 test("serves byte-consistent bootstrap and read-only site artifacts", {

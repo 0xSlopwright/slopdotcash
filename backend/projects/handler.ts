@@ -1427,41 +1427,31 @@ async function githubLookup(
       : `${url.origin}${url.pathname.toLowerCase()}`,
   );
   const build = async () => {
-    try {
-      if (parts[1] === "owned-repositories") {
-        if (!validGithubLogin(session.githubLogin))
-          fail(
-            400,
-            "invalid_request",
-            "The signed-in GitHub login is not valid.",
-          );
-        const repositories = await listOwnedRepositories(
-          deps.github.fetch,
-          deps.github.token,
-          session.githubLogin,
-          deps.github.apiOrigin,
+    if (parts[1] === "owned-repositories") {
+      if (!validGithubLogin(session.githubLogin))
+        fail(
+          400,
+          "invalid_request",
+          "The signed-in GitHub login is not valid.",
         );
-        return json(200, { repositories }, "public, max-age=0, s-maxage=300");
-      }
-      const repository = `${parts[2]}/${parts[3]}`;
-      if (!validRepositoryPath(repository))
-        fail(400, "invalid_request", "Enter the repository as owner/name.");
-      const facts = await lookupGitHubRepository(
+      const repositories = await listOwnedRepositories(
         deps.github.fetch,
         deps.github.token,
-        repository,
+        session.githubLogin,
         deps.github.apiOrigin,
       );
-      return json(
-        200,
-        { repository: facts },
-        "public, max-age=0, s-maxage=300",
-      );
-    } catch (error) {
-      if (error instanceof GithubLookupError)
-        fail(error.status, error.code, error.message);
-      throw error;
+      return json(200, { repositories }, "public, max-age=0, s-maxage=300");
     }
+    const repository = `${parts[2]}/${parts[3]}`;
+    if (!validRepositoryPath(repository))
+      fail(400, "invalid_request", "Enter the repository as owner/name.");
+    const facts = await lookupGitHubRepository(
+      deps.github.fetch,
+      deps.github.token,
+      repository,
+      deps.github.apiOrigin,
+    );
+    return json(200, { repository: facts }, "public, max-age=0, s-maxage=300");
   };
   const response = await cachedPublicResponse(
     deps.cache,
@@ -1595,7 +1585,8 @@ export async function handleProjectApi(
           ? error.code
           : "internal_error",
       message:
-        status >= 500 || typeof error.message !== "string"
+        (status >= 500 && !(caught instanceof GithubLookupError)) ||
+        typeof error.message !== "string"
           ? "Internal error"
           : error.message,
     });

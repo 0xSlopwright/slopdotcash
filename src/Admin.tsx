@@ -142,7 +142,7 @@ function ApplicationCard({
   onDecided,
 }: {
   application: ProjectApplication;
-  onDecided: () => void;
+  onDecided: (decision: "approve" | "reject") => void;
 }) {
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
@@ -160,10 +160,13 @@ function ApplicationCard({
       "POST",
       `admin/project-applications/${encodeURIComponent(application.id)}/${decision}`,
       reason.trim() === "" ? {} : { reason: reason.trim() },
-    ).then(onDecided, (caught: unknown) => {
-      setBusy(null);
-      setError(errorMessage(caught));
-    });
+    ).then(
+      () => onDecided(decision),
+      (caught: unknown) => {
+        setBusy(null);
+        setError(errorMessage(caught));
+      },
+    );
   };
   return (
     <article className="admin-card" id={`application-${application.id}`}>
@@ -325,13 +328,25 @@ function ApplicationCard({
   );
 }
 
-function ApplicationsSection({ onDecided }: { onDecided: () => void }) {
-  const [focusedId, setFocusedId] = useState(
-    () =>
-      /^\/admin\/applications\/([A-Za-z0-9_-]+)\/?$/u.exec(
-        window.location.pathname,
-      )?.[1] ?? null,
+function applicationIdFromLocation() {
+  return (
+    /^\/admin\/applications\/([A-Za-z0-9_-]+)\/?$/u.exec(
+      window.location.pathname,
+    )?.[1] ?? null
   );
+}
+
+function ApplicationsSection({
+  onDecided,
+}: {
+  onDecided: (projectId: string | null) => void;
+}) {
+  const [focusedId, setFocusedId] = useState(applicationIdFromLocation);
+  useEffect(() => {
+    const read = () => setFocusedId(applicationIdFromLocation());
+    window.addEventListener("popstate", read);
+    return () => window.removeEventListener("popstate", read);
+  }, []);
   const [status, setStatus] = useState<"pending" | "approved" | "rejected">(
     "pending",
   );
@@ -342,11 +357,10 @@ function ApplicationsSection({ onDecided }: { onDecided: () => void }) {
   // The admin email links to /admin/applications/<id>; bring that card into view.
   useEffect(() => {
     if (state.status !== "ready") return;
-    const id = /^\/admin\/applications\/([A-Za-z0-9_-]+)\/?$/u.exec(
-      window.location.pathname,
-    )?.[1];
-    if (focusedId && state.value[0]) setStatus(state.value[0].status);
-    if (id) document.getElementById(`application-${id}`)?.scrollIntoView();
+    if (focusedId && state.value[0]) {
+      setStatus(state.value[0].status);
+      document.getElementById(`application-${focusedId}`)?.scrollIntoView();
+    }
   }, [state, focusedId]);
   return (
     <section aria-labelledby="admin-applications" className="admin-section">
@@ -365,7 +379,7 @@ function ApplicationsSection({ onDecided }: { onDecided: () => void }) {
                   window.history.replaceState(
                     window.history.state,
                     "",
-                    "/admin",
+                    `/admin${window.location.search}`,
                   );
                 }}
                 type="radio"
@@ -384,9 +398,9 @@ function ApplicationsSection({ onDecided }: { onDecided: () => void }) {
           <ApplicationCard
             application={application}
             key={application.id}
-            onDecided={() => {
+            onDecided={(decision) => {
               reload();
-              onDecided();
+              onDecided(decision === "approve" ? application.projectId : null);
             }}
           />
         ))
@@ -691,6 +705,43 @@ function ProjectEditor({
           skills and security clearance for this exact revision. Save content
           changes paused, review both skill previews, then complete the{" "}
           <a href="#admin-vetting">security review</a> before activation.
+        </p>
+      </fieldset>
+      <fieldset className="admin-fieldset">
+        <legend>Discovery</legend>
+        <label>
+          Discovery placement
+          <select
+            value={String(
+              projectFields?.listingTier ?? project.manifest.listingTier,
+            )}
+            onChange={(event) => {
+              setStatus("paused");
+              setText(
+                JSON.stringify(
+                  { ...projectFields, listingTier: event.target.value },
+                  null,
+                  2,
+                ),
+              );
+            }}
+          >
+            <option value="community">Community</option>
+            <option
+              value="featured"
+              disabled={project.enforcement.state !== "clear"}
+            >
+              Featured
+            </option>
+            <option value="retired" disabled={status !== "paused"}>
+              Retired
+            </option>
+          </select>
+        </label>
+        <p className="admin-status">
+          Changing placement pauses the project for review. Featuring starts
+          after security clearance and activation. The revision records your
+          reason.
         </p>
       </fieldset>
       <details
@@ -998,23 +1049,53 @@ function DelistButton({
   );
 }
 
-function ProjectsSection({ onChanged }: { onChanged: () => void }) {
+function ProjectsSection({
+  onChanged,
+  selectedProject,
+  onSelect,
+}: {
+  onChanged: () => void;
+  selectedProject: string | null;
+  onSelect: (id: string | null) => void;
+}) {
+  const [query, setQuery] = useState("");
   const [state, reload] = useAdminData("admin/projects", selectProjects);
   const [editing, setEditing] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const matchingProjects =
+    state.status === "ready"
+      ? state.value.filter((project) =>
+          selectedProject
+            ? project.id === selectedProject
+            : `${project.id} ${project.manifest.name} ${project.manifest.repositories.map((repo) => repo.id).join(" ")}`
+                .toLowerCase()
+                .includes(query.trim().toLowerCase()),
+        )
+      : [];
   return (
     <section aria-labelledby="admin-projects" className="admin-section">
       <div className="admin-section-heading">
         <h2 id="admin-projects">Projects</h2>
       </div>
-      <p className="admin-status">
-        Approved projects start paused and collect nothing until an admin makes
-        them active. Slop generates each project's skills from its approved
-        revision; preview them before activation. The public site shows each
-        saved revision within a minute, without a rebuild. Collected data for an
-        active project (leaderboard, points, and profiles) follows at the next
-        scheduled release, which runs every 6 hours.
-      </p>
+      {selectedProject ? (
+        <button
+          type="button"
+          className="button secondary-button"
+          onClick={() => onSelect(null)}
+        >
+          All projects
+        </button>
+      ) : (
+        <label>
+          Find a project
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Project or repository"
+          />
+        </label>
+      )}
       {note ? (
         <p className="admin-status" role="status">
           {note}
@@ -1025,87 +1106,130 @@ function ProjectsSection({ onChanged }: { onChanged: () => void }) {
       ) : state.value.length === 0 ? (
         <p className="admin-status">No projects are listed yet.</p>
       ) : (
-        state.value.map((project) => (
-          <article className="admin-card" key={project.id}>
-            <header>
-              <h3>{project.manifest.name}</h3>
-              <span className={`admin-badge admin-badge-${project.status}`}>
-                {project.status}
-              </span>
-            </header>
-            <dl className="admin-facts">
-              <div>
-                <dt>Project id</dt>
-                <dd>{project.id}</dd>
-              </div>
-              <div>
-                <dt>Revision</dt>
-                <dd>
-                  {project.revision} · updated {formatTime(project.updatedAt)}{" "}
-                  UTC
-                </dd>
-              </div>
-              <div>
-                <dt>Skills</dt>
-                <dd>
-                  {usesGeneratedSkills(project.manifest)
-                    ? `Generated from revision ${project.revision}`
-                    : `${project.manifest.skill.sourcePath} · ${project.manifest.reviewSkill.sourcePath}`}
-                </dd>
-              </div>
-            </dl>
-            <GeneratedSkillPreview
-              manifest={project.manifest}
-              registry={{
-                revision: project.revision,
-                manifestSha256: project.manifestSha256,
-              }}
-            />
-            {editing === project.id ? (
-              <ProjectEditor
-                key={`${project.id}:${project.revision}`}
-                onCancel={() => setEditing(null)}
-                onSaved={(saved) => {
-                  setEditing(null);
-                  setNote(saved);
-                  reload();
-                  onChanged();
-                }}
-                project={project}
-              />
+        <>
+          {matchingProjects.length === 0 ? <p>No projects match.</p> : null}
+          {matchingProjects.map((project) =>
+            selectedProject ? (
+              <article className="admin-card" key={project.id}>
+                <header>
+                  <h3>{project.manifest.name}</h3>
+                  <span className={`admin-badge admin-badge-${project.status}`}>
+                    {project.status}
+                  </span>
+                </header>
+                <dl className="admin-facts">
+                  <div>
+                    <dt>Project id</dt>
+                    <dd>{project.id}</dd>
+                  </div>
+                  <div>
+                    <dt>Revision</dt>
+                    <dd>
+                      {project.revision} · updated{" "}
+                      {formatTime(project.updatedAt)} UTC
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Skills</dt>
+                    <dd>
+                      {usesGeneratedSkills(project.manifest)
+                        ? `Generated from revision ${project.revision}`
+                        : `${project.manifest.skill.sourcePath} · ${project.manifest.reviewSkill.sourcePath}`}
+                    </dd>
+                  </div>
+                </dl>
+                <GeneratedSkillPreview
+                  manifest={project.manifest}
+                  registry={{
+                    revision: project.revision,
+                    manifestSha256: project.manifestSha256,
+                  }}
+                />
+                {editing === project.id ? (
+                  <ProjectEditor
+                    key={`${project.id}:${project.revision}`}
+                    onCancel={() => setEditing(null)}
+                    onSaved={(saved) => {
+                      setEditing(null);
+                      setNote(saved);
+                      reload();
+                      onChanged();
+                    }}
+                    project={project}
+                  />
+                ) : (
+                  <button
+                    className="button secondary-button"
+                    onClick={() => setEditing(project.id)}
+                    type="button"
+                  >
+                    Edit manifest
+                  </button>
+                )}
+                <DelistButton
+                  onDone={(saved) => {
+                    setNote(saved);
+                    reload();
+                    onChanged();
+                  }}
+                  project={project}
+                />
+                <ProjectEnforcementPanel
+                  onDone={(saved) => {
+                    setNote(saved);
+                    reload();
+                    onChanged();
+                  }}
+                  project={project}
+                />
+              </article>
             ) : (
-              <button
-                className="button secondary-button"
-                onClick={() => setEditing(project.id)}
-                type="button"
+              <article
+                className="admin-card admin-project-summary"
+                key={project.id}
               >
-                Edit manifest
-              </button>
-            )}
-            <DelistButton
-              onDone={(saved) => {
-                setNote(saved);
-                reload();
-                onChanged();
-              }}
-              project={project}
-            />
-            <ProjectEnforcementPanel
-              onDone={(saved) => {
-                setNote(saved);
-                reload();
-                onChanged();
-              }}
-              project={project}
-            />
-          </article>
-        ))
+                <div>
+                  <h3>{project.manifest.name}</h3>
+                  <p>
+                    {project.id} · {project.status} ·{" "}
+                    {project.manifest.listingTier}
+                  </p>
+                </div>
+                <button
+                  className="button secondary-button"
+                  type="button"
+                  onClick={() => onSelect(project.id)}
+                >
+                  Open {project.manifest.name}
+                </button>
+              </article>
+            ),
+          )}
+        </>
       )}
     </section>
   );
 }
 
 export function AdminPage() {
+  const [selectedProject, setSelectedProject] = useState(() =>
+    new URLSearchParams(window.location.search).get("project"),
+  );
+  useEffect(() => {
+    const read = () =>
+      setSelectedProject(
+        new URLSearchParams(window.location.search).get("project"),
+      );
+    window.addEventListener("popstate", read);
+    return () => window.removeEventListener("popstate", read);
+  }, []);
+  const selectProject = (id: string | null) => {
+    const url = id
+      ? `/admin?${new URLSearchParams({ project: id })}`
+      : "/admin";
+    window.history.pushState(window.history.state, "", url);
+    setSelectedProject(id);
+  };
   const state = useProjectSession();
   // An approval adds a project, so the registry list reloads after decisions.
   const [registryVersion, setRegistryVersion] = useState(0);
@@ -1114,7 +1238,7 @@ export function AdminPage() {
   if (state.status !== "signed-in") {
     body = (
       <SignInPanel
-        next="/admin"
+        next={`${window.location.pathname}${window.location.search}`}
         purpose="Admins sign in with GitHub to review project applications."
         state={state}
       />
@@ -1130,13 +1254,23 @@ export function AdminPage() {
     body = (
       <>
         <ApplicationsSection
-          onDecided={() => setRegistryVersion((value) => value + 1)}
+          onDecided={(id) => {
+            setRegistryVersion((value) => value + 1);
+            selectProject(id);
+          }}
         />
         <ProjectsSection
-          key={registryVersion}
+          key={`${registryVersion}-${selectedProject ?? "list"}`}
+          selectedProject={selectedProject}
+          onSelect={selectProject}
           onChanged={() => setVettingVersion((value) => value + 1)}
         />
-        <VettingSection key={`vetting-${registryVersion}-${vettingVersion}`} />
+        {selectedProject ? (
+          <VettingSection
+            projectId={selectedProject}
+            key={`vetting-${selectedProject}-${registryVersion}-${vettingVersion}`}
+          />
+        ) : null}
       </>
     );
   }
