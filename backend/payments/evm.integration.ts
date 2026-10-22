@@ -1899,6 +1899,24 @@ try {
             public: false,
             welcome: 0,
           });
+        // Account-only panels use explicit fixture data; payment routes below
+        // still execute their real handlers against SQLite and Anvil.
+        if (url.pathname === "/api/v1/points/sessions")
+          return Response.json({
+            sessions: [
+              {
+                id: (await sha256Hex(browserSession)).slice(0, 24),
+                current: true,
+                expiresAt: new Date(Date.now() + 3600000).toISOString(),
+              },
+            ],
+          });
+        if (url.pathname === "/api/v1/points/x/me")
+          return Response.json({
+            configured: false,
+            account: null,
+            award: null,
+          });
         if (url.pathname.startsWith("/api/v1/payments/")) {
           const headers = new Headers(incoming.headers);
           headers.set("cookie", `__Host-slop_points=${browserSession}`);
