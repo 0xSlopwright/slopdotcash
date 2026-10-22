@@ -18,6 +18,7 @@ import {
 } from "./value-publication";
 import type { ValueRequest } from "./value-requests";
 import { assessValue } from "./value-review";
+import { claimValueSources, ownsValueSources } from "./value-source-leases";
 
 export type ValueConsumerEnv = ReviewEnv & {
   SLOPBOT_PRODUCER_REVISION?: string;
@@ -111,12 +112,21 @@ export async function consumeValueRequest(
       job.repo,
       evidence.pull.base.sha,
     );
+    const scopes = [
+      {
+        repositoryDatabaseId: evidence.repositoryDatabaseId,
+        pullRequestNumber: evidence.pull.number,
+      },
+    ];
+    if (!(await claimValueSources(db, claim, scopes)))
+      return await finish("retry");
     const current = await readValueDecision(db, evidence, policy);
     if (current.status === "assessed" || current.status === "unresolved")
       return await finish("current", true);
     const mayCall = async () => {
       if (
         !(await ownsValueRequest(db, claim)) ||
+        !(await ownsValueSources(db, claim, scopes)) ||
         !(await registeredRepository(db, job))
       )
         return false;

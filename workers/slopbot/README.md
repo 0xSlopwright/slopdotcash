@@ -900,3 +900,19 @@ receipts for one journal row before this repair. Afterward it makes one request,
 stores one receipt and one journal row, and the other delivery returns current
 when retried. The file-backed claim replay also confirms that a different PR
 can acquire a lease while the first remains active.
+
+### Source-set ownership
+
+Migration `0053_slopbot_value_source_leases.sql` adds all-or-none ownership of
+repository-ID/PR-number source sets. The single-source consumer now uses it
+before inference and checks it before each call and publication. Joint
+consumption must acquire its full source set with this same mechanism before
+spending; different initiating PRs do not make overlapping work independent.
+An active competing group prevents the entire acquisition. Completed or expired
+request ownership stops authorizing external work, and disjoint sets can run.
+
+The real SQLite replay proves that groups [1,2] and [2,3] have one winner, the
+loser acquires no part of its set, and disjoint work proceeds. Completion and
+expiry revoke ownership. The actual single-source HTTP/SQLite consumer and
+concurrent-delivery replays still publish once with one receipt. Automatic
+related-source collection and joint consumption remain unfinished.
