@@ -24,3 +24,10 @@ export function timestamp(value, field) {
   }
   return value;
 }
+
+export function nonNegativeInteger(value, path) {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new TypeError(`${path} must be a non-negative safe integer`);
+  }
+  return Number(value);
+}

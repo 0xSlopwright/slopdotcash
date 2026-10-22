@@ -21,6 +21,7 @@
     "contracts/solana/adapter.ts",
     "contracts/vault-totals.ts",
     "src/lib/base58.ts",
+    "src/lib/byte-encoding.ts",
     "src/lib/canonical-json.ts",
     "src/lib/points.ts",
     "src/lib/payout-points.ts",

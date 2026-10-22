@@ -29,19 +29,14 @@ import {
   type SecurityBountyTerms,
   securityBountySplit,
 } from "./lib/security-bounty.mjs";
-import { ExternalLinkAnchor, NotFound } from "./Presentation";
+import {
+  ExternalLinkAnchor,
+  formatNullableUtc as formatUtc,
+  NotFound,
+} from "./Presentation";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";
-}
-
-function formatUtc(value: string | null): string {
-  if (value === null) return "—";
-  return `${new Date(value).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  })} UTC`;
 }
 
 function amounts(terms: SecurityBountyTerms) {

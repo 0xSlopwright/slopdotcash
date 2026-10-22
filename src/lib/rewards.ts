@@ -7,7 +7,11 @@ export type {
   WalletProof,
 } from "./wallet-proof";
 
-import { exactKeys, readRecord as record } from "./record-validation.mjs";
+import {
+  exactKeys,
+  readRecord as record,
+  nonNegativeInteger as safeInteger,
+} from "./record-validation.mjs";
 /**
  * Validates public reward-allocation and external-share manifests.
  * All monetary values remain canonical integer minor units and every approved
@@ -216,13 +220,6 @@ function minor(value: unknown, path: string): string {
   const result = text(value, path, { pattern: /^(?:0|[1-9]\d*)$/u });
   BigInt(result);
   return result;
-}
-
-function safeInteger(value: unknown, path: string): number {
-  if (!Number.isSafeInteger(value) || Number(value) < 0) {
-    throw new TypeError(`${path} must be a non-negative safe integer`);
-  }
-  return Number(value);
 }
 
 function sha256(value: unknown, path: string): string {

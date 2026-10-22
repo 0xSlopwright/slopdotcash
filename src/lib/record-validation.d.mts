@@ -12,3 +12,8 @@ export declare function exactKeys(
   field: string,
 ): void;
 export declare function timestamp(value: unknown, field: string): string;
+
+export declare function nonNegativeInteger(
+  value: unknown,
+  path: string,
+): number;

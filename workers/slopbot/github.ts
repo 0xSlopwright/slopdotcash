@@ -1,3 +1,5 @@
+import { encodeBase64Url } from "../../src/lib/byte-encoding";
+
 // GitHub App plumbing: webhook signatures, App JWT, installation tokens, and
 // the few REST calls Slopbot is allowed to make (BOT-01, slopbot-v2 permissions).
 
@@ -40,12 +42,7 @@ export async function verifyWebhookSignature(
 function base64url(input: ArrayBuffer | string): string {
   const bytes =
     typeof input === "string" ? encoder.encode(input) : new Uint8Array(input);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(/=+$/u, "");
+  return encodeBase64Url(bytes);
 }
 
 // GitHub issues PKCS#1 keys; Workers WebCrypto imports PKCS#8 only. The secret

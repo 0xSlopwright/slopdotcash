@@ -1,3 +1,4 @@
+import { formatNullableUtc as time } from "./Presentation";
 /**
  * The admin view of community project security vetting (PRD VET-01 to
  * VET-08). It shows each project's revision-bound clearance, the restricted
@@ -65,15 +66,6 @@ const STATE_TEXT: Record<AssessmentState, string> = {
   clean: "Clean",
   malicious: "Confirmed malicious",
 };
-
-function time(value: string | null): string {
-  if (value === null) return "—";
-  return `${new Date(value).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "UTC",
-  })} UTC`;
-}
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";

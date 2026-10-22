@@ -53,6 +53,16 @@ export function formatDateTime(value: string): string {
   }).format(new Date(value))} UTC`;
 }
 
+/** Optional admin timestamps use a medium date and a short UTC time. */
+export function formatNullableUtc(value: string | null): string {
+  if (value === null) return "—";
+  return `${new Date(value).toLocaleString("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "UTC",
+  })} UTC`;
+}
+
 export function formatDate(value: string): string {
   return new Intl.DateTimeFormat("en-US", {
     day: "numeric",
