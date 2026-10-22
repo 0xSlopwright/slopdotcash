@@ -585,11 +585,13 @@ function RepositoryPicker({
       ? projectSession.session.githubLogin
       : null;
   const session = projectSession.status;
+  const [attempt, setAttempt] = useState(0);
   const [list, setList] = useState<
     | { status: "loading" }
     | { status: "ready"; repositories: OwnedRepository[] }
     | { status: "error"; message: string }
   >({ status: "loading" });
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt explicitly retries a failed repository request.
   useEffect(() => {
     if (!login) return;
     const controller = new AbortController();
@@ -611,7 +613,7 @@ function RepositoryPicker({
       },
     );
     return () => controller.abort();
-  }, [login]);
+  }, [login, attempt]);
   if (session === "checking")
     return (
       <p className="repository-picker-status" role="status">
@@ -629,7 +631,7 @@ function RepositoryPicker({
         </a>
         <p className="repository-picker-status">
           {session === "error" ? "We couldn’t check your session. " : ""}
-          Sign in to choose from your repositories, or enter one below.
+          Sign in to choose your repository. You can keep drafting below.
         </p>
       </div>
     );
@@ -642,7 +644,15 @@ function RepositoryPicker({
   if (list.status === "error")
     return (
       <p className="repository-picker-status field-error" role="status">
-        {list.message} Enter the repository below.
+        {list.message}{" "}
+        <button
+          type="button"
+          className="text-button"
+          onClick={() => setAttempt((value) => value + 1)}
+        >
+          Retry repositories
+        </button>{" "}
+        Or enter the repository below.
       </p>
     );
   if (list.repositories.length === 0)
@@ -1327,14 +1337,7 @@ export default function ProjectProposalPage() {
                     ? "Looking up…"
                     : "Look up on GitHub"}
                 </button>
-              ) : (
-                <a
-                  className="button secondary-button"
-                  href={loginHref("/projects/new")}
-                >
-                  Sign in to look up repository
-                </a>
-              )}
+              ) : null}
             </div>
             <p
               className={
@@ -1356,7 +1359,7 @@ export default function ProjectProposalPage() {
             />
             <TextField
               error={shown("stewardName")}
-              hint="The GitHub identity that stewards this project. Stewardship is not a claim of ownership or wallet control."
+              hint="The person or organization responsible for the repository."
               label="Steward display name"
               name="stewardName"
               onChange={set("stewardName")}

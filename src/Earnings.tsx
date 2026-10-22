@@ -329,6 +329,17 @@ export function EarningsPage({
     );
   }
 
+  const walletDetailChains = ESCROW_CHAINS.filter(
+    (chain) =>
+      data &&
+      (data.wallets.some((wallet) => wallet.chain === chain) ||
+        data.balances.some(
+          (balance) => balance.chain === chain && balance.netBase !== "0",
+        ) ||
+        data.walletObservations.some(
+          (observation) => observation.chain === chain,
+        )),
+  );
   const Root = walletsOnly ? "section" : "main";
   return (
     <Root
@@ -377,6 +388,9 @@ export function EarningsPage({
         <p>
           Choose a wallet for your {picker ? networkName[picker] : ""} payouts.
         </p>
+        {picker && EVM_CHAINS.includes(picker) ? (
+          <p>Wallet confirmation does not require switching networks.</p>
+        ) : null}
         <div className="wallet-picker-list">
           {wallets
             .filter((wallet) => picker && wallet.family === chainFamily(picker))
@@ -467,8 +481,29 @@ export function EarningsPage({
           {error && <p>Showing the last verified account response.</p>}
           {walletsOnly ? (
             <>
+              {walletDetailChains.length < ESCROW_CHAINS.length ? (
+                <fieldset className="admin-fieldset">
+                  <legend>Add a payout wallet</legend>
+                  <div className="handoff-actions">
+                    {ESCROW_CHAINS.filter(
+                      (chain) => !walletDetailChains.includes(chain),
+                    ).map((chain) => (
+                      <button
+                        key={chain}
+                        id={`${heading}-${chain}`}
+                        className="button secondary-button"
+                        type="button"
+                        disabled={busy !== null || pendingChange !== null}
+                        onClick={() => setPicker(chain)}
+                      >
+                        Connect {networkName[chain]} wallet
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+              ) : null}
               <section aria-label="Payout wallets" className="earnings-wallets">
-                {ESCROW_CHAINS.map((chain) => {
+                {walletDetailChains.map((chain) => {
                   const wallet = data.wallets.find((w) => w.chain === chain);
                   // Each network and asset keeps its own balance; never summed.
                   const unpaid = data.balances.filter(
@@ -508,9 +543,6 @@ export function EarningsPage({
                         <p>
                           Add a {networkName[chain]} wallet to receive awards on
                           this network.
-                          {EVM_CHAINS.includes(chain)
-                            ? " Signing this consent does not require your wallet to be switched to this network."
-                            : ""}
                         </p>
                       )}
                       {!wallet?.authorized &&
@@ -706,7 +738,7 @@ export function EarningsPage({
                                   paid: "Paid, verified on chain",
                                   needs_wallet: `Add or confirm ${networkName[payment.chain]} wallet`,
                                   awaiting_binding:
-                                    "Awaiting automatic payment",
+                                    "Funded, awaiting wallet binding",
                                   submitted:
                                     "Submitted, waiting for chain verification",
                                   held: "Payment held, funds remain reserved",

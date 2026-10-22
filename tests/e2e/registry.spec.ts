@@ -138,7 +138,9 @@ async function queueScan(
   reason: string,
   revision = 1,
 ) {
-  await admin.goto("/admin", { waitUntil: "networkidle" });
+  await admin.goto(`/admin?project=${encodeURIComponent(projectId)}`, {
+    waitUntil: "networkidle",
+  });
   const card = admin.getByRole("article", {
     name: `Security vetting for ${projectId}`,
   });
@@ -285,7 +287,7 @@ test("a signed-out visitor must sign in to look up GitHub and submit @registry",
     page.getByRole("button", { name: "Look up on GitHub" }),
   ).toHaveCount(0);
   await expect(
-    page.getByRole("link", { name: "Sign in to look up repository" }),
+    page.getByRole("link", { name: "Sign in with GitHub", exact: true }),
   ).toHaveAttribute("href", /\/login\?next=%2Fprojects%2Fnew$/u);
   await expect(
     page.getByRole("link", { name: "Sign in with GitHub", exact: true }),
@@ -491,7 +493,9 @@ test("an owner's proof and generated skills reach the admin, who lists and delis
     path: test.info().outputPath("approved-application-deep-link.png"),
     fullPage: true,
   });
-  await admin.goto("/admin", { waitUntil: "networkidle" });
+  await admin.goto(`/admin?project=${project.id}`, {
+    waitUntil: "networkidle",
+  });
 
   // The installer's trust root: the exact approved bytes and their digest.
   const revision = await (
@@ -800,7 +804,9 @@ test("moderators restrict a project and refuse reinstatement without canonical s
   const admin = await adminContext.newPage();
   const adminErrors = observe(admin);
   await signIn(admin, ADMIN_TOKEN);
-  await admin.goto("/admin", { waitUntil: "networkidle" });
+  await admin.goto(`/admin?project=${project.id}`, {
+    waitUntil: "networkidle",
+  });
   const card = () =>
     admin.locator(".admin-card", {
       has: admin.getByText(project.id, { exact: true }),
@@ -946,7 +952,9 @@ test("moderators restrict a project and refuse reinstatement without canonical s
   const moderator = await moderatorContext.newPage();
   const moderatorErrors = observe(moderator);
   await signIn(moderator, MODERATOR_TOKEN);
-  await moderator.goto("/admin", { waitUntil: "networkidle" });
+  await moderator.goto(`/admin?project=${project.id}`, {
+    waitUntil: "networkidle",
+  });
   const moderatorPanel = moderator
     .locator(".admin-card", {
       has: moderator.getByText(project.id, { exact: true }),
@@ -1165,7 +1173,9 @@ test.describe("private evidence console", () => {
         })
       ).status(),
     ).toBe(403);
-    await page.goto("/admin", { waitUntil: "networkidle" });
+    await page.goto(`/admin?project=${fixtureProjects().queued.id}`, {
+      waitUntil: "networkidle",
+    });
     const consoleLink = page.locator(`a[href="${path}"]`);
     await consoleLink
       .locator("xpath=ancestor::details")
@@ -1257,4 +1267,41 @@ test.describe("private evidence console", () => {
         test.info().outputPath("private-evidence-walkthrough.webm"),
       );
   });
+});
+
+test("repository lookup failures explain the next action and preserve the draft @registry", async ({
+  browser,
+}) => {
+  const context = await browser.newContext(walkthroughOptions());
+  const page = await context.newPage();
+  await signIn(page, OWNER_TOKEN);
+  await page.goto("/projects/new", { waitUntil: "networkidle" });
+  const repository = page.getByRole("textbox", {
+    name: "Public GitHub repository",
+    exact: true,
+  });
+  for (const [name, message] of [
+    ["lookup-rate-limited", "GitHub limited lookups."],
+    ["lookup-unavailable", "GitHub returned 503."],
+  ]) {
+    await repository.fill(`e2e-owner/${name}`);
+    await page
+      .getByRole("button", { name: "Look up on GitHub", exact: true })
+      .click();
+    await expect(page.locator(".lookup-status")).toContainText(message);
+    await expect(repository).toHaveValue(`e2e-owner/${name}`);
+    await expect(page.locator("main")).not.toContainText(
+      "Private upstream diagnostic",
+    );
+  }
+  await repository.fill(fixtureProjects().owned.repository);
+  await page
+    .getByRole("button", { name: "Look up on GitHub", exact: true })
+    .click();
+  await expect(page.locator(".lookup-status")).toContainText("Found ");
+  await page.screenshot({
+    path: test.info().outputPath("repository-lookup-recovery.png"),
+    fullPage: true,
+  });
+  await context.close();
 });

@@ -224,7 +224,7 @@ function AssessmentDetails({ assessment }: { assessment: AdminAssessment }) {
   );
 }
 
-export function VettingSection() {
+export function VettingSection({ projectId }: { projectId: string }) {
   const [state, setState] = useState<
     | { status: "loading" }
     | { status: "error"; message: string }
@@ -258,11 +258,8 @@ export function VettingSection() {
         <h2 id="admin-vetting">Security vetting</h2>
       </div>
       <p className="admin-status">
-        A secure virtual machine scans each exact project revision before Slop
-        serves its skills or lets it become active. Only a clean result clears a
-        revision. An incomplete result quarantines it, and a confirmed malicious
-        result bans the project. A changed revision needs a new scan; a revision
-        that only changes the status of a cleared one keeps its clearance.
+        Review the exact revision before activation. Incomplete scans quarantine
+        it; confirmed malicious results ban it.
       </p>
       {note ? (
         <p className="admin-status" role="status">
@@ -288,95 +285,98 @@ export function VettingSection() {
               {state.value.service.reason}
             </p>
           ) : null}
-          {state.value.projects.length === 0 ? (
+          {!state.value.projects.some((project) => project.id === projectId) ? (
             <p className="admin-status">No projects are listed yet.</p>
           ) : (
-            state.value.projects.map((project) => {
-              const clearance = project.clearance;
-              const history = state.value.assessments.filter(
-                (assessment) => assessment.projectId === project.id,
-              );
-              const queued = history.some(
-                (assessment) =>
-                  assessment.state === "pending" &&
-                  assessment.revision === project.revision,
-              );
-              return (
-                <article
-                  aria-label={`Security vetting for ${project.id}`}
-                  className="admin-card"
-                  key={project.id}
-                >
-                  <header>
-                    <h3>{project.name}</h3>
-                    <span
-                      className={`admin-badge admin-badge-vetting-${clearance.state}`}
-                    >
-                      {LABELS[clearance.state]}
-                    </span>
-                  </header>
-                  <dl className="admin-facts">
-                    <div>
-                      <dt>Current revision</dt>
-                      <dd>
-                        {project.id} · revision {project.revision} ·{" "}
-                        {project.status}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>Decided by</dt>
-                      <dd>
-                        {clearance.state === "unscanned"
-                          ? "No scan of this content yet"
-                          : clearance.state === "unverified"
-                            ? clearance.reason
-                            : clearance.state === "stale"
-                              ? `No scan of the live branch head ${clearance.live.commitSha} with skill template ${clearance.live.templateSha256}. The last scan covered ${clearance.assessment.commitSha}.`
-                              : `Scan of revision ${clearance.assessment.revision} · ${STATE_TEXT[clearance.assessment.state]}`}
-                      </dd>
-                    </div>
-                    {"assessment" in clearance ? (
+            state.value.projects
+              .filter((project) => project.id === projectId)
+              .map((project) => {
+                const clearance = project.clearance;
+                const history = state.value.assessments.filter(
+                  (assessment) => assessment.projectId === project.id,
+                );
+                const queued = history.some(
+                  (assessment) =>
+                    assessment.state === "pending" &&
+                    assessment.revision === project.revision,
+                );
+                return (
+                  <article
+                    aria-label={`Security vetting for ${project.id}`}
+                    className="admin-card"
+                    key={project.id}
+                  >
+                    <header>
+                      <h3>{project.name}</h3>
+                      <span
+                        className={`admin-badge admin-badge-vetting-${clearance.state}`}
+                      >
+                        {LABELS[clearance.state]}
+                      </span>
+                    </header>
+                    <dl className="admin-facts">
                       <div>
-                        <dt>Held artifacts</dt>
+                        <dt>Current revision</dt>
                         <dd>
-                          {clearance.assessment.heldArtifacts} of{" "}
-                          {clearance.assessment.artifacts}
+                          {project.id} · revision {project.revision} ·{" "}
+                          {project.status}
                         </dd>
                       </div>
+                      <div>
+                        <dt>Decided by</dt>
+                        <dd>
+                          {clearance.state === "unscanned"
+                            ? "No scan of this content yet"
+                            : clearance.state === "unverified"
+                              ? clearance.reason
+                              : clearance.state === "stale"
+                                ? `No scan of the live branch head ${clearance.live.commitSha} with skill template ${clearance.live.templateSha256}. The last scan covered ${clearance.assessment.commitSha}.`
+                                : `Scan of revision ${clearance.assessment.revision} · ${STATE_TEXT[clearance.assessment.state]}`}
+                        </dd>
+                      </div>
+                      {"assessment" in clearance ? (
+                        <div>
+                          <dt>Held artifacts</dt>
+                          <dd>
+                            {clearance.assessment.heldArtifacts} of{" "}
+                            {clearance.assessment.artifacts}
+                          </dd>
+                        </div>
+                      ) : null}
+                    </dl>
+                    {clearance.state === "banned" ? (
+                      <p className="form-error">
+                        <CircleAlert aria-hidden="true" /> Confirmed malicious.
+                        Skills, discovery and activation are blocked. A new scan
+                        cannot lift a ban.
+                      </p>
                     ) : null}
-                  </dl>
-                  {clearance.state === "banned" ? (
-                    <p className="form-error">
-                      <CircleAlert aria-hidden="true" /> Confirmed malicious.
-                      Skills, discovery and activation are blocked. A new scan
-                      cannot lift a ban.
-                    </p>
-                  ) : null}
-                  {state.value.service.queueRegistrationAvailable && !queued ? (
-                    <QueueScan
-                      onQueued={() => {
-                        setNote(
-                          `Queued a scan of ${project.id} revision ${project.revision}.`,
-                        );
-                        load();
-                      }}
-                      project={project}
-                    />
-                  ) : null}
-                  {history.length > 0 ? (
-                    <>
-                      <h4>Scan history</h4>
-                      {history.map((assessment) => (
-                        <AssessmentDetails
-                          assessment={assessment}
-                          key={assessment.id}
-                        />
-                      ))}
-                    </>
-                  ) : null}
-                </article>
-              );
-            })
+                    {state.value.service.queueRegistrationAvailable &&
+                    !queued ? (
+                      <QueueScan
+                        onQueued={() => {
+                          setNote(
+                            `Queued a scan of ${project.id} revision ${project.revision}.`,
+                          );
+                          load();
+                        }}
+                        project={project}
+                      />
+                    ) : null}
+                    {history.length > 0 ? (
+                      <>
+                        <h4>Scan history</h4>
+                        {history.map((assessment) => (
+                          <AssessmentDetails
+                            assessment={assessment}
+                            key={assessment.id}
+                          />
+                        ))}
+                      </>
+                    ) : null}
+                  </article>
+                );
+              })
           )}
         </>
       )}

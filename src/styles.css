@@ -361,7 +361,7 @@ textarea:focus-visible {
 
 .payment-stages {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   margin: 28px 0 0;
   padding: 0;
   list-style: none;
@@ -4830,4 +4830,16 @@ small {
   .standings-scroll-hint {
     display: block;
   }
+}
+
+.admin-project-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.admin-project-summary h3,
+.admin-project-summary p {
+  margin: 0;
 }
