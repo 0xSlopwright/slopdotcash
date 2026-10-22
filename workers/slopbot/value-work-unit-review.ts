@@ -149,6 +149,7 @@ export function validateWorkUnitAssessment(
 export async function assessWorkUnits(
   env: ModelEnv,
   evidence: WorkUnitEvidence,
+  mayCall: () => Promise<boolean>,
 ) {
   if (evidence.limitations.length > 0)
     throw new Error(
@@ -171,6 +172,7 @@ Joint assessment: return units under the supplied joint schema. Partition EVERY 
       schema: WORK_UNIT_SCHEMA,
       validate: (value) => validateWorkUnitAssessment(value, evidence),
     },
+    mayCall,
   );
   return {
     ...result,

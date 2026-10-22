@@ -16,6 +16,7 @@ export async function assessValue(
   env: ModelEnv,
   evidence: ValueEvidence,
   policy: { sha: string; text: string },
+  mayCall: () => Promise<boolean>,
 ) {
   if (evidence.limitations.length > 0)
     throw new Error("Complete source evidence is required before valuation");
@@ -36,6 +37,7 @@ export async function assessValue(
       schema: VALUE_ASSESSMENT_SCHEMA,
       validate: (value) => validateEvidenceAssessment(value, evidence),
     },
+    mayCall,
   );
   return {
     rubricVersion: VALUE_RUBRIC_VERSION,

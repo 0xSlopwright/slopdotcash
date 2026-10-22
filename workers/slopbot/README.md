@@ -751,3 +751,20 @@ before this fix. Afterward, absent and paused projects append zero records,
 including a pause recorded during source reads. The active-project control
 appends one record; installation deselection still appends none. These checks
 make no model calls and do not publish production scores.
+
+### Authority before each valuation request
+
+Single and grouped API assessments require a caller-supplied guard before every
+provider attempt, including fallback. The dispatcher must use that guard to
+check its lease, live project authority and reserved inference budget. A refused
+or unavailable guard returns `blocked: true` and retains earlier call receipts.
+It does not publish an assessment or erase incurred usage. This callback is not
+itself a budget reservation; automatic dispatch remains incomplete.
+
+A local HTTP replay used both actual assessment entry points and the provider
+SDK with captured source evidence. Before the repair, neither entry point could
+receive the guard and each made two requests despite denial. After the repair,
+initial denial made no request; revocation or a guard error before fallback made
+one request and retained its usage and provider cost. The allowed control made
+both requests. Responses were local schema-invalid fixtures, not real inference
+or provider acceptance. No paid model request or score publication occurred.

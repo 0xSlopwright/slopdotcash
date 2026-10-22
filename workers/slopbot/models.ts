@@ -109,7 +109,7 @@ export async function runStructuredRoute<T>(
     schema: Record<string, unknown>;
     validate(value: unknown): T | null;
   },
-  mayCall?: () => Promise<boolean>,
+  mayCall: () => Promise<boolean>,
 ): Promise<{
   verdict: T | null;
   calls: CallRecord[];
@@ -121,7 +121,7 @@ export async function runStructuredRoute<T>(
   for (const [index, step] of route.entries()) {
     // Recheck after a failed provider call, before starting the fallback.
     try {
-      if (mayCall && !(await mayCall()))
+      if (!(await mayCall()))
         return { verdict: null, calls, servedBy: null, blocked: true };
     } catch {
       // Return prior usage so the caller records it before retrying the job.
