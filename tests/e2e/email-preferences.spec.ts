@@ -17,11 +17,6 @@ test("verified activity email preference persists and can be withdrawn @registry
   const page = await context.newPage();
   const errors: string[] = [];
   const failures: string[] = [];
-  await page.goto("/how-it-works", { waitUntil: "networkidle" });
-  await page.evaluate(() => document.fonts.ready.then(() => undefined));
-  await page.evaluate((token) => {
-    document.cookie = `__Host-slop_points=${token}; Path=/; Secure; SameSite=Strict`;
-  }, token);
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("response", (response) => {
     if (
@@ -35,6 +30,14 @@ test("verified activity email preference persists and can be withdrawn @registry
       `${new URL(request.url()).pathname} ${request.failure()?.errorText}`,
     ),
   );
+  await page.goto("/how-it-works", { waitUntil: "domcontentloaded" });
+  await expect(
+    page.getByRole("heading", { name: "How Slop works", exact: true }),
+  ).toBeVisible();
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  await page.evaluate((token) => {
+    document.cookie = `__Host-slop_points=${token}; Path=/; Secure; SameSite=Strict`;
+  }, token);
   await page.goto("/inbox", { waitUntil: "networkidle" });
   const preferences = page.getByRole("region", { name: "Email preferences" });
   await expect(preferences).toContainText("applicant@example.com");
