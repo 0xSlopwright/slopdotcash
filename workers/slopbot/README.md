@@ -844,3 +844,19 @@ stores both receipts. Every case records zero contributor charges. Responses
 are controlled local fixtures, not live model acceptance. Durable request
 consumption, approved production configuration and live publication remain
 unfinished.
+
+### Durable request claims (consumer integration pending)
+
+Migration `0052_slopbot_value_processing.sql` separates operational claims from
+immutable request history. A ten-minute lease has a unique token. Only the
+current unexpired owner may finish a request. A disappeared worker can be
+reclaimed after expiry; its old token cannot report success. An explicit retry
+time retains budget, authority and evidence blocks. Published/current outcomes
+and open-context dispositions complete that delivery only; a later source event
+has its own request. The consumer must check ownership before external calls
+and publication. The scheduler and complete consumer are not yet connected.
+
+A file-backed SQLite replay verifies one concurrent winner, process restart,
+expiry/reclaim, rejection of a stale completion, scheduled budget retry and a
+terminal open-context disposition. The immutable request remains present. This
+is durable-state evidence, not a model, queue or publication acceptance result.
