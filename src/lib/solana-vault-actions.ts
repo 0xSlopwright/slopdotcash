@@ -133,6 +133,23 @@ export async function sendSolanaVaultAction(
   if (!wallet.solanaSend || plan.wallet !== wallet.address)
     throw new Error("Connect and review the intended wallet again.");
   const msg = planMessage(deployment, plan);
+  return sendSolanaWalletTransaction(
+    deployment,
+    wallet,
+    plan.transaction,
+    msg,
+    beforeSend,
+  );
+}
+export async function sendSolanaWalletTransaction(
+  deployment: EscrowDeployment,
+  wallet: VaultConnection,
+  transaction: string,
+  msg: Uint8Array,
+  beforeSend: () => void,
+) {
+  if (!wallet.solanaSend)
+    throw new Error("Choose a wallet with Solana transaction support.");
   const chain = (
     {
       "solana-mainnet": "solana:mainnet",
@@ -144,7 +161,7 @@ export async function sendSolanaVaultAction(
   ];
   if (!chain) throw new Error("Unsupported Solana network.");
   const signature = await wallet.solanaSend(
-    decode(plan.transaction),
+    decode(transaction),
     chain,
     beforeSend,
   );

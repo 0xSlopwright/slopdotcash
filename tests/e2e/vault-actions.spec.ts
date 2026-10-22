@@ -495,5 +495,202 @@ test("depositor funds a real vault, recovers a submitted transaction and owner w
         .analyze()
     ).violations,
   ).toEqual([]);
+  // Public approval is a controlled fixture here; wallet execution and reserve
+  // verification use the actual local contract and canonical finalized blocks.
+  forceFailedTransaction = false;
+  ambiguous = false;
+  const commitment = {
+    schemaVersion: "1",
+    projectId: "eliza",
+    cycleId: "2026-09",
+    manifestSha256: "a".repeat(64),
+    proposalSha256: "b".repeat(64),
+    decisionsSha256: "c".repeat(64),
+    deployment,
+    award: {
+      githubUserId: "1234",
+      login: "local-contributor",
+      sourceDigest: "d".repeat(64),
+      gross: "2000000",
+      fee: "40000",
+      net: "1960000",
+    },
+  };
+  let reviewAvailable = true;
+  let reviewReads = 0;
+  await page.route(
+    "**/api/v1/payments/projects/eliza/awards/2026-09",
+    (route) => {
+      reviewReads++;
+      return route.fulfill({
+        status: reviewAvailable ? 200 : 503,
+        json: reviewAvailable
+          ? {
+              projectId: "eliza",
+              cycleId: "2026-09",
+              projectRevision: 1,
+              manifestSha256: commitment.manifestSha256,
+              proposalSha256: commitment.proposalSha256,
+              sourceUrl: "https://github.com/SlopDotCash/slopdotcash",
+              deployments: [deployment],
+              asset: project.rewardAsset,
+              proposal: {
+                awards: [
+                  {
+                    githubUserId: "1234",
+                    login: "local-contributor",
+                    grossMicro: "2000000",
+                  },
+                ],
+              },
+              decisions: {
+                rows: [
+                  {
+                    githubUserId: "1234",
+                    state: "approved",
+                    approvedGrossMicro: "2000000",
+                    adjustmentReason: null,
+                    relatedParty: false,
+                  },
+                ],
+              },
+              review: { decisionsSha256: commitment.decisionsSha256 },
+              reviewVerified: true,
+              reviewEndsAt: "2026-10-15T00:00:00.000Z",
+              blockedReason: null,
+            }
+          : { message: "Review temporarily unavailable" },
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/payments/projects/eliza/awards/2026-09/commitment",
+    (route) => {
+      expect(route.request().postDataJSON()).toEqual({
+        network: deployment.network,
+        githubUserId: "1234",
+        manifestSha256: commitment.manifestSha256,
+        proposalSha256: commitment.proposalSha256,
+        decisionsSha256: commitment.decisionsSha256,
+      });
+      return route.fulfill({ json: commitment });
+    },
+  );
+  await page.goto("/projects/eliza/awards");
+  await page.getByLabel("Contribution month").fill("2026-09");
+  await page.getByRole("button", { name: "Load awards", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Review commitment for local-contributor" })
+    .click();
+  const ownerActions = page.getByRole("region", {
+    name: "Authorize award commitment",
+    exact: true,
+  });
+  account = donor;
+  await ownerActions
+    .getByRole("button", { name: "Connect MetaMask", exact: true })
+    .click();
+  await ownerActions
+    .getByRole("button", { name: "Verify award and funding" })
+    .click();
+  await expect(ownerActions.getByRole("alert")).toContainText("owner's wallet");
+  await ownerActions
+    .getByRole("button", { name: "Choose another wallet" })
+    .click();
+  account = owner;
+  await ownerActions
+    .getByRole("button", { name: "Connect MetaMask", exact: true })
+    .click();
+  await ownerActions
+    .getByRole("button", { name: "Verify award and funding" })
+    .click();
+  await expect(
+    ownerActions.getByRole("region", {
+      name: "Commitment review",
+      exact: true,
+    }),
+  ).toContainText("1.96");
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.screenshot({
+    path: info.outputPath("owner-commitment-review.png"),
+    fullPage: true,
+  });
+  rejected = true;
+  await ownerActions
+    .getByRole("button", { name: "Authorize this award in wallet" })
+    .click();
+  await expect(ownerActions.getByRole("alert")).toContainText("You declined");
+  expect(sends).toHaveLength(4);
+  rejected = false;
+  ambiguous = true;
+  await ownerActions
+    .getByRole("button", { name: "Authorize this award in wallet" })
+    .click();
+  await expect(ownerActions.getByRole("alert")).toContainText(
+    "wallet result is unclear",
+  );
+  expect(sends).toHaveLength(5);
+  reviewAvailable = false;
+  await page.reload();
+  await expect(ownerActions).toBeVisible();
+  await ownerActions
+    .getByRole("button", { name: "Connect MetaMask", exact: true })
+    .click();
+  await expect(
+    ownerActions.getByRole("button", {
+      name: "Authorize this award in wallet",
+    }),
+  ).toHaveCount(0);
+  expect(reviewReads).toBe(1);
+  await ownerActions.getByLabel("Commitment transaction hash").fill(sends[1]);
+  await ownerActions.getByRole("button", { name: "Check commitment" }).click();
+  await expect(ownerActions.getByRole("alert")).toContainText(
+    "does not match the pending wallet action",
+  );
+  await ownerActions.getByLabel("Commitment transaction hash").fill(sends[4]);
+  await rpc("anvil_mine", ["0x40"]);
+  await ownerActions.getByRole("button", { name: "Check commitment" }).click();
+  await expect(ownerActions.getByRole("status")).toContainText(
+    "Award reserved on the finalized chain",
+  );
+  const counters = parseAbi([
+    "function reservedPrincipal() view returns (uint128)",
+    "function reservedFees() view returns (uint128)",
+  ]);
+  for (const [functionName, expected] of [
+    ["reservedPrincipal", 1960000n],
+    ["reservedFees", 40000n],
+  ] as const) {
+    expect(
+      BigInt(
+        await rpc("eth_call", [
+          {
+            to: deployment.vault,
+            data: encodeFunctionData({ abi: counters, functionName }),
+          },
+          "latest",
+        ]),
+      ),
+    ).toBe(expected);
+  }
+  await ownerActions
+    .getByRole("button", { name: "Verify award and funding" })
+    .click();
+  await expect(ownerActions.getByRole("alert")).toContainText(
+    "already committed",
+  );
+  expect(sends).toHaveLength(5);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
   expect(errors).toEqual([]);
 });

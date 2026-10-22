@@ -48,7 +48,10 @@ export function walletVaultConfig(
     request: wallet.evmRequest,
   };
 }
-async function assertAccount(wallet: VaultConnection, config: EvmEscrowConfig) {
+export async function assertVaultWalletAccount(
+  wallet: VaultConnection,
+  config: EvmEscrowConfig,
+) {
   const request = wallet.evmRequest;
   if (!request) throw new Error("Choose an EVM wallet.");
   const accounts = await request("eth_accounts", []);
@@ -76,7 +79,7 @@ export async function reviewVaultAction(
   amount: string,
 ) {
   const config = walletVaultConfig(deployment, wallet);
-  await assertAccount(wallet, config);
+  await assertVaultWalletAccount(wallet, config);
   await verifyEvmDeployment(config);
   const totals = await readVaultTotals({
     ...config,
@@ -172,7 +175,7 @@ export async function sendVaultAction(
     value: "0x0",
   };
   await request("eth_estimateGas", [transaction]);
-  await assertAccount(wallet, walletVaultConfig(deployment, wallet));
+  await assertVaultWalletAccount(wallet, walletVaultConfig(deployment, wallet));
   beforeSend();
   const hash = await request("eth_sendTransaction", [transaction]);
   if (typeof hash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(hash))
@@ -191,30 +194,7 @@ export async function checkVaultAction(
   transactionId: string,
   step: "approve" | "reset" | "send",
 ) {
-  const request = wallet.evmRequest;
-  if (!request) throw new Error("Choose an EVM wallet.");
   const config = walletVaultConfig(deployment, wallet);
-  await assertAccount(wallet, config);
-  if (!/^0x[0-9a-fA-F]{64}$/.test(transactionId))
-    throw new Error("Enter a transaction hash from your wallet.");
-  const receipt = (await request("eth_getTransactionReceipt", [
-    transactionId,
-  ])) as {
-    status: string;
-    transactionHash: string;
-    blockNumber: string;
-    blockHash: string;
-    logs: { address: string; topics: string[]; logIndex: string }[];
-  } | null;
-  if (!receipt) return "pending";
-  const transaction = (await request("eth_getTransactionByHash", [
-    transactionId,
-  ])) as {
-    from: string;
-    to: string;
-    input: string;
-    value: string;
-  } | null;
   const expectedInput =
     step === "send"
       ? (operation === "deposit"
@@ -228,34 +208,15 @@ export async function checkVaultAction(
             step === "reset" ? 0n : BigInt(gross),
           ],
         });
-  if (
-    !transaction ||
-    transaction.from.toLowerCase() !== wallet.address.toLowerCase() ||
-    transaction.to?.toLowerCase() !==
-      (step === "send" ? deployment.vault : deployment.asset).toLowerCase() ||
-    transaction.input.toLowerCase() !== expectedInput.toLowerCase() ||
-    BigInt(transaction.value) !== 0n
-  )
-    throw new Error(
-      "This transaction does not match the pending wallet action. Check its hash in your wallet.",
-    );
-  const finalized = (await request("eth_getBlockByNumber", [
-    "finalized",
-    false,
-  ])) as { number: string };
-  if (BigInt(receipt.blockNumber) > BigInt(finalized.number)) return "pending";
-  const block = (await request("eth_getBlockByNumber", [
-    receipt.blockNumber,
-    false,
-  ])) as { hash: string };
-  if (
-    block.hash !== receipt.blockHash ||
-    receipt.transactionHash.toLowerCase() !== transactionId.toLowerCase()
-  )
-    throw new Error("The transaction is not in the canonical finalized chain.");
-  if (receipt.status === "0x0") return "failed";
-  if (receipt.status !== "0x1")
-    throw new Error("The transaction status is not recognized.");
+  const checked = await readFinalizedWalletTransaction(
+    deployment,
+    wallet,
+    transactionId,
+    step === "send" ? deployment.vault : deployment.asset,
+    expectedInput,
+  );
+  if (checked.status !== "finalized") return checked.status;
+  const receipt = checked.receipt;
   if (step !== "send") {
     // Approval never counts as funding; the next review reads the actual allowance again.
     return "approval-confirmed";
@@ -282,4 +243,67 @@ export async function checkVaultAction(
     },
   );
   return "finalized";
+}
+
+/** Verify exact wallet intent and canonical finality before inspecting its domain event. */
+export async function readFinalizedWalletTransaction(
+  deployment: EscrowDeployment,
+  wallet: VaultConnection,
+  transactionId: string,
+  target: string,
+  expectedInput: string,
+) {
+  const request = wallet.evmRequest;
+  if (!request) throw new Error("Choose an EVM wallet.");
+  const config = walletVaultConfig(deployment, wallet);
+  await assertVaultWalletAccount(wallet, config);
+  if (!/^0x[0-9a-fA-F]{64}$/.test(transactionId))
+    throw new Error("Enter a transaction hash from your wallet.");
+  const receipt = (await request("eth_getTransactionReceipt", [
+    transactionId,
+  ])) as {
+    status: string;
+    transactionHash: string;
+    blockNumber: string;
+    blockHash: string;
+    logs: { address: string; topics: string[]; logIndex: string }[];
+  } | null;
+  if (!receipt) return { status: "pending" as const, receipt: null };
+  const transaction = (await request("eth_getTransactionByHash", [
+    transactionId,
+  ])) as {
+    from: string;
+    to: string;
+    input: string;
+    value: string;
+  } | null;
+  if (
+    !transaction ||
+    transaction.from.toLowerCase() !== wallet.address.toLowerCase() ||
+    transaction.to?.toLowerCase() !== target.toLowerCase() ||
+    transaction.input.toLowerCase() !== expectedInput.toLowerCase() ||
+    BigInt(transaction.value) !== 0n
+  )
+    throw new Error(
+      "This transaction does not match the pending wallet action. Check its hash in your wallet.",
+    );
+  const finalized = (await request("eth_getBlockByNumber", [
+    "finalized",
+    false,
+  ])) as { number: string };
+  if (BigInt(receipt.blockNumber) > BigInt(finalized.number))
+    return { status: "pending" as const, receipt: null };
+  const block = (await request("eth_getBlockByNumber", [
+    receipt.blockNumber,
+    false,
+  ])) as { hash: string };
+  if (
+    block.hash !== receipt.blockHash ||
+    receipt.transactionHash.toLowerCase() !== transactionId.toLowerCase()
+  )
+    throw new Error("The transaction is not in the canonical finalized chain.");
+  if (receipt.status === "0x0") return { status: "failed" as const, receipt };
+  if (receipt.status !== "0x1")
+    throw new Error("The transaction status is not recognized.");
+  return { status: "finalized" as const, receipt };
 }

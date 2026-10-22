@@ -4,6 +4,10 @@ import {
   solanaMintDecimals,
 } from "../../contracts/solana/adapter";
 import {
+  checkSolanaCommitment,
+  prepareSolanaCommitment,
+} from "../../contracts/solana/commitment";
+import {
   checkSolanaFunding,
   prepareSolanaFunding,
   SolanaFundingError,
@@ -27,7 +31,12 @@ import { parseVaultAmount } from "../../src/lib/payments/vault-amount";
 import { isWalletAddress, isWalletChain } from "../../src/lib/wallets";
 import { sha256Hex } from "../../workers/identity/crypto";
 import type { D1TransactionalDatabase as D1Database } from "../d1";
-import { OwnerAwardReviewError, type reviewOwnerAwards } from "./owner-review";
+import {
+  OwnerAwardReviewError,
+  type OwnerCommitmentInput,
+  type prepareOwnerCommitment,
+  type reviewOwnerAwards,
+} from "./owner-review";
 import {
   buildPaymentWalletMessage,
   canonicalEvmSignature,
@@ -38,7 +47,26 @@ import { slopbotInvoice } from "./slopbot-billing";
 import { projectVaultSnapshots } from "./vault-snapshots";
 import { registerPaymentWallet } from "./wallet-registration";
 
+function isOwnerCommitmentInput(body: unknown): body is OwnerCommitmentInput {
+  if (!body || typeof body !== "object") return false;
+  const input = body as OwnerCommitmentInput;
+  return (
+    typeof input.network === "string" &&
+    typeof input.githubUserId === "string" &&
+    /^[1-9][0-9]{0,19}$/.test(input.githubUserId) &&
+    [input.proposalSha256, input.decisionsSha256, input.manifestSha256].every(
+      (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value),
+    )
+  );
+}
+
 export interface PaymentsDependencies {
+  ownerCommitment?: (
+    projectId: string,
+    cycleId: string,
+    actor: { githubId: string; githubLogin: string },
+    expected: OwnerCommitmentInput,
+  ) => Promise<Awaited<ReturnType<typeof prepareOwnerCommitment>>>;
   ownerAwardReview?: (
     projectId: string,
     cycleId: string,
@@ -353,6 +381,164 @@ export async function handlePaymentsApi(
       .bind(await sha256Hex(token), now)
       .first<{ github_id: string; login: string }>();
     if (!member) return json(401, { error: "session_expired" });
+    const solanaCommitmentRoute =
+      /^\/projects\/([a-z0-9][a-z0-9-]*)\/awards\/(\d{4}-(?:0[1-9]|1[0-2]))\/solana-commitment$/.exec(
+        path,
+      );
+    if (solanaCommitmentRoute && request.method === "POST") {
+      if (!deps.solanaFundingConfig)
+        return json(503, { error: "owner_commitment_unavailable" });
+      const body = (await readBoundedJson(
+        request,
+        4096,
+        "Solana award commitment",
+      )) as Record<string, unknown>;
+      if (
+        !body ||
+        (body.step !== "review" && body.step !== "check") ||
+        typeof body.network !== "string" ||
+        typeof body.vault !== "string" ||
+        typeof body.wallet !== "string" ||
+        !isWalletAddress("solana", body.wallet)
+      )
+        return json(400, { error: "invalid_commitment_action" });
+      try {
+        if (body.step === "review") {
+          if (!isOwnerCommitmentInput(body))
+            return json(400, { error: "invalid_commitment_review" });
+          if (!deps.ownerCommitment)
+            return json(503, { error: "owner_commitment_unavailable" });
+          const award = await deps.ownerCommitment(
+            solanaCommitmentRoute[1],
+            solanaCommitmentRoute[2],
+            { githubId: member.github_id, githubLogin: member.login },
+            body,
+          );
+          if (
+            award.deployment.vault !== body.vault ||
+            ESCROW_NETWORKS[award.deployment.network].family !== "solana"
+          )
+            return json(409, { error: "commitment_vault_changed" });
+          const config = await deps.solanaFundingConfig(
+            solanaCommitmentRoute[1],
+            body.network,
+            body.vault,
+          );
+          const reviewed = award.deployment;
+          if (
+            config.mint !== reviewed.asset ||
+            [
+              "network",
+              "vault",
+              "programId",
+              "projectPda",
+              "owner",
+              "identityAuthority",
+              "feeRecipient",
+              "codeSha256",
+              "upgradeAuthority",
+              "networkDomain",
+              "bindingDelaySeconds",
+              "rotationDelaySeconds",
+            ].some(
+              (key) =>
+                (config as unknown as Record<string, unknown>)[key] !==
+                (reviewed as unknown as Record<string, unknown>)[key],
+            )
+          )
+            return json(409, {
+              error: "commitment_vault_changed",
+              message:
+                "The vault changed during review. Reload its current awards.",
+            });
+          const transaction = await prepareSolanaCommitment(config, {
+            wallet: body.wallet,
+            sourceDigest: award.award.sourceDigest,
+            githubUserId: award.award.githubUserId,
+            gross: award.award.gross,
+          });
+          return json(200, { plan: award, transaction });
+        }
+        // Recovery reads finalized evidence only. A later hold or review outage must
+        // not hide a transaction already submitted by the owner's wallet.
+        if (
+          typeof body.sourceDigest !== "string" ||
+          !/^[a-f0-9]{64}$/.test(body.sourceDigest) ||
+          typeof body.githubUserId !== "string" ||
+          !/^[1-9][0-9]{0,19}$/.test(body.githubUserId) ||
+          typeof body.gross !== "string" ||
+          !/^[1-9][0-9]{0,19}$/.test(body.gross) ||
+          typeof body.blockhash !== "string" ||
+          !isWalletAddress("solana", body.blockhash) ||
+          typeof body.transactionId !== "string" ||
+          body.transactionId.length > 100
+        )
+          return json(400, { error: "invalid_commitment_check" });
+        const config = await deps.solanaFundingConfig(
+          solanaCommitmentRoute[1],
+          body.network,
+          body.vault,
+        );
+        return json(200, {
+          status: await checkSolanaCommitment(
+            config,
+            {
+              wallet: body.wallet,
+              sourceDigest: body.sourceDigest,
+              githubUserId: body.githubUserId,
+              gross: body.gross,
+              blockhash: body.blockhash,
+            },
+            body.transactionId,
+          ),
+        });
+      } catch (error) {
+        if (error instanceof OwnerAwardReviewError)
+          return json(error.status, {
+            error: "owner_commitment_unavailable",
+            message: error.message,
+          });
+        if (error instanceof SolanaFundingError)
+          return json(422, {
+            error: "commitment_action_rejected",
+            message: error.message,
+          });
+        throw error;
+      }
+    }
+    const ownerCommitmentRoute =
+      /^\/projects\/([a-z0-9][a-z0-9-]*)\/awards\/(\d{4}-(?:0[1-9]|1[0-2]))\/commitment$/.exec(
+        path,
+      );
+    if (ownerCommitmentRoute && request.method === "POST") {
+      if (!deps.ownerCommitment)
+        return json(503, { error: "owner_commitment_unavailable" });
+      const body = (await readBoundedJson(
+        request,
+        4096,
+        "Owner commitment review",
+      )) as OwnerCommitmentInput;
+      if (!isOwnerCommitmentInput(body))
+        return json(400, { error: "invalid_commitment_review" });
+      try {
+        return json(
+          200,
+          await deps.ownerCommitment(
+            ownerCommitmentRoute[1],
+            ownerCommitmentRoute[2],
+            { githubId: member.github_id, githubLogin: member.login },
+            body,
+          ),
+        );
+      } catch (error) {
+        if (error instanceof OwnerAwardReviewError)
+          return json(error.status, {
+            error: "owner_commitment_unavailable",
+            message: error.message,
+          });
+        throw error;
+      }
+    }
     const ownerAwardsRoute =
       /^\/projects\/([a-z0-9][a-z0-9-]*)\/awards\/(\d{4}-(?:0[1-9]|1[0-2]))$/.exec(
         path,

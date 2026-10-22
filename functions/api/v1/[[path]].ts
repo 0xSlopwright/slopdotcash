@@ -17,6 +17,7 @@ import {
 } from "../../../backend/payments/handler";
 import {
   OwnerAwardReviewError,
+  prepareOwnerCommitment,
   reviewOwnerAwards,
 } from "../../../backend/payments/owner-review";
 import {
@@ -30,6 +31,7 @@ import {
 } from "../../../backend/projects/cloudflare-persistence";
 import type { RepositoryControl } from "../../../backend/projects/contracts";
 import { edgeCache } from "../../../backend/projects/edge-cache";
+import { publicRestrictionOf } from "../../../backend/projects/enforcement";
 import { githubApiOrigin } from "../../../backend/projects/github-lookup";
 import {
   type AdminApplicationNotice,
@@ -621,6 +623,53 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       securityPayments: {
         db: securityPaymentDatabase(context.env.SLOP_DB),
         solanaAttester: context.env.SECURITY_SOLANA_IDENTITY_ATTESTER,
+      },
+      ownerCommitment: async (projectId, cycleId, actor, expected) => {
+        const generation = await projectPersistence.enforcementGeneration();
+        const project = await projectPersistence.getProject(projectId);
+        if (!project)
+          throw new OwnerAwardReviewError(404, "Project not found.");
+        if (
+          publicRestrictionOf(
+            project,
+            await projectPersistence.listEnforcements(),
+          ).state !== "clear"
+        )
+          throw new OwnerAwardReviewError(
+            409,
+            "This project is restricted. New award commitments are unavailable.",
+          );
+        if (
+          !parsePaymentNetworks(context.env.PAYMENT_NETWORKS).some(
+            (network) => network === expected.network,
+          )
+        )
+          throw new OwnerAwardReviewError(
+            409,
+            "Award processing is not configured for this network.",
+          );
+        const result = await prepareOwnerCommitment(
+          {
+            project,
+            cycleId,
+            actor,
+            token: context.env.SLOP_GITHUB_READ_TOKEN,
+            now: new Date(),
+          },
+          expected,
+        );
+        const current = await projectPersistence.getProject(projectId);
+        if (
+          !current ||
+          current.revision !== project.revision ||
+          current.manifestSha256 !== project.manifestSha256 ||
+          (await projectPersistence.enforcementGeneration()) !== generation
+        )
+          throw new OwnerAwardReviewError(
+            409,
+            "The project changed during review. Reload its current awards.",
+          );
+        return result;
       },
       ownerAwardReview: async (projectId, cycleId, actor) => {
         const project = await projectPersistence.getProject(projectId);

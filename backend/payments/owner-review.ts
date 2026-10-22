@@ -1,5 +1,6 @@
 import { readBoundedJson, readBoundedText } from "../../src/lib/browser-json";
 import { validateEscrowCycle } from "../../src/lib/payments/escrow-cycle";
+import { resolveEscrowIdentities } from "../../src/lib/payments/escrow-identities";
 import {
   assertEscrowDecisions,
   assertEscrowFinancialPolicy,
@@ -196,11 +197,99 @@ export async function reviewOwnerAwards(input: {
     proposalSha256: verified.digest,
     proposal: verified.proposal,
     asset: archived.rewardAsset ?? null,
+    deployments: project.escrow.deployments,
     decisions,
     review,
     reviewEndsAt,
     blockedReason,
     // A successful public review is not current funding or wallet authorization.
     reviewVerified: review !== null,
+  };
+}
+
+export interface OwnerCommitmentInput {
+  network: string;
+  githubUserId: string;
+  proposalSha256: string;
+  decisionsSha256: string;
+  manifestSha256: string;
+}
+
+/** Rechecks the exact published decision; the owner still signs in their wallet. */
+export async function prepareOwnerCommitment(
+  input: Parameters<typeof reviewOwnerAwards>[0],
+  expected: OwnerCommitmentInput,
+) {
+  const project = input.project.manifest;
+  if (project.status !== "active" || project.reward.paymentMode !== "enabled")
+    throw new OwnerAwardReviewError(
+      409,
+      "This project is not enabled for new award commitments.",
+    );
+  const current = await reviewOwnerAwards(input);
+  if (!current.reviewVerified || !current.review || !current.decisions)
+    throw new OwnerAwardReviewError(
+      409,
+      current.blockedReason ?? "The award review is incomplete.",
+    );
+  if (
+    current.manifestSha256 !== expected.manifestSha256 ||
+    current.proposalSha256 !== expected.proposalSha256 ||
+    current.review.decisionsSha256 !== expected.decisionsSha256
+  )
+    throw new OwnerAwardReviewError(
+      409,
+      "The project or reviewed awards changed. Reload the review before authorizing funds.",
+    );
+  const deployment = project.escrow?.deployments.find(
+    (entry) => entry.network === expected.network,
+  );
+  if (!deployment)
+    throw new OwnerAwardReviewError(
+      409,
+      "The selected vault is no longer in the project policy.",
+    );
+  const source = current.proposal.awards.find(
+    (entry) => entry.githubUserId === expected.githubUserId,
+  );
+  const decision = current.decisions.rows.find(
+    (entry) => entry.githubUserId === expected.githubUserId,
+  );
+  if (
+    !source ||
+    !decision ||
+    decision.state !== "approved" ||
+    BigInt(decision.approvedGrossMicro) <= 0n
+  )
+    throw new OwnerAwardReviewError(
+      409,
+      "This award is not approved for commitment.",
+    );
+  const identities = await resolveEscrowIdentities(
+    [source.githubNodeId],
+    input.token ?? "",
+  );
+  if (identities[0]?.githubUserId !== source.githubUserId)
+    throw new OwnerAwardReviewError(
+      409,
+      "The contributor's GitHub identity no longer matches the reviewed award.",
+    );
+  const gross = BigInt(decision.approvedGrossMicro);
+  return {
+    schemaVersion: "1" as const,
+    projectId: project.id,
+    cycleId: input.cycleId,
+    manifestSha256: current.manifestSha256,
+    proposalSha256: current.proposalSha256,
+    decisionsSha256: current.review.decisionsSha256,
+    deployment,
+    award: {
+      githubUserId: source.githubUserId,
+      login: identities[0].login,
+      sourceDigest: source.sourceDigest,
+      gross: gross.toString(),
+      fee: (gross / 50n).toString(),
+      net: (gross - gross / 50n).toString(),
+    },
   };
 }

@@ -1,8 +1,10 @@
 import { type FormEvent, useState } from "react";
 import type { reviewOwnerAwards } from "../backend/payments/owner-review";
 import { readBoundedJson } from "./lib/browser-json";
+import type { EscrowDeployment } from "./lib/escrow-policy.mjs";
 import { formatBaseUnits } from "./lib/payments/contracts";
 import type { ProjectDefinition } from "./lib/projects.mjs";
+import OwnerCommitment, { recoverOwnerCommitments } from "./OwnerCommitment";
 import { loginHref } from "./Points";
 
 type Review = Awaited<ReturnType<typeof reviewOwnerAwards>>;
@@ -17,14 +19,35 @@ export default function OwnerAwards({
 }: {
   project: ProjectDefinition;
 }) {
+  const [recovery] = useState(() => {
+    try {
+      return { pending: recoverOwnerCommitments(project.id), error: "" };
+    } catch (reason) {
+      return {
+        pending: [],
+        error:
+          reason instanceof Error
+            ? reason.message
+            : "Saved commitments are unavailable.",
+      };
+    }
+  });
   const [cycle, setCycle] = useState(previousMonth);
   const [review, setReview] = useState<Review | null>(null);
   const [loading, setLoading] = useState(false);
+  const [selectedActor, setSelectedActor] = useState<string | null>(null);
+  const [network, setNetwork] = useState<EscrowDeployment["network"] | "">("");
+  const networks = review?.deployments ?? [];
+  const selectedNetwork =
+    networks.find((entry) => entry.network === network)?.network ??
+    networks[0]?.network;
+
   const [error, setError] = useState("");
   const [signedOut, setSignedOut] = useState(false);
   async function load(event: FormEvent) {
     event.preventDefault();
     setReview(null);
+    setSelectedActor(null);
     setError("");
     setSignedOut(false);
     setLoading(true);
@@ -68,6 +91,15 @@ export default function OwnerAwards({
         <a href={`/projects/${project.slug}`}>{project.name}</a> / Awards
       </p>
       <h1>Review awards</h1>
+      {recovery.error && <p role="alert">{recovery.error}</p>}
+      {recovery.pending.map((entry) => (
+        <OwnerCommitment
+          key={`recovery:${entry.cycleId}:${entry.expected.network}:${entry.expected.githubUserId}`}
+          projectId={project.id}
+          cycleId={entry.cycleId}
+          expected={entry.expected}
+        />
+      ))}
       <form onSubmit={load}>
         <label>
           Contribution month
@@ -124,6 +156,24 @@ export default function OwnerAwards({
             Approved awards need the owner’s wallet authorization and sufficient
             free funding.
           </p>
+          {review.reviewVerified && networks.length > 0 && (
+            <label>
+              Settlement network
+              <select
+                value={selectedNetwork}
+                onChange={(event) => {
+                  setNetwork(event.target.value as EscrowDeployment["network"]);
+                  setSelectedActor(null);
+                }}
+              >
+                {networks.map((entry) => (
+                  <option key={entry.network} value={entry.network}>
+                    {entry.network}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {review.proposal.awards.length === 0 ? (
             <p>No awards in this cycle.</p>
           ) : (
@@ -153,6 +203,19 @@ export default function OwnerAwards({
                           : "Not approved"}
                       </dd>
                     </dl>
+                    {review.reviewVerified &&
+                      review.review &&
+                      selectedNetwork &&
+                      decision?.state === "approved" &&
+                      BigInt(decision.approvedGrossMicro) > 0n && (
+                        <button
+                          className="button secondary-button"
+                          type="button"
+                          onClick={() => setSelectedActor(award.githubUserId)}
+                        >
+                          Review commitment for {award.login}
+                        </button>
+                      )}
                     {decision?.adjustmentReason && (
                       <p>{decision.adjustmentReason}</p>
                     )}
@@ -169,6 +232,29 @@ export default function OwnerAwards({
               })}
             </ul>
           )}
+          {selectedActor &&
+            selectedNetwork &&
+            review.reviewVerified &&
+            review.review &&
+            !recovery.pending.some(
+              (entry) =>
+                entry.cycleId === review.cycleId &&
+                entry.expected.network === selectedNetwork &&
+                entry.expected.githubUserId === selectedActor,
+            ) && (
+              <OwnerCommitment
+                key={`${review.proposalSha256}:${selectedActor}:${selectedNetwork}`}
+                projectId={project.id}
+                cycleId={review.cycleId}
+                expected={{
+                  network: selectedNetwork,
+                  githubUserId: selectedActor,
+                  manifestSha256: review.manifestSha256,
+                  proposalSha256: review.proposalSha256,
+                  decisionsSha256: review.review.decisionsSha256,
+                }}
+              />
+            )}
         </section>
       )}
       <p>

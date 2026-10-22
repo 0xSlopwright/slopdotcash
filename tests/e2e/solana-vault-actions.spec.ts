@@ -522,6 +522,220 @@ test("Solana wallet deposits, recovers after reload, and owner withdraws with ve
   );
   expect(account.amount).toBe(4_900_000n);
   expect(apiRejections).toEqual([422, 422, 422]);
+  // Approval and session are controlled fixtures; the API planner, wallet and
+  // finalized commitment verifier below use the actual local Solana program.
+  const commitment = {
+    schemaVersion: "1",
+    projectId: "eliza",
+    cycleId: "2026-09",
+    manifestSha256: "a".repeat(64),
+    proposalSha256: "b".repeat(64),
+    decisionsSha256: "c".repeat(64),
+    deployment,
+    award: {
+      githubUserId: "1234",
+      login: "local-contributor",
+      sourceDigest: "d".repeat(64),
+      gross: "2000000",
+      fee: "40000",
+      net: "1960000",
+    },
+  };
+  let reviewAvailable = true;
+  let reviewReads = 0;
+  await page.route(
+    "**/api/v1/payments/projects/eliza/awards/2026-09",
+    (route) => {
+      reviewReads++;
+      return route.fulfill({
+        status: reviewAvailable ? 200 : 503,
+        json: reviewAvailable
+          ? {
+              projectId: "eliza",
+              cycleId: "2026-09",
+              projectRevision: 1,
+              manifestSha256: commitment.manifestSha256,
+              proposalSha256: commitment.proposalSha256,
+              sourceUrl: "https://github.com/SlopDotCash/slopdotcash",
+              deployments: [deployment],
+              asset: project.rewardAsset,
+              proposal: {
+                awards: [
+                  {
+                    githubUserId: "1234",
+                    login: "local-contributor",
+                    grossMicro: "2000000",
+                  },
+                ],
+              },
+              decisions: {
+                rows: [
+                  {
+                    githubUserId: "1234",
+                    state: "approved",
+                    approvedGrossMicro: "2000000",
+                    adjustmentReason: null,
+                    relatedParty: false,
+                  },
+                ],
+              },
+              review: { decisionsSha256: commitment.decisionsSha256 },
+              reviewVerified: true,
+              reviewEndsAt: "2026-10-15T00:00:00.000Z",
+              blockedReason: null,
+            }
+          : { message: "Review temporarily unavailable" },
+      });
+    },
+  );
+  await page.route(
+    "**/api/v1/payments/projects/eliza/awards/2026-09/commitment",
+    (route) => {
+      expect(route.request().postDataJSON()).toEqual({
+        network: deployment.network,
+        githubUserId: "1234",
+        manifestSha256: commitment.manifestSha256,
+        proposalSha256: commitment.proposalSha256,
+        decisionsSha256: commitment.decisionsSha256,
+      });
+      return route.fulfill({ json: commitment });
+    },
+  );
+  await page.route(
+    "**/api/v1/payments/projects/eliza/awards/2026-09/solana-commitment",
+    async (route) => {
+      const response = await handlePaymentsApi(
+        new Request(
+          "https://slop.cash/api/v1/payments/projects/eliza/awards/2026-09/solana-commitment",
+          {
+            method: "POST",
+            headers: {
+              origin: "https://slop.cash",
+              "content-type": "application/json",
+              cookie: `__Host-slop_points=${"s".repeat(48)}`,
+            },
+            body: route.request().postData(),
+          },
+        ),
+        {
+          db: {
+            prepare() {
+              return {
+                bind() {
+                  return {
+                    async first() {
+                      return { github_id: "1", login: "local-owner" };
+                    },
+                  };
+                },
+              };
+            },
+          } as never,
+          ownerCommitment: async () => {
+            if (!reviewAvailable)
+              throw new Error("Approval fixture is unavailable");
+            return commitment as never;
+          },
+          solanaFundingConfig: async (id, network, vault) => {
+            expect(id).toBe("eliza");
+            expect(network).toBe(deployment.network);
+            expect(vault).toBe(deployment.vault);
+            return config;
+          },
+        },
+      );
+      await route.fulfill({
+        status: response.status,
+        contentType: "application/json",
+        body: await response.text(),
+      });
+    },
+  );
+  await page.goto("/projects/eliza/awards");
+  await page.getByLabel("Contribution month").fill("2026-09");
+  await page.getByRole("button", { name: "Load awards", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Review commitment for local-contributor" })
+    .click();
+  const ownerActions = page.getByRole("region", {
+    name: "Authorize award commitment",
+    exact: true,
+  });
+  const connectOwner = () =>
+    ownerActions
+      .getByRole("button", { name: "Connect Local Solana wallet", exact: true })
+      .click();
+  selected = donor;
+  await connectOwner();
+  await ownerActions
+    .getByRole("button", { name: "Verify award and funding" })
+    .click();
+  await expect(ownerActions.getByRole("alert")).toContainText("owner's wallet");
+  await ownerActions
+    .getByRole("button", { name: "Choose another wallet" })
+    .click();
+  selected = owner;
+  await connectOwner();
+  await ownerActions
+    .getByRole("button", { name: "Verify award and funding" })
+    .click();
+  await expect(
+    ownerActions.getByRole("region", {
+      name: "Commitment review",
+      exact: true,
+    }),
+  ).toContainText("1.96");
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
+  await page.screenshot({
+    path: info.outputPath("solana-commitment-review.png"),
+    fullPage: true,
+  });
+  reject = true;
+  await ownerActions
+    .getByRole("button", { name: "Authorize this award in wallet" })
+    .click();
+  await expect(ownerActions.getByRole("alert")).toContainText("You declined");
+  expect(sends).toHaveLength(2);
+  reject = false;
+  interrupted = true;
+  await ownerActions
+    .getByRole("button", { name: "Authorize this award in wallet" })
+    .click();
+  await expect(ownerActions.getByRole("alert")).toContainText(
+    "wallet result is unclear",
+  );
+  expect(sends).toHaveLength(3);
+  reviewAvailable = false;
+  await page.reload({ waitUntil: "networkidle" });
+  await connectOwner();
+  expect(reviewReads).toBe(1);
+  await expect(
+    ownerActions.getByRole("button", {
+      name: "Authorize this award in wallet",
+    }),
+  ).toHaveCount(0);
+  await ownerActions.getByLabel("Commitment transaction hash").fill(sends[0]);
+  await ownerActions
+    .getByRole("button", { name: "Check commitment", exact: true })
+    .click();
+  await expect(ownerActions.getByRole("alert")).toContainText("does not match");
+  await ownerActions.getByLabel("Commitment transaction hash").fill(sends[2]);
+  await connection.confirmTransaction(sends[2], "finalized");
+  await ownerActions
+    .getByRole("button", { name: "Check commitment", exact: true })
+    .click();
+  await expect(ownerActions.getByRole("status")).toContainText(
+    "Award reserved on the finalized chain",
+  );
+  reviewAvailable = true;
+  interrupted = false;
+  await ownerActions
+    .getByRole("button", { name: "Verify award and funding" })
+    .click();
+  await expect(ownerActions.getByRole("alert")).toContainText(
+    "already committed",
+  );
+  expect(sends).toHaveLength(3);
   expect(errors).toEqual([]);
   expect(
     (
