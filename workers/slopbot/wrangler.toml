@@ -12,6 +12,10 @@ database_name = "slop-private"
 database_id = "1b453124-2709-45af-8389-151a8105c461"
 migrations_dir = "../../migrations"
 
+[[services]]
+binding = "SLOP_NOTIFY"
+service = "slop-notify"
+
 [[queues.producers]]
 binding = "SLOPBOT_QUEUE"
 queue = "slopbot-jobs"

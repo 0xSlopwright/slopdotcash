@@ -17,3 +17,29 @@ export type ProjectApplicationNotice = {
   submittedAt: string;
   reviewUrl: string;
 };
+
+export const SLOPBOT_SPEND_NOTICE_PATH = "/v1/slopbot-spend";
+export const SLOPBOT_SPEND_INTERVAL_MICRO_USD = 500_000_000;
+export type SlopbotSpendNotice = {
+  month: string;
+  thresholdMicroUsd: number;
+  recordedMicroUsd: number;
+  estimatedCalls: number;
+};
+export function validSpendNotice(value: unknown): value is SlopbotSpendNotice {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    Object.keys(v).sort().join() ===
+      "estimatedCalls,month,recordedMicroUsd,thresholdMicroUsd" &&
+    typeof v.month === "string" &&
+    /^20\d{2}-(0[1-9]|1[0-2])$/u.test(v.month) &&
+    Number.isSafeInteger(v.thresholdMicroUsd) &&
+    Number(v.thresholdMicroUsd) > 0 &&
+    Number(v.thresholdMicroUsd) % SLOPBOT_SPEND_INTERVAL_MICRO_USD === 0 &&
+    Number.isSafeInteger(v.recordedMicroUsd) &&
+    Number(v.recordedMicroUsd) >= Number(v.thresholdMicroUsd) &&
+    Number.isSafeInteger(v.estimatedCalls) &&
+    Number(v.estimatedCalls) >= 0
+  );
+}

@@ -7,6 +7,7 @@ import type { Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import * as store from "./persistence";
 import { type ReviewEnv, recordHumanSignal, reviewItem } from "./review";
+import { dispatchSpendAlert } from "./spend-alerts";
 import { valueHistory } from "./value-journal";
 import { workUnitHistory } from "./value-work-unit-journal";
 import { readWebhookBody } from "./webhook-body";
@@ -16,6 +17,7 @@ type Env = Omit<ReviewEnv, "SLOPBOT_DB"> & {
   SLOPBOT_DB: store.D1TransactionalDatabase;
   SLOPBOT_WEBHOOK_SECRET: string;
   SLOPBOT_QUEUE: Queue;
+  SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
 };
 
 const MAX_WEBHOOK_BYTES = 25 * 1024 * 1024;
@@ -293,6 +295,8 @@ export default {
 
   async scheduled(_event: unknown, env: Env) {
     await resumeBudgetBlocks(env.SLOPBOT_DB, env.SLOPBOT_QUEUE);
+    if (env.SLOP_NOTIFY)
+      await dispatchSpendAlert(env.SLOPBOT_DB, env.SLOP_NOTIFY);
   },
 
   async queue(

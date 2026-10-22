@@ -694,3 +694,25 @@ source reads. It checked admin authorization, same-origin enforcement, absent
 binding, invalid provenance, exact source, replay and repository deselection.
 The local replay replaces the Cloudflare RPC transport with direct dispatch;
 it is not production binding or live installation acceptance.
+
+
+## Monthly API cost emails
+
+The owner requested email at each $500 milestone on 21 October 2026.
+`dispatchSpendAlert` uses the immutable model-call ledger across installations,
+including failed calls. Provider-reported micro-USD takes precedence; other
+calls use their recorded estimate. The email states how many calls use an
+estimate. This is an operational alert, not a provider invoice, spending cap,
+contributor charge or payout approval. Subscription backfill has no API calls.
+
+Apply migration `0049_slopbot_spend_alerts.sql`. The protected workflow releases
+the private notify route before Slopbot. An enabled Slopbot release requires
+`SLOP_NOTIFY_RELEASE=enabled`; its `SLOP_NOTIFY` binding targets `slop-notify`.
+No production settings are activated by this source change. Existing
+`ADMIN_EMAILS` recipients receive the notices; no address is taken from GitHub.
+The existing five-minute cron processes one pending milestone per invocation.
+A jump across several milestones catches up without losing past UTC months.
+Overlapping schedules claim each month/milestone once. Missing receipts and
+`ambiguous` receipts require operator reconciliation; do not delete claims or
+blindly resend. `accepted` means the email service accepted all recipients,
+not inbox delivery. Production activation and inbox receipt remain unverified.

@@ -1025,12 +1025,22 @@ jobs:
           }
           NODE
 
+          # The selected profile is prepared from the checked-in Pages D1 contract.
+          # No pilot is selected unless the protected environment opts in.
+          if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
+            bun scripts/release-notify.mjs deploy production "$RUNNER_TEMP/slop-notify-release"
+          else
+            test -z "$SLOP_NOTIFY_MAIL_PILOTS"
+            echo "::notice::Notification release is disabled."
+          fi
+
           # Slopbot (workers/slopbot, protocol/slopbot-v2.md). The owner creates
           # the Worker shell, its custom domain and its secrets once, then sets
           # the SLOPBOT_RELEASE repository variable to "enabled". Releases only
           # upload and promote versions. Its D1 tables come from the shared
           # slop-private migration apply above.
           if [ "$SLOPBOT_RELEASE" = "enabled" ]; then
+          test "$SLOP_NOTIFY_RELEASE" = "enabled"
           slopbot_secrets="$RUNNER_TEMP/slopbot-secrets.json"
           ./node_modules/.bin/wrangler secret list \
             --config workers/slopbot/wrangler.toml > "$slopbot_secrets"
@@ -1114,14 +1124,6 @@ jobs:
             echo "::notice::Slopbot release is not enabled (SLOPBOT_RELEASE repository variable)."
           fi
 
-          # The selected profile is prepared from the checked-in Pages D1 contract.
-          # No pilot is selected unless the protected environment opts in.
-          if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
-            bun scripts/release-notify.mjs deploy production "$RUNNER_TEMP/slop-notify-release"
-          else
-            test -z "$SLOP_NOTIFY_MAIL_PILOTS"
-            echo "::notice::Notification release is disabled."
-          fi
 
           # Fee-wallet converter (workers/fee-converter, PRD MVP-07c). The owner
           # creates the Worker shell and its secrets once, then sets the
