@@ -96,7 +96,9 @@ test("history navigation keeps contributor standings scoped to the current proje
     .getByRole("link", { name: "Projects", exact: true })
     .click();
   await page.locator('a.project-card[href="/projects/eliza"]').click();
-  await standings.getByRole("combobox", { name: "Sort by" }).selectOption("money");
+  await standings
+    .getByRole("combobox", { name: "Sort by" })
+    .selectOption("money");
   await expect(eliza).toContainText("$111.11");
   await page.evaluate(() => history.go(-2));
   await expect(page.locator(".breadcrumb")).toHaveText("Projects/Slop");
