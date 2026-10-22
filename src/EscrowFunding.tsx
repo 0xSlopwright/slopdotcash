@@ -9,6 +9,7 @@ import {
 } from "./lib/payments/contracts";
 import type { ProjectDefinition } from "./lib/projects.mjs";
 import { formatDateTime } from "./Presentation";
+import { VaultActions } from "./VaultActions";
 
 interface VaultResponse {
   projectId: string;
@@ -177,10 +178,8 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
       ) : (
         <>
           <p>
-            Anyone can fund this vault through its deposit transaction. A
-            deposit joins the free balance. Only the project owner can commit it
-            to awards or return it, and a depositor gets no refund right. Direct
-            token transfers are not credited.
+            Use the deposit action below to fund this project. Direct token
+            transfers are not credited.
           </p>
           {error ? (
             <p role="alert">{error}</p>
@@ -200,6 +199,18 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
               />
             ))
           )}
+          {project.escrow?.deployments
+            .filter(
+              (deployment) =>
+                ESCROW_NETWORKS[deployment.network].family === "evm",
+            )
+            .map((deployment) => (
+              <VaultActions
+                key={`${deployment.network}:${deployment.vault}`}
+                deployment={deployment}
+                onFinalized={() => setRevision((value) => value + 1)}
+              />
+            ))}
           <button
             className="button secondary-button"
             type="button"
@@ -210,7 +221,7 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
         </>
       )}
       <p>
-        <a href="/earnings">View your payouts and wallets</a>
+        <a href="/earnings">View your payouts</a>
       </p>
     </section>
   );

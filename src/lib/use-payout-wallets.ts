@@ -48,6 +48,8 @@ export type PayoutWallet = {
   connect(options?: { chooseAccount?: boolean }): Promise<{
     address: string;
     sign(message: string): Promise<string>;
+    /** Available only for the selected EVM provider; every call rechecks its identity. */
+    evmRequest?: (method: string, params: unknown[]) => Promise<unknown>;
   }>;
 };
 
@@ -95,6 +97,10 @@ function evmWallet(
       const address = addresses[0].toLowerCase();
       return {
         address,
+        async evmRequest(method, params) {
+          if (!trusted()) throw new Error(conflictMessage);
+          return provider.request({ method, params });
+        },
         async sign(message) {
           if (!trusted()) throw new Error(conflictMessage);
           const hex = `0x${Array.from(new TextEncoder().encode(message), (n) => n.toString(16).padStart(2, "0")).join("")}`;
