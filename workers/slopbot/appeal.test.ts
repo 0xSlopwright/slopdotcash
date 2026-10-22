@@ -38,6 +38,8 @@ test("Slopbot queue confirms appeal labels and refuses private or replaced repos
     [owner, at],
   );
   let labelStatus = 404;
+  let labelApplied = false;
+  let title = "local fixture";
   let repositoryPrivate = false;
   let repositoryId = Number(project.authority.repositoryId);
   const calls: string[] = [];
@@ -48,16 +50,19 @@ test("Slopbot queue confirms appeal labels and refuses private or replaced repos
       calls.push(`${request.method} ${path}`);
       if (path.endsWith("/access_tokens"))
         return Response.json({ token: "local-synthetic-token" });
-      if (path.endsWith("/labels"))
+      if (path.endsWith("/labels")) {
+        if (labelStatus === 200 || labelStatus === 500) labelApplied = true;
         return labelStatus === 200
           ? Response.json([{ name: "slopbot: appeal" }])
           : new Response(null, { status: labelStatus });
+      }
       if (path.endsWith("/issues/1"))
         return Response.json({
           node_id: "I_local",
           number: 1,
           state: "closed",
-          title: "local fixture",
+          title,
+          labels: labelApplied ? [{ name: "slopbot: appeal" }] : [],
           body: "appeal",
           user: { login: "author", id: 42, type: "User" },
           assignees: [],
@@ -101,7 +106,11 @@ test("Slopbot queue confirms appeal labels and refuses private or replaced repos
   };
   const outcomes = [];
   try {
-    for (const status of [404, 302, 200]) {
+    for (const status of [404, 302, 200, 200, 500, 200]) {
+      if (status === 500) {
+        title = "new revision with a lost label response";
+        labelApplied = false;
+      }
       labelStatus = status;
       let ack = 0,
         retry = 0;
@@ -133,16 +142,70 @@ test("Slopbot queue confirms appeal labels and refuses private or replaced repos
       );
       outcomes.push({ status, ack, retry });
     }
-    assert.equal(calls.filter((call) => call.endsWith("/labels")).length, 3);
+    assert.equal(calls.filter((call) => call.endsWith("/labels")).length, 4);
     assert.deepEqual(
       sqlite.query("SELECT COUNT(*) AS n FROM slopbot_actions").get(),
-      { n: 1 },
+      { n: 4 },
     );
     assert.deepEqual(outcomes, [
       { status: 404, ack: 0, retry: 1 },
       { status: 302, ack: 0, retry: 1 },
       { status: 200, ack: 1, retry: 0 },
+      { status: 200, ack: 1, retry: 0 },
+      { status: 500, ack: 0, retry: 1 },
+      { status: 200, ack: 1, retry: 0 },
     ]);
+    for (const state of ["removed_at", "suspended_at", "missing"] as const) {
+      if (state === "missing")
+        sqlite.run(
+          "DELETE FROM slopbot_installations WHERE installation_id = 1",
+        );
+      else
+        sqlite.run(
+          `UPDATE slopbot_installations SET removed_at=NULL, suspended_at=NULL, ${state}=? WHERE installation_id=1`,
+          [at],
+        );
+      for (const kind of ["appeal", "human_reopen"] as const) {
+        const before = calls.length;
+        let ack = 0;
+        await worker.queue(
+          {
+            messages: [
+              {
+                body: {
+                  kind,
+                  deliveryId: `inactive-${state}-${kind}`,
+                  installationId: 1,
+                  repositoryId: Number(project.authority.repositoryId),
+                  owner,
+                  repo,
+                  itemKind: "issue",
+                  number: 1,
+                  senderId: 42,
+                },
+                ack() {
+                  ack++;
+                },
+                retry() {
+                  assert.fail("inactive installation must be retired");
+                },
+              },
+            ],
+          },
+          env,
+        );
+        assert.equal(ack, 1);
+        assert.equal(
+          calls.length,
+          before,
+          "inactive jobs must not authenticate or write",
+        );
+      }
+    }
+    sqlite.run(
+      "INSERT INTO slopbot_installations(installation_id, account_id, account_login, account_type, created_at) VALUES (1,77,?,'Organization',?)",
+      [owner, at],
+    );
     for (const scope of ["private", "replaced"] as const) {
       repositoryPrivate = scope === "private";
       repositoryId =

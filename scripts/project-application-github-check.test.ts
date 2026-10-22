@@ -111,11 +111,11 @@ async function submit(manifest: unknown) {
     env: { SLOP_DB: db, ADMIN_GITHUB_IDS: "900000001" } as never,
   });
   const body = (await response.json()) as {
-    application?: { githubCheck: string };
+    application?: { id: string; githubCheck: string };
     error?: string;
     message?: string;
   };
-  return { status: response.status, body };
+  return { status: response.status, body, db, sqlite };
 }
 
 /** The `/projects/new` manifest for a user repository, plus `repositories`. */
@@ -254,4 +254,78 @@ test("an application names at most 5 repositories and aliases", async () => {
     message: "An application may name at most 5 repositories and aliases",
   });
   expect(lookups).toEqual([]);
+});
+
+test.each(["unchanged", "changed", "unavailable"])(
+  "approval rechecks pending alias facts: %s",
+  async (state) => {
+    const submitted = await submit(
+      manifestWith({ aliases: ["example/old-registry-name"] }),
+    );
+    expect(submitted.status).toBe(201);
+    const applicationId = submitted.body.application?.id;
+    if (!applicationId) throw new Error("Application was not stored");
+    const adminToken = "a".repeat(48);
+    submitted.sqlite.exec(`INSERT INTO points_members (actor_id, github_id, login, joined_at, public)
+    VALUES ('act_admin', '900000001', 'admin', '2026-10-01T00:00:00.000Z', 0)`);
+    submitted.sqlite
+      .prepare(
+        "INSERT INTO points_sessions (token_hash, actor_id, expires_at) VALUES (?, 'act_admin', '2099-01-01T00:00:00.000Z')",
+      )
+      .run(await sha256Hex(adminToken));
+    const original = repositories["example/old-registry-name"];
+    if (state === "changed")
+      repositories["example/old-registry-name"] =
+        repositories["someone-else/their-repo"];
+    if (state === "unavailable")
+      globalThis.fetch = (async () => {
+        throw new Error("GitHub unavailable");
+      }) as unknown as typeof fetch;
+    try {
+      const response = await onRequest({
+        request: new Request(
+          `${ORIGIN}/api/v1/admin/project-applications/${applicationId}/approve`,
+          {
+            method: "POST",
+            headers: {
+              origin: ORIGIN,
+              "content-type": "application/json",
+              cookie: `__Host-slop_points=${adminToken}`,
+            },
+            body: "{}",
+          },
+        ),
+        env: { SLOP_DB: submitted.db, ADMIN_GITHUB_IDS: "900000001" } as never,
+      });
+      expect(response.status).toBe(
+        state === "unchanged" ? 200 : state === "changed" ? 422 : 503,
+      );
+      if (state === "changed")
+        expect(await response.json()).toMatchObject({
+          error: "invalid_manifest",
+          message:
+            "Alias example/old-registry-name is not a name of example/open-registry on GitHub",
+        });
+      expect(
+        submitted.sqlite
+          .prepare("SELECT status FROM project_applications WHERE id = ?")
+          .get(applicationId),
+      ).toMatchObject({
+        status: state === "unchanged" ? "approved" : "pending",
+      });
+    } finally {
+      repositories["example/old-registry-name"] = original;
+    }
+  },
+);
+test("an application cannot claim a different GitHub owner account type", async () => {
+  const manifest = manifestWith({});
+  manifest.steward.github.type = "Organization";
+  const { status, body } = await submit(manifest);
+  expect(lookups).toContain(`${API}/repos/example/open-registry`);
+  expect(status).toBe(422);
+  expect(body).toMatchObject({
+    error: "invalid_manifest",
+    message: "Repository or steward facts do not match GitHub",
+  });
 });

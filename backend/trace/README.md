@@ -26,6 +26,12 @@ never a private intake.
 - R2 keys are content addressed as `traces/sha256/<prefix>/<digest>`.
 - Objects are UTF-8 `text/plain` or `application/x-ndjson`, at most 8 MiB.
 - R2 writes are create-only and verify stored size and digest metadata.
+- Before a write, D1 atomically reserves one digest and its safe object metadata
+  for the run. Overlapping uploads cannot write a different trace. The permanent
+  reservation records the attempted object even if storage or attachment fails.
+  A retry may use the same bytes; choosing different bytes requires a new run.
+  A reservation alone does not mark the trace uploaded or permit finalization.
+  Apply migration 0058 before deploying the updated trace handler.
 - There is no trace update, delete, listing, or public-read API.
 - The bucket must have no lifecycle expiration rule. Permanent retention is an
   operational invariant as well as an application invariant.

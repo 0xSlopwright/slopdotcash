@@ -181,6 +181,9 @@ export type PersistenceResult<T> =
 export interface TracePersistence {
   createRun(input: CreateRunInput): Promise<PersistenceResult<TraceRun>>;
   getRun(runId: string): Promise<TraceRun | null>;
+  reserveTraceWrite(
+    input: Pick<AttachTraceInput, "runId" | "githubId" | "object">,
+  ): Promise<boolean>;
   attachTrace(input: AttachTraceInput): Promise<PersistenceResult<TraceRun>>;
   finalizeRun(
     runId: string,

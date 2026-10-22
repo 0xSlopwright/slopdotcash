@@ -125,6 +125,8 @@ function repository(): string {
   if (!match) throw new Error("Canonical GitHub origin required");
   return match[1];
 }
+/** Cycles publish through reviewed PRs into `main`; `develop` has no authority. */
+const PUBLICATION_BRANCH = "main";
 async function github<T>(
   repository: string,
   path: string,
@@ -177,13 +179,13 @@ async function publication(
 ): Promise<Publication> {
   const commits = await github<{ sha: string }[]>(
     repo,
-    `commits?sha=development&path=${encodeURIComponent(path)}&per_page=1`,
+    `commits?sha=${PUBLICATION_BRANCH}&path=${encodeURIComponent(path)}&per_page=1`,
     token,
   );
   if (commits.length !== 1 || !/^[a-f0-9]{40}$/.test(commits[0].sha))
     throw new Error("Publication commit unavailable");
   const commit = commits[0].sha;
-  for (const ref of ["development", commit]) {
+  for (const ref of [PUBLICATION_BRANCH, commit]) {
     if (!(await publicBytes(repo, path, ref, token)).equals(bytes))
       throw new Error("Archive differs from public canonical bytes");
   }
@@ -200,7 +202,7 @@ async function publication(
   const candidates = pulls.filter(
     (p) =>
       p.merged_at &&
-      p.base.ref === "development" &&
+      p.base.ref === PUBLICATION_BRANCH &&
       p.base.repo.full_name.toLowerCase() === repo.toLowerCase(),
   );
   if (candidates.length !== 1)
@@ -350,11 +352,11 @@ export async function verifyEscrowReview(input: {
       }>(repo, `pulls/${approval.pullRequest}`, input.token);
       if (
         !pull.merged_at ||
-        pull.base.ref !== "development" ||
+        pull.base.ref !== PUBLICATION_BRANCH ||
         pull.base.repo.full_name.toLowerCase() !== repo.toLowerCase()
       )
         throw new Error(
-          "Platform approval PR must be merged into canonical development",
+          `Platform approval PR must be merged into canonical ${PUBLICATION_BRANCH}`,
         );
       // Approval PR must itself publish the exact decisions, preventing unrelated review reuse.
       if (
