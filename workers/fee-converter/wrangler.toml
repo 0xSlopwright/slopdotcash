@@ -33,9 +33,9 @@ FEE_CONVERTER_MAX_PRICE_IMPACT_BPS = "200"
 FEE_CONVERTER_RUN_CAP_MICRO = "1000000000"
 FEE_CONVERTER_DAILY_CAP_MICRO = "5000000000"
 FEE_CONVERTER_SOLANA_FEE_MICRO = "2000"
-# Published network fee wallets (docs/slop-mvp-plan.md MVP-07a). Robinhood
-# Chain and Ethereum fee wallets are not decided; those networks stay
-# disabled until the owner records them here.
+# Published network fee wallets (docs/slop-product-requirements.md TOK-06). Robinhood
+# Chain and Ethereum fee-wallet decisions are recorded in the PRD. Network
+# configuration and conversion activation still require their reviewed gates.
 FEE_WALLET_BASE = "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86"
 # Owner decision 19 October 2026: the Base fee wallet is also the Robinhood
 # Chain and Ethereum fee wallet.

@@ -6,8 +6,7 @@ Original review: 24 September 2026. Incorporated into requirements: 6 October 20
 
 This is the complete earlier editorial review. Its observations are dated evidence, not a claim about the current deployment.
 Reproduce each defect on the implementation revision before changing code. Record resolved items instead of repeating completed work.
-The [PRD section 16](slop-product-requirements.md#16-page-and-ux-requirements) defines the current requirements.
-The [MVP quality delivery plan](slop-mvp-plan.md#quality-review-delivery) defines their order and acceptance.
+The [PRD quality requirements](https://docs.google.com/document/d/1on3Ge018mShloCpxVMs62ZCA81YA1U3HUv2s-VV7cWo/edit#heading=h.e5jjnj6ydnwp) define the current scope, delivery order, and acceptance.
 
 The following later requirements replace conflicting recommendations in this review:
 

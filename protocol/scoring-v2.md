@@ -73,7 +73,7 @@ contributions.
 Payment-only amendment for #683 (owner decision, 14 October 2026): ordinary
 review payment eligibility changes at `2026-10-09T23:21:35.388Z`, the successful
 production release of SCR-05, rather than October 1. See the
-[PRD amendment](../docs/slop-product-requirements.md#scr-05-payment-cutoff-amendment--14-october-2026)
+[PRD amendment](https://docs.google.com/document/d/1on3Ge018mShloCpxVMs62ZCA81YA1U3HUv2s-VV7cWo/edit#heading=h.1htzdeym83um)
 for release evidence. Pre-release qualifying approvals and change requests
 retain standard payment weight. Public Slop Score and Points keep the October
 1 rule above. New snapshots publish `paymentReviewBasis` with policy
