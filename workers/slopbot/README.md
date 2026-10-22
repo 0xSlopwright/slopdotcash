@@ -951,3 +951,18 @@ source is reassessed. These checks use local HTTP model fixtures and captured
 GitHub evidence, not live model acceptance. A crash before result retention is
 still an ambiguous provider outcome: a stored reservation cannot reconstruct
 an unrecorded response, and its unknown cost must not be released on a timer.
+
+### Stacked squash evidence
+
+When a squash omits changes already present in its parent, the collector can
+retain a source-bound `acceptedRange` proof. Every newly merged patch must match
+its submitted patch exactly. Git blob bytes must verify at both the submitted
+head and accepted commit for every submitted file; omitted paths must also
+match the merge parent. The proof labels those paths `alreadyPresent` and keeps
+both original diffs. It establishes acceptance, not an additional award for a
+dependency. Joint attribution and duplicate-work checks still apply.
+
+The bounded recovery handles at most 16 added or modified text-diff paths and
+2 MiB of verified file reads, with 512 KiB per file. Unsupported changes, missing
+bytes, altered patches, or larger sources retain the original limitation and
+need dedicated Git evidence. No original capture is rewritten.

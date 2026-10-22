@@ -3,6 +3,10 @@ import {
   findRegisteredRepositoryById,
   type TargetRepository,
 } from "../../src/lib/repositories.mjs";
+import {
+  type AcceptedValueRange,
+  collectAcceptedValueRange,
+} from "./value-accepted-range";
 import { addedValuePatchRecovery, hasCompleteValuePatch } from "./value-patch";
 
 // Shared by the installation worker and the historical reviewer. Missing or
@@ -391,6 +395,7 @@ export interface ValueEvidence {
   pull: Pull;
   files: FileChange[];
   mergeCommitEvidence: CommitChangeEvidence | null;
+  acceptedRange?: AcceptedValueRange;
   commits: Commit[];
   reviews: Review[];
   comments: Comment[];
@@ -586,6 +591,7 @@ export async function collectValueEvidence(
   const recoverAddedPatches = addedValuePatchRecovery(client, repository);
   await recoverAddedPatches(files, pull.head.sha);
   let mergeCommitEvidence: CommitChangeEvidence | null = null;
+  let acceptedRange: AcceptedValueRange | null = null;
   if (pull.merged_at !== null) {
     if (!pull.merge_commit_sha) {
       limitations.push("Reported merge commit is unavailable");
@@ -614,7 +620,20 @@ export async function collectValueEvidence(
           mergeCommitEvidence.parents.length === 1 &&
           files.length > 0 &&
           changeBytes(files) === changeBytes(mergeCommitEvidence.files);
-        if (!directMerge && !matchingSingleParent) {
+        if (
+          !directMerge &&
+          !matchingSingleParent &&
+          accepted.limitations.length === 0
+        ) {
+          acceptedRange = await collectAcceptedValueRange(
+            client,
+            repository,
+            pull.head.sha,
+            files,
+            mergeCommitEvidence,
+          );
+        }
+        if (!directMerge && !matchingSingleParent && acceptedRange === null) {
           limitations.push(
             "Reported merge neither directly integrates this head nor matches its entire diff; reconcile the accepted range and related PRs",
           );
@@ -754,6 +773,7 @@ export async function collectValueEvidence(
     pull,
     files,
     mergeCommitEvidence,
+    ...(acceptedRange === null ? {} : { acceptedRange }),
     commits,
     reviews,
     comments,
