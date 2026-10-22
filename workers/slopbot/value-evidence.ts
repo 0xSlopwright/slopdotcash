@@ -7,6 +7,10 @@ import {
   type AcceptedValueRange,
   collectAcceptedValueRange,
 } from "./value-accepted-range";
+import {
+  needsFullValueComparison,
+  recoverFullValueComparisons,
+} from "./value-full-file";
 import { addedValuePatchRecovery, hasCompleteValuePatch } from "./value-patch";
 import { recoverUnchangedValueRenames } from "./value-rename";
 
@@ -68,6 +72,12 @@ export interface FileChange {
   deletions: number;
   patch?: string;
   blob_url: string | null;
+  fullComparison?: {
+    baseSha: string;
+    headSha: string;
+    before: { blobSha: string; text: string };
+    after: { blobSha: string; text: string };
+  };
   unchangedRename?: { baseSha: string; headSha: string; blobSha: string };
 }
 interface Commit {
@@ -119,6 +129,12 @@ function changeBytes(files: FileChange[]): string {
         file.additions,
         file.deletions,
         file.patch ?? null,
+        file.fullComparison
+          ? [
+              file.fullComparison.before.blobSha,
+              file.fullComparison.after.blobSha,
+            ]
+          : null,
       ]),
   );
 }
@@ -595,16 +611,24 @@ export async function collectValueEvidence(
   if (
     files.some(
       (file) =>
-        file.status === "renamed" &&
-        file.patch === undefined &&
-        file.additions === 0 &&
-        file.deletions === 0,
+        needsFullValueComparison(file) ||
+        (file.status === "renamed" &&
+          file.patch === undefined &&
+          file.additions === 0 &&
+          file.deletions === 0),
     )
   ) {
     const comparison = await client.get<{
       merge_base_commit?: { sha: string };
     }>(`${root}/compare/${pull.base.sha}...${pull.head.sha}`);
-    if (comparison?.merge_base_commit?.sha)
+    if (comparison?.merge_base_commit?.sha) {
+      await recoverFullValueComparisons(
+        client,
+        repository,
+        files,
+        comparison.merge_base_commit.sha,
+        pull.head.sha,
+      );
       await recoverUnchangedValueRenames(
         client,
         repository,
@@ -612,6 +636,7 @@ export async function collectValueEvidence(
         comparison.merge_base_commit.sha,
         pull.head.sha,
       );
+    }
   }
   let mergeCommitEvidence: CommitChangeEvidence | null = null;
   let acceptedRange: AcceptedValueRange | null = null;
@@ -634,7 +659,14 @@ export async function collectValueEvidence(
           mergeCommitEvidence.files,
           pull.merge_commit_sha,
         );
-        if (mergeCommitEvidence.parents.length > 0)
+        if (mergeCommitEvidence.parents.length > 0) {
+          await recoverFullValueComparisons(
+            client,
+            repository,
+            mergeCommitEvidence.files,
+            mergeCommitEvidence.parents[0].sha,
+            mergeCommitEvidence.sha,
+          );
           await recoverUnchangedValueRenames(
             client,
             repository,
@@ -642,6 +674,7 @@ export async function collectValueEvidence(
             mergeCommitEvidence.parents[0].sha,
             mergeCommitEvidence.sha,
           );
+        }
         const directMerge =
           mergeCommitEvidence.parents.length === 2 &&
           mergeCommitEvidence.parents[1]?.sha === pull.head.sha;
@@ -683,7 +716,7 @@ export async function collectValueEvidence(
   // GitHub omits binary and oversized patches. Do not let absent or truncated
   // content turn into a confident low-value recommendation.
   for (const file of [...files, ...(mergeCommitEvidence?.files ?? [])]) {
-    if (!hasCompleteValuePatch(file))
+    if (!hasCompleteValuePatch(file) && file.fullComparison === undefined)
       limitations.push(`Full diff required: ${file.filename}`);
   }
   const related = await relatedPullRequests(

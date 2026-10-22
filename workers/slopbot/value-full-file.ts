@@ -1,0 +1,47 @@
+import { valueFileReader } from "./value-blob";
+import type { EvidenceClient, FileChange } from "./value-evidence";
+import { hasCompleteValuePatch } from "./value-patch";
+
+export function needsFullValueComparison(file: FileChange): boolean {
+  return (
+    file.status === "modified" &&
+    file.previous_filename === undefined &&
+    !hasCompleteValuePatch(file)
+  );
+}
+
+/** Preserve both complete texts when GitHub omits a modified-file patch.
+ * This is explicit comparison evidence, not a manufactured unified diff. */
+export async function recoverFullValueComparisons(
+  client: EvidenceClient,
+  repository: string,
+  files: FileChange[],
+  baseSha: string,
+  headSha: string,
+): Promise<void> {
+  const read = valueFileReader(client, repository);
+  for (const file of files) {
+    if (!needsFullValueComparison(file)) continue;
+    const before = await read(file.filename, baseSha);
+    if (!before) continue;
+    const after = await read(file.filename, headSha);
+    if (!after) continue;
+    try {
+      const decoder = new TextDecoder("utf-8", {
+        fatal: true,
+        ignoreBOM: true,
+      });
+      const beforeText = decoder.decode(before.bytes);
+      const afterText = decoder.decode(after.bytes);
+      if (beforeText.includes("\0") || afterText.includes("\0")) continue;
+      file.fullComparison = {
+        baseSha,
+        headSha,
+        before: { blobSha: before.sha, text: beforeText },
+        after: { blobSha: after.sha, text: afterText },
+      };
+    } catch {
+      // Invalid UTF-8 remains an explicit missing-diff limitation.
+    }
+  }
+}

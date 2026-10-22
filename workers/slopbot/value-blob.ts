@@ -1,10 +1,13 @@
 import type { EvidenceClient } from "./value-evidence";
 
 /** Bounded immutable Git blob verification shared by acceptance proofs. */
-export function valueBlobReader(client: EvidenceClient, repository: string) {
+export function valueFileReader(client: EvidenceClient, repository: string) {
   let reads = 0;
   let totalBytes = 0;
-  return async (path: string, ref: string): Promise<string | null> => {
+  return async (
+    path: string,
+    ref: string,
+  ): Promise<{ sha: string; bytes: Uint8Array } | null> => {
     if (
       !/^[a-f0-9]{40}$/u.test(ref) ||
       !path ||
@@ -52,6 +55,12 @@ export function valueBlobReader(client: EvidenceClient, repository: string) {
     ]
       .map((value) => value.toString(16).padStart(2, "0"))
       .join("");
-    return digest === file.sha ? digest : null;
+    return digest === file.sha ? { sha: digest, bytes } : null;
   };
+}
+
+export function valueBlobReader(client: EvidenceClient, repository: string) {
+  const read = valueFileReader(client, repository);
+  return async (path: string, ref: string): Promise<string | null> =>
+    (await read(path, ref))?.sha ?? null;
 }
