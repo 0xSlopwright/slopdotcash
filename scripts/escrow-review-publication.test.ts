@@ -110,7 +110,10 @@ test("a cycle published by a PR merged into main starts the review clock", async
   expect(new Set(queriedBranches)).toEqual(new Set(["main"]));
 });
 
-test("a cycle merged only into the develop compatibility branch has no review clock", async () => {
-  globalThis.fetch = githubPublishedInto("develop");
-  await expect(review()).rejects.toThrow("Publication commit unavailable");
-});
+test.each(["develop", "development"])(
+  "a cycle merged only into %s has no production review clock",
+  async (branch) => {
+    globalThis.fetch = githubPublishedInto(branch);
+    await expect(review()).rejects.toThrow("Publication commit unavailable");
+  },
+);
