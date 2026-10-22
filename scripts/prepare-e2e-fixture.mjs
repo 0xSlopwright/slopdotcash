@@ -71,14 +71,6 @@ export async function prepareE2eFixture() {
     join(repositoryRoot, "node_modules"),
     join(workspace, "node_modules"),
   );
-  if (process.env.SLOP_E2E_SOLANA_VAULT === "1") {
-    for (const directory of ["node_modules", "target"]) {
-      symlinkSync(
-        join(repositoryRoot, "contracts", "solana", directory),
-        join(workspace, "contracts", "solana", directory),
-      );
-    }
-  }
   run("git", ["init", "-q"], workspace);
   run("git", ["add", "-A"], workspace);
   run(
@@ -97,6 +89,16 @@ export async function prepareE2eFixture() {
     ],
     workspace,
   );
+  // Runtime dependencies are not fixture source, including symlinks that a
+  // directory-only .gitignore rule would otherwise let git add capture.
+  if (process.env.SLOP_E2E_SOLANA_VAULT === "1") {
+    for (const directory of ["node_modules", "target"]) {
+      symlinkSync(
+        join(repositoryRoot, "contracts", "solana", directory),
+        join(workspace, "contracts", "solana", directory),
+      );
+    }
+  }
   // The last production ledger published before the D1 registry, with an
   // open cycle, is frozen as a fixture. Its cycle month comes from its own
   // window, so it does not age. Rebind it the way pull-request builds do.
