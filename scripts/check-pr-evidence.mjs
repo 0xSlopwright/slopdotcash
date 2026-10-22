@@ -10,8 +10,6 @@ import {
   inspectEvidenceHead,
   parseChangedFiles,
   REQUIRED_EVIDENCE_ROWS,
-  SURFACE_ARTIFACT_ROW_IDS,
-  SURFACE_OCR_EVIDENCE_ROW,
 } from "./pr-evidence-policy.mjs";
 
 export {

@@ -10,6 +10,7 @@ import { lstat, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { sha256Hex as digest } from "./sha256.mjs";
 
 export const MANIFEST_FILENAME = "deployment-manifest.json";
 
@@ -42,10 +43,6 @@ const RESERVED_PATHS = new Set([
 ]);
 const digestPattern = /^[0-9a-f]{64}$/u;
 const verificationTokenPattern = /^[A-Za-z0-9._-]{1,128}$/u;
-
-function digest(contents) {
-  return createHash("sha256").update(contents).digest("hex");
-}
 
 function sortedKeys(value) {
   return Object.keys(value).sort();

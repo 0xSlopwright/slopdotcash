@@ -5,7 +5,6 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -25,6 +24,7 @@ import {
   GUIDE_RENDERER_PATHS,
 } from "../src/lib/project-skill-publication.mjs";
 import { readIdentityRecord } from "./protocol-identity.mjs";
+import { sha256Hex as sha256 } from "./sha256.mjs";
 import { pythonCommand } from "./skill-python.mjs";
 import { skillSourceMatchesCommit } from "./skill-source-matches-commit.mjs";
 
@@ -44,10 +44,6 @@ const skillValidator = join(
 );
 const publicSiteOrigin = "https://slop.cash";
 const sourceRepository = "SlopDotCash/slopdotcash";
-
-function sha256(contents) {
-  return createHash("sha256").update(contents).digest("hex");
-}
 
 function frontmatterValue(source, field) {
   const match = source.match(new RegExp(`^${field}:\\s*(.+)$`, "mu"));

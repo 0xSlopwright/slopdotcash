@@ -31,13 +31,10 @@ import {
 } from "./lib/security-bounty.mjs";
 import {
   ExternalLinkAnchor,
+  errorMessage,
   formatNullableUtc as formatUtc,
   NotFound,
 } from "./Presentation";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Something went wrong.";
-}
 
 function amounts(terms: SecurityBountyTerms) {
   const split = securityBountySplit(terms.amount.grossMinor);

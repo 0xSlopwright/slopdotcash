@@ -53,14 +53,22 @@ export function formatDateTime(value: string): string {
   }).format(new Date(value))} UTC`;
 }
 
-/** Optional admin timestamps use a medium date and a short UTC time. */
-export function formatNullableUtc(value: string | null): string {
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Something went wrong.";
+}
+
+export function formatTime(value: string | null): string {
   if (value === null) return "—";
-  return `${new Date(value).toLocaleString("en-US", {
+  return new Date(value).toLocaleString("en-US", {
     dateStyle: "medium",
     timeStyle: "short",
     timeZone: "UTC",
-  })} UTC`;
+  });
+}
+
+/** Optional admin timestamps include an explicit UTC suffix. */
+export function formatNullableUtc(value: string | null): string {
+  return value === null ? "—" : `${formatTime(value)} UTC`;
 }
 
 export function formatDate(value: string): string {
