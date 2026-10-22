@@ -1047,9 +1047,9 @@ test("private security bounty programs keep cases restricted from intake to awar
       .click();
     const detail = page.locator(".security-case");
     await expect(detail).toContainText("Waiting for an independent reviewer");
-    await expect(detail).toContainText(
-      "entered by a security maintainer from GitHub, not read from GitHub by Slop",
-    );
+    await detail.getByText("Case details", { exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await expect(detail.getByText(/\(maintainer verified\)/u)).toBeVisible();
     const form = detail.getByRole("form", {
       name: "Related-party award review",
     });
