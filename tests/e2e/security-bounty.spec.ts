@@ -466,11 +466,11 @@ test("private security bounty programs keep cases restricted from intake to awar
       "$7,500 for a confirmed critical vulnerability that can cause loss of funds. Funded by Slop.",
     );
     const facts = page.getByRole("region", { name: "Award terms" });
-    await expect(facts).toContainText("Researcher award (75%)$7,500");
+    await expect(facts).toContainText("Researcher · 75%$7,500");
     await expect(facts).toContainText(
       "Gross funding per eligible finding$10,000",
     );
-    await expect(facts).toContainText("Slop share (25%)$2,500");
+    await expect(facts).toContainText("Slop · 25%$2,500");
     await expect(facts).toContainText("Bounty only.");
     await expectAccessible(page);
     await page.screenshot({
@@ -1042,14 +1042,14 @@ test("private security bounty programs keep cases restricted from intake to awar
     await page.goto("/security", { waitUntil: "networkidle" });
     await page
       .getByRole("button", {
-        name: new RegExp(`${b.id} · GHSA-8c9f-2g3h-4j5m`, "u"),
+        name: new RegExp(`${b.id} GHSA-8c9f-2g3h-4j5m`, "u"),
       })
       .click();
     const detail = page.locator(".security-case");
     await expect(detail).toContainText("Waiting for an independent reviewer");
-    await expect(detail).toContainText(
-      "entered by a security maintainer from GitHub, not read from GitHub by Slop",
-    );
+    await detail.getByText("Case details", { exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await expect(detail.getByText(/\(maintainer verified\)/u)).toBeVisible();
     const form = detail.getByRole("form", {
       name: "Related-party award review",
     });
@@ -1308,7 +1308,7 @@ test("private security bounty programs keep cases restricted from intake to awar
     await page.goto("/security", { waitUntil: "networkidle" });
     await page
       .getByRole("button", {
-        name: new RegExp(`${a.id} · GHSA-2c3f-4g5h-6j7m`, "u"),
+        name: new RegExp(`${a.id} GHSA-2c3f-4g5h-6j7m`, "u"),
       })
       .click();
     const form = page.locator("form").filter({
@@ -1440,7 +1440,7 @@ test("private security bounty programs keep cases restricted from intake to awar
     await page.goto("/security", { waitUntil: "networkidle" });
     await page
       .getByRole("button", {
-        name: new RegExp(`${a.id} · GHSA-2c3f-4g5h-6j7m`, "u"),
+        name: new RegExp(`${a.id} GHSA-2c3f-4g5h-6j7m`, "u"),
       })
       .click();
     const detail = page.locator(".security-case");
@@ -1573,7 +1573,7 @@ test("private settlement requires visibility consent and produces an unsigned re
   const errors = observe(page);
   await signIn(page, TOKENS["reporter-a"]);
   await page.goto("/security", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: new RegExp(`^${id} ·`) }).click();
+  await page.getByRole("button", { name: new RegExp(`^${id} `) }).click();
   await page.getByText("Accept payment visibility", { exact: true }).click();
   await page
     .getByLabel(/^I understand that chain transactions reveal/u)
@@ -1614,15 +1614,15 @@ test("private settlement requires visibility consent and produces an unsigned re
   );
   await signIn(page, TOKENS.finance);
   await page.goto("/security", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: new RegExp(`^${id} ·`) }).click();
+  await page.getByRole("button", { name: new RegExp(`^${id} `) }).click();
   await page.getByText("Prepare private payment", { exact: true }).click();
   await page.getByLabel(/^I approve .* on this network/u).check();
   await page
     .getByRole("button", { name: "Prepare unsigned payment", exact: true })
     .click();
-  await expect(
-    page.getByRole("region", { name: "Private payment" }),
-  ).toContainText("Waiting for the vault owner");
+  await expect(page.locator(".security-case > .admin-facts")).toContainText(
+    "Waiting for the vault owner",
+  );
   await page.getByText("Unsigned owner request", { exact: true }).click();
   await page.getByRole("button", { name: "Copy unsigned request" }).click();
   await expect(

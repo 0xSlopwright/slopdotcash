@@ -37,16 +37,21 @@ import {
   NotFound,
 } from "./Presentation";
 
+function FormError({ message }: { message: string | null }) {
+  return message ? (
+    <p className="form-error" role="alert">
+      <CircleAlert aria-hidden="true" /> {message}
+    </p>
+  ) : null;
+}
+
 function UnsignedPaymentRequest({ request }: { request: unknown }) {
   const [feedback, setFeedback] = useState("");
   const text = JSON.stringify(request, null, 2);
   return (
     <details>
       <summary>Unsigned owner request</summary>
-      <p>
-        The vault owner reviews and signs this request in their wallet. Never
-        include case evidence in it.
-      </p>
+      <p>For the vault owner to review and sign.</p>
       <div className="inbox-actions">
         <button
           className="text-button"
@@ -165,16 +170,9 @@ function IntakeHandoff({ project }: { project: ProjectDefinition }) {
     <section aria-labelledby="security-report" className="admin-card">
       <h2 id="security-report">Report a vulnerability privately</h2>
       <p>
-        Send every suspected critical finding and every suspected loss of funds
-        through the private route, also when you are not sure about the
-        severity. Do not put details in a public issue, pull request, gist, chat
-        or video. You do not need a Slop account or a wallet to report.
-      </p>
-      <p>
-        The report goes to GitHub private vulnerability reporting for this
-        repository. You review and submit it on GitHub. Slop does not store your
-        report. A redirect is not a receipt: your case is submitted only after a
-        security maintainer confirms the GitHub report.
+        Report security findings privately on GitHub, including uncertain
+        severity or potential loss of funds. No Slop account or wallet needed.
+        Keep exploit details out of public posts.
       </p>
       {state.status === "idle" ? (
         <button className="button primary-button" onClick={check} type="button">
@@ -186,8 +184,7 @@ function IntakeHandoff({ project }: { project: ProjectDefinition }) {
         </p>
       ) : state.status === "error" ? (
         <div className="form-error" role="alert">
-          <CircleAlert aria-hidden="true" /> {state.message} Slop cannot hand
-          you to a private report form until the check succeeds.
+          <CircleAlert aria-hidden="true" /> {state.message}
           <button className="text-button" onClick={check} type="button">
             <RotateCcw aria-hidden="true" /> Check again
           </button>
@@ -282,10 +279,18 @@ export function SecurityProgramPage({
       <IntakeHandoff project={project} />
       <section aria-labelledby="security-terms" className="admin-card">
         <h2 id="security-terms">Award terms</h2>
+        <section className="security-award-split" aria-label="Award split">
+          <div>
+            <span>Researcher · 75%</span>
+            <strong>{money.researcher}</strong>
+          </div>
+          <div>
+            <span>Slop · 25%</span>
+            <strong>{money.slop}</strong>
+          </div>
+        </section>
         <dl className="admin-facts">
-          <Fact term="Researcher award (75%)">{money.researcher}</Fact>
           <Fact term="Gross funding per eligible finding">{money.gross}</Fact>
-          <Fact term="Slop share (25%)">{money.slop}</Fact>
           <Fact term="Currency">
             {terms.amount.currency}
             {terms.amount.network ? ` on ${terms.amount.network}` : ""}
@@ -638,11 +643,7 @@ function ClaimForm({
           Only the ID. Do not paste report details here.
         </small>
       </label>
-      {error ? (
-        <p className="form-error" role="alert">
-          <CircleAlert aria-hidden="true" /> {error}
-        </p>
-      ) : null}
+      <FormError message={error} />
       <button className="button primary-button" disabled={busy} type="submit">
         {busy ? "Linking…" : "Link my GitHub report"}
       </button>
@@ -749,11 +750,7 @@ function RecordForm({
         I checked on GitHub that this advisory exists and that this reporter
         submitted it.
       </label>
-      {error ? (
-        <p className="form-error" role="alert">
-          <CircleAlert aria-hidden="true" /> {error}
-        </p>
-      ) : null}
+      <FormError message={error} />
       <button className="button primary-button" disabled={busy} type="submit">
         {busy ? "Recording…" : "Record verified report"}
       </button>
@@ -1288,11 +1285,7 @@ function ActionForm({
           </label>
         );
       })}
-      {error ? (
-        <p className="form-error" role="alert">
-          <CircleAlert aria-hidden="true" /> {error}
-        </p>
-      ) : null}
+      <FormError message={error} />
       <button className="button secondary-button" disabled={busy} type="submit">
         {busy ? "Saving…" : spec.submit}
       </button>
@@ -1384,7 +1377,6 @@ function CaseDetail({
         <h3 id={`case-${record.id}`}>
           Case {record.id} · {record.projectId}
         </h3>
-        <span className="admin-badge">{record.view} view</span>
       </header>
       {note ? (
         <p className="admin-status" role="status">
@@ -1392,17 +1384,18 @@ function CaseDetail({
         </p>
       ) : null}
       <dl className="admin-facts">
-        <Fact term="Your role">{record.viewerRoles.join(", ")}</Fact>
         <Fact term="Submission">
           {SUBMISSION_LABELS[record.submissionState]}
         </Fact>
-        <Fact term="Received by GitHub">
-          {formatUtc(record.receivedAt)}
-          {record.receivedAtSource === "maintainer-attested"
-            ? " — entered by a security maintainer from GitHub, not read from GitHub by Slop"
-            : ""}
-        </Fact>
-        <Fact term="Policy revision">{record.policyRevision ?? "—"}</Fact>
+        {record.nextAction ? (
+          <Fact term="Next action">
+            {record.nextAction}
+            {record.nextActionDueAt
+              ? ` · due ${formatUtc(record.nextActionDueAt)}`
+              : ""}
+            {record.overdue ? " · overdue" : ""}
+          </Fact>
+        ) : null}
         <Fact term="Award terms">{caseMoney(record.terms)}</Fact>
         <Fact term="Award">{record.awardState}</Fact>
         {record.relatedParty === "related" ? (
@@ -1422,69 +1415,69 @@ function CaseDetail({
           <Fact term="GitHub advisory">
             <ExternalLinkAnchor href={record.advisory.url}>
               {record.advisory.ghsa}
-            </ExternalLinkAnchor>{" "}
-            (opens only for people GitHub allows)
+            </ExternalLinkAnchor>
           </Fact>
         ) : null}
-        {record.receiptState ? (
-          <>
-            <Fact term="Receipt">{record.receiptState}</Fact>
-            <Fact term="Remediation">{record.remediationState}</Fact>
-            <Fact term="Disclosure">{record.disclosureState}</Fact>
-            <Fact term="Recognition">{record.recognition}</Fact>
-            <Fact term="Severity">{record.severity ?? "—"}</Fact>
-            <Fact term="Loss of funds">{record.lossFinding ?? "—"}</Fact>
-            <Fact term="Appeal">{record.appealState}</Fact>
-            <Fact term="Next action">
-              {record.nextAction ?? "—"}
-              {record.nextActionDueAt
-                ? ` · due ${formatUtc(record.nextActionDueAt)}`
-                : ""}
-              {record.overdue ? " · overdue" : ""}
-            </Fact>
-          </>
-        ) : null}
-        {record.reporter ? (
-          <Fact term="Reporter">@{record.reporter.githubLogin}</Fact>
-        ) : null}
-        {record.payee ? (
-          <Fact term="Payee">@{record.payee.githubLogin}</Fact>
-        ) : null}
-        {record.view === "restricted" ? (
-          <>
-            <Fact term="Root cause">{record.rootCauseKey ?? "—"}</Fact>
-            <Fact term="Duplicate of">{record.duplicateOf ?? "—"}</Fact>
-            <Fact term="Evidence digest">
-              {record.evidenceDigest ? (
-                <code>{record.evidenceDigest}</code>
-              ) : (
-                "—"
-              )}
-            </Fact>
-            <Fact term="Triagers">
-              {(record.triagers ?? [])
-                .filter((entry) => entry.revokedAt === null)
-                .map((entry) => `@${entry.githubLogin}`)
-                .join(", ") || "None"}
-            </Fact>
-          </>
-        ) : null}
       </dl>
+      <details className="security-reference">
+        <summary>Case details</summary>
+        <dl className="admin-facts">
+          <Fact term="Your role">{record.viewerRoles.join(", ")}</Fact>
+          <Fact term="Received by GitHub">
+            {formatUtc(record.receivedAt)}
+            {record.receivedAtSource === "maintainer-attested"
+              ? " (maintainer verified)"
+              : ""}
+          </Fact>
+          <Fact term="Policy revision">{record.policyRevision ?? "—"}</Fact>
+          {record.receiptState ? (
+            <>
+              <Fact term="Receipt">{record.receiptState}</Fact>
+              <Fact term="Remediation">{record.remediationState}</Fact>
+              <Fact term="Disclosure">{record.disclosureState}</Fact>
+              <Fact term="Recognition">{record.recognition}</Fact>
+              <Fact term="Severity">{record.severity ?? "—"}</Fact>
+              <Fact term="Loss of funds">{record.lossFinding ?? "—"}</Fact>
+              <Fact term="Appeal">{record.appealState}</Fact>
+            </>
+          ) : null}
+          {record.reporter ? (
+            <Fact term="Reporter">@{record.reporter.githubLogin}</Fact>
+          ) : null}
+          {record.payee ? (
+            <Fact term="Payee">@{record.payee.githubLogin}</Fact>
+          ) : null}
+          {record.view === "restricted" ? (
+            <>
+              <Fact term="Root cause">{record.rootCauseKey ?? "—"}</Fact>
+              <Fact term="Duplicate of">{record.duplicateOf ?? "—"}</Fact>
+              <Fact term="Evidence digest">
+                {record.evidenceDigest ? (
+                  <code>{record.evidenceDigest}</code>
+                ) : (
+                  "—"
+                )}
+              </Fact>
+              <Fact term="Triagers">
+                {(record.triagers ?? [])
+                  .filter((entry) => entry.revokedAt === null)
+                  .map((entry) => `@${entry.githubLogin}`)
+                  .join(", ") || "None"}
+              </Fact>
+            </>
+          ) : null}
+        </dl>
+      </details>
       {record.settlement ? (
         <section aria-label="Private payment">
           <p>{record.settlement.privacyNotice}</p>
           {record.viewerRoles.includes("reporter") &&
           record.settlement.state !== "paid" ? (
             <p>
-              <Link href="/account#wallets">Review your payout wallet</Link>.
-              Wallet proof and the existing binding delay still apply.
+              <Link href="/account#wallets">Review your payout wallet</Link>
             </p>
           ) : null}
-          <p>
-            Network: {record.settlement.network}. State:{" "}
-            {PAYMENT_LABELS[record.settlement.state] ?? record.settlement.state}
-            .
-          </p>
+          <p>Network: {record.settlement.network}</p>
           {record.settlement.transactionId ? (
             <p>
               Finalized transaction:{" "}
@@ -1520,23 +1513,19 @@ function CaseDetail({
           </ol>
         </details>
       ) : null}
-      {record.allowedActions.length === 0 ? (
-        <p className="admin-status">Nothing waits for you on this case.</p>
-      ) : (
-        record.allowedActions.map((action) => (
-          <ActionForm
-            action={action}
-            key={`${action}-${record.revision}`}
-            onDone={(updated, saved) => {
-              setNote(saved);
-              if (updated) replace({ case: updated });
-              else reload();
-              onChanged();
-            }}
-            record={record}
-          />
-        ))
-      )}
+      {record.allowedActions.map((action) => (
+        <ActionForm
+          action={action}
+          key={`${action}-${record.revision}`}
+          onDone={(updated, saved) => {
+            setNote(saved);
+            if (updated) replace({ case: updated });
+            else reload();
+            onChanged();
+          }}
+          record={record}
+        />
+      ))}
     </article>
   );
 }
@@ -1613,16 +1602,18 @@ export function SecurityCasesPage() {
                 <li key={record.id}>
                   <button
                     aria-pressed={selected === record.id}
-                    className="text-button"
+                    className="security-case-choice"
                     onClick={() => setSelected(record.id)}
                     type="button"
                   >
-                    {record.projectId} · {record.advisory?.ghsa ?? record.id}
-                  </button>{" "}
-                  · {SUBMISSION_LABELS[record.submissionState]}
-                  {record.receiptState ? ` · ${record.receiptState}` : ""} ·
-                  award {record.awardState}
-                  {record.overdue ? " · overdue" : ""}
+                    <span>{record.projectId}</span>
+                    <strong>{record.advisory?.ghsa ?? record.id}</strong>
+                    <span>{SUBMISSION_LABELS[record.submissionState]}</span>
+                    <span>
+                      Award: {record.awardState}
+                      {record.overdue ? " · overdue" : ""}
+                    </span>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -1634,9 +1625,7 @@ export function SecurityCasesPage() {
         <section aria-labelledby="security-link" className="admin-section">
           <h2 id="security-link">Link a report you submitted on GitHub</h2>
           <p className="admin-status">
-            A link is a claim. It counts as submitted only after a security
-            maintainer confirms on GitHub that you sent the advisory. Your
-            original GitHub receipt time is kept.
+            A maintainer verifies the link and the original GitHub receipt time.
           </p>
           <ClaimForm onCreated={created} programProjects={programProjects} />
         </section>
@@ -1670,9 +1659,6 @@ export function SecurityCasesPage() {
             counts them.
           </p>
         </details>
-        {session.status === "signed-in" ? (
-          <p>Signed in as @{session.session.githubLogin}.</p>
-        ) : null}
       </div>
       {body}
     </main>
