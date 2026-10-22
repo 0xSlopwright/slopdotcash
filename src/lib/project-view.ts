@@ -1,3 +1,4 @@
+import { compareActors } from "./github-actor";
 /**
  * Derives one project's cycle leaderboard, diagnostic compute evidence, and
  * reward simulation from the canonical GitHub snapshot. A finalized private
@@ -120,16 +121,6 @@ export interface ProjectView {
 interface UniqueRun {
   attribution: ModelAttribution;
   receipt: ProjectRunReceipt;
-}
-
-function compareActors(left: GitHubActor, right: GitHubActor): number {
-  const leftLogin = left.login.toLowerCase();
-  const rightLogin = right.login.toLowerCase();
-  return (
-    leftLogin.localeCompare(rightLogin) ||
-    left.login.localeCompare(right.login) ||
-    left.id.localeCompare(right.id)
-  );
 }
 
 function iso(value: number): string {

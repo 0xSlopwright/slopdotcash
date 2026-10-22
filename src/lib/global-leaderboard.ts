@@ -1,3 +1,4 @@
+import { compareActors } from "./github-actor";
 /**
  * Builds the cumulative cross-project leaderboard from accepted score events
  * and immutable closed-cycle records. A closed cycle replaces overlapping
@@ -26,16 +27,6 @@ type MutableGlobalLeader = Omit<GlobalLeader, "cycles" | "projects"> & {
   cycleKeys: Set<string>;
   projectIds: Set<string>;
 };
-
-function compareActors(left: GitHubActor, right: GitHubActor): number {
-  const leftLogin = left.login.toLowerCase();
-  const rightLogin = right.login.toLowerCase();
-  return (
-    leftLogin.localeCompare(rightLogin) ||
-    left.login.localeCompare(right.login) ||
-    left.id.localeCompare(right.id)
-  );
-}
 
 function actorFromCycle(actor: { id: string; login: string }): GitHubActor {
   return {
