@@ -13,25 +13,15 @@ import {
   type SecurityBountyTerms,
   securityBountySplit,
 } from "../../src/lib/security-bounty.mjs";
+import type {
+  D1Result,
+  D1QueryStatement as D1Statement,
+  D1TransactionalDatabase,
+} from "../d1";
 import { notifySecurityCase } from "../notifications/events";
 import { cachedPublicResponse, type EdgeCache } from "../projects/edge-cache";
 import { readJsonObject } from "../trace/validation";
-
-type D1Result<T = unknown> = {
-  success: boolean;
-  results?: T[];
-  meta?: { changes?: number };
-};
-type D1Statement = {
-  bind(...values: unknown[]): D1Statement;
-  first<T>(): Promise<T | null>;
-  all<T>(): Promise<D1Result<T>>;
-  run(): Promise<D1Result>;
-};
-export type SecurityD1Database = {
-  batch(statements: D1Statement[]): Promise<D1Result[]>;
-  prepare(query: string): D1Statement;
-};
+export type SecurityD1Database = D1TransactionalDatabase<D1Statement>;
 
 type Actor = { githubId: string; githubLogin: string };
 

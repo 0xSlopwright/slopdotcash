@@ -147,7 +147,7 @@ export async function handlePointsApi(
     }
     if (route === "/join" && request.method === "POST") {
       const value = (await readBoundedJson(
-        request as unknown as Response,
+        request,
         4096,
         "points join",
       )) as Record<string, unknown>;
@@ -284,7 +284,7 @@ export async function handlePointsApi(
       }
       if (route === "/visibility" && request.method === "POST") {
         const body = (await readBoundedJson(
-          request as unknown as Response,
+          request,
           256,
           "visibility",
         )) as Record<string, unknown>;

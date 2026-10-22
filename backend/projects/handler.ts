@@ -1,4 +1,9 @@
+import {
+  type DeploymentTier,
+  deploymentOrigins,
+} from "../../src/lib/deployment";
 import type {
+  ProjectApplicationNotice as AdminApplicationNotice,
   EnforcementPreview,
   ProjectEnforcementState,
   PublicProjectApplication,
@@ -62,17 +67,10 @@ import {
 } from "./github-lookup";
 import { TokenMetadataError, type TokenMetadataReader } from "./token-metadata";
 
-export type AdminApplicationNotice = {
-  applicationId: string;
-  projectId: string;
-  projectName: string;
-  repository: string;
-  applicantLogin: string;
-  submittedAt: string;
-  reviewUrl: string;
-};
+export type { ProjectApplicationNotice as AdminApplicationNotice } from "../../src/lib/project-contracts";
 
 export type ProjectApiDependencies = {
+  tier?: DeploymentTier;
   persistence: ProjectPersistence;
   adminGithubIds: ReadonlySet<string>;
   /** GitHub actor IDs with the project moderation role (PRD ADM-05, ADM-06). */
@@ -111,7 +109,6 @@ type ApiError = Error & { status?: number; code?: string };
 
 const APPLICATION_ID = /^app_[A-Za-z0-9_-]{8,72}$/u;
 const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
-const ADMIN_REVIEW_URL = "https://slop.cash/admin";
 
 function fail(status: number, code: string, message: string): never {
   const error: ApiError = new Error(message);
@@ -579,7 +576,7 @@ async function submitApplication(
       repository,
       applicantLogin: session.githubLogin,
       submittedAt: application.submittedAt,
-      reviewUrl: `${ADMIN_REVIEW_URL}/applications/${application.id}`,
+      reviewUrl: `${deploymentOrigins(deps.tier).site}/admin/applications/${application.id}`,
     });
   } catch {
     // The application is already stored; the failed email stays visible to

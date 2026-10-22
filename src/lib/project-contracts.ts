@@ -164,3 +164,13 @@ export interface EnforcementPreview {
     listingTierAfter: ProjectDefinition["listingTier"];
   };
 }
+
+export type ProjectApplicationNotice = {
+  applicationId: string;
+  projectId: string;
+  projectName: string;
+  repository: string;
+  applicantLogin: string;
+  submittedAt: string;
+  reviewUrl: string;
+};

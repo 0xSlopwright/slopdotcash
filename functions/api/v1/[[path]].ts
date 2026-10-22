@@ -482,6 +482,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
         context.env.SLOP_DB,
         new Date().toISOString(),
       ),
+    tier: deploymentTier(context.env.SLOP_ENVIRONMENT),
     notifyAdmins: (notice) => notifyAdmins(context.env.SLOP_NOTIFY, notice),
     repositoryControl: (manifest, actor) =>
       repositoryControl(manifest, actor, context.env),

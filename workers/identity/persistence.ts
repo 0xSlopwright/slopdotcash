@@ -1,19 +1,11 @@
+import type { D1Database } from "../../backend/d1";
 import type {
   IdentityAssertion,
   IdentityPersistence,
   OAuthFlow,
 } from "./contracts";
 
-type D1Result = { success: boolean; meta?: { changes?: number } };
-type D1Statement = {
-  bind(...values: unknown[]): D1Statement;
-  first<T>(): Promise<T | null>;
-  run(): Promise<D1Result>;
-};
-
-export type D1Database = {
-  prepare(query: string): D1Statement;
-};
+export type { D1Database } from "../../backend/d1";
 
 type FlowRow = {
   id: string;

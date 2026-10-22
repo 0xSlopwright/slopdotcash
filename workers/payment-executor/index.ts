@@ -75,7 +75,7 @@ export class PaymentSignerJournal {
       return new Response("Not found", { status: 404 });
     try {
       const input = (await readBoundedJson(
-        request as unknown as Response,
+        request,
         4096,
         "payout execution",
       )) as Parameters<ReturnType<typeof createEvmExecutor>["submit"]>[0] & {

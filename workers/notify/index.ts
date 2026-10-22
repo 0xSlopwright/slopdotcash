@@ -1,6 +1,7 @@
 import { EmailMessage } from "cloudflare:email";
 import type { SecurityD1Database } from "../../backend/security/handler";
 import { readBoundedJson } from "../../src/lib/browser-json";
+import { deploymentTier } from "../../src/lib/deployment";
 import {
   type ActivityMailDependencies,
   activityMailEligibility,
@@ -20,6 +21,7 @@ type SendEmailBinding = {
 };
 
 type Env = {
+  SLOP_ENVIRONMENT?: "production" | "staging";
   ADMIN_EMAIL: SendEmailBinding;
   ADMIN_EMAILS?: string;
   SLOP_DB?: SecurityD1Database;
@@ -83,11 +85,7 @@ export default {
       const deps = securityDependencies(env);
       if (!deps) return respond(503);
       try {
-        const body = await readBoundedJson(
-          request as unknown as Response,
-          8192,
-          "private notice",
-        );
+        const body = await readBoundedJson(request, 8192, "private notice");
         if (typeof body !== "object" || body === null || Array.isArray(body))
           return respond(400);
         if (url.pathname.endsWith("/reconcile"))
@@ -124,11 +122,7 @@ export default {
       const deps = activityDependencies(env);
       if (!deps) return respond(503);
       try {
-        const body = await readBoundedJson(
-          request as unknown as Response,
-          8192,
-          "activity notice",
-        );
+        const body = await readBoundedJson(request, 8192, "activity notice");
         if (!body || typeof body !== "object" || Array.isArray(body))
           return respond(400);
         const value = body as Record<string, unknown>;
@@ -160,6 +154,7 @@ export default {
       }
     }
     return handleNotifyRequest(request, {
+      tier: deploymentTier(env.SLOP_ENVIRONMENT),
       adminEmails: env.ADMIN_EMAILS,
       fromAddress: env.NOTIFY_FROM_ADDRESS,
       now: () => new Date(),

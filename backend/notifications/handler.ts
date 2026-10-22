@@ -121,7 +121,7 @@ export async function handleNotificationsApi(
     let body: unknown;
     try {
       body = await readBoundedJson(
-        request as unknown as Response,
+        request,
         32 * 1024,
         "notification read request",
       );

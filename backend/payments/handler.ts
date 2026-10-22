@@ -254,7 +254,7 @@ export async function handlePaymentsApi(
       if (!deps.operatorIds?.includes(member.github_id))
         return json(403, { error: "operator_required" });
       const body = (await readBoundedJson(
-        request as unknown as Response,
+        request,
         4096,
         "wallet proposal",
       )) as Record<string, unknown>;
@@ -286,7 +286,7 @@ export async function handlePaymentsApi(
 
     if (path === "/wallets/register" && request.method === "POST") {
       const body = (await readBoundedJson(
-        request as unknown as Response,
+        request,
         4096,
         "wallet registration",
       )) as Record<string, unknown>;
@@ -309,7 +309,7 @@ export async function handlePaymentsApi(
     }
     if (path === "/wallets/challenge" && request.method === "POST") {
       const body = (await readBoundedJson(
-        request as unknown as Response,
+        request,
         4096,
         "wallet challenge",
       )) as Record<string, unknown>;
@@ -352,7 +352,7 @@ export async function handlePaymentsApi(
     }
     if (path === "/wallets/authorize" && request.method === "POST") {
       const body = (await readBoundedJson(
-        request as unknown as Response,
+        request,
         4096,
         "wallet authorization",
       )) as Record<string, unknown>;
@@ -426,7 +426,7 @@ export async function handlePaymentsApi(
       request.method === "POST"
     ) {
       const body = (await readBoundedJson(
-        request as unknown as Response,
+        request,
         4096,
         "binding authorization",
       )) as Record<string, unknown>;
@@ -572,7 +572,7 @@ export async function handlePaymentsApi(
       request.method === "POST"
     ) {
       const body = (await readBoundedJson(
-        request as unknown as Response,
+        request,
         4096,
         "solana binding",
       )) as Record<string, unknown>;

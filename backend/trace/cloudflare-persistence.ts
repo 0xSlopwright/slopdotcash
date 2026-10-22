@@ -1,3 +1,4 @@
+import type { D1TransactionalDatabase as D1Database, D1Result } from "../d1";
 import { notifyWalletChanged } from "../notifications/events";
 import type {
   AttachTraceInput,
@@ -16,17 +17,7 @@ import type {
 } from "./contracts";
 import { sha256Hex } from "./validation";
 
-type D1Result = { success: boolean; meta?: { changes?: number } };
-type D1Statement = {
-  bind(...values: unknown[]): D1Statement;
-  first<T>(): Promise<T | null>;
-  run(): Promise<D1Result>;
-};
-
-export type D1Database = {
-  batch(statements: D1Statement[]): Promise<D1Result[]>;
-  prepare(query: string): D1Statement;
-};
+export type { D1TransactionalDatabase as D1Database } from "../d1";
 
 type R2Head = {
   size: number;

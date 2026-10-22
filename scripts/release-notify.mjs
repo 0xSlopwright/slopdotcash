@@ -61,7 +61,11 @@ const config = {
   ...base,
   name,
   main: resolve(root, "workers/notify/index.ts"),
-  vars: { ...base.vars, NOTIFY_INBOX_URL: `${expectedOrigin}/inbox` },
+  vars: {
+    ...base.vars,
+    SLOP_ENVIRONMENT: target,
+    NOTIFY_INBOX_URL: `${expectedOrigin}/inbox`,
+  },
   d1_databases: pilots.length
     ? [{ ...database[0], migrations_dir: resolve(root, "migrations") }]
     : [],
@@ -219,8 +223,14 @@ if (version.annotations?.["workers/tag"] !== sha || !Array.isArray(bindings))
 const inboxBinding = bindings.filter(
   (entry) => entry.name === "NOTIFY_INBOX_URL",
 );
+const tierBinding = bindings.filter(
+  (entry) => entry.name === "SLOP_ENVIRONMENT",
+);
 const emailBinding = bindings.filter((entry) => entry.type === "send_email");
 if (
+  tierBinding.length !== 1 ||
+  tierBinding[0].type !== "plain_text" ||
+  tierBinding[0].text !== target ||
   inboxBinding.length !== 1 ||
   inboxBinding[0].type !== "plain_text" ||
   inboxBinding[0].text !== config.vars.NOTIFY_INBOX_URL ||
@@ -230,7 +240,7 @@ if (
   emailBinding[0].allowed_destination_addresses?.length
 )
   throw new TypeError(
-    "Uploaded inbox URL or email binding does not match the selected profile",
+    "Uploaded environment, inbox URL or email binding does not match the selected profile",
   );
 const deployedSecrets = bindings
   .filter((entry) => entry.type === "secret_text")
