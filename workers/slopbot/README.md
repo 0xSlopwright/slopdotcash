@@ -800,7 +800,7 @@ An extended signed HTTP/SQLite replay retained 14 expected source-change
 requests, compared with one before this repair. It preserved five queue sends
 including an appeal retry after a failed send, with zero score or cost rows.
 
-### Valuation budget admission (consumer integration pending)
+### Valuation budget admission
 
 Migration `0051_slopbot_value_budget.sql` stores immutable attempt reservations
 and reconciliations. `reserveValueBudget` requires an explicit approved monthly
@@ -808,8 +808,8 @@ allowance and a conservative maximum attempt cost. It atomically counts the
 current month's recorded provider costs (or estimates) across installations and
 all unreconciled reservations. Prior-month reservations remain held because an
 unresolved provider request can be charged later. A repeated attempt ID does
-not authorize another call. These primitives are not yet wired into automatic
-consumption and do not configure or enforce a production spending limit.
+not authorize another call. The single-source consumer uses these primitives. They do not configure a
+production allowance or impose a provider-side spending cap.
 
 The consumer must use its unique `value:<UUID>` attempt ID as the cost ledger's
 review key, record every attempted route including failures, and pass the full
@@ -841,11 +841,10 @@ schema responses, invalid responses, fallback revocation, authority failures,
 insufficient budget and reservation replay. Valid single and joint results
 return after one stored receipt; invalid output uses the allowed fallback and
 stores both receipts. Every case records zero contributor charges. Responses
-are controlled local fixtures, not live model acceptance. Durable request
-consumption, approved production configuration and live publication remain
-unfinished.
+are controlled local fixtures, not live model acceptance. Grouped request consumption, approved production configuration and live
+publication remain unfinished.
 
-### Durable request claims (consumer integration pending)
+### Durable request claims
 
 Migration `0052_slopbot_value_processing.sql` separates operational claims from
 immutable request history. A ten-minute lease has a unique token. Only the
@@ -854,9 +853,39 @@ reclaimed after expiry; its old token cannot report success. An explicit retry
 time retains budget, authority and evidence blocks. Published/current outcomes
 and open-context dispositions complete that delivery only; a later source event
 has its own request. The consumer must check ownership before external calls
-and publication. The scheduler and complete consumer are not yet connected.
+and publication. The scheduler processes one due request per invocation. Single-source
+consumption is connected; complete grouped consumption remains pending.
 
 A file-backed SQLite replay verifies one concurrent winner, process restart,
 expiry/reclaim, rejection of a stale completion, scheduled budget retry and a
 terminal open-context disposition. The immutable request remains present. This
 is durable-state evidence, not a model, queue or publication acceptance result.
+
+### Scheduled single-source consumption
+
+The scheduler selects one due request and claims it before source reads. It
+checks live registry and installation authority, then reads the complete closed
+PR evidence and pinned policy. A matching current journal avoids another model
+call. New results pass the reserved inference route, a final ownership check
+and the existing fresh-source publisher before the request is completed.
+Open work completes as context, not an implementation award. Missing evidence
+or related PRs wait for the full joint collector; they do not receive guessed
+single-source value. Failures retain a retry state without provider exception
+bodies. Grouped consumption and restart reuse of unpublished model results
+remain incomplete.
+
+Required operator settings have no defaults:
+`SLOPBOT_VALUE_MONTHLY_BUDGET_MICRO_USD`,
+`SLOPBOT_VALUE_ATTEMPT_RESERVE_MICRO_USD`, `SLOPBOT_VALUE_START_AT`, the existing
+model credential, and the deployed `SLOPBOT_PRODUCER_REVISION`. The start date
+separates ongoing API assessment from the subscription-only historical backfill;
+set it after the historical cutoff. No production settings are enabled here.
+The attempt reservation must cover the entire permitted model route.
+
+The consumer replay uses actual SQLite migrations, collector, policy loader,
+model SDK over local HTTP, usage ledger, journal reader and publisher. Captured
+GitHub responses and installation selection are controlled. First delivery
+publishes one local record; another delivery returns current without inference.
+Missing configuration, historical cutoff and open-source paths make no model
+call. Totals: one model-response fixture, one cost receipt, one journal row and
+zero contributor charges. This is not live provider or production acceptance.

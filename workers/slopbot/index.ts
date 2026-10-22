@@ -7,15 +7,19 @@ import type { Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import * as store from "./persistence";
 import { registeredRepository } from "./registry";
-import { type ReviewEnv, recordHumanSignal, reviewItem } from "./review";
+import { recordHumanSignal, reviewItem } from "./review";
 import { dispatchSpendAlert } from "./spend-alerts";
+import {
+  consumePendingValueRequest,
+  type ValueConsumerEnv,
+} from "./value-consumer";
 import { valueHistory } from "./value-journal";
 import { recordValueRequest } from "./value-requests";
 import { workUnitHistory } from "./value-work-unit-journal";
 import { readWebhookBody } from "./webhook-body";
 
 type Queue = { send(body: Job): Promise<void> };
-type Env = Omit<ReviewEnv, "SLOPBOT_DB"> & {
+type Env = Omit<ValueConsumerEnv, "SLOPBOT_DB"> & {
   SLOPBOT_DB: store.D1TransactionalDatabase;
   SLOPBOT_WEBHOOK_SECRET: string;
   SLOPBOT_QUEUE: Queue;
@@ -350,6 +354,7 @@ export default {
     await resumeBudgetBlocks(env.SLOPBOT_DB, env.SLOPBOT_QUEUE);
     if (env.SLOP_NOTIFY)
       await dispatchSpendAlert(env.SLOPBOT_DB, env.SLOP_NOTIFY);
+    await consumePendingValueRequest(env);
   },
 
   async queue(
