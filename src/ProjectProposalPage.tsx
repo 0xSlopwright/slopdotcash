@@ -1978,7 +1978,9 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
         if (!active) return;
         if (
           body.project.headline !== project.headline ||
-          body.project.description !== project.description
+          body.project.description !== project.description ||
+          body.project.contribution?.approvedScope !==
+            project.contribution?.approvedScope
         ) {
           setSubmission({
             state: "error",
@@ -2005,40 +2007,65 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
     };
   }, [project]);
   const key = `slop:project-update:v1:${project.id}`;
-  const initial = { headline: project.headline, goal: project.description };
-  const [draft, setDraft] = useState(() => {
-    const empty = { ...initial, criteria: "", reason: "" };
+  const initial = {
+    headline: project.headline,
+    goal: project.description,
+    criteria: project.contribution?.approvedScope ?? "",
+    reason: "",
+  };
+  const [saved] = useState(() => {
     try {
       const value: unknown = JSON.parse(localStorage.getItem(key) ?? "null");
-      if (!value || typeof value !== "object" || Array.isArray(value))
-        return empty;
-      const stored = value as Record<string, unknown>;
-      return Object.fromEntries(
-        Object.entries(empty).map(([field, fallback]) => [
-          field,
-          typeof stored[field] === "string" ? stored[field] : fallback,
-        ]),
-      ) as typeof empty;
+      return value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : null;
     } catch {
-      return empty;
+      return null;
     }
   });
+  const [draft, setDraft] = useState(
+    () =>
+      Object.fromEntries(
+        Object.entries(initial).map(([field, fallback]) => [
+          field,
+          typeof saved?.[field] === "string" ? saved[field] : fallback,
+        ]),
+      ) as typeof initial,
+  );
+  const [draftRevision, setDraftRevision] = useState<number | null>(
+    saved
+      ? typeof saved.baseRevision === "number"
+        ? saved.baseRevision
+        : -1
+      : null,
+  );
+  const staleDraft =
+    baseRevision !== null &&
+    draftRevision !== null &&
+    draftRevision !== baseRevision;
   const [attempted, setAttempted] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const copy = useCopyStatus();
   useEffect(() => {
     try {
-      localStorage.setItem(key, JSON.stringify(draft));
+      localStorage.setItem(
+        key,
+        JSON.stringify({
+          ...draft,
+          baseRevision: draftRevision ?? baseRevision,
+        }),
+      );
       setSaveFailed(false);
     } catch {
       setSaveFailed(true);
     }
-  }, [draft, key]);
+  }, [draft, key, draftRevision, baseRevision]);
   const errors: Record<string, string | undefined> = {
     headline: lengthError(draft.headline, 8, 120),
     goal: lengthError(draft.goal, 24, 600),
     criteria:
-      draft.criteria.trim() === ""
+      draft.criteria.trim() === initial.criteria ||
+      (draft.criteria.trim() === "" && !initial.criteria)
         ? undefined
         : lengthError(draft.criteria, 6, 1_000),
     reason: lengthError(draft.reason, 8, 500),
@@ -2056,8 +2083,14 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
       before: initial.goal,
       after: draft.goal.trim(),
     },
+    {
+      field: "contribution.approvedScope",
+      label: "Acceptance criteria",
+      before: initial.criteria,
+      after: draft.criteria.trim(),
+    },
   ].filter((change) => change.before !== change.after);
-  const hasChange = changes.length > 0 || draft.criteria.trim() !== "";
+  const hasChange = changes.length > 0;
   const valid = hasChange && Object.values(errors).every((e) => !e);
   const shown = (field: string) => (attempted ? errors[field] : undefined);
   const brief = `Update ${project.id} through a reviewed admin revision on slop.cash.
@@ -2110,7 +2143,7 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
         />
         <TextField
           error={shown("criteria")}
-          hint="Optional. Goes to the contributor and reviewer skills."
+          hint="Used by the contributor and reviewer skills."
           label="Acceptance criteria"
           multiline
           name="criteria"
@@ -2127,6 +2160,38 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
           onChange={set("reason")}
           value={draft.reason}
         />
+        {staleDraft ? (
+          <div role="alert" className="form-error">
+            <p>
+              This draft was saved against{" "}
+              {draftRevision === -1
+                ? "an unknown revision"
+                : `revision ${draftRevision}`}
+              . The current revision is {baseRevision}. Review the changes below
+              before continuing.
+            </p>
+            <button
+              type="button"
+              className="button secondary-button"
+              onClick={() => setDraftRevision(baseRevision)}
+            >
+              Use this draft with the current revision
+            </button>
+          </div>
+        ) : null}
+        <button
+          type="button"
+          className="button secondary-button"
+          disabled={submission.state === "submitting"}
+          onClick={() => {
+            setDraft(initial);
+            setDraftRevision(baseRevision);
+            setAttempted(false);
+            setSubmission({ state: "idle", message: "" });
+          }}
+        >
+          Discard draft
+        </button>
         <section aria-labelledby="update-changes" className="update-changes">
           <h2 id="update-changes">Changes</h2>
           {changes.length === 0 ? (
@@ -2179,11 +2244,17 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
               disabled={
                 submission.state === "submitting" ||
                 submission.state === "submitted" ||
-                baseRevision === null
+                baseRevision === null ||
+                staleDraft
               }
               onClick={async () => {
                 setAttempted(true);
-                if (!valid || baseRevision === null || baseProject === null)
+                if (
+                  !valid ||
+                  staleDraft ||
+                  baseRevision === null ||
+                  baseProject === null
+                )
                   return;
                 setSubmission({ state: "submitting", message: "" });
                 try {

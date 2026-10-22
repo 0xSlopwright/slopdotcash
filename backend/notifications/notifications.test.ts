@@ -476,8 +476,72 @@ describe("notifications API", () => {
         sessionActor: async () => (actor ? { githubId: actor } : null),
         now: () => new Date("2026-10-19T13:00:00.000Z"),
       });
-    return { call, rows };
+    return { call, rows, sqlite };
   }
+  test("older unread notifications remain reachable when new events arrive", async () => {
+    const { call, sqlite } = setup(APPLICANT);
+    const insert = sqlite.prepare(
+      "INSERT INTO notifications (event_key,recipient_github_id,kind,subject,action_path,source_at,created_at) VALUES (?,?,'wallet_changed','base','/account#wallets',?,?)",
+    );
+    for (let i = 0; i < 101; i++)
+      insert.run(
+        `wallet-claim:history-${String(i).padStart(3, "0")}`,
+        APPLICANT,
+        T,
+        T,
+      );
+    const first = await (
+      await call(new Request(`${origin}/api/v1/notifications`))
+    )?.json();
+    expect(first.notifications).toHaveLength(100);
+    expect(first.unread).toBe(103);
+    expect(first.nextCursor).toBeString();
+    insert.run(
+      "wallet-claim:new-arrival",
+      APPLICANT,
+      "2026-10-19T12:00:00.000Z",
+      T,
+    );
+    const second = await (
+      await call(
+        new Request(
+          `${origin}/api/v1/notifications?${new URLSearchParams({ cursor: first.nextCursor })}`,
+        ),
+      )
+    )?.json();
+    expect(second.notifications).toHaveLength(3);
+    expect(second.nextCursor).toBeNull();
+    expect(second.unread).toBe(104);
+    const keys = [...first.notifications, ...second.notifications].map(
+      (n: { eventKey: string }) => n.eventKey,
+    );
+    expect(new Set(keys).size).toBe(103);
+    for (const page of [first, second]) {
+      const response = await call(
+        new Request(`${origin}/api/v1/notifications/read`, {
+          method: "POST",
+          headers: { origin, "content-type": "application/json" },
+          body: JSON.stringify({
+            eventKeys: page.notifications.map(
+              (n: { eventKey: string }) => n.eventKey,
+            ),
+          }),
+        }),
+      );
+      expect(response?.status).toBe(200);
+    }
+    const refreshed = await (
+      await call(new Request(`${origin}/api/v1/notifications`))
+    )?.json();
+    expect(refreshed.unread).toBe(1);
+    expect(refreshed.notifications[0].eventKey).toBe(
+      "wallet-claim:new-arrival",
+    );
+    expect(
+      (await call(new Request(`${origin}/api/v1/notifications?cursor=invalid`)))
+        ?.status,
+    ).toBe(400);
+  });
   const read = (keys: unknown, headers: Record<string, string> = {}) =>
     new Request(`${origin}/api/v1/notifications/read`, {
       method: "POST",

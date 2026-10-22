@@ -43,6 +43,7 @@ export interface Notification {
 export interface NotificationsResponse {
   notifications: Notification[];
   unread: number;
+  nextCursor?: string | null;
 }
 
 /** The most event keys one read request may mark. */
@@ -81,6 +82,20 @@ function isNotification(value: unknown): value is Notification {
   );
 }
 
+/** A stable boundary keeps new notifications from shifting older pages. */
+export function notificationCursor(value: string): [string, string] {
+  if (value.length > 500) throw new Error("Invalid notification cursor");
+  const parts: unknown = JSON.parse(value);
+  if (
+    !Array.isArray(parts) ||
+    parts.length !== 2 ||
+    !isTimestamp(parts[0]) ||
+    !isNotificationEventKey(parts[1])
+  )
+    throw new Error("Invalid notification cursor");
+  return [parts[0], parts[1]];
+}
+
 /** Rejects any response that does not match the contract exactly. */
 export function parseNotificationsResponse(
   value: unknown,
@@ -95,6 +110,11 @@ export function parseNotificationsResponse(
     (body.unread as number) < 0
   )
     throw new Error("The inbox returned an invalid response.");
+  if (body.nextCursor !== undefined && body.nextCursor !== null) {
+    if (typeof body.nextCursor !== "string")
+      throw new Error("Invalid notification cursor");
+    notificationCursor(body.nextCursor);
+  }
   return body as NotificationsResponse;
 }
 

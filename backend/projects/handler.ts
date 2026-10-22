@@ -672,7 +672,16 @@ async function listAdminApplications(
   deps: ProjectApiDependencies,
 ): Promise<Response> {
   await requireAdmin(request, deps);
-  const status = new URL(request.url).searchParams.get("status") ?? "pending";
+  const query = new URL(request.url).searchParams;
+  const id = query.get("id");
+  if (id !== null) {
+    if (!APPLICATION_ID.test(id))
+      fail(404, "not_found", "Application not found");
+    const application = await deps.persistence.getApplication(id);
+    if (application === null) fail(404, "not_found", "Application not found");
+    return json(200, { applications: [publicApplication(application)] });
+  }
+  const status = query.get("status") ?? "pending";
   if (!["pending", "approved", "rejected"].includes(status)) {
     fail(400, "invalid_request", "Invalid application status");
   }
