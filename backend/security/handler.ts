@@ -1423,23 +1423,18 @@ async function planChange(
     case "decide-related-party": {
       exactKeys(body, [...common, "outcome", "reason"]);
       requireAction(row, roles, action);
-      // The reviewer is independent of the technical decision, of any earlier
-      // related-party review of this case, and of the appeal decision that
-      // reopened it: a refusal the reporter appealed cannot be reversed by the
-      // reviewer who made it, and the reviewer who returned the appeal cannot
-      // then approve the award the appeal was about (SEC-12). The appeal
-      // decider's seat is read from the case journal because `decide-appeal`
-      // persists no decider column.
-      const appealDecider = await deps.db
+      // A later appeal must not erase an earlier reviewer's conflict. The
+      // immutable journal retains every related-party and appeal decision.
+      const priorReview = await deps.db
         .prepare(
-          "SELECT actor_github_id FROM security_case_events WHERE case_id = ? AND kind = 'decide-appeal' ORDER BY case_revision DESC LIMIT 1",
+          "SELECT 1 AS found FROM security_case_events WHERE case_id = ? AND actor_github_id = ? AND kind IN ('decide-related-party', 'decide-appeal') LIMIT 1",
         )
-        .bind(row.id)
-        .first<{ actor_github_id: string | null }>();
+        .bind(row.id, actor.githubId)
+        .first<{ found: number }>();
       if (
         row.technical_decider_github_id === actor.githubId ||
         row.related_party_reviewer_github_id === actor.githubId ||
-        appealDecider?.actor_github_id === actor.githubId
+        priorReview !== null
       )
         fail(
           403,
