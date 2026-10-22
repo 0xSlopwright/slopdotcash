@@ -6,6 +6,7 @@ import { fetchWithDeadline, readBoundedJson } from "./browser-json";
 import {
   formatMonthlyCapDisplay,
   MAX_MONTHLY_CAP_MINOR,
+  MAX_PROJECT_ID_LENGTH,
 } from "./project-schema.mjs";
 
 export function safeProposalHttpsUrl(value: string): boolean {
@@ -78,7 +79,8 @@ export function slugify(value: string): string {
     .trim()
     .replace(/[^a-z0-9]+/gu, "-")
     .replace(/^-|-$/gu, "")
-    .slice(0, 48);
+    .slice(0, MAX_PROJECT_ID_LENGTH)
+    .replace(/-$/u, "");
 }
 
 export function monthlyPoolValue(value: string): {
