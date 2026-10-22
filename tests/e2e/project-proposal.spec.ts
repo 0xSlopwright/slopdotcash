@@ -757,7 +757,6 @@ for (const [name, expectedId] of [
       .fill("Reproducible protein-folding benchmarks.");
     await page.getByLabel("Goal").fill("Make protein research reproducible.");
     await page.getByRole("button", { name: "Next: Rewards" }).click();
-    await page.getByRole("button", { name: "Next: Funding" }).click();
     await page.getByRole("button", { name: "Next: Review" }).click();
     const [download] = await Promise.all([
       page.waitForEvent("download"),
