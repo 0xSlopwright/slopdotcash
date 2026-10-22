@@ -4596,6 +4596,10 @@ small {
   gap: 10px;
 }
 
+.admin-fieldset {
+  min-width: 0;
+}
+
 .admin-actions label,
 .admin-editor label {
   display: grid;

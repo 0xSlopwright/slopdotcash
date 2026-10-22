@@ -701,6 +701,9 @@ test("an admin cannot activate or publish skills without canonical scan closure 
   ).toHaveValue(
     "A reviewed paused project awaiting complete security evidence.",
   );
+  expect(
+    await admin.evaluate(() => document.documentElement.scrollWidth),
+  ).toBeLessThanOrEqual(await admin.evaluate(() => window.innerWidth));
   await admin.screenshot({
     path: test.info().outputPath("admin-routine-edit.png"),
     fullPage: true,
