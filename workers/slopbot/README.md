@@ -1035,3 +1035,18 @@ The bounded recovery handles at most 16 added or modified text-diff paths and
 2 MiB of verified file reads, with 512 KiB per file. Unsupported changes, missing
 bytes, altered patches, or larger sources retain the original limitation and
 need dedicated Git evidence. No original capture is rewritten.
+
+### Omitted deleted-file evidence
+
+GitHub can omit a deleted-file patch and report zero file deletions while its
+commit total includes those lines. The collector records `removedComparison`
+with the original text, blob hash, base commit, and accepted commit. It requires
+complete hash-verified trees, a regular parent file, verified blob bytes, and
+absence at the accepted commit. Missing or truncated trees, changed hashes,
+binary content, and files still present cannot establish a deletion.
+
+GitHub's reported `patch` and `deletions` remain unchanged. Matching and commit
+reconciliation use the separately verified text to derive deletion lines and
+a deletion-only comparison. Commit totals must still reconcile. Existing blob
+and tree limits apply; exceeding them leaves an explicit evidence gap. This
+proof supplies review material, not a value tier or payment approval.

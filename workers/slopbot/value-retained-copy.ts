@@ -3,7 +3,11 @@
  */
 import type { FileChange } from "./value-evidence";
 import { retainedManifestIdentity } from "./value-manifest-identity";
-import { hasCompleteValuePatch } from "./value-patch";
+import {
+  hasCompleteValuePatch,
+  valueDeletionCount,
+  valuePatch,
+} from "./value-patch";
 import type { WorkUnitSource } from "./value-work-unit";
 
 export function retainedCopySources(
@@ -51,19 +55,21 @@ export function retainedEditIdentity(file: FileChange): string | null {
     !hasCompleteValuePatch(file) ||
     file.previous_filename !== undefined ||
     !["added", "modified", "removed"].includes(file.status) ||
-    file.additions + file.deletions === 0
+    file.additions + valueDeletionCount(file) === 0
   )
     return null;
   return JSON.stringify([
     file.filename,
     file.status,
-    file.patch?.split("\n").filter((line) => /^[+-]/u.test(line)),
+    valuePatch(file)
+      ?.split("\n")
+      .filter((line) => /^[+-]/u.test(line)),
   ]);
 }
 
 function changedHunks(file: FileChange): string[] | null {
   if (retainedEditIdentity(file) === null) return null;
-  const hunks = (file.patch ?? "")
+  const hunks = (valuePatch(file) ?? "")
     .split(/^@@.*@@.*$/mu)
     .map((hunk) => hunk.split("\n").filter((line) => /^[+-]/u.test(line)))
     .filter((lines) => lines.length > 0)
