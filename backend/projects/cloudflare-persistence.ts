@@ -240,6 +240,20 @@ function isConstraintConflict(error: unknown): boolean {
   );
 }
 
+/**
+ * Matches a pending application that lists any of the bound repository keys
+ * (a JSON array of lowercase ids and aliases) in any of its repositories.
+ */
+const PENDING_REPOSITORY_CLAIM = `SELECT 1 FROM project_applications AS pending,
+    json_each(pending.manifest, '$.repositories') AS repository
+  WHERE pending.status = 'pending'
+    AND EXISTS (
+      SELECT 1 FROM json_each(json_insert(
+          COALESCE(json_extract(repository.value, '$.aliases'), json('[]')),
+          '$[#]', json_extract(repository.value, '$.id'))) AS claimed
+        WHERE lower(claimed.value) IN (SELECT value FROM json_each(?)))
+  LIMIT 1`;
+
 export class CloudflareProjectPersistence implements ProjectPersistence {
   constructor(private readonly db: ProjectD1Database) {}
 
@@ -357,6 +371,13 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
   async createApplication(
     application: ProjectApplication & { manifestText: string },
   ): Promise<"created" | "conflict" | "too_many_pending"> {
+    const repositoryKeys = JSON.stringify(
+      application.manifest.repositories.flatMap((repository) =>
+        [repository.id, ...(repository.aliases ?? [])].map((key) =>
+          key.toLowerCase(),
+        ),
+      ),
+    );
     try {
       const result = await this.db
         .prepare(
@@ -367,7 +388,8 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
              referrer_github_id, referrer_github_login
            ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?, ?, ?
              WHERE (SELECT COUNT(*) FROM project_applications
-               WHERE applicant_github_id = ? AND status = 'pending') < ?`,
+               WHERE applicant_github_id = ? AND status = 'pending') < ?
+               AND NOT EXISTS (${PENDING_REPOSITORY_CLAIM})`,
         )
         .bind(
           application.id,
@@ -386,9 +408,15 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           application.referrer?.githubLogin ?? null,
           application.applicant.githubId,
           MAX_PENDING_APPLICATIONS_PER_APPLICANT,
+          repositoryKeys,
         )
         .run();
-      return (result.meta?.changes ?? 0) === 1 ? "created" : "too_many_pending";
+      if ((result.meta?.changes ?? 0) === 1) return "created";
+      const claimed = await this.db
+        .prepare(PENDING_REPOSITORY_CLAIM)
+        .bind(repositoryKeys)
+        .first();
+      return claimed === null ? "too_many_pending" : "conflict";
     } catch (error) {
       if (isConstraintConflict(error)) return "conflict";
       throw error;
