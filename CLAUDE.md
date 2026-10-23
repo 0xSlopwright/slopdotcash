@@ -14,7 +14,8 @@ alias only.
 
 - Score accepted outcomes, not activity.
 - GitHub is the work, review, and policy authority.
-- Automation proposes; maintainers decide.
+- Slopbot decides routine cases under published rules; humans decide
+  exceptions, escalated disputes, bounty awards, and confirmed-malicious bans.
 - Projected, under-review, approved, scheduled, paid, unclaimed, held, and
   excluded are different states.
 - Any provider, model, and agent client may participate when its exact identity
@@ -182,8 +183,10 @@ self-service setup: verify current GitHub authority, complete project terms,
 install Slopbot, and pass the malicious-code scan before automatic activation.
 Funding is optional and has a separate readiness state. Owners publish immutable
 revisions; admins handle restrictions and disputes, not routine approval.
-Two distinct contributor flags pause the project. Contributor skills must not
-install or work on flagged projects.
+Two distinct contributor flags pause the project. A clean fresh scan reinstates
+a project that flags alone paused; a moderator decides only after a confirmed
+malicious result. Contributor skills must not install or work on flagged
+projects.
 
 The current application still uses admin approval in `backend/projects/`.
 That is implementation to migrate, not the target product rule. Do not bypass
@@ -206,18 +209,21 @@ follow the target repository’s rules, test the result, prepare evidence, and
 emit the required attribution. It must not claim platform authority over an
 issue or create placeholder submissions.
 
-The current reviewer skill is separate and advisory. Slopbot is required and
-always free, and runs only on registered repositories. It scores PRs by perceived
-size and value and credits useful reviews. Automatic closure is limited to
-verified Slop-skill participants, excluding maintainers, with manual appeals.
-Do not charge project vaults for bot reviews. The current global closure switch
-stays off until reviewed production activation. Document changes alone do not
-activate closure, payments, or security enforcement.
+The current reviewer skill is separate and advisory. It measures its own run,
+checks correctness, tests, security, evidence, duplication, abuse signals,
+scope, and usefulness, and places the machine review before the signed
+attribution footer.
 
-
-It measures its own run, checks
-correctness, tests, security, evidence, duplication, abuse signals, scope, and
-usefulness, and places the machine review before the signed attribution footer.
+Slopbot is required and always free, and runs only on registered repositories.
+It scores PRs by perceived size and value, credits useful reviews, and applies
+the published penalty table. Automatic closure is limited to verified
+Slop-skill participants, excluding maintainers. An uncertain finding goes to
+the maintainer first; after 7 days without maintainer action, Slopbot applies
+its verdict as a label only and never closes. Slopbot triages each appeal first,
+and a moderator decides escalated appeals. Do not charge project vaults for bot
+reviews. The current global closure switch stays off until reviewed production
+activation. Document changes alone do not activate closure, payments, or
+security enforcement.
 
 ## Installer and attribution
 
@@ -284,8 +290,11 @@ unit; do not apply account-level caps or diminishing credit.
 
 Unusual useful work may score only through a strict reviewed `evaluations/`
 manifest. Never double-score a source already rewarded by the ordinary ledger.
-An LLM may recommend a hold or award but cannot autonomously ban, approve,
-exclude, or move money.
+Slopbot may assign scores, apply the published penalty table, label uncertain
+findings after the maintainer window, close under PRD section 5, and triage
+appeals and disputes. No LLM or automation may ban a person, decide an
+escalated dispute, approve a bounty award, or move money outside the contract's
+automatic monthly distribution.
 
 ## Participation points
 
@@ -313,14 +322,16 @@ A review budget is an optional additive cash line. Review events remain in the
 shared pool unchanged; a committed review line may pay them only on top of that
 treatment, with separate public arithmetic and evidence.
 
-The PRD's monthly fallback applies only to configured monthly projects with
-funds already committed in escrow. Owners can adjust amounts before execution;
-do not show adjustment history or require public reasons. Distribute the current
+Automatic monthly payment is the PRD default for every project with funds
+committed in its vault. The owner sets the monthly amount during setup, can
+adjust allocations before execution, and can turn the default off; do not show
+adjustment history or require public reasons. Distribute the current
 allocations at the defined monthly cutoff if the owner has not done so. Define
 the UTC cutoff before activation. Keep internal reconciliation and prevent
 manual/automatic duplicate payments. Walletless funded awards remain reserved.
-Private reports are automatic; bounty awards and payouts remain discretionary,
-with disputes handled by humans. Preserve already funded obligations.
+Private reports are automatic; bounty awards and payouts remain discretionary.
+Slopbot triages disputes first, and a moderator decides escalated disputes.
+Preserve already funded obligations.
 
 The current payment implementation retains its older review rules until the
 reviewed migration. Do not infer that this policy change has altered contracts

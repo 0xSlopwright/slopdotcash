@@ -87,9 +87,9 @@ feature-branch code.
 
 ## Slop bounty: what is accepted
 
-This repository has a $1,000 monthly Slop contributor pool. Maintainers score
-accepted merges; payment follows the public monthly review. The pool is pledged,
-not escrowed or guaranteed.
+This repository has a $1,000 monthly Slop contributor pool. Slopbot scores
+accepted merges, and maintainers may correct a score. Payment follows the
+monthly review. The pool is pledged, not escrowed or guaranteed.
 
 The PRD is binding. Accepted work, inside approved MVP scope:
 
@@ -190,8 +190,11 @@ The contributor skill must:
 The current reviewer skill is separate and advisory. The PRD requires free Slopbot on registered
 repositories. Bot closure and security enforcement still need reviewed
 protocol/permission changes before activation. It checks correctness, tests,
-scope, security, duplication, evidence, and usefulness. Automation may propose
-a score or hold; a human decides acceptance, exclusions, and money.
+scope, security, duplication, evidence, and usefulness. Slopbot may score,
+apply the published penalty table, label uncertain findings after the 7-day
+maintainer window, and triage appeals. A human decides merges, escalated
+disputes, exclusions, bounty awards, and any money outside the automatic
+monthly distribution.
 
 Run at minimum:
 
