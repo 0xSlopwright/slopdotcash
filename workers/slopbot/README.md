@@ -75,47 +75,24 @@ Apply migration `0048_slopbot_budget_blocks.sql` before the worker and summary
 API. This recovery mechanism does not set provider limits, reserve prepaid
 credit, or make an estimated token price a hard spending cap.
 
-## Cost statements and vault billing
+## Free reviews and provider cost records
 
-On the Surplus Anthropic endpoint, a structured spending-limit rejection stops
-the model route. It does not trigger the Sol fallback. Other provider failures
-keep the configured fallback behavior. The failed call retains the safe reason
-`provider budget exhausted`; no provider message body is stored. This is
-rejection handling, not proof that a spending limit has been configured.
-The [provider guide](https://www.surplusintelligence.ai/llms.txt) documents the
-Anthropic error envelope and the separate management permission for budgets.
+The canonical PRD section 5 makes Slopbot free on registered repositories.
+Review eligibility does not depend on project credits or a vault balance.
+New triage, confirmation, and value-assessment calls record provider usage and
+cost but zero billed amount and zero billable cost, including successful calls
+and retries of older reviews. Existing `call-v1` and `review-v2` charges remain
+unchanged. The existing `review-v2` row format permits these zero-charge rows;
+no historical invoice or migration is rewritten.
 
+Provider spending-limit rejections still stop the model route without a Sol
+fallback. The queue retains its retry time. Internal budgets, queue limits,
+and the $500 operational alerts remain separate from customer billing.
+No project vault service charge is required or authorized for free Slopbot.
 
-`GET /api/v1/payments/slopbot/installations/<id>/invoices/<YYYY-MM>` returns
-one installation's billed model calls for the UTC month. Values use integer
-micro-USDC. This is a cost statement, not a request for payment or proof of
-settlement. The fee offset is zero until a reviewed project binding exists.
-
-New cost rows use the `review-v2` billing rule. Each append calculates the
-difference between the whole review's rounded cost-plus-10% total and the
-amount already recorded for that review. Triage and confirmation therefore
-share one rounding boundary. Failed calls and service retries add no billable
-cost. Token-rate arithmetic uses integers throughout.
-
-Migration `0047_slopbot_review_billing.sql` preserves old `call-v1` amounts.
-A previously billed legacy review cannot accept a new billable call under
-the new rule without explicit reconciliation. A call already made is retained
-as unbilled evidence before the review reports this failure. Unbilled retries
-can still be recorded. These rows remain cost statements: estimated rates do not prove
-provider settlement, and this calculation does not reserve a budget or
-authorize a service charge.
-
-Billing must use the existing project vaults under PAY-10. The owner authorizes
-`chargeService` on Base or `charge_service` on Solana. The operation must use
-only free sponsor funds, preserve reserved awards and donor funds, and prevent
-a second charge for the same invoice digest. Both contracts now include that
-operation; it is not reviewed or deployed. Contract security review, deployment
-and finalized invoice reconciliation are still required before launch. Issue
-#616 tracks these dependencies.
-
-Do not send service deposits to payout-fee wallets. There is no public prepaid
-deposit-credit endpoint. A past fee transfer must never become new service
-credit. This change neither enables billing nor moves funds.
+`GET /api/v1/payments/slopbot/installations/<id>/invoices/<YYYY-MM>` retains
+historical cost statements. New calls increase the call count but never the
+billed total. A statement does not authorize or request payment.
 
 ## Setup checklist (owner)
 
@@ -185,10 +162,9 @@ Do these in order. Each step names who does it and how to verify it.
 7. **Verify live:**
    - `GET /health` returns `{"service":"slopbot","ok":true}`.
    - The App's "Advanced" tab shows `202` for the ping delivery.
-8. **Qualify billing for the dogfood installation:** install the App on
-   `SlopDotCash/slopdotcash` only. There is no free allowance. Keep billable
-   review disabled until the vault service-charge path and invoice
-   reconciliation are qualified.
+8. **Verify free review:** use a registered repository with no project credits.
+   Confirm that an eligible review runs, records provider costs, and adds zero
+   customer charges. Verify that unregistered repositories remain blocked.
 9. **Observe the shadow period:** review the labels and comments for at least
    14 days and 50 items, with `SLOPBOT_CLOSURE_ENABLED` still `"false"`.
    Enabling closure later is a separate reviewed PR that sets the variable
@@ -209,9 +185,6 @@ and publication separately. An unregistered repository must create no record.
 
 ## Not yet implemented
 
-- There is no free allowance. Review stays blocked until billing is qualified.
-- Vault service charging and finalized invoice reconciliation (PAY-10/BOT-11).
-- Reviewed installation-to-project binding and payout-fee offsets.
 - SCR-01 penalty journal events. Closures record `penaltyEligible` for them.
 - Maintainer dashboard and Automation row (LDR-04).
 

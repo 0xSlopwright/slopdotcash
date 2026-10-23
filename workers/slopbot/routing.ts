@@ -18,7 +18,6 @@ export type RoutingInput = {
   participant: boolean;
   humanReopenedThisRevision: boolean;
   authorCapReached: boolean;
-  balanceMicroUsdc: number;
 };
 
 export type Routing =
@@ -77,8 +76,6 @@ export function route(input: RoutingInput): Routing {
   }
   if (input.authorCapReached)
     return { review: false, reason: "daily review cap for new author reached" };
-  if (input.balanceMicroUsdc <= 0)
-    return { review: false, reason: "budget exhausted (Suspended)" };
 
   // A marker added by someone else never enables a penalty (BOT-06): only a
   // registered participant, matched by immutable actor ID, is penalty eligible.
