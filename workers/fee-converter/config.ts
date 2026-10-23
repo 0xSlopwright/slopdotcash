@@ -1,6 +1,6 @@
 /**
  * Fee-converter configuration. Every value comes from Worker vars or secrets;
- * a missing or malformed value refuses the network instead of guessing.
+ * a missing or malformed value refuses the run instead of guessing.
  */
 
 export type Network = "base" | "ethereum" | "robinhood" | "solana";
@@ -19,9 +19,13 @@ export interface NetworkDefinition {
   chainId: number | null;
   /** Escrow deployment network keys whose assets count as this network's reward assets. */
   escrowNetworks: readonly string[];
-  /** The approved network stablecoin (PRD FND-02). All have 6 decimals. */
-  stablecoin: string;
-  stablecoinSymbol: "USDC" | "USDG";
+  /**
+   * Circle USDC on this network: the only conversion target (PRD section 6).
+   * Null until its address is verified from Circle's primary source; a
+   * network without one converts nothing and its fees stay pending in the
+   * fee wallet. Never substitute another stablecoin or a token named "USDC".
+   */
+  usdc: string | null;
   defaultRpcUrl: string;
   /** KyberSwap Aggregator chain slug; null for Solana. */
   kyberChain: string | null;
@@ -30,10 +34,13 @@ export interface NetworkDefinition {
 }
 
 /**
- * Stablecoin identities: Base and Solana USDC and Robinhood USDG match
- * src/lib/escrow-policy.mjs. Ethereum USDC is Circle's published mainnet
- * contract. Robinhood Chain has no Circle USDC; tokens named "USDC" there are
- * unrelated clones, so its target stays Paxos USDG.
+ * USDC targets: Base and Solana USDC match src/lib/escrow-policy.mjs.
+ * Ethereum USDC is Circle's published mainnet contract (AGENTS.md: verify it
+ * from Circle's primary source before activation). Robinhood Chain has no
+ * verified Circle USDC: the tokens named "USDC" in KyberSwap's 4663 list are
+ * unrelated clones. The PRD supersedes the earlier USDG target, so Robinhood
+ * stays pending until an owner-verified Circle USDC address lands here in a
+ * reviewed change.
  */
 export const NETWORK_DEFINITIONS: Readonly<Record<Network, NetworkDefinition>> =
   Object.freeze({
@@ -41,8 +48,7 @@ export const NETWORK_DEFINITIONS: Readonly<Record<Network, NetworkDefinition>> =
       family: "evm",
       chainId: 8453,
       escrowNetworks: ["base-mainnet"],
-      stablecoin: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-      stablecoinSymbol: "USDC",
+      usdc: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
       defaultRpcUrl: "https://mainnet.base.org",
       kyberChain: "base",
       router: "0x6131b5fae19ea4f9d964eac0408e4408b66337b5",
@@ -51,8 +57,7 @@ export const NETWORK_DEFINITIONS: Readonly<Record<Network, NetworkDefinition>> =
       family: "evm",
       chainId: 1,
       escrowNetworks: ["ethereum"],
-      stablecoin: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-      stablecoinSymbol: "USDC",
+      usdc: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
       defaultRpcUrl: "https://ethereum-rpc.publicnode.com",
       kyberChain: "ethereum",
       router: "0x6131b5fae19ea4f9d964eac0408e4408b66337b5",
@@ -61,8 +66,8 @@ export const NETWORK_DEFINITIONS: Readonly<Record<Network, NetworkDefinition>> =
       family: "evm",
       chainId: 4663,
       escrowNetworks: ["robinhood-mainnet"],
-      stablecoin: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
-      stablecoinSymbol: "USDG",
+      // Owner decision required: no Circle USDC verified on chain 4663.
+      usdc: null,
       defaultRpcUrl: "https://rpc.mainnet.chain.robinhood.com",
       kyberChain: "robinhood",
       router: "0x6131b5fae19ea4f9d964eac0408e4408b66337b5",
@@ -71,8 +76,7 @@ export const NETWORK_DEFINITIONS: Readonly<Record<Network, NetworkDefinition>> =
       family: "solana",
       chainId: null,
       escrowNetworks: ["solana-mainnet"],
-      stablecoin: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-      stablecoinSymbol: "USDC",
+      usdc: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
       defaultRpcUrl: "https://api.mainnet-beta.solana.com",
       kyberChain: null,
       router: null,
@@ -135,6 +139,9 @@ export interface FeeConverterConfig {
   jupiterApiKey: string | null;
 }
 
+/** Typical Solana swap fee in USDC micro-units, used only for the gas multiple. */
+const SOLANA_FEE_ESTIMATE_MICRO = 2_000n;
+
 const EVM_ADDRESS = /^0x[0-9a-f]{40}$/u;
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/u;
 
@@ -152,19 +159,32 @@ export function normalizeToken(network: Network, value: string): string {
     : value;
 }
 
+/**
+ * Conversion limits are economic and security policy (PRD section 9, "Fee
+ * conversion": routes, limits and custody remain approvals). The code holds
+ * no fallback: a converter that runs needs every limit set in the reviewed
+ * wrangler.toml, and a missing one refuses the whole run. `off` reads none.
+ */
+const DUST_DECISION =
+  "awaits the owner's decision on whether tiny fee balances may accumulate";
+
 function integer(
   value: string | undefined,
-  fallback: bigint,
   name: string,
+  required: boolean,
+  missing = "is required",
 ): bigint {
-  if (value === undefined || value === "") return fallback;
-  if (!/^(0|[1-9][0-9]{0,30})$/u.test(value))
+  if (value === undefined || value.trim() === "") {
+    if (required) throw new TypeError(`${name} ${missing}`);
+    return 0n;
+  }
+  if (!/^(0|[1-9][0-9]{0,30})$/u.test(value.trim()))
     throw new TypeError(`${name} must be a non-negative integer`);
-  return BigInt(value);
+  return BigInt(value.trim());
 }
 
-function bps(value: string | undefined, fallback: number, name: string) {
-  const parsed = integer(value, BigInt(fallback), name);
+function bps(value: string | undefined, name: string, required: boolean) {
+  const parsed = integer(value, name, required);
   if (parsed > 10_000n) throw new TypeError(`${name} must be at most 10000`);
   return Number(parsed);
 }
@@ -213,45 +233,53 @@ export function parseConfig(env: FeeConverterEnv): FeeConverterConfig {
     };
   });
   const jupiterApiKey = env.JUPITER_API_KEY?.trim() || null;
+  const running = mode !== "off";
   return {
     mode,
     networks,
     limits: {
+      // The dust threshold: a quote below it, or below the gas multiple of
+      // its network fee, leaves the token in the fee wallet to accumulate.
       minValueMicro: integer(
         env.FEE_CONVERTER_MIN_VALUE_MICRO,
-        5_000_000n,
         "FEE_CONVERTER_MIN_VALUE_MICRO",
+        running,
+        DUST_DECISION,
       ),
       gasMultiple: integer(
         env.FEE_CONVERTER_GAS_MULTIPLE,
-        10n,
         "FEE_CONVERTER_GAS_MULTIPLE",
+        running,
+        DUST_DECISION,
       ),
       maxSlippageBps: bps(
         env.FEE_CONVERTER_MAX_SLIPPAGE_BPS,
-        100,
         "FEE_CONVERTER_MAX_SLIPPAGE_BPS",
+        running,
       ),
       maxPriceImpactBps: bps(
         env.FEE_CONVERTER_MAX_PRICE_IMPACT_BPS,
-        200,
         "FEE_CONVERTER_MAX_PRICE_IMPACT_BPS",
+        running,
       ),
       runCapMicro: integer(
         env.FEE_CONVERTER_RUN_CAP_MICRO,
-        1_000_000_000n,
         "FEE_CONVERTER_RUN_CAP_MICRO",
+        running,
       ),
       dailyCapMicro: integer(
         env.FEE_CONVERTER_DAILY_CAP_MICRO,
-        5_000_000_000n,
         "FEE_CONVERTER_DAILY_CAP_MICRO",
+        running,
       ),
-      solanaFeeMicro: integer(
-        env.FEE_CONVERTER_SOLANA_FEE_MICRO,
-        2_000n,
-        "FEE_CONVERTER_SOLANA_FEE_MICRO",
-      ),
+      // A network-fee estimate, not policy: it only prices the gas multiple.
+      solanaFeeMicro: env.FEE_CONVERTER_SOLANA_FEE_MICRO?.trim()
+        ? integer(
+            env.FEE_CONVERTER_SOLANA_FEE_MICRO,
+            "FEE_CONVERTER_SOLANA_FEE_MICRO",
+            true,
+          )
+        : SOLANA_FEE_ESTIMATE_MICRO,
     },
     kyberClientId: env.KYBERSWAP_CLIENT_ID?.trim() || "slop-fee-converter",
     jupiterApiUrl:

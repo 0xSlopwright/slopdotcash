@@ -2,7 +2,11 @@
 // in-memory D1. It never loads a key. Usage:
 //   bun workers/fee-converter/dry-run.ts <base-wallet> <base-token> <solana-wallet> <solana-mint>
 // Any public holder address can stand in for the fee wallet: the run only
-// reads its balance and asks the aggregators for quotes.
+// reads its balance and asks the aggregators for quotes. The conversion
+// limits have no fallback: set FEE_CONVERTER_MIN_VALUE_MICRO,
+// FEE_CONVERTER_GAS_MULTIPLE, FEE_CONVERTER_MAX_SLIPPAGE_BPS,
+// FEE_CONVERTER_MAX_PRICE_IMPACT_BPS, FEE_CONVERTER_RUN_CAP_MICRO and
+// FEE_CONVERTER_DAILY_CAP_MICRO in the environment.
 import { runOnce } from "./index";
 import { sqliteD1 } from "./sqlite-d1";
 
@@ -25,6 +29,13 @@ const results = await runOnce({
     solana: [solanaMint],
   }),
   RPC_URL_SOLANA: process.env.SOLANA_RPC_URL || undefined,
+  FEE_CONVERTER_MIN_VALUE_MICRO: process.env.FEE_CONVERTER_MIN_VALUE_MICRO,
+  FEE_CONVERTER_GAS_MULTIPLE: process.env.FEE_CONVERTER_GAS_MULTIPLE,
+  FEE_CONVERTER_MAX_SLIPPAGE_BPS: process.env.FEE_CONVERTER_MAX_SLIPPAGE_BPS,
+  FEE_CONVERTER_MAX_PRICE_IMPACT_BPS:
+    process.env.FEE_CONVERTER_MAX_PRICE_IMPACT_BPS,
+  FEE_CONVERTER_RUN_CAP_MICRO: process.env.FEE_CONVERTER_RUN_CAP_MICRO,
+  FEE_CONVERTER_DAILY_CAP_MICRO: process.env.FEE_CONVERTER_DAILY_CAP_MICRO,
 });
 console.log(JSON.stringify(results, null, 2));
 console.log(

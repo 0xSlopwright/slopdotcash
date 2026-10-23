@@ -1,7 +1,13 @@
 /**
  * One conversion run: reconcile unresolved sends, then quote, check and (in
- * live mode) sign one swap per candidate token. The chain and aggregator
- * details live behind ChainClient so the policy here is chain-neutral.
+ * live mode) sign one swap per candidate token into the network's USDC. The
+ * chain and aggregator details live behind ChainClient so the policy here is
+ * chain-neutral.
+ *
+ * A `receipts` run converts only tokens whose fee-wallet balance changed since
+ * the token's last record, so fees convert soon after they arrive (PRD
+ * section 6). A `recovery` run re-evaluates every candidate and retries what
+ * a failed quote, route or price left behind.
  */
 
 import type { Limits, Mode, Network, NetworkConfig } from "./config";
@@ -55,7 +61,7 @@ export interface Quote {
   minAmountOut: bigint;
   /** Null when the aggregator cannot price the input; the run fails closed. */
   priceImpactBps: number | null;
-  /** Estimated network fee in stablecoin micro-units. */
+  /** Estimated network fee in USDC micro-units. */
   gasCostMicro: bigint;
   /** Bounded, public quote facts for the record. */
   summary: Record<string, unknown>;
@@ -127,8 +133,12 @@ export interface ConversionStore {
   latest(network: Network, token: string): Promise<ConversionRow | null>;
 }
 
+export type RunTrigger = "receipts" | "recovery";
+
 export interface RunDependencies {
   mode: Exclude<Mode, "off">;
+  /** Defaults to `recovery`: every candidate is evaluated. */
+  trigger?: RunTrigger;
   limits: Limits;
   store: ConversionStore;
   now: () => Date;
@@ -141,7 +151,11 @@ export interface RunDependencies {
 
 export interface NetworkRunResult {
   network: Network;
-  status: "ran" | "locked";
+  /**
+   * `route_pending`: the network has no verified USDC target, so nothing is
+   * quoted or signed and received fees stay in the fee wallet.
+   */
+  status: "ran" | "locked" | "route_pending";
   reconciled: number;
   records: Record<ConversionState, number>;
 }
@@ -316,10 +330,20 @@ export async function runNetwork(
       }
     }
 
-    const stablecoin = config.definition.stablecoin;
+    const usdc = config.definition.usdc;
+    if (usdc === null) {
+      // Never relabel another asset as USDC: the fees wait in the wallet.
+      deps.log({
+        event: "fee_conversion_route_pending",
+        network: config.network,
+        reason: "no verified USDC target",
+      });
+      result.status = "route_pending";
+      return result;
+    }
     const candidates = [
       ...new Set([...(await deps.projectTokens(config)), ...config.allowlist]),
-    ].filter((token) => token !== stablecoin);
+    ].filter((token) => token !== usdc);
 
     const since = new Date(
       deps.now().getTime() - 24 * 60 * 60 * 1000,
@@ -346,11 +370,25 @@ export async function runNetwork(
       try {
         const balance = await client.balance(token);
         if (balance === 0n) continue;
-        const outcome = await convert(token, balance, config, client, deps, {
-          runId,
-          runValue,
-          dayValue,
-        });
+        if (
+          deps.trigger === "receipts" &&
+          (await deps.store.latest(config.network, token))
+            ?.tokenBalanceBefore === balance.toString()
+        )
+          continue;
+        const outcome = await convert(
+          token,
+          balance,
+          usdc,
+          config,
+          client,
+          deps,
+          {
+            runId,
+            runValue,
+            dayValue,
+          },
+        );
         result.records[outcome.state] += 1;
         if (outcome.committedMicro > 0n) {
           runValue += outcome.committedMicro;
@@ -380,6 +418,7 @@ interface Budget {
 async function convert(
   token: string,
   balance: bigint,
+  usdc: string,
   config: NetworkConfig,
   client: ChainClient,
   deps: RunDependencies,
@@ -394,7 +433,7 @@ async function convert(
     mode: deps.mode,
     feeWallet: config.feeWallet,
     token,
-    targetToken: config.definition.stablecoin,
+    targetToken: usdc,
     amountIn: balance.toString(),
     route: null,
     quoteAmountOut: null,
@@ -439,9 +478,7 @@ async function convert(
     return { state: row.state, committedMicro: 0n };
   };
 
-  const targetBefore = (
-    await client.balance(config.definition.stablecoin)
-  ).toString();
+  const targetBefore = (await client.balance(usdc)).toString();
   const base = (): ConversionRow => ({
     ...unbalanced(),
     targetBalanceBefore: targetBefore,

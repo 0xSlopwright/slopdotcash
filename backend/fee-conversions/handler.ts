@@ -4,6 +4,11 @@
  * transaction bytes stay in D1 and are never returned.
  */
 
+import {
+  NETWORK_DEFINITIONS,
+  NETWORKS,
+} from "../../workers/fee-converter/config";
+
 export interface FeeConversionsDependencies {
   db: {
     prepare(query: string): {
@@ -112,6 +117,26 @@ export function totalsPerToken(rows: SettledRow[]): FeeConversionTotal[] {
     }));
 }
 
+export interface FeeConversionRoute {
+  network: string;
+  /** Circle USDC on the network, or null while no address is verified. */
+  targetToken: string | null;
+  /** `pending`: received fees stay in the fee wallet; nothing converts. */
+  status: "usdc" | "pending";
+}
+
+/** The conversion target of every network, so a pending route is visible. */
+export function conversionRoutes(): FeeConversionRoute[] {
+  return NETWORKS.map((network) => {
+    const usdc = NETWORK_DEFINITIONS[network].usdc;
+    return {
+      network,
+      targetToken: usdc,
+      status: usdc === null ? "pending" : "usdc",
+    };
+  });
+}
+
 /** Returns null when the request is not for this route. */
 export async function handleFeeConversionsApi(
   request: Request,
@@ -183,6 +208,7 @@ export async function handleFeeConversionsApi(
         submittedAt: row.submitted_at,
         finalizedAt: row.finalized_at,
       })),
+      routes: conversionRoutes(),
       totals: totalsPerToken(settled.results),
       last24Hours: states.results,
     });

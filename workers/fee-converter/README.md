@@ -1,10 +1,12 @@
 # Slop fee-converter Worker
 
 `slop-fee-converter` converts project tokens that a network fee wallet has
-already received into that network's stablecoin (PRD MVP-07c; owner decision
-of 18 October 2026). The escrow pays the 2% fee in the reward token directly
-to the fee wallet (TOK-06). This Worker sells those tokens later, inside the
-same wallet.
+already received into that network's Circle USDC (PRD section 6, TOK-07,
+MVP-07c; owner decision of 18 October 2026). The escrow pays the 2% fee in the
+reward token directly to the fee wallet (TOK-06). This Worker sells those
+tokens soon after they arrive, inside the same wallet. USDC is the only
+target: a network without a verified Circle USDC address converts nothing, and
+no other stablecoin or token named "USDC" stands in for it.
 
 It is a narrow exception to "Slop holds no keys" (PRD TOK-07, PAY-04,
 MVP-07c). It holds one hot key per
@@ -23,8 +25,17 @@ block is a reviewed code change, not a configuration value.
 
 ## What one run does
 
-The Worker has no HTTP route. A cron trigger runs it every 15 minutes. For each
-enabled network:
+The Worker has no HTTP route. A cron trigger runs it every minute. Most runs
+are **receipt** runs: they convert only tokens whose fee-wallet balance
+differs from the `token_balance_before` of that token's latest record, which
+is how a newly received fee shows up. Each fifteenth minute
+(`RECOVERY_SCAN_MINUTES` in `index.ts`) the run is a **recovery** scan that
+re-evaluates every candidate, so a token left behind by a failed quote, route,
+price check or prepare is retried. A conversion therefore starts within about
+a minute of the fee transfer being visible at the RPC's `latest` block, unless
+a check below skips it.
+
+For each enabled network:
 
 1. Take the network lock in D1 (`fee_converter_locks`). A second run on the
    same network exits, so two runs never sign with one nonce. The lease lasts
@@ -36,24 +47,29 @@ enabled network:
    row for `acquireLock` to reclaim, so a late run never disturbs a successor.
 2. Reconcile every unresolved live send (`submitted`, `unknown`) before
    anything new. See [Idempotency](#idempotency).
-3. List candidate tokens from D1 project manifests: a `rewardAsset` of kind
+3. A network without a verified USDC target stops here with status
+   `route_pending` and logs `fee_conversion_route_pending`. It quotes and
+   signs nothing and loads no key; its fees stay in the wallet.
+4. List candidate tokens from D1 project manifests: a `rewardAsset` of kind
    `token` on that network, and the `escrow.deployments[].asset` of each
    deployment on the network's escrow key (`base-mainnet`, `ethereum`,
    `robinhood-mainnet`, `solana-mainnet`). Add the `FEE_CONVERTER_ALLOWLIST`
    entries. It never discovers tokens from the wallet, so an airdropped token
    is never sold.
-4. Read the fee-wallet balance of each candidate. Skip the stablecoin and
-   empty balances.
-5. Get a quote. If the quoted value is above the remaining per-run or per-day
+5. Read the fee-wallet balance of each candidate. Skip USDC and empty
+   balances. A receipt run also skips a balance unchanged since the token's
+   latest record.
+6. Get a quote. If the quoted value is above the remaining per-run or per-day
    cap, scale the amount down (at most three requotes, aiming at 98% of the
    remaining cap).
-6. Skip the token and record the reason when the quoted value is below
+7. Skip the token and record the reason when the quoted value is below
    `FEE_CONVERTER_MIN_VALUE_MICRO`, below `FEE_CONVERTER_GAS_MULTIPLE` times the
    estimated network fee, has unknown price impact or impact above
    `FEE_CONVERTER_MAX_PRICE_IMPACT_BPS`, or has a minimum output outside
-   `FEE_CONVERTER_MAX_SLIPPAGE_BPS`.
-7. `dry_run`: record the quote as `quoted` and stop. No key is loaded.
-8. `live`: build, check, simulate and sign the swap. Record the signed bytes
+   `FEE_CONVERTER_MAX_SLIPPAGE_BPS`. The first two are the dust threshold: a
+   skipped fee accumulates in the wallet until a later receipt lifts it over.
+8. `dry_run`: record the quote as `quoted` and stop. No key is loaded.
+9. `live`: build, check, simulate and sign the swap. Record the signed bytes
    as `submitted`, then broadcast. A finalized state is set only by a later
    reconciliation that reads the finalized chain.
 
@@ -68,8 +84,8 @@ rejects so the cron failure remains visible; it does not publish a successful
 | Network | Target | Route | Why |
 | --- | --- | --- | --- |
 | Base (8453) | Circle USDC `0x8335…2913` | KyberSwap Aggregator API | No API key, one integration for all three EVM chains, the router is the same audited `MetaAggregationRouterV2` (`0x6131…37b5`) on each. Its calldata carries the receiver, the input amount and the minimum output, so the Worker can check them before signing. |
-| Ethereum (1) | Circle USDC `0xa0b8…eb48` | KyberSwap Aggregator API | Same router address and code on chain. |
-| Robinhood Chain (4663) | Paxos USDG `0x5fc5…6d1168` | KyberSwap Aggregator API | KyberSwap quotes chain 4663 live (WETH→USDG on 18 October 2026) and the router has code there. There is no Circle USDC on 4663; the tokens named "USDC" in KyberSwap's list are unrelated clones flagged as honeypots. The target stays USDG. |
+| Ethereum (1) | Circle USDC `0xa0b8…eb48` | KyberSwap Aggregator API | Same router address and code on chain. AGENTS.md requires verifying this address from Circle's primary source before activation. |
+| Robinhood Chain (4663) | **Pending.** No verified Circle USDC. | KyberSwap Aggregator API once a target exists | The PRD supersedes the earlier USDG target. On 18 October 2026 there was no Circle USDC on 4663, and the tokens named "USDC" in KyberSwap's list were unrelated clones flagged as honeypots. The network runs as `route_pending` until a reviewed change sets `usdc` in `config.ts` to an address verified from Circle's primary source and a route to it is proven. |
 | Solana | Circle USDC `EPjF…Dt1v` | Jupiter Swap API v1 | The standard Solana router. Uses `lite-api.jup.ag` without a key, or `api.jup.ag` when `JUPITER_API_KEY` is set. |
 
 0x Swap API v2, 1inch and the Uniswap Trading API all need an API key.
@@ -82,7 +98,7 @@ verify those routes. Any of them can replace KyberSwap behind
 
 - The route and build name the pinned router; the build carries no native value.
 - The calldata decodes as `swap` or `swapSimpleMode`, with the exact input
-  token and amount, the network stablecoin as output, the fee wallet as
+  token and amount, the network USDC as output, the fee wallet as
   receiver, and no extra fee receivers.
 - The signed minimum output is at or above the recorded quote minimum. The
   build uses half of the slippage budget, so normal drift between quote and
@@ -112,14 +128,14 @@ verify those routes. Any of them can replace KyberSwap behind
 | `no_route` | The aggregator has no route for this token. |
 | `submitted` | Signed bytes recorded and broadcast; not yet final. |
 | `unknown` | Signed bytes recorded, but the broadcast result is unknown. |
-| `finalized` | Included in a finalized block; `amount_out` is the measured stablecoin credit to the fee wallet. |
+| `finalized` | Included in a finalized block; `amount_out` is the measured USDC credit to the fee wallet. |
+| `failed` | Proven unable to complete: reverted, expired or a prepare check failed. |
 
 Each record also keeps the fee-wallet balances in base units: the input token
-and the stablecoin when quoted (`token_balance_before`,
-`target_balance_before`) and the stablecoin when finalized
-(`target_balance_after`), with the observed times (`created_at`,
-`submitted_at`, `finalized_at`).
-| `failed` | Proven unable to complete: reverted, expired or a prepare check failed. |
+and USDC when quoted (`token_balance_before`, `target_balance_before`) and
+USDC when finalized (`target_balance_after`), with the observed times
+(`created_at`, `submitted_at`, `finalized_at`). Reconciliation measures the
+credit of the record's own `target_token`.
 
 Rows cannot be deleted. `skipped`, `no_route`, `finalized` and `failed` rows
 cannot change.
@@ -146,20 +162,28 @@ The Worker never signs a second transaction for a send that could still land.
 
 ## Configuration
 
-Vars in `wrangler.toml` (reviewed by pull request):
+Vars in `wrangler.toml` (reviewed by pull request). The conversion limits
+have no fallback in code: in `dry_run` and `live` a missing limit refuses the
+run. `off` reads none of them.
 
-| Var | Default | Meaning |
+| Var | Checked-in value | Meaning |
 | --- | --- | --- |
 | `FEE_CONVERTER_MODE` | `off` | `off`, `dry_run` or `live`. |
 | `FEE_CONVERTER_NETWORKS` | empty | Subset of `base,ethereum,robinhood,solana`. |
 | `FEE_CONVERTER_ALLOWLIST` | empty | JSON object of extra tokens per network. |
-| `FEE_CONVERTER_MIN_VALUE_MICRO` | `5000000` | Minimum quoted output (5 USDC). |
-| `FEE_CONVERTER_GAS_MULTIPLE` | `10` | Output must be at least this many times the fee estimate. |
+| `FEE_CONVERTER_MIN_VALUE_MICRO` | empty: **owner decision** | Minimum quoted USDC output. `0` converts every fee. |
+| `FEE_CONVERTER_GAS_MULTIPLE` | empty: **owner decision** | Output must be at least this many times the fee estimate. `0` disables the check. |
 | `FEE_CONVERTER_MAX_SLIPPAGE_BPS` | `100` | Quote minimum within 1% of the quote. |
 | `FEE_CONVERTER_MAX_PRICE_IMPACT_BPS` | `200` | Price-impact cap (2%). |
 | `FEE_CONVERTER_RUN_CAP_MICRO` | `1000000000` | Per-run, per-network value cap (1,000 USDC). |
 | `FEE_CONVERTER_DAILY_CAP_MICRO` | `5000000000` | Rolling 24-hour live value cap per network (5,000 USDC). |
-| `FEE_CONVERTER_SOLANA_FEE_MICRO` | `2000` | Solana fee estimate used for the gas multiple. |
+| `FEE_CONVERTER_SOLANA_FEE_MICRO` | unset (`2000`) | Solana fee estimate used for the gas multiple; an estimate, not policy. |
+
+The PRD sells fees when they arrive and leaves open whether tiny balances may
+accumulate to avoid gas waste. The two dust-threshold values stay empty, so
+the converter cannot run, until the owner records that decision. The
+slippage, impact and cap values are the earlier reviewed values; the PRD
+still lists conversion limits as an approval item.
 | `FEE_WALLET_<NETWORK>` | Base and Solana set | Public fee-wallet address. A network without one is refused. |
 | `KYBERSWAP_CLIENT_ID` | `slop-fee-converter` | Client id header for KyberSwap. |
 
@@ -177,6 +201,16 @@ not derive the configured `FEE_WALLET_<NETWORK>` address. `dry_run` never
 reads a key.
 
 ## Key custody
+
+AGENTS.md (owner decision of 18 October 2026) approves one fee-wallet hot key
+per network that signs only this conversion. The PRD (section 6) instead says
+Slop owners control the signer and raw private keys are not stored in
+application environment variables, and section 9 lists the signer connection
+as an open decision. This Worker keeps the approved hot-key model until the
+owner resolves that conflict. Signing stays narrow: only `live` mode on a
+network with a verified USDC target loads a key; the key signs only an exact
+approval to the pinned router and the checked swap; errors and logs never
+include it.
 
 The fee-wallet key can sign any transaction from the fee wallet. Treat its
 balance as hot funds and keep the balance small.
@@ -217,15 +251,16 @@ before the daily converted value is material.
 
 ## Sweep to treasury
 
-The Worker never sends funds out of the fee wallet. Proceeds accumulate as the
-network stablecoin. A human should sweep them to a cold treasury (for example
+The Worker never sends funds out of the fee wallet. Proceeds accumulate as
+USDC. A human should sweep them to a cold treasury (for example
 a Squads or Safe multisig) on a fixed schedule, such as weekly or above a
 threshold. Keep only a small gas balance (ETH, or SOL) in the hot wallet. A
 sweep is a human-signed transfer outside this Worker.
 
 ## Turn on live mode
 
-1. The owner approves MVP-07c and the fee wallet per network. On 19 October
+1. The owner approves MVP-07c, the fee wallet per network, and the dust
+   threshold (`FEE_CONVERTER_MIN_VALUE_MICRO`, `FEE_CONVERTER_GAS_MULTIPLE`). On 19 October
    2026 the owner chose the Base fee wallet
    `0x8f77C37D8650776bFe73c9b12B15209eE15D9b86` for Robinhood Chain and
    Ethereum too. `FEE_WALLET_ROBINHOOD` and `FEE_WALLET_ETHEREUM` are set in
@@ -253,7 +288,8 @@ sweep is a human-signed transfer outside this Worker.
 
 `GET /api/v1/admin/fee-conversions` (admin GitHub session) returns the 100 most
 recent records, exact per-token totals of finalized live conversions as
-decimal base-unit strings, and state counts for the last 24 hours. It never
+decimal base-unit strings, state counts for the last 24 hours, and each
+network's USDC target with status `usdc` or `pending`. It never
 returns signed transaction bytes. There is no public page.
 
 ## Tests
@@ -262,7 +298,8 @@ returns signed transaction bytes. There is no public page.
 bun run test:fee-converter
 ```
 
-Unit tests cover the release gates, every skip reason, cap scaling, the daily
+Unit tests cover the release gates, the required dust threshold, pending USDC
+routes, receipt and recovery runs, every skip reason, cap scaling, the daily
 cap window, unknown-send reconciliation, the network lock, D1 constraints and
 the admin route.
 
@@ -271,7 +308,9 @@ bun run fee-converter:dry-run <base-wallet> <base-token> <solana-wallet> <solana
 ```
 
 A read-only dry run against mainnet RPCs and the live KyberSwap and Jupiter
-APIs. Any public holder address can stand in for the fee wallet.
+APIs. Any public holder address can stand in for the fee wallet. Set the
+`FEE_CONVERTER_*` limits in the environment first; the script has no
+defaults.
 
 ```bash
 bun run test:fee-converter:fork
