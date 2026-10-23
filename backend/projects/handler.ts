@@ -1046,7 +1046,7 @@ async function requireModerator(
     fail(
       403,
       "moderation_unavailable",
-      "No project moderator is configured. Set PROJECT_MODERATOR_GITHUB_IDS to enable Quarantine, Ban and reinstatement.",
+      "Moderation is not configured. Contact the service operator.",
     );
   if (!deps.moderatorGithubIds.has(session.githubId))
     fail(403, "forbidden", "The project moderator role is required");
