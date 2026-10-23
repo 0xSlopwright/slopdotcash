@@ -217,7 +217,12 @@ Missing objects or a failed reconstruction stop collection. Octopus merges are
 not reconstructed. Reconstruction depends on the Git merge algorithm: review
 the resulting diff before valuation; it does not itself prove useful work.
 
-The hosted collector does not run Git. Historical resolution evidence must
+The hosted collector does not run Git. For a source with no two-parent merges,
+publication can reproduce the local collector's empty resolution array so that
+an unchanged source keeps its original digest. Nonempty resolution evidence is
+never copied from the submitted assessment into the fresh source.
+
+Historical resolution evidence must
 remain source-bound and pass the joint record's freshness and publication gates.
 Do not strip limitations or substitute a full first-parent merge diff to make
 an assessment pass.
