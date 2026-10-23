@@ -28,8 +28,13 @@ remains acceptable for a one-off deployment broadcast, not for this check and
 not for the scanner. Test USDG for the escrow
 (`0x7E955252E15c84f5768B83c41a71F9eba181802F`, listed in the
 [Paxos USDG testnet guide](https://docs.paxos.com/guides/stablecoin/usdg/testnet))
-comes from the Paxos faucet at `https://faucet.paxos.com/`, not from the
-Robinhood gas faucet.
+has no verified supply route in the project evidence. The Paxos guide links a
+general faucet, but that link does not prove support for this network.
+Before the public-testnet scenario, record a verified supply route under
+[issue #899](https://github.com/SlopDotCash/slopdotcash/issues/899). If the route
+is unavailable, stop and record the gap. Do not substitute another token.
+See the [design record](robinhood-chain-escrow-design.md#verified-facts) and
+[PRD payment acceptance](slop-product-requirements.md#14-prove-funding-and-payment).
 
 JSON output reports the integer balance as a decimal string (`wei` or
 `lamports`), the finalized block or slot, and `nonzero`. A zero balance is a
