@@ -60,6 +60,8 @@
     "src/lib/install-command.ts",
     "src/lib/project-view.ts",
     "src/lib/global-leaderboard.ts",
+    "src/lib/contributor-standings.ts",
+    "src/lib/use-snapshot.ts",
     "src/lib/profile-activity.ts",
     "src/lib/reward-cycle.ts",
     "src/lib/reward-finalization.ts",
