@@ -237,8 +237,8 @@ that those fields come from Slop's registry. The generated installer may
 authorize this template revision:
 
 1. current `main`;
-2. a `main` ancestor whose canonical template tree is unchanged, or a successful
-   approved published revision not listed in `protocol/skill-revocations.json`; or
+2. a `main` ancestor whose complete canonical template tree is byte-identical
+   to current `main`; or
 3. an open, non-draft, same-repository PR head into `main` with the
    maintainer-controlled `slop-release-candidate` label applied after the exact
    current-head commit event.
