@@ -4528,7 +4528,7 @@ function assertRepositoryUrl(
   }
   if (
     expectedRepository !== undefined &&
-    repository.id !== expectedRepository
+    repository.id !== findRegisteredRepositoryById(expectedRepository)?.id
   ) {
     throw new Error(`${path} does not match its declared repository`);
   }
@@ -4566,7 +4566,7 @@ function assertRepositoryUrl(
   ) {
     throw new Error(`${path} has an unsupported GitHub fragment`);
   }
-  return repository.id;
+  return expectedRepository ?? repository.id;
 }
 
 function assertEnum<const Values extends readonly string[]>(
@@ -5940,7 +5940,7 @@ function assertAttributionValue(
   }
 }
 
-/** Validate immutable historical data against its known, ordered inventory.
+/** Validate immutable history using its collected order and known identities.
  * Use assertPublishableLeaderboardSnapshot for every fresh publication.
  */
 export function assertLeaderboardSnapshot(
@@ -5952,36 +5952,14 @@ export function assertLeaderboardSnapshot(
       `snapshot.schemaVersion must be ${LEADERBOARD_SCHEMA_VERSION}`,
     );
   }
-  if (snapshot.repository !== LEADERBOARD_REPOSITORY) {
-    throw new Error(`snapshot.repository must be ${LEADERBOARD_REPOSITORY}`);
+  if (!Array.isArray(snapshot.repositories)) {
+    throw new Error("snapshot.repositories must list its collected inventory");
   }
-  if (
-    !Array.isArray(snapshot.repositories) ||
-    (snapshot.repositories.length === 0) !== (TARGET_REPOSITORIES.length === 0)
-  ) {
-    throw new Error(
-      "snapshot.repositories must list the target repository registry",
-    );
-  }
-  let previousRepositoryIndex = -1;
   const repositoryIds: string[] = [];
+  const canonicalIds = new Set<string>();
   snapshot.repositories.forEach((value, index) => {
     const path = `snapshot.repositories[${index}]`;
     const published = assertObject(value, path);
-    const registeredIndex = REGISTERED_REPOSITORIES.findIndex(
-      (repository) => repository.id === published.id,
-    );
-    if (
-      registeredIndex <= previousRepositoryIndex ||
-      (index === 0 && published.id !== PRIMARY_REPOSITORY?.id)
-    ) {
-      throw new Error(
-        `${path}.id must follow the target repository registry order and include the primary repository`,
-      );
-    }
-    previousRepositoryIndex = registeredIndex;
-    const registered = REGISTERED_REPOSITORIES[registeredIndex];
-    repositoryIds.push(registered.id);
     for (const key of [
       "id",
       "owner",
@@ -5993,16 +5971,43 @@ export function assertLeaderboardSnapshot(
       "projectId",
       "role",
     ] as const) {
-      if (published[key] !== registered[key]) {
-        throw new Error(
-          `${path}.${key} does not match the target repository registry`,
-        );
-      }
+      assertString(published[key], `${path}.${key}`);
     }
     if (Object.keys(published).length !== 9) {
       throw new Error(`${path} must publish exactly the registry fields`);
     }
+    const known = findRegisteredRepositoryById(published.id as string);
+    const urlIdentity = findRegisteredRepository(
+      published.owner as string,
+      published.name as string,
+    );
+    if (
+      !known ||
+      known.projectId !== published.projectId ||
+      !urlIdentity ||
+      urlIdentity.id !== known.id ||
+      urlIdentity.projectId !== known.projectId ||
+      published.githubUrl !==
+        `https://github.com/${published.owner}/${published.name}`
+    ) {
+      throw new Error(
+        `${path} must identify a known repository and its project`,
+      );
+    }
+    if (canonicalIds.has(known.id)) {
+      throw new Error(`${path}.id duplicates a repository identity`);
+    }
+    canonicalIds.add(known.id);
+    if (published.role !== (index === 0 ? "primary" : "member")) {
+      throw new Error(`${path}.role must follow the collected inventory order`);
+    }
+    repositoryIds.push(published.id as string);
   });
+  if (snapshot.repository !== (repositoryIds[0] ?? null)) {
+    throw new Error(
+      "snapshot.repository must match its collected primary repository",
+    );
+  }
   if (snapshot.ruleVersion !== SCORE_RULE_VERSION) {
     throw new Error(`snapshot.ruleVersion must be ${SCORE_RULE_VERSION}`);
   }
@@ -7018,6 +7023,26 @@ export function assertPublishableLeaderboardSnapshot(
     throw new Error(
       "snapshot.repositories must list the complete target repository registry for publication",
     );
+  }
+  for (const [index, repository] of value.repositories.entries()) {
+    const current = TARGET_REPOSITORIES[index];
+    for (const key of [
+      "id",
+      "owner",
+      "name",
+      "displayName",
+      "githubUrl",
+      "description",
+      "integrationBranch",
+      "projectId",
+      "role",
+    ] as const) {
+      if (repository[key] !== current[key]) {
+        throw new Error(
+          `snapshot.repositories[${index}].${key} does not match the target repository registry`,
+        );
+      }
+    }
   }
   if (!Number.isFinite(now)) {
     throw new Error("publication time must be finite");
