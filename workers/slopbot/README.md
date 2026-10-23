@@ -710,7 +710,11 @@ does not configure or activate a production binding.
 The envelope has `mode` (`single` or `work-unit`), `installationId`, `result`,
 `sources`, `supersedes`, and `revisionReason`. Grouped imports also require
 `legacyPredecessors`. Each source contains `repository`, `pullRequestNumber`, and
-`contextPaths`. The Worker collects the evidence from GitHub; callers do not
+`contextPaths`. A source may also set `emptyMergeResolutions: true` to match
+a local collector result with no two-parent merges. The Worker verifies that
+condition from fresh GitHub commits before adding the empty array. False values,
+nonempty resolution records and unknown source fields are refused.
+The Worker collects the evidence from GitHub; callers do not
 upload diff bodies. Results use the existing subscription result format.
 Single predecessors are a
 digest or null; grouped predecessors are digest arrays. A successor requires a
