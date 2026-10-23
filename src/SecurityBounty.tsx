@@ -20,6 +20,16 @@ import { SignInPanel } from "./Admin";
 import { Link } from "./Link";
 import { copyText } from "./lib/copy-text";
 import {
+  clearDraft,
+  EMPTY_DRAFT,
+  loadDraft,
+  needsDraft,
+  pruneDrafts,
+  type ReportDraft,
+  saveDraft,
+  TERMINAL_FAILURES,
+} from "./lib/intake-drafts";
+import {
   ProjectApiError,
   projectApiRequest,
   useProjectSession,
@@ -272,58 +282,8 @@ type Submission = {
   failureCode: string | null;
   caseId: string | null;
   retryAllowed: boolean;
+  reconcileAfter: string | null;
 };
-
-type ReportDraft = {
-  summary: string;
-  description: string;
-  severity: string;
-  cvss: string;
-  cwe: string;
-};
-
-const EMPTY_DRAFT: ReportDraft = {
-  summary: "",
-  description: "",
-  severity: "",
-  cvss: "",
-  cwe: "",
-};
-
-/**
- * The draft stays in this browser tab only (OPEN_QUESTION 6). Storage may
- * be unavailable; the form then keeps the draft in memory.
- */
-function draftKey(id: string): string {
-  return `slop-intake-draft:${id}`;
-}
-
-function loadDraft(id: string): ReportDraft | null {
-  try {
-    const raw = window.sessionStorage.getItem(draftKey(id));
-    if (raw === null) return null;
-    const value = JSON.parse(raw) as Partial<ReportDraft>;
-    return { ...EMPTY_DRAFT, ...value };
-  } catch {
-    return null;
-  }
-}
-
-function saveDraft(id: string, draft: ReportDraft): void {
-  try {
-    window.sessionStorage.setItem(draftKey(id), JSON.stringify(draft));
-  } catch {
-    // The draft stays in memory.
-  }
-}
-
-function clearDraft(id: string): void {
-  try {
-    window.sessionStorage.removeItem(draftKey(id));
-  } catch {
-    // Nothing stored.
-  }
-}
 
 function reportBody(draft: ReportDraft): Record<string, unknown> {
   const cweIds = draft.cwe
@@ -354,6 +314,10 @@ const FAILURE_LABELS: Record<string, string> = {
   "not-found": "GitHub has no advisory with that ID that your account can see.",
   "grant-expired": "Your GitHub authorization expired. Authorize again.",
   "already-recorded": "This advisory already has a verified private case.",
+  "not-private-report":
+    "This advisory is not a live private vulnerability report you filed, so it cannot be verified automatically. Link it for a maintainer to verify instead.",
+  unverifiable:
+    "GitHub has this report, but Slop could not confirm it within 24 hours. Link the advisory for a maintainer to verify instead.",
 };
 
 const GRANT_ERRORS: Record<string, string> = {
@@ -377,6 +341,11 @@ function IntakeNotices({ login }: { login: string | null }) {
         The Slop private intake app will file this on GitHub as{" "}
         {login ? `@${login}` : "you"} with your authorization. GitHub records it
         as made by you through the app.
+      </p>
+      <p>
+        Slop adds one line, “Report reference:” and a random code, to the end of
+        the description so it can find the report again. The line names neither
+        you nor Slop, and it stays if the advisory is published.
       </p>
     </>
   );
@@ -1000,7 +969,10 @@ function submissionStatus(submission: Submission): string {
     case "submitting":
       return "Sending to GitHub privately…";
     case "uncertain":
-      return "We could not confirm GitHub received it. Check again.";
+      return submission.reconcileAfter &&
+        Date.parse(submission.reconcileAfter) > Date.now()
+        ? `We could not confirm GitHub received it yet. GitHub may still be saving it; check again after ${formatUtc(submission.reconcileAfter)}.`
+        : "We could not confirm GitHub received it. Check again.";
     case "submitted":
       return "Received by GitHub. Confirming…";
     case "receipt-verified":
@@ -1034,9 +1006,10 @@ function SubmissionCard({
   const [error, setError] = useState<string | null>(null);
   const [needsGrant, setNeedsGrant] = useState(false);
   const session = useProjectSession();
+  const keepDraft = needsDraft(submission);
   useEffect(() => {
-    if (submission.state === "receipt-verified") clearDraft(submission.id);
-  }, [submission.id, submission.state]);
+    if (!keepDraft) clearDraft(submission.id);
+  }, [submission.id, keepDraft]);
   const run = (path: string, body: Record<string, unknown>) => {
     setBusy(true);
     setError(null);
@@ -1079,9 +1052,7 @@ function SubmissionCard({
     submission.origin === "slop" &&
     (submission.state === "draft" ||
       (submission.state === "failed" &&
-        !["author-mismatch", "already-recorded"].includes(
-          submission.failureCode ?? "",
-        ) &&
+        !TERMINAL_FAILURES.includes(submission.failureCode ?? "") &&
         submission.advisory === null));
   const expectedRevision = submission.revision;
   return (
@@ -1207,6 +1178,8 @@ function SubmissionsPanel({
       "security-submissions",
     ).then(
       (body) => {
+        // Report text is kept only while its submission can still be sent.
+        pruneDrafts(body.submissions);
         setSubmissions(body.submissions);
         onAvailability(body.automatic === true);
       },
@@ -1915,7 +1888,8 @@ const PAYMENT_LABELS: Record<string, string> = {
 
 const EVENT_LABELS: Record<string, string> = {
   submit: "Reporter submitted privately; GitHub receipt verified",
-  "receipt-verified": "GitHub receipt verified for the reporter's advisory",
+  "submit-direct":
+    "Reporter linked their GitHub report; GitHub receipt verified",
   claim: "Reporter linked the GitHub report",
   record: "Maintainer recorded the GitHub report",
   "verify-link": "Maintainer verified the GitHub report",
