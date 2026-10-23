@@ -39,8 +39,17 @@ import {
 } from "../../../backend/projects/handler";
 import { assetTemplateSource } from "../../../backend/projects/skill-publication";
 import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata";
+import {
+  githubAdvisoryClient,
+  githubInstallationCheck,
+} from "../../../backend/security/github-advisories";
 import { handleSecurityApi } from "../../../backend/security/handler";
+import {
+  githubIntakeOAuth,
+  type IntakeConfig,
+} from "../../../backend/security/intake-grant";
 import { securityPaymentDatabase } from "../../../backend/security/payment-database";
+import { deterministicAnalyzer } from "../../../backend/security/report-analysis";
 import { handleSlopbotApi } from "../../../backend/slopbot/summary";
 import {
   type HistoricalValueBinding,
@@ -110,6 +119,23 @@ type Env = {
   SLOP_GITHUB_API_ORIGIN?: string;
   /** Optional read-only GitHub token for repository ownership checks. */
   SLOP_GITHUB_READ_TOKEN?: string;
+  /**
+   * Automatic private security intake (PRD section 8, SEC-07). Off unless
+   * exactly "on" and every intake App secret below is set; any missing
+   * value keeps the existing manual flow. The intake App is separate from
+   * the identity App and holds only repository security advisories and
+   * metadata permissions (pending owner approval).
+   */
+  SLOP_PRIVATE_INTAKE_MODE?: string;
+  GITHUB_INTAKE_APP_CLIENT_ID?: string;
+  GITHUB_INTAKE_APP_CLIENT_SECRET?: string;
+  GITHUB_INTAKE_APP_ID?: string;
+  /** Used only for the App installation check, never to read advisories. */
+  GITHUB_INTAKE_APP_PRIVATE_KEY?: string;
+  /** 32-byte base64url AES-GCM key for the reporter grant cookie. */
+  SLOP_INTAKE_GRANT_KEY?: string;
+  /** Local browser tests only: a loopback GitHub OAuth fixture origin. */
+  SLOP_GITHUB_OAUTH_ORIGIN?: string;
   /** Admin email Worker; absent where no notifier is deployed. */
   SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
   SLOPBOT_VALUE_IMPORT?: HistoricalValueBinding;
@@ -124,6 +150,56 @@ type Env = {
   REWARD_RPC_ROBINHOOD?: string;
   REWARD_RPC_SOLANA?: string;
 };
+
+/** The intake configuration, or undefined (off) unless fully configured. */
+function privateIntake(env: Env): IntakeConfig | undefined {
+  const clientId = env.GITHUB_INTAKE_APP_CLIENT_ID;
+  const clientSecret = env.GITHUB_INTAKE_APP_CLIENT_SECRET;
+  const appId = env.GITHUB_INTAKE_APP_ID;
+  const privateKey = env.GITHUB_INTAKE_APP_PRIVATE_KEY;
+  const grantKey = env.SLOP_INTAKE_GRANT_KEY;
+  if (
+    env.SLOP_PRIVATE_INTAKE_MODE !== "on" ||
+    !clientId ||
+    !clientSecret ||
+    !appId ||
+    !privateKey ||
+    !grantKey ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(grantKey)
+  )
+    return undefined;
+  const apiOrigin = githubApiOrigin(env.SLOP_GITHUB_API_ORIGIN);
+  const oauthOrigin =
+    env.SLOP_GITHUB_OAUTH_ORIGIN &&
+    /^http:\/\/127\.0\.0\.1:[1-9][0-9]{3,4}$/u.test(
+      env.SLOP_GITHUB_OAUTH_ORIGIN,
+    )
+      ? env.SLOP_GITHUB_OAUTH_ORIGIN
+      : "https://github.com";
+  const send = (url: string, init: RequestInit) => fetch(url, init);
+  const installation = githubInstallationCheck({
+    fetch: send,
+    apiOrigin,
+    appId,
+    privateKey,
+    now: () => new Date(),
+  });
+  return {
+    mode: "on",
+    grantKey,
+    clientId,
+    authorizeOrigin: oauthOrigin,
+    oauth: githubIntakeOAuth({
+      fetch: send,
+      oauthOrigin,
+      clientId,
+      clientSecret,
+    }),
+    advisories: githubAdvisoryClient({ fetch: send, apiOrigin, installation }),
+    installation,
+    analyzer: deterministicAnalyzer,
+  };
+}
 
 type PagesContext = {
   request: Request;
@@ -542,6 +618,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     },
     cache: edgeCache(),
     waitUntil: context.waitUntil?.bind(context),
+    intake: privateIntake(context.env),
   });
   if (securityResponse !== null) return securityResponse;
   const evidenceResponse = await evidence.handle(context.request);

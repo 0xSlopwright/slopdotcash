@@ -25,7 +25,9 @@ import type {
 import { notifySecurityCase } from "../notifications/events";
 import { cachedPublicResponse, type EdgeCache } from "../projects/edge-cache";
 import { readJsonObject } from "../trace/validation";
+import type { IntakeConfig } from "./intake-grant";
 import { prepareSecuritySettlement, securitySettlementView } from "./payments";
+import { handleSubmissionRoute } from "./submissions";
 export type SecurityD1Database = D1TransactionalDatabase<D1Statement>;
 
 export type SecurityApiDependencies = {
@@ -41,9 +43,15 @@ export type SecurityApiDependencies = {
   };
   cache?: EdgeCache;
   waitUntil?: (promise: Promise<unknown>) => void;
+  /**
+   * Automatic private intake through the reporter's own GitHub
+   * authorization. Absent or `mode: "off"` (the default) keeps every
+   * submission route closed and the manual claim flow unchanged.
+   */
+  intake?: IntakeConfig;
 };
 
-type Role =
+export type Role =
   | "reporter"
   | "security-maintainer"
   | "triager"
@@ -84,6 +92,8 @@ type CaseRow = {
   related_party: "not-assessed" | "unrelated" | "related";
   related_party_review: "not-applicable" | "pending" | "approved" | "refused";
   related_party_reviewer_github_id: string | null;
+  received_at_source: "maintainer-attested" | "github-verified" | null;
+  receipt_evidence_digest: string | null;
   revision: number;
   created_at: string;
   updated_at: string;
@@ -116,7 +126,7 @@ type ReservationRow = {
   reserved_at: string;
 };
 
-type FrozenTerms = {
+export type FrozenTerms = {
   grossMinor: string;
   researcherMinor: string;
   slopMinor: string;
@@ -126,25 +136,27 @@ type FrozenTerms = {
   capacityAwards: number;
 };
 
-const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
+export const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
 const CASE_ID = /^sc_[A-Za-z0-9_-]{8,72}$/u;
-const GHSA =
+export const GHSA =
   /^GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}$/u;
 const GITHUB_ID = /^[1-9]\d{0,19}$/u;
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
-const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,80}$/u;
+export const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,80}$/u;
 const ROOT_CAUSE = /^[a-z0-9][a-z0-9-]{1,78}[a-z0-9]$/u;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 /**
- * Slop does not read private advisories, so the receipt time is the time a
- * security maintainer reads on GitHub and enters by hand (SEC-07, SEC-17).
+ * On the manual claim and record paths Slop does not read the advisory, so
+ * the receipt time is the time a security maintainer reads on GitHub and
+ * enters by hand (SEC-07, SEC-17). Automatic intake records
+ * `github-verified` instead; older rows have no stored source.
  */
 const RECEIVED_AT_SOURCE = "maintainer-attested";
 /** A browser that kept an older readiness answer must check again. */
 export const INTAKE_READINESS_TTL_SECONDS = 30;
 
-function json(
+export function json(
   status: number,
   body: Record<string, unknown>,
   cacheControl = "private, no-store",
@@ -166,7 +178,7 @@ function notFound(): never {
   fail(404, "not_found", "Case not found");
 }
 
-function stringField(
+export function stringField(
   body: Record<string, unknown>,
   key: string,
   pattern: RegExp,
@@ -233,7 +245,7 @@ function timestampField(
   return value;
 }
 
-function exactKeys(
+export function exactKeys(
   body: Record<string, unknown>,
   required: string[],
   optional: string[] = [],
@@ -246,7 +258,7 @@ function exactKeys(
     fail(400, "invalid_request", "Request body has unexpected fields");
 }
 
-async function requireActor(
+export async function requireActor(
   request: Request,
   deps: SecurityApiDependencies,
 ): Promise<Actor> {
@@ -255,7 +267,7 @@ async function requireActor(
   return actor;
 }
 
-async function currentProgram(
+export async function currentProgram(
   deps: Pick<SecurityApiDependencies, "db">,
   projectId: string,
 ): Promise<{ manifest: ProjectDefinition; revision: number } | null> {
@@ -377,6 +389,8 @@ function advisoryUrl(row: CaseRow): string {
 
 const REPORTER_EVENT_KINDS = new Set([
   "claim",
+  "submit",
+  "submit-direct",
   "record",
   "verify-link",
   "reject-link",
@@ -492,7 +506,10 @@ async function caseView(
     ),
     submissionState: row.submission_state,
     receivedAt: row.received_at,
-    receivedAtSource: row.received_at === null ? null : RECEIVED_AT_SOURCE,
+    receivedAtSource:
+      row.received_at === null
+        ? null
+        : (row.received_at_source ?? RECEIVED_AT_SOURCE),
     policyRevision: row.policy_revision,
     terms,
     awardState: row.award_state,
@@ -598,6 +615,7 @@ async function caseView(
     },
     verifiedAt: row.verified_at,
     evidenceDigest: row.evidence_digest,
+    receiptEvidenceDigest: row.receipt_evidence_digest,
     rootCauseKey: row.root_cause_key,
     duplicateOf: row.duplicate_of,
     technicalDeciderGithubId: row.technical_decider_github_id,
@@ -634,7 +652,7 @@ async function caseView(
 }
 
 const CASE_COLUMNS =
-  "id, project_id, advisory_repository, advisory_ghsa, reporter_github_id, reporter_github_login, submission_state, received_at, verified_at, verified_by_github_id, policy_revision, terms, evidence_digest, receipt_state, remediation_state, award_state, payment_state, disclosure_state, recognition, severity, loss_finding, root_cause_key, duplicate_of, technical_decider_github_id, appeal_state, appeal_from_state, owner_github_id, next_action, next_action_due_at, payment_deadline, related_party, related_party_review, related_party_reviewer_github_id, revision, created_at, updated_at";
+  "id, project_id, advisory_repository, advisory_ghsa, reporter_github_id, reporter_github_login, submission_state, received_at, verified_at, verified_by_github_id, policy_revision, terms, evidence_digest, receipt_state, remediation_state, award_state, payment_state, disclosure_state, recognition, severity, loss_finding, root_cause_key, duplicate_of, technical_decider_github_id, appeal_state, appeal_from_state, owner_github_id, next_action, next_action_due_at, payment_deadline, related_party, related_party_review, related_party_reviewer_github_id, received_at_source, receipt_evidence_digest, revision, created_at, updated_at";
 
 async function loadCase(
   deps: Pick<SecurityApiDependencies, "db">,
@@ -728,7 +746,7 @@ async function readCase(
 }
 
 /** The program terms in force at the receipt time, frozen into the case. */
-async function termsAtReceipt(
+export async function termsAtReceipt(
   deps: SecurityApiDependencies,
   projectId: string,
   receivedAt: string,
@@ -762,7 +780,7 @@ async function termsAtReceipt(
   };
 }
 
-function eventStatement(
+export function eventStatement(
   deps: SecurityApiDependencies,
   input: {
     caseId: string;
@@ -814,12 +832,12 @@ const RESERVING_KINDS = new Set([
 /**
  * Inbox rows for one case event (NOT-01, SEC-09): the reporter for every
  * event their own view shows, the security maintainers for a new claim to
- * verify, the dispute reviewers for an appeal or for a decision that leaves
+ * verify or a new automatically received report to triage, the dispute reviewers for an appeal or for a decision that leaves
  * a related-party review pending, the assigned triager, and the financial
  * approvers when a decision, a related-party approval or `reserve-award`
  * reserved an award. The actor is never notified of their own action.
  */
-function inboxStatements(
+export function inboxStatements(
   deps: SecurityApiDependencies,
   input: {
     caseId: string;
@@ -840,7 +858,11 @@ function inboxStatements(
   };
   const recipients = [
     ...(REPORTER_EVENT_KINDS.has(input.kind) ? [input.reporterGithubId] : []),
-    ...(input.kind === "claim" ? ids("technical") : []),
+    ...(input.kind === "claim" ||
+    input.kind === "submit" ||
+    input.kind === "submit-direct"
+      ? ids("technical")
+      : []),
     ...(input.kind === "appeal" ? ids("dispute") : []),
     ...(input.kind === "assign-triager" &&
     typeof input.detail.githubId === "string"
@@ -874,6 +896,68 @@ function inboxStatements(
 
 function constraintError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Inserts a new case at revision 1. A verified case freezes its receipt
+ * time, the terms in force then, and the source of that time. `guard` is an
+ * SQL condition (with its values) that must hold for the row to be written,
+ * so an automatic receipt commits only with its own submission transition.
+ */
+export function caseInsertStatement(
+  deps: Pick<SecurityApiDependencies, "db">,
+  input: {
+    id: string;
+    projectId: string;
+    repository: string;
+    advisory: string;
+    reporter: Actor;
+    verified: {
+      receivedAt: string;
+      verifiedBy: string;
+      policyRevision: number | null;
+      terms: FrozenTerms | null;
+      source?: "github-verified";
+      receiptEvidenceDigest?: string;
+    } | null;
+    ownerGithubId: string | null;
+    nextAction?: string;
+    nextActionDueAt?: string | null;
+    at: string;
+    guard?: { sql: string; values: unknown[] };
+  },
+): D1Statement {
+  const { verified } = input;
+  return deps.db
+    .prepare(
+      `INSERT INTO security_cases (id, project_id, advisory_repository, advisory_ghsa, reporter_github_id, reporter_github_login, submission_state, received_at, verified_at, verified_by_github_id, policy_revision, terms, evidence_digest, receipt_state, remediation_state, award_state, payment_state, disclosure_state, recognition, appeal_state, owner_github_id, next_action, next_action_due_at, received_at_source, receipt_evidence_digest, revision, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'received', 'not-started', ?, 'not-applicable', 'embargoed', 'private', 'none', ?, ?, ?, ?, ?, 1, ?, ?${
+         input.guard ? ` WHERE ${input.guard.sql}` : ""
+}`,
+    )
+    .bind(
+      input.id,
+      input.projectId,
+      input.repository,
+      input.advisory,
+      input.reporter.githubId,
+      input.reporter.githubLogin,
+      verified ? "verified" : "claimed",
+      verified?.receivedAt ?? null,
+      verified ? input.at : null,
+      verified?.verifiedBy ?? null,
+      verified?.policyRevision ?? null,
+      verified?.terms ? JSON.stringify(verified.terms) : null,
+      verified?.terms ? "pending" : "not-applicable",
+      input.ownerGithubId,
+      input.nextAction ?? null,
+      input.nextActionDueAt ?? null,
+      verified?.source ?? null,
+      verified?.receiptEvidenceDigest ?? null,
+      input.at,
+      input.at,
+      ...(input.guard?.values ?? []),
+    );
 }
 
 /**
@@ -944,29 +1028,23 @@ async function createCase(
       ...(await termsAtReceipt(deps, projectId, receivedAt)),
     };
   }
-  const insert = deps.db
-    .prepare(
-      `INSERT INTO security_cases (id, project_id, advisory_repository, advisory_ghsa, reporter_github_id, reporter_github_login, submission_state, received_at, verified_at, verified_by_github_id, policy_revision, terms, evidence_digest, receipt_state, remediation_state, award_state, payment_state, disclosure_state, recognition, appeal_state, owner_github_id, revision, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'received', 'not-started', ?, 'not-applicable', 'embargoed', 'private', 'none', ?, 1, ?, ?)`,
-    )
-    .bind(
-      id,
-      projectId,
-      terms.intake.repository,
-      advisory,
-      reporter.githubId,
-      reporter.githubLogin,
-      verified ? "verified" : "claimed",
-      verified?.receivedAt ?? null,
-      verified ? at : null,
-      verified ? actor.githubId : null,
-      verified?.revision ?? null,
-      verified?.terms ? JSON.stringify(verified.terms) : null,
-      verified?.terms ? "pending" : "not-applicable",
-      verified ? actor.githubId : null,
-      at,
-      at,
-    );
+  const insert = caseInsertStatement(deps, {
+    id,
+    projectId,
+    repository: terms.intake.repository,
+    advisory,
+    reporter,
+    verified: verified
+      ? {
+          receivedAt: verified.receivedAt,
+          verifiedBy: actor.githubId,
+          policyRevision: verified.revision,
+          terms: verified.terms,
+        }
+      : null,
+    ownerGithubId: verified ? actor.githubId : null,
+    at,
+  });
   try {
     await deps.db.batch([
       insert,
@@ -2074,6 +2152,67 @@ async function actOnCase(
   });
 }
 
+export type PvrState = "ready" | "disabled" | "forbidden" | "unavailable";
+export type AutomaticIntake =
+  | "ready"
+  | "app-not-installed"
+  | "unavailable"
+  | "off";
+
+/** GitHub private vulnerability reporting status for one repository. */
+export async function pvrState(
+  deps: Pick<SecurityApiDependencies, "github">,
+  repository: string,
+): Promise<PvrState> {
+  try {
+    const response = await deps.github.fetch(
+      `${deps.github.apiOrigin}/repos/${repository}/private-vulnerability-reporting`,
+      {
+        headers: {
+          accept: "application/vnd.github+json",
+          "user-agent": "slop.cash-security-intake",
+          "x-github-api-version": "2022-11-28",
+          ...(deps.github.token
+            ? { authorization: `Bearer ${deps.github.token}` }
+            : {}),
+        },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (response.status === 401 || response.status === 403) return "forbidden";
+    if (!response.ok) return "unavailable";
+    const body = (await response.json()) as { enabled?: unknown };
+    return body.enabled === true
+      ? "ready"
+      : body.enabled === false
+        ? "disabled"
+        : "unavailable";
+  } catch {
+    return "unavailable";
+  }
+}
+
+/**
+ * Whether Slop can file a private report as the reporter: intake mode on,
+ * private vulnerability reporting ready, and the intake App installed on
+ * the program repository. Every other answer keeps the existing GitHub
+ * handoff and manual verification; there is never a public fallback.
+ */
+export async function automaticIntake(
+  deps: Pick<SecurityApiDependencies, "intake">,
+  repository: string,
+  state: PvrState,
+): Promise<AutomaticIntake> {
+  if (deps.intake?.mode !== "on") return "off";
+  if (state !== "ready") return "unavailable";
+  const installed = await deps.intake.installation.installed(repository);
+  return installed === "yes"
+    ? "ready"
+    : installed === "no"
+      ? "app-not-installed"
+      : "unavailable";
+}
+
 /**
  * Checks that the program's GitHub private vulnerability reporting is on
  * before the site hands a researcher to it (SEC-07). Every other answer
@@ -2091,36 +2230,7 @@ async function intakeReadiness(
   const terms = program.manifest.securityBounty as SecurityBountyTerms;
   const checkedAt = deps.now().toISOString();
   const repository = terms.intake.repository;
-  let state: "ready" | "disabled" | "forbidden" | "unavailable";
-  try {
-    const response = await deps.github.fetch(
-      `${deps.github.apiOrigin}/repos/${repository}/private-vulnerability-reporting`,
-      {
-        headers: {
-          accept: "application/vnd.github+json",
-          "user-agent": "slop.cash-security-intake",
-          "x-github-api-version": "2022-11-28",
-          ...(deps.github.token
-            ? { authorization: `Bearer ${deps.github.token}` }
-            : {}),
-        },
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-    if (response.status === 401 || response.status === 403) state = "forbidden";
-    else if (!response.ok) state = "unavailable";
-    else {
-      const body = (await response.json()) as { enabled?: unknown };
-      state =
-        body.enabled === true
-          ? "ready"
-          : body.enabled === false
-            ? "disabled"
-            : "unavailable";
-    }
-  } catch {
-    state = "unavailable";
-  }
+  const state = await pvrState(deps, repository);
   const closed =
     terms.capacity.closesAt !== null &&
     Date.parse(terms.capacity.closesAt) <= Date.parse(checkedAt);
@@ -2130,6 +2240,7 @@ async function intakeReadiness(
       projectId,
       repository,
       state,
+      automatic: await automaticIntake(deps, repository, state),
       checkedAt,
       maxAgeSeconds: INTAKE_READINESS_TTL_SECONDS,
       programStatus: terms.status,
@@ -2191,7 +2302,11 @@ export async function handleSecurityApi(
   deps: SecurityApiDependencies,
 ): Promise<Response | null> {
   const parts = pathParts(request);
-  if (parts[0] !== "security-cases" && parts[0] !== "security-programs")
+  if (
+    parts[0] !== "security-cases" &&
+    parts[0] !== "security-programs" &&
+    parts[0] !== "security-submissions"
+  )
     return null;
   try {
     if (
@@ -2213,6 +2328,8 @@ export async function handleSecurityApi(
         () => intakeReadiness(deps, parts[1]),
         deps.waitUntil,
       );
+    if (parts[0] === "security-submissions")
+      return await handleSubmissionRoute(request, deps, parts);
     if (parts[0] === "security-cases") {
       if (
         request.method === "POST" &&

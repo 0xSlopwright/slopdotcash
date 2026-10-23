@@ -25,15 +25,81 @@ removed, because its approvers govern restricted case access after closure.
 
 | Route | Access | Purpose |
 |---|---|---|
-| `GET /api/v1/security-programs/:id/intake` | public, edge cached 30 s | GitHub private vulnerability reporting readiness: `ready`, `disabled`, `forbidden` or `unavailable`. Only `ready` returns the GitHub handoff URL |
+| `GET /api/v1/security-programs/:id/intake` | public, edge cached 30 s | GitHub private vulnerability reporting readiness: `ready`, `disabled`, `forbidden` or `unavailable`. Only `ready` returns the GitHub handoff URL. `automatic` is `ready`, `app-not-installed`, `unavailable` or `off` |
 | `GET /api/v1/security-cases` | session | Cases the caller can see now, shaped per role |
 | `POST /api/v1/security-cases` | session | `claim`: a reporter links a GitHub advisory ID. `record`: a technical approver records a verified advisory with GitHub's receipt time |
 | `GET /api/v1/security-cases/:id` | session and role | One case; logs the read |
 | `POST /api/v1/security-cases/:id/actions` | session and role | One human decision with `expectedRevision` and `idempotencyKey` |
+| `GET /api/v1/security-submissions` | session | The caller's own automatic submissions: state, attempt, GHSA, GitHub time, failure code, case id |
+| `POST /api/v1/security-submissions` | session | Creates (or replays) a `slop` draft or a `direct` verification and returns the intake App authorization URL |
+| `GET /api/v1/security-submissions/authorize/callback` | GitHub redirect | PKCE exchange, `/user` identity binding, grant cookie |
+| `POST /api/v1/security-submissions/:id/{authorize,send,reconcile,verify}` | reporter only | Reauthorize, send privately, reconcile an uncertain send, verify a direct report |
 
 A caller without a role gets the same 404 as for a missing case. Writes need
 this site's `Origin` and a JSON content type. Responses are `private,
 no-store` and `noindex`. Errors never log case data.
+
+## Automatic private intake
+
+PRD section 8 ("Private reporting is automatic"), SEC-07, SEC-10, SEC-17.
+Every `security-submissions` route returns 404 unless
+`SLOP_PRIVATE_INTAKE_MODE=on` and all intake App secrets are set
+(`GITHUB_INTAKE_APP_CLIENT_ID`, `GITHUB_INTAKE_APP_CLIENT_SECRET`,
+`GITHUB_INTAKE_APP_ID`, `GITHUB_INTAKE_APP_PRIVATE_KEY`,
+`SLOP_INTAKE_GRANT_KEY`). The dedicated intake GitHub App (repository
+security advisories read and write, metadata read, no webhooks) still needs
+owner approval in the PRD and a maintainer installation on each program
+repository. Until then intake stays off and the manual flow below applies.
+
+- Authorization: a per-submission PKCE consent for the intake App. The
+  callback checks that `/user` is the account that began the consent and
+  stores the user token only in an AES-GCM encrypted HttpOnly
+  `__Secure-slop_intake_grant` cookie (path `/api/v1/security-submissions`,
+  2 hours) bound to the submission and the site session. No access or
+  refresh token is stored in D1. GitHub records the reporter as the author.
+- `security_submissions` (migration 0059) holds no report content. States:
+  `draft`, `submitting`, `uncertain`, `submitted`, `receipt-verified`,
+  `failed`, `abandoned`. Every transition is a revision compare-and-set
+  with an insert-only event in the same batch. `submitting` commits before
+  GitHub is called; a lost answer, a 5xx, a malformed 201 or a 201 naming
+  another author is `uncertain`.
+- Marker: the description gets one line, `Report reference: <32 hex>`, a
+  random value per submission. It names neither the submission nor Slop,
+  because it stays in the text if the advisory is published
+  (OPEN_QUESTION 9); the consent notice says so.
+- Reconcile before retry: an uncertain send lists the reporter's advisories
+  since the first attempt with their own token and matches the marker line
+  and author. Only a complete listing without a match, taken at least
+  5 minutes after the attempt began, reopens the draft for another send;
+  an earlier empty listing or a listing error stays `uncertain`. Several
+  matches adopt the earliest and show the rest to the technical approvers
+  only. A resend that GitHub accepts lists again and adopts an earlier copy
+  that landed late, recording the accepted one as a duplicate. A
+  `submitting` row older than 60 seconds becomes `uncertain` and is never
+  resent. A `submitted` row Slop cannot verify within 24 hours fails as
+  `unverifiable`; it is never resent and no longer blocks a new report.
+- Receipt: GitHub's advisory must name the program repository and the
+  reporter as author (a reporter credit never counts), carry the marker
+  (Slop origin) and have a past `created_at`. A direct report must also be
+  a private vulnerability report (GitHub's `submission` object) in
+  `triage`, `draft` or `published`; anything else fails as
+  `not-private-report` and uses the manual claim path. The verified case,
+  its `submit` or `submit-direct` event (the reporter's own action; the
+  detail records `verifiedBy: "github"`), routing fields, the access log and the inbox rows commit with the
+  submission transition. The receipt time is GitHub's `created_at`
+  (`receivedAtSource: "github-verified"`), the verifier is the sentinel
+  `github`, and `receipt_evidence_digest` stores the SHA-256 of the
+  advisory fields GitHub returned.
+- Direct reports: "Already reported on GitHub? Verify it" runs the same
+  receipt check on a GHSA the reporter filed themselves; GitHub's original
+  `created_at` is kept. Without the App installed, the manual claim and
+  verify-link path below remains the fallback.
+- Analysis: `report-analysis.ts` recommends only, from GitHub's structured
+  severity and CVSS fields. Its result is in the restricted event detail
+  only; the case's owner, neutral next action and due time (the published
+  acknowledgement target) do not depend on it, because the reporter sees
+  them. It never sets severity, receipt, award or disclosure. No model sees
+  report content; none is approved.
 
 ## Roles
 
@@ -173,5 +239,8 @@ the ordinary attester. Missing service configuration fails closed.
   never contains a case identifier, amount, project or advisory. The inbox
   action **Acknowledge** records the recipient's authenticated response;
   **Mark read** is a separate state and never acknowledges a notice.
-- GitHub advisory content is never fetched. Maintainers verify claims by
-  hand on GitHub.
+- On the manual path GitHub advisory content is never fetched; maintainers
+  verify claims by hand on GitHub. Automatic intake reads only the
+  reporter's own advisory with the reporter's token and keeps only its
+  digest. Its GitHub behaviour (user tokens on `/reports`, error shapes,
+  listing visibility) is not yet qualified on a real repository.

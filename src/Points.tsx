@@ -28,6 +28,7 @@ import type { CycleIndex } from "./lib/cycle-index";
 import { deploymentTier } from "./lib/deployment";
 import { GithubIcon } from "./lib/github-icon";
 import { requestIdentityAssertion } from "./lib/identity-flow";
+import { clearAllDrafts } from "./lib/intake-drafts";
 import type { ScoreEvent } from "./lib/leaderboard";
 import {
   assemblePoints,
@@ -308,6 +309,7 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
         headers: { "content-type": "application/json" },
         body: "{}",
       });
+      clearAllDrafts();
       setMe(null);
       setOpen(false);
     } catch {
@@ -719,6 +721,7 @@ function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
         headers: { "content-type": "application/json" },
         body: "{}",
       });
+      clearAllDrafts();
       setMe(null);
     } catch {
       setMessage("Could not sign out. Please retry.");
@@ -947,8 +950,10 @@ function AccountSessions() {
                       headers: { "content-type": "application/json" },
                       body: JSON.stringify({ id: session.id }),
                     });
-                    if (session.current) window.location.assign("/login");
-                    else setAttempt((value) => value + 1);
+                    if (session.current) {
+                      clearAllDrafts();
+                      window.location.assign("/login");
+                    } else setAttempt((value) => value + 1);
                   } catch (caught) {
                     setError(
                       caught instanceof Error

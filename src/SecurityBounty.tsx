@@ -20,6 +20,16 @@ import { SignInPanel } from "./Admin";
 import { Link } from "./Link";
 import { copyText } from "./lib/copy-text";
 import {
+  clearDraft,
+  EMPTY_DRAFT,
+  loadDraft,
+  needsDraft,
+  pruneDrafts,
+  type ReportDraft,
+  saveDraft,
+  TERMINAL_FAILURES,
+} from "./lib/intake-drafts";
+import {
   ProjectApiError,
   projectApiRequest,
   useProjectSession,
@@ -114,6 +124,8 @@ const PROGRAM_STATUS_LABELS: Record<SecurityBountyTerms["status"], string> = {
 
 type Readiness = {
   state: "ready" | "disabled" | "forbidden" | "unavailable";
+  /** Whether Slop can file the report as the reporter (intake App). */
+  automatic?: "ready" | "app-not-installed" | "unavailable" | "off";
   checkedAt: string;
   maxAgeSeconds: number;
   paidParticipation: "open" | "closed";
@@ -206,13 +218,23 @@ function IntakeHandoff({ project }: { project: ProjectDefinition }) {
               ? "This program accepts paid reports."
               : "This program does not accept new paid reports now. Private reporting stays open."}
           </p>
+          {state.value.automatic === "ready" ? (
+            <AutomaticReportForm project={project} />
+          ) : null}
           <a
-            className="button primary-button"
+            className={
+              state.value.automatic === "ready"
+                ? "text-button"
+                : "button primary-button"
+            }
             href={state.value.handoffUrl}
             rel="noreferrer"
             target="_blank"
           >
-            Report privately on GitHub <ExternalLink aria-hidden="true" />
+            {state.value.automatic === "ready"
+              ? "Or report directly on GitHub"
+              : "Report privately on GitHub"}{" "}
+            <ExternalLink aria-hidden="true" />
           </a>
         </div>
       ) : (
@@ -231,11 +253,224 @@ function IntakeHandoff({ project }: { project: ProjectDefinition }) {
         </div>
       )}
       <p>
-        Did you already submit the report on GitHub?{" "}
-        <Link href="/security">Link it to a private Slop case</Link>. Your
+        Already reported on GitHub?{" "}
+        <Link href="/security">Verify it on your private Slop page</Link>. Your
         original GitHub receipt time stays the same.
       </p>
     </section>
+  );
+}
+
+/** A Slop private submission; never contains report content. */
+type Submission = {
+  id: string;
+  projectId: string;
+  repository: string;
+  origin: "slop" | "direct";
+  state:
+    | "draft"
+    | "submitting"
+    | "uncertain"
+    | "submitted"
+    | "receipt-verified"
+    | "failed"
+    | "abandoned";
+  revision: number;
+  attempt: number;
+  advisory: { ghsa: string; url: string } | null;
+  githubCreatedAt: string | null;
+  failureCode: string | null;
+  caseId: string | null;
+  retryAllowed: boolean;
+  reconcileAfter: string | null;
+};
+
+function reportBody(draft: ReportDraft): Record<string, unknown> {
+  const cweIds = draft.cwe
+    .split(/[\s,]+/u)
+    .map((entry) => entry.trim().toUpperCase())
+    .filter(Boolean);
+  return {
+    summary: draft.summary.trim(),
+    description: draft.description.trim(),
+    ...(draft.cvss.trim()
+      ? { cvssVectorString: draft.cvss.trim() }
+      : draft.severity
+        ? { severity: draft.severity }
+        : {}),
+    ...(cweIds.length > 0 ? { cweIds } : {}),
+  };
+}
+
+const FAILURE_LABELS: Record<string, string> = {
+  "pvr-disabled":
+    "GitHub private vulnerability reporting is off for this repository. Nothing was published.",
+  "app-not-installed":
+    "The Slop private intake app is not installed on this repository. Report directly on GitHub instead.",
+  forbidden: "GitHub refused the report for your account.",
+  invalid: "GitHub rejected the report fields. Fix them and send again.",
+  "author-mismatch":
+    "GitHub lists a different author for this advisory, so Slop cannot link it to you.",
+  "not-found": "GitHub has no advisory with that ID that your account can see.",
+  "grant-expired": "Your GitHub authorization expired. Authorize again.",
+  "already-recorded": "This advisory already has a verified private case.",
+  "not-private-report":
+    "This advisory is not a live private vulnerability report you filed, so it cannot be verified automatically. Link it for a maintainer to verify instead.",
+  unverifiable:
+    "GitHub has this report, but Slop could not confirm it within 24 hours. Link the advisory for a maintainer to verify instead.",
+};
+
+const GRANT_ERRORS: Record<string, string> = {
+  grant_identity_mismatch:
+    "GitHub authorized a different account than the one signed in to Slop. Nothing was sent.",
+  grant_state_mismatch: "The GitHub authorization did not match. Try again.",
+  grant_exchange_failed:
+    "GitHub did not complete the authorization. Try again.",
+  grant_flow_missing: "The GitHub authorization expired. Try again.",
+};
+
+function IntakeNotices({ login }: { login: string | null }) {
+  return (
+    <>
+      <p>Maintainers decide awards; a report does not establish eligibility.</p>
+      <p>
+        GitHub keeps the report private to you and the repository’s
+        administrators and security managers. Slop stores no report text.
+      </p>
+      <p>
+        The Slop private intake app will file this on GitHub as{" "}
+        {login ? `@${login}` : "you"} with your authorization. GitHub records it
+        as made by you through the app.
+      </p>
+      <p>
+        Slop adds one line, “Report reference:” and a random code, to the end of
+        the description so it can find the report again. The line names neither
+        you nor Slop, and it stays if the advisory is published.
+      </p>
+    </>
+  );
+}
+
+function ReportFields({
+  draft,
+  onChange,
+}: {
+  draft: ReportDraft;
+  onChange: (draft: ReportDraft) => void;
+}) {
+  const set = (key: keyof ReportDraft) => (value: string) =>
+    onChange({ ...draft, [key]: value });
+  return (
+    <>
+      <label>
+        Summary
+        <input
+          autoComplete="off"
+          maxLength={1024}
+          minLength={8}
+          onChange={(event) => set("summary")(event.target.value)}
+          required
+          value={draft.summary}
+        />
+      </label>
+      <label>
+        Description
+        <textarea
+          maxLength={65000}
+          minLength={20}
+          onChange={(event) => set("description")(event.target.value)}
+          required
+          rows={10}
+          value={draft.description}
+        />
+        <small className="field-hint">
+          Include safe reproduction steps. Never induce an actual loss.
+        </small>
+      </label>
+      <label>
+        Severity (optional)
+        <select
+          disabled={draft.cvss.trim() !== ""}
+          onChange={(event) => set("severity")(event.target.value)}
+          value={draft.severity}
+        >
+          <option value="">Not set</option>
+          <option value="critical">Critical</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </label>
+      <label>
+        CVSS vector (optional, instead of severity)
+        <input
+          autoComplete="off"
+          onChange={(event) => set("cvss")(event.target.value)}
+          placeholder="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+          spellCheck={false}
+          value={draft.cvss}
+        />
+      </label>
+      <label>
+        CWE IDs (optional)
+        <input
+          autoComplete="off"
+          onChange={(event) => set("cwe")(event.target.value)}
+          placeholder="CWE-284"
+          spellCheck={false}
+          value={draft.cwe}
+        />
+      </label>
+    </>
+  );
+}
+
+/**
+ * Starts an automatic private report from the program page: the draft stays
+ * in this tab, Slop creates the private submission and GitHub asks the
+ * reporter to authorize the intake app for it.
+ */
+function AutomaticReportForm({ project }: { project: ProjectDefinition }) {
+  const session = useProjectSession();
+  const [draft, setDraft] = useState<ReportDraft>(EMPTY_DRAFT);
+  const [key] = useState(requestKey);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (session.status !== "signed-in")
+    return (
+      <p>
+        <Link href="/security">Sign in with GitHub</Link> to send a report
+        privately through Slop, or report directly on GitHub.
+      </p>
+    );
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    projectApiRequest<{ submission: Submission; authorizeUrl: string }>(
+      "POST",
+      "security-submissions",
+      { projectId: project.id, idempotencyKey: key, origin: "slop" },
+    ).then(
+      (body) => {
+        saveDraft(body.submission.id, draft);
+        window.location.assign(body.authorizeUrl);
+      },
+      (caught: unknown) => {
+        setBusy(false);
+        setError(errorMessage(caught));
+      },
+    );
+  };
+  return (
+    <form className="security-form" onSubmit={submit}>
+      <IntakeNotices login={session.session.githubLogin} />
+      <ReportFields draft={draft} onChange={setDraft} />
+      <FormError message={error} />
+      <button className="button primary-button" disabled={busy} type="submit">
+        {busy ? "Opening GitHub…" : "Authorize GitHub to submit as you"}
+      </button>
+    </form>
   );
 }
 
@@ -449,8 +684,11 @@ type SecurityCase = {
   allowedActions: string[];
   submissionState: "claimed" | "verified" | "link-rejected";
   receivedAt: string | null;
-  /** Slop does not read the advisory; a maintainer enters the time. */
-  receivedAtSource: "maintainer-attested" | null;
+  /**
+   * `maintainer-attested`: a maintainer entered the time. `github-verified`:
+   * Slop read GitHub's own record with the reporter's authorization.
+   */
+  receivedAtSource: "maintainer-attested" | "github-verified" | null;
   policyRevision: number | null;
   terms: Terms | null;
   awardState: string;
@@ -648,6 +886,349 @@ function ClaimForm({
         {busy ? "Linking…" : "Link my GitHub report"}
       </button>
     </form>
+  );
+}
+
+/**
+ * "Already reported on GitHub? Verify it": GitHub's own record proves the
+ * author and the receipt time, so no maintainer link check is needed.
+ */
+function DirectVerifyForm({
+  programProjects,
+}: {
+  programProjects: ProjectDefinition[];
+}) {
+  const [projectId, setProjectId] = useState(programProjects[0]?.id ?? "");
+  const [advisory, setAdvisory] = useState("");
+  const [key] = useState(requestKey);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (programProjects.length === 0)
+    return (
+      <p className="admin-status">No project runs a security program yet.</p>
+    );
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    projectApiRequest<{ submission: Submission; authorizeUrl: string }>(
+      "POST",
+      "security-submissions",
+      {
+        projectId,
+        advisory: advisory.trim(),
+        idempotencyKey: key,
+        origin: "direct",
+      },
+    ).then(
+      (body) => window.location.assign(body.authorizeUrl),
+      (caught: unknown) => {
+        setBusy(false);
+        setError(errorMessage(caught));
+      },
+    );
+  };
+  return (
+    <form className="security-form" onSubmit={submit}>
+      <ProjectSelect
+        onChange={setProjectId}
+        projects={programProjects}
+        value={projectId}
+      />
+      <label>
+        GitHub advisory ID
+        <input
+          autoComplete="off"
+          onChange={(event) => setAdvisory(event.target.value)}
+          pattern="GHSA-[2-9cfghjmpqrvwx]{4}-[2-9cfghjmpqrvwx]{4}-[2-9cfghjmpqrvwx]{4}"
+          placeholder="GHSA-xxxx-xxxx-xxxx"
+          required
+          spellCheck={false}
+          value={advisory}
+        />
+        <small className="field-hint">
+          Only the ID. Slop checks with GitHub that you are its author.
+        </small>
+      </label>
+      <FormError message={error} />
+      <button className="button primary-button" disabled={busy} type="submit">
+        {busy ? "Opening GitHub…" : "Authorize GitHub and verify"}
+      </button>
+    </form>
+  );
+}
+
+function submissionStatus(submission: Submission): string {
+  switch (submission.state) {
+    case "draft":
+      return submission.retryAllowed
+        ? "GitHub has no copy. You can send again."
+        : submission.origin === "direct"
+          ? "Ready to verify with GitHub."
+          : "Not sent yet.";
+    case "submitting":
+      return "Sending to GitHub privately…";
+    case "uncertain":
+      return submission.reconcileAfter &&
+        Date.parse(submission.reconcileAfter) > Date.now()
+        ? `We could not confirm GitHub received it yet. GitHub may still be saving it; check again after ${formatUtc(submission.reconcileAfter)}.`
+        : "We could not confirm GitHub received it. Check again.";
+    case "submitted":
+      return "Received by GitHub. Confirming…";
+    case "receipt-verified":
+      return `Received by GitHub at ${formatUtc(submission.githubCreatedAt)} (verified with GitHub).`;
+    case "failed":
+      return (
+        FAILURE_LABELS[submission.failureCode ?? ""] ??
+        "GitHub did not accept the report."
+      );
+    case "abandoned":
+      return "Expired after 24 hours without a send.";
+  }
+}
+
+/** One private submission and the only action its state allows. */
+function SubmissionCard({
+  submission,
+  focused,
+  onUpdated,
+  onOpenCase,
+}: {
+  submission: Submission;
+  focused: boolean;
+  onUpdated: (submission: Submission) => void;
+  onOpenCase: (caseId: string) => void;
+}) {
+  const [draft, setDraft] = useState<ReportDraft>(
+    () => loadDraft(submission.id) ?? EMPTY_DRAFT,
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [needsGrant, setNeedsGrant] = useState(false);
+  const session = useProjectSession();
+  const keepDraft = needsDraft(submission);
+  useEffect(() => {
+    if (!keepDraft) clearDraft(submission.id);
+  }, [submission.id, keepDraft]);
+  const run = (path: string, body: Record<string, unknown>) => {
+    setBusy(true);
+    setError(null);
+    projectApiRequest<{ submission: Submission }>(
+      "POST",
+      `security-submissions/${encodeURIComponent(submission.id)}/${path}`,
+      body,
+    ).then(
+      (result) => {
+        setBusy(false);
+        setNeedsGrant(false);
+        onUpdated(result.submission);
+      },
+      (caught: unknown) => {
+        setBusy(false);
+        if (
+          caught instanceof ProjectApiError &&
+          caught.code === "grant_required"
+        )
+          setNeedsGrant(true);
+        else setError(errorMessage(caught));
+      },
+    );
+  };
+  const authorize = () => {
+    setBusy(true);
+    projectApiRequest<{ authorizeUrl: string }>(
+      "POST",
+      `security-submissions/${encodeURIComponent(submission.id)}/authorize`,
+      {},
+    ).then(
+      (body) => window.location.assign(body.authorizeUrl),
+      (caught: unknown) => {
+        setBusy(false);
+        setError(errorMessage(caught));
+      },
+    );
+  };
+  const canSend =
+    submission.origin === "slop" &&
+    (submission.state === "draft" ||
+      (submission.state === "failed" &&
+        !TERMINAL_FAILURES.includes(submission.failureCode ?? "") &&
+        submission.advisory === null));
+  const expectedRevision = submission.revision;
+  return (
+    <article
+      aria-labelledby={`submission-${submission.id}`}
+      className={`admin-card security-case${focused ? " is-focused" : ""}`}
+    >
+      <h3 id={`submission-${submission.id}`}>
+        Private report · {submission.projectId}
+      </h3>
+      <p aria-live="polite" className="admin-status" role="status">
+        {submissionStatus(submission)}
+      </p>
+      {submission.advisory ? (
+        <p>
+          <ExternalLinkAnchor href={submission.advisory.url}>
+            {submission.advisory.ghsa}
+          </ExternalLinkAnchor>
+        </p>
+      ) : null}
+      {submission.state === "receipt-verified" && submission.caseId ? (
+        <button
+          className="text-button"
+          onClick={() => onOpenCase(submission.caseId as string)}
+          type="button"
+        >
+          Open the private case
+        </button>
+      ) : null}
+      {canSend ? (
+        <form
+          className="security-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            saveDraft(submission.id, draft);
+            run("send", { expectedRevision, report: reportBody(draft) });
+          }}
+        >
+          <IntakeNotices
+            login={
+              session.status === "signed-in"
+                ? session.session.githubLogin
+                : null
+            }
+          />
+          <ReportFields
+            draft={draft}
+            onChange={(next) => {
+              setDraft(next);
+              saveDraft(submission.id, next);
+            }}
+          />
+          <button
+            className="button primary-button"
+            disabled={busy}
+            type="submit"
+          >
+            {submission.state === "failed"
+              ? "Fix and resend"
+              : "Submit privately"}
+          </button>
+        </form>
+      ) : null}
+      {submission.origin === "direct" && submission.state === "draft" ? (
+        <button
+          className="button primary-button"
+          disabled={busy}
+          onClick={() => run("verify", { expectedRevision })}
+          type="button"
+        >
+          Verify with GitHub
+        </button>
+      ) : null}
+      {submission.state === "uncertain" || submission.state === "submitted" ? (
+        <button
+          className="button primary-button"
+          disabled={busy}
+          onClick={() => run("reconcile", { expectedRevision })}
+          type="button"
+        >
+          <RotateCcw aria-hidden="true" /> Check again
+        </button>
+      ) : null}
+      {needsGrant ? (
+        <div className="form-error" role="alert">
+          <CircleAlert aria-hidden="true" /> Authorize GitHub for this report
+          first.
+          <button
+            className="text-button"
+            disabled={busy}
+            onClick={authorize}
+            type="button"
+          >
+            Authorize GitHub to submit as you
+          </button>
+        </div>
+      ) : null}
+      <FormError message={error} />
+    </article>
+  );
+}
+
+/**
+ * The reporter's automatic private submissions. Shows nothing while the
+ * intake is off, so the manual claim path stays the only path shown.
+ */
+function SubmissionsPanel({
+  focusId,
+  grantError,
+  onAvailability,
+  onOpenCase,
+}: {
+  focusId: string | null;
+  grantError: string | null;
+  onAvailability: (available: boolean) => void;
+  onOpenCase: (caseId: string) => void;
+}) {
+  const [submissions, setSubmissions] = useState<Submission[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(() => {
+    projectApiRequest<{ automatic: boolean; submissions: Submission[] }>(
+      "GET",
+      "security-submissions",
+    ).then(
+      (body) => {
+        // Report text is kept only while its submission can still be sent.
+        pruneDrafts(body.submissions);
+        setSubmissions(body.submissions);
+        onAvailability(body.automatic === true);
+      },
+      (caught: unknown) => {
+        // The manual path stays available whenever the list cannot load.
+        onAvailability(false);
+        setError(errorMessage(caught));
+      },
+    );
+  }, [onAvailability]);
+  useEffect(load, [load]);
+  if (error)
+    return (
+      <div className="form-error" role="alert">
+        <CircleAlert aria-hidden="true" /> {error}
+        <button className="text-button" onClick={load} type="button">
+          <RotateCcw aria-hidden="true" /> Retry
+        </button>
+      </div>
+    );
+  const shown = (submissions ?? []).filter(
+    (entry) => entry.state !== "abandoned" || entry.id === focusId,
+  );
+  if (shown.length === 0 && !grantError) return null;
+  return (
+    <section aria-labelledby="security-submissions" className="admin-section">
+      <h2 id="security-submissions">Your private reports</h2>
+      {grantError ? (
+        <p className="form-error" role="alert">
+          <CircleAlert aria-hidden="true" />{" "}
+          {GRANT_ERRORS[grantError] ?? GRANT_ERRORS.grant_exchange_failed}
+        </p>
+      ) : null}
+      {shown.map((submission) => (
+        <SubmissionCard
+          focused={submission.id === focusId}
+          key={submission.id}
+          onOpenCase={onOpenCase}
+          onUpdated={(updated) =>
+            setSubmissions((current) =>
+              (current ?? []).map((entry) =>
+                entry.id === updated.id ? updated : entry,
+              ),
+            )
+          }
+          submission={submission}
+        />
+      ))}
+    </section>
   );
 }
 
@@ -1306,6 +1887,9 @@ const PAYMENT_LABELS: Record<string, string> = {
 };
 
 const EVENT_LABELS: Record<string, string> = {
+  submit: "Reporter submitted privately; GitHub receipt verified",
+  "submit-direct":
+    "Reporter linked their GitHub report; GitHub receipt verified",
   claim: "Reporter linked the GitHub report",
   record: "Maintainer recorded the GitHub report",
   "verify-link": "Maintainer verified the GitHub report",
@@ -1427,7 +2011,9 @@ function CaseDetail({
             {formatUtc(record.receivedAt)}
             {record.receivedAtSource === "maintainer-attested"
               ? " (maintainer verified)"
-              : ""}
+              : record.receivedAtSource === "github-verified"
+                ? " (verified with GitHub)"
+                : ""}
           </Fact>
           <Fact term="Policy revision">{record.policyRevision ?? "—"}</Fact>
           {record.receiptState ? (
@@ -1538,6 +2124,28 @@ export function SecurityCasesPage() {
   );
   const [selected, setSelected] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // `null` until the submission list answers; false while intake is off.
+  const [automatic, setAutomatic] = useState<boolean | null>(null);
+  // GitHub's authorization returns here with the submission and any error.
+  const [returned] = useState(() => {
+    const query = new URLSearchParams(window.location.search);
+    const submission = query.get("submission");
+    const intake = query.get("intake");
+    return {
+      submission:
+        submission && /^ss_[A-Za-z0-9_-]{8,72}$/u.test(submission)
+          ? submission
+          : null,
+      error: intake && /^grant_[a-z_]{3,40}$/u.test(intake) ? intake : null,
+    };
+  });
+  const openCase = useCallback(
+    (caseId: string) => {
+      setSelected(caseId);
+      reload();
+    },
+    [reload],
+  );
   const programProjects = useMemo(
     () => PROJECTS.filter((project) => project.securityBounty !== undefined),
     [],
@@ -1622,13 +2230,44 @@ export function SecurityCasesPage() {
             <CaseDetail caseId={selected} key={selected} onChanged={reload} />
           ) : null}
         </section>
-        <section aria-labelledby="security-link" className="admin-section">
-          <h2 id="security-link">Link a report you submitted on GitHub</h2>
-          <p className="admin-status">
-            A maintainer verifies the link and the original GitHub receipt time.
-          </p>
-          <ClaimForm onCreated={created} programProjects={programProjects} />
-        </section>
+        <SubmissionsPanel
+          focusId={returned.submission}
+          grantError={returned.error}
+          onAvailability={setAutomatic}
+          onOpenCase={openCase}
+        />
+        {automatic ? (
+          <section aria-labelledby="security-link" className="admin-section">
+            <h2 id="security-link">Already reported on GitHub? Verify it</h2>
+            <p className="admin-status">
+              GitHub’s own record proves you are the author and keeps the
+              original receipt time.
+            </p>
+            <DirectVerifyForm programProjects={programProjects} />
+            <details>
+              <summary>
+                The project has not installed the Slop private intake app
+              </summary>
+              <p className="admin-status">
+                Link the report instead. A maintainer verifies the link and the
+                original GitHub receipt time.
+              </p>
+              <ClaimForm
+                onCreated={created}
+                programProjects={programProjects}
+              />
+            </details>
+          </section>
+        ) : automatic === false ? (
+          <section aria-labelledby="security-link" className="admin-section">
+            <h2 id="security-link">Link a report you submitted on GitHub</h2>
+            <p className="admin-status">
+              A maintainer verifies the link and the original GitHub receipt
+              time.
+            </p>
+            <ClaimForm onCreated={created} programProjects={programProjects} />
+          </section>
+        ) : null}
         {maintained.size > 0 ? (
           <section aria-labelledby="security-record" className="admin-section">
             <h2 id="security-record">
