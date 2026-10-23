@@ -187,9 +187,9 @@ The contributor skill must:
   authenticated write-only path;
 - never claim an issue, publish a placeholder PR, handle keys, or move money.
 
-The current reviewer skill is separate and advisory. The PRD's optional bot
-closures and security enforcement need approved protocol/permission changes
-before activation. It checks correctness, tests,
+The current reviewer skill is separate and advisory. The PRD requires free Slopbot on registered
+repositories. Bot closure and security enforcement still need reviewed
+protocol/permission changes before activation. It checks correctness, tests,
 scope, security, duplication, evidence, and usefulness. Automation may propose
 a score or hold; a human decides acceptance, exclusions, and money.
 

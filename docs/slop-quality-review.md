@@ -6,7 +6,7 @@ Original review: 24 September 2026. Incorporated into requirements: 6 October 20
 
 This is the complete earlier editorial review. Its observations are dated evidence, not a claim about the current deployment.
 Reproduce each defect on the implementation revision before changing code. Record resolved items instead of repeating completed work.
-The [PRD quality requirements](slop-product-requirements.md#15-complete-private-bounties-and-product-flows) define the current scope, delivery order, and acceptance.
+The [PRD quality requirements](slop-product-requirements.md#11-source-delivery-and-acceptance) define the current scope, delivery order, and acceptance.
 
 The following later requirements replace conflicting recommendations in this review:
 
