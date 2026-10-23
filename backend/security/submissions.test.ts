@@ -1,7 +1,14 @@
 // Automatic private intake against the real migrations and an in-memory
 // GitHub (PRD section 8, SEC-07, SEC-17; issue #910). No request leaves the
 // process; the fake answers the HTTP calls the real adapter makes.
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  describe,
+  expect,
+  setDefaultTimeout,
+  spyOn,
+  test,
+} from "bun:test";
 import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { sqliteD1 } from "../../tests/sqlite-d1";
@@ -9,6 +16,9 @@ import { FAKE_OAUTH, fakeGithub } from "./github-advisories.fake";
 import { handleSecurityApi, type SecurityD1Database } from "./handler";
 import { githubIntakeOAuth, type IntakeConfig } from "./intake-grant";
 import { cvss3BaseScore, deterministicAnalyzer } from "./report-analysis";
+
+// Several tests build more than one database with every migration.
+setDefaultTimeout(30_000);
 
 const migrations = readdirSync("migrations")
   .filter((f) => f.endsWith(".sql"))
@@ -1034,10 +1044,12 @@ describe("private intake: analysis, access, privacy and mode", () => {
     });
   });
 
-  test("with intake off every submission route is closed and readiness says off", async () => {
+  test("with intake off every submission route is closed, the list is empty and readiness says off", async () => {
     const t = setup({ mode: "off" });
+    const listed = await t.call(REPORTER, "GET", "security-submissions");
+    expect(listed.status).toBe(200);
+    expect(listed.body).toEqual({ automatic: false, submissions: [] });
     for (const [method, path] of [
-      ["GET", "security-submissions"],
       ["POST", "security-submissions"],
       ["POST", "security-submissions/ss_case00000001/send"],
       ["GET", "security-submissions/authorize/callback?code=a&state=b"],

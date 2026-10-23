@@ -1185,7 +1185,7 @@ function SubmissionCard({
 }
 
 /**
- * The reporter's automatic private submissions. Returns null while the
+ * The reporter's automatic private submissions. Shows nothing while the
  * intake is off, so the manual claim path stays the only path shown.
  */
 function SubmissionsPanel({
@@ -1202,20 +1202,18 @@ function SubmissionsPanel({
   const [submissions, setSubmissions] = useState<Submission[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(() => {
-    projectApiRequest<{ submissions: Submission[] }>(
+    projectApiRequest<{ automatic: boolean; submissions: Submission[] }>(
       "GET",
       "security-submissions",
     ).then(
       (body) => {
         setSubmissions(body.submissions);
-        onAvailability(true);
+        onAvailability(body.automatic === true);
       },
       (caught: unknown) => {
         // The manual path stays available whenever the list cannot load.
         onAvailability(false);
-        if (caught instanceof ProjectApiError && caught.status === 404)
-          setSubmissions([]);
-        else setError(errorMessage(caught));
+        setError(errorMessage(caught));
       },
     );
   }, [onAvailability]);
