@@ -1,6 +1,5 @@
 // D1 access for Slopbot (migrations/0013_slopbot.sql and
-// 0018_slopbot_delivery_processing.sql). Cost and credit rows are append-only;
-// the balance is always derived, never stored.
+// 0018_slopbot_delivery_processing.sql). Provider cost rows are append-only.
 
 import type {
   D1Database,
@@ -182,20 +181,6 @@ export async function installation(db: D1Database, installationId: number) {
     }>();
 }
 
-export async function balance(
-  db: D1Database,
-  installationId: number,
-): Promise<number> {
-  const row = await db
-    .prepare(
-      `SELECT (SELECT COALESCE(SUM(amount_micro_usdc), 0) FROM slopbot_credits WHERE installation_id = ?1)
-            - (SELECT COALESCE(SUM(billed_micro_usdc), 0) FROM slopbot_costs WHERE installation_id = ?1) AS balance`,
-    )
-    .bind(installationId)
-    .first<{ balance: number }>();
-  return row?.balance ?? 0;
-}
-
 export async function isParticipant(
   db: D1Database,
   githubId: number,
@@ -290,8 +275,8 @@ export async function startReview(
   ).toISOString();
   // Eligibility skips are not completed reviews. Claim the same revision
   // again when its draft/installation/budget state permits review. A skip
-  // before any model call is still a first billable attempt; prior calls
-  // retain the existing Slop-caused retry treatment.
+  // before any model call is still a first attempt; prior calls retain their
+  // original timestamp and identify retries. All new calls are free.
   const resumed = await db
     .prepare(
       `UPDATE slopbot_reviews SET status = 'running', content_digest = ?,
@@ -388,44 +373,30 @@ export async function finishReview(
   if ((result.meta?.changes ?? 0) !== 1) throw new ReviewLeaseLostError();
 }
 
-// One immutable cost row per model call (BOT-10). Failed calls are recorded
-// at cost but billed zero: Slop absorbs provider failures.
+// Keep provider costs for operational budgets and alerts. Slopbot is free:
+// new calls never charge projects, including retries of historically billed reviews.
+// Existing call-v1/review-v2 rows retain their original amounts.
 export async function recordCalls(
   db: D1Database,
   reviewKey: string,
   installationId: number,
   callKind: "triage" | "confirm",
   calls: CallRecord[],
-  billable: boolean,
-): Promise<number> {
-  let billed = 0;
+): Promise<void> {
   for (const call of calls) {
     const price = priceUsage(call.priceKey, call.usage);
     if (price === null) throw new Error(`no price for ${call.priceKey}`);
     const substituted =
       call.servedModel !== null &&
       !call.priceKey.endsWith(`/${call.servedModel}`);
-    const billableCost =
-      billable && call.outcome === "ok" ? price.costMicroUsd : 0;
     const recorded = await db
       .prepare(
-        `WITH prior AS (
-          SELECT COALESCE(SUM(billable_cost_micro_usd), 0) AS cost,
-            COALESCE(SUM(CASE WHEN billing_rule = 'review-v2' THEN billed_micro_usdc ELSE 0 END), 0) AS billed,
-            COUNT(CASE WHEN billing_rule = 'call-v1' AND billed_micro_usdc > 0 THEN 1 END) AS legacy
-          FROM slopbot_costs WHERE review_key = ?1 AND installation_id = ?2
-        )
-        INSERT INTO slopbot_costs (review_key, installation_id, call_kind, route_step, provider, requested_model,
+        `INSERT INTO slopbot_costs (review_key, installation_id, call_kind, route_step, provider, requested_model,
           served_model, outcome, failure, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens,
           price_version, cost_micro_usd, billed_micro_usdc, reconciliation, created_at, provider_cost_micro_usd,
           provider_request_id, billing_rule, billable_cost_micro_usd)
-        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-          CASE WHEN ?20 = 0 OR prior.legacy > 0 THEN 0 ELSE ((prior.cost + ?20) * 11 + 9) / 10 - prior.billed END,
-          ?16, ?17, ?18, ?19, 'review-v2', CASE WHEN prior.legacy > 0 THEN 0 ELSE ?20 END
-        FROM prior
-        WHERE prior.legacy > 0 OR (prior.cost <= ?21 - ?20
-          AND ((prior.cost + ?20) * 11 + 9) / 10 >= prior.billed)
-        RETURNING billed_micro_usdc, billable_cost_micro_usd`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'review-v2', 0)
+        RETURNING id`,
       )
       .bind(
         reviewKey,
@@ -447,20 +418,10 @@ export async function recordCalls(
         now(),
         call.providerCostMicroUsd ?? null,
         call.providerRequestId ?? null,
-        billableCost,
-        Number((BigInt(Number.MAX_SAFE_INTEGER) * 10n) / 11n),
       )
-      .first<{ billed_micro_usdc: number; billable_cost_micro_usd: number }>();
-    if (
-      !recorded ||
-      (billableCost > 0 && recorded.billable_cost_micro_usd === 0)
-    )
-      throw new Error(
-        "Review billing needs reconciliation before further charges",
-      );
-    billed += recorded.billed_micro_usdc;
+      .first<{ id: number }>();
+    if (!recorded) throw new Error("Provider cost was not recorded");
   }
-  return billed;
 }
 
 export async function hasRecordedAction(
