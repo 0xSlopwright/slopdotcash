@@ -34,7 +34,7 @@ Before the public-testnet scenario, record a verified supply route under
 [issue #899](https://github.com/SlopDotCash/slopdotcash/issues/899). If the route
 is unavailable, stop and record the gap. Do not substitute another token.
 See the [design record](robinhood-chain-escrow-design.md#verified-facts) and
-[PRD payment acceptance](slop-product-requirements.md#14-prove-funding-and-payment).
+[PRD payment acceptance](slop-product-requirements.md#11-source-delivery-and-acceptance).
 
 JSON output reports the integer balance as a decimal string (`wei` or
 `lamports`), the finalized block or slot, and `nonzero`. A zero balance is a

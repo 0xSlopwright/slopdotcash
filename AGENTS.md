@@ -34,8 +34,7 @@ alias only.
     block it.
   - One fee-wallet hot key per network (PRD TOK-07, MVP-07c, owner decision
     of 18 October 2026). It controls only the network fee wallet. It signs
-    only the scheduled conversion of fees already in that wallet to the
-    network stablecoin, through allowlisted routes, within the slippage limit,
+    only the conversion of fees received in that wallet to USDC, through allowlisted routes, within the slippage limit,
     with output to the same wallet. It holds no vault role and cannot touch
     vaults, contributor principal, reserved awards or payments. The job runs
     in dry run until a reviewed activation record enables signing.
@@ -178,22 +177,17 @@ tests/e2e/      real-browser end-to-end, accessibility, and Pages coverage
 
 ## Add a project
 
-Projects are added on the website, never by pull request. An applicant signs
-in with GitHub through `/login` and submits a manifest at `/projects/new`. The
-API stores the application in D1 and emails the admins through the
-`slop-notify` Worker (`workers/notify/`). Admins, listed by GitHub actor ID in
-`ADMIN_GITHUB_IDS`, approve or reject it at `/admin`. See
-`backend/projects/README.md`.
+Projects are added on the website, never by pull request. The PRD now requires
+self-service setup: verify current GitHub authority, complete project terms,
+install Slopbot, and pass the malicious-code scan before automatic activation.
+Funding is optional and has a separate readiness state. Owners publish immutable
+revisions; admins handle restrictions and disputes, not routine approval.
+Two distinct contributor flags pause the project. Contributor skills must not
+install or work on flagged projects.
 
-An application must be a paused, unverified, unfunded community project with
-payments disabled. Approval lists it as revision 1, still paused. Admins record
-verified authority, terms, funding, and activation as manifest revisions on
-`/admin`; each revision must pass `assertProjectPolicyTransition`. An admin
-approval publishes the revision. No GitHub pull request adds or updates a
-project, and the repository holds no project JSON or per-project skill folder.
-A project can become active only after an admin approves an activation
-revision whose generated contributor and reviewer skills pass review in the
-`/admin` preview.
+The current application still uses admin approval in `backend/projects/`.
+That is implementation to migrate, not the target product rule. Do not bypass
+its deployed checks before the reviewed replacement is implemented.
 
 A paused project is registered and listed, but none of its repositories is
 collected, so nothing on them reaches the ledger or the leaderboard. It
@@ -212,16 +206,14 @@ follow the target repository’s rules, test the result, prepare evidence, and
 emit the required attribution. It must not claim platform authority over an
 issue or create placeholder submissions.
 
-The current reviewer skill is separate and advisory. The PRD specifies optional
-Slopbot closure and security-vetting enforcement as gated MVP additions. A
-document merge alone does not enable those powers; implement and review the
-versioned protocols and explicit permissions first. The hosted Slopbot service
-is `workers/slopbot` under `protocol/slopbot-v2.md` (effective
-2026-11-01T00:00:00Z). Its global closure switch stays off until a reviewed
-production activation; it never merges, approves payouts, bans, or pays.
-Under owner-approved SCR-06, it may update provisional value scores with
-complete source evidence and append-only revisions. Human ratification takes
-precedence. See `docs/slop-value-scoring-plan.md`.
+The current reviewer skill is separate and advisory. Slopbot is required and
+always free, and runs only on registered repositories. It scores PRs by perceived
+size and value and credits useful reviews. Automatic closure is limited to
+verified Slop-skill participants, excluding maintainers, with manual appeals.
+Do not charge project vaults for bot reviews. The current global closure switch
+stays off until reviewed production activation. Document changes alone do not
+activate closure, payments, or security enforcement.
+
 
 It measures its own run, checks
 correctness, tests, security, evidence, duplication, abuse signals, scope, and
@@ -321,12 +313,18 @@ A review budget is an optional additive cash line. Review events remain in the
 shared pool unchanged; a committed review line may pay them only on top of that
 treatment, with separate public arithmetic and evidence.
 
-Proposal review lasts 14 days. Project owners may adjust awards within the cap
-with a public reason; only such amount changes reset review. Wallet changes
-append a successor; a wallet observed after proposal generation applies to the
-next cycle and never touches the current proposal. History is never edited.
-Missing wallets remain unclaimed. Related-party money requires separate
-approval.
+The PRD's monthly fallback applies only to configured monthly projects with
+funds already committed in escrow. Owners can adjust amounts before execution;
+do not show adjustment history or require public reasons. Distribute the current
+allocations at the defined monthly cutoff if the owner has not done so. Define
+the UTC cutoff before activation. Keep internal reconciliation and prevent
+manual/automatic duplicate payments. Walletless funded awards remain reserved.
+Private reports are automatic; bounty awards and payouts remain discretionary,
+with disputes handled by humans. Preserve already funded obligations.
+
+The current payment implementation retains its older review rules until the
+reviewed migration. Do not infer that this policy change has altered contracts
+or authorized live transactions.
 
 One funding mode exists: the project vault contract (PRD FND-01, owner
 decision of 18 October 2026). Squads v4, Sablier, legacy direct and committed
