@@ -131,7 +131,10 @@ Do these in order. Each step names who does it and how to verify it.
      step 4.
    - Permissions: Contents read, Metadata read, Organization members read,
      Issues write, Pull requests write. No others.
-   - Events: Installation, Issues, Issue comment, Pull request.
+   - Events: Installation, Issues, Issue comment, Pull request, Pull request
+     review, Pull request review comment. The two review events queue a fresh
+     value assessment when a review changes. Without them, the Worker does not
+     receive those changes.
    - "Where can this App be installed": Any account.
    - Verify: the App page shows exactly these permissions.
 2. **Get the App identity:**
@@ -195,7 +198,14 @@ Do these in order. Each step names who does it and how to verify it.
 
 - **Read:** Contents, Metadata, Organization members.
 - **Write:** Issues, Pull requests.
-- **Events:** `installation`, `issues`, `issue_comment`, `pull_request`.
+- **Events:** `installation`, `issues`, `issue_comment`, `pull_request`,
+  `pull_request_review`, `pull_request_review_comment`.
+
+After the protected release, verify delivery of a submitted review and a new
+inline review comment on a registered repository. Each delivery must create a
+pending record in `slopbot_value_requests`. Redelivery must not create another
+record. A pending record proves intake only; verify the resulting assessment
+and publication separately. An unregistered repository must create no record.
 
 ## Not yet implemented
 
