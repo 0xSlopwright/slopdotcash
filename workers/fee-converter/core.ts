@@ -370,12 +370,16 @@ export async function runNetwork(
       try {
         const balance = await client.balance(token);
         if (balance === 0n) continue;
-        if (
-          deps.trigger === "receipts" &&
-          (await deps.store.latest(config.network, token))
-            ?.tokenBalanceBefore === balance.toString()
-        )
-          continue;
+        if (deps.trigger === "receipts") {
+          const latest = await deps.store.latest(config.network, token);
+          // A finalized swap spent the earlier balance. An equal balance can
+          // therefore be a new receipt, and must be evaluated again.
+          if (
+            latest?.state !== "finalized" &&
+            latest?.tokenBalanceBefore === balance.toString()
+          )
+            continue;
+        }
         const outcome = await convert(
           token,
           balance,

@@ -364,6 +364,21 @@ describe("receipt-triggered conversion", () => {
     ]);
   });
 
+  test("a repeated fee amount after finalization is a new receipt", async () => {
+    const h = harness();
+    h.deps.trigger = "receipts";
+    await runNetwork(h.network, h.deps);
+    expect(h.chain.sent).toHaveLength(1);
+    // The first balance was spent, then an equal fee arrived before the next tick.
+    h.chain.statusFor = () => ({ kind: "finalized", amountOut: 20_000_000n });
+    await runNetwork(h.network, h.deps);
+    expect(h.rows().map((row) => row.state)).toEqual([
+      "finalized",
+      "submitted",
+    ]);
+    expect(h.chain.sent).toHaveLength(2);
+  });
+
   test("the recovery scan retries a token that a receipt run leaves alone", async () => {
     const h = harness();
     h.deps.trigger = "receipts";
