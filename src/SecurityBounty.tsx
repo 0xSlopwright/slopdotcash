@@ -1245,7 +1245,7 @@ function SubmissionsPanel({
       {shown.map((submission) => (
         <SubmissionCard
           focused={submission.id === focusId}
-          key={`${submission.id}-${submission.revision}`}
+          key={submission.id}
           onOpenCase={onOpenCase}
           onUpdated={(updated) =>
             setSubmissions((current) =>

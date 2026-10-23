@@ -764,8 +764,13 @@ async function writeVerifiedCase(
     );
   }
   const updated = (await loadSubmission(deps, row.id)) as SubmissionRow;
-  const moved = results[results.length - 2]?.meta?.changes === 1;
-  return { status: moved ? 200 : 409, row: updated };
+  // Another request may have verified the same receipt first.
+  if (
+    results[results.length - 2]?.meta?.changes !== 1 &&
+    updated.state !== "receipt-verified"
+  )
+    fail(409, "stale_revision", "The submission changed since you loaded it");
+  return { status: 200, row: updated };
 }
 
 /** §3: send one private report. Returns state only; never the content. */

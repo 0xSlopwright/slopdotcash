@@ -358,6 +358,40 @@ describe("private intake: creation and identity", () => {
     expect(t.github.counts.posts).toBe(0);
   });
 
+  test("the grant cookie is encrypted, HttpOnly, Strict and scoped to the submission routes", async () => {
+    const t = setup();
+    const created = await t.create();
+    expect(created.cookies).toHaveLength(1);
+    expect(created.cookies[0]).toMatch(
+      /^__Secure-slop_intake_flow=[^;]+; Path=\/api\/v1\/security-submissions; Max-Age=600; Secure; HttpOnly; SameSite=Lax$/u,
+    );
+    const callback = await t.authorize(
+      REPORTER,
+      created.body.authorizeUrl as string,
+    );
+    const grant = callback.cookies.find((c) =>
+      c.startsWith("__Secure-slop_intake_grant="),
+    );
+    expect(grant).toMatch(
+      /; Path=\/api\/v1\/security-submissions; Max-Age=7200; Secure; HttpOnly; SameSite=Strict$/u,
+    );
+    expect(grant).not.toContain("ghu_");
+    // The flow cookie is cleared once used.
+    expect(
+      callback.cookies.some((c) =>
+        /^__Secure-slop_intake_flow=; .*Max-Age=0/u.test(c),
+      ),
+    ).toBe(true);
+    // A replayed callback has no flow and sets no grant.
+    const replay = await t.raw(
+      null,
+      "GET",
+      `security-submissions/authorize/callback?code=code_9_1&state=x`,
+    );
+    expect(replay.location).toBe("/security?intake=grant_flow_missing");
+    expect(replay.cookies.some((c) => c.includes("intake_grant"))).toBe(false);
+  });
+
   test("a missing, tampered, expired or rebound grant never reaches GitHub", async () => {
     const t = setup();
     const created = await t.create();
