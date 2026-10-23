@@ -765,7 +765,6 @@ export async function reviewItem(
     participant: await store.isParticipant(db, issue.user.id),
     humanReopenedThisRevision: humanReopened > 0,
     authorCapReached,
-    balanceMicroUsdc: await store.balance(db, job.installationId),
   });
 
   const contentDigest = await sha256Hex(context.itemText);
@@ -796,7 +795,6 @@ export async function reviewItem(
       reviewKey,
       contentDigest,
       claimToken,
-      started === "new",
     );
   } catch (error) {
     await store.finishReview(db, reviewKey, claimToken, "failed", {
@@ -814,7 +812,6 @@ async function runReview(
   reviewKey: string,
   contentDigest: string,
   claimToken: string,
-  billable: boolean,
 ): Promise<string> {
   const db = env.SLOPBOT_DB;
   const { issue, config } = context;
@@ -848,7 +845,6 @@ async function runReview(
       job.installationId,
       "triage",
       result.calls,
-      billable && (await store.ownsReviewClaim(db, claim)),
     );
     if (result.blocked)
       throw new Error("Model call blocked by the live project registry");
@@ -908,7 +904,6 @@ async function runReview(
         job.installationId,
         "confirm",
         second.calls,
-        billable && (await store.ownsReviewClaim(db, claim)),
       );
       if (second.blocked)
         throw new Error("Model call blocked by the live project registry");

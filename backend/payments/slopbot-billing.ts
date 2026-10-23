@@ -51,9 +51,9 @@ export async function slopbotInvoice(
     billedMicroUsdc: billed.toString(),
     feeOffsetMicroUsdc: "0",
     feeOffsetReason:
-      "No reviewed link from a Slopbot installation to a funded project exists yet, so Slop's payout fee cannot offset this invoice.",
+      "New Slopbot reviews are free. Historical billed amounts remain unchanged; no payout-fee offset is applied.",
     settlement: "unavailable",
     settlementReason:
-      "The vault service-charge operation and finalized invoice reconciliation are not implemented. This statement does not authorize or request a payment.",
+      "Slopbot does not charge project vaults. This historical cost statement does not authorize or request a payment.",
   };
 }

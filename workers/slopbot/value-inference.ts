@@ -96,7 +96,6 @@ export async function runValueInference<T>(
     budget.installationId,
     "triage",
     result.calls,
-    false,
   );
   const inferredAt = new Date().toISOString();
   if (!result.blocked && result.verdict && result.servedBy) {
