@@ -583,6 +583,16 @@ Incomplete path evidence is null and blocks assessment; it is never an empty
 change set. The final PR stability read follows these commit and identity reads.
 The whole-PR contributor set follows SCR-04: the non-bot PR author plus
 GitHub-linked primary commit authors when the PR targets the integration branch.
+Historical PRs can target a former integration branch. When a merged PR has
+other eligible primary authors and its base differs from today's registry,
+the collector reads `CONTRIBUTING.md` at the immutable PR base SHA. It recognizes
+the explicit sentence `Pull requests target \`branch\`.` outside fenced examples
+and comments. Missing, conflicting, or unreadable declarations leave a source
+limitation; a declaration of another branch keeps author-only credit. A matching
+declaration retains commit-author credit without changing the current registry.
+The captured document and base SHA enter the source digest and are re-read for
+publication. Existing assessments require a verified successor, not an in-place
+recipient change. This historical evidence never activates a project or payment.
 Vendor agent accounts and co-author trailers do not add score recipients or
 turn trailer authors into self-reviewers. The original commit messages remain
 in the evidence; the collector does not resolve trailers into credit authority.

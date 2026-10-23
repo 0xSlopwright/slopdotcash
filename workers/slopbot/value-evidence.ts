@@ -8,6 +8,11 @@ import {
   collectAcceptedValueRange,
 } from "./value-accepted-range";
 import {
+  collectBranchPolicy,
+  matchesHistoricalIntegrationBranch,
+  type ValueBranchPolicy,
+} from "./value-branch-policy";
+import {
   needsFullValueComparison,
   recoverFullValueComparisons,
 } from "./value-full-file";
@@ -442,6 +447,7 @@ export interface ValueEvidence {
   evidenceUrls: string[];
   eligibleReviewIds: string[];
   implementationActorNodeIds: string[];
+  historicalBranchPolicy?: ValueBranchPolicy;
   commitAttribution: CommitAttribution[];
   mergeResolutions?: ValueMergeResolution[];
   relatedPullRequests: RelatedPullRequest[];
@@ -834,7 +840,38 @@ export async function collectValueEvidence(
   // Trailer identities are source text, not credit authority under SCR-04.
   const implementationActors = new Set<string>();
   if (pull.user.type !== "Bot") implementationActors.add(pull.user.node_id);
-  if (pull.base.ref === repositoryPolicy?.integrationBranch) {
+  let historicalBranchPolicy: ValueBranchPolicy | undefined;
+  if (
+    pull.merged_at !== null &&
+    repositoryPolicy !== null &&
+    pull.base.ref !== repositoryPolicy.integrationBranch &&
+    commits.some(
+      (commit) =>
+        commit.parents.length <= 1 &&
+        commit.author &&
+        commit.author.node_id !== pull.user.node_id &&
+        isCreditEligibleCommitAuthor({
+          id: commit.author.node_id,
+          kind: commit.author.type,
+        }),
+    )
+  ) {
+    try {
+      historicalBranchPolicy = await collectBranchPolicy(
+        client,
+        repository,
+        pull.base.sha,
+      );
+    } catch {
+      limitations.push(
+        "Historical integration branch authority is unavailable or ambiguous",
+      );
+    }
+  }
+  if (
+    pull.base.ref === repositoryPolicy?.integrationBranch ||
+    matchesHistoricalIntegrationBranch(historicalBranchPolicy, pull.base)
+  ) {
     for (const commit of commits) {
       if (
         commit.parents.length <= 1 &&
@@ -906,6 +943,7 @@ export async function collectValueEvidence(
     evidenceUrls,
     eligibleReviewIds,
     implementationActorNodeIds: [...implementationActors].sort(),
+    ...(historicalBranchPolicy === undefined ? {} : { historicalBranchPolicy }),
     commitAttribution,
     relatedPullRequests: related.references,
   };

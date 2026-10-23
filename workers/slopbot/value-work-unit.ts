@@ -8,6 +8,7 @@ import {
   type TargetRepository,
 } from "../../src/lib/repositories.mjs";
 import { sha256Hex } from "./github";
+import { matchesHistoricalIntegrationBranch } from "./value-branch-policy";
 import {
   type ValueEvidence,
   valueEvidenceMatchesRepository,
@@ -215,7 +216,11 @@ export async function prepareWorkUnitEvidence(
       const actors = new Set<string>();
       if (pull.user.type !== "Bot") actors.add(pull.user.node_id);
       if (
-        pull.base.ref === repository.integrationBranch &&
+        (pull.base.ref === repository.integrationBranch ||
+          matchesHistoricalIntegrationBranch(
+            evidence.historicalBranchPolicy,
+            pull.base,
+          )) &&
         commit.author &&
         isCreditEligibleCommitAuthor({
           id: commit.author.node_id,
