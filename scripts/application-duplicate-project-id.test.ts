@@ -137,3 +137,31 @@ test("an admin revision still replaces the listed project with that id", async (
   expect(revised.status).toBe(200);
   expect((await persistence.getProject("open-registry"))?.revision).toBe(2);
 });
+
+test("an application cannot list a repository another pending application lists", async () => {
+  const { persistence, call, submit } = registry();
+  const first = await submit("alpha", "example/shared");
+  expect(first.status).toBe(201);
+  const base = applicationManifest("gamma", "example/gamma");
+  const [primary] = base.repositories as Record<string, unknown>[];
+  const second = await call("POST", "project-applications", "900000003", {
+    manifest: {
+      ...base,
+      repositories: [
+        primary,
+        {
+          ...primary,
+          id: "example/shared",
+          displayName: "example/shared",
+          githubUrl: "https://github.com/example/shared",
+        },
+      ],
+    },
+  });
+  expect(second.status).toBe(409);
+  expect(second.body.error).toBe("application_exists");
+  const pending = await persistence.listApplications("pending");
+  expect(pending.map((application) => application.projectId)).toEqual([
+    "alpha",
+  ]);
+});
