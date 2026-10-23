@@ -3327,7 +3327,13 @@ function createSnapshotWithReviewCutoff(
       ) =>
         source.pull.merged_at ?? source.indirectAcceptance?.observedOnBranchAt;
       const sources = [
-        ...new Set(scoped.map((claim) => claim.creditPullRequestId)),
+        ...new Set(
+          scoped.map(
+            (claim) =>
+              claim.retainedCopy?.acceptancePullRequestId ??
+              claim.creditPullRequestId,
+          ),
+        ),
       ]
         .map((id) => {
           const source = members.get(id);
@@ -3379,6 +3385,14 @@ function createSnapshotWithReviewCutoff(
       const tier = unit.assessment.tier;
       if (tier === null)
         throw new Error("Joint implementation has no value tier");
+      // The merged carrier establishes acceptance time; it does not replace
+      // the original contributor as the primary author of copied work.
+      const retainedOriginal = scoped
+        .filter((claim) => claim.retainedCopy)
+        .map((claim) => members.get(claim.creditPullRequestId))
+        .filter((source) => source !== undefined)
+        .sort((a, b) => compareCodeUnits(a.pull.node_id, b.pull.node_id))[0];
+      const primaryAuthorId = (retainedOriginal ?? first).pull.user.node_id;
       const actors = [
         ...new Set(scoped.flatMap((claim) => claim.implementationActorNodeIds)),
       ]
@@ -3391,9 +3405,9 @@ function createSnapshotWithReviewCutoff(
           return actor;
         })
         .sort((a, b) =>
-          a.id === first.pull.user.node_id
+          a.id === primaryAuthorId
             ? -1
-            : b.id === first.pull.user.node_id
+            : b.id === primaryAuthorId
               ? 1
               : compareCodeUnits(a.id, b.id),
         );
