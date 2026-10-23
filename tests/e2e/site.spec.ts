@@ -22,6 +22,7 @@ import {
   projectCycleHasOpened,
 } from "../../src/lib/project-view";
 import { PROJECTS } from "../../src/lib/projects.mjs";
+import { CONTRIBUTION } from "../project-application-manifest";
 
 const deployment = deploymentOrigins(
   deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
@@ -278,6 +279,11 @@ test("equal contributors share cycle and profile ranks", async ({
 test("discovers projects and one score-ranked homepage leaderboard", async ({
   page,
 }) => {
+  await page.route("**/.well-known/slop/projects.json", (route) =>
+    route.fulfill({
+      json: { schemaVersion: "1", projects: [{ project_id: "eliza" }] },
+    }),
+  );
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/", { waitUntil: "networkidle" });
   await page.reload({ waitUntil: "networkidle" });
@@ -715,6 +721,353 @@ test("makes the public project draft boundary unmistakable", async ({
         .analyze()
     ).violations,
   ).toEqual([]);
+});
+
+test("reviews criteria changes and stops a stale maintainer draft", async ({
+  page,
+}) => {
+  const registered = PROJECTS.find((entry) => entry.id === "eliza");
+  if (!registered) throw new Error("Eliza is missing");
+  const project = {
+    ...registered,
+    contribution: {
+      ...CONTRIBUTION,
+      approvedScope:
+        "Work must improve the primary product and pass three gates: authorized demand, primary mission, and material outcome. Authorized demand means a maintainer request or an approved requirement. The affected workflow must pass end-to-end checks. Keep source, local tests, hosted checks and production acceptance separate. Reuse existing code and preserve review history. Include the exact old and new criteria so the maintainer can review the entire change before submission.",
+    },
+  };
+  await page.route("**/data/fixture-project-registry.json", (route) =>
+    route.fulfill({
+      json: {
+        schemaVersion: "1",
+        projects: PROJECTS.map((entry) =>
+          entry.id === project.id ? project : entry,
+        ),
+      },
+    }),
+  );
+  let revision = 1;
+  await page.route("**/api/v1/projects/eliza", (route) =>
+    route.fulfill({ json: { revision, project } }),
+  );
+  await page.route("**/api/v1/project-session", (route) =>
+    route.fulfill({
+      json: {
+        session: { githubId: "4242", githubLogin: "example", admin: false },
+      },
+    }),
+  );
+  let submission: {
+    expectedRevision: number;
+    manifest: { contribution: { approvedScope: string } };
+  } | null = null;
+  await page.route("**/api/v1/project-applications", (route) => {
+    submission = route.request().postDataJSON();
+    return route.fulfill({
+      status: 201,
+      json: { application: { id: "app_criteria" } },
+    });
+  });
+  await page.goto("/projects/eliza/manage", { waitUntil: "networkidle" });
+  await expect(page.getByLabel("Acceptance criteria")).toHaveValue(
+    project.contribution?.approvedScope ?? "",
+  );
+  const scope =
+    "Fix reproducible defects and provide the affected workflow evidence.";
+  await page.getByLabel("Acceptance criteria").fill(scope);
+  await page
+    .getByLabel("Reason for the change")
+    .fill("Clarify acceptance evidence for maintainers.");
+  await expect(page.getByRole("region", { name: "Changes" })).toContainText(
+    scope,
+  );
+  await expect(page.getByRole("region", { name: "Changes" })).not.toContainText(
+    "No manifest field has changed",
+  );
+  revision = 2;
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(page.getByRole("alert")).toContainText(
+    "saved against revision 1",
+  );
+  await expect(
+    page.getByRole("button", { name: "Submit changes for review" }),
+  ).toBeDisabled();
+  await expect(page.getByLabel("Acceptance criteria")).toHaveValue(scope);
+  await page
+    .getByRole("button", { name: "Use this draft with the current revision" })
+    .click();
+  const review = page.getByRole("region", { name: "Changes" });
+  const proposed = review.getByText(scope, { exact: true });
+  await review.scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: test.info().outputPath("criteria-reviewed-diff.png"),
+    fullPage: true,
+  });
+  async function expectReadableReview() {
+    const reviewBox = await review.boundingBox();
+    const proposedBox = await proposed.boundingBox();
+    if (!reviewBox || !proposedBox)
+      throw new Error("Change preview is missing");
+    // Long current text must not squeeze the proposal into a word-by-word
+    // column or force horizontal page scrolling before the owner can submit.
+    expect(proposedBox.width).toBeGreaterThanOrEqual(reviewBox.width * 0.35);
+    const geometry = await page.evaluate(() => ({
+      width: document.documentElement.scrollWidth,
+      viewport: innerWidth,
+    }));
+    expect(geometry.width).toBeLessThanOrEqual(geometry.viewport);
+  }
+  await expectReadableReview();
+  await review.evaluate((element) => {
+    const sizes = [...element.querySelectorAll<HTMLElement>("*")].map(
+      (child) => ({
+        child,
+        size: Number.parseFloat(getComputedStyle(child).fontSize),
+      }),
+    );
+    for (const { child, size } of sizes) child.style.fontSize = `${size * 2}px`;
+  });
+  await expectReadableReview();
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
+  await review.screenshot({
+    path: test.info().outputPath("criteria-review-200-percent-text.png"),
+  });
+  await page.getByRole("button", { name: "Submit changes for review" }).click();
+  await expect(
+    page.getByRole("button", { name: "Submitted", exact: true }),
+  ).toBeVisible();
+  expect(submission).toMatchObject({
+    expectedRevision: 2,
+    manifest: { contribution: { approvedScope: scope } },
+  });
+  await page.getByRole("button", { name: "Discard draft" }).click();
+  await expect(page.getByLabel("Acceptance criteria")).toHaveValue(
+    project.contribution?.approvedScope ?? "",
+  );
+  await expect(page.getByRole("region", { name: "Changes" })).toContainText(
+    "No manifest field has changed",
+  );
+});
+
+test("reaches and reads older inbox notifications without losing the page", async ({
+  page,
+}) => {
+  const notifications = Array.from({ length: 101 }, (_, i) => ({
+    eventKey: `project-revision:sample:${i}`,
+    kind: "project_revision",
+    subject: `project-${i}`,
+    detail: null,
+    actionPath: "/projects/eliza",
+    sourceAt: "2026-10-22T00:00:00.000Z",
+    createdAt: "2026-10-22T00:00:00.000Z",
+    readAt: null as string | null,
+  }));
+  await page.route(/\/api\/v1\/notifications(?:\?.*)?$/u, (route) => {
+    const cursor = new URL(route.request().url()).searchParams.get("cursor");
+    const offset = cursor
+      ? notifications.findIndex((n) => n.eventKey === JSON.parse(cursor)[1]) + 1
+      : 0;
+    const entries = notifications.slice(offset, offset + 100);
+    const last = entries.at(-1);
+    return route.fulfill({
+      json: {
+        notifications: entries,
+        unread: notifications.filter((n) => n.readAt === null).length,
+        nextCursor:
+          offset + entries.length < notifications.length && last
+            ? JSON.stringify([last.sourceAt, last.eventKey])
+            : null,
+      },
+    });
+  });
+  await page.route("**/api/v1/notifications/email", (route) =>
+    route.fulfill({ json: { enabled: false, availability: "unavailable" } }),
+  );
+  await page.route("**/api/v1/notifications/read", (route) => {
+    const keys: string[] = route.request().postDataJSON().eventKeys;
+    for (const n of notifications)
+      if (keys.includes(n.eventKey)) n.readAt = "2026-10-22T01:00:00.000Z";
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/inbox", { waitUntil: "networkidle" });
+  await expect(page.locator(".inbox-item")).toHaveCount(100);
+  await page
+    .getByRole("button", { name: "Mark shown as read", exact: true })
+    .click();
+  await expect(page.locator(".inbox-summary")).toContainText("1 unread");
+  await page.getByRole("button", { name: "Older notifications" }).click();
+  await expect(page.locator(".inbox-item")).toHaveCount(1);
+  await expect(page.locator(".inbox-item")).toContainText("project-100");
+  await page
+    .getByRole("button", { name: "Mark shown as read", exact: true })
+    .click();
+  await expect(page.locator(".inbox-summary")).toContainText(
+    "All notifications are read.",
+  );
+  await expect(page.locator(".inbox-item")).toContainText("project-100");
+  await page.screenshot({
+    path: test.info().outputPath("older-notification-read.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Newer notifications" }).click();
+  await expect(page.locator(".inbox-item")).toHaveCount(100);
+});
+
+test("an admin leaves an unset reward asset unchanged until choosing it", async ({
+  page,
+}) => {
+  const project = PROJECTS.find((entry) => entry.id === "asi");
+  if (!project) throw new Error("ASI is missing");
+  const { rewardAsset: _asset, ...manifest } = project;
+  await page.route("**/api/v1/project-session", (route) =>
+    route.fulfill({
+      json: {
+        session: { githubId: "4242", githubLogin: "example", admin: true },
+      },
+    }),
+  );
+  await page.route("**/api/v1/admin/project-applications?*", (route) =>
+    route.fulfill({ json: { applications: [] } }),
+  );
+  await page.route("**/api/v1/admin/projects", (route) =>
+    route.fulfill({
+      json: {
+        projects: [
+          {
+            id: project.id,
+            status: project.status,
+            revision: 1,
+            manifest,
+            manifestSha256: "a".repeat(64),
+            createdAt: "2026-10-22T00:00:00.000Z",
+            updatedAt: "2026-10-22T00:00:00.000Z",
+            sourceApplicationId: null,
+            enforcement: {
+              state: "clear",
+              appeal: "none",
+              since: null,
+              restrictedBy: [],
+              nextSequence: 1,
+              revisionPending: false,
+              moderation: "unconfigured",
+              records: [],
+            },
+          },
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/v1/admin/vetting*", (route) =>
+    route.fulfill({
+      json: {
+        service: {
+          state: "unavailable",
+          reason: "Test service is not configured",
+          queueRegistrationAvailable: false,
+        },
+        projects: [],
+      },
+    }),
+  );
+  await page.goto("/admin", { waitUntil: "networkidle" });
+  await page.getByRole("searchbox", { name: "Find a project" }).fill("ASI");
+  await page.getByRole("button", { name: "Open ASI", exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\?project=asi$/u);
+  await page
+    .getByRole("button", { name: "Edit manifest", exact: true })
+    .click();
+  const changes = page.getByRole("region", { name: "Revision changes" });
+  await expect(changes).toContainText("No changes.");
+  await page
+    .getByRole("textbox", { name: "Short description", exact: true })
+    .fill("An updated description without a financial configuration change.");
+  await expect(changes).toContainText("headline");
+  await expect(changes).not.toContainText("rewardAsset");
+  await page.getByRole("button", { name: "Close and keep draft" }).click();
+  await page.getByRole("button", { name: "All projects", exact: true }).click();
+  await page.getByRole("button", { name: "Open ASI", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Edit manifest", exact: true })
+    .click();
+  await expect(changes).not.toContainText("rewardAsset");
+  await page.screenshot({
+    path: test.info().outputPath("admin-no-implicit-asset.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "Use this reward asset" }).click();
+  await expect(changes).toContainText("rewardAsset");
+  await page.getByLabel("Discovery placement").selectOption("community");
+  await expect(page.getByLabel("Project status")).toHaveValue("paused");
+  await expect(changes).toContainText("listingTier");
+});
+
+test("project standings and sponsor links keep the intended destination", async ({
+  page,
+}) => {
+  await page.goto("/projects/eliza", { waitUntil: "networkidle" });
+  const standings = page.getByRole("link", {
+    name: "Full standings",
+    exact: true,
+  });
+  await expect(standings).toHaveAttribute("href", /project=eliza/u);
+  await standings.click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "Leaderboard",
+  );
+  await expect(page.getByLabel("Project", { exact: true })).toHaveValue(
+    "eliza",
+  );
+  await page.goto("/sponsors", { waitUntil: "networkidle" });
+  await expect(
+    page.getByRole("link", { name: "Eliza", exact: true }),
+  ).toHaveAttribute("href", "/projects/eliza/funding");
+  await expect(
+    page.getByRole("link", { name: "Reviewed project revisions", exact: true }),
+  ).toHaveAttribute("href", "/api/v1/project-revisions");
+  await page.screenshot({
+    path: test.info().outputPath("direct-sponsor-handoffs.png"),
+    fullPage: true,
+  });
+});
+
+test("current payment guidance separates award approval from vault payment", async ({
+  page,
+}) => {
+  await page.goto("/how-it-works", { waitUntil: "networkidle" });
+  await expect(
+    page.getByRole("list", { name: "Award review stages" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Funded, awaiting wallet", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("Funded, ready", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("An unsigned transfer plan exists.", { exact: false }),
+  ).toHaveCount(0);
+  await page.getByText("How do I get paid?", { exact: true }).click();
+  await expect(
+    page.getByText("Wallet confirmation requires your signature.", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: test.info().outputPath("current-vault-payment-states.png"),
+    fullPage: true,
+  });
+  await page.goto("/sponsors", { waitUntil: "networkidle" });
+  await page
+    .getByText("Funding rules and payment stages", { exact: true })
+    .click();
+  await expect(
+    page.getByRole("list", { name: "Award review stages" }),
+  ).toBeVisible();
+  await expect(page.getByText("Funded, ready", { exact: true })).toBeVisible();
 });
 
 test("serves byte-consistent bootstrap and read-only site artifacts", {

@@ -38,6 +38,7 @@ import {
   pointMembers,
 } from "./lib/points";
 import { profileCounts } from "./lib/profiles";
+import { useProjectSession } from "./lib/project-api";
 import { findProject, PROJECTS } from "./lib/projects.mjs";
 import { useAllDirectTransfers } from "./lib/use-direct-transfers";
 import { type DataState, useSnapshot } from "./lib/use-snapshot";
@@ -57,6 +58,15 @@ export const loginHref = (next: string) =>
   `${productOrigin() ? "" : browserDeployment.site}${
     next === "/" ? "/login" : `/login?next=${encodeURIComponent(next)}`
   }`;
+
+function AdminAccountLink({ onNavigate }: { onNavigate: () => void }) {
+  const session = useProjectSession();
+  return session.status === "signed-in" && session.session.admin ? (
+    <Link href="/admin" onNavigate={onNavigate}>
+      Admin
+    </Link>
+  ) : null;
+}
 
 interface Membership {
   actor: { id: string; login: string };
@@ -392,11 +402,15 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
             Inbox
           </a>
           <a href="/earnings" onClick={navigate}>
-            Payouts and wallets
+            Payouts
           </a>
+          <Link href="/account#wallets" onNavigate={navigate}>
+            Wallets
+          </Link>
           <a href="/account" onClick={navigate}>
             Account settings
           </a>
+          <AdminAccountLink onNavigate={navigate} />
           <button type="button" onClick={() => void signout()} disabled={busy}>
             {busy ? "Signing out…" : "Sign out"}
           </button>
@@ -973,29 +987,25 @@ const POINT_CATEGORIES: readonly (readonly [string, string, boolean])[] = [
 export function PointsPage() {
   return (
     <main className="shell route-main points-page">
-      <h1>Slop Points</h1>
-      <p>{POINTS_NOTICE}</p>
+      <h1>Leaderboard</h1>
       <p>
         <a href="/account">Account settings</a> ·{" "}
         <a href="#people">Find people</a> · <a href="#rules">Ways to earn</a>
       </p>
       <ContributorStandings />
       <section className="points-panel" id="rules">
-        <h2>Ways to earn</h2>
+        <h2>Ways to earn Points</h2>
+        <p>{POINTS_NOTICE}</p>
         <ul aria-label="Point categories" className="points-rules">
-          {POINT_CATEGORIES.map(([activity, points, ranked]) => (
+          {POINT_CATEGORIES.map(([activity, points]) => (
             <li key={activity}>
               <span>{activity}</span>
               <strong>{points}</strong>
-              <small>
-                {ranked
-                  ? "Counts in earned-point standings"
-                  : "Not in earned-point standings"}
-              </small>
             </li>
           ))}
         </ul>
         <p className="points-meta">
+          Joining and connection bonuses do not count in earned-point standings.
           Points never change Slop Score or Money received. Points persist
           across months, and corrections stay in the history. Review coverage
           before scoring records is limited.
@@ -1135,7 +1145,11 @@ export function ContributorStandings({
       {compact ? (
         <p className="points-meta">
           This month (UTC) · verified payments.{" "}
-          <Link href="/points">Full standings</Link>
+          <Link
+            href={`/points?${new URLSearchParams({ project: projectId ?? project, period, sort })}`}
+          >
+            Full standings
+          </Link>
         </p>
       ) : null}
       {!scoreState ? (

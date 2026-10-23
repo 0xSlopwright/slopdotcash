@@ -102,7 +102,10 @@ try {
   await page
     .getByRole("button", { name: "Connect Robinhood Chain wallet" })
     .waitFor();
-  await page.getByRole("heading", { name: "Robinhood Chain" }).waitFor();
+  // Empty networks use direct connection buttons; detailed headings appear
+  // only once a wallet or network history exists.
+  await page.getByRole("button", { name: "Connect Solana wallet" }).waitFor();
+  await page.getByRole("button", { name: "Connect Ethereum wallet" }).waitFor();
   await page.screenshot({
     path: "evidence/payout-desktop-before.png",
     fullPage: true,

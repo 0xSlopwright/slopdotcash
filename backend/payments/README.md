@@ -176,6 +176,25 @@ reserved amounts in the vault asset, with the block time ("as of") and a stale
 warning past `staleAfterMs`. It shows "not reported" for a NULL counter and no
 totals before the first read, never zero.
 
+`POST /api/v1/payments/projects/<id>/solana-funding` reviews or checks a
+wallet funding action. It needs no Slop session: the depositor or owner signs
+in their wallet. A `review` request names `network`, `vault`, `wallet`,
+`operation` (`deposit` or `withdraw`) and decimal `amount`. The service reads
+mint precision, verifies the current deployment and balances, simulates the
+unsigned transaction, and returns its review and blockhash lifetime. A `check`
+request instead supplies base-unit `gross`, the reviewed `blockhash`, and
+`transactionId`. It accepts only the exact wallet-signed message on the
+finalized chain, with matching token balance changes. It never signs, sends,
+changes an award or writes payment state.
+
+Pages resolves the vault from the current D1 registry and `PAYMENT_NETWORKS`.
+Its `PAYMENT_RPC_URLS` binding supplies HTTPS RPC endpoints for those networks;
+keep this private if a URL includes a provider credential. No RPC URL is
+accepted from a request or returned in the plan. Missing configuration fails
+closed. Passive page views still use the cached snapshot route above. A wallet
+rejection, unconfirmed transaction and finalized failure are separate states;
+an uncertain send must be reconciled before another send.
+
 Migration `0014` adds `payment_direct_transfers`: transfers that a project
 creator sent outside escrow, imported from the reviewed `disclosures/*.json`
 records. Each deploy runs `scripts/prepare-payments-import.ts` after the
@@ -203,3 +222,36 @@ and an isolated Anvil chain. It exposes `/fixture`, the account login read, and
 the actual payments API. Wallet registration and signing trigger real local
 binding, payout, and finality indexing. This is local product evidence, not a
 real GitHub OAuth or public testnet deployment result.
+
+### Owner award review
+
+`GET /api/v1/payments/projects/:projectId/awards/:YYYY-MM` requires the current
+project steward's site session and current GitHub maintainer permission. The
+repository's immutable ID must match the D1 policy. The endpoint loads frozen
+cycle artifacts from a pinned `main` commit of the canonical repository and uses the
+same proposal reconstruction and publication-review checks as the owner CLI.
+It rechecks the D1 revision before returning the result.
+
+The response separates published decisions from verified review completion.
+Missing decisions, the 14-day review period, and unavailable approval evidence
+cannot produce a verified review. Held and excluded awards remain visible.
+This read route neither approves awards nor reserves or transfers funds.
+`reviewVerified` does not establish current funding or wallet authority.
+
+`POST /api/v1/payments/projects/:projectId/awards/:YYYY-MM/commitment`
+rechecks the current steward, repository authority, published review, frozen
+proposal and decisions, recipient identity, project revision, and enforcement
+state. The request names the reviewed hashes, network and recipient. Only an
+approved positive award on an enabled project and configured network returns
+a commitment plan. It does not change the published decision or send a transaction.
+
+The EVM browser flow verifies the vault and free balance through the selected
+owner wallet. The Solana flow uses the authenticated `solana-commitment` route
+under the same cycle path: `review` returns an unsigned, simulated transaction
+for the approved award; `check` verifies the exact submitted signature and
+finalized reservation. Solana RPC configuration comes only from the service.
+The browser reconstructs the expected message before requesting the owner's
+signature. Both flows save the pending request before the wallet call and
+support recovery after reload without a second submission. Transaction checks
+do not require the published review to remain available after submission.
+A finalized reservation is a commitment, not a payment.

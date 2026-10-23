@@ -10,6 +10,7 @@ import {
   MAX_NOTIFICATION_MARK,
   type Notification,
   type NotificationsResponse,
+  notificationCursor,
 } from "../../src/lib/notifications";
 
 export interface NotificationsDependencies {
@@ -76,6 +77,15 @@ export async function handleNotificationsApi(
     const actor = await deps.sessionActor(request);
     if (actor === null) return json(401, { error: "not_signed_in" });
     if (!write) {
+      let cursor: [string, string] | null = null;
+      const rawCursor = url.searchParams.get("cursor");
+      if (rawCursor !== null) {
+        try {
+          cursor = notificationCursor(rawCursor);
+        } catch {
+          return json(400, { error: "invalid_cursor" });
+        }
+      }
       const [rows, unread] = await Promise.all([
         deps.db
           .prepare(
@@ -88,9 +98,14 @@ export async function handleNotificationsApi(
                       WHERE s.event_key = notifications.event_key AND s.recipient_github_id = notifications.recipient_github_id
                         AND s.template_version = 'security-inbox-v1') AS acknowledged_at
                FROM notifications WHERE recipient_github_id = ?
+                ${cursor ? "AND (source_at < ? OR (source_at = ? AND event_key > ?))" : ""}
               ORDER BY source_at DESC, event_key LIMIT ?`,
           )
-          .bind(actor.githubId, LIST_LIMIT)
+          .bind(
+            actor.githubId,
+            ...(cursor ? [cursor[0], cursor[0], cursor[1]] : []),
+            LIST_LIMIT + 1,
+          )
           .all<Row>(),
         deps.db
           .prepare(
@@ -100,8 +115,14 @@ export async function handleNotificationsApi(
           .bind(actor.githubId)
           .all<{ count: number }>(),
       ]);
+      const page = rows.results.slice(0, LIST_LIMIT);
+      const last = page.at(-1);
       const body: NotificationsResponse = {
-        notifications: rows.results.map((row) => ({
+        nextCursor:
+          rows.results.length > LIST_LIMIT && last
+            ? JSON.stringify([last.source_at, last.event_key])
+            : null,
+        notifications: page.map((row) => ({
           eventKey: row.event_key,
           kind: row.kind,
           subject: row.subject,

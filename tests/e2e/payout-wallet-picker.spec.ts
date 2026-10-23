@@ -342,6 +342,12 @@ test("no wallets offers official install links in either network modal", async (
 }) => {
   const writes = await payments(page);
   await page.goto("/account#wallets");
+  await expect(
+    page.getByRole("group", { name: "Add a payout wallet" }),
+  ).toBeVisible();
+  await expect(page.getByText("No unpaid awards", { exact: true })).toHaveCount(
+    0,
+  );
   for (const chain of ["Base", "Solana"] as const) {
     const dialog = await openPicker(page, chain);
     await expect(

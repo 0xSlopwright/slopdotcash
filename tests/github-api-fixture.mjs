@@ -121,6 +121,16 @@ export function startGitHubApiFixture(port) {
       return;
     }
     if (request.method === "GET" && repository) {
+      const name = repository[1].split("/")[1];
+      if (name === "lookup-rate-limited" || name === "lookup-unavailable") {
+        response.writeHead(name === "lookup-rate-limited" ? 429 : 503, {
+          "content-type": "application/json",
+        });
+        response.end(
+          '{"message":"Private upstream diagnostic must not be shown"}',
+        );
+        return;
+      }
       const [owner] = repository[1].split("/");
       if (owner === E2E_OWNER.login || owner === E2E_ORGANIZATION.login) {
         response.writeHead(200, { "content-type": "application/json" });

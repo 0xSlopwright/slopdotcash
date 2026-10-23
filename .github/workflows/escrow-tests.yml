@@ -17,6 +17,13 @@ on:
       - 'src/EscrowFunding.tsx'
       - 'src/ProjectProposalPage.tsx'
       - 'src/WalletRegistration.tsx'
+      - 'src/VaultActions.tsx'
+      - 'src/OwnerAwards.tsx'
+      - 'src/OwnerCommitment.tsx'
+      - 'src/lib/*vault-actions.ts'
+      - 'src/lib/*commitment-actions.ts'
+      - 'src/lib/use-payout-wallets.ts'
+      - 'tests/e2e/*vault-actions.spec.ts'
       - 'src/lib/wallets.ts'
       - 'src/lib/wallet-registration.ts'
       - 'src/lib/funding-address.*'
@@ -26,6 +33,10 @@ on:
       - 'scripts/prepare-payment-deployments.ts'
       - 'scripts/check-payout-readiness.ts'
       - 'scripts/test-payout-browser.mjs'
+      - 'scripts/child-environment.mjs'
+      - 'scripts/prepare-e2e-fixture.mjs'
+      - 'scripts/run-e2e*.mjs'
+      - 'playwright.config.ts'
       - 'migrations/**'
       - 'package.json'
       - 'bun.lock'
@@ -58,6 +69,20 @@ jobs:
         with:
           version: v1.7.1
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+      - name: Install pinned skill validator dependency
+        run: |
+          printf '%s\n' \
+            'PyYAML==6.0.3 --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6' \
+            > "$RUNNER_TEMP/slop-python-requirements.txt"
+          python -m pip install \
+            --disable-pip-version-check \
+            --require-hashes \
+            --requirement "$RUNNER_TEMP/slop-python-requirements.txt"
+
       - run: forge fmt --root contracts/evm --check
       - run: forge build --root contracts/evm --sizes
       - run: forge test --root contracts/evm
@@ -65,8 +90,32 @@ jobs:
       - run: bun run test:contracts:evm
       - run: bun run test:payments
       - run: bunx playwright install --with-deps chromium
+      - name: Load deployed public ledger for browser checks
+        run: |
+          set -euo pipefail
+          mkdir -p public/data
+          ledger_file="$(mktemp "$RUNNER_TEMP/slop-ledger.XXXXXX")"
+          trap 'rm -f "$ledger_file"' EXIT
+          curl --fail --silent --show-error \
+            --proto '=https' \
+            --tlsv1.2 \
+            --connect-timeout 10 \
+            --max-time 60 \
+            --max-filesize 26214400 \
+            --output "$ledger_file" \
+            https://slop.cash/data/leaderboard.json
+          test -s "$ledger_file"
+          bun scripts/prepare-pr-ledger.ts \
+            "$ledger_file" public/data/leaderboard.json
+
       - run: bunx vite build
       - run: node scripts/test-payout-browser.mjs
+      - name: Exercise wallet funding and recovery in Chromium
+        env:
+          SLOP_E2E_VAULT_ACTIONS: '1'
+          SLOP_E2E_VIDEO: '1'
+          SLOP_E2E_LANE: preview
+        run: bun run test:e2e tests/e2e/vault-actions.spec.ts --workers=1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
@@ -76,6 +125,11 @@ jobs:
             evidence/payout-browser*.json
             evidence/payout-browser*.log
             evidence/payout-videos/*.webm
+            playwright-report
+            test-results/**/*.png
+            test-results/**/*.webm
+            test-results/**/*.zip
+            test-results/**/*.md
           retention-days: 30
 
   solana:
@@ -93,8 +147,58 @@ jobs:
         with:
           bun-version: '1.3.14'
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+      - name: Install pinned skill validator dependency
+        run: |
+          printf '%s\n' \
+            'PyYAML==6.0.3 --hash=sha256:0f29edc409a6392443abf94b9cf89ce99889a1dd5376d94316ae5145dfedd5d6' \
+            > "$RUNNER_TEMP/slop-python-requirements.txt"
+          python -m pip install \
+            --disable-pip-version-check \
+            --require-hashes \
+            --requirement "$RUNNER_TEMP/slop-python-requirements.txt"
+
       - run: bash contracts/solana/scripts/bootstrap-linux.sh
       - run: bun run test:contracts:solana
+      - run: bunx playwright install --with-deps chromium
+      - name: Load deployed public ledger for browser checks
+        run: |
+          set -euo pipefail
+          mkdir -p public/data
+          ledger_file="$(mktemp "$RUNNER_TEMP/slop-ledger.XXXXXX")"
+          trap 'rm -f "$ledger_file"' EXIT
+          curl --fail --silent --show-error \
+            --proto '=https' \
+            --tlsv1.2 \
+            --connect-timeout 10 \
+            --max-time 60 \
+            --max-filesize 26214400 \
+            --output "$ledger_file" \
+            https://slop.cash/data/leaderboard.json
+          test -s "$ledger_file"
+          bun scripts/prepare-pr-ledger.ts \
+            "$ledger_file" public/data/leaderboard.json
+
+      - name: Exercise wallet funding and recovery against the validator
+        env:
+          SLOP_E2E_SOLANA_VAULT: '1'
+          SLOP_E2E_VIDEO: '1'
+          SLOP_E2E_LANE: preview
+        run: bun run test:e2e tests/e2e/solana-vault-actions.spec.ts --workers=1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: solana-wallet-browser-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            playwright-report
+            test-results/**/*.png
+            test-results/**/*.webm
+            test-results/**/*.zip
+            test-results/**/*.md
+          retention-days: 30
 
 # These jobs use isolated local chains and public fixture keys. They receive no
 # environment secrets, create no public deployment, and do not use a paid RPC.
