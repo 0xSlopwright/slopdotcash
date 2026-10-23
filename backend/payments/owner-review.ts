@@ -235,7 +235,9 @@ export async function prepareOwnerCommitment(
   expected: OwnerCommitmentInput,
 ) {
   const project = input.project.manifest;
-  if (project.status !== "active" || project.reward.paymentMode !== "enabled")
+  // An escrow project always has the legacy reward.paymentMode "disabled";
+  // its vault policy is what enables owner commitments.
+  if (project.status !== "active" || !project.escrow)
     throw new OwnerAwardReviewError(
       409,
       "This project is not enabled for new award commitments.",

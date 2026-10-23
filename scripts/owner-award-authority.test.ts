@@ -108,6 +108,36 @@ test("organization maintainers reach published award lookup through their own se
       message: "The published cycle record is not available.",
     });
     expect(requests.some((path) => path.endsWith("/commits/main"))).toBe(true);
+    // An active vault project (legacy paymentMode is always "disabled") reaches
+    // the same published-review checks before any commitment plan.
+    requests.length = 0;
+    const commitment = await onRequest({
+      request: new Request(
+        `https://slop.cash/api/v1/payments/projects/${project.id}/awards/2026-11/commitment`,
+        {
+          method: "POST",
+          headers: {
+            cookie: `__Host-slop_points=${token}`,
+            origin: "https://slop.cash",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            network: "base-mainnet",
+            githubUserId: "123",
+            proposalSha256: "d".repeat(64),
+            decisionsSha256: "e".repeat(64),
+            manifestSha256: "c".repeat(64),
+          }),
+        },
+      ),
+      env: { SLOP_DB: db, PAYMENT_NETWORKS: '["base-mainnet"]' } as never,
+    });
+    expect(project.reward.paymentMode).toBe("disabled");
+    expect(commitment.status).toBe(404);
+    expect(await commitment.json()).toMatchObject({
+      message: "The published cycle record is not available.",
+    });
+    expect(requests.some((path) => path.endsWith("/commits/main"))).toBe(true);
     for (const failure of [
       "read-only",
       "different-human",
