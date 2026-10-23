@@ -117,6 +117,12 @@ test.beforeAll(async () => {
       }),
     },
   ]);
+  await expect
+    .poll(async () => {
+      const receipt = await rpc("eth_getTransactionReceipt", [createHashId]);
+      return receipt?.status;
+    })
+    .toBe("0x1");
   const encoded = await rpc("eth_call", [
     {
       to: factory,
