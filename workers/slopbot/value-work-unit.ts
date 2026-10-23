@@ -253,7 +253,25 @@ export async function prepareWorkUnitEvidence(
         a.occurredAt - b.occurredAt ||
         compare(a.source.evidence.pull.node_id, b.source.evidence.pull.node_id),
     );
-    const first = carriers[0];
+    // An integration PR can merge before GitHub closes the original PR.
+    // Prefer the original carrier when another carrier imports its exact head.
+    const origins = carriers.filter(
+      (candidate) =>
+        !carriers.some(
+          (other) =>
+            other.source.evidence.pull.head.sha !==
+              candidate.source.evidence.pull.head.sha &&
+            candidate.source.evidence.commits.some(
+              (commit) => commit.sha === other.source.evidence.pull.head.sha,
+            ) &&
+            !other.source.evidence.commits.some(
+              (commit) =>
+                commit.sha === candidate.source.evidence.pull.head.sha,
+            ),
+        ),
+    );
+    const first = origins[0];
+    if (!first) throw new Error("Joint carriers have inconsistent ancestry");
     prepared.push({
       id: await sha256Hex(key),
       repositoryNodeId: claim.repositoryNodeId,

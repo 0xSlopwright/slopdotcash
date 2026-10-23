@@ -693,9 +693,13 @@ export async function collectValueEvidence(
             mergeCommitEvidence.sha,
           );
         }
+        // GitHub can report an integration merge with the PR head first.
+        // Shared commits still retain one claim in the joint work-unit ledger.
         const directMerge =
           mergeCommitEvidence.parents.length === 2 &&
-          mergeCommitEvidence.parents[1]?.sha === pull.head.sha;
+          mergeCommitEvidence.parents.some(
+            (parent) => parent.sha === pull.head.sha,
+          );
         // A squash is usable when its entire diff matches the submitted diff.
         // Never assume that the final commit of a rebase contains the whole PR.
         const matchingSingleParent =
