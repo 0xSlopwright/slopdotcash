@@ -112,7 +112,7 @@ maintainers must not receive the same implementation award twice.
 
 ## Delivery and acceptance checklist
 
-- [x] Refresh the visible September/October census through 2026-10-21T21:28:26.301Z from the live D1 registry: five active projects, 274 connection pages, 27,003 PRs scanned, 5,784 closures, and 4,209 merges. September has 1,460 merges and October has 2,749. Of these, 1,387 and 2,633 respectively fall within the manifest reward-start windows, before bot, attribution, overlap, and evidence checks. This is source coverage, not a completed valuation; unavailable historical nodes remain separate evidence gaps.
+- [x] Reconcile the September/October source census through 2026-10-21T21:28:26.301Z: five active projects and 7,287 closed PR records. See the evidence boundary below. Full diff review and valuation remain incomplete.
 - [ ] Full diff and discussion evidence, with explicit missing-source coverage.
 - [ ] Calibrated rubric and individual reasoned assessment for every eligible outcome.
 - [ ] Reviewer and maintainer outcomes assessed without duplicate credit.
@@ -125,6 +125,42 @@ maintainers must not receive the same implementation award twice.
 - [x] Verified owner-completed Slopbot App installation on elizaOS (installation 169856061; all repositories selected; contents/members/metadata read, issues/PRs write).
 - [ ] Live delivery, model call, score publication, and source-ledger readback.
 - [ ] Human payout review remains separate; no payment is authorized by this plan.
+
+## Reconciled source census
+
+The source window starts at 2026-09-01T00:00:00.000Z and ends at the cutoff
+above. The reconciliation completed on 23 October 2026. It does not extend
+the window to that date.
+
+| Repository | Closed PR records |
+| --- | ---: |
+| SlopDotCash/asi | 848 |
+| SlopDotCash/proximityprize | 101 |
+| elizaOS/eliza | 5,675 |
+| SlopDotCash/slopdotcash | 559 |
+| eliza-research/thenetwork | 104 |
+| Total | 7,287 |
+
+The earlier repository-connection census contained 5,784 records. A separate
+closed-date search found 1,503 additional records, but omitted 1,037 records
+from that earlier census. Neither result alone proved complete coverage.
+
+A full REST pull-request scan then checked the combined set across 292 pages.
+It matched all immutable PR IDs, PR numbers, merge times, and closure times.
+The comparison found no missing records, duplicate IDs, or outcome differences.
+These separate observations are not an atomic GitHub snapshot.
+
+The retained combined-census artifact has SHA-256
+`0c2270448ec950aa8187603225327b1f009d0f8897eb87cd47f9c55225d54c1d`.
+The three-source reconciliation artifact has SHA-256
+`55a1e30575dd52045659b2eaf7d3f9703100abd63e1b70b84b3367250f8d47c4`.
+Raw evidence remains outside the repository.
+
+These counts include merged and closed-unmerged work. They do not prove full
+diff capture, accepted value, reward eligibility, or payout approval. The old
+merge and reward-window subtotals came from the incomplete census and are
+withdrawn. Recalculate those subtotals from the reconciled set before using
+them in a contributor comparison. Missing source evidence remains unresolved.
 
 ## Known setup gaps
 
