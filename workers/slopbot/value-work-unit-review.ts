@@ -86,7 +86,6 @@ export function validateWorkUnitAssessment(
       !Array.isArray(unit.assessment.reviews)
     )
       return null;
-    const unitClaimIds = unit.claimIds;
     const required = new Set<string>();
     for (const review of unit.assessment.reviews) {
       if (
@@ -114,10 +113,9 @@ export function validateWorkUnitAssessment(
             !actors.has(review.user.node_id) &&
             // Closing an original PR later does not make post-acceptance
             // reviews eligible for its already-integrated copied changes.
-            unitClaimIds.every((id) => {
-              const claim = claims.get(id);
+            evidence.claims.every((claim) => {
               if (
-                !claim?.retainedCopy ||
+                !claim.retainedCopy ||
                 claim.creditPullRequestId !== source.pull.node_id
               )
                 return true;
