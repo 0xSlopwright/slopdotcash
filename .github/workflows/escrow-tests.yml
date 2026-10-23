@@ -90,6 +90,24 @@ jobs:
       - run: bun run test:contracts:evm
       - run: bun run test:payments
       - run: bunx playwright install --with-deps chromium
+      - name: Load deployed public ledger for browser checks
+        run: |
+          set -euo pipefail
+          mkdir -p public/data
+          ledger_file="$(mktemp "$RUNNER_TEMP/slop-ledger.XXXXXX")"
+          trap 'rm -f "$ledger_file"' EXIT
+          curl --fail --silent --show-error \
+            --proto '=https' \
+            --tlsv1.2 \
+            --connect-timeout 10 \
+            --max-time 60 \
+            --max-filesize 26214400 \
+            --output "$ledger_file" \
+            https://slop.cash/data/leaderboard.json
+          test -s "$ledger_file"
+          bun scripts/prepare-pr-ledger.ts \
+            "$ledger_file" public/data/leaderboard.json
+
       - run: bunx vite build
       - run: node scripts/test-payout-browser.mjs
       - name: Exercise wallet funding and recovery in Chromium
@@ -146,6 +164,24 @@ jobs:
       - run: bash contracts/solana/scripts/bootstrap-linux.sh
       - run: bun run test:contracts:solana
       - run: bunx playwright install --with-deps chromium
+      - name: Load deployed public ledger for browser checks
+        run: |
+          set -euo pipefail
+          mkdir -p public/data
+          ledger_file="$(mktemp "$RUNNER_TEMP/slop-ledger.XXXXXX")"
+          trap 'rm -f "$ledger_file"' EXIT
+          curl --fail --silent --show-error \
+            --proto '=https' \
+            --tlsv1.2 \
+            --connect-timeout 10 \
+            --max-time 60 \
+            --max-filesize 26214400 \
+            --output "$ledger_file" \
+            https://slop.cash/data/leaderboard.json
+          test -s "$ledger_file"
+          bun scripts/prepare-pr-ledger.ts \
+            "$ledger_file" public/data/leaderboard.json
+
       - name: Exercise wallet funding and recovery against the validator
         env:
           SLOP_E2E_SOLANA_VAULT: '1'
