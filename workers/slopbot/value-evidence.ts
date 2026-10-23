@@ -21,7 +21,16 @@ import {
   type IndirectValueAcceptance,
 } from "./value-indirect";
 import type { ValueMergeResolution } from "./value-merge-resolution";
-import { addedValuePatchRecovery, hasCompleteValuePatch } from "./value-patch";
+import {
+  addedValuePatchRecovery,
+  hasCompleteValuePatch,
+  valueDeletionCount,
+  valuePatch,
+} from "./value-patch";
+import {
+  needsRemovedValueComparison,
+  recoverRemovedValueComparisons,
+} from "./value-removed-file";
 import { recoverUnchangedValueRenames } from "./value-rename";
 
 // Shared by the installation worker and the historical reviewer. Missing or
@@ -88,6 +97,11 @@ export interface FileChange {
     before: { blobSha: string; text: string };
     after: { blobSha: string; text: string };
   };
+  removedComparison?: {
+    baseSha: string;
+    headSha: string;
+    before: { blobSha: string; text: string };
+  };
   unchangedRename?: { baseSha: string; headSha: string; blobSha: string };
 }
 interface Commit {
@@ -137,8 +151,8 @@ function changeBytes(files: FileChange[]): string {
         file.previous_filename ?? null,
         file.status,
         file.additions,
-        file.deletions,
-        file.patch ?? null,
+        valueDeletionCount(file),
+        valuePatch(file) ?? null,
         file.fullComparison
           ? [
               file.fullComparison.before.blobSha,
@@ -209,10 +223,23 @@ async function collectCommitChanges(
       commit.files.length
     )
       limitations.push(`${label} contains repeated file paths`);
+    if (commit.parents.length > 0 && limitations.length === 0) {
+      await recoverRemovedValueComparisons(
+        client,
+        root.slice("/repos/".length),
+        commit.files,
+        commit.parents[0].sha,
+        commit.sha,
+      );
+    }
     for (const kind of ["additions", "deletions"] as const)
       if (
-        commit.files.reduce((sum, file) => sum + file[kind], 0) !==
-        commit.stats[kind]
+        commit.files.reduce(
+          (sum, file) =>
+            sum +
+            (kind === "deletions" ? valueDeletionCount(file) : file.additions),
+          0,
+        ) !== commit.stats[kind]
       )
         limitations.push(`Incomplete ${label.toLowerCase()} ${kind}`);
   }
@@ -654,6 +681,7 @@ export async function collectValueEvidence(
     files.some(
       (file) =>
         needsFullValueComparison(file) ||
+        needsRemovedValueComparison(file) ||
         (file.status === "renamed" &&
           file.patch === undefined &&
           file.additions === 0 &&
@@ -664,6 +692,13 @@ export async function collectValueEvidence(
       merge_base_commit?: { sha: string };
     }>(`${root}/compare/${pull.base.sha}...${pull.head.sha}`);
     if (comparison?.merge_base_commit?.sha) {
+      await recoverRemovedValueComparisons(
+        client,
+        repository,
+        files,
+        comparison.merge_base_commit.sha,
+        pull.head.sha,
+      );
       await recoverFullValueComparisons(
         client,
         repository,
