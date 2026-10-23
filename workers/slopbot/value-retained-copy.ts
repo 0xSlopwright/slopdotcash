@@ -2,6 +2,7 @@
  * discovery hint, never sufficient evidence for assigning implementation credit.
  */
 import type { FileChange } from "./value-evidence";
+import { retainedManifestIdentity } from "./value-manifest-identity";
 import { hasCompleteValuePatch } from "./value-patch";
 import type { WorkUnitSource } from "./value-work-unit";
 
@@ -163,6 +164,18 @@ export function retainedCopyBindings(sources: readonly WorkUnitSource[]) {
             .filter((edit) => edit !== null),
         ),
       );
+      const manifestEdits = new Set(
+        evidence.commitAttribution.flatMap((attribution) => {
+          const commit = evidence.commits.find(
+            (c) => c.sha === attribution.sha,
+          );
+          return commit
+            ? (attribution.files ?? [])
+                .map((file) => retainedManifestIdentity(file, commit))
+                .filter((id) => id !== null)
+            : [];
+        }),
+      );
       for (const candidate of sources) {
         const other = candidate.evidence;
         if (
@@ -183,7 +196,15 @@ export function retainedCopyBindings(sources: readonly WorkUnitSource[]) {
           other.commitAttribution.some((commit) =>
             (commit.files ?? []).some((file) => {
               const edit = retainedEditIdentity(file);
-              if (edit === null || !edits.has(edit)) return false;
+              const known = other.commits.find((c) => c.sha === commit.sha);
+              const manifest = known
+                ? retainedManifestIdentity(file, known)
+                : null;
+              if (
+                (edit === null || !edits.has(edit)) &&
+                (manifest === null || !manifestEdits.has(manifest))
+              )
+                return false;
               // The same accepted commit can be carried by an intermediate
               // PR and the acknowledged final integration. It is one copy,
               // not another original requiring a separate acknowledgement.
@@ -192,10 +213,21 @@ export function retainedCopyBindings(sources: readonly WorkUnitSource[]) {
                   (retained) =>
                     retained.sha === commit.sha &&
                     retained.limitations.length === 0 &&
-                    retained.files?.some(
-                      (retainedFile) =>
-                        retainedEditIdentity(retainedFile) === edit,
-                    ),
+                    retained.files?.some((retainedFile) => {
+                      const retainedCommit = accepted.commits.find(
+                        (c) => c.sha === retained.sha,
+                      );
+                      return (
+                        (edit !== null &&
+                          retainedEditIdentity(retainedFile) === edit) ||
+                        (manifest !== null &&
+                          retainedCommit !== undefined &&
+                          retainedManifestIdentity(
+                            retainedFile,
+                            retainedCommit,
+                          ) === manifest)
+                      );
+                    }),
                 ),
               );
             }),
@@ -242,7 +274,10 @@ export function retainedCopyBindings(sources: readonly WorkUnitSource[]) {
             return (accepted.files ?? []).flatMap((candidate) => {
               if (identity === null) return [];
               const prior =
-                retainedEditIdentity(candidate) === identity
+                retainedEditIdentity(candidate) === identity ||
+                (retainedManifestIdentity(file, commit) !== null &&
+                  retainedManifestIdentity(file, commit) ===
+                    retainedManifestIdentity(candidate, known))
                   ? []
                   : preexistingHunks(
                       file,

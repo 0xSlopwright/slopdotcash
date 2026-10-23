@@ -6,11 +6,12 @@ export function needsFullValueComparison(file: FileChange): boolean {
   return (
     file.status === "modified" &&
     file.previous_filename === undefined &&
-    !hasCompleteValuePatch(file)
+    (!hasCompleteValuePatch(file) ||
+      /(^|\/)package\.json$/u.test(file.filename))
   );
 }
 
-/** Preserve both complete texts when GitHub omits a modified-file patch.
+/** Preserve complete texts for missing patches and reordered package manifests.
  * This is explicit comparison evidence, not a manufactured unified diff. */
 export async function recoverFullValueComparisons(
   client: EvidenceClient,
