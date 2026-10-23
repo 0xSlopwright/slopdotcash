@@ -221,6 +221,19 @@ async function runRegistryPhase() {
       {
         ...database.env,
         SLOP_E2E_GITHUB_API_ORIGIN: `http://127.0.0.1:${githubPort}`,
+        // Automatic private intake against the loopback fixture, opt-in so
+        // the default lane keeps intake off. The App key is a throwaway.
+        ...(process.env.SLOP_E2E_PRIVATE_INTAKE === "1"
+          ? {
+              SLOP_E2E_PRIVATE_INTAKE: "1",
+              SLOP_E2E_INTAKE_APP_KEY: generateKeyPairSync("rsa", {
+                modulusLength: 2048,
+              })
+                .privateKey.export({ format: "der", type: "pkcs8" })
+                .toString("base64"),
+              SLOP_E2E_INTAKE_GRANT_KEY: randomBytes(32).toString("base64url"),
+            }
+          : {}),
         SLOP_E2E_OUTPUT: "registry",
         SLOP_E2E_NOTIFY_SERVICE: notify.name,
         ...(process.env.SLOP_VETTING_OVERLAY_PATH

@@ -1668,3 +1668,274 @@ test("private settlement requires visibility consent and produces an unsigned re
   expect(errors).toEqual([]);
   await context.close();
 });
+
+/**
+ * Automatic private intake (PRD section 8 "Private reporting is automatic",
+ * SEC-07, SEC-17). Runs only with SLOP_E2E_PRIVATE_INTAKE=1, which turns on
+ * the intake bindings against the loopback GitHub fixture; the default
+ * registry lane keeps intake off and the manual path above.
+ */
+test("automatic private intake files as the reporter and verifies receipt @registry @private-intake", async ({
+  browser,
+  request,
+}) => {
+  test.skip(
+    process.env.SLOP_E2E_PRIVATE_INTAKE !== "1",
+    "Automatic intake bindings are off in this lane",
+  );
+  test.setTimeout(240_000);
+  const suffix = test.info().project.name.replace(/-chromium$/u, "");
+  const program = {
+    id: `bounty-intake-${suffix}`,
+    repository: `e2e-owner/bounty-intake-${suffix}`,
+  };
+  const sentinel = `E2E-PRIVATE-SENTINEL-${suffix}`;
+  const report = {
+    summary: `Vault withdraw skips the owner check ${sentinel}`,
+    description: `A crafted proof drains the vault on a local fork. ${sentinel}`,
+    cvssVectorString: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+  };
+  const origin = new URL(test.info().project.use.baseURL ?? "").origin;
+  // Cookies are carried by hand: the grant cookie is path-scoped and Secure.
+  const jar = new Map<string, string>([[COOKIE, TOKENS["reporter-a"]]]);
+  const remember = (headers: { name: string; value: string }[]) => {
+    for (const header of headers) {
+      if (header.name.toLowerCase() !== "set-cookie") continue;
+      for (const line of header.value.split("\n")) {
+        const [pair, ...attributes] = line.split(";");
+        const name = pair.slice(0, pair.indexOf("=")).trim();
+        if (attributes.some((part) => part.trim() === "Max-Age=0"))
+          jar.delete(name);
+        else jar.set(name, pair.slice(pair.indexOf("=") + 1));
+      }
+    }
+  };
+  const intakeApi = async (
+    method: "GET" | "POST",
+    path: string,
+    data?: unknown,
+  ): Promise<Reply> => {
+    const response = await request.fetch(`/api/v1/${path}`, {
+      method,
+      maxRedirects: 0,
+      headers: {
+        cookie: [...jar].map(([name, value]) => `${name}=${value}`).join("; "),
+        ...(method === "GET" ? {} : { origin }),
+      },
+      ...(data === undefined ? {} : { data }),
+    });
+    remember(response.headersArray());
+    const text = await response.text();
+    return { status: response.status(), body: text ? JSON.parse(text) : {} };
+  };
+  /** Creates a submission and completes the fixture's GitHub consent. */
+  const authorized = async () => {
+    const created = await intakeApi("POST", "security-submissions", {
+      projectId: program.id,
+      idempotencyKey: key(),
+      origin: "slop",
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const github = await request.fetch(String(created.body.authorizeUrl), {
+      maxRedirects: 0,
+    });
+    expect(github.status()).toBe(302);
+    const callback = new URL(github.headers().location as string);
+    const returned = await request.fetch(
+      `${callback.pathname}${callback.search}`,
+      {
+        maxRedirects: 0,
+        headers: {
+          cookie: [...jar]
+            .filter(([name]) => name !== COOKIE)
+            .map(([name, value]) => `${name}=${value}`)
+            .join("; "),
+        },
+      },
+    );
+    expect(returned.status()).toBe(303);
+    remember(returned.headersArray());
+    expect(jar.has("__Secure-slop_intake_grant")).toBe(true);
+    return created.body.submission as { id: string; revision: number };
+  };
+  const advisoryCount = async () =>
+    (
+      (await (
+        await request.fetch(
+          `${GITHUB_FIXTURE}/__fixture/advisories/${program.repository}/count`,
+        )
+      ).json()) as { count: number }
+    ).count;
+
+  await test.step("program setup with the intake app installed", async () => {
+    await listProject(
+      request,
+      TOKENS.security,
+      program.repository,
+      program.id,
+      {
+        reward: {
+          ...(applicationManifest(program.id, program.repository)
+            .reward as object),
+          monthlyCapMinor: "0",
+          monthlyCapDisplay: "$0",
+        },
+        securityBounty: bountyTerms(program.repository),
+      },
+    );
+    const opened = await revise(request, program.id, (m) => ({
+      ...m,
+      securityBounty: openTerms(m.securityBounty as Record<string, unknown>),
+    }));
+    expect(opened.status).toBe(200);
+    await setIntake(request, program.repository, "enabled");
+    const installed = await request.fetch(
+      `${GITHUB_FIXTURE}/__fixture/intake-app/${program.repository}/installed`,
+      { method: "PUT" },
+    );
+    expect(installed.status()).toBe(204);
+    const readiness = await api(
+      request,
+      "GET",
+      `security-programs/${program.id}/intake?installed=1`,
+      null,
+    );
+    expect(readiness.body).toMatchObject({
+      state: "ready",
+      automatic: "ready",
+    });
+  });
+
+  await test.step("the program page offers the private form with consent", async () => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const errors = observe(page);
+    await signIn(page, TOKENS["reporter-a"]);
+    await page.goto(`/projects/${program.id}/security`, {
+      waitUntil: "networkidle",
+    });
+    await page.getByRole("button", { name: "Check private reporting" }).click();
+    await expect(page.getByText("Maintainers decide awards")).toBeVisible();
+    await expect(
+      page.getByText(
+        "The Slop private intake app will file this on GitHub as @e2e-reporter-a",
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Authorize GitHub to submit as you" }),
+    ).toBeVisible();
+    await expectAccessible(page);
+    expect(errors).toEqual([]);
+    await context.close();
+  });
+
+  await test.step("a private report reaches a verified receipt", async () => {
+    const submission = await authorized();
+    const before = await advisoryCount();
+    const sent = await intakeApi(
+      "POST",
+      `security-submissions/${submission.id}/send`,
+      { expectedRevision: submission.revision, report },
+    );
+    expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+    expect(sent.body.submission).toMatchObject({ state: "receipt-verified" });
+    expect(JSON.stringify(sent.body)).not.toContain(sentinel);
+    expect(await advisoryCount()).toBe(before + 1);
+    const caseId = (sent.body.submission as { caseId: string }).caseId;
+    const mine = await api(
+      request,
+      "GET",
+      `security-cases/${caseId}`,
+      TOKENS["reporter-a"],
+    );
+    expect(mine.body.case).toMatchObject({
+      receivedAtSource: "github-verified",
+      view: "reporter",
+    });
+    // The maintainer's case needs no link check, only triage.
+    const maintainer = await api(
+      request,
+      "GET",
+      `security-cases/${caseId}`,
+      TOKENS.security,
+    );
+    expect(maintainer.body.case).toMatchObject({
+      submissionState: "verified",
+      receivedAtSource: "github-verified",
+      nextAction: "Triage urgent private report",
+    });
+    expect(
+      (maintainer.body.case as { allowedActions: string[] }).allowedActions,
+    ).not.toContain("verify-link");
+  });
+
+  await test.step("an interrupted send is reconciled to one advisory", async () => {
+    const submission = await authorized();
+    const before = await advisoryCount();
+    const fault = await request.fetch(
+      `${GITHUB_FIXTURE}/__fixture/advisories/create/timeout-after-create`,
+      { method: "PUT" },
+    );
+    expect(fault.status()).toBe(204);
+    const sent = await intakeApi(
+      "POST",
+      `security-submissions/${submission.id}/send`,
+      { expectedRevision: submission.revision, report },
+    );
+    expect(sent.body.submission).toMatchObject({ state: "uncertain" });
+    const resend = await intakeApi(
+      "POST",
+      `security-submissions/${submission.id}/send`,
+      {
+        expectedRevision: (sent.body.submission as { revision: number })
+          .revision,
+        report,
+      },
+    );
+    expect(resend.body.error).toBe("reconcile_required");
+    const reconciled = await intakeApi(
+      "POST",
+      `security-submissions/${submission.id}/reconcile`,
+      {
+        expectedRevision: (sent.body.submission as { revision: number })
+          .revision,
+      },
+    );
+    expect(reconciled.body.submission).toMatchObject({
+      state: "receipt-verified",
+    });
+    expect(await advisoryCount()).toBe(before + 1);
+  });
+
+  await test.step("without the app the automatic path is refused, never public", async () => {
+    await request.fetch(
+      `${GITHUB_FIXTURE}/__fixture/intake-app/${program.repository}/missing`,
+      { method: "PUT" },
+    );
+    const readiness = await api(
+      request,
+      "GET",
+      `security-programs/${program.id}/intake?installed=0`,
+      null,
+    );
+    expect(readiness.body).toMatchObject({
+      state: "ready",
+      automatic: "app-not-installed",
+    });
+    const refused = await intakeApi("POST", "security-submissions", {
+      projectId: program.id,
+      idempotencyKey: key(),
+      origin: "slop",
+    });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe("intake_unavailable");
+    // Public outputs carry no report content.
+    for (const path of [
+      `/projects/${program.id}/terms.json`,
+      "/api/v1/projects",
+    ]) {
+      const response = await request.get(path);
+      expect(await response.text()).not.toContain(sentinel);
+    }
+  });
+});

@@ -47,6 +47,20 @@ if (
   !/^http:\/\/127\.0\.0\.1:[0-9]{4,5}$/u.test(registryGitHub)
 )
   throw new Error("SLOP_E2E_GITHUB_API_ORIGIN must be a loopback origin");
+// Automatic private intake bindings (opt-in; tests/e2e/security-bounty.spec.ts).
+const registryIntakeKey = process.env.SLOP_E2E_INTAKE_APP_KEY;
+const registryIntakeGrant = process.env.SLOP_E2E_INTAKE_GRANT_KEY;
+if (
+  process.env.SLOP_E2E_PRIVATE_INTAKE === "1" &&
+  (registryGitHub === undefined ||
+    !/^[A-Za-z0-9+/]+={0,2}$/u.test(registryIntakeKey ?? "") ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(registryIntakeGrant ?? ""))
+)
+  throw new Error("Private intake e2e needs the loopback fixture and keys");
+const registryIntake =
+  process.env.SLOP_E2E_PRIVATE_INTAKE === "1"
+    ? ` --binding SLOP_PRIVATE_INTAKE_MODE=on --binding GITHUB_INTAKE_APP_CLIENT_ID=Iv1.e2efixture --binding GITHUB_INTAKE_APP_CLIENT_SECRET=e2e-fixture-secret --binding GITHUB_INTAKE_APP_ID=1 --binding 'GITHUB_INTAKE_APP_PRIVATE_KEY=${registryIntakeKey}' --binding SLOP_INTAKE_GRANT_KEY=${registryIntakeGrant} --binding SLOP_GITHUB_OAUTH_ORIGIN=${registryGitHub}`
+    : "";
 const registryVettingKey = process.env.SLOP_E2E_VETTING_PUBLIC_KEY;
 if (
   registryVettingKey !== undefined &&
@@ -68,7 +82,7 @@ const registryArguments = registryPersistTo
       registryVettingKey
         ? ` --binding VETTING_RESULT_PUBLIC_KEYS=${registryVettingKey} --r2 VETTING_EVIDENCE --binding 'VETTING_EVIDENCE_POLICY=${JSON.stringify({ ...localEvidencePolicy(new Date()), maxObjectBytes: 32 * 1024 * 1024 }).replaceAll("'", "'\\''")}'`
         : ""
-    }${registryNotify ? ` --service SLOP_NOTIFY=${registryNotify}` : ""}`
+    }${registryNotify ? ` --service SLOP_NOTIFY=${registryNotify}` : ""}${registryIntake}`
   : "";
 const outputName = process.env.SLOP_E2E_OUTPUT ?? localServer;
 
