@@ -80,6 +80,7 @@ type Issue = {
   body: string | null;
   user: { login: string; id: number; type: string };
   assignees: unknown[];
+  labels?: (string | { name: string })[];
   pull_request?: unknown;
 };
 type Pull = {
@@ -604,12 +605,16 @@ async function addLabels(
   labels: string[],
 ): Promise<void> {
   await requireRegisteredRepository(env.SLOPBOT_DB, job);
-  const result = await github.request(
+  const result = await github.request<{ name: string }[]>(
     "POST",
     `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
     { labels },
   );
-  if (result.status !== 200 || result.data === null)
+  if (
+    result.status !== 200 ||
+    !Array.isArray(result.data) ||
+    !labels.every((label) => result.data?.some((entry) => entry.name === label))
+  )
     throw new GitHubError(
       result.status,
       "GitHub did not confirm the label addition",
@@ -1285,6 +1290,13 @@ export async function recordHumanSignal(
   const db = env.SLOPBOT_DB;
   if (!(await registeredRepository(db, job)))
     return "repository is not active in the Slop registry";
+  const install = await store.installation(db, job.installationId);
+  if (
+    install === null ||
+    install.removed_at !== null ||
+    install.suspended_at !== null
+  )
+    return "installation removed or suspended";
   const github = await GitHubClient.forInstallation(
     env.SLOPBOT_APP_ID,
     env.SLOPBOT_APP_PRIVATE_KEY,
@@ -1331,6 +1343,26 @@ export async function recordHumanSignal(
     kind,
     String(job.senderId),
   );
-  if (kind === "appeal") await addLabels(env, job, github, ["slopbot: appeal"]);
+  if (
+    kind === "appeal" &&
+    !(await store.hasRecordedAction(db, signalKey, "label"))
+  ) {
+    const label = "slopbot: appeal";
+    // Reconcile a successful write whose response or local record was lost.
+    if (
+      !issue.labels?.some((entry) =>
+        typeof entry === "string" ? entry === label : entry.name === label,
+      )
+    )
+      await addLabels(env, job, github, [label]);
+    await store.recordAction(
+      db,
+      signalKey,
+      job.repositoryId,
+      issue.node_id,
+      "label",
+      label,
+    );
+  }
   return kind;
 }

@@ -1437,7 +1437,11 @@ function ProjectPage({
             Activity for this project has not been collected yet.
           </p>
         ) : null}
-        <ProjectPaymentHistory project={project} state={state} />
+        <ProjectPaymentHistory
+          key={project.id}
+          project={project}
+          state={state}
+        />
         {view && state.status === "ready" ? (
           <ProjectLeaderboard
             state={state}

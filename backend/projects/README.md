@@ -241,3 +241,9 @@ which active repositories to collect; an origin that does not serve the
 registry API yet keeps the committed snapshot. `bun run projects:check` proves
 the committed snapshot is canonical and that every active project carries its
 contribution fields.
+
+Approval rechecks a pending new application against the current application rules
+and GitHub repository and alias identities. A changed identity refuses approval.
+An unavailable GitHub check leaves the application pending for a later retry.
+Valid aliases remain allowed; maintainer update applications use their existing
+revision and policy checks.

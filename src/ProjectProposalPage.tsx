@@ -845,9 +845,10 @@ export default function ProjectProposalPage() {
   };
   const valid = Object.keys(errors).length === 0;
   const p = proposal;
-  const slug = slugify(
-    p.name || p.repository.split("/").at(-1) || "new-project",
-  );
+  const slug =
+    slugify(p.name) ||
+    slugify(p.repository.split("/").at(-1) || "") ||
+    "new-project";
   const pool = monthlyPoolValue(p.monthlyPool);
   const includesReviewBudget = p.reviewBudgetEnabled === "yes";
   const reviewBudget = monthlyPoolValue(p.monthlyReviewBudget);

@@ -463,6 +463,21 @@ export async function recordCalls(
   return billed;
 }
 
+export async function hasRecordedAction(
+  db: D1Database,
+  reviewKey: string,
+  action: "label",
+): Promise<boolean> {
+  return (
+    (await db
+      .prepare(
+        "SELECT id FROM slopbot_actions WHERE review_key = ? AND action = ?",
+      )
+      .bind(reviewKey, action)
+      .first()) !== null
+  );
+}
+
 export async function recordAction(
   db: D1Database,
   reviewKey: string,
