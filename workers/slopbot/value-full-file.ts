@@ -3,6 +3,12 @@ import type { EvidenceClient, FileChange } from "./value-evidence";
 import { hasCompleteValuePatch } from "./value-patch";
 
 export function needsFullValueComparison(file: FileChange): boolean {
+  if (file.status === "renamed")
+    return (
+      typeof file.previous_filename === "string" &&
+      file.previous_filename !== file.filename &&
+      !hasCompleteValuePatch(file)
+    );
   return (
     file.status === "modified" &&
     file.previous_filename === undefined &&
@@ -23,10 +29,12 @@ export async function recoverFullValueComparisons(
   const read = valueFileReader(client, repository);
   for (const file of files) {
     if (!needsFullValueComparison(file)) continue;
-    const before = await read(file.filename, baseSha);
+    const before = await read(file.previous_filename ?? file.filename, baseSha);
     if (!before) continue;
     const after = await read(file.filename, headSha);
     if (!after) continue;
+    // Leave identical renames to the existing unchanged-rename proof.
+    if (file.status === "renamed" && before.sha === after.sha) continue;
     try {
       const decoder = new TextDecoder("utf-8", {
         fatal: true,
