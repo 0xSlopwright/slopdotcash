@@ -216,6 +216,21 @@ async function collectCommitChanges(
       )
         limitations.push(`Incomplete ${label.toLowerCase()} ${kind}`);
   }
+  if (
+    commit !== null &&
+    commit.parents.length === 1 &&
+    limitations.length === 0
+  ) {
+    await recoverFullValueComparisons(
+      client,
+      root.slice("/repos/".length),
+      commit.files.filter((file) =>
+        /(^|\/)package\.json$/u.test(file.filename),
+      ),
+      commit.parents[0].sha,
+      commit.sha,
+    );
+  }
   return { commit, limitations };
 }
 export interface CommitAttribution {
