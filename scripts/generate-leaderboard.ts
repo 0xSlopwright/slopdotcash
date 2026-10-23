@@ -2092,12 +2092,8 @@ async function completeOutcomeCommits(
   const outcome = reference.outcome;
   const firstPage = reference.commitPage;
   if (!outcome || !firstPage) return;
-  // Other branches retain author-only credit and need no commit hydration.
-  if (outcome.baseRefName !== repository.integrationBranch) {
-    outcome.commits = null;
-    delete reference.commitPage;
-    return;
-  }
+  // Every base branch needs complete commit evidence to establish first credit.
+  // The scorer separately limits shared credit to the integration branch.
   let commits = outcome.commits;
   if (!commits) throw new Error(`PR #${outcome.number} has no commit evidence`);
   if (firstPage.totalCount > GITHUB_PULL_REQUEST_COMMIT_LIST_LIMIT) {
