@@ -183,7 +183,21 @@ export function retainedCopyBindings(sources: readonly WorkUnitSource[]) {
           other.commitAttribution.some((commit) =>
             (commit.files ?? []).some((file) => {
               const edit = retainedEditIdentity(file);
-              return edit !== null && edits.has(edit);
+              if (edit === null || !edits.has(edit)) return false;
+              // The same accepted commit can be carried by an intermediate
+              // PR and the acknowledged final integration. It is one copy,
+              // not another original requiring a separate acknowledgement.
+              return !integrations.some(({ evidence: accepted }) =>
+                accepted.commitAttribution.some(
+                  (retained) =>
+                    retained.sha === commit.sha &&
+                    retained.limitations.length === 0 &&
+                    retained.files?.some(
+                      (retainedFile) =>
+                        retainedEditIdentity(retainedFile) === edit,
+                    ),
+                ),
+              );
             }),
           )
         )
