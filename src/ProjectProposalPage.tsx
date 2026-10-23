@@ -2206,29 +2206,21 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
           {changes.length === 0 ? (
             <p>No manifest field has changed.</p>
           ) : (
-            <div className="plain-table-wrap">
-              <table className="plain-table">
-                <caption className="visually-hidden">
-                  Field changes for {project.name}
-                </caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Field</th>
-                    <th scope="col">Current</th>
-                    <th scope="col">Proposed</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {changes.map((change) => (
-                    <tr key={change.field}>
-                      <th scope="row">{change.label}</th>
-                      <td>{change.before}</td>
-                      <td>{change.after}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            changes.map((change) => (
+              <div className="project-change" key={change.field}>
+                <h3>{change.label}</h3>
+                <dl>
+                  <div>
+                    <dt>Current</dt>
+                    <dd>{change.before || "Not set"}</dd>
+                  </div>
+                  <div>
+                    <dt>Proposed</dt>
+                    <dd>{change.after || "Not set"}</dd>
+                  </div>
+                </dl>
+              </div>
+            ))
           )}
         </section>
         {attempted && !valid ? (

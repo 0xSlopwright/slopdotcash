@@ -3866,8 +3866,31 @@ small {
   font-size: 24px;
 }
 
-.update-changes td {
+.project-change {
+  padding-block: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.project-change h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.project-change dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: 16px;
+  margin: 0;
+}
+
+.project-change dt {
+  font-weight: 700;
+}
+
+.project-change dd {
+  margin: 8px 0 0;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 /* Funding records and the maintainer payout workspace are separate views. */

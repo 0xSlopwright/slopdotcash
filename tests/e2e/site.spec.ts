@@ -22,6 +22,7 @@ import {
   projectCycleHasOpened,
 } from "../../src/lib/project-view";
 import { PROJECTS } from "../../src/lib/projects.mjs";
+import { CONTRIBUTION } from "../project-application-manifest";
 
 const deployment = deploymentOrigins(
   deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
@@ -725,8 +726,26 @@ test("makes the public project draft boundary unmistakable", async ({
 test("reviews criteria changes and stops a stale maintainer draft", async ({
   page,
 }) => {
-  const project = PROJECTS.find((entry) => entry.id === "eliza");
-  if (!project) throw new Error("Eliza is missing");
+  const registered = PROJECTS.find((entry) => entry.id === "eliza");
+  if (!registered) throw new Error("Eliza is missing");
+  const project = {
+    ...registered,
+    contribution: {
+      ...CONTRIBUTION,
+      approvedScope:
+        "Work must improve the primary product and pass three gates: authorized demand, primary mission, and material outcome. Authorized demand means a maintainer request or an approved requirement. The affected workflow must pass end-to-end checks. Keep source, local tests, hosted checks and production acceptance separate. Reuse existing code and preserve review history. Include the exact old and new criteria so the maintainer can review the entire change before submission.",
+    },
+  };
+  await page.route("**/data/fixture-project-registry.json", (route) =>
+    route.fulfill({
+      json: {
+        schemaVersion: "1",
+        projects: PROJECTS.map((entry) =>
+          entry.id === project.id ? project : entry,
+        ),
+      },
+    }),
+  );
   let revision = 1;
   await page.route("**/api/v1/projects/eliza", (route) =>
     route.fulfill({ json: { revision, project } }),
@@ -777,9 +796,47 @@ test("reviews criteria changes and stops a stale maintainer draft", async ({
   await page
     .getByRole("button", { name: "Use this draft with the current revision" })
     .click();
+  const review = page.getByRole("region", { name: "Changes" });
+  const proposed = review.getByText(scope, { exact: true });
+  await review.scrollIntoViewIfNeeded();
   await page.screenshot({
     path: test.info().outputPath("criteria-reviewed-diff.png"),
     fullPage: true,
+  });
+  async function expectReadableReview() {
+    const reviewBox = await review.boundingBox();
+    const proposedBox = await proposed.boundingBox();
+    if (!reviewBox || !proposedBox)
+      throw new Error("Change preview is missing");
+    // Long current text must not squeeze the proposal into a word-by-word
+    // column or force horizontal page scrolling before the owner can submit.
+    expect(proposedBox.width).toBeGreaterThanOrEqual(reviewBox.width * 0.35);
+    const geometry = await page.evaluate(() => ({
+      width: document.documentElement.scrollWidth,
+      viewport: innerWidth,
+    }));
+    expect(geometry.width).toBeLessThanOrEqual(geometry.viewport);
+  }
+  await expectReadableReview();
+  await review.evaluate((element) => {
+    const sizes = [...element.querySelectorAll<HTMLElement>("*")].map(
+      (child) => ({
+        child,
+        size: Number.parseFloat(getComputedStyle(child).fontSize),
+      }),
+    );
+    for (const { child, size } of sizes) child.style.fontSize = `${size * 2}px`;
+  });
+  await expectReadableReview();
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
+  await review.screenshot({
+    path: test.info().outputPath("criteria-review-200-percent-text.png"),
   });
   await page.getByRole("button", { name: "Submit changes for review" }).click();
   await expect(
