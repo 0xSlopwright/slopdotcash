@@ -158,6 +158,8 @@ jobs:
               --connect-timeout 10 --max-time 60 --max-filesize 8388608 \
               "$profile_origin/data/profiles.json" --output "$previous_profiles"
           fi
+          # Selects the versioned value scoring policy for new work; it refuses
+          # to publish while that policy's owner decision is pending.
           bun run leaderboard:generate
           # Preserve previously observed issue history, including records
           # no longer accessible. Both source inventories must reconcile.

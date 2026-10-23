@@ -179,3 +179,44 @@ published score. Do not rewrite a frozen cycle or change an approved, funded,
 scheduled or paid obligation through this provisional extension. Review
 activity keeps its actual source date; a later merge does not move an August
 review into the September or October activity ledger.
+
+## Current producer: slop-value-v1
+
+PRD section 7 makes Slopbot's size and value assessment the normal score for
+new work (SCR-06; MVP-09, MVP-05a). `src/lib/scoring-policy.ts` holds the one
+versioned policy for new work. `bun run leaderboard:generate` and the release
+workflow select it without an opt-in flag. The merge time of a pull request, or
+the closure time of closed unmerged work, selects its policy. Work accepted
+before the effective instant keeps the Score v2 and SCR-05 rules above, its
+coverage row reads `legacy-policy`, and its awards are not reinterpreted.
+Work accepted from that instant:
+
+- takes its implementation score from the current exact-head value
+  assessment. A valid maintainer `slop-score` record is the correction
+  exception and takes precedence for the implementation score;
+- keeps the one-third minimum while its assessment is missing, incomplete,
+  stale or unresolved. This is an unassessed state, not an assessed tier;
+- earns review credit only from assessed, non-duplicate review value. A useful
+  approval or comment qualifies; a request for changes is not required.
+
+Review credit is one explicit allocation per pull request. Qualifying reviews
+exclude implementation actors, bots, reviews after merge or closure, and
+duplicate findings. They are grouped by immutable reviewer node ID. Reviewers
+are ordered by their first qualifying review's submission time, then review
+node ID. The first five share the pull request's review pool, weighted by each
+reviewer's highest assessed band (triage 1, standard 3, deep 9, specialist 24
+thirds). Shares are integer thirds by largest remainder; equal remainders go to
+the earlier reviewer, and the shares always sum to the pool. Each credited
+reviewer has one ledger record, sourced from that reviewer's highest-band
+review. Their other reviews publish `already-awarded-reviewer`; later reviewers
+publish `review-credit-reviewer-limit`; a zero rounded share publishes
+`review-credit-zero-share`. A joint work unit whose accepted members span the
+effective instant is not applied, so legacy work is never scored twice; its
+new member keeps the one-third minimum.
+
+The effective instant and the per-pull-request review pool await an owner
+decision (PRD section 12, review-credit allocation rounding). Until both are
+recorded in `VALUE_SCORING_POLICY_DECISION`, generation stops before
+collecting any source and publishes nothing; it does not fall back to the
+legacy producer. Accepted-source identity, the earliest-merge commit rule and
+separate payment authority are unchanged. A score is never a payment approval.
