@@ -77,10 +77,17 @@ export async function collectIndirectValueAcceptance(
   const branch = source.repositoryPolicy.integrationBranch;
   const candidates: CommitChanges[] = [];
   for (const hint of hints) {
-    const c = await client.get<CommitChanges>(
-      `${root}/commits/${hint}?per_page=100&page=1`,
-    );
-    if (!c) continue;
+    let c: CommitChanges | null;
+    try {
+      c = await client.get<CommitChanges>(
+        `${root}/commits/${hint}?per_page=100&page=1`,
+      );
+    } catch {
+      // Prose can contain non-commit digests. Keep the PR evidence, but do
+      // not infer acceptance when a discovery request could not resolve.
+      return unresolved(`commit hint ${hint} could not be resolved`);
+    }
+    if (!c) return unresolved(`commit hint ${hint} could not be resolved`);
     if (
       !/^[a-f0-9]{40}$/u.test(c.sha) ||
       !c.sha.startsWith(hint) ||
