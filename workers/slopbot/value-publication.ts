@@ -79,6 +79,15 @@ export async function verifyCurrentValueSource(
     collected,
     valueContextSelections(evidence),
   );
+  // The local Git collector appends an empty result when there are no
+  // two-parent merges to reconstruct. Reproduce that representation without
+  // accepting client-supplied resolution evidence or changing stored digests.
+  if (
+    Array.isArray(evidence.mergeResolutions) &&
+    evidence.mergeResolutions.length === 0 &&
+    current.commits.every((commit) => commit.parents.length !== 2)
+  )
+    current.mergeResolutions = [];
   if (current.pull.state !== "closed" || current.limitations.length)
     throw new Error(
       "Value publication requires complete closed-pull-request evidence",

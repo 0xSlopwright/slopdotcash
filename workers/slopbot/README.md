@@ -217,7 +217,12 @@ Missing objects or a failed reconstruction stop collection. Octopus merges are
 not reconstructed. Reconstruction depends on the Git merge algorithm: review
 the resulting diff before valuation; it does not itself prove useful work.
 
-The hosted collector does not run Git. Historical resolution evidence must
+The hosted collector does not run Git. For a source with no two-parent merges,
+publication can reproduce the local collector's empty resolution array so that
+an unchanged source keeps its original digest. Nonempty resolution evidence is
+never copied from the submitted assessment into the fresh source.
+
+Historical resolution evidence must
 remain source-bound and pass the joint record's freshness and publication gates.
 Do not strip limitations or substitute a full first-parent merge diff to make
 an assessment pass.
@@ -705,7 +710,11 @@ does not configure or activate a production binding.
 The envelope has `mode` (`single` or `work-unit`), `installationId`, `result`,
 `sources`, `supersedes`, and `revisionReason`. Grouped imports also require
 `legacyPredecessors`. Each source contains `repository`, `pullRequestNumber`, and
-`contextPaths`. The Worker collects the evidence from GitHub; callers do not
+`contextPaths`. A source may also set `emptyMergeResolutions: true` to match
+a local collector result with no two-parent merges. The Worker verifies that
+condition from fresh GitHub commits before adding the empty array. False values,
+nonempty resolution records and unknown source fields are refused.
+The Worker collects the evidence from GitHub; callers do not
 upload diff bodies. Results use the existing subscription result format.
 Single predecessors are a
 digest or null; grouped predecessors are digest arrays. A successor requires a
