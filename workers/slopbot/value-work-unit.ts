@@ -12,6 +12,7 @@ import {
   type ValueEvidence,
   valueEvidenceMatchesRepository,
 } from "./value-evidence";
+import { mergeResolutionMatches } from "./value-merge-resolution";
 import { valueSourceDigest } from "./value-review";
 
 export interface WorkUnitSource {
@@ -121,23 +122,46 @@ export async function prepareWorkUnitEvidence(
     const covered = new Set<string>();
     for (const commit of evidence.commits.filter(
       (entry) =>
-        entry.parents.length <= 1 &&
+        (entry.parents.length <= 1 ||
+          evidence.mergeResolutions?.some(
+            (resolution) => resolution.commitSha === entry.sha,
+          )) &&
         (!indirect || indirect.acceptedCommitShas.includes(entry.sha)),
     )) {
+      const resolutions = (evidence.mergeResolutions ?? []).filter(
+        (resolution) => resolution.commitSha === commit.sha,
+      );
+      const resolution = resolutions[0];
+      if (
+        commit.parents.length > 1 &&
+        (resolutions.length !== 1 ||
+          !mergeResolutionMatches(resolution, commit) ||
+          (await sha256Hex(resolution.patch)) !== resolution.patchSha256)
+      ) {
+        limitations.add(
+          `${pull.node_id}: invalid merge-resolution evidence for ${commit.sha}`,
+        );
+        continue;
+      }
       const attribution = evidence.commitAttribution.filter(
         (entry) => entry.sha === commit.sha,
       );
       if (
-        attribution.length !== 1 ||
-        attribution[0].changedPaths === null ||
-        attribution[0].limitations.length > 0
+        commit.parents.length <= 1 &&
+        (attribution.length !== 1 ||
+          attribution[0].changedPaths === null ||
+          attribution[0].limitations.length > 0)
       ) {
         limitations.add(
           `${pull.node_id}: complete commit scope is missing for ${commit.sha}`,
         );
         continue;
       }
-      const paths = ordered(attribution[0].changedPaths);
+      const paths = ordered(
+        commit.parents.length > 1
+          ? resolution.paths
+          : attribution[0].changedPaths!,
+      );
       // The same immutable commit cannot have different paths or primary author
       // merely because it appears in a different PR's listing.
       const commitKey = JSON.stringify([evidence.repositoryNodeId, commit.sha]);

@@ -15,6 +15,7 @@ import {
   collectIndirectValueAcceptance,
   type IndirectValueAcceptance,
 } from "./value-indirect";
+import type { ValueMergeResolution } from "./value-merge-resolution";
 import { addedValuePatchRecovery, hasCompleteValuePatch } from "./value-patch";
 import { recoverUnchangedValueRenames } from "./value-rename";
 
@@ -428,6 +429,7 @@ export interface ValueEvidence {
   eligibleReviewIds: string[];
   implementationActorNodeIds: string[];
   commitAttribution: CommitAttribution[];
+  mergeResolutions?: ValueMergeResolution[];
   relatedPullRequests: RelatedPullRequest[];
   contextFiles?: {
     path: string;

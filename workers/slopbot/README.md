@@ -233,6 +233,22 @@ collection uses:
 bun scripts/collect-value-evidence.ts OWNER/REPOSITORY PR_NUMBER /private/output
 ```
 
+For merge-resolution scope, add `--local-git /absolute/repository`. The checkout
+must contain the collected merge commits and both parents. Collection reads
+objects without checking out or running repository code. It reconstructs each
+two-parent merge in an isolated bare repository with no global configuration,
+hooks or configured merge drivers. Only the difference between that automatic
+tree and the recorded tree becomes resolution scope. A clean branch sync adds
+no claims. The record binds the Git version, parents, trees and patch digest.
+Missing objects or a failed reconstruction stop collection. Octopus merges are
+not reconstructed. Reconstruction depends on the Git merge algorithm: review
+the resulting diff before valuation; it does not itself prove useful work.
+
+The hosted collector does not run Git. Historical resolution evidence must
+remain source-bound and pass the joint record's freshness and publication gates.
+Do not strip limitations or substitute a full first-parent merge diff to make
+an assessment pass.
+
 Raw evidence stays outside the repository. `value-review.ts` shares the strict
 value rubric with the hosted model route. It does not publish scores or approve
 awards. Source-bound publication, ingestion and complete historical calibration
