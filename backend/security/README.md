@@ -63,16 +63,29 @@ repository. Until then intake stays off and the manual flow below applies.
   with an insert-only event in the same batch. `submitting` commits before
   GitHub is called; a lost answer, a 5xx, a malformed 201 or a 201 naming
   another author is `uncertain`.
+- Marker: the description gets one line, `Report reference: <32 hex>`, a
+  random value per submission. It names neither the submission nor Slop,
+  because it stays in the text if the advisory is published
+  (OPEN_QUESTION 9); the consent notice says so.
 - Reconcile before retry: an uncertain send lists the reporter's advisories
-  with their own token and matches the private marker line and author. Only
-  a complete listing without a match reopens the draft for another send; a
-  listing error stays `uncertain`. Several matches adopt the earliest and
-  show the rest to the technical approvers only. A `submitting` row older
-  than 60 seconds becomes `uncertain` and is never resent.
+  since the first attempt with their own token and matches the marker line
+  and author. Only a complete listing without a match, taken at least
+  5 minutes after the attempt began, reopens the draft for another send;
+  an earlier empty listing or a listing error stays `uncertain`. Several
+  matches adopt the earliest and show the rest to the technical approvers
+  only. A resend that GitHub accepts lists again and adopts an earlier copy
+  that landed late, recording the accepted one as a duplicate. A
+  `submitting` row older than 60 seconds becomes `uncertain` and is never
+  resent. A `submitted` row Slop cannot verify within 24 hours fails as
+  `unverifiable`; it is never resent and no longer blocks a new report.
 - Receipt: GitHub's advisory must name the program repository and the
-  reporter as author, carry the marker (Slop origin) and have a past
-  `created_at`. The verified case, its `submit` or `receipt-verified`
-  event, routing fields, the access log and the inbox rows commit with the
+  reporter as author (a reporter credit never counts), carry the marker
+  (Slop origin) and have a past `created_at`. A direct report must also be
+  a private vulnerability report (GitHub's `submission` object) in
+  `triage`, `draft` or `published`; anything else fails as
+  `not-private-report` and uses the manual claim path. The verified case,
+  its `submit` or `submit-direct` event (the reporter's own action; the
+  detail records `verifiedBy: "github"`), routing fields, the access log and the inbox rows commit with the
   submission transition. The receipt time is GitHub's `created_at`
   (`receivedAtSource: "github-verified"`), the verifier is the sentinel
   `github`, and `receipt_evidence_digest` stores the SHA-256 of the
@@ -82,8 +95,10 @@ repository. Until then intake stays off and the manual flow below applies.
   `created_at` is kept. Without the App installed, the manual claim and
   verify-link path below remains the fallback.
 - Analysis: `report-analysis.ts` recommends only, from GitHub's structured
-  severity and CVSS fields, and sets the owner, next action and due time.
-  It never sets severity, receipt, award or disclosure. No model sees
+  severity and CVSS fields. Its result is in the restricted event detail
+  only; the case's owner, neutral next action and due time (the published
+  acknowledgement target) do not depend on it, because the reporter sees
+  them. It never sets severity, receipt, award or disclosure. No model sees
   report content; none is approved.
 
 ## Roles

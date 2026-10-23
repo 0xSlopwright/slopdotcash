@@ -37,6 +37,8 @@ type Advisory = {
   vulnerabilities: unknown[] | null;
   author: { id: number; login: string };
   credits_detailed: { user: { id: number; login: string }; type: string }[];
+  /** Present only for a private vulnerability report. */
+  submission: { accepted: boolean } | null;
   state: string;
   created_at: string;
 };
@@ -82,6 +84,9 @@ export function fakeGithub(options: { now: () => Date }) {
     author: { id: number; login: string },
     fields: Record<string, unknown>,
     createdAt?: string,
+    extra: Partial<
+      Pick<Advisory, "credits_detailed" | "submission" | "state">
+    > = {},
   ): Advisory => {
     const id = ghsa();
     const cvss =
@@ -103,12 +108,14 @@ export function fakeGithub(options: { now: () => Date }) {
         : null,
       author,
       credits_detailed: [{ user: author, type: "reporter" }],
+      submission: { accepted: false },
       state: "triage",
       created_at:
         createdAt ??
         new Date(
           options.now().getTime() + createdOffsetSeconds * 1000,
         ).toISOString(),
+      ...extra,
     };
     advisories.push({ repository: repository.toLowerCase(), advisory });
     return advisory;
@@ -274,11 +281,19 @@ export function fakeGithub(options: { now: () => Date }) {
     beforeCreate: (hook: () => void) => {
       beforeCreate = hook;
     },
+    /**
+     * Adds an advisory as if `author` filed it. `extra` overrides credits,
+     * the private-report `submission` object (null for a maintainer's own
+     * draft) or the state.
+     */
     seed: (
       repository: string,
       author: { id: number; login: string },
       fields: Record<string, unknown>,
       createdAt?: string,
-    ) => store(repository, author, fields, createdAt),
+      extra?: Partial<
+        Pick<Advisory, "credits_detailed" | "submission" | "state">
+      >,
+    ) => store(repository, author, fields, createdAt, extra),
   };
 }

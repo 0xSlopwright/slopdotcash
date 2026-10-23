@@ -390,7 +390,7 @@ function advisoryUrl(row: CaseRow): string {
 const REPORTER_EVENT_KINDS = new Set([
   "claim",
   "submit",
-  "receipt-verified",
+  "submit-direct",
   "record",
   "verify-link",
   "reject-link",
@@ -860,7 +860,7 @@ export function inboxStatements(
     ...(REPORTER_EVENT_KINDS.has(input.kind) ? [input.reporterGithubId] : []),
     ...(input.kind === "claim" ||
     input.kind === "submit" ||
-    input.kind === "receipt-verified"
+    input.kind === "submit-direct"
       ? ids("technical")
       : []),
     ...(input.kind === "appeal" ? ids("dispute") : []),

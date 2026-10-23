@@ -31,7 +31,8 @@ CREATE TABLE security_submissions (
   evidence_digest TEXT CHECK (evidence_digest IS NULL OR length(evidence_digest) = 64),
   failure_code TEXT CHECK (failure_code IS NULL OR failure_code IN (
     'pvr-disabled', 'app-not-installed', 'forbidden', 'invalid',
-    'author-mismatch', 'not-found', 'grant-expired', 'already-recorded'
+    'author-mismatch', 'not-found', 'grant-expired', 'already-recorded',
+    'not-private-report', 'unverifiable'
   )),
   case_id TEXT REFERENCES security_cases(id),
   revision INTEGER NOT NULL CHECK (revision > 0),

@@ -19,7 +19,9 @@ export type FailureCode =
   | "author-mismatch"
   | "not-found"
   | "grant-expired"
-  | "already-recorded";
+  | "already-recorded"
+  | "not-private-report"
+  | "unverifiable";
 
 declare const reporterGrantBrand: unique symbol;
 /** A user access token that `/user` proved belongs to `githubId`. */
@@ -60,7 +62,12 @@ export type AdvisoryFacts = {
   ghsa: string;
   repository: string;
   authorId: string | null;
-  reporterCreditIds: string[];
+  /**
+   * Whether GitHub says the advisory arrived through private vulnerability
+   * reporting (its `submission` object). A repository advisory a maintainer
+   * drafted has none.
+   */
+  privateReport: boolean;
   state: string;
   createdAt: string;
   markerFound: boolean;
@@ -132,9 +139,14 @@ const MAX_ADVISORY_BYTES = 1024 * 1024;
 const MAX_LIST_BYTES = 8 * 1024 * 1024;
 const MAX_LIST_PAGES = 10;
 
-/** The one line appended to the private GitHub description (OPEN_QUESTION 9). */
-export function markerLine(submissionId: string, marker: string): string {
-  return `Slop private submission ${submissionId} marker ${marker}`;
+/**
+ * The one line appended to the private GitHub description (OPEN_QUESTION 9).
+ * It stays in the text if the maintainers later publish the advisory, so it
+ * carries only the submission's random 128-bit marker: no Slop submission
+ * ID and no Slop name.
+ */
+export function markerLine(marker: string): string {
+  return `Report reference: ${marker}`;
 }
 
 function bounded(value: unknown, key: string, min: number, max: number) {
@@ -286,23 +298,14 @@ export async function advisoryFacts(
   const cweIds = Array.isArray(advisory.cwe_ids)
     ? advisory.cwe_ids.filter((id): id is string => typeof id === "string")
     : [];
-  const credits = Array.isArray(advisory.credits_detailed)
-    ? advisory.credits_detailed
-    : [];
-  const reporterCreditIds = credits
-    .filter(
-      (credit) =>
-        typeof credit === "object" &&
-        credit !== null &&
-        (credit as { type?: unknown }).type === "reporter",
-    )
-    .map((credit) => githubId((credit as { user?: { id?: unknown } }).user?.id))
-    .filter((id): id is string => id !== null);
+  // Credits are editable by maintainers and collaborators, so they never
+  // establish authorship (SEC-17); only `author` does.
   return {
     ghsa,
     repository,
     authorId: githubId((advisory.author as { id?: unknown } | null)?.id),
-    reporterCreditIds,
+    privateReport:
+      typeof advisory.submission === "object" && advisory.submission !== null,
     state: typeof advisory.state === "string" ? advisory.state : "unknown",
     createdAt: new Date(Date.parse(createdAt)).toISOString(),
     markerFound:

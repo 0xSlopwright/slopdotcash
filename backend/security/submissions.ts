@@ -13,7 +13,8 @@
  *   state machine, enum codes and identifiers.
  * - The transition to `submitting` commits before GitHub is called. A send
  *   whose outcome is unknown becomes `uncertain`, and only a complete
- *   private listing that finds no copy reopens it for a second send.
+ *   private listing that finds no copy, taken a quiet period after the
+ *   attempt, reopens it for a second send.
  * - There is no public fallback. A refused or unavailable intake leaves the
  *   report in the reporter's browser.
  */
@@ -93,6 +94,17 @@ export const SUBMITTING_TIMEOUT_MS = 60_000;
 export const IDLE_MS = 24 * 60 * 60 * 1000;
 /** How far before the attempt a GitHub listing looks for its copy. */
 const RECONCILE_WINDOW_MS = 10 * 60 * 1000;
+/**
+ * An empty listing reopens an uncertain send only this long after the
+ * attempt began: well past the 10 second request timeout and GitHub's
+ * listing lag, so a send that was cut off but still lands is found first.
+ */
+export const RECONCILE_QUIET_MS = 5 * 60 * 1000;
+/**
+ * A `submitted` row GitHub has not let Slop verify for this long fails as
+ * `unverifiable`, so it no longer blocks a new submission for the program.
+ */
+export const SUBMITTED_LIMIT_MS = 24 * 60 * 60 * 1000;
 /** GitHub's clock may run slightly ahead of Slop's. */
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
 const MAX_SEND_BYTES = 256 * 1024;
@@ -100,7 +112,11 @@ const MAX_SEND_BYTES = 256 * 1024;
 const TERMINAL_FAILURES: readonly FailureCode[] = [
   "author-mismatch",
   "already-recorded",
+  "not-private-report",
+  "unverifiable",
 ];
+/** Advisory states a direct report may be verified in. */
+const DIRECT_STATES = new Set(["triage", "draft", "published"]);
 
 function notFound(): never {
   fail(404, "not_found", "Submission not found");
@@ -150,6 +166,15 @@ function submissionView(row: SubmissionRow): Record<string, unknown> {
     failureCode: row.failure_code,
     caseId: row.case_id,
     retryAllowed: row.state === "draft" && row.attempt > 0,
+    // An empty listing before this time keeps the send uncertain.
+    reconcileAfter:
+      row.state === "uncertain" &&
+      row.advisory_ghsa === null &&
+      row.attempt_started_at !== null
+        ? new Date(
+            Date.parse(row.attempt_started_at) + RECONCILE_QUIET_MS,
+          ).toISOString()
+        : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -278,8 +303,9 @@ async function transition(
 
 /**
  * Applies time-based moves before any decision: an interrupted send becomes
- * `uncertain` and is never resent, and an idle draft or failure is
- * abandoned.
+ * `uncertain` and is never resent, a `submitted` row GitHub never let Slop
+ * verify fails as `unverifiable` (it holds a GitHub advisory, so it is never
+ * resent), and an idle draft or failure is abandoned.
  */
 async function settle(
   deps: SecurityApiDependencies,
@@ -293,6 +319,18 @@ async function settle(
     now - Date.parse(row.attempt_started_at) > SUBMITTING_TIMEOUT_MS
   )
     next = { state: "uncertain", kind: "interrupted", actorGithubId: null };
+  else if (
+    row.state === "submitted" &&
+    now - Date.parse(row.attempt_started_at ?? row.updated_at) >
+      SUBMITTED_LIMIT_MS
+  )
+    next = {
+      state: "failed",
+      set: { failure_code: "unverifiable" },
+      kind: "verify-expired",
+      detail: { code: "unverifiable" },
+      actorGithubId: null,
+    };
   else if (
     (row.state === "draft" || row.state === "failed") &&
     now - Date.parse(row.updated_at) > IDLE_MS
@@ -562,8 +600,7 @@ async function verifyReceipt(
   const now = deps.now();
   const terms = await programTerms(deps, row.project_id);
   const ghsa = row.advisory_ghsa as string;
-  const marker =
-    row.origin === "slop" ? markerLine(row.id, row.marker) : undefined;
+  const marker = row.origin === "slop" ? markerLine(row.marker) : undefined;
   const fetched = await intake.advisories.getAdvisory(
     grant,
     row.repository,
@@ -603,12 +640,19 @@ async function verifyReceipt(
     row.repository.toLowerCase() !== terms.intake.repository.toLowerCase()
   )
     return failWith("invalid");
-  // A pasted link never establishes authorship (SEC-17); GitHub's author does.
+  // A pasted link never establishes authorship (SEC-17); GitHub's author
+  // does. A reporter credit is editable by maintainers and collaborators,
+  // so a credited non-author uses the manual claim that a security
+  // maintainer verifies.
+  if (facts.authorId !== reporter) return failWith("author-mismatch");
+  // Only a private vulnerability report that is still live is a receipt. A
+  // repository advisory a maintainer drafted, or a closed or withdrawn
+  // report, goes to the manual claim path instead.
   if (
-    facts.authorId !== reporter &&
-    !(row.origin === "direct" && facts.reporterCreditIds.includes(reporter))
+    row.origin === "direct" &&
+    (!facts.privateReport || !DIRECT_STATES.has(facts.state))
   )
-    return failWith("author-mismatch");
+    return failWith("not-private-report");
   if (
     Date.parse(facts.createdAt) > now.getTime() + CLOCK_SKEW_MS ||
     (row.origin === "slop" && !facts.markerFound)
@@ -641,17 +685,22 @@ async function writeVerifiedCase(
   const duplicateAdvisories = duplicates
     ? ((JSON.parse(duplicates.detail) as { ghsas?: string[] }).ghsas ?? [])
     : [];
+  // The case's next action and due time are in the reporter's view, so they
+  // never depend on the analysis: the priority stays in the restricted event
+  // detail, and the due time is the program's published acknowledgement
+  // target.
   const acknowledgeHours = terms.responseTargets?.acknowledgeHours;
-  const urgent = analysis.priority === "urgent";
   const dueAt =
     typeof acknowledgeHours === "number"
       ? new Date(
-          now.getTime() +
-            (acknowledgeHours * 60 * 60 * 1000) / (urgent ? 2 : 1),
+          now.getTime() + acknowledgeHours * 60 * 60 * 1000,
         ).toISOString()
       : null;
   const caseId = `sc_${deps.randomId().replaceAll("-", "")}`;
-  const kind = row.origin === "slop" ? "submit" : "receipt-verified";
+  // The reporter's own action: a send through Slop, or asking Slop to
+  // verify a report they filed directly. GitHub's record, not the reporter,
+  // verified the receipt (`verifiedBy` below and in the detail).
+  const kind = row.origin === "slop" ? "submit" : "submit-direct";
   const reporter = {
     githubId: row.reporter_github_id,
     githubLogin: row.reporter_github_login,
@@ -680,9 +729,7 @@ async function writeVerifiedCase(
         receiptEvidenceDigest: facts.evidenceDigest,
       },
       ownerGithubId: terms.approvers.technical[0]?.githubId ?? null,
-      nextAction: urgent
-        ? "Triage urgent private report"
-        : "Triage new private report",
+      nextAction: "Triage new private report",
       nextActionDueAt: dueAt,
       at,
       guard,
@@ -701,6 +748,7 @@ async function writeVerifiedCase(
         advisory: facts.ghsa,
         receivedAt,
         receivedAtSource: "github-verified",
+        verifiedBy: "github",
         policyRevision: frozen.revision,
         // Recommendations only; never severity, receipt or award (SEC-10).
         autoAnalysis: { ...analysis, analyzer: intake.analyzer.id },
@@ -747,16 +795,21 @@ async function writeVerifiedCase(
   } catch (error) {
     if (!/UNIQUE/iu.test(error instanceof Error ? error.message : ""))
       throw error;
-    // Another case already holds this advisory. It is not revealed here.
     const current = (await loadSubmission(deps, row.id)) as SubmissionRow;
-    if (current.revision === row.revision && current.state === row.state)
-      await transition(deps, current, {
-        state: "failed",
-        set: { failure_code: "already-recorded" },
-        kind: "verify-failed",
-        detail: { code: "already-recorded" },
-        actorGithubId: null,
-      });
+    // A concurrent request for this same submission won: its event took the
+    // next revision. Answer with its outcome, never with already-recorded.
+    if (current.state === "receipt-verified")
+      return { status: 200, row: current };
+    if (current.revision !== row.revision || current.state !== row.state)
+      fail(409, "stale_revision", "The submission changed since you loaded it");
+    // Another case already holds this advisory. It is not revealed here.
+    await transition(deps, current, {
+      state: "failed",
+      set: { failure_code: "already-recorded" },
+      kind: "verify-failed",
+      detail: { code: "already-recorded" },
+      actorGithubId: null,
+    });
     fail(
       409,
       "advisory_already_recorded",
@@ -856,7 +909,7 @@ async function sendSubmission(
     grant,
     sending.repository,
     report,
-    markerLine(sending.id, sending.marker),
+    markerLine(sending.marker),
   );
   if (result.kind === "rejected") {
     const failed = await transition(deps, sending, {
@@ -876,17 +929,31 @@ async function sendSubmission(
     });
     return grantResponse(202, uncertain ?? sending);
   }
+  // A resend may race a copy from an earlier attempt that landed late; the
+  // binding is set once, so the earliest copy is chosen before it is set.
+  const copies =
+    sending.attempt > 1
+      ? await earlierCopies(deps, intake, sending, grant, result.facts)
+      : [result.facts];
+  const adopted = copies[0];
   let submitted: SubmissionRow | null = null;
   try {
     submitted = await transition(deps, sending, {
       state: "submitted",
       set: {
-        advisory_ghsa: result.facts.ghsa,
-        github_created_at: result.facts.createdAt,
-        evidence_digest: result.facts.evidenceDigest,
+        advisory_ghsa: adopted.ghsa,
+        github_created_at: adopted.createdAt,
+        evidence_digest: adopted.evidenceDigest,
       },
-      kind: "created",
-      detail: { advisory: result.facts.ghsa },
+      ...(copies.length > 1
+        ? {
+            kind: "duplicate-advisories",
+            detail: {
+              advisory: adopted.ghsa,
+              ghsas: copies.slice(1).map((copy) => copy.ghsa),
+            },
+          }
+        : { kind: "created", detail: { advisory: adopted.ghsa } }),
       actorGithubId: null,
     });
   } catch (error) {
@@ -909,6 +976,62 @@ async function sendSubmission(
   }
   const verified = await verifyReceipt(deps, intake, submitted, grant);
   return grantResponse(verified.status, verified.row);
+}
+
+/** When the first send of this submission began; the listing starts there. */
+async function firstAttemptAt(
+  deps: SecurityApiDependencies,
+  row: SubmissionRow,
+): Promise<string> {
+  const first = await deps.db
+    .prepare(
+      "SELECT MIN(at) AS at FROM security_submission_events WHERE submission_id = ? AND kind = 'send'",
+    )
+    .bind(row.id)
+    .first<{ at: string | null }>();
+  return first?.at ?? row.attempt_started_at ?? row.updated_at;
+}
+
+function sinceFirstAttempt(at: string): string {
+  return new Date(Date.parse(at) - RECONCILE_WINDOW_MS).toISOString();
+}
+
+/**
+ * After a resend that GitHub accepted, lists the reporter's copies since the
+ * first attempt, earliest first, always including the accepted one. A late
+ * copy from an earlier attempt then becomes the receipt and the rest are
+ * recorded as duplicates for the technical approvers, as reconcile does. A
+ * failed listing keeps only the accepted copy.
+ */
+async function earlierCopies(
+  deps: SecurityApiDependencies,
+  intake: IntakeConfig,
+  row: SubmissionRow,
+  grant: ReporterGrant,
+  accepted: AdvisoryFacts,
+): Promise<AdvisoryFacts[]> {
+  const listing = await intake.advisories.findByMarker(
+    grant,
+    row.repository,
+    markerLine(row.marker),
+    sinceFirstAttempt(await firstAttemptAt(deps, row)),
+  );
+  if (listing.kind === "error") return [accepted];
+  return earliestFirst([
+    accepted,
+    ...listing.matches.filter(
+      (match) =>
+        match.authorId === row.reporter_github_id &&
+        match.ghsa !== accepted.ghsa,
+    ),
+  ]);
+}
+
+function earliestFirst(matches: AdvisoryFacts[]): AdvisoryFacts[] {
+  return [...matches].sort(
+    (a, b) =>
+      a.createdAt.localeCompare(b.createdAt) || a.ghsa.localeCompare(b.ghsa),
+  );
 }
 
 /**
@@ -935,15 +1058,11 @@ async function reconcileSubmission(
     fail(409, "nothing_to_reconcile", "This submission is not uncertain");
   const grant = await requireGrant(request, deps, intake, row);
   if (row.state === "uncertain" && row.advisory_ghsa === null) {
-    const since = new Date(
-      Date.parse(row.attempt_started_at ?? row.updated_at) -
-        RECONCILE_WINDOW_MS,
-    ).toISOString();
     const listing = await intake.advisories.findByMarker(
       grant,
       row.repository,
-      markerLine(row.id, row.marker),
-      since,
+      markerLine(row.marker),
+      sinceFirstAttempt(await firstAttemptAt(deps, row)),
     );
     if (listing.kind === "error") {
       const unchanged = await transition(deps, row, {
@@ -953,13 +1072,25 @@ async function reconcileSubmission(
       });
       return grantResponse(202, unchanged ?? row);
     }
-    const matches = listing.matches
-      .filter((match) => match.authorId === row.reporter_github_id)
-      .sort(
-        (a, b) =>
-          a.createdAt.localeCompare(b.createdAt) ||
-          a.ghsa.localeCompare(b.ghsa),
-      );
+    const matches = earliestFirst(
+      listing.matches.filter(
+        (match) => match.authorId === row.reporter_github_id,
+      ),
+    );
+    if (
+      matches.length === 0 &&
+      deps.now().getTime() -
+        Date.parse(row.attempt_started_at ?? row.updated_at) <
+        RECONCILE_QUIET_MS
+    ) {
+      // Too soon to trust an empty listing: the send may still be landing.
+      const unchanged = await transition(deps, row, {
+        state: "uncertain",
+        kind: "reconcile-too-early",
+        actorGithubId: actor.githubId,
+      });
+      return grantResponse(202, unchanged ?? row);
+    }
     if (matches.length === 0) {
       const draft = await transition(deps, row, {
         state: "draft",

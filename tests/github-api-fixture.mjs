@@ -106,6 +106,7 @@ function privateIntakeFixture() {
         : null,
       author,
       credits_detailed: [{ user: author, type: "reporter" }],
+      submission: { accepted: false },
       state: "triage",
       created_at: new Date(Date.now() - 1000).toISOString(),
     };

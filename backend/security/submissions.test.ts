@@ -16,6 +16,7 @@ import { FAKE_OAUTH, fakeGithub } from "./github-advisories.fake";
 import { handleSecurityApi, type SecurityD1Database } from "./handler";
 import { githubIntakeOAuth, type IntakeConfig } from "./intake-grant";
 import { cvss3BaseScore, deterministicAnalyzer } from "./report-analysis";
+import { RECONCILE_QUIET_MS, SUBMITTED_LIMIT_MS } from "./submissions";
 
 // Several tests build more than one database with every migration.
 setDefaultTimeout(30_000);
@@ -456,8 +457,12 @@ describe("private intake: send outcomes", () => {
     expect(advisory.advisory.author.id).toBe(Number(REPORTER.githubId));
     const row = t.row(submission.id);
     expect(advisory.advisory.description).toContain(
-      `Slop private submission ${submission.id} marker ${row.marker}`,
+      `Report reference: ${row.marker}`,
     );
+    // The line stays if the advisory is ever published, so it names neither
+    // the Slop submission nor Slop.
+    expect(advisory.advisory.description).not.toContain(submission.id);
+    expect(advisory.advisory.description).not.toContain("Slop");
     const [verified] = t.cases();
     expect(verified).toMatchObject({
       id: row.case_id,
@@ -471,7 +476,8 @@ describe("private intake: send outcomes", () => {
       receipt_state: "received",
       severity: null,
       owner_github_id: MAINTAINER.githubId,
-      next_action: "Triage urgent private report",
+      // The analysis never shows in fields the reporter sees.
+      next_action: "Triage new private report",
     });
     expect(verified.receipt_evidence_digest).toMatch(/^[0-9a-f]{64}$/u);
     expect(row.evidence_digest).toBe(verified.receipt_evidence_digest);
@@ -479,8 +485,8 @@ describe("private intake: send outcomes", () => {
       grossMinor: "1000000",
       researcherMinor: "750000",
     });
-    // CVSS 9.8 is urgent: half the 24 hour acknowledgement target.
-    expect(verified.next_action_due_at).toBe("2026-10-23T22:00:00.000Z");
+    // The published 24 hour acknowledgement target, whatever the priority.
+    expect(verified.next_action_due_at).toBe("2026-10-24T10:00:00.000Z");
     const event = t.sqlite
       .query(
         "SELECT kind, actor_role, detail FROM security_case_events WHERE case_id = ?",
@@ -506,8 +512,11 @@ describe("private intake: send outcomes", () => {
       receivedAtSource: "github-verified",
       receivedAt: advisory.advisory.created_at,
       view: "reporter",
+      nextAction: "Triage new private report",
+      nextActionDueAt: "2026-10-24T10:00:00.000Z",
     });
     expect(JSON.stringify(view.body)).not.toContain("autoAnalysis");
+    expect(JSON.stringify(view.body)).not.toContain("urgent");
     // The grant is cleared once the receipt is verified.
     expect(t.jar(REPORTER).has("__Secure-slop_intake_grant")).toBe(false);
     // The maintainer sees GitHub-verified receipt and its evidence digest.
@@ -590,6 +599,7 @@ describe("private intake: send outcomes", () => {
     t.github.faults.create = "5xx-before-create";
     const sent = await t.send(submission.id, 1);
     expect(sent.body.submission?.state).toBe("uncertain");
+    t.advance(RECONCILE_QUIET_MS + 1000);
     const reconciled = await t.reconcile(
       submission.id,
       sent.body.submission?.revision as number,
@@ -688,9 +698,10 @@ describe("private intake: send outcomes", () => {
       { id: Number(OTHER.githubId), login: OTHER.githubLogin },
       {
         summary: "copied",
-        description: `copy\n\nSlop private submission ${submission.id} marker ${row.marker}`,
+        description: `copy\n\nReport reference: ${row.marker}`,
       },
     );
+    t.advance(RECONCILE_QUIET_MS + 1000);
     const reconciled = await t.reconcile(
       submission.id,
       sent.body.submission?.revision as number,
@@ -719,6 +730,7 @@ describe("private intake: send outcomes", () => {
     expect(late.body.error).toBe("reconcile_required");
     expect(t.row(submission.id).state).toBe("uncertain");
     expect(t.github.counts.posts).toBe(0);
+    t.advance(RECONCILE_QUIET_MS);
     const reconciled = await t.reconcile(submission.id, 3);
     expect(reconciled.body.submission).toMatchObject({
       state: "draft",
@@ -752,6 +764,110 @@ describe("private intake: send outcomes", () => {
     expect(replay.body).toMatchObject({ replayed: true });
     expect(replay.body.submission?.state).toBe("submitting");
     expect(t.github.counts.posts).toBe(0);
+  });
+
+  test("an empty listing right after the attempt keeps it uncertain, and a late copy is then adopted", async () => {
+    const t = setup();
+    const submission = await t.ready();
+    t.github.faults.create = "5xx-before-create";
+    const sent = await t.send(submission.id, 1);
+    expect(sent.body.submission?.reconcileAfter).toBe(
+      new Date(Date.parse(START) + RECONCILE_QUIET_MS).toISOString(),
+    );
+    // GitHub has not shown the copy yet.
+    t.advance(5_000);
+    const early = await t.reconcile(
+      submission.id,
+      sent.body.submission?.revision as number,
+    );
+    expect(early.status).toBe(202);
+    expect(early.body.submission).toMatchObject({
+      state: "uncertain",
+      retryAllowed: false,
+    });
+    const resend = await t.send(
+      submission.id,
+      early.body.submission?.revision as number,
+    );
+    expect(resend.body.error).toBe("reconcile_required");
+    // The cut-off send lands late.
+    const marker = t.row(submission.id).marker as string;
+    const late = t.github.seed(
+      REPO,
+      { id: Number(REPORTER.githubId), login: REPORTER.githubLogin },
+      { summary: "late", description: `late\n\nReport reference: ${marker}` },
+      new Date(Date.parse(START) + 2_000).toISOString(),
+    );
+    t.advance(RECONCILE_QUIET_MS);
+    const reconciled = await t.reconcile(
+      submission.id,
+      early.body.submission?.revision as number,
+    );
+    expect(reconciled.body.submission?.state).toBe("receipt-verified");
+    expect(t.cases()).toHaveLength(1);
+    expect(t.cases()[0].advisory_ghsa).toBe(late.ghsa_id);
+    expect(t.github.counts.posts).toBe(1);
+  });
+
+  test("a resend that races a late copy adopts the earliest and records the duplicate", async () => {
+    const t = setup();
+    const submission = await t.ready();
+    t.github.faults.create = "5xx-before-create";
+    const sent = await t.send(submission.id, 1);
+    t.advance(RECONCILE_QUIET_MS + 1000);
+    const reconciled = await t.reconcile(
+      submission.id,
+      sent.body.submission?.revision as number,
+    );
+    expect(reconciled.body.submission?.state).toBe("draft");
+    // The first attempt's copy becomes visible only after the empty listing.
+    const marker = t.row(submission.id).marker as string;
+    const late = t.github.seed(
+      REPO,
+      { id: Number(REPORTER.githubId), login: REPORTER.githubLogin },
+      { summary: "late", description: `late\n\nReport reference: ${marker}` },
+      new Date(Date.parse(START) + 2_000).toISOString(),
+    );
+    t.github.faults.create = "ok";
+    const again = await t.send(
+      submission.id,
+      reconciled.body.submission?.revision as number,
+    );
+    expect(again.body.submission?.state).toBe("receipt-verified");
+    const created = t.github.advisories.find(
+      (entry) => entry.advisory.ghsa_id !== late.ghsa_id,
+    )?.advisory.ghsa_id;
+    expect(t.cases()).toHaveLength(1);
+    expect(t.cases()[0]).toMatchObject({
+      advisory_ghsa: late.ghsa_id,
+      received_at: late.created_at,
+    });
+    const event = t.sqlite
+      .query("SELECT detail FROM security_case_events WHERE case_id = ?")
+      .get(t.cases()[0].id as string) as { detail: string };
+    expect(JSON.parse(event.detail).duplicateAdvisories).toEqual([created]);
+  });
+
+  test("a submitted report GitHub never lets Slop verify stops blocking new reports", async () => {
+    const t = setup();
+    const submission = await t.ready();
+    t.github.faults.get = "error";
+    const sent = await t.send(submission.id, 1);
+    expect(sent.body.submission?.state).toBe("submitted");
+    expect((await t.create()).body.error).toBe("submission_in_flight");
+    t.advance(SUBMITTED_LIMIT_MS + 1000);
+    const listed = await t.call(REPORTER, "GET", "security-submissions");
+    expect(
+      (listed.body.submissions as { id: string }[]).find(
+        (entry) => entry.id === submission.id,
+      ),
+    ).toMatchObject({ state: "failed", failureCode: "unverifiable" });
+    // It holds a GitHub advisory, so it is never resent.
+    const row = t.row(submission.id);
+    const resend = await t.send(submission.id, row.revision as number);
+    expect(resend.body.error).toBe("already_submitted");
+    expect(t.github.counts.posts).toBe(1);
+    expect((await t.create()).status).toBe(201);
   });
 
   test("a 201 that is not the reporter's well-formed advisory is uncertain", async () => {
@@ -792,6 +908,7 @@ describe("private intake: direct GitHub reports", () => {
     t: ReturnType<typeof setup>,
     author: Account,
     createdAt = "2026-10-20T08:30:00.000Z",
+    extra?: Parameters<ReturnType<typeof setup>["github"]["seed"]>[4],
   ) => {
     const advisory = t.github.seed(
       REPO,
@@ -802,6 +919,7 @@ describe("private intake: direct GitHub reports", () => {
         severity: "high",
       },
       createdAt,
+      extra,
     );
     const created = await t.create(REPORTER, {
       origin: "direct",
@@ -830,9 +948,111 @@ describe("private intake: direct GitHub reports", () => {
       next_action: "Triage new private report",
     });
     const event = t.sqlite
-      .query("SELECT kind FROM security_case_events WHERE case_id = ?")
-      .get(row.id as string) as { kind: string };
-    expect(event.kind).toBe("receipt-verified");
+      .query(
+        "SELECT kind, actor_github_id, actor_role, detail FROM security_case_events WHERE case_id = ?",
+      )
+      .get(row.id as string) as {
+      kind: string;
+      actor_github_id: string;
+      actor_role: string;
+      detail: string;
+    };
+    // The reporter's own action is linking their report; GitHub's record,
+    // not the reporter, verified the receipt.
+    expect(event).toMatchObject({
+      kind: "submit-direct",
+      actor_github_id: REPORTER.githubId,
+      actor_role: "reporter",
+    });
+    expect(JSON.parse(event.detail)).toMatchObject({
+      verifiedBy: "github",
+      receivedAtSource: "github-verified",
+    });
+    expect(row.verified_by_github_id).toBe("github");
+  });
+
+  test("a reporter credit on someone else's advisory is not authorship, and the author can still verify", async () => {
+    const t = setup();
+    // A maintainer credited REPORTER on OTHER's private report.
+    const { advisory, verified } = await direct(t, OTHER, undefined, {
+      credits_detailed: [
+        {
+          user: { id: Number(OTHER.githubId), login: OTHER.githubLogin },
+          type: "reporter",
+        },
+        {
+          user: { id: Number(REPORTER.githubId), login: REPORTER.githubLogin },
+          type: "reporter",
+        },
+      ],
+    });
+    expect(verified.body.submission).toMatchObject({
+      state: "failed",
+      failureCode: "author-mismatch",
+    });
+    expect(t.cases()).toHaveLength(0);
+    // The real author is not locked out.
+    const created = await t.create(OTHER, {
+      origin: "direct",
+      advisory: advisory.ghsa_id,
+    });
+    await t.authorize(OTHER, created.body.authorizeUrl as string);
+    const own = await t.call(
+      OTHER,
+      "POST",
+      `security-submissions/${created.body.submission?.id}/verify`,
+      { expectedRevision: 1 },
+    );
+    expect(own.body.submission?.state).toBe("receipt-verified");
+    expect(t.cases()).toHaveLength(1);
+    expect(t.cases()[0].reporter_github_id).toBe(OTHER.githubId);
+  });
+
+  test("an advisory that is not a live private report is never an automatic receipt", async () => {
+    for (const extra of [
+      // A repository advisory the reporter drafted as a maintainer.
+      { submission: null },
+      { state: "closed" },
+      { state: "withdrawn" },
+    ]) {
+      const t = setup();
+      const { verified } = await direct(t, REPORTER, undefined, extra);
+      expect(verified.body.submission).toMatchObject({
+        state: "failed",
+        failureCode: "not-private-report",
+      });
+      expect(t.cases()).toHaveLength(0);
+      expect(t.outbox()).toEqual([]);
+    }
+  });
+
+  test("two concurrent verifications of one submission both answer with the one verified case", async () => {
+    const t = setup();
+    const advisory = t.github.seed(
+      REPO,
+      { id: Number(REPORTER.githubId), login: REPORTER.githubLogin },
+      { summary: "Filed on GitHub", description: "Direct" },
+      "2026-10-20T08:30:00.000Z",
+    );
+    const created = await t.create(REPORTER, {
+      origin: "direct",
+      advisory: advisory.ghsa_id,
+    });
+    await t.authorize(REPORTER, created.body.authorizeUrl as string);
+    const path = `security-submissions/${created.body.submission?.id}/verify`;
+    const results = await Promise.all([
+      t.call(REPORTER, "POST", path, { expectedRevision: 1 }),
+      t.call(REPORTER, "POST", path, { expectedRevision: 1 }),
+    ]);
+    for (const result of results) {
+      expect(result.status).toBe(200);
+      expect(result.body.submission?.state).toBe("receipt-verified");
+    }
+    expect(t.cases()).toHaveLength(1);
+    expect(t.row(created.body.submission?.id as string)).toMatchObject({
+      state: "receipt-verified",
+      failure_code: null,
+    });
   });
 
   test("another user's advisory fails as author-mismatch with no case", async () => {

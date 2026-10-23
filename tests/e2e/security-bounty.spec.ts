@@ -1851,6 +1851,8 @@ test("automatic private intake files as the reporter and verifies receipt @regis
     expect(mine.body.case).toMatchObject({
       receivedAtSource: "github-verified",
       view: "reporter",
+      // The automatic analysis never shows in fields the reporter sees.
+      nextAction: "Triage new private report",
     });
     // The maintainer's case needs no link check, only triage.
     const maintainer = await api(
@@ -1862,7 +1864,7 @@ test("automatic private intake files as the reporter and verifies receipt @regis
     expect(maintainer.body.case).toMatchObject({
       submissionState: "verified",
       receivedAtSource: "github-verified",
-      nextAction: "Triage urgent private report",
+      nextAction: "Triage new private report",
     });
     expect(
       (maintainer.body.case as { allowedActions: string[] }).allowedActions,
