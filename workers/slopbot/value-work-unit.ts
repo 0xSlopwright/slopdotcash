@@ -13,6 +13,7 @@ import {
   valueEvidenceMatchesRepository,
 } from "./value-evidence";
 import { mergeResolutionMatches } from "./value-merge-resolution";
+import { retainedCopyBindings } from "./value-retained-copy";
 import { valueSourceDigest } from "./value-review";
 
 export interface WorkUnitSource {
@@ -28,6 +29,11 @@ export interface WorkUnitClaim {
   carrierPullRequestIds: string[];
   creditPullRequestId: string;
   implementationActorNodeIds: string[];
+  retainedCopy?: {
+    acceptancePullRequestId: string;
+    acceptedCommitSha: string;
+    preexistingCommitShas: string[];
+  };
 }
 
 export interface WorkUnitEvidence {
@@ -59,7 +65,8 @@ export async function prepareWorkUnitEvidence(
   );
   const ids = new Set<string>();
   const projects = new Set<string>();
-  const limitations = new Set<string>();
+  const retained = retainedCopyBindings(sources);
+  const limitations = new Set<string>(retained.limitations);
   const sourceDigests: WorkUnitEvidence["sourceDigests"] = [];
   const commits = new Map<string, string>();
   const importedPaths: { sourceId: string; originId: string; path: string }[] =
@@ -272,6 +279,63 @@ export async function prepareWorkUnitEvidence(
     );
     const first = origins[0];
     if (!first) throw new Error("Joint carriers have inconsistent ancestry");
+    const copied = retained.bindings.get(key);
+    if (copied) {
+      const origin = copied.original.evidence;
+      const originCommit = origin.commits.find(
+        (commit) => commit.sha === copied.originalCommitSha,
+      );
+      const repository = repositories.find((entry) =>
+        valueEvidenceMatchesRepository(origin, entry),
+      );
+      if (!originCommit || !repository)
+        throw new Error("Retained original identity is missing");
+      const actors = new Set<string>();
+      if (origin.pull.user.type !== "Bot") actors.add(origin.pull.user.node_id);
+      // A retained copy is accepted by the integration carrier, even when
+      // the original historical branch has since been renamed. Preserve a
+      // linked primary author only when both immutable commits agree.
+      if (
+        originCommit.author &&
+        isCreditEligibleCommitAuthor({
+          id: originCommit.author.node_id,
+          kind: originCommit.author.type,
+        })
+      ) {
+        const acceptedAuthor = copied.integration.evidence.commits.find(
+          (commit) => commit.sha === copied.acceptedCommitSha,
+        )?.author;
+        if (acceptedAuthor?.node_id !== originCommit.author.node_id)
+          limitations.add(
+            `${origin.pull.node_id}: retained primary author identity differs between commits`,
+          );
+        else actors.add(originCommit.author.node_id);
+      }
+      prepared.push({
+        id: await sha256Hex(
+          JSON.stringify([
+            claim.repositoryNodeId,
+            copied.originalCommitSha,
+            claim.path,
+          ]),
+        ),
+        repositoryNodeId: claim.repositoryNodeId,
+        commitSha: copied.originalCommitSha,
+        path: claim.path,
+        carrierPullRequestIds: ordered([
+          ...carriers.map(({ source }) => source.evidence.pull.node_id),
+          origin.pull.node_id,
+        ]),
+        creditPullRequestId: origin.pull.node_id,
+        implementationActorNodeIds: ordered(actors),
+        retainedCopy: {
+          acceptancePullRequestId: copied.integration.evidence.pull.node_id,
+          acceptedCommitSha: copied.acceptedCommitSha,
+          preexistingCommitShas: copied.preexistingCommitShas,
+        },
+      });
+      continue;
+    }
     prepared.push({
       id: await sha256Hex(key),
       repositoryNodeId: claim.repositoryNodeId,

@@ -217,6 +217,9 @@ export interface CommitAttribution {
   sha: string;
   actorNodeIds: string[];
   changedPaths: string[] | null;
+  // Private source evidence for retained-copy reconciliation. Paths alone
+  // cannot establish which original changes survived a cherry-pick.
+  files?: FileChange[];
   limitations: string[];
 }
 interface RelatedPullRequest {
@@ -795,6 +798,9 @@ export async function collectValueEvidence(
               ),
             ].sort()
           : null,
+      ...(changes.commit !== null && changes.limitations.length === 0
+        ? { files: changes.commit.files }
+        : {}),
       limitations: changes.limitations,
     };
     commitAttribution.push(attribution);
