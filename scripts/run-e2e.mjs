@@ -82,9 +82,18 @@ if (
 }
 const insideFixture = process.env.SLOP_E2E_WORKSPACE === "fixture";
 
-// Releases must exercise the online build without regenerating its journal.
-if (process.env.SLOP_E2E_PREBUILT !== "1") runSync("bun", ["run", "build"]);
-runSync("node", ["scripts/dist-manifest.mjs", "verify-local", "dist"]);
+// Explicit local-chain workflows use the seeded fixture, which builds and
+// verifies its own manifest below. They have no live-registry ledger to build
+// in the outer checkout. Release and ordinary browser checks retain that gate.
+const walletFixture =
+  !insideFixture &&
+  lane === "preview" &&
+  (process.env.SLOP_E2E_VAULT_ACTIONS === "1" ||
+    process.env.SLOP_E2E_SOLANA_VAULT === "1");
+if (!walletFixture) {
+  if (process.env.SLOP_E2E_PREBUILT !== "1") runSync("bun", ["run", "build"]);
+  runSync("node", ["scripts/dist-manifest.mjs", "verify-local", "dist"]);
+}
 
 // The preview phase binds the base port and Pages binds the next one.
 const basePort = Number(process.env.SLOP_E2E_PORT ?? "4466");
