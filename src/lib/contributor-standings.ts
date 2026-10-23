@@ -12,8 +12,10 @@ export function contributorStandings(
   members: readonly PointsMember[] | null,
   month: string | null,
   projectId: string,
-  directTransfers: readonly DirectTransfer[] = [],
+  directTransfers: readonly DirectTransfer[] | null = null,
 ) {
+  // An unavailable source is not an empty history or a complete Paid total.
+  const moneyAvailable = state.status === "ready" && directTransfers !== null;
   const scoreAvailable =
     state.status === "ready" &&
     (!month ||
@@ -46,7 +48,7 @@ export function contributorStandings(
         actor: currentActors.get(actor.id) ?? actor,
         score: scoreAvailable ? 0 : null,
         points: members ? 0 : null,
-        money: state.status === "ready" ? 0n : null,
+        money: moneyAvailable ? 0n : null,
       };
       rows.set(actor.id, value);
     }
@@ -77,6 +79,7 @@ export function contributorStandings(
     for (const score of scores) row(score.actor).score = score.score;
     // Payment occurrence follows finalized settlement time, not the work month.
     for (const cycle of cycles) {
+      if (!moneyAvailable) continue;
       if (month && !cycle.settledAt?.startsWith(month)) continue;
       for (const contributor of cycle.contributors) {
         if (BigInt(contributor.paidMinor) > 0n) {
@@ -87,7 +90,7 @@ export function contributorStandings(
       }
     }
   }
-  if (state.status === "ready" && directTransfers.length > 0) {
+  if (state.status === "ready" && directTransfers !== null) {
     // Direct transfers name numeric GitHub IDs; rows may carry node IDs.
     const byNumericId = new Map<string, { id: string; login: string }>();
     for (const actor of [
@@ -115,5 +118,5 @@ export function contributorStandings(
     const value = row(member.actor);
     value.points = month ? member.monthly : member.total;
   }
-  return { rows: [...rows.values()], scoreAvailable };
+  return { rows: [...rows.values()], scoreAvailable, moneyAvailable };
 }

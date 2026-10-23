@@ -14,7 +14,7 @@ const contributors = {
   slopdotcash: { id: "202", login: "synthetic-slop", amount: "222220000" },
 };
 
-async function fixtures(page: Page) {
+async function fixtures(page: Page, paymentsAvailable = () => true) {
   await page.clock.setFixedTime(new Date(instant));
   await page.route(`${site}/**`, (route) =>
     route.fulfill({
@@ -46,6 +46,11 @@ async function fixtures(page: Page) {
   await page.route(
     "**/api/v1/payments/projects/*/direct-transfers",
     (route) => {
+      if (!paymentsAvailable())
+        return route.fulfill({
+          status: 503,
+          body: "Payment source unavailable",
+        });
       const projectId = new URL(route.request().url()).pathname.split("/")[5];
       const actor = contributors[projectId as keyof typeof contributors];
       return route.fulfill({
@@ -72,6 +77,74 @@ async function fixtures(page: Page) {
     },
   );
 }
+
+test("Paid standings preserve unavailable data and recover on retry", async ({
+  page,
+}, info) => {
+  let available = false;
+  const errors: string[] = [];
+  const failures: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("response", (response) => {
+    if (response.status() >= 400)
+      failures.push(`${response.status()} ${response.url()}`);
+  });
+  await fixtures(page, () => available);
+  await page.goto(`${site}/points?sort=money&period=lifetime`);
+  const standings = page.getByRole("region", {
+    name: "Contributor standings",
+    exact: true,
+  });
+  await expect(
+    standings.getByText("Payment records unavailable."),
+  ).toBeVisible();
+  await expect(standings.locator("tbody tr")).toHaveCount(0);
+  await expect(
+    standings.getByText("No recorded contributions match this view."),
+  ).toHaveCount(0);
+  expect(failures.length).toBeGreaterThan(0);
+  expect(
+    failures.every(
+      (failure) =>
+        failure.startsWith("503 ") && failure.endsWith("/direct-transfers"),
+    ),
+  ).toBe(true);
+  await page.screenshot({ path: info.outputPath("payments-unavailable.png") });
+  // Other metrics remain usable while the independent payment source fails.
+  await standings.getByRole("button", { name: "Score", exact: true }).click();
+  await expect(standings.locator("tbody tr").first()).toBeVisible();
+  await expect(
+    standings.locator("tbody tr").first().locator("td").last(),
+  ).toHaveText("Unavailable");
+  await standings.getByRole("button", { name: "Paid", exact: true }).click();
+  available = true;
+  failures.length = 0;
+  const retry = standings.getByRole("button", {
+    name: "Retry payment records",
+  });
+  await retry.focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    standings.getByRole("row").filter({ hasText: "synthetic-slop" }),
+  ).toContainText("$222.22");
+  await expect(
+    standings.getByRole("row").filter({ hasText: "synthetic-eliza" }),
+  ).toContainText("$111.11");
+  await expect(standings.locator("tbody tr").first()).toContainText(
+    "synthetic-slop",
+  );
+  await expect(retry).toHaveCount(0);
+  expect(errors).toEqual([]);
+  expect(failures).toEqual([]);
+  await page.screenshot({ path: info.outputPath("payments-recovered.png") });
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
+});
 
 test("history navigation keeps contributor standings scoped to the current project", async ({
   page,
