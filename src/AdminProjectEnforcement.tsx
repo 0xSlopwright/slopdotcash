@@ -184,8 +184,7 @@ export function ProjectEnforcementPanel({
       ) : null}
       {enforcement.moderation === "unconfigured" ? (
         <p className="admin-status">
-          Enforcement actions are unavailable: no project moderator is
-          configured. A maintainer must set PROJECT_MODERATOR_GITHUB_IDS.
+          Moderation is not configured. Contact the service operator.
         </p>
       ) : enforcement.moderation === "not-moderator" ? (
         <p className="admin-status">
