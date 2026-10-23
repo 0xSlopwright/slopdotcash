@@ -305,8 +305,19 @@ async function relatedPullRequests(
   // duplication; GitHub supplies the immutable identity and visibility.
   const candidates = new Map<string, { repository: string; number: number }>();
   for (const text of sourceTexts) {
-    for (const match of text.matchAll(
-      /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:pull|issues)\/(\d+)\b|(?<![\w/])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)[ \t]*)?#(\d+)\b/gu,
+    // Link destinations own the reference scope. In release notes, a label
+    // such as #412 may point to an upstream repository rather than this one.
+    const referencesText = text
+      .replace(
+        /<a\b[^>]*\bhref=(["'])(https:\/\/(?:redirect\.)?github\.com\/[^"']+)\1[^>]*>[\s\S]*?<\/a>/giu,
+        "$2",
+      )
+      .replace(
+        /\[[^\]\n]*\]\((https:\/\/(?:redirect\.)?github\.com\/[^\s)]+)\)/gu,
+        "$1",
+      );
+    for (const match of referencesText.matchAll(
+      /https:\/\/(?:redirect\.)?github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:pull|issues)\/(\d+)\b|(?<![\w/])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)[ \t]*)?#(\d+)\b/gu,
     )) {
       const targetRepository = match[1] ?? match[3] ?? repository;
       const targetNumber = Number(match[2] ?? match[4]);
