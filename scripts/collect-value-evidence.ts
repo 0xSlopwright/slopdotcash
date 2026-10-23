@@ -15,15 +15,23 @@ import {
   fetchProjectRegistry,
   renderProjectRevisions,
 } from "./sync-project-registry.mjs";
+import { collectMergeResolutions } from "./value-merge-resolution";
 
 const [repository, numberText, directory, ...contextArgs] =
   process.argv.slice(2);
 if (!repository || !numberText || !directory)
   throw new Error(
-    "Usage: bun scripts/collect-value-evidence.ts owner/repo PR_NUMBER /absolute/private-output-directory [context-path | --context-at SHA path ...]",
+    "Usage: bun scripts/collect-value-evidence.ts owner/repo PR_NUMBER /absolute/private-output-directory [--local-git /absolute/repository] [context-path | --context-at SHA path ...]",
   );
 const contextPaths: ValueContextSelection[] = [];
+let localGit: string | undefined;
 for (let index = 0; index < contextArgs.length; index += 1) {
+  if (contextArgs[index] === "--local-git") {
+    localGit = contextArgs[++index];
+    if (!localGit || !isAbsolute(localGit))
+      throw new Error("--local-git requires an absolute repository path");
+    continue;
+  }
   if (contextArgs[index] !== "--context-at") {
     contextPaths.push(contextArgs[index]);
     continue;
@@ -101,7 +109,10 @@ const collected = await collectValueEvidence(
   Number(numberText),
   repositoryPolicy,
 );
-const evidence = await collectValueContext(client, collected, contextPaths);
+const contextual = await collectValueContext(client, collected, contextPaths);
+const evidence = localGit
+  ? await collectMergeResolutions(contextual, localGit)
+  : contextual;
 const bytes = `${JSON.stringify(evidence, null, 2)}\n`;
 const digest = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const path = `${canonicalOutput}/${repository.replace("/", "-")}-${numberText}-${digest}.json`;
