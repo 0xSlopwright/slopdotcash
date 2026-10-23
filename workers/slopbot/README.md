@@ -411,7 +411,7 @@ blob reader permits at most 48 reads, 512 KiB per file and 2 MiB per recovery
 range. Missing, changed or invalid bytes retain the limitation; zero line
 counts alone are insufficient. A rename proves no new content or extra award.
 
-When a modified text file has no complete patch, the collector can retain a
+When a modified or renamed text file has no complete patch, the collector can retain a
 `fullComparison` with the complete old and new text, verified Git blob hashes,
 and immutable refs. The old version comes from the submitted merge base or
 accepted first parent. It does not manufacture a patch. Invalid UTF-8, binary,
@@ -419,6 +419,12 @@ missing and oversized files remain unresolved. The bounded shared reader limits
 this recovery to 48 reads, 512 KiB per file and 2 MiB per range. Squash matching
 also compares the recovered blob pairs. Both texts remain private and are
 included in the source digest that publication revalidates.
+
+For a changed rename, read the old path at the base and the new path at the
+head. GitHub can report zero changed lines while those blobs differ. Preserve
+the reported counts and missing patch; the complete texts provide the evidence.
+An identical rename still uses the unchanged-rename proof above. A missing old
+path or unverified file leaves the evidence gap open.
 
 An unchanged file can prove or disprove a review claim. Pass its repository path
 after the output directory in `scripts/collect-value-evidence.ts`. The collector
