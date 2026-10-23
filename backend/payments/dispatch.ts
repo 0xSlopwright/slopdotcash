@@ -1,4 +1,4 @@
-import type { D1TransactionalDatabase as D1Database } from "../d1";
+import type { D1TransactionalDatabase as D1Database, D1Statement } from "../d1";
 import {
   notifyPayoutException,
   notifyPayoutHeld,
@@ -27,6 +27,7 @@ export async function dispatchPayment(
   executor: PaymentExecutor,
   obligationId: string,
   now: Date,
+  heldNotices?: (obligationId: string, at: string) => Promise<D1Statement[]>,
 ): Promise<"submitted" | "unavailable"> {
   const timestamp = now.toISOString();
   const lease = crypto.randomUUID();
@@ -66,8 +67,12 @@ export async function dispatchPayment(
           "UPDATE payment_outbox SET state='held',lease_token=NULL,lease_until=NULL,updated_at=? WHERE obligation_id=? AND lease_token=?",
         )
         .bind(timestamp, obligationId, lease),
-      notifyPayoutHeld(db, obligationId, timestamp),
-      notifyPayoutException(db, obligationId, timestamp),
+      ...(heldNotices
+        ? await heldNotices(obligationId, timestamp)
+        : [
+            notifyPayoutHeld(db, obligationId, timestamp),
+            notifyPayoutException(db, obligationId, timestamp),
+          ]),
     ]);
     return "unavailable";
   }

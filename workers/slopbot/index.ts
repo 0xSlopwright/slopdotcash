@@ -1,18 +1,30 @@
 // Slopbot GitHub App service (draft, docs/slopbot-v2-proposal.md).
 // fetch: verify and deduplicate webhooks, then enqueue identifiers only.
 // queue: re-read GitHub state and run the review pipeline.
+import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+import { resumeBudgetBlocks } from "./budget-blocks";
 import type { Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import * as store from "./persistence";
+import { QUALITY_MARKER } from "./quality";
 import { registeredRepository } from "./registry";
-import { type ReviewEnv, recordHumanSignal, reviewItem } from "./review";
+import { recordHumanSignal, reviewItem } from "./review";
+import { dispatchSpendAlert } from "./spend-alerts";
+import {
+  consumePendingValueRequest,
+  type ValueConsumerEnv,
+} from "./value-consumer";
+import { valueHistory } from "./value-journal";
+import { recordValueRequest } from "./value-requests";
+import { workUnitHistory } from "./value-work-unit-journal";
 import { readWebhookBody } from "./webhook-body";
 
 type Queue = { send(body: Job): Promise<void> };
-type Env = Omit<ReviewEnv, "SLOPBOT_DB"> & {
+type Env = Omit<ValueConsumerEnv, "SLOPBOT_DB"> & {
   SLOPBOT_DB: store.D1TransactionalDatabase;
   SLOPBOT_WEBHOOK_SECRET: string;
   SLOPBOT_QUEUE: Queue;
+  SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
 };
 
 const MAX_WEBHOOK_BYTES = 25 * 1024 * 1024;
@@ -24,6 +36,13 @@ const REVIEW_ACTIONS: Record<string, ReadonlySet<string>> = {
     "synchronize",
     "ready_for_review",
   ]),
+};
+
+const VALUE_ACTIONS: Record<string, ReadonlySet<string>> = {
+  pull_request: new Set(["closed", "reopened", "edited", "synchronize"]),
+  pull_request_review: new Set(["submitted", "edited", "dismissed"]),
+  pull_request_review_comment: new Set(["created", "edited", "deleted"]),
+  issue_comment: new Set(["created", "edited", "deleted"]),
 };
 
 type Payload = {
@@ -42,10 +61,10 @@ type Payload = {
   sender?: { id: number; type: string };
   issue?: { number: number; pull_request?: unknown };
   pull_request?: { number: number };
-  comment?: { body: string };
+  comment?: { body: string; id?: number };
 };
 
-function jobFor(
+export function jobFor(
   event: string,
   deliveryId: string,
   payload: Payload,
@@ -60,7 +79,13 @@ function jobFor(
     action === undefined
   )
     return null;
-  if (String(sender.id) === appUserId) return null;
+  const qualityReceipt =
+    event === "issue_comment" &&
+    action === "created" &&
+    payload.comment?.body.startsWith(`${QUALITY_MARKER}\n`) &&
+    Number.isSafeInteger(payload.comment.id) &&
+    Number(payload.comment.id) > 0;
+  if (String(sender.id) === appUserId && !qualityReceipt) return null;
   const base = {
     deliveryId,
     installationId: installation.id,
@@ -85,6 +110,13 @@ function jobFor(
         : null;
   if (item === null) return null;
   if (event === "issue_comment") {
+    if (qualityReceipt && item.itemKind === "pull_request")
+      return {
+        kind: "review",
+        ...base,
+        ...item,
+        qualityCommentId: payload.comment?.id,
+      };
     if (
       action !== "created" ||
       !(payload.comment?.body ?? "").trim().startsWith("/slopbot appeal")
@@ -160,6 +192,71 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") {
       return Response.json({ service: "slopbot", ok: true });
     }
+    const jointHistory = url.pathname === "/v1/work-unit-assessments";
+    if (
+      request.method === "GET" &&
+      (jointHistory || url.pathname === "/v1/value-assessments")
+    ) {
+      const repository = findRegisteredRepositoryById(
+        url.searchParams.get("repository") ?? "",
+      );
+      const number = url.searchParams.get("pull") ?? "";
+      const after = url.searchParams.get("after") ?? "0";
+      const through = jointHistory ? url.searchParams.get("through") : null;
+      if (
+        !repository ||
+        !/^[1-9][0-9]*$/u.test(number) ||
+        !/^(0|[1-9][0-9]*)$/u.test(after) ||
+        !Number.isSafeInteger(Number(number)) ||
+        !Number.isSafeInteger(Number(after)) ||
+        (jointHistory && Number(after) > 0 && through === null) ||
+        (through !== null &&
+          (!/^(0|[1-9][0-9]*)$/u.test(through) ||
+            !Number.isSafeInteger(Number(through)) ||
+            Number(through) < Number(after)))
+      )
+        return Response.json(
+          { error: "Invalid value-history query" },
+          { status: 400 },
+        );
+      try {
+        const history = jointHistory
+          ? await workUnitHistory(
+              env.SLOPBOT_DB,
+              repository.id,
+              Number(number),
+              Number(after),
+              through === null ? null : Number(through),
+            )
+          : await valueHistory(
+              env.SLOPBOT_DB,
+              repository.id,
+              Number(number),
+              Number(after),
+            );
+        return Response.json(
+          {
+            schemaVersion: jointHistory
+              ? "slop-work-unit-history:v1"
+              : "slop-value-history:v1",
+            repository: repository.id,
+            pullRequestNumber: Number(number),
+            ...history,
+          },
+          {
+            headers: {
+              "cache-control": "no-store",
+              "x-content-type-options": "nosniff",
+            },
+          },
+        );
+      } catch {
+        return Response.json(
+          { error: "Value history is unavailable" },
+          { status: 503, headers: { "cache-control": "no-store" } },
+        );
+      }
+    }
     if (request.method !== "POST" || url.pathname !== "/github/webhook") {
       return new Response("not found", { status: 404 });
     }
@@ -188,8 +285,19 @@ export default {
     } catch {
       return new Response("invalid body", { status: 400 });
     }
+    let payload: Payload;
+    try {
+      payload = JSON.parse(text) as Payload;
+      if (
+        typeof payload !== "object" ||
+        payload === null ||
+        Array.isArray(payload)
+      )
+        return new Response("invalid payload", { status: 400 });
+    } catch {
+      return new Response("invalid JSON", { status: 400 });
+    }
     if (event === "installation") {
-      const payload = JSON.parse(text) as Payload;
       if (
         !(await store.claimInstallationDelivery(
           env.SLOPBOT_DB,
@@ -206,22 +314,67 @@ export default {
       return new Response("duplicate delivery", { status: 202 });
     }
     try {
-      const payload = JSON.parse(text) as Payload;
+      // Changes to accepted outcomes and their reviews must survive restarts.
+      // This receipt is pending assessment, never a successful valuation.
+      let valuationPending = false;
+      const valueNumber =
+        event === "issue_comment"
+          ? payload.issue?.pull_request
+            ? payload.issue.number
+            : undefined
+          : payload.pull_request?.number;
+      if (
+        payload.action &&
+        VALUE_ACTIONS[event]?.has(payload.action) &&
+        payload.installation &&
+        payload.repository &&
+        valueNumber !== undefined
+      ) {
+        const request = {
+          deliveryId,
+          installationId: payload.installation.id,
+          repositoryId: payload.repository.id,
+          owner: payload.repository.owner.login,
+          repo: payload.repository.name,
+          number: valueNumber,
+        };
+        if (await registeredRepository(env.SLOPBOT_DB, request)) {
+          await recordValueRequest(env.SLOPBOT_DB, request);
+          valuationPending = true;
+        }
+      }
       const job = jobFor(event, deliveryId, payload, env.SLOPBOT_APP_USER_ID);
       if (job !== null) {
-        if (!(await registeredRepository(env.SLOPBOT_DB, job)))
+        if (!(await registeredRepository(env.SLOPBOT_DB, job))) {
+          await store.completeDelivery(env.SLOPBOT_DB, deliveryId);
           return new Response("repository is not active in the Slop registry", {
             status: 202,
           });
+        }
         await env.SLOPBOT_QUEUE.send(job);
       }
-      return new Response(job === null ? "ignored" : "queued", {
-        status: 202,
-      });
+      await store.completeDelivery(env.SLOPBOT_DB, deliveryId);
+      return new Response(
+        job === null
+          ? valuationPending
+            ? "valuation pending"
+            : "ignored"
+          : "queued",
+        {
+          status: 202,
+        },
+      );
     } catch (error) {
       await store.releaseDelivery(env.SLOPBOT_DB, deliveryId);
       throw error;
     }
+  },
+
+  async scheduled(_event: unknown, env: Env) {
+    await resumeBudgetBlocks(env.SLOPBOT_DB, env.SLOPBOT_QUEUE);
+    if (env.SLOP_NOTIFY)
+      await dispatchSpendAlert(env.SLOPBOT_DB, env.SLOP_NOTIFY);
+    await consumePendingValueRequest(env);
   },
 
   async queue(
@@ -256,7 +409,10 @@ export default {
           }),
         );
         // Back off for GitHub's secondary content-creation limits (BOT-13).
-        message.retry({ delaySeconds: 60 });
+        message.retry({
+          delaySeconds:
+            error instanceof store.ReviewBusyError ? error.delaySeconds : 60,
+        });
       }
     }
   },

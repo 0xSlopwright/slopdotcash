@@ -361,7 +361,7 @@ textarea:focus-visible {
 
 .payment-stages {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   margin: 28px 0 0;
   padding: 0;
   list-style: none;
@@ -3866,8 +3866,31 @@ small {
   font-size: 24px;
 }
 
-.update-changes td {
+.project-change {
+  padding-block: 20px;
+  border-top: 1px solid var(--line);
+}
+
+.project-change h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+
+.project-change dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: 16px;
+  margin: 0;
+}
+
+.project-change dt {
+  font-weight: 700;
+}
+
+.project-change dd {
+  margin: 8px 0 0;
   overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 /* Funding records and the maintainer payout workspace are separate views. */
@@ -4713,6 +4736,37 @@ small {
 }
 
 /* Private security bounty pages (SecurityBounty.tsx). */
+.security-case,
+.security-case > * {
+  min-width: 0;
+}
+
+.security-case .admin-facts {
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+}
+
+.security-case h3 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.security-payment-request {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin-top: 8px;
+  padding: 12px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--brand-font-data);
+  font-size: 12px;
+  white-space: pre;
+  overflow: auto;
+}
+
 .admin-intro .security-lead {
   color: var(--ink);
   font-size: 18px;
@@ -4720,13 +4774,68 @@ small {
 }
 
 .security-page .admin-card ul,
-.security-case-list,
 .security-history {
   display: grid;
   gap: 6px;
   margin: 0;
   padding-left: 18px;
   font-size: 13px;
+}
+
+.security-case-list {
+  margin: 0;
+  font-size: 13px;
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.security-case-choice {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 0.35rem 1rem;
+  padding: 1rem;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.security-case-choice[aria-pressed="true"] {
+  border-color: currentColor;
+}
+
+.security-reference {
+  margin-block: 1rem;
+}
+
+.security-award-split {
+  display: grid;
+  grid-template-columns: 3fr 1fr;
+  gap: 0.5rem;
+  margin-block: 1rem 1.5rem;
+}
+
+.security-award-split > div {
+  display: grid;
+  gap: 0.5rem;
+  padding-block: 0.75rem;
+  border-top: 0.5rem solid currentColor;
+}
+
+.security-award-split strong {
+  font-size: clamp(1rem, 3vw, 1.75rem);
+}
+
+@media (max-width: 480px) {
+  .security-case-choice {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .security-handoff {
@@ -4778,6 +4887,15 @@ small {
   font-weight: 400;
 }
 
+.points-revisions dd {
+  margin-inline-start: 0;
+  overflow-wrap: anywhere;
+}
+.points-revisions dt {
+  font-weight: 600;
+  margin-block-start: 0.5rem;
+}
+
 .reward-exact-amount {
   display: inline-block;
   white-space: nowrap;
@@ -4790,4 +4908,85 @@ small {
   .standings-scroll-hint {
     display: block;
   }
+}
+
+.admin-project-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.admin-project-summary h3,
+.admin-project-summary p {
+  margin: 0;
+}
+
+.vault-actions code {
+  overflow-wrap: anywhere;
+}
+
+.vault-actions label {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.vault-actions input:not([type="radio"]) {
+  width: 100%;
+  min-width: 0;
+  padding: 10px;
+  font: inherit;
+}
+
+.vault-operation {
+  border: 0;
+  padding: 0;
+  margin: 0 0 12px;
+  min-width: 0;
+}
+.vault-operation label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.vault-operation input[type="radio"] {
+  flex: 0 0 auto;
+  margin-top: 0.3em;
+}
+
+.owner-awards-page form {
+  display: grid;
+  gap: 1rem;
+  justify-items: start;
+  margin-block: 1.5rem 2rem;
+}
+
+.owner-awards-page form label {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.owner-award-list {
+  display: grid;
+  gap: 1.5rem;
+  padding-inline-start: 1.25rem;
+  margin-block: 1.5rem 2rem;
+}
+
+.owner-award-list li {
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.owner-award-list dl {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.5rem 1rem;
+  max-width: 36rem;
+}
+
+.owner-award-list dd {
+  margin: 0;
 }

@@ -102,8 +102,12 @@ export async function currentProjectSession(): Promise<ProjectSession | null> {
 
 export function submitProjectApplication(
   manifest: ProjectDefinition,
+  referrer: string | null,
 ): Promise<{ application: ProjectApplication }> {
-  return projectApiRequest("POST", "project-applications", { manifest });
+  return projectApiRequest("POST", "project-applications", {
+    manifest,
+    ...(referrer === null ? {} : { referrer }),
+  });
 }
 
 export type ProjectSessionState =

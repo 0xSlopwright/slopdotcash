@@ -38,6 +38,7 @@ import {
   pointMembers,
 } from "./lib/points";
 import { profileCounts } from "./lib/profiles";
+import { useProjectSession } from "./lib/project-api";
 import { findProject, PROJECTS } from "./lib/projects.mjs";
 import { useAllDirectTransfers } from "./lib/use-direct-transfers";
 import { type DataState, useSnapshot } from "./lib/use-snapshot";
@@ -57,6 +58,15 @@ export const loginHref = (next: string) =>
   `${productOrigin() ? "" : browserDeployment.site}${
     next === "/" ? "/login" : `/login?next=${encodeURIComponent(next)}`
   }`;
+
+function AdminAccountLink({ onNavigate }: { onNavigate: () => void }) {
+  const session = useProjectSession();
+  return session.status === "signed-in" && session.session.admin ? (
+    <Link href="/admin" onNavigate={onNavigate}>
+      Admin
+    </Link>
+  ) : null;
+}
 
 interface Membership {
   actor: { id: string; login: string };
@@ -392,11 +402,15 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
             Inbox
           </a>
           <a href="/earnings" onClick={navigate}>
-            Payouts and wallets
+            Payouts
           </a>
+          <Link href="/account#wallets" onNavigate={navigate}>
+            Wallets
+          </Link>
           <a href="/account" onClick={navigate}>
             Account settings
           </a>
+          <AdminAccountLink onNavigate={navigate} />
           <button type="button" onClick={() => void signout()} disabled={busy}>
             {busy ? "Signing out…" : "Sign out"}
           </button>
@@ -550,6 +564,14 @@ export function ProfilePoints({
       <ProfileActivity
         work={work}
         awards={m?.awards}
+        revisions={
+          state.status === "ready" && (resolvedActorId ?? m?.actor.id)
+            ? state.journal.revisions.filter(
+                (revision) =>
+                  revision.award.actor.id === (resolvedActorId ?? m?.actor.id),
+              )
+            : undefined
+        }
         login={login}
         actorId={resolvedActorId ?? m?.actor.id}
         census={census}
@@ -564,6 +586,9 @@ export function ProfilePoints({
                   <span key={badge}>{badge}</span>
                 ))}
                 <PublicXLink
+                  actorId={(m?.actor ?? identity?.actor ?? recorded!).id}
+                />
+                <PublicTelegramLink
                   actorId={(m?.actor ?? identity?.actor ?? recorded!).id}
                 />
                 {own ? <a href="/account">Manage account</a> : null}
@@ -962,29 +987,25 @@ const POINT_CATEGORIES: readonly (readonly [string, string, boolean])[] = [
 export function PointsPage() {
   return (
     <main className="shell route-main points-page">
-      <h1>Slop Points</h1>
-      <p>{POINTS_NOTICE}</p>
+      <h1>Leaderboard</h1>
       <p>
         <a href="/account">Account settings</a> ·{" "}
         <a href="#people">Find people</a> · <a href="#rules">Ways to earn</a>
       </p>
       <ContributorStandings />
       <section className="points-panel" id="rules">
-        <h2>Ways to earn</h2>
+        <h2>Ways to earn Points</h2>
+        <p>{POINTS_NOTICE}</p>
         <ul aria-label="Point categories" className="points-rules">
-          {POINT_CATEGORIES.map(([activity, points, ranked]) => (
+          {POINT_CATEGORIES.map(([activity, points]) => (
             <li key={activity}>
               <span>{activity}</span>
               <strong>{points}</strong>
-              <small>
-                {ranked
-                  ? "Counts in earned-point standings"
-                  : "Not in earned-point standings"}
-              </small>
             </li>
           ))}
         </ul>
         <p className="points-meta">
+          Joining and connection bonuses do not count in earned-point standings.
           Points never change Slop Score or Money received. Points persist
           across months, and corrections stay in the history. Review coverage
           before scoring records is limited.
@@ -1034,7 +1055,8 @@ export function ContributorStandings({
     };
   }, [projectId]);
   const [filters, setFilters] = useState(readFilters);
-  const { sort, period, query, project, page } = filters;
+  const { sort, period, query, page } = filters;
+  const project = projectId ?? filters.project;
   const setSort = (sort: StandingsSort) =>
     setFilters((v) => ({ ...v, sort, page: 0 }));
   const setPeriod = (period: string) =>
@@ -1123,7 +1145,11 @@ export function ContributorStandings({
       {compact ? (
         <p className="points-meta">
           This month (UTC) · verified payments.{" "}
-          <Link href="/points">Full standings</Link>
+          <Link
+            href={`/points?${new URLSearchParams({ project: projectId ?? project, period, sort })}`}
+          >
+            Full standings
+          </Link>
         </p>
       ) : null}
       {!scoreState ? (
@@ -1360,6 +1386,237 @@ export function PublicXLink({ actorId }: { actorId: string }) {
     <small>X link unavailable</small>
   ) : null;
 }
+type TelegramAccount = { username: string | null; verifiedAt: string };
+function telegramAccount(value: unknown): TelegramAccount {
+  const t = value as TelegramAccount;
+  if (
+    !t ||
+    (t.username !== null && !/^[A-Za-z0-9_]{5,32}$/.test(t.username)) ||
+    !Number.isFinite(Date.parse(t.verifiedAt))
+  )
+    throw new Error("Invalid Telegram identity");
+  return t;
+}
+function TelegramAccountLink({ account }: { account: TelegramAccount }) {
+  const title = `Account connected ${account.verifiedAt.slice(0, 10)}`;
+  return account.username ? (
+    <a
+      href={`https://t.me/${encodeURIComponent(account.username)}`}
+      target="_blank"
+      rel="noreferrer"
+      title={title}
+    >
+      Telegram · @{account.username}
+    </a>
+  ) : (
+    <span title={title}>Telegram · connected</span>
+  );
+}
+export function PublicTelegramLink({ actorId }: { actorId: string }) {
+  const [account, setAccount] = useState<TelegramAccount | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setAccount(null);
+    setFailed(false);
+    if (!productOrigin()) return;
+    const c = new AbortController();
+    void requestJson(
+      `/api/v1/points/telegram/profile?actor=${encodeURIComponent(actorId)}`,
+      { signal: c.signal },
+    )
+      .then((v) => setAccount(v ? telegramAccount(v) : null))
+      .catch(() => {
+        if (!c.signal.aborted) setFailed(true);
+      });
+    return () => c.abort();
+  }, [actorId]);
+  return account ? (
+    <span className="points-social-link">
+      <TelegramAccountLink account={account} />
+    </span>
+  ) : failed ? (
+    <small>Telegram link unavailable</small>
+  ) : null;
+}
+type TelegramState = {
+  configured: boolean;
+  account: (TelegramAccount & { id: string; public: number }) | null;
+  flow: { expiresAt: string } | null;
+};
+/**
+ * The browser never talks to Telegram. Connect issues a single-use deep link
+ * to the Slop bot; pressing Start in Telegram delivers the code to Slop, and
+ * this panel polls until the connection appears or the ten minutes run out.
+ */
+function TelegramConnection() {
+  const { me, setMe } = useContext(Context);
+  const [data, setData] = useState<TelegramState | null>(null);
+  const [link, setLink] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [publish, setPublish] = useState(false);
+  const [version, setVersion] = useState(0);
+  const waiting = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version explicitly refreshes the server state after account mutations and while a link is pending.
+  useEffect(() => {
+    if (!me || !productOrigin()) return;
+    const c = new AbortController();
+    void requestJson("/api/v1/points/telegram/me", { signal: c.signal })
+      .then((value) => {
+        const v = value as TelegramState;
+        if (
+          typeof v.configured !== "boolean" ||
+          (v.account && ![0, 1].includes(v.account.public)) ||
+          (v.flow && !Number.isFinite(Date.parse(v.flow.expiresAt)))
+        )
+          throw new Error("Invalid connection state");
+        if (v.account) telegramAccount(v.account);
+        if (!v.flow) {
+          setLink(null);
+          if (waiting.current)
+            setMessage(
+              v.account
+                ? "Telegram connected."
+                : "The Telegram link expired or could not be used. Start again.",
+            );
+        }
+        waiting.current = !!v.flow;
+        setData(v);
+      })
+      .catch(() => {
+        if (!c.signal.aborted)
+          setMessage(
+            "Telegram connection details are unavailable. Retry below.",
+          );
+      });
+    return () => c.abort();
+  }, [me, version]);
+  const pending = !!data?.flow;
+  useEffect(() => {
+    if (!pending) return;
+    const id = window.setInterval(() => setVersion((v) => v + 1), 3000);
+    return () => window.clearInterval(id);
+  }, [pending]);
+  async function action(path: string, body: unknown) {
+    setBusy(true);
+    setMessage("");
+    try {
+      const value = await requestJson(`/api/v1/points/telegram/${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (path === "start") {
+        const url = new URL((value as { url: string }).url);
+        if (url.origin !== "https://t.me") throw new Error("Invalid link");
+        setLink(url.href);
+        waiting.current = true;
+      }
+      setVersion((v) => v + 1);
+      if (path === "disconnect" || path === "visibility") {
+        if (me) setMe({ ...me });
+        setMessage(
+          path === "disconnect"
+            ? "Telegram disconnected."
+            : "Telegram visibility updated.",
+        );
+      }
+    } catch {
+      setMessage(
+        "Could not complete the Telegram connection request. Please retry.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (!me) return null;
+  if (!data)
+    return (
+      <>
+        <p role="status">{message || "Loading Telegram details…"}</p>
+        <button type="button" onClick={() => setVersion((v) => v + 1)}>
+          Retry Telegram details
+        </button>
+      </>
+    );
+  return (
+    <>
+      <div className="connection-row">
+        <strong>Telegram</strong>
+        <span>
+          {data.account ? (
+            <>
+              Connected · <TelegramAccountLink account={data.account} />
+            </>
+          ) : data.flow ? (
+            "Waiting for Telegram…"
+          ) : (
+            "Not connected"
+          )}
+        </span>
+        <span>No points</span>
+        {data.account ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void action("disconnect", {})}
+          >
+            Disconnect Telegram
+          </button>
+        ) : data.flow ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void action("cancel", {})}
+          >
+            Cancel Telegram connection
+          </button>
+        ) : data.configured ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void action("start", { public: publish })}
+          >
+            {busy ? "Preparing…" : "Connect Telegram"}
+          </button>
+        ) : (
+          <span>Not enabled yet</span>
+        )}
+      </div>
+      {data.flow && link ? (
+        <p role="status">
+          <a href={link} target="_blank" rel="noreferrer">
+            Open Telegram
+          </a>{" "}
+          and press Start to finish. The link works for ten minutes, once.
+        </p>
+      ) : null}
+      {data.account || data.configured ? (
+        <label>
+          <input
+            type="checkbox"
+            checked={data.account ? data.account.public === 1 : publish}
+            disabled={busy}
+            onChange={(e) =>
+              data.account
+                ? void action("visibility", { public: e.target.checked })
+                : setPublish(e.target.checked)
+            }
+          />
+          Show my Telegram account with my public membership
+        </label>
+      ) : null}
+      {data.account && !me.public ? (
+        <p>Your membership is private, so your Telegram link stays hidden.</p>
+      ) : null}
+      <p className="points-meta">
+        The Slop bot reads only the Start message you send it and keeps your
+        Telegram account ID, username and connection time. It awards no points.
+      </p>
+      <p role="status">{message}</p>
+    </>
+  );
+}
 function SocialConnections() {
   const { me, setMe } = useContext(Context);
   const [data, setData] = useState<{
@@ -1434,7 +1691,7 @@ function SocialConnections() {
   }
   if (!me) return null;
   return (
-    <section className="points-panel" aria-label="Connect X">
+    <section className="points-panel" aria-label="Connections">
       <h2>Connections</h2>
       {outcome === "connected" ? (
         <p role="status">X connected. Your connection points are recorded.</p>
@@ -1516,6 +1773,7 @@ function SocialConnections() {
           <p role="status">{message}</p>
         </>
       )}
+      <TelegramConnection />
     </section>
   );
 }
@@ -1524,6 +1782,7 @@ type Person = {
   welcome: number;
   socialPoints: number;
   x: XAccount | null;
+  telegram: TelegramAccount | null;
 };
 type MemberState =
   | { status: "loading" | "error" | "preview" }
@@ -1537,6 +1796,7 @@ function validPerson(p: Person) {
   )
     throw new Error("Invalid community member");
   if (p.x) xAccount(p.x);
+  if (p.telegram) telegramAccount(p.telegram);
 }
 /** Reads every public-member page; cursors must strictly advance. */
 async function loadMembers(signal: AbortSignal): Promise<Person[]> {
@@ -1710,6 +1970,9 @@ function People() {
                       </small>
                     ) : null}
                     {p.member?.x ? <XAccountLink account={p.member.x} /> : null}
+                    {p.member?.telegram ? (
+                      <TelegramAccountLink account={p.member.telegram} />
+                    ) : null}
                   </li>
                 );
               })}

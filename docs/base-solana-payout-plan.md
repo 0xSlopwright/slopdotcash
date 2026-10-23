@@ -18,7 +18,7 @@ This is a new financial protocol, not an additional chain selector. Existing pro
 - Fetched `origin/develop`: `4c657a4737b498b43847db0c2e5202f383a9ef24`. The findings below use this newer source unless explicitly labeled local.
 - Read the supplied repository instructions, local CONTRIBUTING.md and README, current upstream identity, wallet, funding, cycle, settlement, and deployment code, and relevant live GitHub issues and PR metadata.
 - The current local checkout is substantially behind upstream. In particular, Base wallet registration and additional payment controls already exist upstream. Implement from a fresh current canonical branch, not this dirty checkout.
-- No separate approved PRD or MVP plan was found by repository filename search. Their location was requested. This document converts the user's requirements into a proposed specification; it is not a claim that all remaining product decisions are approved.
+- Historical research note: the original review could not locate the requirements. The [canonical PRD](slop-product-requirements.md) now defines scope, delivery and open decisions. This research does not override it.
 - This was a source and architecture review. It did not run application tests, complete real GitHub login, inspect production D1, verify existing on-chain vaults, or deploy contracts. Source availability does not prove deployed availability.
 - New testnet deployment and application validation are deliverables of the implementation phases below. No mainnet migration is authorized by this plan.
 
@@ -224,7 +224,7 @@ Rollback means stop new commitments/dispatch, retain all obligations and receipt
 
 | Phase | Concrete changes | Completion evidence |
 |---|---|---|
-| 0. Requirements and authority | Adopt PRD/MVP changes; settle fee incidence, withdrawal policy, identity/admin authority, claim lifetime, minimum amount, refund ownership and upgrade policy. Reconcile #472, #334, #500 and #534. | Approved requirement-to-acceptance matrix and exact authority/fee examples; no contradictory public promises. |
+| 0. Requirements and authority | Adopt PRD changes; settle fee incidence, withdrawal policy, identity/admin authority, claim lifetime, minimum amount, refund ownership and upgrade policy. Reconcile #472, #334, #500 and #534. | Approved requirement-to-acceptance matrix and exact authority/fee examples; no contradictory public promises. |
 | 1. Shared protocol | Version project, award, wallet binding and settlement schemas; isolate network-specific encoding; preserve v1 readers; define accounting and message domains. | Legacy fixtures retain identical meaning; both chain encoders consume identical reviewed vectors; invalid cross-network/project replay is rejected. |
 | 2. Contracts | Implement EVM factory/vault and Solana program with matching deposits, reserves, obligations, destination binding, payments, refunds, fees and counters. | Local-validator integration, accounting invariants, adversarial transaction tests, measured gas/rent and independent review. |
 | 3. Identity and backend | Reuse OAuth and wallet lineages; add scoped sessions, destination authorization and administration; transactional outbox, dispatch attempts and finality indexing. | Real GitHub login and database migrations in isolated staging; concurrent registrations produce one valid successor; restart/retry cannot duplicate a payment. |
@@ -322,7 +322,7 @@ Keep the repository's required checks: frozen-lockfile install; leaderboard gene
 | Public funding | Limit creditable deposits to the declared funding model initially; any third-party funding terms must be explicit. | An arbitrary transfer cannot establish who may reclaim principal. |
 | Upgrade/emergency control | Immutable/versioned vaults where practical; explicitly decide Solana upgrade authority and narrowly bounded emergency controls. | Upgrade keys can override ordinary reserve guarantees. |
 | External prizes | Preserve historical external records; adopt escrow only after actual funding and reviewed conversion. | They currently sit outside Slop settlement. |
-| PRD/MVP and release branch | Obtain authoritative documents and resolve #534. | Prevents implementing against contradictory scope or deployment rules. |
+| PRD and release branch | Obtain authoritative documents and resolve #534. | Prevents implementing against contradictory scope or deployment rules. |
 
 ## Review outcome
 

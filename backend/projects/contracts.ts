@@ -54,10 +54,12 @@ export interface ProjectPersistence {
   listApplications(status: ApplicationStatus): Promise<ProjectApplication[]>;
   listApplicantApplications(githubId: string): Promise<ProjectApplication[]>;
   countPendingApplications(githubId: string): Promise<number>;
+  /** Membership is keyed by the immutable current GitHub actor ID. */
+  hasSignedInActor(githubId: string): Promise<boolean>;
   /** Returns "conflict" when the project or repository already has an open application. */
   createApplication(
     application: ProjectApplication & { manifestText: string },
-  ): Promise<"created" | "conflict">;
+  ): Promise<"created" | "conflict" | "too_many_pending">;
   recordAdminNotification(
     applicationId: string,
     outcome: Exclude<AdminNotification, "pending">,

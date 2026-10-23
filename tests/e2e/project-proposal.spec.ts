@@ -16,6 +16,11 @@ import {
   lookupGitHubRepository,
 } from "../../backend/projects/github-lookup";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
+import {
+  assertProjectDefinition,
+  MAX_PROJECT_ID_LENGTH,
+} from "../../src/lib/project-schema.mjs";
+import { REWARD_ASSET_NETWORKS } from "../../src/lib/reward-asset.mjs";
 
 const deployment = deploymentOrigins(
   deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
@@ -159,7 +164,10 @@ test("drafts a project through the setup steps and submits it for review", async
   await routeGitHub(page);
   // The registry API itself runs in the @registry lane; here it is a fixture
   // so the wizard's submission can be checked byte for byte.
-  let submitted: { manifest: Record<string, unknown> } | null = null;
+  let submitted: {
+    manifest: Record<string, unknown>;
+    referrer?: string;
+  } | null = null;
   await page.route("**/api/v1/project-session", (route) =>
     route.fulfill({
       json: {
@@ -193,11 +201,16 @@ test("drafts a project through the setup steps and submits it for review", async
           decisionReason: null,
           githubCheck:
             "Not proven: @example-maintainer is not a public member of example",
+          referrer: { githubId: "4343", githubLogin: "example-referrer" },
         },
       },
     });
   });
-  await page.goto("/projects/new", { waitUntil: "networkidle" });
+  // A referral link names the referrer; the draft keeps it across reloads
+  // and the applicant can clear it before submitting (PRJ-05).
+  await page.goto("/projects/new?ref=example-referrer", {
+    waitUntil: "networkidle",
+  });
   const steps = page.getByRole("navigation", { name: "Setup steps" });
   for (const label of ["Repository", "Contribution rules", "Rewards", "Review"])
     await expect(steps.getByRole("button", { name: label })).toBeVisible();
@@ -271,6 +284,11 @@ test("drafts a project through the setup steps and submits it for review", async
   await expect(preview).toContainText("$2,500 · unfunded pledge");
   await expect(preview).toContainText("Solana · payments disabled");
   await expect(preview).toContainText("MIT");
+  await expect(preview).toContainText("Referred by");
+  await expect(preview).toContainText("@example-referrer");
+  await expect(
+    preview.getByRole("button", { name: "Clear referral" }),
+  ).toBeVisible();
   const manifestDetails = page.locator("details.manifest-preview");
   await expect(manifestDetails).not.toHaveAttribute("open", "");
   const handoff = page.getByRole("button", { name: /Submit for review/u });
@@ -336,9 +354,10 @@ test("drafts a project through the setup steps and submits it for review", async
   await expect(
     page.getByRole("status").filter({ hasText: "Application submitted" }),
   ).toContainText(
-    "Application app_fixture0001 · submitted by @example-maintainer",
+    "Application app_fixture0001 · submitted by @example-maintainer · referred by @example-referrer",
   );
   expect(submitted).toMatchObject({
+    referrer: "example-referrer",
     manifest: {
       id: "open-protein",
       status: "paused",
@@ -669,3 +688,100 @@ test("a signed-in maintainer picks an owned repository and gets suggested text",
     errors.filter((message) => !message.includes("status of 401")),
   ).toEqual([]);
 });
+
+for (const [name, expectedId] of [
+  ["한글 프로젝트", "open-protein"],
+  [
+    `${"a".repeat(MAX_PROJECT_ID_LENGTH - 1)} b`,
+    "a".repeat(MAX_PROJECT_ID_LENGTH - 1),
+  ],
+]) {
+  test(`submits a valid project identity for ${name}`, async ({ page }) => {
+    const errors = observe(page);
+    await routeGitHub(page);
+    await page.route("**/api/v1/project-session", (route) =>
+      route.fulfill({
+        json: {
+          session: {
+            githubId: "4242",
+            githubLogin: "example-maintainer",
+            admin: false,
+          },
+        },
+      }),
+    );
+    // The server adds reviewed stablecoin metadata before schema validation.
+    const validate = (manifest: Record<string, unknown>) => {
+      const network = REWARD_ASSET_NETWORKS.base;
+      return assertProjectDefinition({
+        ...manifest,
+        rewardAsset: {
+          ...(manifest.rewardAsset as object),
+          decimals: network.stablecoin.decimals,
+          chainId: network.chainId,
+          cluster: network.cluster,
+          verifiedAt: "2026-10-20T00:00:00.000Z",
+        },
+      });
+    };
+    let submitted: unknown;
+    await page.route("**/api/v1/project-applications", async (route) => {
+      const manifest = route.request().postDataJSON().manifest;
+      submitted = manifest;
+      validate(manifest);
+      await route.fulfill({
+        status: 201,
+        json: {
+          application: {
+            id: "app_fixture_slug",
+            manifest: submitted,
+            applicant: { githubId: "4242", githubLogin: "example-maintainer" },
+          },
+        },
+      });
+    });
+    await page.goto("/projects/new", { waitUntil: "networkidle" });
+    await page
+      .getByLabel("Public GitHub repository")
+      .fill("example/open-protein");
+    await page.getByRole("button", { name: "Look up on GitHub" }).click();
+    await expect(page.locator(".lookup-status")).toContainText(
+      "Found example/open-protein",
+    );
+    await page
+      .getByRole("button", { name: "Next: Contribution rules" })
+      .click();
+    await page.getByLabel("Project name").fill(name);
+    await page
+      .getByLabel("Short description")
+      .fill("Reproducible protein-folding benchmarks.");
+    await page.getByLabel("Goal").fill("Make protein research reproducible.");
+    await page.getByRole("button", { name: "Next: Rewards" }).click();
+    await page.getByRole("button", { name: "Next: Review" }).click();
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("button", { name: "Download manifest" }).click(),
+    ]);
+    const path = await download.path();
+    if (!path) throw new Error("Missing manifest download");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    expect(() => validate(manifest)).not.toThrow();
+    expect(manifest).toMatchObject({
+      id: expectedId,
+      slug: expectedId,
+      name,
+      skill: {
+        id: `contribute-to-${expectedId}`,
+        publicPath: `/projects/${expectedId}/skill.md`,
+      },
+      reviewSkill: { id: `review-${expectedId}-contributions` },
+    });
+    expect(download.suggestedFilename()).toBe(`${expectedId}-project.json`);
+    await page.getByRole("button", { name: "Submit for review" }).click();
+    await expect(
+      page.getByRole("status").filter({ hasText: "Application submitted" }),
+    ).toContainText(name);
+    expect(submitted).toEqual(manifest);
+    expect(errors).toEqual([]);
+  });
+}

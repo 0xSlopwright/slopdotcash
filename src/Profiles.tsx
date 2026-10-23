@@ -4,7 +4,7 @@ import type { CycleIndex } from "./lib/cycle-index";
 import { githubUserIdFromNodeId } from "./lib/github-actor";
 import type { ScoreEvent } from "./lib/leaderboard";
 import { transactionUrl } from "./lib/payments/contracts";
-import { type PointsMember, pointKey } from "./lib/points";
+import { type PointRevision, type PointsMember, pointKey } from "./lib/points";
 import { dailySlopScore } from "./lib/profile-activity";
 import {
   assertProfiles,
@@ -61,6 +61,7 @@ function dollars(n: bigint) {
 export function ProfileActivity({
   work,
   awards,
+  revisions,
   login,
   actorId,
   showIdentity = false,
@@ -73,6 +74,7 @@ export function ProfileActivity({
   login: string;
   work?: readonly ScoreEvent[];
   awards?: PointsMember["awards"];
+  revisions?: readonly PointRevision[];
   actorId?: string;
   showIdentity?: boolean;
   cycles?: CycleIndex;
@@ -172,6 +174,7 @@ export function ProfileActivity({
       ) : counts ? (
         <PullRequestBar counts={counts} login={p?.login ?? login} />
       ) : null}
+      {revisions ? <PointsRevisionHistory revisions={revisions} /> : null}
       {children}
       <PayoutList payments={payments ?? []} direct={direct} />
       <ProfileTimeline work={work} awards={awards} />
@@ -313,6 +316,109 @@ function PayoutList({
         ))}
       </ul>
     </section>
+  );
+}
+
+function PointsRevisionHistory({
+  revisions,
+}: {
+  revisions: readonly PointRevision[];
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (!revisions.length) return null;
+  const byId = new Map(revisions.map((revision) => [revision.id, revision]));
+  const ordered = [...revisions].reverse();
+  return (
+    <details className="points-revisions">
+      <summary>Points decision history ({revisions.length})</summary>
+      <p>
+        Each entry replaces the prior amount for that contribution. Changes are
+        not additional full awards. Points have no monetary value.
+      </p>
+      <ol className="points-history">
+        {(expanded ? ordered : ordered.slice(0, 10)).map((revision) => {
+          const previous = revision.previous
+            ? byId.get(revision.previous)
+            : undefined;
+          const delta = revision.award.amount - (previous?.award.amount ?? 0);
+          return (
+            <li key={revision.id}>
+              <ExternalLinkAnchor href={revision.award.sourceUrl}>
+                {revision.award.category.replaceAll("-", " ")}
+              </ExternalLinkAnchor>
+              <p>
+                {previous?.award.amount.toLocaleString() ?? "0"} →{" "}
+                {revision.award.amount.toLocaleString()} Points · Change:{" "}
+                {delta > 0 ? "+" : ""}
+                {delta.toLocaleString()}
+                {revision.award.provisional ? " · Provisional" : ""}
+              </p>
+              <p>
+                {revision.decision?.reason ??
+                  "This earlier record does not include a separate decision reason."}
+              </p>
+              <dl>
+                <dt>Work occurred</dt>
+                <dd>
+                  <time dateTime={revision.award.occurredAt}>
+                    {new Date(revision.award.occurredAt).toLocaleString()}
+                  </time>
+                </dd>
+                <dt>Decision effective</dt>
+                <dd>
+                  {revision.decision ? (
+                    <time dateTime={revision.decision.effectiveAt}>
+                      {new Date(revision.decision.effectiveAt).toLocaleString()}
+                    </time>
+                  ) : (
+                    "Not recorded in this earlier revision"
+                  )}
+                </dd>
+                <dt>Recorded</dt>
+                <dd>
+                  <time dateTime={revision.recordedAt}>
+                    {new Date(revision.recordedAt).toLocaleString()}
+                  </time>
+                </dd>
+                <dt>Rule</dt>
+                <dd>{revision.sourceRule}</dd>
+                <dt>Revision</dt>
+                <dd>
+                  <code>{revision.id}</code>
+                </dd>
+                <dt>Predecessor</dt>
+                <dd>
+                  {revision.previous ? (
+                    <code>{revision.previous}</code>
+                  ) : (
+                    "First record"
+                  )}
+                </dd>
+                {revision.decision ? (
+                  <>
+                    <dt>Decision source</dt>
+                    <dd>
+                      <code>{revision.decision.sourceId}</code>
+                    </dd>
+                  </>
+                ) : null}
+              </dl>
+            </li>
+          );
+        })}
+      </ol>
+      {ordered.length > 10 ? (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded
+            ? "Show recent decisions"
+            : `View all ${ordered.length} decisions`}
+        </button>
+      ) : null}
+    </details>
   );
 }
 

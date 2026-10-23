@@ -1,4 +1,18 @@
 import { evmBindingTypedData } from "../../contracts/evm/adapter";
+import {
+  type SolanaEscrowConfig,
+  solanaMintDecimals,
+} from "../../contracts/solana/adapter";
+import {
+  checkSolanaCommitment,
+  prepareSolanaCommitment,
+} from "../../contracts/solana/commitment";
+import {
+  checkSolanaFunding,
+  prepareSolanaFunding,
+  SolanaFundingError,
+  type SolanaFundingIntent,
+} from "../../contracts/solana/funding";
 import { readBoundedJson } from "../../src/lib/browser-json";
 import {
   ESCROW_CHAINS,
@@ -13,9 +27,16 @@ import {
   type PaymentsAccount,
   VAULT_SNAPSHOT_STALE_MS,
 } from "../../src/lib/payments/contracts";
+import { parseVaultAmount } from "../../src/lib/payments/vault-amount";
 import { isWalletAddress, isWalletChain } from "../../src/lib/wallets";
 import { sha256Hex } from "../../workers/identity/crypto";
 import type { D1TransactionalDatabase as D1Database } from "../d1";
+import {
+  OwnerAwardReviewError,
+  type OwnerCommitmentInput,
+  type prepareOwnerCommitment,
+  type reviewOwnerAwards,
+} from "./owner-review";
 import {
   buildPaymentWalletMessage,
   canonicalEvmSignature,
@@ -26,7 +47,31 @@ import { slopbotInvoice } from "./slopbot-billing";
 import { projectVaultSnapshots } from "./vault-snapshots";
 import { registerPaymentWallet } from "./wallet-registration";
 
+function isOwnerCommitmentInput(body: unknown): body is OwnerCommitmentInput {
+  if (!body || typeof body !== "object") return false;
+  const input = body as OwnerCommitmentInput;
+  return (
+    typeof input.network === "string" &&
+    typeof input.githubUserId === "string" &&
+    /^[1-9][0-9]{0,19}$/.test(input.githubUserId) &&
+    [input.proposalSha256, input.decisionsSha256, input.manifestSha256].every(
+      (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value),
+    )
+  );
+}
+
 export interface PaymentsDependencies {
+  ownerCommitment?: (
+    projectId: string,
+    cycleId: string,
+    actor: { githubId: string; githubLogin: string },
+    expected: OwnerCommitmentInput,
+  ) => Promise<Awaited<ReturnType<typeof prepareOwnerCommitment>>>;
+  ownerAwardReview?: (
+    projectId: string,
+    cycleId: string,
+    actor: { githubId: string; githubLogin: string },
+  ) => Promise<Awaited<ReturnType<typeof reviewOwnerAwards>>>;
   db: D1Database;
   now?: () => Date;
   /** Additional trusted deployment origins; never sourced from request input. */
@@ -43,6 +88,18 @@ export interface PaymentsDependencies {
     | (() => Promise<readonly PaymentDeploymentIdentity[]>);
   /** Service binding to the Solana identity attester role; never request-supplied. */
   solanaAttester?: { fetch(request: Request): Promise<Response> };
+  /** Private bounty ledger and its separately scoped attester. Only the
+   * authenticated reporter's binding request may access this ledger. */
+  securityPayments?: {
+    db: D1Database;
+    solanaAttester?: { fetch(request: Request): Promise<Response> };
+  };
+  /** Resolve only a reviewed registry vault and an operator-configured RPC. No request URL or signing service. */
+  solanaFundingConfig?: (
+    projectId: string,
+    network: string,
+    vault: string,
+  ) => Promise<SolanaEscrowConfig>;
   /** Edge cache for public vault snapshot reads (caches.default on Pages). */
   edgeCache?: {
     match(request: Request): Promise<Response | undefined>;
@@ -104,6 +161,80 @@ export async function handlePaymentsApi(
   )
     return json(403, { error: "origin_forbidden" });
   try {
+    const fundingRoute =
+      /^\/projects\/([a-z0-9][a-z0-9-]*)\/solana-funding$/.exec(path);
+    if (fundingRoute && request.method === "POST") {
+      if (!deps.solanaFundingConfig)
+        return json(503, { error: "funding_unavailable" });
+      const body = (await readBoundedJson(
+        request,
+        4096,
+        "vault funding action",
+      )) as Record<string, unknown>;
+      if (
+        !body ||
+        (body.step !== "review" && body.step !== "check") ||
+        (body.operation !== "deposit" && body.operation !== "withdraw") ||
+        typeof body.network !== "string" ||
+        typeof body.vault !== "string" ||
+        typeof body.wallet !== "string" ||
+        !isWalletAddress("solana", body.wallet) ||
+        (body.step === "review" &&
+          (typeof body.amount !== "string" || body.amount.length > 80)) ||
+        (body.step === "check" &&
+          (typeof body.gross !== "string" ||
+            !/^[1-9][0-9]{0,19}$/.test(body.gross))) ||
+        (body.step === "check" &&
+          (typeof body.blockhash !== "string" ||
+            !isWalletAddress("solana", body.blockhash) ||
+            typeof body.transactionId !== "string" ||
+            body.transactionId.length > 100))
+      )
+        return json(400, { error: "invalid_funding_action" });
+      const config = await deps.solanaFundingConfig(
+        fundingRoute[1],
+        body.network,
+        body.vault,
+      );
+      let gross = body.gross as string;
+      if (body.step === "review") {
+        const decimals = await solanaMintDecimals(config, config.mint);
+        try {
+          gross = parseVaultAmount(body.amount as string, decimals).toString();
+        } catch {
+          return json(422, {
+            error: "invalid_funding_amount",
+            message:
+              "Enter a positive amount within this token's decimal precision and vault limit.",
+          });
+        }
+      }
+      const intent: Omit<SolanaFundingIntent, "blockhash"> = {
+        operation: body.operation,
+        wallet: body.wallet,
+        gross,
+      };
+      try {
+        if (body.step === "review")
+          return json(200, {
+            plan: await prepareSolanaFunding(config, intent),
+          });
+        return json(200, {
+          status: await checkSolanaFunding(
+            config,
+            { ...intent, blockhash: body.blockhash as string },
+            body.transactionId as string,
+          ),
+        });
+      } catch (error) {
+        if (error instanceof SolanaFundingError)
+          return json(422, {
+            error: "funding_action_rejected",
+            message: error.message,
+          });
+        throw error;
+      }
+    }
     const totalsRoute = /^\/projects\/([a-z0-9][a-z0-9-]*)\/totals$/.exec(path);
     if (totalsRoute && request.method === "GET") {
       const projectId = totalsRoute[1];
@@ -250,6 +381,189 @@ export async function handlePaymentsApi(
       .bind(await sha256Hex(token), now)
       .first<{ github_id: string; login: string }>();
     if (!member) return json(401, { error: "session_expired" });
+    const solanaCommitmentRoute =
+      /^\/projects\/([a-z0-9][a-z0-9-]*)\/awards\/(\d{4}-(?:0[1-9]|1[0-2]))\/solana-commitment$/.exec(
+        path,
+      );
+    if (solanaCommitmentRoute && request.method === "POST") {
+      if (!deps.solanaFundingConfig)
+        return json(503, { error: "owner_commitment_unavailable" });
+      const body = (await readBoundedJson(
+        request,
+        4096,
+        "Solana award commitment",
+      )) as Record<string, unknown>;
+      if (
+        !body ||
+        (body.step !== "review" && body.step !== "check") ||
+        typeof body.network !== "string" ||
+        typeof body.vault !== "string" ||
+        typeof body.wallet !== "string" ||
+        !isWalletAddress("solana", body.wallet)
+      )
+        return json(400, { error: "invalid_commitment_action" });
+      try {
+        if (body.step === "review") {
+          if (!isOwnerCommitmentInput(body))
+            return json(400, { error: "invalid_commitment_review" });
+          if (!deps.ownerCommitment)
+            return json(503, { error: "owner_commitment_unavailable" });
+          const award = await deps.ownerCommitment(
+            solanaCommitmentRoute[1],
+            solanaCommitmentRoute[2],
+            { githubId: member.github_id, githubLogin: member.login },
+            body,
+          );
+          if (
+            award.deployment.vault !== body.vault ||
+            ESCROW_NETWORKS[award.deployment.network].family !== "solana"
+          )
+            return json(409, { error: "commitment_vault_changed" });
+          const config = await deps.solanaFundingConfig(
+            solanaCommitmentRoute[1],
+            body.network,
+            body.vault,
+          );
+          const reviewed = award.deployment;
+          if (
+            config.mint !== reviewed.asset ||
+            [
+              "network",
+              "vault",
+              "programId",
+              "projectPda",
+              "owner",
+              "identityAuthority",
+              "feeRecipient",
+              "codeSha256",
+              "upgradeAuthority",
+              "networkDomain",
+              "bindingDelaySeconds",
+              "rotationDelaySeconds",
+            ].some(
+              (key) =>
+                (config as unknown as Record<string, unknown>)[key] !==
+                (reviewed as unknown as Record<string, unknown>)[key],
+            )
+          )
+            return json(409, {
+              error: "commitment_vault_changed",
+              message:
+                "The vault changed during review. Reload its current awards.",
+            });
+          const transaction = await prepareSolanaCommitment(config, {
+            wallet: body.wallet,
+            sourceDigest: award.award.sourceDigest,
+            githubUserId: award.award.githubUserId,
+            gross: award.award.gross,
+          });
+          return json(200, { plan: award, transaction });
+        }
+        // Recovery reads finalized evidence only. A later hold or review outage must
+        // not hide a transaction already submitted by the owner's wallet.
+        if (
+          typeof body.sourceDigest !== "string" ||
+          !/^[a-f0-9]{64}$/.test(body.sourceDigest) ||
+          typeof body.githubUserId !== "string" ||
+          !/^[1-9][0-9]{0,19}$/.test(body.githubUserId) ||
+          typeof body.gross !== "string" ||
+          !/^[1-9][0-9]{0,19}$/.test(body.gross) ||
+          typeof body.blockhash !== "string" ||
+          !isWalletAddress("solana", body.blockhash) ||
+          typeof body.transactionId !== "string" ||
+          body.transactionId.length > 100
+        )
+          return json(400, { error: "invalid_commitment_check" });
+        const config = await deps.solanaFundingConfig(
+          solanaCommitmentRoute[1],
+          body.network,
+          body.vault,
+        );
+        return json(200, {
+          status: await checkSolanaCommitment(
+            config,
+            {
+              wallet: body.wallet,
+              sourceDigest: body.sourceDigest,
+              githubUserId: body.githubUserId,
+              gross: body.gross,
+              blockhash: body.blockhash,
+            },
+            body.transactionId,
+          ),
+        });
+      } catch (error) {
+        if (error instanceof OwnerAwardReviewError)
+          return json(error.status, {
+            error: "owner_commitment_unavailable",
+            message: error.message,
+          });
+        if (error instanceof SolanaFundingError)
+          return json(422, {
+            error: "commitment_action_rejected",
+            message: error.message,
+          });
+        throw error;
+      }
+    }
+    const ownerCommitmentRoute =
+      /^\/projects\/([a-z0-9][a-z0-9-]*)\/awards\/(\d{4}-(?:0[1-9]|1[0-2]))\/commitment$/.exec(
+        path,
+      );
+    if (ownerCommitmentRoute && request.method === "POST") {
+      if (!deps.ownerCommitment)
+        return json(503, { error: "owner_commitment_unavailable" });
+      const body = (await readBoundedJson(
+        request,
+        4096,
+        "Owner commitment review",
+      )) as OwnerCommitmentInput;
+      if (!isOwnerCommitmentInput(body))
+        return json(400, { error: "invalid_commitment_review" });
+      try {
+        return json(
+          200,
+          await deps.ownerCommitment(
+            ownerCommitmentRoute[1],
+            ownerCommitmentRoute[2],
+            { githubId: member.github_id, githubLogin: member.login },
+            body,
+          ),
+        );
+      } catch (error) {
+        if (error instanceof OwnerAwardReviewError)
+          return json(error.status, {
+            error: "owner_commitment_unavailable",
+            message: error.message,
+          });
+        throw error;
+      }
+    }
+    const ownerAwardsRoute =
+      /^\/projects\/([a-z0-9][a-z0-9-]*)\/awards\/(\d{4}-(?:0[1-9]|1[0-2]))$/.exec(
+        path,
+      );
+    if (ownerAwardsRoute && request.method === "GET") {
+      if (!deps.ownerAwardReview)
+        return json(503, { error: "owner_review_unavailable" });
+      try {
+        return json(
+          200,
+          await deps.ownerAwardReview(
+            ownerAwardsRoute[1],
+            ownerAwardsRoute[2],
+            { githubId: member.github_id, githubLogin: member.login },
+          ),
+        );
+      } catch (error) {
+        if (error instanceof OwnerAwardReviewError)
+          return json(error.status, {
+            error: "owner_review_unavailable",
+            message: error.message,
+          });
+        throw error;
+      }
+    }
     if (path === "/admin/wallet-proposals" && request.method === "POST") {
       if (!deps.operatorIds?.includes(member.github_id))
         return json(403, { error: "operator_required" });
@@ -586,16 +900,40 @@ export async function handlePaymentsApi(
             !/^[A-Za-z0-9+/]+={0,2}$/.test(body.transaction)))
       )
         return json(400, { error: "invalid_request" });
-      if (!deps.solanaAttester)
+      if (!deps.solanaAttester && !deps.securityPayments)
         return json(503, { error: "identity_attester_unavailable" });
-      const payment = await deps.db
-        .prepare(
-          "SELECT o.id obligationId,o.network,o.vault,o.github_user_id githubUserId,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,t.id idempotencyKey FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND o.github_user_id=? AND o.chain='solana' AND o.state='reserved' AND w.source='d1_registry' AND t.state IN ('prepared','unknown','submitted') AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id) ORDER BY t.created_at LIMIT 1",
-        )
+      const bindingQuery =
+        "SELECT o.id obligationId,o.network,o.vault,o.github_user_id githubUserId,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,t.id idempotencyKey FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND o.github_user_id=? AND o.chain='solana' AND o.state='reserved' AND w.source='d1_registry' AND t.state IN ('prepared','unknown','submitted') AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id) ORDER BY t.created_at LIMIT 1";
+      let attester = deps.solanaAttester;
+      let payment = await deps.db
+        .prepare(bindingQuery)
         .bind(body.obligationId, member.github_id)
         .first<Record<string, string>>();
+      if (!payment && deps.securityPayments) {
+        const owned = await deps.db
+          .prepare(
+            "SELECT s.case_id FROM security_settlements s JOIN security_cases c ON c.id=s.case_id WHERE s.obligation_id=? AND c.reporter_github_id=?",
+          )
+          .bind(body.obligationId, member.github_id)
+          .first<{ case_id: string }>();
+        if (owned) {
+          await deps.db
+            .prepare(
+              "INSERT INTO security_case_access_log(case_id,actor_github_id,actor_role,action,at) VALUES(?,?,'reporter','write',?)",
+            )
+            .bind(owned.case_id, member.github_id, now)
+            .run();
+          payment = await deps.securityPayments.db
+            .prepare(bindingQuery)
+            .bind(body.obligationId, member.github_id)
+            .first<Record<string, string>>();
+          attester = deps.securityPayments.solanaAttester;
+        }
+      }
       if (!payment) return json(409, { error: "binding_not_ready" });
-      const response = await deps.solanaAttester.fetch(
+      if (!attester)
+        return json(503, { error: "identity_attester_unavailable" });
+      const response = await attester.fetch(
         new Request(
           `https://identity-attester.internal/v1/${complete ? "complete-bind" : "pay"}`,
           {

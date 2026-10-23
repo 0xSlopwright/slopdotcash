@@ -276,6 +276,106 @@
       ]
     },
     {
+      "name": "commit_bounty",
+      "docs": [
+        "Bounties reuse ordinary reserves, destination authorization and recovery."
+      ],
+      "discriminator": [154, 59, 142, 180, 230, 40, 184, 226],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": ["project"]
+        },
+        {
+          "name": "project",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [118, 97, 117, 108, 116]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              }
+            ]
+          }
+        },
+        {
+          "name": "origin",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [111, 114, 105, 103, 105, 110]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "source_digest"
+              }
+            ]
+          }
+        },
+        {
+          "name": "obligation",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [97, 119, 97, 114, 100]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "award_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "award_id",
+          "type": {
+            "array": ["u8", 32]
+          }
+        },
+        {
+          "name": "source_digest",
+          "type": {
+            "array": ["u8", 32]
+          }
+        },
+        {
+          "name": "actor_id",
+          "type": "u64"
+        },
+        {
+          "name": "gross",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "confirm_authority_rotation",
       "discriminator": [3, 247, 66, 156, 194, 171, 127, 86],
       "accounts": [

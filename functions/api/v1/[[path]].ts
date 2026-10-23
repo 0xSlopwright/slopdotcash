@@ -16,15 +16,22 @@ import {
   type PaymentsDependencies,
 } from "../../../backend/payments/handler";
 import {
+  OwnerAwardReviewError,
+  prepareOwnerCommitment,
+  reviewOwnerAwards,
+} from "../../../backend/payments/owner-review";
+import {
   handlePointsApi,
   sessionGithubActor,
 } from "../../../backend/points/handler";
+import { telegramConfiguration } from "../../../backend/points/telegram";
 import {
   CloudflareProjectPersistence,
   type ProjectD1Database,
 } from "../../../backend/projects/cloudflare-persistence";
 import type { RepositoryControl } from "../../../backend/projects/contracts";
 import { edgeCache } from "../../../backend/projects/edge-cache";
+import { publicRestrictionOf } from "../../../backend/projects/enforcement";
 import { githubApiOrigin } from "../../../backend/projects/github-lookup";
 import {
   type AdminApplicationNotice,
@@ -33,7 +40,12 @@ import {
 import { assetTemplateSource } from "../../../backend/projects/skill-publication";
 import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata";
 import { handleSecurityApi } from "../../../backend/security/handler";
+import { securityPaymentDatabase } from "../../../backend/security/payment-database";
 import { handleSlopbotApi } from "../../../backend/slopbot/summary";
+import {
+  type HistoricalValueBinding,
+  handleHistoricalValueImport,
+} from "../../../backend/slopbot/value-import";
 import {
   CloudflareTracePersistence,
   type R2Bucket,
@@ -49,7 +61,9 @@ import {
   vettingBranchCache,
 } from "../../../backend/vetting/live-pin";
 import { CloudflareVettingPersistence } from "../../../backend/vetting/persistence";
+import type { SolanaEscrowConfig } from "../../../contracts/solana/adapter";
 import { deploymentTier } from "../../../src/lib/deployment";
+import { ESCROW_NETWORKS } from "../../../src/lib/escrow-policy.mjs";
 import type { ProjectDefinition } from "../../../src/lib/projects.mjs";
 import {
   loadRegistryPaymentDeployments,
@@ -69,10 +83,20 @@ type Env = {
    * every binding closed.
    */
   PAYMENT_NETWORKS?: string;
+  SOLANA_IDENTITY_ATTESTER?: { fetch(request: Request): Promise<Response> };
+  SECURITY_SOLANA_IDENTITY_ATTESTER?: {
+    fetch(request: Request): Promise<Response>;
+  };
+  /** Private RPC endpoints for explicit wallet funding review/check requests. Never returned to the browser. */
+  PAYMENT_RPC_URLS?: string;
   PRIVATE_TRACES: R2Bucket;
   TRACE_AUTH_SECRET: string;
   X_CLIENT_ID?: string;
   X_CLIENT_SECRET?: string;
+  /** Telegram connection bot (PRD SOC-02); all three or none. */
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_BOT_USERNAME?: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
   OPERATOR_GITHUB_IDS?: string;
   /** GitHub numeric actor IDs allowed to review project applications. */
   ADMIN_GITHUB_IDS?: string;
@@ -88,6 +112,7 @@ type Env = {
   SLOP_GITHUB_READ_TOKEN?: string;
   /** Admin email Worker; absent where no notifier is deployed. */
   SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
+  SLOPBOT_VALUE_IMPORT?: HistoricalValueBinding;
   ASSETS?: { fetch(request: Request): Promise<Response> };
   /** Secure-VM vetting service Ed25519 public keys (base64, comma separated). */
   VETTING_RESULT_PUBLIC_KEYS?: string;
@@ -393,16 +418,19 @@ async function ownerControl(
 
 /**
  * The steward is the account GitHub reports as the repository owner: the same
- * numeric id, node id and login (GitHub logins are case-insensitive). Pages
+ * numeric id, node id, account type and login (case-insensitive). Pages
  * show the steward by login and attribute the project to its node id.
  */
 function stewardIsOwner(
-  owner: { id?: unknown; node_id?: unknown; login?: unknown } | undefined,
+  owner:
+    | { id?: unknown; node_id?: unknown; login?: unknown; type?: unknown }
+    | undefined,
   steward: ProjectDefinition["steward"]["github"],
 ): boolean {
   return (
     String(owner?.id) === steward.actorId &&
     owner?.node_id === steward.nodeId &&
+    owner?.type === steward.type &&
     String(owner?.login).toLowerCase() === steward.login.toLowerCase()
   );
 }
@@ -594,6 +622,112 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   if (new URL(context.request.url).pathname.startsWith("/api/v1/payments/"))
     return handlePaymentsApi(context.request, {
       db: context.env.SLOP_DB,
+      solanaAttester: context.env.SOLANA_IDENTITY_ATTESTER,
+      securityPayments: {
+        db: securityPaymentDatabase(context.env.SLOP_DB),
+        solanaAttester: context.env.SECURITY_SOLANA_IDENTITY_ATTESTER,
+      },
+      ownerCommitment: async (projectId, cycleId, actor, expected) => {
+        const generation = await projectPersistence.enforcementGeneration();
+        const project = await projectPersistence.getProject(projectId);
+        if (!project)
+          throw new OwnerAwardReviewError(404, "Project not found.");
+        if (
+          publicRestrictionOf(
+            project,
+            await projectPersistence.listEnforcements(),
+          ).state !== "clear"
+        )
+          throw new OwnerAwardReviewError(
+            409,
+            "This project is restricted. New award commitments are unavailable.",
+          );
+        if (
+          !parsePaymentNetworks(context.env.PAYMENT_NETWORKS).some(
+            (network) => network === expected.network,
+          )
+        )
+          throw new OwnerAwardReviewError(
+            409,
+            "Award processing is not configured for this network.",
+          );
+        const result = await prepareOwnerCommitment(
+          {
+            project,
+            cycleId,
+            actor,
+            token: context.env.SLOP_GITHUB_READ_TOKEN,
+            now: new Date(),
+          },
+          expected,
+        );
+        const current = await projectPersistence.getProject(projectId);
+        if (
+          !current ||
+          current.revision !== project.revision ||
+          current.manifestSha256 !== project.manifestSha256 ||
+          (await projectPersistence.enforcementGeneration()) !== generation
+        )
+          throw new OwnerAwardReviewError(
+            409,
+            "The project changed during review. Reload its current awards.",
+          );
+        return result;
+      },
+      ownerAwardReview: async (projectId, cycleId, actor) => {
+        const project = await projectPersistence.getProject(projectId);
+        if (!project)
+          throw new OwnerAwardReviewError(404, "Project not found.");
+        const result = await reviewOwnerAwards({
+          project,
+          cycleId,
+          actor,
+          token: context.env.SLOP_GITHUB_READ_TOKEN,
+          now: new Date(),
+        });
+        const current = await projectPersistence.getProject(projectId);
+        if (
+          !current ||
+          current.revision !== project.revision ||
+          current.manifestSha256 !== project.manifestSha256
+        )
+          throw new OwnerAwardReviewError(
+            409,
+            "The project changed during review. Reload its current awards.",
+          );
+        return result;
+      },
+      solanaFundingConfig: async (projectId, network, vault) => {
+        const networks = parsePaymentNetworks(context.env.PAYMENT_NETWORKS);
+        const selected = networks.find((name) => name === network);
+        if (!selected || ESCROW_NETWORKS[selected].family !== "solana")
+          throw new Error("Funding network unavailable");
+        const registry = await loadRegistryPaymentDeployments(
+          context.env.SLOP_DB,
+          [selected],
+        );
+        const matches = registry.deployments.filter(
+          (row) =>
+            row.projectId === projectId &&
+            row.network === network &&
+            row.vault === vault,
+        );
+        if (matches.length !== 1) throw new Error("Funding vault unavailable");
+        const rpcUrl = (
+          JSON.parse(context.env.PAYMENT_RPC_URLS ?? "{}") as Record<
+            string,
+            unknown
+          >
+        )[network];
+        if (typeof rpcUrl !== "string" || new URL(rpcUrl).protocol !== "https:")
+          throw new Error("Funding RPC unavailable");
+        return {
+          ...matches[0],
+          mint: matches[0].asset,
+          rpcUrl,
+          genesisHash: ESCROW_NETWORKS[selected].genesisHash,
+        } as SolanaEscrowConfig;
+      },
       // Cloudflare's per-colo edge cache; absent outside the Workers runtime.
       edgeCache: (
         globalThis as {
@@ -608,13 +742,18 @@ export async function onRequest(context: PagesContext): Promise<Response> {
         .filter((id) => /^[1-9][0-9]*$/.test(id)),
       // Binding consent names a vault recorded in the D1 project registry for
       // a served network; a vault of any other network is unknown.
-      paymentDeployments: async () =>
-        (
-          await loadRegistryPaymentDeployments(
+      paymentDeployments: async () => {
+        const networks = parsePaymentNetworks(context.env.PAYMENT_NETWORKS);
+        const [ordinary, security] = await Promise.all([
+          loadRegistryPaymentDeployments(context.env.SLOP_DB, networks),
+          loadRegistryPaymentDeployments(
             context.env.SLOP_DB,
-            parsePaymentNetworks(context.env.PAYMENT_NETWORKS),
-          )
-        ).deployments,
+            networks,
+            "security-bounty",
+          ),
+        ]);
+        return [...ordinary.deployments, ...security.deployments];
+      },
       ...([
         "https://staging.slop.cash",
         "https://slop-staging.pages.dev",
@@ -641,6 +780,18 @@ export async function onRequest(context: PagesContext): Promise<Response> {
               clientSecret: context.env.X_CLIENT_SECRET,
             }
           : undefined,
+      telegram: telegramConfiguration(context.env),
+    });
+  if (new URL(context.request.url).pathname === "/api/v1/slopbot/value-import")
+    return handleHistoricalValueImport(context.request, {
+      adminGithubIds: githubIdSet(context.env.ADMIN_GITHUB_IDS),
+      sessionActor: (request) =>
+        sessionGithubActor(
+          request,
+          context.env.SLOP_DB,
+          new Date().toISOString(),
+        ),
+      publisher: context.env.SLOPBOT_VALUE_IMPORT,
     });
   if (new URL(context.request.url).pathname.startsWith("/api/v1/slopbot/"))
     return handleSlopbotApi(context.request, context.env.SLOP_DB);

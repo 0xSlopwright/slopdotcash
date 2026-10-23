@@ -84,6 +84,32 @@ async function githubJson(
   return value as Record<string, unknown>;
 }
 
+/** Resolve the current owner of a login before recording permanent attribution. */
+export async function lookupGitHubActor(
+  fetcher: GithubFetch,
+  token: string | undefined,
+  login: string,
+  apiOrigin = GITHUB_API,
+): Promise<{ githubId: string; githubLogin: string } | null> {
+  if (!validGithubLogin(login)) return null;
+  const user = await githubJson(fetcher, token, `/users/${login}`, apiOrigin);
+  if (!user) return null;
+  if (
+    user.type !== "User" ||
+    !Number.isSafeInteger(user.id) ||
+    Number(user.id) <= 0 ||
+    typeof user.login !== "string" ||
+    !validGithubLogin(user.login) ||
+    user.login.toLowerCase() !== login.toLowerCase()
+  )
+    throw new GithubLookupError(
+      502,
+      "github_unavailable",
+      "GitHub returned incomplete account facts.",
+    );
+  return { githubId: String(user.id), githubLogin: user.login };
+}
+
 function repositoryDescription(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const text = value.replace(/\s+/gu, " ").trim();

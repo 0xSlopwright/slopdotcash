@@ -34,8 +34,7 @@ alias only.
     block it.
   - One fee-wallet hot key per network (PRD TOK-07, MVP-07c, owner decision
     of 18 October 2026). It controls only the network fee wallet. It signs
-    only the scheduled conversion of fees already in that wallet to the
-    network stablecoin, through allowlisted routes, within the slippage limit,
+    only the conversion of fees received in that wallet to USDC, through allowlisted routes, within the slippage limit,
     with output to the same wallet. It holds no vault role and cannot touch
     vaults, contributor principal, reserved awards or payments. The job runs
     in dry run until a reviewed activation record enables signing.
@@ -47,10 +46,10 @@ alias only.
 
 ## MVP scope and phase gate
 
-The canonical product requirements are
-[Slop Product Requirements](docs/slop-product-requirements.md). The only current
-implementation scope is [Slop MVP Delivery Plan](docs/slop-mvp-plan.md).
-Read both before selecting work, proposing a change, reviewing a PR, or
+The [canonical Slop PRD](docs/slop-product-requirements.md) defines
+product scope, MVP delivery packages, acceptance, and completion.
+The Google Docs version mirrors the repository PRD. The repository governs.
+Read the PRD before selecting work, proposing a change, reviewing a PR, or
 implementing a feature. Link the exact PRD requirement and MVP work-package ID
 in every implementation PR. Existing code, an open issue, a model suggestion,
 or a PRD entry marked Future does not approve implementation.
@@ -62,15 +61,15 @@ Reuse existing implementations and simplify the affected code. Explain the
 useful result and why the selected implementation is needed.
 
 A new requirement must first be discussed with humans and added to the PRD.
-Maintainers must approve its scope and phase, and update the MVP plan when it
-changes the current phase, before implementation starts. Unresolved choices
-in the PRD are decision gates, not authority for an agent to choose economic,
+Maintainers must approve its scope, phase, and delivery requirements in the PRD
+before implementation starts. Unresolved choices in the PRD are decision gates,
+not authority for an agent to choose economic,
 security, or product policy. Keep proposals distinct from approved work.
 
 Do not start the rest of the PRD until maintainers explicitly confirm that the
 whole MVP is finished, verified, tested, and validated. The confirmation must
-be a reviewed completion record linked from the MVP plan. It must cover every
-MVP requirement and release gate with exact tested revisions, real end-to-end
+be a reviewed completion record in the PRD. It must cover every MVP requirement
+and release gate with exact tested revisions, real end-to-end
 results, deployment/provider/chain evidence where applicable, and resolution
 of blocking defects. A merged PR, a local test pass, partial rollout, or an
 agent's statement cannot close the MVP. After that record is approved, humans
@@ -178,22 +177,17 @@ tests/e2e/      real-browser end-to-end, accessibility, and Pages coverage
 
 ## Add a project
 
-Projects are added on the website, never by pull request. An applicant signs
-in with GitHub through `/login` and submits a manifest at `/projects/new`. The
-API stores the application in D1 and emails the admins through the
-`slop-notify` Worker (`workers/notify/`). Admins, listed by GitHub actor ID in
-`ADMIN_GITHUB_IDS`, approve or reject it at `/admin`. See
-`backend/projects/README.md`.
+Projects are added on the website, never by pull request. The PRD now requires
+self-service setup: verify current GitHub authority, complete project terms,
+install Slopbot, and pass the malicious-code scan before automatic activation.
+Funding is optional and has a separate readiness state. Owners publish immutable
+revisions; admins handle restrictions and disputes, not routine approval.
+Two distinct contributor flags pause the project. Contributor skills must not
+install or work on flagged projects.
 
-An application must be a paused, unverified, unfunded community project with
-payments disabled. Approval lists it as revision 1, still paused. Admins record
-verified authority, terms, funding, and activation as manifest revisions on
-`/admin`; each revision must pass `assertProjectPolicyTransition`. An admin
-approval publishes the revision. No GitHub pull request adds or updates a
-project, and the repository holds no project JSON or per-project skill folder.
-A project can become active only after an admin approves an activation
-revision whose generated contributor and reviewer skills pass review in the
-`/admin` preview.
+The current application still uses admin approval in `backend/projects/`.
+That is implementation to migrate, not the target product rule. Do not bypass
+its deployed checks before the reviewed replacement is implemented.
 
 A paused project is registered and listed, but none of its repositories is
 collected, so nothing on them reaches the ledger or the leaderboard. It
@@ -212,13 +206,14 @@ follow the target repository’s rules, test the result, prepare evidence, and
 emit the required attribution. It must not claim platform authority over an
 issue or create placeholder submissions.
 
-The current reviewer skill is separate and advisory. The PRD specifies optional
-Slopbot closure and security-vetting enforcement as gated MVP additions. A
-document merge alone does not enable those powers; implement and review the
-versioned protocols and explicit permissions first. The hosted Slopbot service
-is `workers/slopbot` under `protocol/slopbot-v2.md` (effective
-2026-11-01T00:00:00Z). Its global closure switch stays off until a reviewed
-production activation; it never merges, approves, scores, bans, or pays.
+The current reviewer skill is separate and advisory. Slopbot is required and
+always free, and runs only on registered repositories. It scores PRs by perceived
+size and value and credits useful reviews. Automatic closure is limited to
+verified Slop-skill participants, excluding maintainers, with manual appeals.
+Do not charge project vaults for bot reviews. The current global closure switch
+stays off until reviewed production activation. Document changes alone do not
+activate closure, payments, or security enforcement.
+
 
 It measures its own run, checks
 correctness, tests, security, evidence, duplication, abuse signals, scope, and
@@ -297,7 +292,8 @@ exclude, or move money.
 Slop Points are nonfinancial participation records governed by
 `protocol/points-v1.md`. Welcome and verified X-connection awards are not accepted-work score.
 Verified payout recognition is fixed per recipient/project/cycle, never per dollar
-or transfer. X control never confers GitHub, organization, or payment authority.
+or transfer. X or Telegram control never confers GitHub, organization, or payment
+authority; a Telegram connection earns no points (PRD SOC-02).
 Never feed points into rewards or settlement. Preserve the append-only journal,
 source coverage, original contribution dates, and distinct recording dates.
 Generated points projections are build outputs; do not edit them by hand.
@@ -317,12 +313,18 @@ A review budget is an optional additive cash line. Review events remain in the
 shared pool unchanged; a committed review line may pay them only on top of that
 treatment, with separate public arithmetic and evidence.
 
-Proposal review lasts 14 days. Project owners may adjust awards within the cap
-with a public reason; only such amount changes reset review. Wallet changes
-append a successor; a wallet observed after proposal generation applies to the
-next cycle and never touches the current proposal. History is never edited.
-Missing wallets remain unclaimed. Related-party money requires separate
-approval.
+The PRD's monthly fallback applies only to configured monthly projects with
+funds already committed in escrow. Owners can adjust amounts before execution;
+do not show adjustment history or require public reasons. Distribute the current
+allocations at the defined monthly cutoff if the owner has not done so. Define
+the UTC cutoff before activation. Keep internal reconciliation and prevent
+manual/automatic duplicate payments. Walletless funded awards remain reserved.
+Private reports are automatic; bounty awards and payouts remain discretionary,
+with disputes handled by humans. Preserve already funded obligations.
+
+The current payment implementation retains its older review rules until the
+reviewed migration. Do not infer that this policy change has altered contracts
+or authorized live transactions.
 
 One funding mode exists: the project vault contract (PRD FND-01, owner
 decision of 18 October 2026). Squads v4, Sablier, legacy direct and committed
@@ -450,7 +452,7 @@ bun run verify
 
 ## Definition of done
 
-Every PR must show a useful result and its PRD/MVP references. New features
+Every PR must show a useful result and its PRD references. New features
 remain blocked by the scope and phase gate above. For documentation-only
 changes, validate links, instructions, scope consistency, and policy mirrors;
 explain why application acceptance does not apply to the prose itself. Keep
@@ -476,12 +478,15 @@ availability. Report each boundary precisely.
 
 ## Escrow payout migration
 
-The maintainer-authorized escrow MVP is defined in `docs/payouts-mvp.md` and
-`docs/base-solana-payout-plan.md`. Its scoped contract, identity attestation and
-relayer services may execute isolated test-chain transactions under those rules.
+The canonical PRD defines escrow requirements and delivery. The historical
+`docs/payouts-mvp.md` and `docs/base-solana-payout-plan.md` records provide context.
+The scoped contract, identity attestation, and
+executor services may execute isolated test-chain transactions under those rules.
 This supersedes the legacy unsigned-only model for that protocol only. Never
 use production credentials or move mainnet funds during testnet qualification.
-New gross awards deduct 2% before contributor earnings are displayed or paid.
+New ordinary public-work awards deduct 2% before display or payment.
+Private security bounties use SEC-05 instead: 75% to the researcher and 25% to
+slop.cash. Do not add the ordinary 2% fee to a private security bounty.
 For a project-token reward (PRD TOK-06, owner decision of 14 October 2026),
 the 2% is deducted in that token and paid in that token to the network fee
 wallet at payout. No contract converts it. A scheduled backend job converts

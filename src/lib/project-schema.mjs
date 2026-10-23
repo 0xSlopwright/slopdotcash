@@ -10,6 +10,7 @@ import {
   assertFundingAddresses,
   fundingAssetForNetwork,
 } from "./funding-address.mjs";
+import LEGACY_PROJECTS from "./legacy-projects.json" with { type: "json" };
 import {
   assertRewardAsset,
   REWARD_ASSET_NETWORK_IDS,
@@ -44,6 +45,23 @@ export const CONTRIBUTION_FIELDS = Object.freeze([
   "closurePolicy",
   "maintainerNotes",
 ]);
+
+/**
+ * Repositories of projects removed before the D1 registry keep their original
+ * project id in contributor points and profiles. Listing one of them under
+ * another id would key a second award for the same immutable GitHub source,
+ * so the registry must reuse the id that history already carries.
+ */
+const LEGACY_PROJECT_ID_BY_REPOSITORY = new Map(
+  LEGACY_PROJECTS.flatMap((project) =>
+    project.repositories.flatMap((repository) =>
+      [repository.id, ...(repository.aliases ?? [])].map((repositoryId) => [
+        repositoryId.toLowerCase(),
+        project.id,
+      ]),
+    ),
+  ),
+);
 
 const PROJECT_KEYS = [
   "authority",
@@ -1218,6 +1236,22 @@ function validateProjectDefinition(
       repositories,
       reward: project.reward,
     });
+  if (project.escrow && project.securityBounty?.settlement) {
+    for (const privateVault of project.securityBounty.settlement.deployments)
+      if (
+        project.escrow.deployments.some(
+          (ordinary) =>
+            ordinary.network === privateVault.network &&
+            (privateVault.programId
+              ? ordinary.vault === privateVault.vault
+              : ordinary.vault.toLowerCase() ===
+                privateVault.vault.toLowerCase()),
+        )
+      )
+        throw new TypeError(
+          "Private bounties must use a separate vault so public totals reveal no private payments",
+        );
+  }
   // Escrow is the only funding mode, and the escrow vault holds the balance.
   // No manifest instrument can back a committed amount or an enabled payment.
   if (
@@ -1351,6 +1385,23 @@ export function assertProjectRegistry(values) {
   ]) {
     if (new Set(entries).size !== entries.length) {
       throw new TypeError(`project registry contains duplicate ${field}`);
+    }
+  }
+  for (const project of projects) {
+    for (const repository of project.repositories) {
+      for (const repositoryId of [
+        repository.id,
+        ...(repository.aliases ?? []),
+      ]) {
+        const legacyId = LEGACY_PROJECT_ID_BY_REPOSITORY.get(
+          repositoryId.toLowerCase(),
+        );
+        if (legacyId !== undefined && legacyId !== project.id) {
+          throw new TypeError(
+            `project registry lists ${repositoryId} under id ${project.id}; contributor history keeps it under id ${legacyId}`,
+          );
+        }
+      }
     }
   }
   for (const project of projects) {

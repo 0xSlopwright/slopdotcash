@@ -27,7 +27,6 @@ export const UNIVERSAL_CATEGORIES: ReadonlySet<Category> = new Set([
 export const NEVER_CLOSE: ReadonlySet<Category> = new Set([
   "none",
   "missing_evidence",
-  "low_quality",
 ]);
 
 export type CategoryMode = "off" | "label" | "close";
@@ -185,6 +184,7 @@ export type Verdict = {
   evidence: string[];
   summary: string;
   limitations: string[];
+  objective_defect?: string | null;
 };
 
 // JSON Schema shared by every provider's structured-output mode.
@@ -198,8 +198,10 @@ export const VERDICT_SCHEMA = {
     "evidence",
     "summary",
     "limitations",
+    "objective_defect",
   ],
   properties: {
+    objective_defect: { type: ["string", "null"] },
     category: { type: "string", enum: [...CATEGORIES] },
     confidence: { type: "number" },
     rule_refs: {
@@ -242,7 +244,15 @@ export function validateVerdict(raw: unknown): Verdict | null {
   if (!value.limitations.every((item) => typeof item === "string")) return null;
   if (typeof value.summary !== "string" || value.summary.length === 0)
     return null;
+  if (
+    value.objective_defect != null &&
+    (typeof value.objective_defect !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(value.objective_defect))
+  )
+    return null;
   return {
+    objective_defect:
+      (value.objective_defect as string | null | undefined) ?? null,
     category: value.category as Category,
     confidence,
     rule_refs: ruleRefs,
@@ -277,9 +287,9 @@ export const PRICES: Record<string, PriceEntry> = {
     output: 3_000_000,
     reconciliation: "estimated",
   },
-  // OpenAI price per secondary sources on 9 October 2026 (OpenAI's page was
-  // not reachable); reconcile against the OpenAI invoice.
-  "openai/gpt-6.1-sol": {
+  // Surplus catalog reference, 10 October 2026. Seller execution prices vary;
+  // this estimate is not a reconciled invoice or authority to charge funds.
+  "surplus/gpt-6.1-sol": {
     input: 2_000_000,
     cacheWrite: 2_000_000,
     cacheRead: 100_000,
@@ -298,15 +308,26 @@ export type Usage = {
 export function priceUsage(key: string, usage: Usage) {
   const entry = PRICES[key];
   if (entry === undefined) return null;
-  const micro =
-    usage.input * entry.input +
-    usage.cacheWrite * entry.cacheWrite +
-    usage.cacheRead * entry.cacheRead +
-    usage.output * entry.output;
-  const costMicroUsd = Math.ceil(micro / 1_000_000);
+  const fields = ["input", "cacheWrite", "cacheRead", "output"] as const;
+  if (
+    fields.some(
+      (field) => !Number.isSafeInteger(usage[field]) || usage[field] < 0,
+    )
+  )
+    throw new Error("Token usage must contain nonnegative safe integers");
+  const micro = fields.reduce(
+    (total, field) => total + BigInt(usage[field]) * BigInt(entry[field]),
+    0n,
+  );
+  const cost = (micro + 999_999n) / 1_000_000n;
+  const billed = (cost * 11n + 9n) / 10n;
+  if (billed > BigInt(Number.MAX_SAFE_INTEGER))
+    throw new Error("Model price exceeds the supported integer range");
   return {
-    costMicroUsd,
-    billedMicroUsdc: Math.ceil((costMicroUsd * 11) / 10),
+    costMicroUsd: Number(cost),
+    // A standalone estimate. The cost journal applies this rounding to the
+    // accumulated billable cost of the entire review, not to each call.
+    billedMicroUsdc: Number(billed),
     reconciliation: entry.reconciliation,
   };
 }
@@ -321,6 +342,7 @@ export const REOPEN_BREAKER_RATIO = 0.1;
 export type Job =
   | {
       kind: "review";
+      qualityCommentId?: number;
       deliveryId: string;
       installationId: number;
       repositoryId: number;

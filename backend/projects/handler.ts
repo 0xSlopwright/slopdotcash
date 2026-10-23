@@ -64,6 +64,7 @@ import {
   type GithubFetch,
   GithubLookupError,
   listOwnedRepositories,
+  lookupGitHubActor,
   lookupGitHubRepository,
   validGithubLogin,
 } from "./github-lookup";
@@ -354,14 +355,20 @@ function assertReviewBudgetTransition(
   }
 }
 
+/**
+ * Checks the candidate against the live registry. Only a manifest revision or a reviewed update application
+ * replaces the listed project with the same id; a new application or an
+ * approval must conflict with a listed project that already has that id.
+ */
 function assertRegistryWith(
   projects: ProjectRecord[],
   candidate: ProjectDefinition,
+  { replaces }: { replaces: boolean },
 ): void {
   try {
     assertProjectRegistry([
       ...projects
-        .filter((project) => project.id !== candidate.id)
+        .filter((project) => !replaces || project.id !== candidate.id)
         .map((project) => project.manifest),
       candidate,
     ]);
@@ -395,6 +402,7 @@ function publicApplication(
     githubCheck: application.githubCheck,
     expectedRevision: application.expectedRevision,
     changeReason: application.changeReason,
+    referrer: application.referrer,
   };
 }
 
@@ -407,6 +415,7 @@ function adminProject(project: ProjectRecord): ProjectRecord {
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     sourceApplicationId: project.sourceApplicationId,
+    referrer: project.referrer,
     manifest: project.manifest,
   };
 }
@@ -449,13 +458,68 @@ async function repositoryControl(
   }
 }
 
+/**
+ * Resolves the referrer an applicant named (PRJ-05). The login must belong
+ * to an account that has signed in to slop.cash, and it cannot be the
+ * applicant, the manifest steward or a Slop team account. A refused referral
+ * fails the submission with the reason, so the applicant can clear it or
+ * fix it; it is never dropped silently.
+ */
+async function resolveReferrer(
+  value: unknown,
+  manifest: ProjectDefinition,
+  applicant: GithubActor,
+  deps: ProjectApiDependencies,
+): Promise<GithubActor | null> {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string" || !validGithubLogin(value))
+    fail(422, "invalid_referrer", "The referrer must be a GitHub login.");
+  const referrer = await lookupGitHubActor(
+    deps.github.fetch,
+    deps.github.token,
+    value,
+    deps.github.apiOrigin,
+  );
+  if (
+    referrer === null ||
+    !(await deps.persistence.hasSignedInActor(referrer.githubId))
+  )
+    fail(
+      422,
+      "invalid_referrer",
+      `@${value} has not signed in to slop.cash, so they cannot be recorded as the referrer. Clear the referral or ask them to sign in first.`,
+    );
+  if (referrer.githubId === applicant.githubId)
+    fail(422, "invalid_referrer", "You cannot refer your own project.");
+  if (
+    referrer.githubId === manifest.steward.github.actorId ||
+    referrer.githubLogin.toLowerCase() ===
+      manifest.steward.github.login.toLowerCase()
+  )
+    fail(
+      422,
+      "invalid_referrer",
+      "The project steward cannot be recorded as its referrer.",
+    );
+  if (
+    deps.adminGithubIds.has(referrer.githubId) ||
+    deps.moderatorGithubIds.has(referrer.githubId)
+  )
+    fail(
+      422,
+      "invalid_referrer",
+      "Slop team accounts cannot be recorded as referrers.",
+    );
+  return referrer;
+}
+
 async function submitApplication(
   request: Request,
   deps: ProjectApiDependencies,
 ): Promise<Response> {
   const session = await requireSession(request, deps);
   const body = await readJsonObject(request);
-  exactKeys(body, ["manifest"], ["expectedRevision", "reason"]);
+  exactKeys(body, ["manifest"], ["expectedRevision", "reason", "referrer"]);
   const proposedId = (body.manifest as { id?: unknown } | null)?.id;
   const current =
     body.expectedRevision === undefined
@@ -506,6 +570,15 @@ async function submitApplication(
     githubId: session.githubId,
     githubLogin: session.githubLogin,
   };
+  if (current && body.referrer !== undefined)
+    fail(
+      422,
+      "invalid_referrer",
+      "A project update cannot change its referrer.",
+    );
+  const referrer = current
+    ? current.referrer
+    : await resolveReferrer(body.referrer, manifest, actor, deps);
   if (
     (await deps.persistence.countPendingApplications(session.githubId)) >=
     MAX_PENDING_APPLICATIONS_PER_APPLICANT
@@ -516,7 +589,9 @@ async function submitApplication(
       `You already have ${MAX_PENDING_APPLICATIONS_PER_APPLICANT} applications awaiting review`,
     );
   }
-  assertRegistryWith(await deps.persistence.listProjects(), manifest);
+  assertRegistryWith(await deps.persistence.listProjects(), manifest, {
+    replaces: current !== null,
+  });
   const control = await repositoryControl(deps, manifest, actor);
   if (control.state === "mismatch" || (current && control.state !== "proven"))
     fail(422, "invalid_manifest", control.reason);
@@ -552,8 +627,17 @@ async function submitApplication(
         0,
         300,
       ),
+    referrer,
   };
-  if ((await deps.persistence.createApplication(application)) === "conflict") {
+  const created = await deps.persistence.createApplication(application);
+  if (created === "too_many_pending") {
+    fail(
+      429,
+      "too_many_pending",
+      `You already have ${MAX_PENDING_APPLICATIONS_PER_APPLICANT} applications awaiting review`,
+    );
+  }
+  if (created === "conflict") {
     fail(
       409,
       "application_exists",
@@ -604,7 +688,16 @@ async function listAdminApplications(
   deps: ProjectApiDependencies,
 ): Promise<Response> {
   await requireAdmin(request, deps);
-  const status = new URL(request.url).searchParams.get("status") ?? "pending";
+  const query = new URL(request.url).searchParams;
+  const id = query.get("id");
+  if (id !== null) {
+    if (!APPLICATION_ID.test(id))
+      fail(404, "not_found", "Application not found");
+    const application = await deps.persistence.getApplication(id);
+    if (application === null) fail(404, "not_found", "Application not found");
+    return json(200, { applications: [publicApplication(application)] });
+  }
+  const status = query.get("status") ?? "pending";
   if (!["pending", "approved", "rejected"].includes(status)) {
     fail(400, "invalid_request", "Invalid application status");
   }
@@ -670,6 +763,22 @@ async function decideApplication(
     // Re-check against the live registry: another approval may have claimed
     // the id or repository since this application was submitted.
     canonicalManifest(application.manifest);
+    assertApplicationManifest(application.manifest);
+    let control: RepositoryControl;
+    try {
+      control = await deps.repositoryControl(
+        application.manifest,
+        application.applicant,
+      );
+    } catch {
+      fail(
+        503,
+        "github_unavailable",
+        "GitHub could not be checked; retry approval later",
+      );
+    }
+    if (control.state === "mismatch")
+      fail(422, "invalid_manifest", control.reason);
     assertRepositoryUnrestricted(
       application.manifest,
       await deps.persistence.listEnforcements(),
@@ -677,6 +786,7 @@ async function decideApplication(
     assertRegistryWith(
       await deps.persistence.listProjects(),
       application.manifest,
+      { replaces: false },
     );
     const result = await deps.persistence.approveApplication({
       applicationId,
@@ -800,7 +910,7 @@ async function replaceProjectManifest(
     invalidManifest(error);
   }
   assertReviewBudgetTransition(current.manifest, manifest, deps.now());
-  assertRegistryWith(projects, manifest);
+  assertRegistryWith(projects, manifest, { replaces: true });
   // Project skills are generated from this manifest and the reviewed
   // template, so a project goes live only with complete skill content.
   if (manifest.status === "active" && !publishesGeneratedSkills(manifest)) {
@@ -936,7 +1046,7 @@ async function requireModerator(
     fail(
       403,
       "moderation_unavailable",
-      "No project moderator is configured. Set PROJECT_MODERATOR_GITHUB_IDS to enable Quarantine, Ban and reinstatement.",
+      "Moderation is not configured. Contact the service operator.",
     );
   if (!deps.moderatorGithubIds.has(session.githubId))
     fail(403, "forbidden", "The project moderator role is required");
@@ -1350,41 +1460,31 @@ async function githubLookup(
       : `${url.origin}${url.pathname.toLowerCase()}`,
   );
   const build = async () => {
-    try {
-      if (parts[1] === "owned-repositories") {
-        if (!validGithubLogin(session.githubLogin))
-          fail(
-            400,
-            "invalid_request",
-            "The signed-in GitHub login is not valid.",
-          );
-        const repositories = await listOwnedRepositories(
-          deps.github.fetch,
-          deps.github.token,
-          session.githubLogin,
-          deps.github.apiOrigin,
+    if (parts[1] === "owned-repositories") {
+      if (!validGithubLogin(session.githubLogin))
+        fail(
+          400,
+          "invalid_request",
+          "The signed-in GitHub login is not valid.",
         );
-        return json(200, { repositories }, "public, max-age=0, s-maxage=300");
-      }
-      const repository = `${parts[2]}/${parts[3]}`;
-      if (!validRepositoryPath(repository))
-        fail(400, "invalid_request", "Enter the repository as owner/name.");
-      const facts = await lookupGitHubRepository(
+      const repositories = await listOwnedRepositories(
         deps.github.fetch,
         deps.github.token,
-        repository,
+        session.githubLogin,
         deps.github.apiOrigin,
       );
-      return json(
-        200,
-        { repository: facts },
-        "public, max-age=0, s-maxage=300",
-      );
-    } catch (error) {
-      if (error instanceof GithubLookupError)
-        fail(error.status, error.code, error.message);
-      throw error;
+      return json(200, { repositories }, "public, max-age=0, s-maxage=300");
     }
+    const repository = `${parts[2]}/${parts[3]}`;
+    if (!validRepositoryPath(repository))
+      fail(400, "invalid_request", "Enter the repository as owner/name.");
+    const facts = await lookupGitHubRepository(
+      deps.github.fetch,
+      deps.github.token,
+      repository,
+      deps.github.apiOrigin,
+    );
+    return json(200, { repository: facts }, "public, max-age=0, s-maxage=300");
   };
   const response = await cachedPublicResponse(
     deps.cache,
@@ -1518,7 +1618,8 @@ export async function handleProjectApi(
           ? error.code
           : "internal_error",
       message:
-        status >= 500 || typeof error.message !== "string"
+        (status >= 500 && !(caught instanceof GithubLookupError)) ||
+        typeof error.message !== "string"
           ? "Internal error"
           : error.message,
     });

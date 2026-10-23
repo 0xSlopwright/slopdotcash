@@ -13,8 +13,9 @@ v2 keeps every v1 rule except the ones listed under "Changes from v1".
    (see "Cost").
 2. **Delegated closure.** Slopbot may close an issue or pull request only under
    a category the repository has set to `close`, as defined in PRD BOT-06. It
-   still never merges, approves, requests changes, bans, excludes, scores, or
-   pays.
+   still never merges, approves payouts, requests changes, bans, excludes, or
+   pays. The separate owner-approved SCR-06 value-scoring extension permits
+   automatic provisional assessments; it does not enable closure powers.
 3. **Permissions.** Read: Contents, Metadata, Organization members.
    Write: Issues and Pull requests, used only to comment, label and close.
    No other write permission.
@@ -56,6 +57,18 @@ Slopbot appears only in the Automation row (PRD LDR-04). Bot activity still
 does not score, and a Slopbot record is still never a prior review for the
 duplicate-review rule.
 
+## Provisional value assessment extension
+
+The owner approved SCR-06 on 9 October 2026 for every active Slop project,
+including a separate September and October reassessment. See
+[`slop-value-scoring-plan.md`](../docs/slop-value-scoring-plan.md). This
+authority is independent of the 1 November closure-policy activation.
+Assessments require complete source evidence, exact revision binding, model
+and rubric provenance, and an append-only successor record. Existing scores
+remain visible. Maintainer ratification overrides automation. Payout approval
+remains human. An incomplete assessment cannot imply a low-value outcome.
+Bot activity itself receives no contributor credit.
+
 ## Registered repository scope
 
 Owner decision, 21 October 2026: the hosted rollout operates only on public
@@ -66,3 +79,16 @@ Read the live registry before queue intake, job execution, inference and each
 GitHub write. A read failure stops that action. A stale installation or queued
 job cannot override the registry. Protection-only operation is superseded for
 this rollout. Closure activation and financial decisions remain separate.
+
+## Objective quality closure amendment
+
+The owner approved the criteria in
+[`docs/slopbot-quality-closure-proposal.md`](../docs/slopbot-quality-closure-proposal.md)
+for implementation on 21 October 2026. They take effect no earlier than this
+protocol's 2026-11-01T00:00:00Z effective time. A quality closure requires a
+published rejection rule and two grounded verdicts identifying the same
+verified defect: removal of required behavior, a reproduced patch regression,
+or a result claim contradicted by its cited artifact. Missing verification
+requires label-only handling. This amendment grants no production activation,
+penalty, score or payment authority. Existing shadow qualification, explicit
+enablement, caps, appeals and reopen controls remain required.

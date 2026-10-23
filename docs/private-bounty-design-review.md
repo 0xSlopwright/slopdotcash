@@ -1,6 +1,6 @@
 # Private bounty design review
 
-Date: 13 October 2026. Scope: product and workflow research, not a contract audit. This review supports [PRD SEC-01–18](slop-product-requirements.md#19-private-security-bounty-programs--mvp) and [MVP-13](slop-mvp-plan.md#mvp-13-delivery-and-acceptance). It does not activate a program, change Umia, approve a report or move funds.
+Date: 13 October 2026. Scope: product and workflow research, not a contract audit. This review supports [PRD SEC-01–18](slop-product-requirements.md#10-private-bounty-acceptance) and [MVP-13](slop-product-requirements.md#10-private-bounty-acceptance). It does not activate a program, change Umia, approve a report or move funds.
 
 ## Confirmed product direction
 

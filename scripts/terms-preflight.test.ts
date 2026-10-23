@@ -48,6 +48,7 @@ async function servedTerms(): Promise<Record<string, unknown>> {
     createdAt: "2026-10-18T00:00:00.000Z",
     updatedAt: "2026-10-18T00:00:00.000Z",
     sourceApplicationId: null,
+    referrer: null,
   };
   const unused = async (): Promise<never> => {
     throw new Error("terms.json does not render skills");

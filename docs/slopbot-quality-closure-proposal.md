@@ -1,7 +1,8 @@
-# Objective quality closure proposal
+# Objective quality closure amendment
 
-Status: proposed for human approval. The repository owner requested this
-amendment on 21 October 2026. It does not enable closure or approve its rules.
+Status: criteria approved for implementation by the repository owner on
+21 October 2026. Approval does not activate production closure. The protocol
+effective time remains 2026-11-01T00:00:00Z; qualification must finish first.
 Scope: PRD BOT-06, BOT-12 and MVP-05a.
 
 ## Problem
@@ -9,7 +10,7 @@ Scope: PRD BOT-06, BOT-12 and MVP-05a.
 The current bot can label `low_quality` work but cannot close it. A broad
 quality judgment is not enough evidence to reject useful work.
 
-## Proposed rule
+## Approved rule
 
 A repository may enable `low_quality: close` only with a published rejection
 rule in its base-branch contribution guidance. A closure must identify one of
@@ -53,8 +54,7 @@ The existing separate human and financial authority rules remain in force.
 
 ## Approval and acceptance
 
-Before implementation, maintainers must approve these criteria, update BOT-06
-and MVP-05a, and publish an effective date in the versioned protocol. Then test
+The owner approved these criteria for implementation on 21 October 2026. Test
 real examples of each accepted rejection rule and useful counterexamples.
 Verify unchanged-head closure, source changes during review, missing evidence,
 provider failure, unavailable verification, exemptions, appeals and reopen.

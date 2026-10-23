@@ -76,8 +76,13 @@ export function initializeConfig(
 /** Creates the Config with the fixture keys once per validator, then checks it. */
 export async function ensureConfig(program) {
   const address = configAddress(program.programId);
-  if (!(await program.account.config.fetchNullable(address)))
-    await initializeConfig(program);
+  if (!(await program.account.config.fetchNullable(address))) {
+    const signature = await initializeConfig(program);
+    await program.provider.connection.confirmTransaction(
+      signature,
+      "finalized",
+    );
+  }
   const config = await program.account.config.fetch(address);
   if (
     !config.identityAuthority.equals(configIdentity.publicKey) ||

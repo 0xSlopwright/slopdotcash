@@ -1,6 +1,7 @@
 ## Summary
 
-<!-- What changed, why, and who is affected? -->
+<!-- What changed, why, and who is affected? Link the canonical PRD requirement
+     and delivery-package IDs from docs/slop-product-requirements.md. -->
 
 ## Validation
 

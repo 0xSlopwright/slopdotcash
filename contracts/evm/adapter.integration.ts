@@ -593,6 +593,74 @@ try {
     verifyReserve(config, paymentTx, 0, id),
     /Wrong event topics/,
   );
+  // A private bounty uses the same vault binding and payment recovery, with
+  // an explicitly selected 75/25 policy. Ordinary verification must refuse it.
+  const bountySource = `0x${"b".repeat(64)}`;
+  const bountyId = evmAwardId(31337n, vault, bountySource);
+  const bountyConfig = { ...config, payoutPolicy: "security-bounty" as const };
+  await send(token, "mint(address,uint256)", [owner, "100000000"]);
+  await send(token, "approve(address,uint256)", [vault, "100000000"]);
+  await send(vault, "deposit(uint128)", ["100000000"]);
+  const bountyReserve = await rpc("eth_sendTransaction", [
+    {
+      from: owner,
+      to: vault,
+      gas: "0x7a1200",
+      data: buildCommitAwardCalldata({
+        obligationId: bountyId,
+        githubUserId: "101",
+        grossMicro: "100000000",
+        sourceDigest: bountySource,
+        payoutPolicy: "security-bounty",
+      }),
+    },
+  ]);
+  await rpc("anvil_mine", ["0x40"]);
+  assert.equal(
+    (await verifyReserve(bountyConfig, bountyReserve, 0, bountyId)).feeMicro,
+    "25000000",
+  );
+  await assert.rejects(
+    verifyReserve(config, bountyReserve, 0, bountyId),
+    /accounting/,
+  );
+  await rpc("evm_increaseTime", [3601]);
+  const bountyPaid = await rpc("eth_sendTransaction", [
+    {
+      from: recipient,
+      to: vault,
+      gas: "0x7a1200",
+      data: buildPayCalldata(bountyId, "2"),
+    },
+  ]);
+  await rpc("anvil_mine", ["0x40"]);
+  assert.equal(
+    (await verifyPayment(bountyConfig, bountyPaid, 0, bountyId)).netMicro,
+    "75000000",
+  );
+  await assert.rejects(
+    verifyPayment(config, bountyPaid, 0, bountyId),
+    /accounting/,
+  );
+  const duplicateBounty = await send(vault, "pay(bytes32,uint64)", [
+    bountyId,
+    "2",
+  ]);
+  assert.equal(
+    (await rpc("eth_getTransactionReceipt", [duplicateBounty])).status,
+    "0x0",
+  );
+  assert.throws(
+    () =>
+      buildCommitAwardCalldata({
+        obligationId: bountyId,
+        githubUserId: "101",
+        grossMicro: "100000001",
+        sourceDigest: bountySource,
+        payoutPolicy: "security-bounty",
+      }),
+    /exact/,
+  );
   // Identity authority rotation: the registrar (the deployer here) proposes and
   // the change takes effect after 7 days. The adapter pins the factory and its
   // rotation rules, not the authority in force, so verification continues

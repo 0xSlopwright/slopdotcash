@@ -335,6 +335,49 @@ export class CloudflareTracePersistence implements TracePersistence {
     return row === null ? null : mapRun(row);
   }
 
+  async reserveTraceWrite(
+    input: Pick<AttachTraceInput, "runId" | "githubId" | "object">,
+  ): Promise<boolean> {
+    const object = input.object;
+    await this.db
+      .prepare(`INSERT INTO trace_write_reservations
+      (run_id, github_user_id, trace_sha256, r2_key, size_bytes, content_type, created_at)
+      SELECT id, github_user_id, ?, ?, ?, ?, ? FROM trace_runs
+      WHERE id = ? AND github_user_id = ? AND state != 'finalized'
+        AND (trace_sha256 IS NULL OR trace_sha256 = ?)
+      ON CONFLICT(run_id) DO NOTHING`)
+      .bind(
+        object.sha256,
+        object.key,
+        object.sizeBytes,
+        object.contentType,
+        object.createdAt,
+        input.runId,
+        input.githubId,
+        object.sha256,
+      )
+      .run();
+    const reserved = await this.db
+      .prepare(`SELECT reservation.run_id
+      FROM trace_write_reservations AS reservation JOIN trace_runs AS run ON run.id = reservation.run_id
+      WHERE reservation.run_id = ? AND reservation.github_user_id = ?
+        AND reservation.trace_sha256 = ? AND reservation.r2_key = ?
+        AND reservation.size_bytes = ? AND reservation.content_type = ?
+        AND run.state != 'finalized'
+        AND (run.trace_sha256 IS NULL OR run.trace_sha256 = ?)`)
+      .bind(
+        input.runId,
+        input.githubId,
+        object.sha256,
+        object.key,
+        object.sizeBytes,
+        object.contentType,
+        object.sha256,
+      )
+      .first();
+    return reserved !== null;
+  }
+
   async attachTrace(
     input: AttachTraceInput,
   ): Promise<PersistenceResult<TraceRun>> {

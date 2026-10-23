@@ -86,6 +86,12 @@ export class GitHubError extends Error {
 export class GitHubClient {
   private constructor(private readonly token: string) {}
 
+  /** Existing GitHub token for read-only source ingestion outside the Worker. */
+  static forToken(token: string) {
+    if (!token.trim()) throw new Error("GitHub source token is required");
+    return new GitHubClient(token);
+  }
+
   static async forInstallation(
     appId: string,
     privateKey: string,
@@ -140,6 +146,20 @@ export class GitHubClient {
 
   async get<T>(path: string): Promise<T | null> {
     return (await this.request<T>("GET", path)).data;
+  }
+
+  async graphql<T>(
+    query: string,
+    variables: Record<string, unknown>,
+  ): Promise<T> {
+    const response = await this.request<{ data?: T; errors?: unknown[] }>(
+      "POST",
+      "/graphql",
+      { query, variables },
+    );
+    if (!response.data?.data || response.data.errors?.length)
+      throw new Error("GitHub GraphQL evidence is incomplete");
+    return response.data.data;
   }
 
   // Raw file text at an exact commit, bounded. null when absent.
@@ -225,4 +245,52 @@ export async function authorExemption(
   } catch {
     return "unknown";
   }
+}
+
+// Recover a confirmed GitHub comment after an interrupted local checkpoint.
+// An untrusted contributor can copy the marker, so the exact App actor is required.
+export async function findReviewComment(
+  github: GitHubClient,
+  owner: string,
+  repo: string,
+  number: number,
+  appUserId: string,
+): Promise<number | null> {
+  let found: number | null = null;
+  for (let page = 1; page <= 100; page++) {
+    const response = await github.request<
+      {
+        id: number;
+        body: string | null;
+        user: { id: number; type: string } | null;
+      }[]
+    >(
+      "GET",
+      `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100&page=${page}`,
+    );
+    if (
+      response.status !== 200 ||
+      !Array.isArray(response.data) ||
+      response.data.length > 100
+    )
+      throw new Error("GitHub review comment history is unavailable");
+    for (const comment of response.data) {
+      if (!comment || !Number.isSafeInteger(comment.id) || comment.id <= 0)
+        throw new Error("GitHub review comment identity is invalid");
+      if (
+        comment.user?.type === "Bot" &&
+        String(comment.user.id) === appUserId &&
+        typeof comment.body === "string" &&
+        comment.body.startsWith("<!-- slopbot:review -->")
+      ) {
+        if (found !== null && found !== comment.id)
+          throw new Error(
+            "Multiple Slopbot review comments require reconciliation",
+          );
+        found = comment.id;
+      }
+    }
+    if (response.data.length < 100) return found;
+  }
+  throw new Error("GitHub review comment history is incomplete");
 }

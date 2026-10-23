@@ -13,6 +13,7 @@ import type {
   AdminNotification,
   ApplicationStatus,
   DecisionInput,
+  GithubActor,
   ProjectApplication,
   ProjectEnforcement,
   ProjectPersistence,
@@ -20,6 +21,7 @@ import type {
   ProjectRevision,
   ProjectRevisionInput,
 } from "./contracts";
+import { MAX_PENDING_APPLICATIONS_PER_APPLICANT } from "./contracts";
 export type ProjectD1Database = D1TransactionalDatabase<D1Statement>;
 
 type ProjectRow = {
@@ -31,6 +33,8 @@ type ProjectRow = {
   created_at: string;
   updated_at: string;
   source_application_id: string | null;
+  referrer_github_id: string | null;
+  referrer_github_login: string | null;
 };
 
 type ApplicationRow = {
@@ -53,12 +57,26 @@ type ApplicationRow = {
   decided_by_github_login: string | null;
   decision_reason: string | null;
   github_check: string | null;
+  referrer_github_id: string | null;
+  referrer_github_login: string | null;
 };
 
 const PROJECT_COLUMNS =
-  "id, status, revision, manifest, manifest_sha256, created_at, updated_at, source_application_id";
+  "id, status, revision, manifest, manifest_sha256, created_at, updated_at, source_application_id, referrer_github_id, referrer_github_login";
 const APPLICATION_COLUMNS =
-  "id, project_id, repository_key, manifest, manifest_sha256, acceptance_criteria, applicant_github_id, applicant_github_login, submitted_at, status, admin_notification, admin_notification_at, decided_at, decided_by_github_id, decided_by_github_login, decision_reason, github_check, expected_revision, change_reason";
+  "id, project_id, repository_key, manifest, manifest_sha256, acceptance_criteria, applicant_github_id, applicant_github_login, submitted_at, status, admin_notification, admin_notification_at, decided_at, decided_by_github_id, decided_by_github_login, decision_reason, github_check, expected_revision, change_reason, referrer_github_id, referrer_github_login";
+
+function referrerFromRow(row: {
+  referrer_github_id: string | null;
+  referrer_github_login: string | null;
+}): GithubActor | null {
+  return row.referrer_github_id !== null && row.referrer_github_login !== null
+    ? {
+        githubId: row.referrer_github_id,
+        githubLogin: row.referrer_github_login,
+      }
+    : null;
+}
 
 function projectFromRow(row: ProjectRow): ProjectRecord {
   return {
@@ -70,6 +88,7 @@ function projectFromRow(row: ProjectRow): ProjectRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     sourceApplicationId: row.source_application_id,
+    referrer: referrerFromRow(row),
   };
 }
 
@@ -105,6 +124,7 @@ function applicationFromRow(row: ApplicationRow): ProjectApplication {
           },
     decisionReason: row.decision_reason,
     githubCheck: row.github_check,
+    referrer: referrerFromRow(row),
   };
 }
 
@@ -325,17 +345,29 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
     return row?.count ?? 0;
   }
 
+  async hasSignedInActor(githubId: string): Promise<boolean> {
+    return (
+      (await this.db
+        .prepare("SELECT github_id FROM points_members WHERE github_id = ?")
+        .bind(githubId)
+        .first()) !== null
+    );
+  }
+
   async createApplication(
     application: ProjectApplication & { manifestText: string },
-  ): Promise<"created" | "conflict"> {
+  ): Promise<"created" | "conflict" | "too_many_pending"> {
     try {
-      await this.db
+      const result = await this.db
         .prepare(
           `INSERT INTO project_applications (
              id, project_id, repository_key, manifest, manifest_sha256,
              acceptance_criteria, applicant_github_id, applicant_github_login,
-             submitted_at, status, admin_notification, github_check, expected_revision, change_reason
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?)`,
+             submitted_at, status, admin_notification, github_check, expected_revision, change_reason,
+             referrer_github_id, referrer_github_login
+           ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?, ?, ?
+             WHERE (SELECT COUNT(*) FROM project_applications
+               WHERE applicant_github_id = ? AND status = 'pending') < ?`,
         )
         .bind(
           application.id,
@@ -350,9 +382,13 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           application.githubCheck,
           application.expectedRevision ?? null,
           application.changeReason ?? null,
+          application.referrer?.githubId ?? null,
+          application.referrer?.githubLogin ?? null,
+          application.applicant.githubId,
+          MAX_PENDING_APPLICATIONS_PER_APPLICANT,
         )
         .run();
-      return "created";
+      return (result.meta?.changes ?? 0) === 1 ? "created" : "too_many_pending";
     } catch (error) {
       if (isConstraintConflict(error)) return "conflict";
       throw error;
@@ -405,7 +441,7 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
       this.db
         .prepare(
           `INSERT INTO projects (${PROJECT_COLUMNS})
-           SELECT ?, 'paused', 1, ?, ?, ?, ?, ? WHERE ${pending}`,
+           SELECT ?, 'paused', 1, ?, ?, ?, ?, ?, ?, ? WHERE ${pending}`,
         )
         .bind(
           application.projectId,
@@ -414,6 +450,8 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           input.at,
           input.at,
           application.id,
+          application.referrer?.githubId ?? null,
+          application.referrer?.githubLogin ?? null,
           application.id,
         ),
       ...application.manifest.repositories.map((repository) =>

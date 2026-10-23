@@ -466,11 +466,11 @@ test("private security bounty programs keep cases restricted from intake to awar
       "$7,500 for a confirmed critical vulnerability that can cause loss of funds. Funded by Slop.",
     );
     const facts = page.getByRole("region", { name: "Award terms" });
-    await expect(facts).toContainText("Researcher award (75%)$7,500");
+    await expect(facts).toContainText("Researcher · 75%$7,500");
     await expect(facts).toContainText(
       "Gross funding per eligible finding$10,000",
     );
-    await expect(facts).toContainText("Slop share (25%)$2,500");
+    await expect(facts).toContainText("Slop · 25%$2,500");
     await expect(facts).toContainText("Bounty only.");
     await expectAccessible(page);
     await page.screenshot({
@@ -1042,14 +1042,14 @@ test("private security bounty programs keep cases restricted from intake to awar
     await page.goto("/security", { waitUntil: "networkidle" });
     await page
       .getByRole("button", {
-        name: new RegExp(`${b.id} · GHSA-8c9f-2g3h-4j5m`, "u"),
+        name: new RegExp(`${b.id} GHSA-8c9f-2g3h-4j5m`, "u"),
       })
       .click();
     const detail = page.locator(".security-case");
     await expect(detail).toContainText("Waiting for an independent reviewer");
-    await expect(detail).toContainText(
-      "entered by a security maintainer from GitHub, not read from GitHub by Slop",
-    );
+    await detail.getByText("Case details", { exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await expect(detail.getByText(/\(maintainer verified\)/u)).toBeVisible();
     const form = detail.getByRole("form", {
       name: "Related-party award review",
     });
@@ -1308,7 +1308,7 @@ test("private security bounty programs keep cases restricted from intake to awar
     await page.goto("/security", { waitUntil: "networkidle" });
     await page
       .getByRole("button", {
-        name: new RegExp(`${a.id} · GHSA-2c3f-4g5h-6j7m`, "u"),
+        name: new RegExp(`${a.id} GHSA-2c3f-4g5h-6j7m`, "u"),
       })
       .click();
     const form = page.locator("form").filter({
@@ -1440,7 +1440,7 @@ test("private security bounty programs keep cases restricted from intake to awar
     await page.goto("/security", { waitUntil: "networkidle" });
     await page
       .getByRole("button", {
-        name: new RegExp(`${a.id} · GHSA-2c3f-4g5h-6j7m`, "u"),
+        name: new RegExp(`${a.id} GHSA-2c3f-4g5h-6j7m`, "u"),
       })
       .click();
     const detail = page.locator(".security-case");
@@ -1480,4 +1480,191 @@ test("private security bounty programs keep cases restricted from intake to awar
       expect(text).not.toMatch(/sc_[A-Za-z0-9]{8}/u);
     }
   });
+});
+
+// This is UI evidence against real Pages/D1. The finalized snapshot is an
+// explicit local fixture; payments.integration.ts proves the chain separately.
+test("private settlement requires visibility consent and produces an unsigned request @registry", async ({
+  browser,
+  request,
+}) => {
+  test.setTimeout(180_000);
+  const suffix = test.info().project.name.replace(/-chromium$/u, "");
+  const id = `private-pay-${suffix}`;
+  const repository = `e2e-owner/${id}`;
+  const deployment = {
+    network: "base-sepolia",
+    vault: "0x1000000000000000000000000000000000000001",
+    asset: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+    owner: "0x2000000000000000000000000000000000000002",
+    identityAuthority: "0x3000000000000000000000000000000000000003",
+    feeRecipient: "0x4000000000000000000000000000000000000004",
+    factory: "0x5000000000000000000000000000000000000005",
+    registrar: "0x6000000000000000000000000000000000000006",
+    factoryCodeSha256: "cd".repeat(32),
+    codeSha256: "ab".repeat(32),
+    deploymentTransaction: `0x${"ab".repeat(32)}`,
+    sourceCommit: "a".repeat(40),
+    bindingDelaySeconds: "3600",
+    rotationDelaySeconds: null,
+    programId: null,
+    projectPda: null,
+    networkDomain: null,
+    upgradeAuthority: null,
+  };
+  const terms = bountyTerms(repository, {
+    rewardMode: "separate",
+    amount: {
+      currency: "USDC",
+      decimals: 6,
+      network: "base",
+      grossMinor: "100000000",
+    },
+    settlement: {
+      schemaVersion: "1",
+      effectiveCycle: "2026-11",
+      chain: "base",
+      feeBasisPoints: 2500,
+      withdrawalFeeBasisPoints: 200,
+      feeMode: "deduct-from-gross",
+      deployments: [deployment],
+    },
+  });
+  await listProject(request, TOKENS.security, repository, id, {
+    securityBounty: terms,
+  });
+  const revised = await revise(request, id, (m) => ({
+    ...m,
+    securityBounty: openTerms(terms),
+  }));
+  expect(revised.status, JSON.stringify(revised.body)).toBe(200);
+  const caseId = await recordCase(
+    request,
+    id,
+    "GHSA-2345-6789-cfgh",
+    "reporter-a",
+    new Date().toISOString(),
+  );
+  expect(
+    (await act(request, "security", caseId, "decide", decision())).status,
+  ).toBe(200);
+  expect(
+    (
+      await act(request, "finance", caseId, "approve-award", {
+        paymentDeadline: new Date(Date.now() + 86400000).toISOString(),
+        confirmation: true,
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await act(request, "finance", caseId, "prepare-payment", {
+        network: "base-sepolia",
+        confirmation: true,
+      })
+    ).body.error,
+  ).toBe("payment_consent_required");
+  const context = await browser.newContext({
+    viewport: test.info().project.use.viewport,
+    recordVideo: { dir: test.info().outputPath("settlement-video") },
+  });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const page = await context.newPage();
+  const errors = observe(page);
+  await signIn(page, TOKENS["reporter-a"]);
+  await page.goto("/security", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: new RegExp(`^${id} `) }).click();
+  await page.getByText("Accept payment visibility", { exact: true }).click();
+  await page
+    .getByLabel(/^I understand that chain transactions reveal/u)
+    .check();
+  await page
+    .getByRole("button", { name: "Accept visibility", exact: true })
+    .click();
+  await expect
+    .poll(
+      async () =>
+        (
+          await act(request, "finance", caseId, "prepare-payment", {
+            network: "base-sepolia",
+            confirmation: true,
+          })
+        ).body.error,
+    )
+    .toBe("payment_vault_unverified");
+  // Seed the local scanner output only. No hosted database or chain is used.
+  const persist = process.env.SLOP_E2E_PERSIST_TO;
+  expect(persist).toBeTruthy();
+  const { execFileSync } = await import("node:child_process");
+  const now = new Date().toISOString();
+  execFileSync(
+    "node",
+    [
+      "node_modules/wrangler/bin/wrangler.js",
+      "d1",
+      "execute",
+      "slop-private",
+      "--local",
+      "--persist-to",
+      persist as string,
+      "--command",
+      `INSERT INTO security_vault_snapshots(project_id,network,chain,vault,asset_address,asset_decimals,total_deposited,total_paid,total_payout_fees,total_gross_withdrawn,total_withdrawal_fees,total_service_fees,free_balance,reserved_principal,reserved_fees,accrued_fees,reserved,block_number,block_time,observed_at) VALUES('${id}','base-sepolia','base','${deployment.vault}','${deployment.asset}',6,'100000000','0','0','0','0','0','100000000',NULL,NULL,NULL,'0','64','${now}','${now}')`,
+    ],
+    { stdio: "pipe" },
+  );
+  await signIn(page, TOKENS.finance);
+  await page.goto("/security", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: new RegExp(`^${id} `) }).click();
+  await page.getByText("Prepare private payment", { exact: true }).click();
+  await page.getByLabel(/^I approve .* on this network/u).check();
+  await page
+    .getByRole("button", { name: "Prepare unsigned payment", exact: true })
+    .click();
+  await expect(page.locator(".security-case > .admin-facts")).toContainText(
+    "Waiting for the vault owner",
+  );
+  await page.getByText("Unsigned owner request", { exact: true }).click();
+  await page.getByRole("button", { name: "Copy unsigned request" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Request copied." }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+    ),
+  ).toBe(true);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download unsigned request" }).focus();
+  await page.keyboard.press("Enter");
+  const file = await download;
+  expect(file.suggestedFilename()).toBe("private-payment-request.json");
+  await file.saveAs(test.info().outputPath("unsigned-request.json"));
+  await expect(
+    page.getByRole("status").filter({ hasText: "Request download started." }),
+  ).toBeVisible();
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.screenshot({
+    path: test.info().outputPath("private-settlement.png"),
+    fullPage: true,
+  });
+  await page.evaluate(() => {
+    document.documentElement.style.zoom = "2";
+  });
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.screenshot({
+    path: test.info().outputPath("private-settlement-zoom.png"),
+    fullPage: true,
+  });
+  // The existing site supports a minimum layout width of 320 CSS pixels.
+  // At 200% on a 320px viewport it scrolls to that minimum; the request
+  // must not expand the page beyond it.
+  expect(
+    await page.evaluate(
+      () =>
+        document.documentElement.scrollWidth <=
+        Math.max(window.innerWidth, 640) + 1,
+    ),
+  ).toBe(true);
+  expect(errors).toEqual([]);
+  await context.close();
 });

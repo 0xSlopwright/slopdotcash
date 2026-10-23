@@ -44,6 +44,8 @@ test("Account waits for identity, revokes another session and signs out the curr
       sessions = sessions.filter((session) => session.id !== id);
       json = { revoked: true };
     } else if (path.endsWith("/sessions")) json = { sessions };
+    else if (path.endsWith("/telegram/me"))
+      json = { configured: false, account: null, flow: null };
     else if (path.endsWith("/x/me"))
       json = { configured: false, account: null, award: null };
     else if (path.endsWith("/me")) {

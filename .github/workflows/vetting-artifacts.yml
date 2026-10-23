@@ -27,5 +27,9 @@ jobs:
           sudo apparmor_parser -r /usr/share/apparmor/extra-profiles/bwrap-userns-restrict
       - name: Run harmless artifact and isolation workflows
         run: python3 workers/vetting/artifacts_workflow_test.py
+      - name: Compare exact Git source and release archives in isolation
+        run: python3 workers/vetting/provenance_workflow_test.py
       - name: Run private DNS and HTTPS dependency capture workflows
         run: sudo unshare --mount --net --fork python3 workers/vetting/dependencies_workflow_test.py
+      - name: Capture actual filesystem changes and refuse unsafe entries
+        run: python3 workers/vetting/filesystem_workflow_test.py

@@ -281,11 +281,25 @@ jobs:
         with:
           name: slop-source-${{ needs.source.outputs.sha }}
           path: dist
+      - name: Install Playwright system dependencies
+        run: |
+          # The Azure mirror stalled across release and PR runners. Use Ubuntu's
+          # primary archive; the runner's URI normally points to apt-mirrors.txt.
+          # Keep its suites, components and signing keys unchanged.
+          sudo sed -i 's|^URIs:.*|URIs: https://archive.ubuntu.com/ubuntu/|' \
+            /etc/apt/sources.list.d/ubuntu.sources
+          grep -Fx 'URIs: https://archive.ubuntu.com/ubuntu/' \
+            /etc/apt/sources.list.d/ubuntu.sources
+          # Run the timeout as root so it can terminate apt and its children.
+          # Do not retry an interrupted package transaction on the same runner.
+          # Hosted package downloads exceeded ten minutes in two release runs.
+          sudo timeout --signal=TERM --kill-after=15s 20m \
+            "$(command -v node)" ./node_modules/playwright/cli.js install-deps chromium firefox
       - name: Install Playwright Chromium and Firefox
         run: |
           set -euo pipefail
           for attempt in 1 2; do
-            if timeout --signal=TERM 10m ./node_modules/.bin/playwright install --with-deps chromium firefox; then
+            if timeout --signal=TERM --kill-after=15s 10m ./node_modules/.bin/playwright install chromium firefox; then
               exit 0
             fi
             if [ "$attempt" -eq 2 ]; then
@@ -623,6 +637,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           X_CLIENT_ID: ${{ secrets.X_CLIENT_ID }}
           X_CLIENT_SECRET: ${{ secrets.X_CLIENT_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_USERNAME: ${{ secrets.TELEGRAM_BOT_USERNAME }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
           SLOPBOT_RELEASE: ${{ vars.SLOPBOT_RELEASE }}
           SLOP_NOTIFY_RELEASE: ${{ vars.SLOP_NOTIFY_RELEASE }}
           SLOP_NOTIFY_MAIL_PILOTS: ${{ vars.SLOP_NOTIFY_MAIL_PILOTS }}
@@ -683,6 +700,19 @@ jobs:
             rm -f "$x_secrets"
           fi
 
+          # Optional Telegram connection bot (PRD SOC-02): all three values or none.
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] || [ -n "$TELEGRAM_BOT_USERNAME" ] || [ -n "$TELEGRAM_WEBHOOK_SECRET" ]; then
+            telegram_secrets="$RUNNER_TEMP/slop-telegram-secrets.json"
+            node - "$telegram_secrets" <<'NODE'
+          const { writeFileSync } = require("node:fs");
+          const { TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME, TELEGRAM_WEBHOOK_SECRET } = process.env;
+          if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_BOT_USERNAME || !TELEGRAM_WEBHOOK_SECRET) throw new Error("Telegram bot settings must be configured together");
+          writeFileSync(process.argv[2], JSON.stringify({ TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME, TELEGRAM_WEBHOOK_SECRET }), { mode: 0o600 });
+          NODE
+            ./node_modules/.bin/wrangler pages secret bulk "$telegram_secrets" --project-name eliza-computer
+            rm -f "$telegram_secrets"
+          fi
+
           pages_secrets="$RUNNER_TEMP/slop-pages-secrets.txt"
           ./node_modules/.bin/wrangler pages secret list \
             --project-name eliza-computer > "$pages_secrets"
@@ -698,7 +728,9 @@ jobs:
             .sort();
           const xKeys = actual.filter((name) => name === "X_CLIENT_ID" || name === "X_CLIENT_SECRET");
           if (xKeys.length === 1) throw new TypeError("X OAuth credentials must be configured together");
-          const required = actual.filter((name) => !xKeys.includes(name));
+          const telegramKeys = actual.filter((name) => ["TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_USERNAME", "TELEGRAM_WEBHOOK_SECRET"].includes(name));
+          if (telegramKeys.length !== 0 && telegramKeys.length !== 3) throw new TypeError("Telegram bot settings must be configured together");
+          const required = actual.filter((name) => !xKeys.includes(name) && !telegramKeys.includes(name));
           if (JSON.stringify(required) !== JSON.stringify(expected)) {
             throw new TypeError("Pages secret inventory is incomplete or contains unexpected entries");
           }
@@ -1026,12 +1058,22 @@ jobs:
           }
           NODE
 
+          # The selected profile is prepared from the checked-in Pages D1 contract.
+          # No pilot is selected unless the protected environment opts in.
+          if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
+            bun scripts/release-notify.mjs deploy production "$RUNNER_TEMP/slop-notify-release"
+          else
+            test -z "$SLOP_NOTIFY_MAIL_PILOTS"
+            echo "::notice::Notification release is disabled."
+          fi
+
           # Slopbot (workers/slopbot, protocol/slopbot-v2.md). The owner creates
           # the Worker shell, its custom domain and its secrets once, then sets
           # the SLOPBOT_RELEASE repository variable to "enabled". Releases only
           # upload and promote versions. Its D1 tables come from the shared
           # slop-private migration apply above.
           if [ "$SLOPBOT_RELEASE" = "enabled" ]; then
+          test "$SLOP_NOTIFY_RELEASE" = "enabled"
           slopbot_secrets="$RUNNER_TEMP/slopbot-secrets.json"
           ./node_modules/.bin/wrangler secret list \
             --config workers/slopbot/wrangler.toml > "$slopbot_secrets"
@@ -1041,7 +1083,6 @@ jobs:
           if (!Array.isArray(value)) throw new TypeError("slopbot secret inventory must be an array");
           const names = value.map((entry) => entry?.name).sort();
           const required = [
-            "OPENAI_API_KEY",
             "SLOPBOT_APP_ID",
             "SLOPBOT_APP_PRIVATE_KEY",
             "SLOPBOT_APP_USER_ID",
@@ -1057,6 +1098,7 @@ jobs:
           slopbot_upload="$RUNNER_TEMP/slopbot-upload.log"
           ./node_modules/.bin/wrangler versions upload \
             --config workers/slopbot/wrangler.toml \
+            --var="SLOPBOT_PRODUCER_REVISION:$GITHUB_SHA" \
             --minify \
             --tag="$GITHUB_SHA" \
             --message="slop.cash release $GITHUB_SHA" 2>&1 | tee "$slopbot_upload"
@@ -1076,6 +1118,10 @@ jobs:
             --percentage=100 \
             --message="slop.cash release $GITHUB_SHA" \
             --yes
+
+          # Version deployments do not apply the scheduler or queue triggers.
+          ./node_modules/.bin/wrangler triggers deploy \
+            --config workers/slopbot/wrangler.toml
 
           slopbot_versions="$RUNNER_TEMP/slopbot-versions.json"
           slopbot_deployment="$RUNNER_TEMP/slopbot-deployment.json"
@@ -1115,14 +1161,6 @@ jobs:
             echo "::notice::Slopbot release is not enabled (SLOPBOT_RELEASE repository variable)."
           fi
 
-          # The selected profile is prepared from the checked-in Pages D1 contract.
-          # No pilot is selected unless the protected environment opts in.
-          if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
-            bun scripts/release-notify.mjs deploy production "$RUNNER_TEMP/slop-notify-release"
-          else
-            test -z "$SLOP_NOTIFY_MAIL_PILOTS"
-            echo "::notice::Notification release is disabled."
-          fi
 
           # Fee-wallet converter (workers/fee-converter, PRD MVP-07c). The owner
           # creates the Worker shell and its secrets once, then sets the

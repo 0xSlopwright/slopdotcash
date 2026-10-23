@@ -14,12 +14,15 @@ Migrations `0019_project_registry.sql`,
 `0027_project_enforcement_owner_appeals.sql` create:
 
 - `project_applications`: submitted manifests, applicant GitHub identity,
-  review status, decision, and admin email outcome. One pending application
-  per project id and per repository.
+  the referrer the applicant named (PRJ-05, migration
+  `0055_project_referrer.sql`), review status, decision, and admin email
+  outcome. One pending application per project id and per repository.
 - `project_revisions`: the append-only manifest history. Triggers refuse
   update and delete.
-- `projects`: the current pointer to the newest revision. Triggers require a
-  matching appended revision for every insert and update, and refuse delete.
+- `projects`: the current pointer to the newest revision, plus the referrer
+  copied once from the approved application. Triggers require a matching
+  appended revision for every insert and update, refuse delete, and refuse
+  any change to the referrer.
 - `project_repositories`: makes each repository unique across the registry.
 - `project_enforcements`: the append-only ADM-06 record of each Quarantine,
   Ban, reinstatement request and appeal decision, with the ADM-05 audit
@@ -42,7 +45,7 @@ points and profiles still validate.
 | `GET /api/v1/project-github/repositories/:owner/:name` | session | Public repository facts for `/projects/new` |
 | `GET /api/v1/project-revisions/:id/:revision` | public, immutable | One approved revision's exact stored `manifestText` and digest, for generated-skill installers |
 | `GET /api/v1/project-session` | public | GitHub identity and admin flag, or `null` when signed out |
-| `POST /api/v1/project-applications` | session | Submits a manifest, records the GitHub check, and emails the admins |
+| `POST /api/v1/project-applications` | session | Submits a manifest with an optional `referrer` login, records the GitHub check, and emails the admins |
 | `GET /api/v1/project-applications/mine` | session | The applicant's own applications |
 | `GET /api/v1/admin/project-applications?status=` | admin | Review queue |
 | `POST /api/v1/admin/project-applications/:id/approve` | admin | Lists the project as paused (optional `reason`) |
@@ -238,3 +241,9 @@ which active repositories to collect; an origin that does not serve the
 registry API yet keeps the committed snapshot. `bun run projects:check` proves
 the committed snapshot is canonical and that every active project carries its
 contribution fields.
+
+Approval rechecks a pending new application against the current application rules
+and GitHub repository and alias identities. A changed identity refuses approval.
+An unavailable GitHub check leaves the application pending for a later retry.
+Valid aliases remain allowed; maintainer update applications use their existing
+revision and policy checks.

@@ -131,3 +131,33 @@ root-tamper resistance, arbitrary interpreter/JIT or memory-only interception,
 full project execution or a controlled network pass. Provider calls and result
 publication remain disabled. The Darwin option still authorizes only the pinned
 harmless fixture, never live untrusted repository execution.
+
+### Captured filesystem changes
+
+The collector observes the existing quarantine workspace before the command,
+after its traced phase, and after the separate post-collector probe. This is a
+bounded guest observation, not an atomic or independent disk snapshot. It records
+path additions, changes and absence; matching hashes never prove a rename.
+The root is `/tmp/slop-quarantine`. Other paths and transient writes between
+observations remain outside this coverage. Hardlinks may have other names outside
+the root. A tracer exit does not prove that every writer stopped.
+
+Directory access uses descriptors. Files are first pinned with Linux `O_PATH`
+and checked as regular files before their bytes are opened through that descriptor.
+Symlinks and special files are not opened. Identity, size, owner, mode and change
+and modification times are checked before and after reads. Races produce gaps;
+bytes already captured remain private evidence. The collector limits directory
+depth to 8, entries per phase to 256 and unique captured bytes to 672 KiB, unique objects to 256, and shared path/change
+metadata to 64 KiB. The direct JSON transport avoids a second base64 layer for
+filesystem metadata. A complete guest frame must fit 3.75 MiB of the 4 MiB serial
+budget; boot output still consumes the remaining budget. The complete capture
+also remains in the private guest write layer if serial transport fails. Limits do
+not produce a complete snapshot. Captured artifacts remain uninspected and cannot
+execute because they were captured.
+
+The private serial frame binds the capture digest. Host collection preserves the
+raw capture and each verified content object. The assembler retains those exact
+objects and supplies metadata, without encoded artifact bodies, to model review.
+The canonical retention check must follow all content references. The full VM
+write layer remains separate evidence. None of these files authorizes execution,
+provider calls or publication.

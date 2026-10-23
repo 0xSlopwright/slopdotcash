@@ -25,7 +25,11 @@ multiply points. Required source evidence and project participation rules apply.
 Historical merged PRs initially receive 10 provisional points each, including
 work before the project's payment program. A Score v2 merge from
 2026-10-01T00:00:00Z without a ratified tier is provisional small credit and
-receives 30 provisional points. This is a recognition backfill and
+receives 30 provisional points in the legacy projection. When source-bound value
+assessments are enabled, missing, stale, incomplete, or unresolved assessments
+do not create fallback awards or remove prior recorded points. A verified bot
+assessment remains provisional until a maintainer decision supersedes it. An
+assessed zero creates a zero-amount revision. This is a recognition backfill and
 never retroactive cash eligibility. Verified archived and current scoring
 records supersede provisional amounts, including exclusions and work grouping
 within their complete source windows. Historical review credit is limited to
@@ -66,12 +70,18 @@ Projects and repositories come only from the canonical manifest registry.
 retaining earlier revisions and source digests. Source IDs, actor IDs and
 categories determine award identity; a rule upgrade cannot mint another copy.
 Revisions carry predecessor hashes. A corrected outcome replaces its former
-amount in the projection rather than adding another full award.
+amount in the projection rather than adding another full award. Source-bound
+score decisions also record the decision source, effective time, reason, and
+exact signed change from the previous amount. A new decision with the same
+amount records a zero change; replaying that decision creates no revision.
+Distinct assessed review findings retain their separate work-unit identities.
 
 The permanent D1 points tables are logically separate from trace tables in the
 existing deployment database. This avoids a new credential or provisioning
 boundary; the points handler never constructs trace persistence or reads trace
-records. Journal rows reject updates/deletions and branching successors. A batch
+records. Journal rows reject updates, deletions, changed-row replacement, and
+branching successors. Completed batch metadata is immutable. Exact imports and
+replays preserve the original bytes. A batch
 is publishable only when its full revision count reconciles. Trusted Actions
 checkpoints the tested journal into D1 during every protected production
 release, including the scheduled ones, under the existing publication lock.
@@ -167,12 +177,69 @@ Primary references checked during implementation:
 [X token exchange and revocation](https://docs.x.com/fundamentals/authentication/oauth-2-0/user-access-token),
 [X endpoint scope mapping](https://docs.x.com/fundamentals/authentication/guides/v2-authentication-mapping).
 
+### Telegram connections
+
+A member may connect one Telegram account from a signed-in GitHub web session.
+**A Telegram connection earns no points.** Like X, the numeric Telegram account
+ID is reserved to the first GitHub identity that verifies it and never moves
+to another account; reconnecting replaces the member's own link, and
+disconnecting removes the visible link while keeping the reservation.
+
+The browser never talks to Telegram and the site loads no Telegram script or
+frame. `POST /api/v1/points/telegram/start` records a single-use code bound to
+the web session, valid for ten minutes, and returns the deep link
+`https://t.me/<bot>?start=<code>`. The member opens it and presses Start.
+Telegram delivers that `/start <code>` message to
+`POST /api/v1/points/telegram/webhook`, authenticated by the
+`X-Telegram-Bot-Api-Secret-Token` header set at `setWebhook`; that delivery is
+the proof of the account ID. The webhook accepts only a `/start` message from a
+non-bot user in a private chat, replies only in that chat (connected, link no
+longer valid, account already connected elsewhere, or how to start), and
+answers 200 after authentication so a consumed code is never retried. Any
+other update is ignored without a reply. The bot never joins groups, posts, or
+reads anything beyond that message.
+
+Stored: account ID, the optional username snapshot, verification time and
+visibility. Not stored: phone number, display name, photo, chat history. The
+numeric ID is never shown to others; public display uses the username
+snapshot only, and `Telegram · connected` when the account has none. Public
+display needs both the public membership and the public link opt-in, as with X.
+Telegram control confers no GitHub project, organization, wallet or payment
+authority, and Telegram failure never blocks GitHub work or payments.
+
+### Enabling Telegram
+
+Create a bot with BotFather and keep its token private. Register the webhook
+once against the production origin, with a fresh random secret of at least 32
+characters from `A-Za-z0-9_-`:
+
+```text
+POST https://api.telegram.org/bot<token>/setWebhook
+{ "url": "https://slop.cash/api/v1/points/telegram/webhook",
+  "secret_token": "<secret>", "allowed_updates": ["message"],
+  "drop_pending_updates": true }
+```
+
+Place `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` (the bot's username
+without `@`) and `TELEGRAM_WEBHOOK_SECRET` together in the protected GitHub
+production environment. The protected main release installs the three as
+encrypted Pages secrets and applies migration `0056_points_telegram.sql`.
+With none configured, the app reports that Telegram connections are not
+enabled and the webhook answers 404; a partial or malformed set is rejected at
+release and disables the routes. A real bot and a live webhook delivery must
+be verified at activation; tests with doubles are not live evidence.
+
+Primary references checked during implementation:
+[Bot deep links](https://core.telegram.org/api/links#bot-links),
+[setWebhook and the secret token](https://core.telegram.org/bots/api#setwebhook),
+[Update and Message objects](https://core.telegram.org/bots/api#update).
+
 ### Individual profiles
 
 Every recorded PR author has a discoverable `/contributors/<login>` profile,
 including authors with only open or closed unmerged PRs. Joined members and
 historical point recipients retain profiles independently of the current score
-window. Public membership and X visibility remain opt-in.
+window. Public membership, X visibility and Telegram visibility remain opt-in.
 
 `profiles:generate` walks the complete PR connection of each active manifest
 repository, deduplicates immutable PR IDs, and reconciles the total record count

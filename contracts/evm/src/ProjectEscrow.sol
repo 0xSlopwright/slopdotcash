@@ -23,7 +23,10 @@ uint64 constant MAX_BINDING_DELAY = 30 days;
 /// no payment goes to any earlier wallet, so a rotation away from a compromised wallet freezes payment
 /// instead of racing it. The owner can cancel the latest binding only inside those windows, never after it
 /// has paid, and at most MAX_CANCELS_BETWEEN_PAYMENTS times between two payments to the actor, so the owner
-/// can delay a payout by a bounded number of delays but never retract it. Fees accrue in the vault and are pulled separately, so a blocked fee recipient cannot
+/// can delay a payout by a bounded number of delays but never retract it. That cap does not apply while the
+/// factory has a pending authority rotation, which only the registrar can open: during the public notice of
+/// a stolen key the owner cancels every attacker binding, however many cancels it had spent before, and those
+/// cancels do not count. Fees accrue in the vault and are pulled separately, so a blocked fee recipient cannot
 /// stop payouts or refunds.
 /// Anyone may deposit; deposits join one free balance that only the owner commits or refunds to its refund
 /// destination. The payout fee and the unused-fund withdrawal fee are both 2% (floor(gross / 50)), so awarding
@@ -51,7 +54,9 @@ contract ProjectEscrow {
     }
 
     /// @notice Cancels the owner may make for an actor between two payments to that actor. Each cancel can
-    /// only delay the actor by one more bindingDelay, so this bounds the owner's delay power.
+    /// only delay the actor by one more bindingDelay, so this bounds the owner's delay power. The cap is
+    /// waived, and the count untouched, while the factory has a pending authority rotation, so an earlier
+    /// cancel never shortens the cover the owner can give during a key compromise.
     uint8 public constant MAX_CANCELS_BETWEEN_PAYMENTS = 3;
 
     bytes32 private constant DOMAIN_TYPEHASH =
@@ -270,11 +275,21 @@ contract ProjectEscrow {
 
     /// @param sourceDigest Unique per award origin (project/cycle/actor/allocation), not a whole-cycle digest.
     function commitAward(bytes32 id, uint64 actorId, uint128 gross, bytes32 sourceDigest) external onlyOwner {
+        commit(id, actorId, gross, sourceDigest, payoutFee(gross));
+    }
+
+    /// @notice Owner-approved private bounty: exactly 75% to the researcher and 25% to Slop.
+    /// The source must be a random opaque commitment, never a digest of a private report.
+    function commitBountyAward(bytes32 id, uint64 actorId, uint128 gross, bytes32 sourceDigest) external onlyOwner {
+        if (gross % 4 != 0) revert InvalidInput();
+        commit(id, actorId, gross, sourceDigest, gross / 4);
+    }
+
+    function commit(bytes32 id, uint64 actorId, uint128 gross, bytes32 sourceDigest, uint128 fee) private {
         if (actorId == 0 || gross == 0 || sourceDigest == bytes32(0) || id != awardId(sourceDigest)) {
             revert InvalidInput();
         }
         if (awards[id].actorId != 0 || consumedSources[sourceDigest]) revert DuplicateAward();
-        uint128 fee = payoutFee(gross);
         if (gross > freeBalance) revert InsufficientFreeBalance();
         freeBalance -= gross;
         reservedPrincipal += gross - fee;
@@ -319,8 +334,10 @@ contract ProjectEscrow {
     /// @notice The sponsor can stop the latest binding before it pays: while it waits out its own delay, or
     /// while an award committed to the actor is still inside its commit delay. A binding that has paid
     /// cannot be cancelled, and the owner can cancel at most MAX_CANCELS_BETWEEN_PAYMENTS times between two
-    /// payments to the actor. Only a new authority binding can follow a cancel; no payment goes out until it
-    /// is ready.
+    /// payments to the actor, except while the factory has a pending authority rotation: then every cancel
+    /// is allowed and none is counted, because the registrar alone opens that window and the owner needs
+    /// an unbounded number of cancels to outlast a stolen key's notice period. Only a new authority binding
+    /// can follow a cancel; no payment goes out until it is ready.
     function cancelBinding(uint64 actorId, uint64 expectedVersion) external onlyOwner {
         Binding storage binding = bindings[actorId];
         if (
@@ -331,8 +348,10 @@ contract ProjectEscrow {
         bool pending = block.timestamp < binding.activatesAt;
         bool commitWindow = committedAt != 0 && block.timestamp < committedAt + bindingDelay;
         if (!pending && !commitWindow) revert InvalidBinding();
-        if (cancelCount[actorId] >= MAX_CANCELS_BETWEEN_PAYMENTS) revert CancelLimit();
-        cancelCount[actorId] += 1;
+        if (factory.pendingIdentityAuthority() == address(0)) {
+            if (cancelCount[actorId] >= MAX_CANCELS_BETWEEN_PAYMENTS) revert CancelLimit();
+            cancelCount[actorId] += 1;
+        }
         binding.cancelled = true;
         emit BindingCancelled(actorId, expectedVersion);
     }

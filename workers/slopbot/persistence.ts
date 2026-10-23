@@ -23,13 +23,29 @@ export async function recordDelivery(
   deliveryId: string,
   event: string,
 ): Promise<boolean> {
-  const result = await db
+  await db
     .prepare(
       "INSERT OR IGNORE INTO slopbot_deliveries (delivery_id, event, received_at) VALUES (?, ?, ?)",
     )
     .bind(deliveryId, event, now())
     .run();
-  return (result.meta?.changes ?? 0) === 1;
+  const row = await db
+    .prepare(
+      "SELECT processed_at FROM slopbot_deliveries WHERE delivery_id = ?",
+    )
+    .bind(deliveryId)
+    .first<{ processed_at: string | null }>();
+  if (!row) throw new Error("Webhook receipt was not stored");
+  return row.processed_at === null;
+}
+
+export async function completeDelivery(db: D1Database, deliveryId: string) {
+  await db
+    .prepare(
+      "UPDATE slopbot_deliveries SET processed_at = ? WHERE delivery_id = ? AND processed_at IS NULL",
+    )
+    .bind(now(), deliveryId)
+    .run();
 }
 
 export async function releaseDelivery(db: D1Database, deliveryId: string) {
@@ -209,7 +225,7 @@ export async function reviewExists(
 ): Promise<boolean> {
   const row = await db
     .prepare(
-      "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND status IN ('running', 'completed')",
+      "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND status = 'completed'",
     )
     .bind(reviewKey)
     .first();
@@ -229,12 +245,49 @@ export type ReviewRow = {
   policyDigest: string;
 };
 
-// "retry" resumes a review whose earlier attempt failed; its model calls are
-// Slop-caused and recorded unbilled.
+// Longer than Cloudflare's 15-minute queue consumer wall limit. Contended
+// deliveries wait for this lease instead of exhausting short retries or acking.
+export const REVIEW_LEASE_SECONDS = 20 * 60;
+export class ReviewBusyError extends Error {
+  constructor(readonly delaySeconds: number) {
+    super("Review is still claimed by another attempt");
+  }
+}
+export class ReviewLeaseLostError extends Error {
+  constructor() {
+    super("Review attempt no longer owns its lease");
+  }
+}
+export type ReviewClaim = { reviewKey: string; token: string };
+
+export async function ownsReviewClaim(
+  db: D1Database,
+  claim: ReviewClaim,
+): Promise<boolean> {
+  return (
+    (await db
+      .prepare(
+        "SELECT 1 AS ok FROM slopbot_reviews WHERE review_key = ? AND claim_token = ? AND status = 'running' AND lease_expires_at > ?",
+      )
+      .bind(claim.reviewKey, claim.token, now())
+      .first()) !== null
+  );
+}
+export async function assertReviewClaim(db: D1Database, claim: ReviewClaim) {
+  if (!(await ownsReviewClaim(db, claim))) throw new ReviewLeaseLostError();
+}
+
+// A skipped item has never reached inference. A failed or interrupted attempt
+// resumes unbilled. Each transition atomically replaces the attempt token.
 export async function startReview(
   db: D1Database,
   row: ReviewRow,
+  token: string,
 ): Promise<"new" | "retry" | "exists"> {
+  const at = now();
+  const expires = new Date(
+    Date.parse(at) + REVIEW_LEASE_SECONDS * 1000,
+  ).toISOString();
   // Eligibility skips are not completed reviews. Claim the same revision
   // again when its draft/installation/budget state permits review. A skip
   // before any model call is still a first billable attempt; prior calls
@@ -243,25 +296,33 @@ export async function startReview(
     .prepare(
       `UPDATE slopbot_reviews SET status = 'running', content_digest = ?,
         created_at = CASE WHEN EXISTS (SELECT 1 FROM slopbot_costs WHERE review_key = ?)
-          THEN created_at ELSE ? END, skip_reason = NULL, completed_at = NULL
+          THEN created_at ELSE ? END, skip_reason = NULL, completed_at = NULL, claim_token = ?, lease_expires_at = ?
        WHERE review_key = ? AND status = 'skipped'
        RETURNING EXISTS (SELECT 1 FROM slopbot_costs WHERE review_key = ?) AS retry`,
     )
-    .bind(row.contentDigest, row.reviewKey, now(), row.reviewKey, row.reviewKey)
+    .bind(
+      row.contentDigest,
+      row.reviewKey,
+      at,
+      token,
+      expires,
+      row.reviewKey,
+      row.reviewKey,
+    )
     .first<{ retry: number }>();
   if (resumed !== null) return resumed.retry === 1 ? "retry" : "new";
   const retried = await db
     .prepare(
-      "UPDATE slopbot_reviews SET status = 'running' WHERE review_key = ? AND status = 'failed'",
+      "UPDATE slopbot_reviews SET status = 'running', skip_reason = NULL, completed_at = NULL, claim_token = ?, lease_expires_at = ? WHERE review_key = ? AND (status = 'failed' OR (status = 'running' AND lease_expires_at <= ?))",
     )
-    .bind(row.reviewKey)
+    .bind(token, expires, row.reviewKey, at)
     .run();
   if ((retried.meta?.changes ?? 0) === 1) return "retry";
   const result = await db
     .prepare(
       `INSERT OR IGNORE INTO slopbot_reviews (review_key, installation_id, repository_id, item_kind, item_number,
-        item_node_id, author_id, revision, content_digest, policy_digest, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)`,
+      item_node_id, author_id, revision, content_digest, policy_digest, status, created_at, claim_token, lease_expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
     )
     .bind(
       row.reviewKey,
@@ -274,31 +335,57 @@ export async function startReview(
       row.revision,
       row.contentDigest,
       row.policyDigest,
-      now(),
+      at,
+      token,
+      expires,
     )
     .run();
-  return (result.meta?.changes ?? 0) === 1 ? "new" : "exists";
+  if ((result.meta?.changes ?? 0) === 1) return "new";
+  const current = await db
+    .prepare(
+      "SELECT status, lease_expires_at FROM slopbot_reviews WHERE review_key = ?",
+    )
+    .bind(row.reviewKey)
+    .first<{ status: string; lease_expires_at: string | null }>();
+  if (current?.status === "completed") return "exists";
+  const until = Date.parse(current?.lease_expires_at ?? "");
+  throw new ReviewBusyError(
+    Number.isFinite(until)
+      ? Math.max(
+          1,
+          Math.min(
+            REVIEW_LEASE_SECONDS,
+            Math.ceil((until - Date.now()) / 1000),
+          ),
+        )
+      : REVIEW_LEASE_SECONDS,
+  );
 }
 
 export async function finishReview(
   db: D1Database,
   reviewKey: string,
+  token: string,
   status: "completed" | "failed" | "skipped",
   detail: { skipReason?: string; verdict?: unknown; action?: string },
 ) {
-  await db
+  const at = now();
+  const result = await db
     .prepare(
-      "UPDATE slopbot_reviews SET status = ?, skip_reason = ?, verdict = ?, action = ?, completed_at = ? WHERE review_key = ?",
+      "UPDATE slopbot_reviews SET status = ?, skip_reason = ?, verdict = ?, action = ?, completed_at = ?, lease_expires_at = NULL WHERE review_key = ? AND claim_token = ? AND status = 'running' AND lease_expires_at > ?",
     )
     .bind(
       status,
       detail.skipReason ?? null,
       detail.verdict === undefined ? null : JSON.stringify(detail.verdict),
       detail.action ?? null,
-      now(),
+      at,
       reviewKey,
+      token,
+      at,
     )
     .run();
+  if ((result.meta?.changes ?? 0) !== 1) throw new ReviewLeaseLostError();
 }
 
 // One immutable cost row per model call (BOT-10). Failed calls are recorded
@@ -318,15 +405,27 @@ export async function recordCalls(
     const substituted =
       call.servedModel !== null &&
       !call.priceKey.endsWith(`/${call.servedModel}`);
-    const billedMicro =
-      billable && call.outcome === "ok" ? price.billedMicroUsdc : 0;
-    billed += billedMicro;
-    await db
+    const billableCost =
+      billable && call.outcome === "ok" ? price.costMicroUsd : 0;
+    const recorded = await db
       .prepare(
-        `INSERT INTO slopbot_costs (review_key, installation_id, call_kind, route_step, provider, requested_model,
+        `WITH prior AS (
+          SELECT COALESCE(SUM(billable_cost_micro_usd), 0) AS cost,
+            COALESCE(SUM(CASE WHEN billing_rule = 'review-v2' THEN billed_micro_usdc ELSE 0 END), 0) AS billed,
+            COUNT(CASE WHEN billing_rule = 'call-v1' AND billed_micro_usdc > 0 THEN 1 END) AS legacy
+          FROM slopbot_costs WHERE review_key = ?1 AND installation_id = ?2
+        )
+        INSERT INTO slopbot_costs (review_key, installation_id, call_kind, route_step, provider, requested_model,
           served_model, outcome, failure, input_tokens, cache_write_tokens, cache_read_tokens, output_tokens,
-          price_version, cost_micro_usd, billed_micro_usdc, reconciliation, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          price_version, cost_micro_usd, billed_micro_usdc, reconciliation, created_at, provider_cost_micro_usd,
+          provider_request_id, billing_rule, billable_cost_micro_usd)
+        SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+          CASE WHEN ?20 = 0 OR prior.legacy > 0 THEN 0 ELSE ((prior.cost + ?20) * 11 + 9) / 10 - prior.billed END,
+          ?16, ?17, ?18, ?19, 'review-v2', CASE WHEN prior.legacy > 0 THEN 0 ELSE ?20 END
+        FROM prior
+        WHERE prior.legacy > 0 OR (prior.cost <= ?21 - ?20
+          AND ((prior.cost + ?20) * 11 + 9) / 10 >= prior.billed)
+        RETURNING billed_micro_usdc, billable_cost_micro_usd`,
       )
       .bind(
         reviewKey,
@@ -344,13 +443,39 @@ export async function recordCalls(
         call.usage.output,
         PRICE_VERSION,
         price.costMicroUsd,
-        billedMicro,
         substituted ? "estimated" : price.reconciliation,
         now(),
+        call.providerCostMicroUsd ?? null,
+        call.providerRequestId ?? null,
+        billableCost,
+        Number((BigInt(Number.MAX_SAFE_INTEGER) * 10n) / 11n),
       )
-      .run();
+      .first<{ billed_micro_usdc: number; billable_cost_micro_usd: number }>();
+    if (
+      !recorded ||
+      (billableCost > 0 && recorded.billable_cost_micro_usd === 0)
+    )
+      throw new Error(
+        "Review billing needs reconciliation before further charges",
+      );
+    billed += recorded.billed_micro_usdc;
   }
   return billed;
+}
+
+export async function hasRecordedAction(
+  db: D1Database,
+  reviewKey: string,
+  action: "label",
+): Promise<boolean> {
+  return (
+    (await db
+      .prepare(
+        "SELECT id FROM slopbot_actions WHERE review_key = ? AND action = ?",
+      )
+      .bind(reviewKey, action)
+      .first()) !== null
+  );
 }
 
 export async function recordAction(

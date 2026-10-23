@@ -13,6 +13,10 @@ import {
   type VaultTotals,
 } from "../../backend/payments/vault-snapshots";
 import {
+  securityLedgerPolicy,
+  securityPaymentNotices,
+} from "../../backend/security/payments";
+import {
   readVaultTotals as readEvmVaultTotals,
   verifyEvmDeployment,
 } from "../../contracts/evm/adapter";
@@ -21,6 +25,7 @@ import {
   solanaPaymentAdapter,
 } from "../../contracts/solana/adapter";
 import { chainFamily, type EscrowChain } from "../../src/lib/escrow-policy.mjs";
+import type { PayoutPolicy } from "../../src/lib/payments/contracts";
 import {
   loadRegistryPaymentDeployments,
   parsePaymentNetworks,
@@ -29,6 +34,7 @@ import { reconcileFailedAttempts } from "./reconcile";
 import { scanEvmPayments, scanSolanaPayments } from "./scanner";
 
 export interface PaymentDeployment {
+  payoutPolicy?: PayoutPolicy;
   projectId: string;
   network: string;
   chain: EscrowChain;
@@ -55,6 +61,8 @@ export interface PaymentDeployment {
   deploymentTransaction?: string;
 }
 export interface PaymentsWorkerEnvironment {
+  /** Private worker only. Its entrypoint binds the separate private ledger. */
+  PAYMENT_SCOPE?: "security-bounty";
   PAYMENTS_DB: D1Database;
   /**
    * The D1 project registry (the Pages `SLOP_DB`, `slop-private`), bound
@@ -79,6 +87,7 @@ export function registryDeployments(env: PaymentsWorkerEnvironment) {
   return loadRegistryPaymentDeployments(
     env.REGISTRY_DB,
     parsePaymentNetworks(env.PAYMENT_NETWORKS),
+    env.PAYMENT_SCOPE,
   );
 }
 export async function recoverUncertainAttempts(
@@ -223,7 +232,15 @@ export async function runPaymentDispatch(
   const failures: unknown[] = [];
   for (const id of JSON.parse(rows?.ids ?? "[]") as string[]) {
     try {
-      await dispatchPayment(env.PAYMENTS_DB, executor(env), id, now);
+      await dispatchPayment(
+        env.PAYMENTS_DB,
+        executor(env),
+        id,
+        now,
+        env.PAYMENT_SCOPE === "security-bounty"
+          ? (id, at) => securityPaymentNotices(env.REGISTRY_DB, id, "held", at)
+          : undefined,
+      );
     } catch (error) {
       failures.push(error);
     }
@@ -313,7 +330,15 @@ export async function ingestPaymentEvent(
       rotationDelaySeconds: deployment.rotationDelaySeconds,
     });
   } else throw new Error("Reviewed chain deployment incomplete");
-  await indexPaymentEvent(env.PAYMENTS_DB, adapter, message, now.toISOString());
+  await indexPaymentEvent(
+    env.PAYMENTS_DB,
+    adapter,
+    message,
+    now.toISOString(),
+    env.PAYMENT_SCOPE === "security-bounty"
+      ? securityLedgerPolicy(env.REGISTRY_DB)
+      : undefined,
+  );
 }
 /**
  * Reads the vault counters at the finalized block through the chain adapter

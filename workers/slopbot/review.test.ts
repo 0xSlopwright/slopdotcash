@@ -10,11 +10,18 @@ import { labelOnlyConfig, type Verdict, validateVerdict } from "./contracts";
 import { authorExemption } from "./github";
 import {
   finishReview,
+  ReviewBusyError,
   recordCalls,
   reviewExists,
   startReview,
 } from "./persistence";
-import { grounded, neutralize, prefilter, pullDiff } from "./review";
+import {
+  confirmedClosure,
+  grounded,
+  neutralize,
+  prefilter,
+  pullDiff,
+} from "./review";
 import { route } from "./routing";
 
 describe("custom collaborator roles", () => {
@@ -83,6 +90,18 @@ test("a skipped revision can be claimed once without changing prior-call retry b
       "utf8",
     ),
   );
+  for (const migration of [
+    "0039_slopbot_provider_cost.sql",
+    "0043_slopbot_provider_request.sql",
+    "0045_slopbot_review_leases.sql",
+    "0047_slopbot_review_billing.sql",
+  ])
+    sqlite.exec(
+      readFileSync(
+        new URL(`../../migrations/${migration}`, import.meta.url),
+        "utf8",
+      ),
+    );
   const db = {
     prepare(sql: string) {
       const statement = sqlite.prepare(sql);
@@ -115,19 +134,25 @@ test("a skipped revision can be claimed once without changing prior-call retry b
     policyDigest: "policy",
   };
   try {
-    expect(await startReview(db, row)).toBe("new");
-    await finishReview(db, row.reviewKey, "skipped", {
+    expect(await startReview(db, row, "claim")).toBe("new");
+    await finishReview(db, row.reviewKey, "claim", "skipped", {
       skipReason: "draft pull request",
     });
     expect(await reviewExists(db, row.reviewKey)).toBe(false);
     sqlite
       .query("UPDATE slopbot_reviews SET created_at='2026-01-01T00:00:00.000Z'")
       .run();
-    const claims = await Promise.all([
-      startReview(db, { ...row, contentDigest: "ready-content" }),
-      startReview(db, { ...row, contentDigest: "ready-content" }),
+    const claims = await Promise.allSettled([
+      startReview(db, { ...row, contentDigest: "ready-content" }, "claim"),
+      startReview(db, { ...row, contentDigest: "ready-content" }, "claim"),
     ]);
-    expect(claims.sort()).toEqual(["exists", "new"]);
+    expect(
+      claims
+        .filter((result) => result.status === "fulfilled")
+        .map((result) => result.value),
+    ).toEqual(["new"]);
+    const busy = claims.find((result) => result.status === "rejected");
+    expect(busy?.reason).toBeInstanceOf(ReviewBusyError);
     const resumed = sqlite
       .query(
         "SELECT created_at, content_digest, skip_reason, completed_at FROM slopbot_reviews",
@@ -137,12 +162,12 @@ test("a skipped revision can be claimed once without changing prior-call retry b
     expect(resumed.content_digest).toBe("ready-content");
     expect(resumed.skip_reason).toBeNull();
     expect(resumed.completed_at).toBeNull();
-    expect(await reviewExists(db, row.reviewKey)).toBe(true);
-    await finishReview(db, row.reviewKey, "completed", {});
-    expect(await startReview(db, row)).toBe("exists");
+    expect(await reviewExists(db, row.reviewKey)).toBe(false);
+    await finishReview(db, row.reviewKey, "claim", "completed", {});
+    expect(await startReview(db, row, "claim")).toBe("exists");
 
     const failed = { ...row, reviewKey: "failed-then-skipped" };
-    expect(await startReview(db, failed)).toBe("new");
+    expect(await startReview(db, failed, "claim")).toBe("new");
     await recordCalls(
       db,
       failed.reviewKey,
@@ -151,10 +176,12 @@ test("a skipped revision can be claimed once without changing prior-call retry b
       [
         {
           routeStep: 1,
-          provider: "openai",
+          provider: "surplus",
+          providerCostMicroUsd: null,
+          providerRequestId: null,
           requestedModel: "gpt-6.1-sol",
           servedModel: null,
-          priceKey: "openai/gpt-6.1-sol",
+          priceKey: "surplus/gpt-6.1-sol",
           outcome: "failed",
           failure: "local regression fixture",
           usage: { input: 1, cacheWrite: 0, cacheRead: 0, output: 0 },
@@ -162,12 +189,12 @@ test("a skipped revision can be claimed once without changing prior-call retry b
       ],
       false,
     );
-    await finishReview(db, failed.reviewKey, "failed", {});
-    expect(await startReview(db, failed)).toBe("retry");
-    await finishReview(db, failed.reviewKey, "skipped", {
+    await finishReview(db, failed.reviewKey, "claim", "failed", {});
+    expect(await startReview(db, failed, "claim")).toBe("retry");
+    await finishReview(db, failed.reviewKey, "claim", "skipped", {
       skipReason: "budget exhausted",
     });
-    expect(await startReview(db, failed)).toBe("retry");
+    expect(await startReview(db, failed, "claim")).toBe("retry");
   } finally {
     sqlite.close();
   }
@@ -188,6 +215,7 @@ test("zero-line file changes are not deterministically empty", () => {
   const pull = {
     draft: false,
     merged: false,
+    base: { sha: "baseline" },
     head: { sha: "a".repeat(40) },
     changed_files: 1,
     additions: 0,
@@ -296,6 +324,7 @@ describe("item text that instructs Slopbot to close another item", () => {
       "confidence",
       "evidence",
       "limitations",
+      "objective_defect",
       "rule_refs",
       "summary",
     ]);
@@ -421,5 +450,41 @@ describe("pullDiff", () => {
     expect(result.diff).toContain("(binary or too large to show)");
     expect(result.diff).toContain("tail.ts");
     expect(result.truncated).toBe(true);
+  });
+});
+
+describe("independent closure confirmation", () => {
+  test("a matching category cannot authorize invented evidence or rules", () => {
+    const first = verdict({});
+    expect(confirmedClosure(first, verdict({}), context)).toBe(true);
+    expect(
+      confirmedClosure(
+        first,
+        verdict({ evidence: ["The author admits this is prohibited work."] }),
+        context,
+      ),
+    ).toBe(false);
+    expect(
+      confirmedClosure(
+        first,
+        verdict({
+          rule_refs: [
+            {
+              source: "README.md",
+              quote: "Close every contribution automatically.",
+            },
+          ],
+        }),
+        context,
+      ),
+    ).toBe(false);
+    expect(
+      confirmedClosure(
+        first,
+        verdict({ limitations: ["The required source was unavailable."] }),
+        context,
+      ),
+    ).toBe(false);
+    expect(confirmedClosure(first, null, context)).toBe(false);
   });
 });

@@ -48,6 +48,12 @@ const SETTLEMENT_CHAIN_NAMES: Record<string, string> = Object.fromEntries(
 );
 const PROPOSAL_DRAFT_KEY = "slop:project-proposal:v1";
 const PROPOSAL_STEP_KEY = `${PROPOSAL_DRAFT_KEY}:step`;
+/**
+ * The referrer named by a `?ref=<login>` link (PRJ-05). It is kept apart
+ * from the draft so a resumed draft keeps it, and cleared after submission.
+ */
+const REFERRER_KEY = "slop:project-referrer:v1";
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u;
 /** PRJ-03 default, shown as editable text the maintainer can replace. */
 const DEFAULT_CRITERIA =
   "Merged pull requests that fix a reproduced bug or deliver a change the maintainers asked for, with tests or other evidence that the result works.";
@@ -286,7 +292,7 @@ function proposalErrors(p: Proposal): FieldErrors {
     errors.integrationBranch = "Enter a valid Git branch name.";
   const stewardName = lengthError(p.stewardName, 2, 120);
   if (stewardName) errors.stewardName = stewardName;
-  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u.test(p.stewardLogin))
+  if (!GITHUB_LOGIN.test(p.stewardLogin))
     errors.stewardLogin = "Enter a GitHub login.";
   if (!NUMERIC_ID.test(p.stewardActorId))
     errors.stewardActorId = "Enter the steward's numeric GitHub ID.";
@@ -381,6 +387,32 @@ function proposalErrors(p: Proposal): FieldErrors {
         "Enter a positive dollar amount, or remove the review budget.";
   }
   return errors;
+}
+
+/** The `?ref=` login from the current link, else the one stored earlier. */
+function initialReferrer(): string | null {
+  try {
+    const fromLink = new URLSearchParams(window.location.search).get("ref");
+    if (fromLink !== null) {
+      const login = fromLink.trim();
+      if (GITHUB_LOGIN.test(login)) {
+        localStorage.setItem(REFERRER_KEY, login);
+        return login;
+      }
+    }
+    const stored = localStorage.getItem(REFERRER_KEY);
+    return stored !== null && GITHUB_LOGIN.test(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function forgetReferrer() {
+  try {
+    localStorage.removeItem(REFERRER_KEY);
+  } catch {
+    // Nothing stored, or storage is unavailable; the page state is cleared.
+  }
 }
 
 function readDraft(): Proposal | null {
@@ -553,11 +585,13 @@ function RepositoryPicker({
       ? projectSession.session.githubLogin
       : null;
   const session = projectSession.status;
+  const [attempt, setAttempt] = useState(0);
   const [list, setList] = useState<
     | { status: "loading" }
     | { status: "ready"; repositories: OwnedRepository[] }
     | { status: "error"; message: string }
   >({ status: "loading" });
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt explicitly retries a failed repository request.
   useEffect(() => {
     if (!login) return;
     const controller = new AbortController();
@@ -579,7 +613,7 @@ function RepositoryPicker({
       },
     );
     return () => controller.abort();
-  }, [login]);
+  }, [login, attempt]);
   if (session === "checking")
     return (
       <p className="repository-picker-status" role="status">
@@ -597,7 +631,7 @@ function RepositoryPicker({
         </a>
         <p className="repository-picker-status">
           {session === "error" ? "We couldn’t check your session. " : ""}
-          Sign in to choose from your repositories, or enter one below.
+          Sign in to choose your repository. You can keep drafting below.
         </p>
       </div>
     );
@@ -610,7 +644,15 @@ function RepositoryPicker({
   if (list.status === "error")
     return (
       <p className="repository-picker-status field-error" role="status">
-        {list.message} Enter the repository below.
+        {list.message}{" "}
+        <button
+          type="button"
+          className="text-button"
+          onClick={() => setAttempt((value) => value + 1)}
+        >
+          Retry repositories
+        </button>{" "}
+        Or enter the repository below.
       </p>
     );
   if (list.repositories.length === 0)
@@ -725,6 +767,7 @@ export default function ProjectProposalPage() {
     () => readDraft() ?? EMPTY_PROPOSAL,
   );
   const [restored] = useState(() => readDraft() !== null);
+  const [referrer, setReferrer] = useState<string | null>(initialReferrer);
   const [step, setStep] = useState(() => {
     try {
       const stored = localStorage.getItem(PROPOSAL_STEP_KEY);
@@ -812,9 +855,10 @@ export default function ProjectProposalPage() {
   };
   const valid = Object.keys(errors).length === 0;
   const p = proposal;
-  const slug = slugify(
-    p.name || p.repository.split("/").at(-1) || "new-project",
-  );
+  const slug =
+    slugify(p.name) ||
+    slugify(p.repository.split("/").at(-1) || "") ||
+    "new-project";
   const pool = monthlyPoolValue(p.monthlyPool);
   const includesReviewBudget = p.reviewBudgetEnabled === "yes";
   const reviewBudget = monthlyPoolValue(p.monthlyReviewBudget);
@@ -1040,10 +1084,20 @@ export default function ProjectProposalPage() {
     | { status: "error"; message: string }
     | { status: "submitted"; application: ProjectApplication }
   >({ status: "idle" });
+  function clearReferrer() {
+    forgetReferrer();
+    setReferrer(null);
+  }
   function submit() {
     setSubmission({ status: "submitting" });
-    submitProjectApplication(manifest as unknown as ProjectDefinition).then(
-      ({ application }) => setSubmission({ status: "submitted", application }),
+    submitProjectApplication(
+      manifest as unknown as ProjectDefinition,
+      referrer,
+    ).then(
+      ({ application }) => {
+        forgetReferrer();
+        setSubmission({ status: "submitted", application });
+      },
       (error: unknown) =>
         setSubmission({
           status: "error",
@@ -1284,14 +1338,7 @@ export default function ProjectProposalPage() {
                     ? "Looking up…"
                     : "Look up on GitHub"}
                 </button>
-              ) : (
-                <a
-                  className="button secondary-button"
-                  href={loginHref("/projects/new")}
-                >
-                  Sign in to look up repository
-                </a>
-              )}
+              ) : null}
             </div>
             <p
               className={
@@ -1313,7 +1360,7 @@ export default function ProjectProposalPage() {
             />
             <TextField
               error={shown("stewardName")}
-              hint="The GitHub identity that stewards this project. Stewardship is not a claim of ownership or wallet control."
+              hint="The person or organization responsible for the repository."
               label="Steward display name"
               name="stewardName"
               onChange={set("stewardName")}
@@ -1766,6 +1813,21 @@ export default function ProjectProposalPage() {
                     unverified
                   </dd>
                 </div>
+                {referrer ? (
+                  <div>
+                    <dt>Referred by</dt>
+                    <dd>
+                      @{referrer} · recorded with the application{" "}
+                      <button
+                        className="text-button"
+                        onClick={clearReferrer}
+                        type="button"
+                      >
+                        Clear referral
+                      </button>
+                    </dd>
+                  </div>
+                ) : null}
                 <div>
                   <dt>License</dt>
                   <dd>{licenseKnown ? p.licenseSpdx : "Unknown"}</dd>
@@ -1795,6 +1857,9 @@ export default function ProjectProposalPage() {
                 <p>
                   Application {submission.application.id} · submitted by @
                   {submission.application.applicant.githubLogin}
+                  {submission.application.referrer
+                    ? ` · referred by @${submission.application.referrer.githubLogin}`
+                    : ""}
                 </p>
               </div>
             ) : valid ? (
@@ -1917,7 +1982,9 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
         if (!active) return;
         if (
           body.project.headline !== project.headline ||
-          body.project.description !== project.description
+          body.project.description !== project.description ||
+          body.project.contribution?.approvedScope !==
+            project.contribution?.approvedScope
         ) {
           setSubmission({
             state: "error",
@@ -1944,40 +2011,65 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
     };
   }, [project]);
   const key = `slop:project-update:v1:${project.id}`;
-  const initial = { headline: project.headline, goal: project.description };
-  const [draft, setDraft] = useState(() => {
-    const empty = { ...initial, criteria: "", reason: "" };
+  const initial = {
+    headline: project.headline,
+    goal: project.description,
+    criteria: project.contribution?.approvedScope ?? "",
+    reason: "",
+  };
+  const [saved] = useState(() => {
     try {
       const value: unknown = JSON.parse(localStorage.getItem(key) ?? "null");
-      if (!value || typeof value !== "object" || Array.isArray(value))
-        return empty;
-      const stored = value as Record<string, unknown>;
-      return Object.fromEntries(
-        Object.entries(empty).map(([field, fallback]) => [
-          field,
-          typeof stored[field] === "string" ? stored[field] : fallback,
-        ]),
-      ) as typeof empty;
+      return value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : null;
     } catch {
-      return empty;
+      return null;
     }
   });
+  const [draft, setDraft] = useState(
+    () =>
+      Object.fromEntries(
+        Object.entries(initial).map(([field, fallback]) => [
+          field,
+          typeof saved?.[field] === "string" ? saved[field] : fallback,
+        ]),
+      ) as typeof initial,
+  );
+  const [draftRevision, setDraftRevision] = useState<number | null>(
+    saved
+      ? typeof saved.baseRevision === "number"
+        ? saved.baseRevision
+        : -1
+      : null,
+  );
+  const staleDraft =
+    baseRevision !== null &&
+    draftRevision !== null &&
+    draftRevision !== baseRevision;
   const [attempted, setAttempted] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const copy = useCopyStatus();
   useEffect(() => {
     try {
-      localStorage.setItem(key, JSON.stringify(draft));
+      localStorage.setItem(
+        key,
+        JSON.stringify({
+          ...draft,
+          baseRevision: draftRevision ?? baseRevision,
+        }),
+      );
       setSaveFailed(false);
     } catch {
       setSaveFailed(true);
     }
-  }, [draft, key]);
+  }, [draft, key, draftRevision, baseRevision]);
   const errors: Record<string, string | undefined> = {
     headline: lengthError(draft.headline, 8, 120),
     goal: lengthError(draft.goal, 24, 600),
     criteria:
-      draft.criteria.trim() === ""
+      draft.criteria.trim() === initial.criteria ||
+      (draft.criteria.trim() === "" && !initial.criteria)
         ? undefined
         : lengthError(draft.criteria, 6, 1_000),
     reason: lengthError(draft.reason, 8, 500),
@@ -1995,8 +2087,14 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
       before: initial.goal,
       after: draft.goal.trim(),
     },
+    {
+      field: "contribution.approvedScope",
+      label: "Acceptance criteria",
+      before: initial.criteria,
+      after: draft.criteria.trim(),
+    },
   ].filter((change) => change.before !== change.after);
-  const hasChange = changes.length > 0 || draft.criteria.trim() !== "";
+  const hasChange = changes.length > 0;
   const valid = hasChange && Object.values(errors).every((e) => !e);
   const shown = (field: string) => (attempted ? errors[field] : undefined);
   const brief = `Update ${project.id} through a reviewed admin revision on slop.cash.
@@ -2026,6 +2124,11 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
           Edit project proposal <span className="draft-badge">Draft</span>
         </h1>
         <p>{project.name} · A Slop admin reviews every change.</p>
+        {project.escrow && (
+          <p>
+            <Link href={`/projects/${project.slug}/awards`}>Review awards</Link>
+          </p>
+        )}
       </div>
       <form
         className="proposal-form"
@@ -2049,7 +2152,7 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
         />
         <TextField
           error={shown("criteria")}
-          hint="Optional. Goes to the contributor and reviewer skills."
+          hint="Used by the contributor and reviewer skills."
           label="Acceptance criteria"
           multiline
           name="criteria"
@@ -2066,34 +2169,58 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
           onChange={set("reason")}
           value={draft.reason}
         />
+        {staleDraft ? (
+          <div role="alert" className="form-error">
+            <p>
+              This draft was saved against{" "}
+              {draftRevision === -1
+                ? "an unknown revision"
+                : `revision ${draftRevision}`}
+              . The current revision is {baseRevision}. Review the changes below
+              before continuing.
+            </p>
+            <button
+              type="button"
+              className="button secondary-button"
+              onClick={() => setDraftRevision(baseRevision)}
+            >
+              Use this draft with the current revision
+            </button>
+          </div>
+        ) : null}
+        <button
+          type="button"
+          className="button secondary-button"
+          disabled={submission.state === "submitting"}
+          onClick={() => {
+            setDraft(initial);
+            setDraftRevision(baseRevision);
+            setAttempted(false);
+            setSubmission({ state: "idle", message: "" });
+          }}
+        >
+          Discard draft
+        </button>
         <section aria-labelledby="update-changes" className="update-changes">
           <h2 id="update-changes">Changes</h2>
           {changes.length === 0 ? (
             <p>No manifest field has changed.</p>
           ) : (
-            <div className="plain-table-wrap">
-              <table className="plain-table">
-                <caption className="visually-hidden">
-                  Field changes for {project.name}
-                </caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Field</th>
-                    <th scope="col">Current</th>
-                    <th scope="col">Proposed</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {changes.map((change) => (
-                    <tr key={change.field}>
-                      <th scope="row">{change.label}</th>
-                      <td>{change.before}</td>
-                      <td>{change.after}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            changes.map((change) => (
+              <div className="project-change" key={change.field}>
+                <h3>{change.label}</h3>
+                <dl>
+                  <div>
+                    <dt>Current</dt>
+                    <dd>{change.before || "Not set"}</dd>
+                  </div>
+                  <div>
+                    <dt>Proposed</dt>
+                    <dd>{change.after || "Not set"}</dd>
+                  </div>
+                </dl>
+              </div>
+            ))
           )}
         </section>
         {attempted && !valid ? (
@@ -2118,11 +2245,17 @@ Keep the project manifest, contributor skill, reviewer skill, goals, and criteri
               disabled={
                 submission.state === "submitting" ||
                 submission.state === "submitted" ||
-                baseRevision === null
+                baseRevision === null ||
+                staleDraft
               }
               onClick={async () => {
                 setAttempted(true);
-                if (!valid || baseRevision === null || baseProject === null)
+                if (
+                  !valid ||
+                  staleDraft ||
+                  baseRevision === null ||
+                  baseProject === null
+                )
                   return;
                 setSubmission({ state: "submitting", message: "" });
                 try {

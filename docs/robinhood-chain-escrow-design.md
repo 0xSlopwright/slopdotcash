@@ -185,7 +185,7 @@ To be delivered in PR C as `docs/robinhood-chain-testnet-runbook.md` with an evi
 
 The repository rules require a new requirement to be discussed with humans and added to the PRD, with maintainer approval of scope and phase, before implementation is accepted. FND-02 read "Choose Base or Solana before first funding", so Robinhood Chain was a new requirement.
 
-- **Step 0, PRD amendment (PR #678).** A docs-only PR adds Robinhood Chain and USDG to FND-02 and to every other PRD, MVP-plan and payouts-addendum line that named only Base and Solana or called Robinhood future scope, replaces the section 22 "Robinhood meaning" row with the decision, and links this document. The repository owner approved this scope on 14 October 2026.
+- **Step 0, PRD amendment (PR #678).** A docs-only PR adds Robinhood Chain and USDG to FND-02 and to every other PRD delivery and payouts-addendum line that named only Base and Solana or called Robinhood future scope, replaces the section 22 "Robinhood meaning" row with the decision, and links this document. The repository owner approved this scope on 14 October 2026.
 
 Order of events, stated exactly: the implementation PRs below were opened as drafts before the scope approval existed. A draft is not approval. They stayed drafts and unmerged until the repository owner approved the scope on 14 October 2026, and they merge only after this amendment.
 
@@ -194,7 +194,7 @@ Payment authority is a separate prerequisite. Robinhood Chain destination bindin
 The implementation pull requests into `development`, merged by the repository owner after step 0:
 
 - **PR A (#677), family refactor.** `chainFamily`, `ESCROW_CHAINS`, the registry fields, renames (`evmPaymentAdapter`, `scanEvmPayments`, `preflightEvmDeployment`, `EvmEscrowConfig`, `verifyEvmDeployment`, `evmAwardId`, `finalizedEvmRevert`, `EVM_PAYMENT_EXECUTOR`, `CHAIN_FAMILY=evm`), and every `chain === "base"` call site that means EVM. No new chain value, no migration, no label change. Base integration output identical before and after.
-- **PR B (#680), Robinhood Chain.** Registry entries (including the Paxos test USDG asset for `robinhood-testnet`), migration 0017, deploy scripts, wallet and payment API acceptance, manifest schema, labels, explorer links, tests, README and docs updates (the EVM contracts README network table and USDG paragraph, `docs/testnet-funding.md`, the executor README gas table). The PRD, MVP plan and payouts addendum changes land in step 0, not here.
+- **PR B (#680), Robinhood Chain.** Registry entries (including the Paxos test USDG asset for `robinhood-testnet`), migration 0017, deploy scripts, wallet and payment API acceptance, manifest schema, labels, explorer links, tests, README and docs updates (the EVM contracts README network table and USDG paragraph, `docs/testnet-funding.md`, the executor README gas table). The PRD delivery and payouts addendum changes land in step 0, not here.
 - **PR C, runbook.** Not yet opened. `docs/robinhood-chain-testnet-runbook.md`, the evidence template, the test USDG supply route, and the `check-payout-test-funding.mjs` network entry if not already in B.
 
 Each PR cites FND-01, FND-02, PAY-06, PAY-07 and MVP-02, MVP-06, MVP-07 in its description per the repository's PR rule.

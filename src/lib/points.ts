@@ -10,6 +10,7 @@ import {
   isHistoricalProjectId,
   isHistoricalRepositoryId,
 } from "./projects.mjs";
+import { findRegisteredRepositoryById } from "./repositories.mjs";
 import { sha256Hex } from "./sha256";
 
 export const POINTS_RULE = "slop-points-v1";
@@ -27,7 +28,13 @@ export interface PointAward {
   workUnitId: string;
   provisional: boolean;
 }
+export interface PointDecision {
+  sourceId: string;
+  effectiveAt: string;
+  reason: string;
+}
 export interface PointRevision {
+  decision?: PointDecision & { delta: number };
   id: string;
   previous: string | null;
   recordedAt: string;
@@ -107,6 +114,7 @@ export function assertPointsJournal(
       "sourceDigest",
       "sourceRule",
       "award",
+      ...("decision" in r ? ["decision"] : []),
     ]);
     const a = r.award;
     exact(a, [
@@ -168,7 +176,21 @@ export function assertPointsJournal(
       a.sourceUrl.length > 2048
     )
       throw new Error("Invalid point source");
-    if (a.key !== pointKey(a.projectId, a.actor.id, a.category, a.sourceId))
+    if (
+      a.key !== pointKey(a.projectId, a.actor.id, a.category, a.sourceId) &&
+      !(
+        a.category === "merged-pull-request" &&
+        /^wu_[a-f0-9]{64}$/u.test(a.workUnitId) &&
+        a.key ===
+          pointKey(
+            a.projectId,
+            a.actor.id,
+            a.category,
+            a.sourceId,
+            a.workUnitId,
+          )
+      )
+    )
       throw new Error("Point source key mismatch");
     const { id, ...body } = r;
     if (
@@ -178,6 +200,28 @@ export function assertPointsJournal(
     )
       throw new Error("Broken points revision chain");
     const prior = latest.get(a.key);
+    if ("decision" in r) {
+      const decision = r.decision;
+      if (!decision || typeof decision !== "object")
+        throw new Error("Invalid points decision");
+      exact(decision, ["sourceId", "effectiveAt", "reason", "delta"]);
+      if (
+        r.sourceRule !== "slop-score-v2" ||
+        typeof decision.sourceId !== "string" ||
+        !(
+          /^[A-Za-z0-9_=-]{4,256}$/u.test(decision.sourceId) ||
+          /^value:[a-f0-9]{64}$/u.test(decision.sourceId)
+        ) ||
+        !iso(decision.effectiveAt) ||
+        decision.effectiveAt > r.recordedAt ||
+        typeof decision.reason !== "string" ||
+        !decision.reason.trim() ||
+        !Number.isSafeInteger(decision.delta) ||
+        decision.delta !== a.amount - (prior?.award.amount ?? 0)
+      )
+        throw new Error("Points decision does not reconcile its revision");
+    }
+
     if (
       prior &&
       (prior.award.occurredAt !== a.occurredAt ||
@@ -204,17 +248,31 @@ export function pointKey(
   actor: string,
   category: string,
   source: string,
+  workUnit?: string,
 ): string {
-  return sha256Hex(JSON.stringify([project, actor, category, source]));
+  return sha256Hex(
+    JSON.stringify([
+      project,
+      actor,
+      category,
+      source,
+      ...(workUnit === undefined ? [] : [workUnit]),
+    ]),
+  );
 }
 export function pointsForScore(
-  event: Pick<ScoreEvent, "scoreThirds" | "points">,
+  event: Pick<ScoreEvent, "scoreThirds" | "points"> &
+    Partial<Pick<ScoreEvent, "category" | "scoreDecisionSourceId">>,
 ): number {
   const amount =
     event.scoreThirds === undefined
       ? event.points * 30
       : event.scoreThirds * 10;
-  if (!Number.isSafeInteger(amount) || amount <= 0)
+  const assessedZero =
+    amount === 0 &&
+    event.category === "merged-pull-request" &&
+    /^value:[a-f0-9]{64}$/u.test(event.scoreDecisionSourceId ?? "");
+  if (!Number.isSafeInteger(amount) || (amount <= 0 && !assessedZero))
     throw new Error("Score cannot be converted to exact points");
   return amount;
 }
@@ -229,6 +287,9 @@ export function awardForScore(event: ScoreEvent): PointAward {
       event.actor.id,
       event.category,
       event.category === "evidence" ? event.id : event.source.id,
+      event.category === "merged-pull-request" && event.id.includes(":joint:")
+        ? event.workUnitId
+        : undefined,
     ),
     actor: { id: event.actor.id, login: event.actor.login },
     projectId: project.projectId,
@@ -239,9 +300,10 @@ export function awardForScore(event: ScoreEvent): PointAward {
     sourceUrl: event.source.url,
     workUnitId: event.workUnitId ?? event.id,
     provisional:
-      event.category === "merged-pull-request" &&
-      event.scoreThirds !== undefined &&
-      !event.scoreDecisionSourceId,
+      event.scoreDecisionSourceId?.startsWith("value:") === true ||
+      (event.category === "merged-pull-request" &&
+        event.scoreThirds !== undefined &&
+        !event.scoreDecisionSourceId),
   };
 }
 export function latestPoints(
@@ -255,6 +317,7 @@ export function appendPointAwards(
   sourceDigest: string,
   sourceRule: string,
   recordedAt: string,
+  decisions?: ReadonlyMap<string, PointDecision>,
 ): PointsJournal {
   assertPointsJournal(journal);
   const output = {
@@ -265,7 +328,15 @@ export function appendPointAwards(
   const latest = latestPoints(journal);
   for (const award of [...awards].sort((a, b) => a.key.localeCompare(b.key))) {
     const previous = latest.get(award.key);
-    if (previous && JSON.stringify(previous.award) === JSON.stringify(award))
+    const decision = decisions?.get(award.key);
+    if (
+      previous &&
+      JSON.stringify(previous.award) === JSON.stringify(award) &&
+      (!decision ||
+        (previous.decision?.sourceId === decision.sourceId &&
+          previous.decision.effectiveAt === decision.effectiveAt &&
+          previous.decision.reason === decision.reason))
+    )
       continue;
     const revision = {
       previous: previous?.id ?? null,
@@ -273,6 +344,14 @@ export function appendPointAwards(
       sourceDigest,
       sourceRule,
       award,
+      ...(decision
+        ? {
+            decision: {
+              ...decision,
+              delta: award.amount - (previous?.award.amount ?? 0),
+            },
+          }
+        : {}),
     };
     const next = { id: pointRevisionId(revision), ...revision };
     output.revisions.push(next);
@@ -317,6 +396,23 @@ export function applyPointsSnapshot(
     .filter((e) => e.actor.kind === "User")
     .map(awardForScore)
     .filter((a) => !batchOwned.has(a.key));
+  const decisions = new Map<string, PointDecision>();
+  const parentDecisions = new Map<string, PointDecision>();
+  for (const event of snapshot.ledger) {
+    if (
+      event.actor.kind !== "User" ||
+      !event.scoreDecisionSourceId ||
+      !event.scoreDecisionAt
+    )
+      continue;
+    const decision = {
+      sourceId: event.scoreDecisionSourceId,
+      effectiveAt: new Date(event.scoreDecisionAt).toISOString(),
+      reason: event.reason,
+    };
+    decisions.set(awardForScore(event).key, decision);
+    parentDecisions.set(event.source.url.split("#")[0], decision);
+  }
   const keys = new Set(awards.map((a) => a.key));
   const repositoryIds = new Set(snapshot.repositories.map((r) => r.id));
   // A review is judged with its merged pull request, so the census can rule
@@ -332,6 +428,27 @@ export function applyPointsSnapshot(
   for (const previous of latestPoints(journal).values()) {
     const a = previous.award;
     const project = findHistoricalProject(a.projectId);
+    const sourceUrl = new URL(a.sourceUrl);
+    const match =
+      sourceUrl.origin === "https://github.com"
+        ? sourceUrl.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/([1-9][0-9]*)$/u)
+        : null;
+    if (snapshot.valueAssessmentCoverage && match) {
+      const repository = findRegisteredRepositoryById(
+        `${match[1]}/${match[2]}`,
+      );
+      const coverage = snapshot.valueAssessmentCoverage.find(
+        (row) =>
+          row.repository === repository?.id &&
+          row.pullRequestNumber === Number(match[3]),
+      );
+      // A missing valuation is not evidence that an earlier award was wrong.
+      if (
+        !coverage ||
+        !["assessed", "human-ratified"].includes(coverage.status)
+      )
+        continue;
+    }
     if (
       a.category !== "payout-received" &&
       a.amount &&
@@ -342,8 +459,15 @@ export function applyPointsSnapshot(
         (a.category === "substantive-review" &&
           excludedReviews.has(`${a.projectId}\0${a.sourceId}`))) &&
       project?.repositories.every((r) => repositoryIds.has(r.id))
-    )
+    ) {
       awards.push({ ...a, amount: 0 });
+      const decision = parentDecisions.get(a.sourceUrl.split("#")[0]);
+      if (decision)
+        decisions.set(a.key, {
+          ...decision,
+          reason: `Prior credit was superseded by the current source-bound scoring decision. ${decision.reason}`,
+        });
+    }
   }
   const result = appendPointAwards(
     journal,
@@ -351,6 +475,7 @@ export function applyPointsSnapshot(
     digest,
     snapshot.ruleVersion,
     recordedAt,
+    decisions,
   );
   const existing = new Set(
     result.coverage.map((c) => `${c.repository}:${c.digest}`),
@@ -433,8 +558,20 @@ export function pointMembers(
   projectId?: string,
 ): PointsMember[] {
   const groups = new Map<string, PointAward>();
+  const actors = new Map<string, PointRevision>();
+  for (const revision of journal.revisions) {
+    const prior = actors.get(revision.award.actor.id);
+    if (!prior || revision.recordedAt >= prior.recordedAt)
+      actors.set(revision.award.actor.id, revision);
+  }
   const firstContributionAt = new Map<string, string>();
-  const awards = [...latestPoints(journal).values()].map((r) => r.award);
+  const revisions = [...latestPoints(journal).values()];
+  const valueAwardKeys = new Set(
+    revisions
+      .filter((revision) => revision.decision?.sourceId.startsWith("value:"))
+      .map((revision) => revision.award.key),
+  );
+  const awards = revisions.map((revision) => revision.award);
   // The dedup key is the canonical parsed PR identity, not the raw URL:
   // the journal validator accepts URL variants (owner/repo casing, default
   // port, empty query, dot-segments, mixed-case review fragment) while
@@ -471,7 +608,8 @@ export function pointMembers(
       a.projectId,
       a.actor.id,
       a.category,
-      a.category === "substantive-review"
+      valueAwardKeys.has(a.key) ? a.occurredAt.slice(0, 7) : null,
+      a.category === "substantive-review" && !a.provisional
         ? (reviewIdentity ?? a.sourceUrl.split("#")[0])
         : a.workUnitId,
     ]);
@@ -503,7 +641,35 @@ export function pointMembers(
     m.awards.push(a);
     members.set(a.actor.id, m);
   }
+  // An assessed zero corrects an amount; it does not erase the contributor.
+  // Keep these identities discoverable without counting zero awards as badges.
+  for (const award of awards) {
+    if (
+      !valueAwardKeys.has(award.key) ||
+      award.amount ||
+      (projectId && award.projectId !== projectId)
+    )
+      continue;
+    const member = members.get(award.actor.id);
+    if (!member) {
+      members.set(award.actor.id, {
+        actor: award.actor,
+        total: 0,
+        monthly: 0,
+        firstContributionAt: award.occurredAt,
+        projects: 0,
+        badges: [],
+        awards: [],
+      });
+    } else if (
+      member.total === 0 &&
+      award.occurredAt < member.firstContributionAt
+    ) {
+      member.firstContributionAt = award.occurredAt;
+    }
+  }
   for (const m of members.values()) {
+    m.actor = actors.get(m.actor.id)?.award.actor ?? m.actor;
     m.awards.sort(
       (a, b) =>
         b.occurredAt.localeCompare(a.occurredAt) || a.key.localeCompare(b.key),

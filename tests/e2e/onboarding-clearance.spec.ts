@@ -46,4 +46,23 @@ test("agent setup retries unavailable discovery and only copies a cleared projec
   expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(
     "elizaOS/eliza",
   );
+  state = "blocked";
+  await page.goto("/", { waitUntil: "networkidle" });
+  await expect(
+    page.getByText("No projects are cleared for agent setup yet.", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Copy agent prompt" }),
+  ).toHaveCount(0);
+  await page.screenshot({
+    path: info.outputPath("home-no-cleared-projects.png"),
+    fullPage: true,
+  });
+  state = "cleared";
+  await page.getByRole("button", { name: "Check again", exact: true }).click();
+  await expect(
+    page.getByRole("status", { name: "Agent prompt" }),
+  ).toContainText("/SKILL.md");
 });

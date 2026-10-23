@@ -72,6 +72,7 @@ import {
   monthlyPoolPointsOnly,
   monthlyPoolUnfunded,
   NotFound,
+  PaymentLifecycle,
   reviewBudgetLabel,
   UNFUNDED_POOL_HEADLINE,
 } from "./Presentation";
@@ -95,6 +96,7 @@ import { fetchWithDeadline, readBoundedJson } from "./lib/browser-json";
 
 export { readBoundedJson } from "./lib/browser-json";
 
+const OwnerAwardsPage = lazy(() => import("./OwnerAwards"));
 const ProjectProposalPage = lazy(() => import("./ProjectProposalPage"));
 const AdminPage = lazy(() => import("./Admin"));
 const InboxPage = lazy(() => import("./Inbox"));
@@ -138,6 +140,7 @@ interface Route {
     | "funding-project"
     | "home"
     | "how-it-works"
+    | "owner-awards"
     | "manage-project"
     | "new-project"
     | "profile"
@@ -178,6 +181,12 @@ function internalRoute(pathname: string): Route {
     return { kind: "vetting-evidence" };
   if (segments.length === 1 && segments[0] === "security")
     return { kind: "security-cases" };
+  if (
+    segments.length === 3 &&
+    segments[0] === "projects" &&
+    segments[2] === "awards"
+  )
+    return { kind: "owner-awards", projectId: segments[1] };
   // The admin email deep-links one application at /admin/applications/<id>.
   if (
     segments[0] === "admin" &&
@@ -278,6 +287,7 @@ function useRoute(): Route {
 
 const PRIVATE_PAGE_TITLES = new Map<Route["kind"], string>([
   ["admin", "Admin"],
+  ["owner-awards", "Review awards"],
   ["account", "Account"],
   ["login", "Log in"],
   ["earnings", "Your payouts"],
@@ -293,7 +303,12 @@ function routeHead(route: Route): { title: string; path: string | null } {
   if (privateTitle) {
     return {
       title: pageTitle(privateTitle),
-      path: route.kind === "security-cases" ? "/security" : `/${route.kind}`,
+      path:
+        route.kind === "owner-awards"
+          ? null
+          : route.kind === "security-cases"
+            ? "/security"
+            : `/${route.kind}`,
     };
   }
   if (route.kind === "profile") {
@@ -555,7 +570,11 @@ function ProjectCard({ project }: { project: ProjectDefinition }) {
         </p>
         {monthlyPoolPointsOnly(project.reward) ? (
           <small className="project-money-state">Points only</small>
-        ) : project.reward.kind === "monthly-pool" ? null : (
+        ) : project.reward.kind === "monthly-pool" ? (
+          project.reward.paymentMode !== "enabled" ? (
+            <small className="project-money-state">Payments not active</small>
+          ) : null
+        ) : (
           <small className="project-money-state">External prize</small>
         )}
         {project.reward.reviewBudget ? (
@@ -581,9 +600,16 @@ function ProjectRow({ project }: { project: ProjectDefinition }) {
         <span className="project-row-name">
           <strong>{project.name}</strong>
           <small>{project.description}</small>
+          {project.status === "paused" ? (
+            <small className="project-money-state">Paused</small>
+          ) : project.reward.kind === "monthly-pool" &&
+            !monthlyPoolPointsOnly(project.reward) &&
+            project.reward.paymentMode !== "enabled" ? (
+            <small className="project-money-state">Payments not active</small>
+          ) : null}
         </span>
         <span className="project-row-amount">
-          {project.status === "paused" ? "Paused" : amount}
+          {project.status === "paused" ? null : amount}
         </span>
         <ChevronRight aria-hidden="true" />
       </Link>
@@ -663,15 +689,13 @@ function bootstrapAgentPrompt(): string {
 }
 
 function HomePage() {
-  const featuredProjects = homeProjects().filter(
-    (project) => project.listingTier === "featured",
-  );
+  const featuredProjects = homeProjects();
+  const listedCommunityProjects = communityProjects();
   return (
     <main>
       <section className="hero shell">
         <TypewriterHeroHeading />
-        <p className="hero-copy">Paste this into your coding agent.</p>
-        <AgentPromptBox openIn prompt={bootstrapAgentPrompt()} />
+        <InstallPanel />
       </section>
 
       <section className="section shell home-projects-section" id="projects">
@@ -681,7 +705,7 @@ function HomePage() {
             <Plus aria-hidden="true" /> Add a project
           </Link>
         </div>
-        {homeProjects().length === 0 ? (
+        {featuredProjects.length + listedCommunityProjects.length === 0 ? (
           <p className="project-tier-note">
             No projects are listed yet. Maintainers add one with GitHub sign-in,
             and a Slop admin reviews each application.
@@ -701,7 +725,7 @@ function HomePage() {
                 </div>
               </section>
             ) : null}
-            <CommunityProjects projects={communityProjects()} />
+            <CommunityProjects projects={listedCommunityProjects} />
           </>
         )}
       </section>
@@ -947,7 +971,8 @@ export function ProjectParticipation({
   );
 }
 
-function InstallPanel({ project }: { project: ProjectDefinition }) {
+function InstallPanel({ project }: { project?: ProjectDefinition }) {
+  const projectId = project?.id;
   const [eligibility, setEligibility] = useState<
     "loading" | "ready" | "blocked" | "error"
   >("loading");
@@ -970,7 +995,11 @@ function InstallPanel({ project }: { project: ProjectDefinition }) {
           throw new Error("Invalid discovery registry");
         if (active)
           setEligibility(
-            body.projects.some((entry) => entry.project_id === project.id)
+            (
+              projectId
+                ? body.projects.some((entry) => entry.project_id === projectId)
+                : body.projects.length > 0
+            )
               ? "ready"
               : "blocked",
           );
@@ -981,15 +1010,27 @@ function InstallPanel({ project }: { project: ProjectDefinition }) {
     return () => {
       active = false;
     };
-  }, [project.id, attempt]);
+  }, [projectId, attempt]);
   return (
-    <div className="install-panel" id="start">
+    <div
+      className={project ? "install-panel" : "home-agent-setup"}
+      id={project ? "start" : undefined}
+    >
       {eligibility === "ready" ? (
         <>
-          <div className="install-heading">
-            <h2>Copy this into your agent.</h2>
-          </div>
-          <AgentPromptBox prompt={projectAgentPrompt(project)} />
+          {project ? (
+            <div className="install-heading">
+              <h2>Copy this into your agent.</h2>
+            </div>
+          ) : (
+            <p className="hero-copy">Paste this into your coding agent.</p>
+          )}
+          <AgentPromptBox
+            openIn={!project}
+            prompt={
+              project ? projectAgentPrompt(project) : bootstrapAgentPrompt()
+            }
+          />
         </>
       ) : (
         <>
@@ -1001,13 +1042,20 @@ function InstallPanel({ project }: { project: ProjectDefinition }) {
                 : "Agent setup unavailable"}
           </h2>
           {eligibility === "blocked" ? (
-            <p>
-              The current project revision is not cleared for agent
-              installation.{" "}
-              <Link href={`/projects/${project.slug}/manage`}>
-                Project owner: review setup
-              </Link>
-            </p>
+            project ? (
+              <p>
+                The current project revision is not cleared for agent
+                installation.{" "}
+                <Link href={`/projects/${project.slug}/manage`}>
+                  Project owner: review setup
+                </Link>
+              </p>
+            ) : (
+              <p>
+                No projects are cleared for agent setup yet. Browse the projects
+                below.
+              </p>
+            )
           ) : null}
           {eligibility !== "loading" ? (
             <button
@@ -1068,6 +1116,9 @@ function ProjectPaymentHistory({
         <Link href={`/projects/${project.slug}/manage`}>
           Draft a project update
         </Link>
+        {project.escrow && (
+          <Link href={`/projects/${project.slug}/awards`}>Review awards</Link>
+        )}
       </div>
       {directState.status === "error" && !externalPrize ? (
         <p role="status">
@@ -1254,6 +1305,8 @@ function ProjectPage({
             <div>
               <h1>
                 {project.status === "paused" ||
+                (project.reward.kind === "monthly-pool" &&
+                  project.reward.paymentMode !== "enabled") ||
                 monthlyPoolPointsOnly(project.reward) ? (
                   project.name
                 ) : headlineAction ? (
@@ -1278,7 +1331,7 @@ function ProjectPage({
                 {monthlyPoolPointsOnly(project.reward)
                   ? "Points only · no cash rewards"
                   : project.reward.kind === "monthly-pool"
-                    ? `${project.reward.monthlyCapDisplay} monthly target · ${formatMicroUsdc(project.reward.committedMinor)} committed · payouts ${project.reward.paymentMode}`
+                    ? `${project.reward.monthlyCapDisplay} monthly target · ${formatMicroUsdc(project.reward.committedMinor)} committed · ${project.reward.paymentMode === "enabled" ? "payments enabled" : "payments not active"}`
                     : "External prize · organizer decides awards"}
               </p>
               {project.status === "paused" ? (
@@ -1437,7 +1490,11 @@ function ProjectPage({
             Activity for this project has not been collected yet.
           </p>
         ) : null}
-        <ProjectPaymentHistory project={project} state={state} />
+        <ProjectPaymentHistory
+          key={project.id}
+          project={project}
+          state={state}
+        />
         {view && state.status === "ready" ? (
           <ProjectLeaderboard
             state={state}
@@ -1653,66 +1710,7 @@ function HowItWorksPage() {
       </section>
       <section className="custody-proof money-states">
         <h2>Payment stages</h2>
-        <p>
-          Each stage needs its own evidence. A person or a verifier must act
-          before the next stage; nothing moves forward automatically.
-        </p>
-        <ol className="payment-stages" aria-label="Payment stages">
-          <li>
-            <strong>Projected</strong>
-            <span>
-              A live estimate from accepted score at the published cap. Not a
-              balance, wage, or guarantee.
-            </span>
-          </li>
-          <li>
-            <small className="payment-gate">Monthly freeze</small>
-            <strong>Under review</strong>
-            <span>A frozen monthly proposal in its 14-day public window.</span>
-          </li>
-          <li>
-            <small className="payment-gate">Maintainer approval</small>
-            <strong>Approved</strong>
-            <span>
-              Immutable payout intents after the maintainer signs off.
-            </span>
-          </li>
-          <li>
-            <small className="payment-gate">Unsigned plan</small>
-            <strong>Scheduled</strong>
-            <span>An unsigned transfer plan exists. No money has moved.</span>
-          </li>
-          <li>
-            <small className="payment-gate">Finalized evidence</small>
-            <strong>Paid</strong>
-            <span>
-              Finalized on-chain evidence reconciles the exact transfers and
-              fee.
-            </span>
-          </li>
-        </ol>
-        <section
-          className="payment-branches"
-          aria-labelledby="payment-branches-title"
-        >
-          <h3 className="payment-branches-title" id="payment-branches-title">
-            Unresolved outcomes: not steps toward payment
-          </h3>
-          <dl>
-            <div>
-              <dt>Held</dt>
-              <dd>A decision or requirement remains unresolved.</dd>
-            </div>
-            <div>
-              <dt>Unclaimed</dt>
-              <dd>A required wallet is missing. The row carries forward.</dd>
-            </div>
-            <div>
-              <dt>Excluded</dt>
-              <dd>The row keeps its public reason and is not paid.</dd>
-            </div>
-          </dl>
-        </section>
+        <PaymentLifecycle />
         <details>
           <summary>Funding and cycle rules</summary>
           <p>
@@ -1724,11 +1722,10 @@ function HowItWorksPage() {
             funding is committed.
           </p>
           <p>
-            For monthly v1 cycles, the first-of-month workflow freezes a
-            proposal for 14 days of public review. Only an amount change
-            restarts review; a wallet registered after the proposal applies to
-            the next cycle. Awards below $2 accrue to the next cycle. Historical
-            records keep their recorded fee and authority rules.
+            Monthly proposals have a 14-day public review. A funded award can
+            wait for a wallet; confirming one later does not require another
+            monthly cycle. Historical records keep their recorded fee and
+            authority rules.
           </p>
         </details>
       </section>
@@ -1832,23 +1829,21 @@ function HowItWorksPage() {
         <details>
           <summary>How do I get paid?</summary>
           <p>
-            Register a public Solana, Base or Robinhood Chain address in{" "}
-            <Link href="/account#wallets">Account wallets</Link> with your
-            GitHub account. No wallet connection or signing is needed. Payments
-            are USDC on the project's settlement network, Base or Solana, sent
-            by the project maintainer, never by Slop. A wallet must be
-            registered before a month freezes to apply to that month. Without
-            one, your row stays unclaimed and carries forward.
+            Connect and confirm a wallet in{" "}
+            <Link href="/account#wallets">Account wallets</Link> for your
+            award's network: Base, Solana, Robinhood Chain or Ethereum. Wallet
+            confirmation requires your signature. An approved award also needs
+            reserved funding and a verified wallet binding before payment.
+            Missing wallets do not erase awards.
           </p>
         </details>
         <details>
           <summary>When are payments sent?</summary>
           <p>
-            At 00:11 UTC on the first of each month, the previous month freezes
-            into a proposal. After 14 days of public review the maintainer
-            approves it and sends USDC from their own wallet. Slop shows a
-            payment as paid only after the transfers are confirmed on-chain.
-            Amounts below $2 carry to the next month.
+            The previous month becomes a proposal for public review. After owner
+            approval and funding, eligible awards can be executed from the
+            project vault. Submitted means verification is pending; paid means
+            finalized evidence reconciles the award and fee.
           </p>
         </details>
         <details>
@@ -2179,7 +2174,7 @@ function SponsorsPage({
                 return (
                   <tr key={project.id}>
                     <th scope="row">
-                      <Link href={`/projects/${project.id}`}>
+                      <Link href={`/projects/${project.slug}/funding`}>
                         {project.name}
                       </Link>
                     </th>
@@ -2238,7 +2233,7 @@ function SponsorsPage({
       </section>
       <section className="worked-example sponsor-start">
         <div>
-          <h2>Start with an application.</h2>
+          <h2>Add your own project.</h2>
           <p>
             Sign in with GitHub and add a project. A Slop admin reviews it, and
             new projects start paused. Escrow deployments change only through a
@@ -2250,10 +2245,8 @@ function SponsorsPage({
             <Link href="/projects/new">Add a project</Link>
           </li>
           <li>
-            <ExternalLinkAnchor
-              href={`${SOURCE_REPOSITORY}/tree/${browserDeployment.branch}/projects`}
-            >
-              Reviewed manifests
+            <ExternalLinkAnchor href="/api/v1/project-revisions">
+              Reviewed project revisions
             </ExternalLinkAnchor>
           </li>
           <li>
@@ -2266,7 +2259,7 @@ function SponsorsPage({
           </li>
           <li>
             <ExternalLinkAnchor href={SOURCE_REPOSITORY}>
-              Open an issue on GitHub
+              View the repository on GitHub
             </ExternalLinkAnchor>
           </li>
         </ul>
@@ -2347,59 +2340,12 @@ function SponsorsPage({
           </div>
         </section>
         <section className="custody-proof money-states">
-          <h2>Your money has exact states.</h2>
-          <dl>
-            <div>
-              <dt>Pledged</dt>
-              <dd>
-                A public target with no money behind it. Contributors see
-                projections at the cap and the word unfunded next to them.
-              </dd>
-            </div>
-            <div>
-              <dt>Committed</dt>
-              <dd>
-                Funds deposited in the project escrow contract. Awards never
-                exceed its free balance.
-              </dd>
-            </div>
-            <div>
-              <dt>Under review</dt>
-              <dd>A frozen monthly proposal in its 14-day public window.</dd>
-            </div>
-            <div>
-              <dt>Approved</dt>
-              <dd>
-                Immutable payout intents after you sign off, with a public
-                reason attached to every change you made.
-              </dd>
-            </div>
-            <div>
-              <dt>Scheduled</dt>
-              <dd>
-                The owner reserved an approved award in the escrow. No money has
-                moved yet.
-              </dd>
-            </div>
-            <div>
-              <dt>Paid</dt>
-              <dd>
-                Finalized on-chain evidence reconciles the exact transfers and
-                the fee.
-              </dd>
-            </div>
-            <div>
-              <dt>Unclaimed, held, excluded</dt>
-              <dd>
-                Visible unresolved states with public reasons. A missing wallet
-                stays unclaimed. Rows below $2 accrue to the next cycle.
-              </dd>
-            </div>
-          </dl>
+          <h2>Awards and payments</h2>
+          <PaymentLifecycle />
           <p>
-            Unused committed funds roll over without raising the cap. A wallet
-            registered after a proposal is generated applies to the next cycle
-            and never touches the current one.
+            A target is not a balance. Deposits fund the vault; approved awards
+            require their own reservation. A wallet added later can unlock an
+            eligible reserved award without waiting for another cycle.
           </p>
         </section>
         <section className="custody-proof">
@@ -2516,23 +2462,28 @@ function ReceiptsPage({
     <main className="shell evidence-page receipt-page">
       <section className="evidence-page-hero">
         <h1>Run receipts</h1>
-        <p>
-          Device signatures attest byte continuity. Model and usage declarations
-          are self-reported; private traces stay private.
-        </p>
+        <details>
+          <summary>About receipts</summary>
+          <p>
+            Device signatures attest byte continuity. Model and usage
+            declarations are self-reported; private traces stay private.
+          </p>
+        </details>
         <DataNotice retry={retry} state={state} />
       </section>
-      <label className="receipt-search">
-        Find a receipt
-        <input
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Contributor, model, client or run ID"
-          disabled={state.status !== "ready"}
-        />
-      </label>
-      {state.status === "ready" ? (
+      {state.status === "ready" && receipts.length > 0 ? (
+        <label className="receipt-search">
+          Find a receipt
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Contributor, model, client or run ID"
+            disabled={state.status !== "ready"}
+          />
+        </label>
+      ) : null}
+      {state.status === "ready" && receipts.length > 0 ? (
         <p className="receipt-count" role="status">
           {matching.length} of {receipts.length} receipts
         </p>
@@ -2541,10 +2492,13 @@ function ReceiptsPage({
         <EmptyState
           text={
             receipts.length === 0
-              ? "No publishable signed receipts in this snapshot."
+              ? "No receipts published yet."
               : "No receipts match this search."
           }
         />
+      ) : null}
+      {state.status === "ready" && receipts.length === 0 ? (
+        <Link href="/#projects">Browse projects</Link>
       ) : null}
       <div className="receipt-list">
         {matching.map((entry) => {
@@ -2905,8 +2859,8 @@ function ModelOutcomes({ summary }: { summary: ModelOutcomeSummary }) {
         )}
       </details>
 
-      <section className="model-outcomes-section">
-        <h2>Read before quoting</h2>
+      <details className="model-outcomes-section">
+        <summary>Methodology and limitations</summary>
         <ul className="model-outcomes-notes">
           <li>
             This is not a benchmark. Contributors choose their own tasks, repos
@@ -2934,12 +2888,12 @@ function ModelOutcomes({ summary }: { summary: ModelOutcomeSummary }) {
           </li>
           <li>
             The leaderboard is a rolling window and regenerates on a schedule,
-            so every figure moves. Nothing here describes money. PR points are
-            the scoring input; what any pool pays is decided in a separate
-            public review.
+            so every figure moves. Nothing here describes money. Slop Score
+            measures accepted work; awards require separate funding and
+            approval.
           </li>
         </ul>
-      </section>
+      </details>
     </>
   );
 }
@@ -2984,6 +2938,7 @@ function AppContent({ route }: { route: Route }) {
     "how-it-works",
     "new-project",
     "manage-project",
+    "owner-awards",
     "security-cases",
     "vetting-evidence",
     "security-program",
@@ -3040,6 +2995,13 @@ function AppContent({ route }: { route: Route }) {
     const project = findProject(route.projectId ?? "");
     content = project ? (
       <SecurityProgramPage project={project} />
+    ) : (
+      <NotFound title="Project not found" />
+    );
+  } else if (route.kind === "owner-awards") {
+    const project = findProject(route.projectId ?? "");
+    content = project ? (
+      <OwnerAwardsPage key={project.id} project={project} />
     ) : (
       <NotFound title="Project not found" />
     );
