@@ -1097,17 +1097,23 @@ export function ContributorStandings({
   const metric = (
     m: ReturnType<typeof contributorStandings>["rows"][number],
   ) => (sort === "score" ? m.score : sort === "points" ? m.points : m.money);
-  const [direct] = useAllDirectTransfers(PROJECTS.map((p) => p.id));
+  const [direct, retryDirect] = useAllDirectTransfers(
+    PROJECTS.map((p) => p.id),
+  );
   const projection = contributorStandings(
     scores,
     state.status === "ready" ? members : null,
     period === "month" ? new Date().toISOString().slice(0, 7) : null,
     project,
-    direct.status === "ready" ? direct.transfers : [],
+    direct.status === "ready" ? direct.transfers : null,
   );
   // Loading and failed sources stay distinct in each column.
   const scoreMissing = scores.status === "loading" ? "Loading…" : "Unavailable";
   const pointsMissing = state.status === "loading" ? "Loading…" : "Unavailable";
+  const moneyMissing =
+    scores.status === "loading" || direct.status === "loading"
+      ? "Loading…"
+      : "Unavailable";
   const ranked = projection.rows
     .filter((m) => metric(m) !== null)
     .sort((a, b) => {
@@ -1156,6 +1162,16 @@ export function ContributorStandings({
         <DataNotice state={scores} retry={retryScore ?? retryLoadedScore} />
       ) : null}
       <Notice />
+      {direct.status === "error" ? (
+        <p role="status">
+          <span>Payment records unavailable.</span>{" "}
+          <button type="button" onClick={retryDirect}>
+            Retry payment records
+          </button>
+        </p>
+      ) : direct.status === "loading" && sort === "money" ? (
+        <p role="status">Loading payment records…</p>
+      ) : null}
       {scores.status === "ready" && !projection.scoreAvailable ? (
         <p className="points-meta">
           {compact
@@ -1297,7 +1313,7 @@ export function ContributorStandings({
                       </td>
                       <td className="points-value">
                         {m.money === null
-                          ? scoreMissing
+                          ? moneyMissing
                           : formatMicroUsdc(m.money.toString())}
                       </td>
                     </tr>
@@ -1305,7 +1321,8 @@ export function ContributorStandings({
               </tbody>
             </table>
           </section>
-          {rows.length === 0 ? (
+          {rows.length === 0 &&
+          (sort !== "money" || projection.moneyAvailable) ? (
             <p>No recorded contributions match this view.</p>
           ) : null}
           {rows.length > pageSize ? (
