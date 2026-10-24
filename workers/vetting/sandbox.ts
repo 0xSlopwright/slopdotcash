@@ -18,7 +18,7 @@ export type IsolatedArtifactEvidence = {
   artifactSha256: string;
   interpreter: ArtifactInterpreter;
   internetEnabled: false;
-  status: "exited" | "timeout" | "output-limit";
+  status: "exited" | "timeout" | "output-limit" | "not-executable";
   exitCode: number;
   stdoutBase64: string;
   stderrBase64: string;
@@ -99,7 +99,9 @@ export async function runIsolatedArtifact(input: {
     evidence.artifactSha256 !== artifactSha256 ||
     evidence.interpreter !== interpreter ||
     evidence.internetEnabled !== false ||
-    !["exited", "timeout", "output-limit"].includes(String(evidence.status)) ||
+    !["exited", "timeout", "output-limit", "not-executable"].includes(
+      String(evidence.status),
+    ) ||
     !Number.isSafeInteger(evidence.exitCode) ||
     evidence.outputComplete !== (evidence.status === "exited") ||
     typeof evidence.stdoutBase64 !== "string" ||
