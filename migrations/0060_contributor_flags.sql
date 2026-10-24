@@ -6,8 +6,9 @@
 -- the flag. That record names the flags as its standing-rule issuer; no
 -- moderator approves a flag before it counts.
 --
--- A flag stops counting when it closes. The reporter may withdraw it. A clean
--- scan resolves only flags in its immutable request snapshot. A moderator
+-- A flag stops counting when it closes. The reporter may withdraw it. A flag
+-- expires 90 days after filing (owner decision D3). A clean scan resolves
+-- only flags in its immutable request snapshot. A moderator
 -- reinstatement resolves the flags it reviews. A clean fresh scan after a pause
 -- that flags alone placed appends a signed vetting-service reinstatement.
 -- History is never deleted or rewritten.
@@ -192,15 +193,16 @@ CREATE TABLE project_flags (
     )
   ),
   created_at TEXT NOT NULL,
-  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'withdrawn', 'resolved')),
+  state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'withdrawn', 'resolved', 'expired')),
   closed_at TEXT,
-  closed_by TEXT CHECK (closed_by IS NULL OR closed_by IN ('reporter', 'clean-scan', 'reinstatement')),
+  closed_by TEXT CHECK (closed_by IS NULL OR closed_by IN ('reporter', 'clean-scan', 'reinstatement', 'lifetime')),
   -- The assessment or enforcement record that resolved the flag.
   closed_reference TEXT,
   FOREIGN KEY (project_id, revision) REFERENCES project_revisions(project_id, revision),
   CHECK ((state = 'active') = (closed_at IS NULL)),
   CHECK ((state = 'active') = (closed_by IS NULL)),
   CHECK (state <> 'withdrawn' OR (closed_by = 'reporter' AND closed_reference IS NULL)),
+  CHECK (state <> 'expired' OR (closed_by = 'lifetime' AND closed_reference IS NULL)),
   CHECK (state <> 'resolved' OR (closed_by IN ('clean-scan', 'reinstatement') AND closed_reference IS NOT NULL))
 ) STRICT;
 
@@ -239,7 +241,8 @@ BEGIN
   SELECT RAISE(ABORT, 'flags are permanent');
 END;
 
--- A flag pause names at least two distinct active reporters of that project.
+-- A flag pause names at least two distinct active reporters of that
+-- project, each filed within the 90-day flag lifetime.
 CREATE TRIGGER project_enforcements_flag_pause_valid
 BEFORE INSERT ON project_enforcements
 WHEN NEW.actor_role = 'contributor-flags' AND (
@@ -247,6 +250,7 @@ WHEN NEW.actor_role = 'contributor-flags' AND (
     FROM json_each(NEW.system_issuer, '$.flagIds') listed
     JOIN project_flags f ON f.id = listed.value
    WHERE f.project_id = NEW.project_id AND f.state = 'active'
+     AND f.created_at > strftime('%Y-%m-%dT%H:%M:%fZ', NEW.created_at, '-90 days')
 ) < 2
 BEGIN
   SELECT RAISE(ABORT, 'a flag pause needs two distinct active contributor flags');

@@ -29,6 +29,7 @@ type OwnFlag = {
   evidence: string;
   evidenceUrl: string | null;
   createdAt: string;
+  expiresAt: string;
 };
 type FlagStatus = {
   flag: OwnFlag | null;
@@ -127,7 +128,7 @@ export function ProjectRiskFlag({ projectId }: { projectId: string }) {
         setEvidenceUrl("");
         return value.paused
           ? "Flag recorded. A second member had flagged this project, so it is now paused and moderators were notified. A clean fresh scan reinstates it."
-          : "Flag recorded. Your flag counts until it is withdrawn or a later clean scan resolves it.";
+          : "Flag recorded. Your flag counts for 90 days, until you withdraw it, or until a later clean scan resolves it.";
       },
     );
   };
@@ -147,8 +148,11 @@ export function ProjectRiskFlag({ projectId }: { projectId: string }) {
         wallets, credentials or secrets, run unsafe downloads, or try to
         redirect your agent. When two different members flag a project, Slop
         pauses it and notifies moderators; a clean fresh security scan
-        reinstates it. A vulnerability in the project is not malicious code:
-        report it privately through the project's security policy instead.
+        reinstates it. To flag, your GitHub account must be at least 30 days old
+        and you need at least 1 accepted contribution to a Slop project. Project
+        maintainers cannot flag their own project. A vulnerability in the
+        project is not malicious code: report it privately through the project's
+        security policy instead.
       </p>
       {state.status === "loading" ? (
         <p role="status">Loading your flag status…</p>
@@ -169,7 +173,8 @@ export function ProjectRiskFlag({ projectId }: { projectId: string }) {
           <p>
             You flagged this project on{" "}
             {formatDateTime(state.value.flag.createdAt)} for{" "}
-            <strong>{categoryLabel(state.value.flag.category)}</strong>.
+            <strong>{categoryLabel(state.value.flag.category)}</strong>. It
+            counts until {formatDateTime(state.value.flag.expiresAt)}.
             {state.value.restriction === "clear"
               ? " The project is not paused."
               : state.value.pausedByFlags

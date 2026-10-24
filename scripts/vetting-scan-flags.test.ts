@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import { handleProjectApi } from "../backend/projects/handler";
+import { githubFlaggerStanding } from "../backend/vetting/flagger-standing";
 import {
   handleProjectFlagsApi,
   ProjectFlagStore,
@@ -25,6 +26,7 @@ import {
   scanProblems,
   specialistRequired,
 } from "../backend/vetting/scan-result";
+import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
 import { applicationManifest } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 import { localVettingEvidence } from "../tests/vetting-evidence-fixture";
@@ -42,6 +44,9 @@ const ALICE = { githubId: "900000010", githubLogin: "alice" };
 const BOB = { githubId: "900000011", githubLogin: "bob" };
 const CAROL = { githubId: "900000012", githubLogin: "carol" };
 const STEWARD = { githubId: "987654321", githubLogin: "example" };
+const NEWCOMER = { githubId: "900000013", githubLogin: "newcomer" };
+const BYSTANDER = { githubId: "900000014", githubLogin: "bystander" };
+const COLLABORATOR = { githubId: "900000015", githubLogin: "collaborator" };
 const ACTORS: Record<string, { githubId: string; githubLogin: string }> = {
   admin: ADMIN,
   applicant: APPLICANT,
@@ -49,7 +54,92 @@ const ACTORS: Record<string, { githubId: string; githubLogin: string }> = {
   bob: BOB,
   carol: CAROL,
   steward: STEWARD,
+  newcomer: NEWCOMER,
+  bystander: BYSTANDER,
+  collaborator: COLLABORATOR,
 };
+/** GitHub account facts and merged Slop pull requests per test member. */
+const STANDING: Record<
+  string,
+  { createdAt: string; merged: number; association?: string }
+> = {
+  alice: { createdAt: "2020-01-01T00:00:00Z", merged: 3 },
+  bob: { createdAt: "2021-05-01T00:00:00Z", merged: 1 },
+  carol: { createdAt: "2022-02-02T00:00:00Z", merged: 2 },
+  steward: { createdAt: "2015-01-01T00:00:00Z", merged: 9 },
+  newcomer: { createdAt: "2026-10-01T00:00:00Z", merged: 1 },
+  bystander: { createdAt: "2019-01-01T00:00:00Z", merged: 0 },
+  collaborator: {
+    createdAt: "2018-01-01T00:00:00Z",
+    merged: 4,
+    association: "COLLABORATOR",
+  },
+};
+const GITHUB = "https://api.github.test";
+let githubUp = true;
+
+/** Answers the GitHub REST reads the flag eligibility check makes. */
+async function githubFixture(url: string): Promise<Response> {
+  if (!githubUp) return new Response("unavailable", { status: 502 });
+  const path = new URL(url).pathname;
+  const user = /^\/user\/([0-9]+)$/u.exec(path)?.[1];
+  if (user !== undefined) {
+    const [name, actor] =
+      Object.entries(ACTORS).find(([, entry]) => entry.githubId === user) ?? [];
+    const facts = name === undefined ? undefined : STANDING[name];
+    if (actor === undefined || facts === undefined)
+      return new Response(null, { status: 404 });
+    return Response.json({
+      id: Number(actor.githubId),
+      login: actor.githubLogin,
+      node_id: `U_${actor.githubId}`,
+      type: "User",
+      created_at: facts.createdAt,
+    });
+  }
+  if (/^\/repos\/[^/]+\/[^/]+\/issues$/u.test(path)) {
+    const creator = new URL(url).searchParams.get("creator");
+    const [name] =
+      Object.entries(ACTORS).find(
+        ([, entry]) => entry.githubLogin === creator,
+      ) ?? [];
+    const association = name && STANDING[name]?.association;
+    return Response.json(
+      association ? [{ author_association: association }] : [],
+    );
+  }
+  return new Response(null, { status: 404 });
+}
+
+/** The published profile census, counted by immutable node id. */
+function profileCensus(): Response {
+  const [first] = TARGET_REPOSITORIES.map((entry) => entry.id);
+  const people = Object.entries(STANDING)
+    .filter(([, facts]) => facts.merged > 0)
+    .map(([name, facts]) => ({
+      id: `U_${ACTORS[name].githubId}`,
+      login: ACTORS[name].githubLogin,
+      avatarUrl: "https://avatars.githubusercontent.com/u/1",
+      repositories: [
+        { repository: first, merged: facts.merged, open: 0, closed: 0 },
+      ],
+    }));
+  const merged = people.reduce(
+    (sum, person) => sum + person.repositories[0].merged,
+    0,
+  );
+  return Response.json({
+    schemaVersion: "1",
+    startedAt: "2026-10-01T00:00:00.000Z",
+    generatedAt: "2026-10-18T00:00:00.000Z",
+    repositories: TARGET_REPOSITORIES.map((entry) => ({
+      repository: entry.id,
+      count: entry.id === first ? merged : 0,
+      excluded: 0,
+    })),
+    people,
+  });
+}
 const NOW = new Date("2026-10-18T12:00:00.000Z");
 const HEAD = "a".repeat(40);
 const TEMPLATE = "b".repeat(64);
@@ -74,6 +164,7 @@ beforeEach(async () => {
   projects = new CloudflareProjectPersistence(database.db);
   flags = new ProjectFlagStore(database.db);
   clock = NOW;
+  githubUp = true;
   retained = await localVettingEvidence(database.db, () => clock);
   vetting = new CloudflareVettingPersistence(
     database.db,
@@ -140,6 +231,11 @@ const flagApi = (request: Request) =>
     flags,
     projects,
     sessionActor: async (value) => actorOf(value),
+    flaggerStanding: githubFlaggerStanding({
+      fetch: githubFixture,
+      apiOrigin: GITHUB,
+      readProfiles: async () => profileCensus(),
+    }),
     moderatorGithubIds: [ADMIN.githubId, MODERATOR.githubId],
     queueFreshScan: (project) =>
       queueAutomaticScan(
@@ -568,7 +664,7 @@ describe("two-contributor flags", () => {
     expect((await publicProject()).status).toBe(200);
     expect((await projects.getProject("open-registry"))?.status).toBe("active");
     // Resolved flags stop counting, so the project does not pause again.
-    expect(await flags.activeFlags()).toEqual([]);
+    expect(await flags.activeFlags(clock)).toEqual([]);
     clock = new Date(NOW.getTime() + 180_000);
     expect(await (await flag("alice")).json()).toMatchObject({ paused: false });
     expect((await publicProject()).status).toBe(200);
@@ -595,7 +691,9 @@ describe("two-contributor flags", () => {
       ).toBe(200);
       expect((await publicProject()).status).toBe(410);
       expect(
-        (await flags.activeFlags()).map((entry) => entry.reporter.githubId),
+        (await flags.activeFlags(clock)).map(
+          (entry) => entry.reporter.githubId,
+        ),
       ).toEqual([CAROL.githubId]);
       const refreshed = await refresh();
       expect(refreshed.queued).toHaveLength(1);
@@ -609,7 +707,7 @@ describe("two-contributor flags", () => {
         ).status,
       ).toBe(200);
       expect((await publicProject()).status).toBe(200);
-      expect(await flags.activeFlags()).toEqual([]);
+      expect(await flags.activeFlags(clock)).toEqual([]);
     },
   );
 
@@ -654,6 +752,51 @@ describe("two-contributor flags", () => {
       }),
     );
     expect(crossSite.status).toBe(403);
+  });
+
+  test("only established contributors outside the project may flag", async () => {
+    await activeProject();
+    for (const [actor, code] of [
+      ["collaborator", "maintainer_cannot_flag"],
+      ["newcomer", "flagger_account_too_new"],
+      ["bystander", "flagger_needs_accepted_contribution"],
+    ] as const) {
+      const refused = await flag(actor);
+      expect(refused.status).toBe(403);
+      expect((await refused.json()).error).toBe(code);
+    }
+    // A failed GitHub read refuses the flag; it never admits one.
+    githubUp = false;
+    const unknown = await flag("alice");
+    expect(unknown.status).toBe(503);
+    expect((await unknown.json()).error).toBe("flagger_standing_unavailable");
+    githubUp = true;
+    expect(await flags.activeFlags(clock)).toEqual([]);
+    expect((await flag("alice")).status).toBe(201);
+  });
+
+  test("a flag stops counting 90 days after it was filed", async () => {
+    await activeProject();
+    expect((await flag("alice")).status).toBe(201);
+    clock = new Date(NOW.getTime() + 7_776_000_000);
+    // Alice's flag reached its lifetime, so Bob's flag alone does not pause.
+    expect(await (await flag("bob")).json()).toMatchObject({ paused: false });
+    expect((await publicProject()).status).toBe(200);
+    const mine = await flagApi(
+      sessionRequest("GET", "project-flags/open-registry", "alice"),
+    );
+    expect((await mine.json()).flag).toBeNull();
+    // Alice may file again; two counting flags then pause the project.
+    expect(await (await flag("alice")).json()).toMatchObject({ paused: true });
+    expect(
+      sqlite
+        .query("SELECT state, closed_by FROM project_flags ORDER BY created_at")
+        .all(),
+    ).toEqual([
+      { state: "expired", closed_by: "lifetime" },
+      { state: "active", closed_by: null },
+      { state: "active", closed_by: null },
+    ]);
   });
 
   test("a confirmed malicious result after a flag pause stays with a moderator", async () => {
@@ -710,7 +853,7 @@ describe("two-contributor flags", () => {
     expect((await flag("alice")).status).toBe(201);
     const project = await projects.getProject("open-registry");
     if (project === null) throw new Error("project vanished");
-    const [only] = await flags.activeFlags();
+    const [only] = await flags.activeFlags(clock);
     expect(() =>
       sqlite
         .query(

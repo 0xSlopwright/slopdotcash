@@ -157,9 +157,21 @@ prerequisite for an ordinary clean result.
 
 ## Two-contributor flags
 
-`flags.ts` and migration 0060 implement PRD sections 4 and 8. Any signed-in
-member except the project steward may file one active flag per project with a
-threat category and 20 to 4,000 characters of evidence. In the same D1
+`flags.ts` and migration 0060 implement PRD sections 4 and 8. A signed-in
+member may file one active flag per project with a threat category and 20 to
+4,000 characters of evidence. Owner decision D3 sets who may flag, and
+`flagger-standing.ts` reads it from GitHub at filing time:
+
+- the GitHub account is at least 30 days old (`GET /user/:id`);
+- the member has at least 1 accepted contribution: a merged pull request in a
+  registered project repository, counted under the member's immutable node ID
+  in the published profile census (`/data/profiles.json`);
+- the member is not the project steward, and GitHub does not mark the member
+  as owner, member or collaborator of a project repository or list the member
+  as a public member of the organization that owns it.
+
+A failed GitHub or census read refuses the flag with
+`flagger_standing_unavailable`; it never admits one. In the same D1
 transaction as the second distinct active reporter's flag, Slop appends a
 `quarantine` enforcement record whose issuer is `contributor-flags` with the
 flag ids, a standing rule and no GitHub actor. It notifies each configured
@@ -173,11 +185,12 @@ A flag stops counting when it closes:
 
 - the reporter withdraws it;
 - a clean scan requested after the flag was filed resolves it;
-- any reinstatement of the project resolves the flags it found.
+- any reinstatement of the project resolves the flags it found;
+- 90 days pass after filing (`FLAG_ACTIVE_LIFETIME_MS = 7776000000`, owner
+  decision D3). The next flag on the project closes the old flag as `expired`,
+  and a database trigger refuses a pause that counts an older flag.
 
-The PRD sets no time-based flag lifetime, so `FLAG_ACTIVE_LIFETIME_MS` is
-null and awaits an owner decision: an unresolved flag counts until one of the
-events above.
+A single flag stays private and does not change the project.
 
 A clean fresh scan requested at or after a pause that flags alone placed
 appends a signed `vetting-service` reinstatement (rule

@@ -253,7 +253,7 @@ async function adminOverview(
           },
     assessments: assessments.map(adminAssessment),
     // Moderators read flag evidence here; a flag needs no approval to count.
-    flags: (await deps.flags?.activeFlags()) ?? [],
+    flags: (await deps.flags?.activeFlags(deps.now())) ?? [],
   });
 }
 

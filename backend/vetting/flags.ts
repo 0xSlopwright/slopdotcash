@@ -2,15 +2,17 @@ import { pathParts } from "../api-path";
 /**
  * Two-contributor flags (PRD sections 4 and 8; audit finding 9; issue #911).
  *
- * A signed-in member reports a malicious-code or injection risk with
- * evidence. Each member holds at most one active flag per project. The
+ * An eligible signed-in member reports a malicious-code or injection risk
+ * with evidence (owner decision D3: a GitHub account at least 30 days old,
+ * at least one accepted contribution, and not a steward or maintainer of the
+ * project). Each member holds at most one active flag per project. The
  * second distinct active reporter pauses the project at once, through the
  * existing append-only enforcement record, in the same D1 transaction as the
  * flag, and notifies moderators once. No moderator approves a flag first.
  *
  * Flags stop counting when they close: the reporter withdraws, a clean scan
- * requested after the flag resolves it, or the project is reinstated
- * (migration 0060 triggers). A clean fresh scan reinstates a project that
+ * requested after the flag resolves it, the project is reinstated
+ * (migration 0060 triggers), or the flag reaches FLAG_ACTIVE_LIFETIME_MS. A clean fresh scan reinstates a project that
  * flags alone paused; a moderator decides only after a confirmed malicious
  * result. Flag evidence is visible to the reporter and administrators only.
  */
@@ -31,18 +33,26 @@ import {
   repositoryIdentity,
 } from "../projects/enforcement";
 import { readJsonObject } from "../trace/validation";
+import type { FlaggerStandingReader } from "./flagger-standing";
 import { SCAN_THREATS } from "./scan-result";
 
 export const FLAG_CATEGORIES = [...SCAN_THREATS, "other"] as const;
 export type FlagCategory = (typeof FLAG_CATEGORIES)[number];
 
 /**
- * How long an unresolved flag keeps counting. The PRD does not set a
- * lifetime, so none is applied: a flag counts until it is withdrawn,
- * resolved by a later clean scan, or resolved by reinstatement. Awaiting an
- * owner decision; do not choose a value here.
+ * How long an unresolved flag keeps counting (owner decision D3: 90 days).
+ * Migration 0060 refuses a pause that counts an older flag.
  */
-export const FLAG_ACTIVE_LIFETIME_MS: number | null = null;
+export const FLAG_ACTIVE_LIFETIME_MS = 7_776_000_000;
+/** The youngest GitHub account that may flag (owner decision D3: 30 days). */
+export const FLAGGER_MIN_ACCOUNT_AGE_MS = 2_592_000_000;
+/** Accepted Slop contributions a flagger needs (owner decision D3). */
+export const FLAGGER_MIN_ACCEPTED_CONTRIBUTIONS = 1;
+
+/** Flags filed at or before this instant no longer count. */
+export function flagCutoff(at: Date): string {
+  return new Date(at.getTime() - FLAG_ACTIVE_LIFETIME_MS).toISOString();
+}
 
 const MIN_EVIDENCE = 20;
 const MAX_EVIDENCE = 4000;
@@ -57,9 +67,9 @@ export type ProjectFlag = {
   evidence: string;
   evidenceUrl: string | null;
   createdAt: string;
-  state: "active" | "withdrawn" | "resolved";
+  state: "active" | "withdrawn" | "resolved" | "expired";
   closedAt: string | null;
-  closedBy: "reporter" | "clean-scan" | "reinstatement" | null;
+  closedBy: "reporter" | "clean-scan" | "reinstatement" | "lifetime" | null;
   closedReference: string | null;
 };
 
@@ -124,28 +134,32 @@ export class ProjectFlagStore {
     return row === null ? null : fromRow(row);
   }
 
-  /** The reporter's one active flag on a project, if any. */
+  /** The reporter's one counting flag on a project, if any. */
   async activeFor(
     projectId: string,
     githubId: string,
+    at: Date,
   ): Promise<ProjectFlag | null> {
     const row = await this.db
       .prepare(
         `SELECT ${COLUMNS} FROM project_flags
-          WHERE project_id = ? AND reporter_github_id = ? AND state = 'active'`,
+          WHERE project_id = ? AND reporter_github_id = ? AND state = 'active'
+            AND created_at > ?`,
       )
-      .bind(projectId, githubId)
+      .bind(projectId, githubId, flagCutoff(at))
       .first<FlagRow>();
     return row === null ? null : fromRow(row);
   }
 
-  /** Every active flag, for the restricted moderator view. */
-  async activeFlags(): Promise<ProjectFlag[]> {
+  /** Every counting flag, for the restricted moderator view. */
+  async activeFlags(at: Date): Promise<ProjectFlag[]> {
     const rows = await this.db
       .prepare(
-        `SELECT ${COLUMNS} FROM project_flags WHERE state = 'active'
+        `SELECT ${COLUMNS} FROM project_flags
+          WHERE state = 'active' AND created_at > ?
           ORDER BY project_id, created_at, id LIMIT 500`,
       )
+      .bind(flagCutoff(at))
       .all<FlagRow>();
     return (rows.results ?? []).map(fromRow);
   }
@@ -155,6 +169,8 @@ export class ProjectFlagStore {
    * The pause lands only when the project's own records are clear and at
    * least FLAG_PAUSE_THRESHOLD distinct members hold an active flag, read
    * inside the write itself, so concurrent flags cannot both miss it.
+   * Flags older than FLAG_ACTIVE_LIFETIME_MS close as expired first, so they
+   * neither count nor block their reporter from filing again.
    * Returns "conflict" when the reporter already holds an active flag.
    */
   async file(input: {
@@ -171,6 +187,13 @@ export class ProjectFlagStore {
     at: string;
   }): Promise<FiledFlag | "conflict"> {
     const statements = [
+      this.db
+        .prepare(
+          `UPDATE project_flags
+              SET state = 'expired', closed_at = ?, closed_by = 'lifetime'
+            WHERE project_id = ? AND state = 'active' AND created_at <= ?`,
+        )
+        .bind(input.at, input.project.id, flagCutoff(new Date(input.at))),
       this.db
         .prepare(
           `INSERT INTO project_flags (
@@ -256,7 +279,7 @@ export class ProjectFlagStore {
     ];
     try {
       const results = await this.db.batch(statements);
-      if (results[0]?.meta?.changes !== 1) return "conflict";
+      if (results[1]?.meta?.changes !== 1) return "conflict";
     } catch (error) {
       if (
         error instanceof Error &&
@@ -301,6 +324,8 @@ export type ProjectFlagApiDependencies = {
     "getProject" | "listEnforcements" | "enforcementGeneration"
   >;
   sessionActor: (request: Request) => Promise<GithubActor | null>;
+  /** Reads account age, accepted contributions and maintainer status. */
+  flaggerStanding: FlaggerStandingReader;
   /** Configured project moderators and administrators to notify. */
   moderatorGithubIds: readonly string[];
   /** Queues a fresh scan after a pause; failures wait for the next refresh. */
@@ -333,6 +358,9 @@ function reporterFlag(flag: ProjectFlag | null) {
         evidenceUrl: flag.evidenceUrl,
         revision: flag.revision,
         createdAt: flag.createdAt,
+        expiresAt: new Date(
+          Date.parse(flag.createdAt) + FLAG_ACTIVE_LIFETIME_MS,
+        ).toISOString(),
         state: flag.state,
       };
 }
@@ -388,6 +416,45 @@ async function requireActor(
   return actor;
 }
 
+/** Owner decision D3: who may flag. A failed read refuses the flag. */
+async function requireEligibleFlagger(
+  deps: ProjectFlagApiDependencies,
+  actor: GithubActor,
+  project: ProjectRecord,
+): Promise<void> {
+  let standing: Awaited<ReturnType<FlaggerStandingReader>>;
+  try {
+    standing = await deps.flaggerStanding(actor, project);
+  } catch {
+    fail(
+      503,
+      "flagger_standing_unavailable",
+      "Slop could not confirm your GitHub account and contributions. Nothing was filed. Try again later.",
+    );
+  }
+  if (standing.maintainer)
+    fail(
+      403,
+      "maintainer_cannot_flag",
+      "Project maintainers fix or pause their own project instead of flagging it",
+    );
+  if (
+    deps.now().getTime() - Date.parse(standing.accountCreatedAt) <
+    FLAGGER_MIN_ACCOUNT_AGE_MS
+  )
+    fail(
+      403,
+      "flagger_account_too_new",
+      "Your GitHub account must be at least 30 days old to flag a project",
+    );
+  if (standing.acceptedContributions < FLAGGER_MIN_ACCEPTED_CONTRIBUTIONS)
+    fail(
+      403,
+      "flagger_needs_accepted_contribution",
+      "You need at least 1 accepted contribution to a Slop project to flag a project",
+    );
+}
+
 async function readProject(
   deps: ProjectFlagApiDependencies,
   projectId: string,
@@ -421,7 +488,9 @@ async function mine(
   const project = await readProject(deps, projectId);
   return json(200, {
     projectId: project.id,
-    flag: reporterFlag(await deps.flags.activeFor(project.id, actor.githubId)),
+    flag: reporterFlag(
+      await deps.flags.activeFor(project.id, actor.githubId, deps.now()),
+    ),
     ...(await projectState(deps, project)),
   });
 }
@@ -454,6 +523,7 @@ async function file(
       "owner_cannot_flag",
       "Project owners pause or update their own project instead of flagging it",
     );
+  await requireEligibleFlagger(deps, actor, project);
   const records = await deps.projects.listEnforcements();
   const restriction = projectRestriction(project.id, records);
   const identity = repositoryIdentity(project.manifest);
@@ -475,7 +545,7 @@ async function file(
     at,
   });
   if (filed === "conflict") {
-    if (await deps.flags.activeFor(project.id, actor.githubId))
+    if (await deps.flags.activeFor(project.id, actor.githubId, deps.now()))
       fail(
         409,
         "flag_active",

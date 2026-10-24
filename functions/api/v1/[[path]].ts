@@ -66,6 +66,7 @@ import {
 } from "../../../backend/trace/cloudflare-persistence";
 import { handleTraceApi } from "../../../backend/trace/handler";
 import { VettingEvidence } from "../../../backend/vetting/evidence";
+import { githubFlaggerStanding } from "../../../backend/vetting/flagger-standing";
 import {
   handleProjectFlagsApi,
   ProjectFlagStore,
@@ -666,6 +667,20 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   const flagsResponse = await handleProjectFlagsApi(context.request, {
     flags,
     projects: projectPersistence,
+    flaggerStanding: githubFlaggerStanding({
+      fetch: github.fetch,
+      token: github.token,
+      apiOrigin: github.apiOrigin,
+      readProfiles: async () => {
+        if (!context.env.ASSETS)
+          throw new Error("Static assets are unavailable");
+        return context.env.ASSETS.fetch(
+          new Request(
+            `${new URL(context.request.url).origin}/data/profiles.json`,
+          ),
+        );
+      },
+    }),
     sessionActor: (request) =>
       sessionGithubActor(
         request,
