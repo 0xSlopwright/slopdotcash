@@ -1625,6 +1625,9 @@ test("two contributors flag through the form, pause the project and notify moder
     second.getByRole("status").filter({ hasText: "Flag recorded" }),
   ).toContainText("now paused");
   await expect(second.locator("main")).not.toContainText(firstEvidence);
+  await expect(second.locator("#start")).toContainText(
+    "Do not install this project's skill or start work while the project is paused.",
+  );
   expect(await readPrivate(second, ownPath)).toMatchObject({
     restriction: "quarantined",
     pausedByFlags: true,

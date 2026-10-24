@@ -952,7 +952,10 @@ export function ProjectParticipation({
     return (
       <section className="section" id="start">
         <h2>Project paused</h2>
-        <p>A Slop admin opens the project after review.</p>
+        <p>
+          Do not install this project's skill or start work while the project is
+          paused.
+        </p>
       </section>
     );
   }
