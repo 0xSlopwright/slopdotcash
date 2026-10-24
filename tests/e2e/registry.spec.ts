@@ -31,6 +31,17 @@ const MODERATOR_TOKEN = process.env.SLOP_E2E_MODERATOR_TOKEN ?? "";
 const VETTING_PUBLIC_KEY = process.env.SLOP_E2E_VETTING_PUBLIC_KEY ?? "";
 const VETTING_PRIVATE_KEY = process.env.SLOP_E2E_VETTING_PRIVATE_KEY ?? "";
 const GITHUB_FIXTURE = process.env.SLOP_E2E_GITHUB_API_ORIGIN ?? "";
+/** A contributor session from the security roles, used as a flagger. */
+const SECURITY_ACCOUNT = {
+  id: "900000011",
+  login: "e2e-reporter-a",
+  token: (
+    JSON.parse(process.env.SLOP_E2E_SECURITY_TOKENS ?? "{}") as Record<
+      string,
+      string
+    >
+  )["reporter-a"],
+};
 
 function walkthroughOptions() {
   return {
@@ -194,6 +205,22 @@ function fixtureProjects() {
       name: `Stored Registry ${words}`,
     },
   };
+}
+
+/** Sets the GitHub account facts that flag eligibility reads. */
+async function setGithubUser(
+  id: string,
+  login: string,
+  createdAt: string,
+  merged: number,
+) {
+  if (!GITHUB_FIXTURE) throw new Error("Missing E2E GitHub fixture");
+  const url = new URL(`${GITHUB_FIXTURE}/__fixture/github-users/${id}`);
+  url.searchParams.set("login", login);
+  url.searchParams.set("createdAt", createdAt);
+  url.searchParams.set("merged", String(merged));
+  const response = await fetch(url, { method: "PUT" });
+  if (response.status !== 204) throw new Error("GitHub fixture refused");
 }
 
 /** Sets what the Slopbot GitHub App reads in the loopback GitHub fixture. */
@@ -1492,31 +1519,68 @@ test("two contributors flag through the form, pause the project and notify moder
   const suffix = test.info().project.name.replace(/-chromium$/u, "");
   const project = {
     id: `flag-flow-${suffix}`,
-    repository: `example/flag-flow-${suffix}`,
+    repository: `e2e-owner/flag-flow-${suffix}`,
     name: `Flag flow ${suffix}`,
   };
-  const firstContext = await browser.newContext(walkthroughOptions());
-  const first = await firstContext.newPage();
-  const firstErrors = observe(first);
-  await signIn(first, APPLICANT_TOKEN);
-  await draftApplication(first, project);
-  await first.getByRole("button", { name: /Submit for review/u }).click();
+  // Owner decision D3: a flagger's GitHub account is at least 30 days old
+  // and has at least 1 merged pull request in a registered project.
+  await setGithubUser("900000002", "e2e-applicant", "2020-01-01T00:00:00Z", 2);
+  await setGithubUser(
+    SECURITY_ACCOUNT.id,
+    SECURITY_ACCOUNT.login,
+    "2021-06-01T00:00:00Z",
+    1,
+  );
+  await setGithubUser(
+    "900000004",
+    "e2e-moderator",
+    new Date().toISOString(),
+    3,
+  );
+
+  const ownerContext = await browser.newContext(walkthroughOptions());
+  const owner = await ownerContext.newPage();
+  const ownerErrors = observe(owner);
+  await signIn(owner, OWNER_TOKEN);
+  await draftApplication(owner, project);
+  await owner
+    .getByRole("button", { name: "Create project", exact: true })
+    .click();
   await expect(
-    first.getByRole("status").filter({ hasText: "Application submitted" }),
+    owner.getByRole("heading", { name: "Project created" }),
   ).toBeVisible();
+  expect(await listedProject(owner, project.id)).toMatchObject({
+    status: "paused",
+  });
+  const fileFlag = (token: string) =>
+    owner.request.post(`/api/v1/project-flags/${project.id}`, {
+      headers: {
+        origin: new URL(owner.url()).origin,
+        cookie: `__Host-slop_points=${token}`,
+      },
+      data: {
+        category: "other",
+        evidence: "Synthetic fixture: a refused flag must not be recorded.",
+      },
+    });
+  // The project's own owner and a new GitHub account cannot flag.
+  const ownFlag = await fileFlag(OWNER_TOKEN);
+  expect(ownFlag.status()).toBe(403);
+  expect(await ownFlag.json()).toMatchObject({ error: "owner_cannot_flag" });
+  const newAccount = await fileFlag(MODERATOR_TOKEN);
+  expect(newAccount.status()).toBe(403);
+  expect(await newAccount.json()).toMatchObject({
+    error: "flagger_account_too_new",
+  });
 
   const adminContext = await browser.newContext(walkthroughOptions());
   const admin = await adminContext.newPage();
   await signIn(admin, ADMIN_TOKEN);
-  await admin.goto("/admin", { waitUntil: "networkidle" });
-  await admin
-    .locator(".admin-card", { hasText: project.repository })
-    .getByRole("button", { name: "Approve as paused project" })
-    .click();
-  await expect
-    .poll(async () => (await listedProject(admin, project.id))?.status)
-    .toBe("paused");
 
+  const firstContext = await browser.newContext(walkthroughOptions());
+  const first = await firstContext.newPage();
+  const firstErrors = observe(first);
+  await signIn(first, APPLICANT_TOKEN);
   const firstEvidence =
     "Synthetic fixture: install.js requests credentials before starting.";
   await first.goto(`/projects/${project.id}`, { waitUntil: "networkidle" });
@@ -1542,7 +1606,7 @@ test("two contributors flag through the form, pause the project and notify moder
   const secondContext = await browser.newContext(walkthroughOptions());
   const second = await secondContext.newPage();
   const secondErrors = observe(second);
-  await signIn(second, OWNER_TOKEN);
+  await signIn(second, SECURITY_ACCOUNT.token);
   expect(await readPrivate(second, ownPath)).toMatchObject({
     flag: null,
   });
@@ -1596,8 +1660,10 @@ test("two contributors flag through the form, pause the project and notify moder
         notice.subject === project.id && notice.kind === "project_quarantined",
     ),
   ).toHaveLength(1);
+  expect(ownerErrors).toEqual([]);
   expect(firstErrors).toEqual([]);
   expect(secondErrors).toEqual([]);
+  await ownerContext.close();
   await firstContext.close();
   await secondContext.close();
   await adminContext.close();

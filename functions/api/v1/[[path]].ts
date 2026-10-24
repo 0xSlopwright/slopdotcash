@@ -40,6 +40,8 @@ import {
 } from "../../../backend/projects/handler";
 import {
   parseRepositoryAccess,
+  readRepositoryAccess,
+  setupAuthority,
   vettingScanRequester,
 } from "../../../backend/projects/setup";
 import { assetTemplateSource } from "../../../backend/projects/skill-publication";
@@ -671,16 +673,34 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       fetch: github.fetch,
       token: github.token,
       apiOrigin: github.apiOrigin,
-      readProfiles: async () => {
-        if (!context.env.ASSETS)
-          throw new Error("Static assets are unavailable");
-        return context.env.ASSETS.fetch(
-          new Request(
-            `${new URL(context.request.url).origin}/data/profiles.json`,
-          ),
-        );
-      },
+      registryRepositories: async () =>
+        (await projectPersistence.listProjects()).flatMap((project) =>
+          project.manifest.repositories.map((entry) => entry.id),
+        ),
     }),
+    repositoryAuthority: async (manifest, actor) => {
+      // A flag needs no proof that the manifest matches GitHub, only
+      // whether this member maintains the repository.
+      let control: RepositoryControl | null;
+      try {
+        control = await repositoryControl(manifest, actor, context.env);
+      } catch {
+        control = null;
+      }
+      if (control?.state === "mismatch")
+        control = { state: "unproven", reason: control.reason };
+      return setupAuthority(
+        control,
+        await readRepositoryAccess(
+          (repository, member) =>
+            slopbotRepositoryAccess(context.env.SLOPBOT, repository, member),
+          manifest,
+          actor,
+        ),
+        actor,
+        manifest.repositories[0].id,
+      );
+    },
     sessionActor: (request) =>
       sessionGithubActor(
         request,

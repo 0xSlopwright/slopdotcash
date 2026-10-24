@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import { handleProjectApi } from "../backend/projects/handler";
+import { setupAuthority } from "../backend/projects/setup";
 import { githubFlaggerStanding } from "../backend/vetting/flagger-standing";
 import {
   handleProjectFlagsApi,
@@ -26,7 +27,6 @@ import {
   scanProblems,
   specialistRequired,
 } from "../backend/vetting/scan-result";
-import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
 import { applicationManifest } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 import { localVettingEvidence } from "../tests/vetting-evidence-fixture";
@@ -58,7 +58,7 @@ const ACTORS: Record<string, { githubId: string; githubLogin: string }> = {
   bystander: BYSTANDER,
   collaborator: COLLABORATOR,
 };
-/** GitHub account facts and merged Slop pull requests per test member. */
+/** GitHub account facts, merged Slop pull requests and write access. */
 const STANDING: Record<
   string,
   { createdAt: string; merged: number; association?: string }
@@ -99,47 +99,22 @@ async function githubFixture(url: string): Promise<Response> {
   }
   if (/^\/repos\/[^/]+\/[^/]+\/issues$/u.test(path)) {
     const creator = new URL(url).searchParams.get("creator");
-    const [name] =
+    const [name, actor] =
       Object.entries(ACTORS).find(
         ([, entry]) => entry.githubLogin === creator,
       ) ?? [];
-    const association = name && STANDING[name]?.association;
+    const merged = (name && STANDING[name]?.merged) || 0;
     return Response.json(
-      association ? [{ author_association: association }] : [],
+      Array.from({ length: merged }, (_, index) => ({
+        number: index + 1,
+        user: { id: Number(actor?.githubId) },
+        pull_request: { merged_at: "2026-09-01T00:00:00Z" },
+      })),
     );
   }
   return new Response(null, { status: 404 });
 }
 
-/** The published profile census, counted by immutable node id. */
-function profileCensus(): Response {
-  const [first] = TARGET_REPOSITORIES.map((entry) => entry.id);
-  const people = Object.entries(STANDING)
-    .filter(([, facts]) => facts.merged > 0)
-    .map(([name, facts]) => ({
-      id: `U_${ACTORS[name].githubId}`,
-      login: ACTORS[name].githubLogin,
-      avatarUrl: "https://avatars.githubusercontent.com/u/1",
-      repositories: [
-        { repository: first, merged: facts.merged, open: 0, closed: 0 },
-      ],
-    }));
-  const merged = people.reduce(
-    (sum, person) => sum + person.repositories[0].merged,
-    0,
-  );
-  return Response.json({
-    schemaVersion: "1",
-    startedAt: "2026-10-01T00:00:00.000Z",
-    generatedAt: "2026-10-18T00:00:00.000Z",
-    repositories: TARGET_REPOSITORIES.map((entry) => ({
-      repository: entry.id,
-      count: entry.id === first ? merged : 0,
-      excluded: 0,
-    })),
-    people,
-  });
-}
 const NOW = new Date("2026-10-18T12:00:00.000Z");
 const HEAD = "a".repeat(40);
 const TEMPLATE = "b".repeat(64);
@@ -206,7 +181,6 @@ function projectApi(request: Request) {
     now: () => clock,
     randomId,
     sessionActor: async (value) => actorOf(value),
-    notifyAdmins: async () => true,
     repositoryControl: async () => ({ state: "proven", reason: "fixture" }),
     readTokenMetadata: async () => {
       throw new Error("no token reads in this suite");
@@ -234,8 +208,31 @@ const flagApi = (request: Request) =>
     flaggerStanding: githubFlaggerStanding({
       fetch: githubFixture,
       apiOrigin: GITHUB,
-      readProfiles: async () => profileCensus(),
+      registryRepositories: async () =>
+        (await projects.listProjects()).flatMap((entry) =>
+          entry.manifest.repositories.map((repository) => repository.id),
+        ),
     }),
+    // Slopbot reads each member's repository permission.
+    repositoryAuthority: async (manifest, actor) => {
+      const name = Object.keys(ACTORS).find(
+        (key) => ACTORS[key].githubId === actor.githubId,
+      );
+      return setupAuthority(
+        { state: "unproven", reason: "fixture" },
+        {
+          state: "read",
+          access: {
+            installation: "installed",
+            installationId: 1,
+            permission: name && STANDING[name]?.association ? "write" : "read",
+            roleName: null,
+          },
+        },
+        actor,
+        manifest.repositories[0].id,
+      );
+    },
     moderatorGithubIds: [ADMIN.githubId, MODERATOR.githubId],
     queueFreshScan: (project) =>
       queueAutomaticScan(
@@ -283,23 +280,14 @@ async function signed(method: string, path: string, body = "") {
   });
 }
 
+/** The owner lists the project paused through self-service setup. */
 async function listPausedProject() {
-  const submitted = await projectApi(
-    sessionRequest("POST", "project-applications", "applicant", {
+  const created = await projectApi(
+    sessionRequest("POST", "projects", "applicant", {
       manifest: applicationManifest("open-registry", "example/open-registry"),
     }),
   );
-  expect(submitted.status).toBe(201);
-  const { application } = await submitted.json();
-  const approved = await projectApi(
-    sessionRequest(
-      "POST",
-      `admin/project-applications/${application.id}/approve`,
-      "admin",
-      {},
-    ),
-  );
-  expect(approved.status).toBe(200);
+  expect(created.status).toBe(201);
 }
 
 /** The signed scanner service asks Slop to queue what changed. */

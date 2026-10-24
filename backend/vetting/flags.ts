@@ -1,4 +1,5 @@
 import { pathParts } from "../api-path";
+
 /**
  * Two-contributor flags (PRD sections 4 and 8; audit finding 9; issue #911).
  *
@@ -17,6 +18,7 @@ import { pathParts } from "../api-path";
  * result. Flag evidence is visible to the reporter and administrators only.
  */
 
+import type { SetupAuthority } from "../../src/lib/project-contracts";
 import { type ApiError, fail } from "../api-error";
 import { notifyProjectEnforcement } from "../notifications/events";
 import {
@@ -33,7 +35,10 @@ import {
   repositoryIdentity,
 } from "../projects/enforcement";
 import { readJsonObject } from "../trace/validation";
-import type { FlaggerStandingReader } from "./flagger-standing";
+import type {
+  FlaggerStanding,
+  FlaggerStandingReader,
+} from "./flagger-standing";
 import { SCAN_THREATS } from "./scan-result";
 
 export const FLAG_CATEGORIES = [...SCAN_THREATS, "other"] as const;
@@ -46,8 +51,6 @@ export type FlagCategory = (typeof FLAG_CATEGORIES)[number];
 export const FLAG_ACTIVE_LIFETIME_MS = 7_776_000_000;
 /** The youngest GitHub account that may flag (owner decision D3: 30 days). */
 export const FLAGGER_MIN_ACCOUNT_AGE_MS = 2_592_000_000;
-/** Accepted Slop contributions a flagger needs (owner decision D3). */
-export const FLAGGER_MIN_ACCEPTED_CONTRIBUTIONS = 1;
 
 /** Flags filed at or before this instant no longer count. */
 export function flagCutoff(at: Date): string {
@@ -324,8 +327,16 @@ export type ProjectFlagApiDependencies = {
     "getProject" | "listEnforcements" | "enforcementGeneration"
   >;
   sessionActor: (request: Request) => Promise<GithubActor | null>;
-  /** Reads account age, accepted contributions and maintainer status. */
+  /** Reads account age and accepted contributions from GitHub. */
   flaggerStanding: FlaggerStandingReader;
+  /**
+   * The member's authority over the project repository, read as project
+   * setup reads it. "verified" means a maintainer, who cannot flag.
+   */
+  repositoryAuthority: (
+    manifest: ProjectRecord["manifest"],
+    actor: GithubActor,
+  ) => Promise<SetupAuthority>;
   /** Configured project moderators and administrators to notify. */
   moderatorGithubIds: readonly string[];
   /** Queues a fresh scan after a pause; failures wait for the next refresh. */
@@ -422,21 +433,26 @@ async function requireEligibleFlagger(
   actor: GithubActor,
   project: ProjectRecord,
 ): Promise<void> {
-  let standing: Awaited<ReturnType<FlaggerStandingReader>>;
+  let authority: SetupAuthority;
+  let standing: FlaggerStanding;
   try {
-    standing = await deps.flaggerStanding(actor, project);
+    authority = await deps.repositoryAuthority(project.manifest, actor);
+    standing = await deps.flaggerStanding(actor);
   } catch {
-    fail(
-      503,
-      "flagger_standing_unavailable",
-      "Slop could not confirm your GitHub account and contributions. Nothing was filed. Try again later.",
-    );
+    authority = { state: "retry", message: "" };
+    standing = { accountCreatedAt: "", hasAcceptedContribution: false };
   }
-  if (standing.maintainer)
+  if (authority.state === "verified")
     fail(
       403,
       "maintainer_cannot_flag",
       "Project maintainers fix or pause their own project instead of flagging it",
+    );
+  if (authority.state === "retry" || standing.accountCreatedAt === "")
+    fail(
+      503,
+      "flagger_standing_unavailable",
+      "Slop could not confirm your GitHub account and contributions. Nothing was filed. Try again later.",
     );
   if (
     deps.now().getTime() - Date.parse(standing.accountCreatedAt) <
@@ -447,7 +463,7 @@ async function requireEligibleFlagger(
       "flagger_account_too_new",
       "Your GitHub account must be at least 30 days old to flag a project",
     );
-  if (standing.acceptedContributions < FLAGGER_MIN_ACCEPTED_CONTRIBUTIONS)
+  if (!standing.hasAcceptedContribution)
     fail(
       403,
       "flagger_needs_accepted_contribution",
