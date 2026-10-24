@@ -26,6 +26,7 @@ import {
   readVaultTotals,
   solanaAllocationProof,
   solanaAllocationRoot,
+  solanaAllocationTotal,
   solanaAwardId,
   solanaMonthlyMessage,
   solanaPaymentAdapter,
@@ -1385,8 +1386,8 @@ test("private bounty pays exactly 75/25 from its own bounty project, and purpose
 
 // Owner decision D13: after the period cutoff anyone records the month's allocation
 // root signed by the identity authority, then anyone commits each award with its
-// Merkle proof, within the owner's monthly cap, once per period and source, unless
-// the owner has turned monthly commitments off. Payment stays permissionless.
+// Merkle sum proof against the fully funded reservation, once per period and source.
+// Later owner settings affect new months only. Payment stays permissionless.
 test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs and permissionless pay", async () => {
   const stranger = Keypair.generate();
   await sendAndConfirmTransaction(
@@ -1431,7 +1432,7 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
     .rpc();
   await mintTo(provider.connection, payer, mint, source, payer, 100_000_000n);
   await program.methods
-    .deposit(bn(100_000_000))
+    .deposit(bn(55_000_000))
     .accountsStrict({
       depositor: payer.publicKey,
       project,
@@ -1476,12 +1477,14 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
     },
   ];
   const root = solanaAllocationRoot(entries);
+  const total = solanaAllocationTotal(entries);
   const message = (p = period, r = root, at = project, domain = network) =>
     solanaMonthlyMessage(
       program.programId.toBase58(),
       at.toBase58(),
       p,
       r,
+      total,
       Buffer.from(domain).toString("hex"),
     );
   const attestation = (signer = authority, bytes = message()) =>
@@ -1491,10 +1494,11 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
     });
   const recordAt = (n, r, pre) =>
     program.methods
-      .commitMonthly(n, [...Buffer.from(r, "hex")])
+      .commitMonthly(n, [...Buffer.from(r, "hex")], bn(total))
       .accountsStrict({
         payer: stranger.publicKey,
         project,
+        vault,
         month: pda(seed("month"), key(project), periodSeed(n)),
         instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
         systemProgram: SystemProgram.programId,
@@ -1519,9 +1523,10 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
         bn(entry.grossMicro),
         index,
         entries.length,
-        (proof ?? solanaAllocationProof(entries, index)).map((h) => [
-          ...Buffer.from(h, "hex"),
-        ]),
+        (proof ?? solanaAllocationProof(entries, index)).map((sibling) => ({
+          hash: [...Buffer.from(sibling.hash, "hex")],
+          total: bn(sibling.total),
+        })),
       )
       .accountsStrict({
         payer: stranger.publicKey,
@@ -1556,6 +1561,29 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
   );
   await assert.rejects(setMonthly(0, true), /InvalidAmount/);
   await setMonthly(50_000_000, true);
+  await assert.rejects(record(), /MonthlyCapExceeded/);
+  await setMonthly(60_000_000, true);
+  // No obligation or reservation is admitted until the entire month is funded.
+  await assert.rejects(record(), /InsufficientFreeBalance/);
+  assert.equal(
+    (await program.account.project.fetch(project)).reserved.toString(),
+    "0",
+  );
+  assert.equal(
+    await program.account.monthlyAllocation.fetchNullable(month(period)),
+    null,
+  );
+  await program.methods
+    .deposit(bn(45_000_000))
+    .accountsStrict({
+      depositor: payer.publicKey,
+      project,
+      mint,
+      source,
+      vault,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .rpc();
 
   // The window: an invalid period, and next month's period before its cutoff.
   await assert.rejects(
@@ -1564,7 +1592,7 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
   );
   await assert.rejects(record(later), /MonthlyWindowClosed/);
 
-  // The signature binds the network, program, project, period and root, and only the
+  // The signature binds the program, project, period, root and total, and only the
   // project's identity authority attests.
   await assert.rejects(record(period, root, []), /InvalidAttestation/);
   await assert.rejects(
@@ -1573,6 +1601,21 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
   );
   await assert.rejects(
     record(period, root, [attestation(authority, message(later))]),
+    /InvalidAttestation/,
+  );
+  await assert.rejects(
+    record(period, root, [
+      attestation(
+        authority,
+        solanaMonthlyMessage(
+          program.programId.toBase58(),
+          project.toBase58(),
+          period,
+          root,
+          "59000000",
+        ),
+      ),
+    ]),
     /InvalidAttestation/,
   );
   await assert.rejects(
@@ -1611,6 +1654,12 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
   const recorded = await program.account.monthlyAllocation.fetch(month(period));
   assert.equal(Buffer.from(recorded.allocationRoot).toString("hex"), root);
   assert.equal(recorded.committed.toString(), "0");
+  assert.equal(recorded.total.toString(), total);
+  assert.equal(
+    (await program.account.project.fetch(project)).reserved.toString(),
+    total,
+  );
+  await assert.rejects(withdraw(50_000_000), /InsufficientFreeBalance/);
   await assert.rejects(record(), /already in use/);
   await assert.rejects(record(period, otherRoot), /already in use/);
 
@@ -1630,12 +1679,16 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
   await commitEntry(0);
   await commitEntry(1);
   await assert.rejects(commitEntry(0), /already in use/);
-  // 30 + 20 + 10 is above the owner's 50 cap.
-  await assert.rejects(commitEntry(2), /MonthlyCapExceeded/);
-  // The owner opts out: no monthly award commits until it turns them on again.
-  await setMonthly(60_000_000, false);
-  await assert.rejects(commitEntry(2), /MonthlyDisabled/);
-  await setMonthly(60_000_000, true);
+  // Later owner settings cannot cancel or expand the admitted funded month.
+  await setMonthly(10_000_000, false);
+  const altered = solanaAllocationProof(entries, 2).map((node) => ({
+    ...node,
+    total: String(BigInt(node.total) + 1n),
+  }));
+  await assert.rejects(
+    commitEntry(2, entries[2], altered),
+    /InvalidAllocationProof/,
+  );
   await commitEntry(2);
   assert.equal(
     (
