@@ -300,6 +300,7 @@ function validateEscrowPolicy(value, feeBasisPoints) {
       "owner",
       "identityAuthority",
       "feeRecipient",
+      ...(chainFamily(value.chain) === "solana" ? ["rotationAuthority"] : []),
       "deploymentTransaction",
       "sourceCommit",
       "codeSha256",
@@ -327,6 +328,17 @@ function validateEscrowPolicy(value, feeBasisPoints) {
       ].every((address) => isFundingAddress(value.chain, address))
     )
       throw new TypeError("Invalid escrow address");
+    if (
+      chainFamily(value.chain) === "solana" &&
+      (!isFundingAddress(value.chain, deployment.rotationAuthority) ||
+        [
+          deployment.owner,
+          deployment.identityAuthority,
+          deployment.feeRecipient,
+          deployment.vault,
+        ].includes(deployment.rotationAuthority))
+    )
+      throw new TypeError("Solana requires an independent rotation authority");
     // Any standard token is allowed (TOK-01); the adapter reads its decimals
     // from chain and rejects a vault whose token differs from the manifest.
     if (
@@ -349,7 +361,7 @@ function validateEscrowPolicy(value, feeBasisPoints) {
           !/^[0-9a-f]{64}$/.test(deployment.networkDomain)
     )
       throw new TypeError("Escrow program does not match the network");
-    // The owner proposes and the fee recipient confirms a new identity
+    // The owner proposes and the rotation authority confirms a new identity
     // authority; the notice period gives every binding made with a stolen
     // key time to be vetoed. Base fixes 7 days in the factory contract.
     if (
@@ -381,13 +393,8 @@ function validateEscrowPolicy(value, feeBasisPoints) {
       throw new TypeError(
         "Escrow binding delay is missing or below the production minimum",
       );
-    // The veto cap is waived while a confirmed rotation is pending (outside
-    // report, 20 October 2026), so the owner's cover during a key compromise
-    // no longer depends on vetoes already spent. This bound stays as defence in
-    // depth: with no earlier veto, three vetoes and the last binding's own delay
-    // still outlast the rotation notice before the fee recipient confirms, so
-    // the new authority replaces a stolen key's last binding before it can pay.
-    // Base fixes 7 days, under four 48-hour delays.
+    // Retain the reviewed deployment delay relationship. Wallet activation is immediate;
+    // this bound does not guarantee time to cancel an eligible payment.
     if (
       chainFamily(value.chain) === "solana" &&
       Number(deployment.rotationDelaySeconds) >=

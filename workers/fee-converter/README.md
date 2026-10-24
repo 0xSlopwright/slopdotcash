@@ -16,12 +16,13 @@ and a failed conversion leaves the fee in the wallet.
 
 The Worker is off by default.
 
-**Solana signing is blocked.** On Solana the fee recipient also confirms an
-identity-attester rotation (PAY-05). MVP-07c keeps Solana conversion blocked
-until the owner records how that role stays apart from the hot key. The
-Worker refuses `live` on Solana and the release step refuses a `live`
-configuration that enables Solana. Solana runs in `dry_run` only. Lifting the
-block is a reviewed code change, not a configuration value.
+**Solana signing is blocked until activation is verified.** The revised Solana
+program pins an independent rotation-confirmation authority, separate from the
+fee recipient and identity authority. The rotation key must never be installed
+in this Worker. Earlier program layouts gave the fee recipient that power.
+The current live-mode block remains until the reviewed deployment uses the
+separated layout and the converter verifies that boundary. Key generation
+alone does not establish safe activation.
 
 ## What one run does
 
