@@ -213,3 +213,24 @@ export async function projectRewardTokens(
     ),
   ].filter((asset): asset is string => typeof asset === "string");
 }
+
+/**
+ * Escrow vaults named by D1 project manifests on the network's escrow keys.
+ * Only these vaults are claimed; a vault is never discovered on chain.
+ */
+export async function projectVaults(
+  db: FeeD1Database,
+  escrowNetworks: readonly string[],
+): Promise<string[]> {
+  const rows = await db
+    .prepare(
+      `SELECT DISTINCT json_extract(d.value, '$.vault') AS vault
+         FROM projects, json_each(projects.manifest, '$.escrow.deployments') AS d
+        WHERE json_extract(d.value, '$.network') IN (SELECT value FROM json_each(?))`,
+    )
+    .bind(JSON.stringify(escrowNetworks))
+    .all<{ vault: unknown }>();
+  return rows.results
+    .map((row) => row.vault)
+    .filter((vault): vault is string => typeof vault === "string");
+}
