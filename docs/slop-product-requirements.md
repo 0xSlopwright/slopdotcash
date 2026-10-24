@@ -97,7 +97,7 @@ Published penalty table (approved 24 October 2026, in points):
 | Slopbot category | Action | Debit |
 | --- | --- | --- |
 | Spam | Close | 30 |
-| Scam or malicious | Close; one moderator Inbox notice to review the account | 240 |
+| Scam or malicious | Close; moderator reviews the account | 240 |
 | Clear violation of a quoted project rule | Close | 10 |
 | Low quality | Close (closure-eligible authors only) | 0 |
 | Duplicate | Close | 0 |
