@@ -55,6 +55,15 @@ export async function collectMergeResolutions(
         throw new Error("Complete local Git evidence unavailable");
       return result.stdout;
     };
+    const acceptedPaths = new Set(evidence.files.map((file) => file.filename));
+    const authoredPaths = new Set(
+      evidence.commitAttribution.flatMap((entry) => entry.changedPaths ?? []),
+    );
+    const entryAt = (ref: string, path: string) =>
+      read("ls-tree", "-z", ref, "--", `:(literal)${path}`)
+        .split("\0")
+        .find((entry) => entry.split("\t")[1] === path)
+        ?.split("\t")[0];
     for (const commit of evidence.commits) {
       if (commit.parents.length !== 2) continue;
       if (
@@ -105,6 +114,68 @@ export async function collectMergeResolutions(
       )
         .split("\0")
         .filter(Boolean);
+      const automaticRelocations: NonNullable<
+        ValueMergeResolution["automaticRelocations"]
+      > = [];
+      for (const sourceParent of parents) {
+        const rows = read(
+          "diff",
+          "--raw",
+          "-z",
+          "--no-abbrev",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--find-renames=100%",
+          "--diff-filter=R",
+          sourceParent,
+          automaticTree,
+          "--",
+        ).split("\0");
+        for (let index = 0; index < rows.length - 1; index += 3) {
+          const [oldMode, newMode, oldBlob, newBlob, status] = rows[index]
+            .slice(1)
+            .split(" ");
+          const sourcePath = rows[index + 1];
+          const path = rows[index + 2];
+          if (
+            status !== "R100" ||
+            oldMode !== newMode ||
+            oldBlob !== newBlob ||
+            !acceptedPaths.has(path) ||
+            authoredPaths.has(path) ||
+            !["100644", "100755"].includes(oldMode)
+          )
+            continue;
+          const expected = `${oldMode} blob ${oldBlob}`;
+          if (
+            entryAt(sourceParent, sourcePath) !== expected ||
+            entryAt(automaticTree, path) !== expected ||
+            entryAt(resolvedTree, path) !== expected ||
+            entryAt(evidence.pull.head.sha, path) !== expected
+          )
+            continue;
+          const sourceCommitShas = evidence.commitAttribution
+            .filter(
+              (entry) =>
+                /^[a-f0-9]{40}$/u.test(entry.sha) &&
+                entry.limitations.length === 0 &&
+                entry.changedPaths?.includes(sourcePath) &&
+                git("merge-base", "--is-ancestor", entry.sha, sourceParent)
+                  .status === 0,
+            )
+            .map((entry) => entry.sha)
+            .sort();
+          if (!sourceCommitShas.length) continue;
+          automaticRelocations.push({
+            sourceParent,
+            sourcePath,
+            path,
+            blobSha: oldBlob,
+            headSha: evidence.pull.head.sha,
+            sourceCommitShas,
+          });
+        }
+      }
       resolutions.push({
         commitSha: commit.sha,
         parents,
@@ -115,6 +186,7 @@ export async function collectMergeResolutions(
         patch,
         patchSha256: createHash("sha256").update(patch).digest("hex"),
         paths,
+        ...(automaticRelocations.length ? { automaticRelocations } : {}),
       });
     }
     return { ...evidence, mergeResolutions: resolutions };
