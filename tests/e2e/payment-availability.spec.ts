@@ -1,6 +1,7 @@
 /** A monthly target must not look like an active payment offer. */
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { createProjectView } from "../../src/lib/project-view";
 import { PROJECTS } from "../../src/lib/projects.mjs";
 
 test("disabled payouts are visible from discovery through the project page", async ({
@@ -88,4 +89,38 @@ test("disabled payouts are visible from discovery through the project page", asy
       () => document.documentElement.scrollWidth - innerWidth,
     ),
   ).toBeLessThanOrEqual(1);
+});
+
+test("a cycle record offers a funding check without inventing a vault balance", async ({
+  page,
+}) => {
+  const response = await page.request.get("/data/leaderboard.json");
+  expect(response.ok()).toBe(true);
+  const snapshot = await response.json();
+  const view = createProjectView(snapshot, "eliza");
+  await page.clock.install({ time: new Date(view.cycle.endsAt) });
+  await page.goto(`/cycles/eliza/${view.cycle.id}`, {
+    waitUntil: "networkidle",
+  });
+  const notice = page.locator(".cycle-reminder");
+  await expect(notice).toContainText(
+    "does not verify the month's funding status",
+  );
+  await expect(notice).not.toContainText("Unfunded");
+  await expect(notice).not.toContainText("Underfunded");
+  await page.screenshot({
+    path: test.info().outputPath("cycle-funding-check.png"),
+    fullPage: true,
+  });
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
+  const link = notice.getByRole("link", { name: "View project funding" });
+  await expect(link).toHaveAttribute("href", "/projects/eliza/funding");
+  await link.click();
+  await expect(page).toHaveURL(/\/projects\/eliza\/funding$/u);
 });

@@ -5,6 +5,7 @@ import type { CycleIndexEntry } from "./lib/cycle-index";
 import { cycleSettlementReminder } from "./lib/funding-reminders";
 import { createProjectView, type ProjectView } from "./lib/project-view";
 import { findProject, type ProjectDefinition } from "./lib/projects.mjs";
+import { resolveRewardCapMinor } from "./lib/reward-cap.mjs";
 import type { CycleIndexState } from "./lib/use-cycle-index";
 import type { DataState } from "./lib/use-snapshot";
 import {
@@ -72,6 +73,8 @@ export function CyclePage({
     record?.state ?? (view?.cycle.status === "live" ? "live" : "closed");
   const reminder = cycleSettlementReminder({
     closesAt: to,
+    capMinor:
+      record?.reward.capMinor ?? resolveRewardCapMinor(project, cycleId),
     kind:
       record?.kind ??
       (view?.reward.kind === "external-prize-share"
@@ -162,7 +165,12 @@ export function CyclePage({
           role="status"
         >
           <CircleAlert aria-hidden="true" size={18} />
-          <span>{reminder.message}</span>
+          <span>
+            {reminder.message}{" "}
+            <Link href={`/projects/${project.slug}/funding`}>
+              View project funding
+            </Link>
+          </span>
         </div>
       ) : null}
       {record?.kind === "external-prize-share" ? (
