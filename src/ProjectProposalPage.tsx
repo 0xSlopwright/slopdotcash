@@ -3,7 +3,6 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { GeneratedSkillPreview } from "./GeneratedSkillPreview";
 import { Link } from "./Link";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
-import { copyText } from "./lib/copy-text";
 import {
   ESCROW_PAYOUT_FEE_BASIS_POINTS,
   ESCROW_WITHDRAWAL_FEE_BASIS_POINTS,
@@ -341,7 +340,7 @@ function proposalErrors(p: Proposal): FieldErrors {
     if (holder) errors.legalHolder = holder;
     if (p.stewardKind === "dao")
       errors.copyrightModel =
-        "DAO title cannot activate until review supplies a legal-capacity record and a governance resolution.";
+        "Sponsor-owned copyright is not available for a DAO steward. Choose another copyright model.";
   }
   if (p.inboundMode !== "unknown") {
     if (
@@ -700,30 +699,6 @@ function RepositoryPicker({
   );
 }
 
-function downloadText(value: string, name: string, type: string) {
-  const url = URL.createObjectURL(new Blob([value], { type }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function useCopyStatus() {
-  const [status, setStatus] = useState<{
-    kind: string;
-    state: "copied" | "error";
-  } | null>(null);
-  const copy = (kind: string, value: string) =>
-    void copyText(value).then(
-      () => setStatus({ kind, state: "copied" }),
-      () => setStatus({ kind, state: "error" }),
-    );
-  const label = (kind: string, idle: string, done: string, failed: string) =>
-    status?.kind === kind ? (status.state === "copied" ? done : failed) : idle;
-  return { status, copy, label };
-}
-
 /**
  * Reads the session only on the review step that needs it. The API decides
  * who may create a project, so the button follows its session, not the
@@ -763,9 +738,7 @@ function SubmitProject({
         </a>
       )}
       <p>
-        {login
-          ? `You create the project as @${login}. Slop checks your GitHub access to the repository now.`
-          : "Sign in with GitHub to create this project. Your draft stays on this device."}
+        {login ? `Creating as @${login}.` : "Your draft stays on this device."}
       </p>
     </>
   );
@@ -949,7 +922,6 @@ export default function ProjectProposalPage() {
       proposal.copyrightModel !== "unknown" ||
       proposal.inboundMode !== "unknown",
   );
-  const copy = useCopyStatus();
   useEffect(() => {
     try {
       localStorage.setItem(PROPOSAL_DRAFT_KEY, JSON.stringify(proposal));
@@ -1166,7 +1138,6 @@ export default function ProjectProposalPage() {
       },
     };
   }, [p, slug, funding]);
-  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
   const [submission, setSubmission] = useState<
     | { status: "idle" | "submitting" }
     | { status: "error"; message: string; install: boolean }
@@ -1332,8 +1303,8 @@ export default function ProjectProposalPage() {
   const draftNote = (
     <p className="proposal-note">
       {saveFailed
-        ? "This browser cannot save the draft. Keep this page open, or copy the brief."
-        : "Draft saved on this device only. No credentials are stored. It is not a listing."}
+        ? "This browser cannot save the draft. Keep this page open."
+        : "Draft saved on this device."}
     </p>
   );
   const navigation = (
@@ -1363,10 +1334,9 @@ export default function ProjectProposalPage() {
       <section className="proposal-intro">
         <h1>Add a project</h1>
         <p>
-          Create your project without waiting for an admin. First install
-          Slopbot on the repository, so Slop can read your GitHub access. Then
-          an automatic security scan runs. The project goes live when those
-          checks pass. Funding is optional. Questions? Email{" "}
+          Connect your repository, set contribution rules and optional rewards,
+          then install Slopbot. Your project goes live automatically once the
+          security scan passes. Questions? Email{" "}
           <a href={CONTACT_MAILTO}>{CONTACT_EMAIL}</a>.
         </p>
       </section>
@@ -1796,7 +1766,7 @@ export default function ProjectProposalPage() {
         {step === 3 ? (
           <>
             <article className="proposal-preview" aria-label="Listing preview">
-              <span className="draft-badge">Draft · not listed</span>
+              <span className="draft-badge">Preview</span>
               <h3>{p.name || "Unnamed project"}</h3>
               <p>{p.headline || "No short description yet."}</p>
               <dl>
@@ -1809,9 +1779,7 @@ export default function ProjectProposalPage() {
                 <div>
                   <dt>Before you create</dt>
                   <dd>
-                    Install Slopbot on {p.repository || "the repository"}. Slop
-                    reads your write access through it. The project stays paused
-                    until the security scan passes.
+                    Install Slopbot on {p.repository || "the repository"}.
                   </dd>
                 </div>
                 <div>
@@ -1863,10 +1831,8 @@ export default function ProjectProposalPage() {
               <div className="proposal-submitted">
                 <h2>Project created</h2>
                 <p>
-                  {p.name || submission.projectId} is listed as a paused
-                  project. Slop generated its contributor and reviewer skills
-                  from your rules. Finish the next action below; the project
-                  goes live by itself when every check passes.
+                  {p.name || submission.projectId} is created. Complete the next
+                  step below and it goes live automatically.
                   {submission.referrer
                     ? ` Referred by @${submission.referrer}.`
                     : ""}
@@ -1897,50 +1863,10 @@ export default function ProjectProposalPage() {
                   </p>
                 ) : null}
                 {draftNote}
-                <div className="handoff-alternatives">
-                  <span>Other options:</span>
-                  <button
-                    onClick={() =>
-                      downloadText(
-                        manifestText,
-                        `${slug}-project.json`,
-                        "application/json",
-                      )
-                    }
-                    type="button"
-                  >
-                    Download manifest
-                  </button>
-                  <button
-                    onClick={() => copy.copy("json", manifestText)}
-                    type="button"
-                  >
-                    {copy.label(
-                      "json",
-                      "Copy manifest",
-                      "Manifest copied",
-                      "Copy unavailable; select the manifest",
-                    )}
-                  </button>
-                </div>
               </div>
             ) : (
               draftNote
             )}
-            <details
-              className="manifest-preview"
-              open={
-                copy.status?.kind === "json" && copy.status.state === "error"
-              }
-            >
-              <summary>View manifest · {slug}</summary>
-              <textarea
-                aria-label="Project manifest JSON"
-                readOnly
-                spellCheck={false}
-                value={manifestText}
-              />
-            </details>
           </>
         ) : null}
         {step < 3 ? (
@@ -2419,7 +2345,7 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
         />
         <TextField
           error={shown("criteria")}
-          hint="Used by the contributor and reviewer skills. A change needs a new security scan."
+          hint="Used by the contributor and reviewer skills."
           label="Acceptance criteria"
           multiline
           name="criteria"
@@ -2432,10 +2358,7 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
           open={SKILL_RULE_FIELDS.some((field) => Boolean(shown(field)))}
         >
           <summary>Contributor instructions</summary>
-          <p className="field-hint">
-            These rules generate the project skills. A change needs a new
-            security scan; an active project pauses until it passes.
-          </p>
+          <p className="field-hint">These rules generate the project skills.</p>
           {SKILL_RULE_FIELDS.map((field) => (
             <TextField
               error={shown(field)}
@@ -2632,7 +2555,7 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
           <p className="payout-status">
             {reward.paymentMode === "enabled"
               ? "Payouts are enabled. Review allocations in Manage payouts."
-              : "Payouts are not enabled yet."}{" "}
+              : "Payouts are disabled. Funding alone does not enable them."}{" "}
             <Link href={`/projects/${project.slug}/funding`}>
               Funding setup
             </Link>
@@ -2656,6 +2579,12 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
  * application stored before self-service setup, which its applicant
  * publishes without entering it again.
  */
+/** Readable labels for the stored project status enum. */
+const PROJECT_STATUS_LABEL: Record<ProjectSummary["status"], string> = {
+  active: "Live",
+  paused: "Paused",
+};
+
 function OwnerProjects({ refreshKey }: { refreshKey: string }) {
   const session = useProjectSession();
   const [state, setState] = useState<
@@ -2718,7 +2647,8 @@ function OwnerProjects({ refreshKey }: { refreshKey: string }) {
         <ul>
           {state.projects.map((project) => (
             <li key={project.id}>
-              <strong>{project.name}</strong> · {project.status}
+              <strong>{project.name}</strong> ·{" "}
+              {PROJECT_STATUS_LABEL[project.status]}
               {project.listingTier === "retired" ? " · delisted" : ""}{" "}
               <Link href={`/projects/${project.slug}/manage`}>Manage</Link>{" "}
               <button

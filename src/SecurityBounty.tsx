@@ -118,8 +118,8 @@ function amounts(terms: SecurityBountyTerms) {
 }
 
 const PROGRAM_STATUS_LABELS: Record<SecurityBountyTerms["status"], string> = {
-  draft: "Draft — not accepting paid reports",
-  "pending-approval": "Waiting for approval — not accepting paid reports",
+  draft: "Not open for paid reports; private reporting stays open",
+  "pending-approval": "Not open for paid reports; private reporting stays open",
   open: "Open for paid reports",
   paused: "Paused — no new paid reports; private reporting stays open",
   closed: "Closed — no new paid reports; private reporting stays open",
@@ -185,9 +185,9 @@ function IntakeHandoff({ project }: { project: ProjectDefinition }) {
     <section aria-labelledby="security-report" className="admin-card">
       <h2 id="security-report">Report a vulnerability privately</h2>
       <p>
-        Report security findings privately on GitHub, including uncertain
-        severity or potential loss of funds. No Slop account or wallet needed.
-        Keep exploit details out of public posts.
+        Report security findings privately through Slop, including uncertain
+        severity or potential loss of funds. Keep exploit details out of public
+        posts.
       </p>
       {state.status === "idle" ? (
         <button className="button primary-button" onClick={check} type="button">
@@ -859,7 +859,7 @@ const AWARD_LABELS: Record<string, string> = {
   "not-applicable": "No paid program was open when GitHub received it",
   pending: "Award not decided yet",
   ineligible: "No award",
-  reserved: "Reserved, waiting for approval",
+  reserved: "Reserved",
   "capacity-exhausted": "Waiting for the owner's award decision",
   approved: "Approved and reserved",
 };
@@ -2229,7 +2229,7 @@ function AnalysisPanel({
       ) : (
         <p className="admin-status">
           {analysis.state === "unavailable"
-            ? "The analysis was unavailable: no analysis model is configured, or GitHub could not be read."
+            ? "Analysis is unavailable right now. Run it again later."
             : "The analysis failed."}
         </p>
       )}
@@ -2327,7 +2327,7 @@ function AppealTriagePanel({
       ) : (
         <p className="admin-status">
           {triage.state === "unavailable"
-            ? "The appeal triage was unavailable: no analysis model is configured. A moderator decides without a draft."
+            ? "Slopbot triage is unavailable. A moderator decides without a draft."
             : "The appeal triage failed. A moderator decides without a draft."}
         </p>
       )}

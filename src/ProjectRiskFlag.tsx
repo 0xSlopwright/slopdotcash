@@ -144,15 +144,11 @@ export function ProjectRiskFlag({ projectId }: { projectId: string }) {
     <details className="project-risk-flag">
       <summary>Report malicious code in this project</summary>
       <p>
-        Stop working on the project first. Flag code or instructions that steal
-        wallets, credentials or secrets, run unsafe downloads, or try to
-        redirect your agent. When two different members flag a project, Slop
-        pauses it and notifies moderators; a clean fresh security scan
-        reinstates it. To flag, your GitHub account must be at least 30 days old
-        and you need at least 1 accepted contribution to a Slop project. Project
-        maintainers cannot flag their own project. A vulnerability in the
-        project is not malicious code: report it privately through the project's
-        security policy instead.
+        Stop work and flag code or instructions that steal wallets, credentials
+        or secrets, run unsafe downloads, or redirect your agent. Flags from two
+        members pause the project. Flagging requires a GitHub account at least
+        30 days old and one accepted Slop contribution. Report ordinary
+        vulnerabilities privately through the project&apos;s security policy.
       </p>
       {state.status === "loading" ? (
         <p role="status">Loading your flag status…</p>

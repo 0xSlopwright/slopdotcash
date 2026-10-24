@@ -134,9 +134,9 @@ export function parseNotificationsResponse(
 export function notificationTitle(n: Notification): string {
   switch (n.kind) {
     case "application_approved":
-      return `Your application for ${n.subject} was approved. The project is listed as paused.`;
+      return `${n.subject} was added to Slop.`;
     case "application_rejected":
-      return `Your application for ${n.subject} was not approved.`;
+      return `${n.subject} was not added to Slop.`;
     case "project_ready":
       return `The ${n.subject} project is ready and open to contributor work.`;
     case "project_scan_failed":
@@ -210,7 +210,7 @@ export function notificationAction(n: Notification): string {
     case "security_report_received":
       return "Open security cases";
     case "application_rejected":
-      return "Apply again";
+      return "Add a project";
     case "award_reserved":
     case "payment_paid":
     case "payout_held":

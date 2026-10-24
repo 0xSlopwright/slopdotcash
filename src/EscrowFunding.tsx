@@ -162,17 +162,17 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
   }, [project.id, deployed, revision]);
   return (
     <section className="section project-funding" aria-label="Project escrow">
-      <h2>{chainNames[project.escrow?.chain ?? "solana"]} escrow</h2>
+      <h2>Project vault · {chainNames[project.escrow?.chain ?? "solana"]}</h2>
       <p>
-        Contributor amounts deduct a 2% fee in the reward token. Funded awards
-        remain reserved until paid.
+        Awards pay out after a 2% fee in the reward token. Reserved awards
+        cannot be withdrawn.
         {withdrawalFee !== null &&
-          ` Returning unused sponsor funds costs ${withdrawalFee}%.`}
+          ` Withdrawing unused funds costs ${withdrawalFee}%.`}
       </p>
       {!deployed ? (
         <p>
-          Escrow deployment is pending review. This project is not accepting
-          escrow funding yet.
+          This project has no vault yet. Deposits and payments are not possible
+          until a project revision records the owner&apos;s vault.
         </p>
       ) : (
         <>
@@ -180,6 +180,12 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
             Use the deposit action below to fund this project. Direct token
             transfers are not credited.
           </p>
+          {project.reward.paymentMode !== "enabled" ? (
+            <p role="note">
+              Payments are disabled for this project. No award is paid from the
+              vault until payments are enabled.
+            </p>
+          ) : null}
           {error ? (
             <p role="alert">{error}</p>
           ) : !vault ? (

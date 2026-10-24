@@ -1731,7 +1731,7 @@ function TelegramConnection() {
             {busy ? "Preparing…" : "Connect Telegram"}
           </button>
         ) : (
-          <span>Not enabled yet</span>
+          <span>Unavailable</span>
         )}
       </div>
       {data.flow && link ? (
@@ -1887,7 +1887,7 @@ function SocialConnections() {
                 {busy ? "Connecting…" : "Connect X"}
               </button>
             ) : (
-              <span>Not enabled yet</span>
+              <span>Unavailable</span>
             )}
           </div>
           {data.account || data.configured ? (
@@ -1909,8 +1909,8 @@ function SocialConnections() {
             <p>Your membership is private, so your X link stays hidden.</p>
           ) : null}
           <p className="points-meta">
-            Connections grant no points or authority. Slop does not request
-            posting or messaging permissions.
+            Connections grant no authority. Slop does not request posting or
+            messaging permissions.
           </p>
           <p role="status">{message}</p>
         </>

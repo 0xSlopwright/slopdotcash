@@ -86,13 +86,6 @@ import { ProfilePage } from "./ProfilePage";
 import { ProjectLeaderboard } from "./ProjectLeaderboard";
 import { ProjectRiskFlag } from "./ProjectRiskFlag";
 
-export { safeProposalHttpsUrl } from "./lib/project-proposal";
-export {
-  monthlyPoolLabel,
-  monthlyPoolUnfunded,
-  reviewBudgetLabel,
-} from "./Presentation";
-
 /**
  * Renders the GitHub-native Slop network across discovery, project,
  * contributor, cycle, and project-proposal routes. Every fetched snapshot is
@@ -100,8 +93,6 @@ export {
  */
 
 import { fetchWithDeadline, readBoundedJson } from "./lib/browser-json";
-
-export { readBoundedJson } from "./lib/browser-json";
 
 const OwnerAwardsPage = lazy(() => import("./OwnerAwards"));
 const ProjectProposalPage = lazy(() => import("./ProjectProposalPage"));
@@ -123,13 +114,8 @@ const ProjectUpdatePage = lazy(() =>
 const SOCIAL_X = "https://x.com/SlopCash";
 const SOCIAL_LINKEDIN = "https://www.linkedin.com/company/slop-cash";
 const SOCIAL_TELEGRAM = "https://t.me/slopcashofficial";
-// DSC-01: the hero names only launched work; add a phrase here only when it
-// describes a shipped program.
-const HERO_ACTIONS = ["SHIPPING OPEN SOURCE."] as const;
-const HERO_HOLD_MS = 2_400;
-const HERO_TYPE_MS = 55;
-const HERO_DELETE_MS = 30;
-const HERO_GAP_MS = 220;
+// DSC-01: the hero names only launched work.
+const HERO_ACTION = "SHIPPING OPEN SOURCE.";
 
 export function publicFooterDomain(
   hostname: string,
@@ -448,55 +434,17 @@ function Footer() {
   );
 }
 
-function TypewriterHeroHeading() {
-  const [index, setIndex] = useState(0);
-  const [characters, setCharacters] = useState(HERO_ACTIONS[0].length);
-  const [phase, setPhase] = useState<"deleting" | "holding" | "typing">(
-    "holding",
-  );
-  useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    if (HERO_ACTIONS.length < 2) return;
-    const target = HERO_ACTIONS[index];
-    let delay = 1;
-    let advance: () => void;
-    if (phase === "holding") {
-      delay = HERO_HOLD_MS;
-      advance = () => setPhase("deleting");
-    } else if (phase === "deleting" && characters > 0) {
-      delay = HERO_DELETE_MS;
-      advance = () => setCharacters((value) => Math.max(0, value - 1));
-    } else if (phase === "deleting") {
-      delay = HERO_GAP_MS;
-      advance = () => {
-        setIndex((value) => (value + 1) % HERO_ACTIONS.length);
-        setPhase("typing");
-      };
-    } else if (characters < target.length) {
-      delay = HERO_TYPE_MS;
-      advance = () => setCharacters((value) => value + 1);
-    } else {
-      advance = () => setPhase("holding");
-    }
-    const timer = window.setTimeout(advance, delay);
-    return () => window.clearTimeout(timer);
-  }, [characters, index, phase]);
-  const action = HERO_ACTIONS[index];
+function HeroHeading() {
   return (
-    <h1 aria-label="MAKE MONEY SHIPPING OPEN SOURCE.">
+    <h1 aria-label={`MAKE MONEY ${HERO_ACTION}`}>
       <span aria-hidden="true" className="hero-message">
         <span>MAKE MONEY</span>
         <span className="hero-action">
-          {HERO_ACTIONS.map((candidate) => (
-            <span className="hero-switch-sizer" key={candidate}>
-              {candidate}
-            </span>
-          ))}
           <span className="hero-typewriter">
-            {action.slice(0, characters)}
+            {HERO_ACTION}
             <span className="hero-typewriter-caret" />
           </span>
-          <span className="hero-mobile-action">{action}</span>
+          <span className="hero-mobile-action">{HERO_ACTION}</span>
         </span>
       </span>
     </h1>
@@ -589,7 +537,7 @@ function ProjectCard({ project }: { project: ProjectDefinition }) {
 
 function ProjectRow({ project }: { project: ProjectDefinition }) {
   const amount = monthlyPoolPointsOnly(project.reward)
-    ? "$0 + points (Points only)"
+    ? "Points only"
     : project.reward.kind === "monthly-pool"
       ? `${monthlyPoolCapLabel(project)}/mo target`
       : `${project.reward.externalOpportunity?.advertisedAmountDisplay ?? "External prize"} + points`;
@@ -631,8 +579,7 @@ function CommunityProjects({ projects }: { projects: ProjectDefinition[] }) {
     >
       <h3 id="community-projects">Community</h3>
       <p className="project-tier-note">
-        Listed by their owners, not featured by Slop. Paused projects are listed
-        but not collected yet.
+        Listed by their owners, not featured by Slop.
       </p>
       <ul className="project-rows">
         {visible.map((project) => (
@@ -690,7 +637,7 @@ function HomePage() {
   return (
     <main>
       <section className="hero shell">
-        <TypewriterHeroHeading />
+        <HeroHeading />
         <InstallPanel />
       </section>
 
@@ -937,8 +884,7 @@ export function ProjectParticipation({
           <ExternalLinkAnchor href={project.steward.github.profileUrl}>
             {project.steward.displayName}
           </ExternalLinkAnchor>{" "}
-          about permission before contributing. Project activation remains
-          paused.
+          about permission before contributing.
         </p>
       </section>
     );
@@ -1010,6 +956,8 @@ function InstallPanel({ project }: { project?: ProjectDefinition }) {
       active = false;
     };
   }, [projectId, attempt]);
+  // The home page lists projects below; it needs no panel until one is cleared.
+  if (!project && eligibility === "blocked") return null;
   return (
     <div
       className={project ? "install-panel" : "home-agent-setup"}
@@ -1040,21 +988,14 @@ function InstallPanel({ project }: { project?: ProjectDefinition }) {
                 ? "Agent setup awaiting security review"
                 : "Agent setup unavailable"}
           </h2>
-          {eligibility === "blocked" ? (
-            project ? (
-              <p>
-                The current project revision is not cleared for agent
-                installation.{" "}
-                <Link href={`/projects/${project.slug}/manage`}>
-                  Project owner: review setup
-                </Link>
-              </p>
-            ) : (
-              <p>
-                No projects are cleared for agent setup yet. Browse the projects
-                below.
-              </p>
-            )
+          {eligibility === "blocked" && project ? (
+            <p>
+              The current project revision is not cleared for agent
+              installation.{" "}
+              <Link href={`/projects/${project.slug}/manage`}>
+                Project owner: review setup
+              </Link>
+            </p>
           ) : null}
           {eligibility !== "loading" ? (
             <button
@@ -1070,8 +1011,6 @@ function InstallPanel({ project }: { project?: ProjectDefinition }) {
     </div>
   );
 }
-
-/** Dollars are simulated only against committed funds; otherwise a share. */
 
 function ProjectPaymentHistory({
   project,
@@ -1202,12 +1141,24 @@ export function ProjectFunding({ project }: { project: ProjectDefinition }) {
   return <EscrowFunding project={project} />;
 }
 
+function paymentStateLabel(project: ProjectDefinition): string {
+  return project.reward.paymentMode === "enabled" ? "Enabled" : "Disabled";
+}
+
+/** "Live" only when a recorded vault can pay: payments must be enabled too. */
+function vaultStateLabel(project: ProjectDefinition): string {
+  if (project.reward.kind === "external-prize-share") return "Not applicable";
+  if (!project.escrow?.deployments.length) return "Not set up";
+  return project.reward.paymentMode === "enabled"
+    ? "Live"
+    : "Recorded · payments disabled";
+}
+
 function fundingStateLabel(project: ProjectDefinition): string {
-  if (project.reward.kind === "external-prize-share")
-    return "External prize, not held by Slop";
+  if (project.reward.kind === "external-prize-share") return "External prize";
   return project.reward.fundingState === "committed"
     ? "Committed"
-    : "Pledged, not committed";
+    : "Not funded yet";
 }
 
 function ProjectFundingPage({ project }: { project: ProjectDefinition }) {
@@ -1245,35 +1196,35 @@ function ProjectFundingPage({ project }: { project: ProjectDefinition }) {
           </div>
           <div>
             <dt>Payments</dt>
-            <dd>
-              {project.reward.paymentMode === "enabled"
-                ? "Enabled"
-                : "Disabled"}
-            </dd>
+            <dd>{paymentStateLabel(project)}</dd>
           </div>
           <div>
             <dt>Project vault</dt>
-            <dd>
-              {project.escrow?.deployments.length
-                ? "Reviewed deployment published"
-                : "Not deployed"}
-            </dd>
+            <dd>{vaultStateLabel(project)}</dd>
           </div>
         </dl>
-        {project.escrow ? (
+        {project.reward.kind === "external-prize-share" ? (
+          <p>
+            The organizer pays this external prize. Slop has no vault for this
+            project.
+          </p>
+        ) : project.escrow ? (
           <EscrowFunding project={project} />
         ) : (
           <div>
-            <EmptyState text="Funding setup requires a reviewed project vault." />
+            <EmptyState text="This project has no vault yet." />
             <p>
-              Ask a Slop admin to review the vault deployment and funding
-              authority. <a href={CONTACT_MAILTO}>Contact Slop</a>
+              Deposits and payments are not possible until a vault is recorded
+              for this project. The site has no control that creates a vault:
+              the project owner creates it on chain from its own wallet, and a
+              project revision then records it. Project owner:{" "}
+              <a href={CONTACT_MAILTO}>contact Slop</a> for vault setup.
             </p>
           </div>
         )}
         <p className="funding-records-note">
-          A GitHub login does not prove wallet ownership or payment. Monthly
-          cycle states are in the <Link href="/cycles">cycle archive</Link>.
+          Monthly cycle states are in the{" "}
+          <Link href="/cycles">cycle archive</Link>.
         </p>
       </section>
     </main>
@@ -1342,7 +1293,7 @@ function ProjectPage({
                 {monthlyPoolPointsOnly(project.reward)
                   ? "Points only · no cash rewards"
                   : project.reward.kind === "monthly-pool"
-                    ? `${project.reward.monthlyCapDisplay} monthly target · ${formatMicroUsdc(project.reward.committedMinor)} committed · ${project.reward.paymentMode === "enabled" ? "payments enabled" : "payments not active"}`
+                    ? `${project.reward.monthlyCapDisplay} monthly target · ${monthlyPoolUnfunded(project.reward) ? "not funded yet" : `${formatMicroUsdc(project.reward.committedMinor)} funded`} · ${project.reward.paymentMode === "enabled" ? "payments enabled" : "payments not active"}`
                     : "External prize · organizer decides awards"}
               </p>
               {project.status === "paused" ? (
@@ -1401,9 +1352,6 @@ function ProjectPage({
                     ? "Loading funding history…"
                     : "Funding history unavailable"}
                 </strong>
-                <p>
-                  Funding promotion cannot be determined until the records load.
-                </p>
               </aside>
             ) : project.reward.kind === "monthly-pool" &&
               monthlyPoolUnfunded(project.reward) ? null : promotionEligible ? (
@@ -1451,7 +1399,7 @@ function ProjectPage({
                       : project.reward.kind === "monthly-pool"
                         ? monthlyPoolUnfunded(project.reward)
                           ? `Target ${project.reward.monthlyCapDisplay} per month. No payments scheduled.`
-                          : `${formatMicroUsdc(project.reward.committedMinor)} committed against a ${project.reward.monthlyCapDisplay} monthly target. Accessibility is unknown; no payment is enabled.`
+                          : `${formatMicroUsdc(project.reward.committedMinor)} funded toward a ${project.reward.monthlyCapDisplay} monthly target.`
                         : null}
                   </p>
                 )}
@@ -1471,11 +1419,8 @@ function ProjectPage({
               </aside>
             ) : (
               <aside className="reward-card">
-                <strong>Funding promotion paused</strong>
-                <p>
-                  Accepted work and cycle history remain available. No payment
-                  is enabled.
-                </p>
+                <strong>Not funded this month</strong>
+                <p>Accepted work still earns Slop Score.</p>
               </aside>
             )}
           </div>
@@ -1564,9 +1509,8 @@ function HowItWorksPage() {
             <li>
               <strong>4. Score and reward review</strong>
               <p>
-                Accepted outcomes receive Slop Score. Points are nonfinancial; a
-                payment requires separate funding, approval and verified
-                settlement.
+                Accepted outcomes receive Slop Score. Funded projects with
+                payments enabled pay out monthly by share of score.
               </p>
             </li>
           </ol>
@@ -1580,8 +1524,8 @@ function HowItWorksPage() {
                 <Link href="/projects/new">
                   Add your repository and contribution rules
                 </Link>
-                . Install Slopbot; the project goes live when the security scan
-                passes. No admin approval is needed.
+                . Install the free Slopbot; the project goes live when the
+                security scan passes.
               </p>
             </li>
             <li>
@@ -1599,10 +1543,11 @@ function HowItWorksPage() {
               </p>
             </li>
             <li>
-              <strong>4. Send payment</strong>
+              <strong>4. Automatic payment</strong>
               <p>
-                Reserve the final awards in the project escrow. A reservation
-                alone does not prove payment.
+                When payments are enabled, funded awards pay out from the
+                project vault after the 72-hour monthly cutoff, unless you turn
+                automatic payment off.
               </p>
             </li>
           </ol>
@@ -1704,10 +1649,6 @@ function HowItWorksPage() {
           <p>
             Accepted weight ÷ total weight × funded pool = projected allocation.
           </p>
-          <p>
-            This example is a projection, not an approved award or a payment.
-            The cycle records the applicable fees and exact amounts.
-          </p>
           <details>
             <summary>Exact calculation</summary>
             <p>
@@ -1748,10 +1689,10 @@ function HowItWorksPage() {
           </p>
           <p>
             The owner may change proposed amounts privately before the monthly
-            cutoff; current allocations are then distributed automatically
-            unless the owner turned that off. A funded award can wait for a
-            wallet; confirming one later does not require another monthly cycle.
-            Historical records keep their recorded fee and authority rules.
+            cutoff; if payments are enabled, current allocations are then
+            distributed automatically unless the owner turned that off. A funded
+            award can wait for a wallet; confirming one later does not require
+            another monthly cycle.
           </p>
         </details>
       </section>
@@ -1765,8 +1706,8 @@ function HowItWorksPage() {
           <summary>Which repositories count?</summary>
           <p>
             Repositories listed by an active project on Slop. Each project page
-            names them and links its skill. Paused projects are listed but not
-            collected yet, and pull requests anywhere else are not in any pool.
+            names them and links its skill. Pull requests elsewhere are not in
+            any pool.
           </p>
         </details>
         <details>
@@ -1847,9 +1788,11 @@ function HowItWorksPage() {
         <details>
           <summary>When are payments sent?</summary>
           <p>
-            The previous month becomes a proposal for public review. After owner
-            approval and funding, eligible awards can be executed from the
-            project vault. Submitted means verification is pending; paid means
+            Monthly. When a calendar month ends (UTC), the owner has 72 hours to
+            adjust or finalize its awards. If the project has payments enabled,
+            a funded vault then pays the current allocations automatically
+            unless the owner turned that off. With payments disabled, no payment
+            is sent. Submitted means verification is pending; paid means
             finalized evidence reconciles the award and fee.
           </p>
         </details>
@@ -2124,10 +2067,6 @@ function WhoBuildsOnSlop({
         <ExternalLinkAnchor href={pinnedFile(pin.methodPath)}>
           Method and caveats
         </ExternalLinkAnchor>
-        {" · "}
-        <ExternalLinkAnchor href={pin.renderedUrl}>
-          Rendered view
-        </ExternalLinkAnchor>
       </p>
     </section>
   );
@@ -2149,17 +2088,14 @@ function SponsorsPage({
       <section className="evidence-page-hero">
         <h1>Fund a project.</h1>
         <p>
-          Choose a project or add your repository. Maintainers accept the work;
-          authorized signers approve payments outside Slop. Funding does not
-          grant repository control or guarantee a payout.
+          Deposit into a project&apos;s vault. Maintainers accept the work on
+          GitHub. When a project has payments enabled, funded awards pay
+          contributors automatically each month. Each project below shows its
+          payment state.
         </p>
       </section>
       <section className="custody-proof sponsor-pools">
         <h2>Projects</h2>
-        <p>
-          Targets are not balances. Committed amounts need verified funding;
-          payment availability is separate.
-        </p>
         <section
           className="plain-table-wrap"
           aria-label="Project funding pools"
@@ -2173,7 +2109,7 @@ function SponsorsPage({
                 <th scope="col">Pool</th>
                 <th scope="col">Payments</th>
                 {hasReviewBudget ? <th scope="col">Review line</th> : null}
-                <th scope="col">Escrow vault</th>
+                <th scope="col">Vault</th>
               </tr>
             </thead>
             <tbody>
@@ -2186,7 +2122,7 @@ function SponsorsPage({
                       </Link>
                     </th>
                     <td>{sponsorPoolLabel(project.reward)}</td>
-                    <td>{project.reward.paymentMode}</td>
+                    <td>{paymentStateLabel(project)}</td>
                     {hasReviewBudget ? (
                       <td>
                         {project.reward.reviewBudget
@@ -2194,11 +2130,7 @@ function SponsorsPage({
                           : "none"}
                       </td>
                     ) : null}
-                    <td>
-                      {project.escrow?.deployments.length
-                        ? "reviewed deployment"
-                        : "not deployed"}
-                    </td>
+                    <td>{vaultStateLabel(project)}</td>
                   </tr>
                 );
               })}
@@ -2211,9 +2143,7 @@ function SponsorsPage({
           <h2>Awards, fee and total.</h2>
           <p>
             Escrow payouts deduct 2% from the gross award: 100 USDC becomes 98
-            USDC for the contributor and 2 USDC in fees. Each cycle keeps its
-            recorded policy. Paid requires finalized evidence for both the award
-            and the fee.
+            USDC for the contributor and 2 USDC in fees.
           </p>
           <p>
             External prize shares use the terms published for that project. The
@@ -2243,8 +2173,7 @@ function SponsorsPage({
           <h2>Add your own project.</h2>
           <p>
             Sign in with GitHub and add a project. It goes live when you have
-            installed Slopbot and the security scan passes. Escrow deployments
-            change only through a reviewed admin revision.
+            installed Slopbot and the security scan passes.
           </p>
         </div>
         <ul>
@@ -2275,33 +2204,32 @@ function SponsorsPage({
         <summary>Funding rules and payment stages</summary>
         <ol className="mechanism-flow" aria-label="What funding a pool buys">
           <li>
-            <strong>01 · Publish the cap</strong>
+            <strong>01 · Set the monthly amount</strong>
             <p>
-              A reviewed admin revision sets the monthly cap and the reward
-              start. Until the project escrow holds funds, the pool shows as
-              unfunded with a target, never as a balance. Contributors then use
-              any agent to contribute. Accepted merges, eligible reviews, and
-              separately reviewed awards follow the published scoring policy.
+              The project owner sets the monthly cap and the reward start during
+              setup. The pool shows only funds held in the project escrow, never
+              a target as a balance. Contributors then use any agent to
+              contribute. Accepted merges, eligible reviews, and separately
+              reviewed awards follow the published scoring policy.
             </p>
           </li>
           <li>
-            <strong>02 · The month freezes</strong>
+            <strong>02 · The month closes</strong>
             <p>
-              The monthly workflow prepares a proposal under the cap.
-              Publication depends on complete source data and successful
-              validation. Fourteen days of public review follow. Every row names
-              its source events, its integer weights, and the scoring rule
+              When the calendar month ends (UTC), the monthly workflow prepares
+              allocations under the cap from complete source data. Every row
+              names its source events, its integer weights, and the scoring rule
               version, so anyone can recompute it.
             </p>
           </li>
           <li>
-            <strong>03 · You decide and sign</strong>
+            <strong>03 · Automatic payment</strong>
             <p>
               The project owner may change proposed awards privately within the
-              cap until the monthly cutoff, when the current allocations are
-              finalized. The owner reserves them in the project escrow, which
-              pays them from reserved funds. Slop marks an award paid only when
-              finalized on-chain evidence reconciles the award and the fee.
+              cap until 72 hours after the month ends. If payments are enabled,
+              the vault then pays the current allocations automatically, unless
+              the owner turned that off. An award is marked paid when finalized
+              on-chain evidence reconciles the award and the fee.
             </p>
           </li>
         </ol>
@@ -2312,38 +2240,13 @@ function SponsorsPage({
               <li>The monthly cap, with exact-cycle overrides.</li>
               <li>
                 Proposed awards may change privately within the cap before the
-                monthly cutoff. Automatic monthly payment is on by default and
-                can be turned off.
+                monthly cutoff. When payments are enabled, automatic monthly
+                payment is on by default and can be turned off.
               </li>
               <li>
                 Whether to add a named review budget as a second cash line.
               </li>
-              <li>
-                The project owner authorizes each award and each withdrawal of
-                unused funds.
-              </li>
-            </ul>
-          </div>
-          <div>
-            <h2>What funding does not buy.</h2>
-            <ul>
-              <li>
-                Turn a donation into control of the repository. Maintainers
-                manage work and acceptance on GitHub; sponsorship alone grants
-                no maintainer or payout approval authority.
-              </li>
-              <li>
-                Edit history. Corrections append; past cycle records are never
-                rewritten.
-              </li>
-              <li>
-                Route money through Slop. Funds stay in the project&apos;s own
-                escrow contract; Slop holds no balance and cannot move them.
-              </li>
-              <li>
-                Pay a related party without a separate approval on the public
-                record.
-              </li>
+              <li>Withdrawals of unused funds, with the 2% fee.</li>
             </ul>
           </div>
         </section>
@@ -2351,9 +2254,8 @@ function SponsorsPage({
           <h2>Awards and payments</h2>
           <PaymentLifecycle />
           <p>
-            A target is not a balance. Deposits fund the vault; approved awards
-            require their own reservation. A wallet added later can unlock an
-            eligible reserved award without waiting for another cycle.
+            A wallet added later unlocks a reserved award without waiting for
+            another cycle.
           </p>
         </section>
         <section className="custody-proof">
@@ -2364,17 +2266,8 @@ function SponsorsPage({
               contract enforces reserved awards, fees and exact-once payment.
             </li>
             <li>
-              Slop holds no balance and cannot move funds. Its identity attester
-              key only co-signs a binding that the contributor&apos;s own wallet
-              also signs.
-            </li>
-            <li>
-              The owner can withdraw free funds under the disclosed fee.
-              Reserved awards cannot be withdrawn. Nothing is guaranteed.
-            </li>
-            <li>
-              GitHub identity never proves wallet control. An escrow deployment
-              appears on this site only through a reviewed admin revision.
+              The owner can withdraw free funds with the 2% fee. Reserved awards
+              cannot be withdrawn, and Slop cannot move funds.
             </li>
           </ul>
         </section>
@@ -2400,10 +2293,6 @@ function SponsorsPage({
           Audience report ·{" "}
           {whoBuildsDateLabel(WHO_BUILDS_SNAPSHOT.generatedAt)}
         </summary>
-        <p>
-          This report shows sponsors the public GitHub work of the people on the
-          leaderboard. It does not change points or payments.
-        </p>
         <WhoBuildsOnSlop retry={retry} state={state} />
       </details>
       <section className="custody-proof mechanism-sources">
@@ -2896,9 +2785,7 @@ function ModelOutcomes({ summary }: { summary: ModelOutcomeSummary }) {
           </li>
           <li>
             The leaderboard is a rolling window and regenerates on a schedule,
-            so every figure moves. Nothing here describes money. Slop Score
-            measures accepted work; awards require separate funding and
-            approval.
+            so every figure moves. Slop Score measures accepted work, not money.
           </li>
         </ul>
       </details>

@@ -163,7 +163,7 @@ export function InboxEmail() {
             <p>
               {state.value.availability === "unverified"
                 ? "No verified email destination is available for this account."
-                : "The email service is unavailable."}
+                : "Activity email is temporarily unavailable."}
             </p>
           )}
           {state.value.enabled || state.value.availability === "verified" ? (
