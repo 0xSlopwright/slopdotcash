@@ -137,6 +137,10 @@ test("the contributor skill stops locally on a malicious-code risk and keeps pro
   expect(skill).toMatch(/The project decides the work/iu);
   expect(skill).not.toMatch(/follow this skill\./iu);
   // Exact identity is required; signed receipts stay optional diagnostics.
-  expect(skill).toMatch(/discloses the exact provider, model and client/iu);
-  expect(skill).toMatch(/Signed run receipts[^.]*optional diagnostics/iu);
+  expect(skill).toMatch(
+    /disclose(?:s)? the exact provider, model and client/iu,
+  );
+  expect(skill).toContain(
+    "A signed run receipt (`run-receipt.mjs start` and `finish`) is optional and never blocks submission.",
+  );
 });
