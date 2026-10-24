@@ -9,15 +9,17 @@
 > does not prove the approved logic. After an upgrade, review and append a new
 > registry revision before treating the new implementation as accepted.
 
-# Escrow mainnet deployment (humans only)
+# Owner-controlled escrow mainnet deployment
 
-These are the exact human steps to deploy the escrow v4 `EscrowFactory` on
-Base, Robinhood Chain and Ethereum, to verify its source, and to upgrade the
-Solana program to the current source while retaining owner-controlled upgrades.
+These steps deploy replacement UUPS EVM factories and vault implementations,
+and deploy or upgrade the Solana program with owner-controlled upgrades.
+The approved launch order is Base, Solana, Ethereum, then Robinhood.
 
-**Agents must not run any step in this file.** Agents never hold mainnet keys,
-never sign, and never broadcast. An agent may prepare a command or review a
-simulation output that a human gives it.
+Deployment runs through the owner-controlled operator process. The owner has
+authorized the deployment agent to use the designated local deployment keys.
+This authorization does not grant Slop application services custody of those
+keys or authority to upgrade contracts. Keep signing material and transaction
+journals private; publish only transaction identities and verified results.
 
 No project activates escrow because a factory or program exists. Activation
 needs a reviewed manifest revision with the deployment evidence below
@@ -27,10 +29,12 @@ needs a reviewed manifest revision with the deployment evidence below
 
 1. Check out the reviewed commit of `main`. Record its SHA. Run
    `git status` and confirm a clean tree.
-2. Confirm that independent review, the testnet acceptance runs
+2. Record the owner waiver of independent contract and legal reviews
+   ([#903](https://github.com/SlopDotCash/slopdotcash/issues/903)). Do not report
+   those reviews as completed. Confirm that the testnet acceptance runs
    (`docs/robinhood-chain-testnet-runbook.md` and the Base Sepolia run) and a
    rehearsed key recovery runbook are recorded. These are launch gates.
-3. Decide and record, for each chain, three public addresses and their
+3. Decide and record, for each chain, four public addresses and their
    custody:
    - `ESCROW_REGISTRAR`: proposes identity authority
      rotations. Use a reviewed multisig or hardware key, never the attester
@@ -57,11 +61,11 @@ needs a reviewed manifest revision with the deployment evidence below
 
 ## 1. EVM factory deployment (Base, Robinhood Chain, Ethereum)
 
-| Network | Chain id | Script | RPC variable |
-| --- | --- | --- | --- |
-| Base | 8453 | `script/DeployBase.s.sol:DeployBase` | `BASE_RPC_URL` |
-| Robinhood Chain | 4663 | `script/DeployRobinhood.s.sol:DeployRobinhood` | `ROBINHOOD_RPC_URL` |
-| Ethereum | 1 | `script/DeployEthereum.s.sol:DeployEthereum` | `ETHEREUM_RPC_URL` |
+| Network         | Chain id | Script                                         | RPC variable        |
+| --------------- | -------- | ---------------------------------------------- | ------------------- |
+| Base            | 8453     | `script/DeployBase.s.sol:DeployBase`           | `BASE_RPC_URL`      |
+| Robinhood Chain | 4663     | `script/DeployRobinhood.s.sol:DeployRobinhood` | `ROBINHOOD_RPC_URL` |
+| Ethereum        | 1        | `script/DeployEthereum.s.sol:DeployEthereum`   | `ETHEREUM_RPC_URL`  |
 
 Each script rejects every other chain id and reverts when a required address
 is missing. One factory serves every standard ERC-20 on its chain; the
@@ -130,7 +134,7 @@ forge verify-contract "$FACTORY_IMPLEMENTATION" src/ProjectEscrow.sol:EscrowFact
 - Base: `--chain-id 8453`, Etherscan v2 API key (Basescan).
 - Ethereum: `--chain-id 1`.
 - Robinhood Chain: `--chain-id 4663 --verifier blockscout --verifier-url
-  https://robinhoodchain.blockscout.com/api/`.
+https://robinhoodchain.blockscout.com/api/`.
 
 `foundry.toml` pins solc 0.8.30, `evm_version = "cancun"`, optimizer 200 runs
 and `bytecode_hash = "none"`; the verifier reads them from the project.
@@ -164,19 +168,22 @@ recipient, factory address, deployment transaction, `factoryCodeSha256`, local
 Anvil digest, explorer verification link, and for each vault its project ID,
 token, decimals, creation transaction and `codeSha256`.
 
-## 2. Solana program upgrade and finalization
+## 2. Solana program deployment, upgrade and verification
 
 Program: `slop-escrow`, ID `7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ`
-(upgradeable, already on mainnet).
+(upgradeable). This selected program exists on devnet. The mainnet account
+was absent at the 24 October 2026 preflight. Read the target cluster again
+before deciding between initial deployment and upgrade.
 
-A human operator does every step below. An agent never runs these commands,
-never holds the upgrade authority or payer key, and never signs or broadcasts.
-The scripts in `contracts/solana/scripts/` only read chain state and build
-unsigned transactions.
+Use the owner-controlled operator process described above. The application
+services do not receive the payer or upgrade key. The plan builders in
+`contracts/solana/scripts/` read chain state and produce unsigned transactions.
 
 Placeholders:
 
 - `$PROGRAM` = `7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ`
+- `$PROGRAM_KEYPAIR` = the private keypair whose public key equals `$PROGRAM`;
+  required only for initial deployment
 - `$RPC` = a private mainnet RPC URL (`-u $RPC` below; never commit it)
 - `$UPGRADE_AUTHORITY` = the current upgrade authority signer (keypair path or
   `usb://ledger?key=N`)
@@ -188,11 +195,12 @@ Placeholders:
 
 1. The change is merged to `main` through a reviewed PR. CI is green on the
    exact commit. Record the commit SHA as `$COMMIT`.
-2. The independent review covers this program version (any-mint, permissionless
-   deposit, 2% withdrawal fee, Config pinning).
+2. Record the owner waiver of external reviews and the actual validation
+   results for this version. A waiver is not review evidence.
 3. `$IDENTITY` and `$FEES` are published and approved by the repository owner.
    They must be distinct. They cannot change after step 6.
-4. The build has no `short-delay-for-tests` feature. Only `test-e2e.sh` sets it.
+4. Use the production build. The lifecycle suite uses the same build; zero
+   mandatory delays no longer need a separate short-delay test build.
 
 ### 2. Verifiable build with the pinned toolchain
 
@@ -217,6 +225,11 @@ A second operator repeats this step on a different machine. Both hashes must
 match. Record them in the release issue.
 
 ### 3. Record the current deployed program
+
+If the program account is absent, verify the target cluster and that
+`solana-keygen pubkey "$PROGRAM_KEYPAIR"` equals `$PROGRAM`. Record initial
+deployment and skip the existing-program dump, hash and extension checks below.
+An RPC failure is not evidence that the account is absent.
 
 ```bash
 solana program show "$PROGRAM" -u "$RPC"           # record Authority and Data Length
@@ -256,7 +269,17 @@ print('ok', hashlib.sha256(local).hexdigest())
 PY
 ```
 
-### 5. Upgrade
+### 5. Deploy or upgrade
+
+For an initial deployment, use the program keypair as the program signer:
+
+```bash
+solana program deploy --program-id "$PROGRAM_KEYPAIR" --buffer "$BUFFER" \
+  --upgrade-authority "$UPGRADE_AUTHORITY" --keypair "$PAYER" -u "$RPC"
+solana program dump "$PROGRAM" upgraded.so -u "$RPC"
+```
+
+For an existing program, use its current upgrade authority:
 
 ```bash
 solana program upgrade "$BUFFER" "$PROGRAM" \
