@@ -203,6 +203,10 @@ test("social membership preserves past points and connection privacy without new
     "Connections grant no points or authority.",
   );
   await expect(social).not.toContainText("+10 points");
+  await page.screenshot({
+    path: info.outputPath("account-connections.png"),
+    fullPage: true,
+  });
   const community = page.getByRole("region", { name: "People", exact: true });
   const visibilitySaved = page.waitForResponse(
     (response) =>
@@ -241,6 +245,10 @@ test("social membership preserves past points and connection privacy without new
     "Connections grant no points or authority.",
   );
   await expect(social).not.toContainText("+10 points");
+  await page.screenshot({
+    path: info.outputPath("account-connections.png"),
+    fullPage: true,
+  });
   const a11y = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
     .analyze();
