@@ -1646,7 +1646,8 @@ function HowItWorksPage() {
             table and awards points. Every accepted merge earns at least 10
             points. Points this month and total points are views of the same
             history. Only accepted-work points count toward project payouts;
-            welcome, social, and payment-recognition bonuses do not.
+            historical welcome and X-connection points and payment-recognition
+            bonuses do not. Joining and connecting X earn no points.
           </p>
           <details>
             <summary>Points rules and evidence</summary>
