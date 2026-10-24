@@ -20,7 +20,7 @@ import {
 } from "./lib/payments/contracts";
 import { isDirectTransfer } from "./lib/use-direct-transfers";
 import { type PayoutWallet, usePayoutWallets } from "./lib/use-payout-wallets";
-import { formatCycleMonth, formatDate, formatDateTime } from "./Presentation";
+import { formatCycleMonth, formatDate } from "./Presentation";
 
 const networkName: Record<EscrowChain, string> = {
   base: "Base",
@@ -590,15 +590,6 @@ export function EarningsPage({
                             : "Confirm this wallet to enable automatic payments"}
                         </p>
                       )}
-                      {wallet?.activationEligibleAt &&
-                        Date.parse(wallet.activationEligibleAt) >
-                          Date.now() && (
-                          <p>
-                            Wallet change becomes eligible after{" "}
-                            {formatDateTime(wallet.activationEligibleAt)}.
-                            Existing awards remain reserved.
-                          </p>
-                        )}
                       <button
                         id={`${heading}-${chain}`}
                         className="button secondary-button"
