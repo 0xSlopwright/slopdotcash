@@ -22,6 +22,7 @@ const ACTION_LABELS: Record<EnforcementAction, string> = {
   ban: "Ban project",
   request_reinstatement: "Request reinstatement",
   reinstate: "Reinstate after review",
+  reinstate_accounts: "Reinstate selected accounts",
   deny_reinstatement: "Deny reinstatement",
 };
 
@@ -47,7 +48,14 @@ function maintainerList(maintainers: { githubLogin: string }[]): string {
 function availableActions(
   enforcement: AdminProject["enforcement"],
 ): EnforcementAction[] {
-  if (enforcement.state === "clear") return ["quarantine", "ban"];
+  const accountActions: EnforcementAction[] =
+    enforcement.bannedMaintainers.length > 0
+      ? enforcement.appeal === "requested"
+        ? ["reinstate_accounts"]
+        : ["request_reinstatement"]
+      : [];
+  if (enforcement.state === "clear")
+    return [...accountActions, "quarantine", "ban"];
   if (enforcement.decisionRequired)
     return enforcement.appeal === "requested"
       ? ["ban", "reinstate"]
@@ -55,7 +63,7 @@ function availableActions(
   const escalate: EnforcementAction[] =
     enforcement.state === "quarantined" ? ["ban"] : [];
   return enforcement.appeal === "requested"
-    ? [...escalate, "reinstate", "deny_reinstatement"]
+    ? [...accountActions, ...escalate, "reinstate", "deny_reinstatement"]
     : [...escalate, "request_reinstatement"];
 }
 
@@ -90,10 +98,13 @@ export function ProjectEnforcementPanel({
     evidenceReference: evidence.trim(),
     expectedRevision: project.revision,
     expectedSequence: enforcement.nextSequence,
-    ...(action === "ban" && enforcement.decisionRequired
+    ...((action === "ban" && enforcement.decisionRequired) ||
+    action === "reinstate_accounts"
       ? {
           responsibleAccounts:
-            preview?.maintainerBans ??
+            (action === "reinstate_accounts"
+              ? preview?.accountReinstatements
+              : preview?.maintainerBans) ??
             responsible
               .split(/[\s,]+/u)
               .filter(Boolean)
@@ -230,6 +241,13 @@ export function ProjectEnforcementPanel({
                     Banned maintainers: {maintainerList(record.maintainerBans)}
                   </>
                 ) : null}
+                {record.accountReinstatements?.length ? (
+                  <>
+                    <br />
+                    Reinstated accounts:{" "}
+                    {maintainerList(record.accountReinstatements)}
+                  </>
+                ) : null}
               </li>
             ))}
           </ol>
@@ -261,18 +279,27 @@ export function ProjectEnforcementPanel({
               ))}
             </select>
           </label>
-          {action === "ban" && enforcement.decisionRequired ? (
+          {(action === "ban" && enforcement.decisionRequired) ||
+          action === "reinstate_accounts" ? (
             <label>
-              Responsible GitHub accounts
+              {action === "reinstate_accounts"
+                ? "GitHub accounts to reinstate"
+                : "Responsible GitHub accounts"}
               <input
                 value={responsible}
                 onChange={(event) => setResponsible(event.target.value)}
                 readOnly={preview !== null}
               />
               <span>
-                Enter account names separated by commas. Select only accounts
-                the evidence identifies as responsible. Leave empty to ban only
-                the project.
+                {action === "reinstate_accounts" ? (
+                  "Enter the accounts cleared by the evidence, separated by commas. This leaves the project restriction and other account bans in place."
+                ) : (
+                  <>
+                    Enter account names separated by commas. Select only
+                    accounts the evidence identifies as responsible. Leave empty
+                    to ban only the project.
+                  </>
+                )}
               </span>
             </label>
           ) : null}
@@ -370,6 +397,15 @@ export function ProjectEnforcementPanel({
                     <dd>
                       {maintainerList(preview.maintainerBans)}. They cannot list
                       or change projects while this ban holds.
+                    </dd>
+                  </div>
+                ) : null}
+                {preview.accountReinstatements?.length ? (
+                  <div>
+                    <dt>Accounts reinstated</dt>
+                    <dd>
+                      {maintainerList(preview.accountReinstatements)}. The
+                      project restriction and other account bans stay in place.
                     </dd>
                   </div>
                 ) : null}

@@ -7,6 +7,7 @@
  */
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
+import { hasParticipationBan } from "../backend/projects/account-bans";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import type { RepositoryControl } from "../backend/projects/contracts";
 import {
@@ -16,6 +17,7 @@ import {
 } from "../backend/projects/handler";
 import type { ScanRequest } from "../backend/projects/setup";
 import { TokenMetadataError } from "../backend/projects/token-metadata";
+import { seedParticipationBan } from "../backend/security/participation-ban.fixture";
 import { signApiToken } from "../backend/trace/auth";
 import {
   CloudflareTracePersistence,
@@ -58,15 +60,10 @@ const CLEARED: VettingClearance = {
   },
 };
 
-function registry(beforeAccountAppealMigration = false) {
+function registry() {
   const { db, sqlite } = sqliteD1(
     readdirSync(new URL("../migrations/", import.meta.url))
-      .filter(
-        (name) =>
-          name.endsWith(".sql") &&
-          (!beforeAccountAppealMigration ||
-            name !== "0070_banned_account_appeals.sql"),
-      )
+      .filter((name) => name.endsWith(".sql"))
       .sort(),
   );
   const persistence = new CloudflareProjectPersistence(db);
@@ -567,10 +564,14 @@ test("the scan digest ignores presentation, listing and money but binds skill in
 });
 
 test("an explicit moderator ban blocks new contribution intake without blaming the original applicant", async () => {
-  const t = registry(true);
+  const t = registry();
   t.deps.moderatorGithubIds = new Set([ADMIN]);
-  t.deps.github.fetch = async () =>
-    Response.json({ id: Number(OTHER), login: "other", type: "User" });
+  t.deps.github.fetch = async (url) =>
+    Response.json(
+      String(url).endsWith("/second")
+        ? { id: 900000004, login: "second", type: "User" }
+        : { id: Number(OTHER), login: "other", type: "User" },
+    );
   expect(
     (await t.create("responsibility", "example/responsibility")).status,
   ).toBe(201);
@@ -677,12 +678,21 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
     "POST",
     "admin/projects/responsibility/enforcement-preview",
     ADMIN,
-    { ...decision, responsibleAccounts: [{ githubLogin: "other" }] },
+    {
+      ...decision,
+      responsibleAccounts: [
+        { githubLogin: "other" },
+        { githubLogin: "second" },
+      ],
+    },
   );
   expect(preview.status).toBe(200);
   const selected = (preview.body.preview as { maintainerBans: unknown[] })
     .maintainerBans;
-  expect(selected).toEqual([{ githubId: OTHER, githubLogin: "other" }]);
+  expect(selected).toEqual([
+    { githubId: OTHER, githubLogin: "other" },
+    { githubId: "900000004", githubLogin: "second" },
+  ]);
   // The ban lands after intake checks the account but before it writes the run.
   const readBan = trace.persistence.hasParticipationBan.bind(trace.persistence);
   let pendingBan = true;
@@ -722,34 +732,6 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
   expect(
     (await t.create("banned-actor", "example/banned-actor", OTHER)).status,
   ).toBe(403);
-  // Upgrade a populated registry: keep the ban and its original journal bytes.
-  const triggers = t.sqlite
-    .query(
-      "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
-    )
-    .all();
-  const before = t.sqlite
-    .query("SELECT rowid, * FROM project_enforcements ORDER BY rowid")
-    .all();
-  t.sqlite.exec(
-    readFileSync(
-      new URL("../migrations/0070_banned_account_appeals.sql", import.meta.url),
-      "utf8",
-    ),
-  );
-  expect(
-    t.sqlite
-      .query("SELECT rowid, * FROM project_enforcements ORDER BY rowid")
-      .all(),
-  ).toEqual(before);
-  expect(t.sqlite.query("PRAGMA foreign_key_check").all()).toEqual([]);
-  expect(
-    t.sqlite
-      .query(
-        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
-      )
-      .all(),
-  ).toEqual(triggers);
   // A ban on one project grants no appeal authority on an unrelated project.
   expect(
     (
@@ -775,4 +757,121 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
   });
   // Filing an appeal grants no new participation or project authority.
   expect((await newRun()).status).toBe(403);
+  const restore = {
+    action: "reinstate_accounts",
+    reason: "Evidence clears this account only",
+    evidenceReference: "private-account-review-fixture",
+    expectedRevision: (await t.persistence.getProject(project.id))?.revision,
+    expectedSequence: 4,
+    responsibleAccounts: [{ githubId: OTHER, githubLogin: "other" }],
+  };
+  expect(
+    (
+      await t.call(
+        "POST",
+        "admin/projects/responsibility/enforcement",
+        ADMIN,
+        restore,
+      )
+    ).status,
+  ).toBe(403);
+  t.deps.moderatorGithubIds = new Set([ADMIN, OWNER]);
+  t.deps.adminGithubIds = new Set([ADMIN, OWNER]);
+  const restored = await t.call(
+    "POST",
+    "admin/projects/responsibility/enforcement",
+    OWNER,
+    restore,
+  );
+  expect(restored.status).toBe(200);
+  expect(restored.body.record).toMatchObject({
+    action: "reinstate_accounts",
+    stateAfter: "banned",
+    afterRevision: null,
+  });
+  expect((await newRun()).status).toBe(201);
+  expect(await hasParticipationBan(t.db, "900000004")).toBe(true);
+  expect(
+    (
+      await t.call(
+        "POST",
+        "admin/projects/responsibility/enforcement",
+        OWNER,
+        restore,
+      )
+    ).status,
+  ).toBe(409);
+  expect(
+    (await t.persistence.listEnforcements()).at(-1)?.accountReinstatements,
+  ).toEqual([
+    {
+      githubId: OTHER,
+      githubLogin: "other",
+      banEnforcementId: (await t.persistence.listEnforcements())[1].id,
+    },
+  ]);
+});
+
+test("account-reinstatement upgrade preserves prior releases and separates future project decisions", async () => {
+  const names = readdirSync(new URL("../migrations/", import.meta.url))
+    .filter((name) => name.endsWith(".sql"))
+    .sort();
+  const { db, sqlite } = sqliteD1(names.filter((name) => name < "0070"));
+  try {
+    const moderator = { githubId: ADMIN, githubLogin: "admin" };
+    for (const id of [OWNER, OTHER])
+      seedParticipationBan(
+        sqlite,
+        { githubId: id, githubLogin: "fixture" },
+        moderator,
+        NOW,
+      );
+    const reinstate = (id: string) =>
+      sqlite
+        .query(`
+      INSERT INTO project_enforcements
+      SELECT 'enf_release_' || ?, project_id, 3, 'reinstate', 'clear', 'granted',
+        reason, evidence_reference, repository_github_id, repository_keys,
+        '700000001', 'independent', NULL, 'project-moderator', 'admin-panel',
+        before_revision, before_manifest_sha256, NULL, NULL, 'no_revision_needed', created_at
+      FROM project_enforcements WHERE id = ?
+    `)
+        .run(id, `enf_malicious-${id}_2`);
+    reinstate(OWNER);
+    const rows = sqlite
+      .query("SELECT rowid,* FROM project_enforcements ORDER BY rowid")
+      .all();
+    const triggers = sqlite
+      .query(
+        "SELECT name,sql FROM sqlite_master WHERE type='trigger' ORDER BY name",
+      )
+      .all() as { name: string; sql: string }[];
+    for (const name of names.filter((name) => name >= "0070"))
+      sqlite.exec(
+        readFileSync(new URL(`../migrations/${name}`, import.meta.url), "utf8"),
+      );
+    expect(
+      sqlite
+        .query("SELECT rowid,* FROM project_enforcements ORDER BY rowid")
+        .all(),
+    ).toEqual(rows);
+    expect(sqlite.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    for (const trigger of triggers)
+      expect(
+        sqlite
+          .query("SELECT name,sql FROM sqlite_master WHERE name=?")
+          .get(trigger.name),
+      ).toEqual(trigger);
+    expect(await hasParticipationBan(db, OWNER)).toBe(false);
+    expect(await hasParticipationBan(db, OTHER)).toBe(true);
+    reinstate(OTHER);
+    expect(await hasParticipationBan(db, OTHER)).toBe(true);
+    expect(
+      sqlite
+        .query("SELECT github_id FROM project_account_reinstatements")
+        .all(),
+    ).toEqual([{ github_id: OWNER }]);
+  } finally {
+    sqlite.close();
+  }
 });

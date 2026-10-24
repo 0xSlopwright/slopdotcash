@@ -46,6 +46,7 @@ import {
   purgeProjectCache,
 } from "./edge-cache";
 import {
+  activeAccountBans,
   activeRestrictions,
   awaitsMaliciousDecision,
   bannedMaintainerIds,
@@ -1783,7 +1784,39 @@ async function recordEnforcement(
       maliciousAssessmentIds: vetting.reviewedMaliciousAssessmentIds ?? [],
     };
   }
-  const maintainerBans = input.responsibleAccounts ?? [];
+  const selectedAccounts = input.responsibleAccounts ?? [];
+  const accountReinstatements: NonNullable<
+    ProjectEnforcement["accountReinstatements"]
+  > = [];
+  if (action === "reinstate_accounts") {
+    if (selectedAccounts.length === 0)
+      fail(400, "invalid_request", "Select the accounts to reinstate.");
+    const currentBans = activeAccountBans(restriction.records);
+    for (const selected of selectedAccounts) {
+      const bans = currentBans.filter(
+        ({ account }) => account.githubId === selected.githubId,
+      );
+      if (bans.length === 0)
+        fail(
+          409,
+          "account_not_banned",
+          "The selected account has no active ban from this project.",
+        );
+      if (bans.some(({ record }) => record.actor?.githubId === actor.githubId))
+        fail(
+          403,
+          "independent_review_required",
+          "A moderator who did not ban this account must decide its appeal.",
+        );
+      for (const { record } of bans)
+        accountReinstatements.push({
+          ...selected,
+          banEnforcementId: record.id,
+        });
+    }
+  }
+  const maintainerBans =
+    action === "reinstate_accounts" ? [] : selectedAccounts;
   if (maintainerBans.length > 0 && !plan.bansMaintainer)
     fail(
       400,
@@ -1830,6 +1863,7 @@ async function recordEnforcement(
           : "no_revision_needed",
     ...(vettingReview ? { vettingReview } : {}),
     ...(maintainerBans.length > 0 ? { maintainerBans } : {}),
+    ...(accountReinstatements.length > 0 ? { accountReinstatements } : {}),
     createdAt: at,
   };
   const preview: EnforcementPreview = {
@@ -1844,6 +1878,7 @@ async function recordEnforcement(
     result: record.result,
     pendingReason: plan.pendingReason,
     maintainerBans,
+    accountReinstatements,
     revision: {
       before: project.revision,
       after: record.afterRevision,

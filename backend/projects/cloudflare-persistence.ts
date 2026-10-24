@@ -628,6 +628,16 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
         ...(bansByEnforcement.get(ban.enforcement_id) ?? []),
         { githubId: ban.github_id, githubLogin: ban.github_login },
       ]);
+    const releases = await this.db
+      .prepare(
+        "SELECT r.enforcement_id, r.ban_enforcement_id, r.github_id, b.github_login FROM project_account_reinstatements r JOIN project_maintainer_bans b ON b.enforcement_id=r.ban_enforcement_id AND b.github_id=r.github_id",
+      )
+      .all<{
+        enforcement_id: string;
+        ban_enforcement_id: string;
+        github_id: string;
+        github_login: string;
+      }>();
     return (result.results ?? []).map((row) => ({
       ...enforcementFromRow(row),
       ...(byEnforcement.has(row.id)
@@ -636,6 +646,13 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
       ...(bansByEnforcement.has(row.id)
         ? { maintainerBans: bansByEnforcement.get(row.id) }
         : {}),
+      accountReinstatements: (releases.results ?? [])
+        .filter((release) => release.enforcement_id === row.id)
+        .map((release) => ({
+          githubId: release.github_id,
+          githubLogin: release.github_login,
+          banEnforcementId: release.ban_enforcement_id,
+        })),
     }));
   }
 
@@ -682,6 +699,14 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
            VALUES (?, ?, ?)`,
           )
           .bind(record.id, maintainer.githubId, maintainer.githubLogin),
+      );
+    for (const account of record.accountReinstatements ?? [])
+      statements.push(
+        this.db
+          .prepare(
+            "INSERT INTO project_account_reinstatements (enforcement_id,ban_enforcement_id,github_id) VALUES (?,?,?)",
+          )
+          .bind(record.id, account.banEnforcementId, account.githubId),
       );
     if (revision !== null) {
       statements.push(

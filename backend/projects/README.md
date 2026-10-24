@@ -304,11 +304,17 @@ rate limit, and caches each answer for five minutes. The browser never calls
   (`0066_project_maintainer_bans.sql`), and it closes an open appeal as
   denied. A moderator who placed the restriction cannot decide an open appeal
   this way. A plain denial is refused with `malicious_decision_required`
-  until the decision is made. While that project stays restricted, a banned
+  until the decision is made. While the account ban holds, a banned
   maintainer cannot create a project, publish a stored application or publish
   an owner revision, as the actor or as the named steward
-  (`maintainer_banned`). The steward or applicant can still appeal the
-  project. A later reinstatement of that project lifts the maintainer ban.
+  (`maintainer_banned`). The steward, applicant, and explicitly banned accounts
+  can appeal, including after ownership changes. A project reinstatement no
+  longer lifts account bans. An independent moderator uses `reinstate_accounts`
+  to select accounts cleared by the evidence. The decision leaves the project
+  restriction and other accounts unchanged. Each release references its exact
+  ban in `project_account_reinstatements`; the existing enforcement journal
+  records its reason and evidence. Migration 0072 preserves releases already
+  made under the former project-wide rule.
   The ban does not erase an approved funded award. The trace API refuses new
   contribution runs and progress events. Bounty approval refuses new
   reservations for a banned researcher, including concurrent bans. Private

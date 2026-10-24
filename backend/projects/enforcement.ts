@@ -30,6 +30,7 @@ export const ENFORCEMENT_ACTIONS: readonly EnforcementAction[] = [
   "ban",
   "request_reinstatement",
   "reinstate",
+  "reinstate_accounts",
   "deny_reinstatement",
 ];
 
@@ -126,6 +127,9 @@ export function projectRestriction(
       restriction.bannedMaintainers = [];
     }
   }
+  restriction.bannedMaintainers = activeAccountBans(records).map(
+    ({ account }) => account,
+  );
   return restriction;
 }
 
@@ -148,17 +152,29 @@ export function awaitsMaliciousDecision(
 }
 
 /**
- * GitHub actor IDs that a moderator banned as maintainers. A ban holds while
- * the project restriction it came with holds; reinstatement of that project
- * lifts it.
+ * Account bans remain active until an explicit decision releases that exact ban.
+ * Project reinstatement alone does not establish an account's innocence.
  */
+export function activeAccountBans(records: ProjectEnforcement[]) {
+  const released = new Set(
+    records.flatMap((record) =>
+      (record.accountReinstatements ?? []).map(
+        (account) => `${account.banEnforcementId}:${account.githubId}`,
+      ),
+    ),
+  );
+  return records.flatMap((record) =>
+    (record.maintainerBans ?? [])
+      .filter((account) => !released.has(`${record.id}:${account.githubId}`))
+      .map((account) => ({ account, record })),
+  );
+}
+
 export function bannedMaintainerIds(
   records: ProjectEnforcement[],
 ): Set<string> {
   return new Set(
-    activeRestrictions(records).flatMap((restriction) =>
-      restriction.bannedMaintainers.map((maintainer) => maintainer.githubId),
-    ),
+    activeAccountBans(records).map(({ account }) => account.githubId),
   );
 }
 
@@ -341,13 +357,32 @@ export function planEnforcement(input: {
       };
     }
     case "request_reinstatement":
-      if (restriction.state === "clear")
+      if (
+        restriction.state === "clear" &&
+        restriction.bannedMaintainers.length === 0
+      )
         refuse("not_restricted", "The project has no restriction to appeal");
       if (restriction.appeal === "requested")
         refuse("appeal_open", "A reinstatement request is already open");
       return {
         stateAfter: restriction.state,
         appealAfter: "requested",
+        manifest: null,
+        pendingReason: null,
+        bansMaintainer: false,
+      };
+    case "reinstate_accounts":
+      if (
+        restriction.appeal !== "requested" ||
+        restriction.bannedMaintainers.length === 0
+      )
+        refuse(
+          "no_open_appeal",
+          "Record an appeal before reinstating an account",
+        );
+      return {
+        stateAfter: restriction.state,
+        appealAfter: restriction.appeal,
         manifest: null,
         pendingReason: null,
         bansMaintainer: false,

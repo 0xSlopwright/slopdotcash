@@ -77,6 +77,7 @@ export type EnforcementAction =
   | "ban"
   | "request_reinstatement"
   | "reinstate"
+  | "reinstate_accounts"
   | "deny_reinstatement";
 export type EnforcementActorRole =
   | "project-moderator"
@@ -140,6 +141,7 @@ export type ProjectEnforcement = {
    * confirmed malicious result (PRD section 8). Only that decision has them.
    */
   maintainerBans?: GithubActor[];
+  accountReinstatements?: (GithubActor & { banEnforcementId: string })[];
   createdAt: string;
 };
 
@@ -186,6 +188,7 @@ export interface EnforcementPreview {
   pendingReason: string | null;
   /** Maintainer accounts the action bans with the project. */
   maintainerBans: GithubActor[];
+  accountReinstatements?: (GithubActor & { banEnforcementId: string })[];
   revision: {
     before: number;
     after: number | null;
