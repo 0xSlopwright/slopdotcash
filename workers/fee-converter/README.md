@@ -5,7 +5,8 @@ already received into that network's Circle USDC (PRD section 6, TOK-07,
 MVP-07c; owner decision of 18 October 2026). The 2% fee is in the reward
 token (TOK-06). Both current EVM and Solana vaults retain accrued fees until
 a permissionless claim sends them to the configured fee recipient. EVM uses
-`claimFees()`; Solana uses `claim_fees`.
+`claimFees()`; Solana uses `claim_fees`, which pays only to a token account
+of the vault mint that the fee recipient owns.
 This Worker claims those EVM fees (issue #905) and sells the tokens soon after
 they arrive, inside the same wallet. USDC is the only
 target: a network without a verified Circle USDC address converts nothing, and
@@ -24,7 +25,8 @@ accrued fees to that same fee wallet. This approval does not authorize free-fund
 withdrawals, contributor payments or access to reserved awards. The current
 Worker implements EVM claims; Solana claim integration and its qualification
 remain required before Solana activation. Verify the reviewed deployment and
-fee recipient, reconcile uncertain sends before retrying, and verify receipt
+that its fee recipient is this fee wallet (on Solana, that the destination
+token account is owned by it), reconcile uncertain sends before retrying, and verify receipt
 before conversion.
 
 The Worker is off by default.
