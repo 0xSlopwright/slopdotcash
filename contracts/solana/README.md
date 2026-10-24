@@ -223,6 +223,14 @@ period is open at a time.
    commits as an ordinary award with the 2% fee
    through the same `origin` and `award` PDAs, so a source commits once, by
    hand or monthly.
+3. After the period's window closes, the owner may call
+   `release_monthly(period)`. It returns `total - committed` from the
+   reservation to the free balance and marks the `month` PDA released, so
+   the period accepts no more awards. Without it, a leaf that cannot commit
+   (actor 0, gross 0, a source that an earlier commit used, or a root with no
+   valid leaves) keeps its gross reserved forever. Anyone can commit each valid
+   award during the full window, so the release cannot remove an award that
+   the coordinator committed on time.
 
 Two steps are necessary because one Solana transaction cannot create the
 accounts of a full month. The attester's role grows from wallet binding to

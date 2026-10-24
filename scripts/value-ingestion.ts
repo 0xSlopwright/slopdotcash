@@ -4,9 +4,14 @@ import type {
   GitHubActor,
   LeaderboardInput,
   MergedPullRequestOutcome,
+  PenaltyFeedRecord,
 } from "../src/lib/leaderboard-types";
-import { findRegisteredRepositoryById } from "../src/lib/repositories.mjs";
+import {
+  findRegisteredRepositoryById,
+  REGISTERED_REPOSITORIES,
+} from "../src/lib/repositories.mjs";
 import type { GitHubClient } from "../workers/slopbot/github";
+import type { PublishedPenalty as PublishedPenaltyRow } from "../workers/slopbot/penalties";
 import { loadPolicy } from "../workers/slopbot/review";
 import { readValueDecisionFromHistory } from "../workers/slopbot/value-consumption";
 import {
@@ -143,6 +148,90 @@ async function fetchHistoryPage(
   )
     throw new Error("Joint value history has an invalid snapshot boundary");
   return body;
+}
+
+/**
+ * Reads every unreversed debit of one project from the fixed hosted origin
+ * (PRD section 7). An outage keeps the last published snapshot, like the
+ * value feed; a malformed page fails the publication.
+ */
+export async function fetchProjectPenalties(
+  projectId: string,
+  transport: Fetch = fetch,
+): Promise<PenaltyFeedRecord[]> {
+  if (!REGISTERED_REPOSITORIES.some((entry) => entry.projectId === projectId))
+    throw new Error("Penalty source project is not registered");
+  const records: PenaltyFeedRecord[] = [];
+  let after = "";
+  for (;;) {
+    const url = new URL("/v1/penalties", HISTORY_ORIGIN);
+    url.searchParams.set("project", projectId);
+    url.searchParams.set("after", after);
+    let response: Response;
+    try {
+      response = await transport(url, {
+        redirect: "manual",
+        cache: "no-store",
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      throw new ValueFeedUnavailableError(error);
+    }
+    // A Slopbot release without this route (404) is an outage too: keep the
+    // last published snapshot instead of publishing scores without debits.
+    if (
+      response.status === 404 ||
+      response.status === 408 ||
+      response.status === 429 ||
+      response.status >= 500
+    )
+      throw new ValueFeedUnavailableError(`HTTP ${response.status}`);
+    if (response.status !== 200 || response.redirected)
+      throw new Error("Authoritative penalty feed is unavailable");
+    let body: {
+      schemaVersion?: unknown;
+      project?: unknown;
+      records?: unknown;
+      nextAfter?: unknown;
+    };
+    try {
+      body = await response.json();
+    } catch (error) {
+      throw new ValueFeedUnavailableError(error);
+    }
+    if (
+      body?.schemaVersion !== "slop-penalties:v1" ||
+      body.project !== projectId ||
+      !Array.isArray(body.records) ||
+      body.records.length > 100 ||
+      !(
+        body.nextAfter === null ||
+        (typeof body.nextAfter === "string" && body.nextAfter > after)
+      )
+    )
+      throw new Error("Penalty feed page has invalid identity or pagination");
+    for (const row of body.records as PublishedPenaltyRow[]) {
+      if (
+        typeof row?.item_node_id !== "string" ||
+        row.item_node_id <= after ||
+        (body.nextAfter !== null && row.item_node_id > body.nextAfter)
+      )
+        throw new Error("Penalty feed page is out of order");
+      records.push({
+        itemNodeId: row.item_node_id,
+        authorGithubId: row.author_github_id,
+        category: row.category,
+        tableVersion: row.table_version,
+        debitThirds: row.debit_thirds,
+        recordedAt: row.recorded_at,
+      });
+    }
+    if (body.nextAfter === null) return records;
+    // The cursor must be the page's last record, or rows between are skipped.
+    if (body.nextAfter !== records.at(-1)?.itemNodeId)
+      throw new Error("Penalty feed cursor skips records");
+    after = body.nextAfter;
+  }
 }
 
 export async function fetchValueHistoryPage(
@@ -470,4 +559,74 @@ export async function loadValueInputs(
       await hydrateActors(new Set(decision.implementationActorNodeIds));
   }
   return { valueDecisions, jointValueDecisions, valueActors };
+}
+
+const ACCOUNT_BAN_FEED = "https://slop.cash/api/v1/project-account-bans";
+
+/**
+ * PRD section 8: a banned account receives no new contribution or review
+ * credit. The public feed lists immutable GitHub IDs and ban start times
+ * only. Each ID resolves to the GitHub node ID that score events carry. An
+ * unanswered feed keeps the last published snapshot (owner decision D2); a
+ * malformed one stops publication.
+ */
+export async function loadParticipationBans(
+  github: Pick<GitHubClient, "get">,
+  transport: Fetch = fetch,
+): Promise<Map<string, string>> {
+  let response: Response;
+  try {
+    response = await transport(ACCOUNT_BAN_FEED, {
+      redirect: "manual",
+      cache: "no-store",
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (error) {
+    throw new ValueFeedUnavailableError(error);
+  }
+  // 404 covers the release window before the route is deployed.
+  if (
+    response.status === 404 ||
+    response.status === 408 ||
+    response.status === 429 ||
+    response.status >= 500
+  )
+    throw new ValueFeedUnavailableError(`HTTP ${response.status}`);
+  if (response.status !== 200 || response.redirected)
+    throw new Error("The account ban feed is unavailable");
+  const body = (await response.json()) as {
+    schemaVersion?: unknown;
+    bans?: unknown;
+  };
+  if (
+    body?.schemaVersion !== "slop-account-bans:v1" ||
+    !Array.isArray(body.bans) ||
+    body.bans.length > 10_000
+  )
+    throw new Error("The account ban feed has an invalid shape");
+  const bans = new Map<string, string>();
+  const seen = new Set<string>();
+  for (const ban of body.bans as { githubId?: unknown; bannedAt?: unknown }[]) {
+    if (
+      typeof ban?.githubId !== "string" ||
+      !/^[1-9][0-9]{0,19}$/u.test(ban.githubId) ||
+      seen.has(ban.githubId) ||
+      typeof ban.bannedAt !== "string" ||
+      Number.isNaN(Date.parse(ban.bannedAt))
+    )
+      throw new Error("The account ban feed has an invalid record");
+    seen.add(ban.githubId);
+    const account = await github.get<{ id: number; node_id: string }>(
+      `/user/${ban.githubId}`,
+    );
+    // A deleted account has no node ID, so no new event can carry it.
+    if (account === null) continue;
+    if (
+      String(account.id) !== ban.githubId ||
+      typeof account.node_id !== "string"
+    )
+      throw new Error("GitHub returned a different account for a ban");
+    bans.set(account.node_id, new Date(ban.bannedAt).toISOString());
+  }
+  return bans;
 }

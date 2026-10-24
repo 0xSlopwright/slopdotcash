@@ -336,6 +336,7 @@ pub mod slop_escrow {
         m.allocation_root = allocation_root;
         m.committed = 0;
         m.total = total;
+        m.released = false;
         p.reserved = add(p.reserved, total)?;
         emit!(MonthlyCommitted {
             project: p.key(),
@@ -361,6 +362,7 @@ pub mod slop_escrow {
         proof: Vec<AllocationNode>,
     ) -> Result<()> {
         let _ = period;
+        require!(!ctx.accounts.month.released, EscrowError::MonthlyReleased);
         // An admitted month is already funded. Later opt-out or cap changes
         // affect new admissions, never these reserved obligations.
         let leaf = AllocationNode {
@@ -398,6 +400,35 @@ pub mod slop_escrow {
             gross,
             fee_for(gross),
         )
+    }
+    // After the period's window closes, the owner returns the part of the period's reservation
+    // that no award committed to the free balance. A leaf that cannot commit (an invalid actor
+    // or gross, a source that an earlier commit used, or a root with no valid leaves) would
+    // otherwise keep its gross reserved forever. The period then accepts no more awards.
+    pub fn release_monthly(ctx: Context<ReleaseMonthly>, period: u32) -> Result<()> {
+        let (_, closes_at) = monthly_window(period)?;
+        require!(
+            Clock::get()?.unix_timestamp >= closes_at,
+            EscrowError::MonthlyWindowOpen
+        );
+        let m = &mut ctx.accounts.month;
+        require!(!m.released, EscrowError::MonthlyReleased);
+        let released = m
+            .total
+            .checked_sub(m.committed)
+            .ok_or(error!(EscrowError::Arithmetic))?;
+        m.released = true;
+        let p = &mut ctx.accounts.project;
+        p.reserved = p
+            .reserved
+            .checked_sub(released)
+            .ok_or(error!(EscrowError::Arithmetic))?;
+        emit!(MonthlyRemainderReleased {
+            project: p.key(),
+            period,
+            released
+        });
+        Ok(())
     }
 
     // The attester and the destination keypair both sign this exact transaction, including
@@ -947,6 +978,15 @@ pub struct CommitMonthlyAward<'info> {
     pub system_program: Program<'info, System>,
 }
 #[derive(Accounts)]
+#[instruction(period:u32)]
+pub struct ReleaseMonthly<'info> {
+    pub owner: Signer<'info>,
+    #[account(mut,has_one=owner)]
+    pub project: Box<Account<'info, Project>>,
+    #[account(mut,has_one=project,seeds=[b"month",project.key().as_ref(),&period.to_le_bytes()],bump)]
+    pub month: Box<Account<'info, MonthlyAllocation>>,
+}
+#[derive(Accounts)]
 #[instruction(actor_id:u64,network:[u8;32])]
 pub struct BindWallet<'info> {
     #[account(mut)]
@@ -1081,6 +1121,8 @@ pub struct MonthlyAllocation {
     pub allocation_root: [u8; 32],
     pub committed: u64,
     pub total: u64,
+    /// The owner returned the uncommitted remainder after the window closed.
+    pub released: bool,
 }
 /// The separate identity, fee and rotation authorities, written once by
 /// `initialize_config` and never changed.
@@ -1137,6 +1179,12 @@ pub struct MonthlyCommitted {
     pub period: u32,
     pub allocation_root: [u8; 32],
     pub total: u64,
+}
+#[event]
+pub struct MonthlyRemainderReleased {
+    pub project: Pubkey,
+    pub period: u32,
+    pub released: u64,
 }
 #[event]
 pub struct AuthorityRotationProposed {
@@ -1278,6 +1326,10 @@ pub enum EscrowError {
     InvalidAllocationProof,
     #[msg("Monthly awards would exceed the owner's monthly cap")]
     MonthlyCapExceeded,
+    #[msg("The period's window has not closed")]
+    MonthlyWindowOpen,
+    #[msg("The owner released this period's remainder")]
+    MonthlyReleased,
 }
 
 #[account]

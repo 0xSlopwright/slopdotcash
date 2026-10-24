@@ -29,11 +29,12 @@ alias only.
     on 14 October 2026). It only attests the authenticated GitHub actor for a
     destination binding that the destination wallet also signs, and it submits
     only that binding transaction. It cannot choose an amount, move, pay or
-    route funds alone, or reach free or reserved funds. Each binding waits the
-    reviewed binding delay, and the project owner can cancel it in that time.
+    route funds alone, or reach free or reserved funds. A verified binding
+    activates immediately (owner decision of 24 October 2026); the project
+    owner can cancel an unpaid binding only if the cancellation executes first.
     A public timelocked rotation replaces the key, and the attester cannot
     block it. Owner decision of 24 October 2026: after the reviewed contract
-    change and independent audit, it also signs each funded project's monthly
+    change, it also signs each funded project's monthly
     allocation root. The contract limits that commitment to the owner's
     monthly cap, one commitment per period, and the owner's opt-out; the
     attester still cannot withdraw, redirect, or pay funds.

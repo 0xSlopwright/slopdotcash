@@ -23,14 +23,21 @@ import type {
   D1TransactionalDatabase,
 } from "../d1";
 import { notifySecurityCase } from "../notifications/events";
+import {
+  hasParticipationBan,
+  PARTICIPATION_BAN_QUERY,
+} from "../projects/account-bans";
 import { cachedPublicResponse, type EdgeCache } from "../projects/edge-cache";
 import { readJsonObject } from "../trace/validation";
 import type { AdvisoryReader, GithubPrivateReport } from "./advisories";
 import {
   ANALYSIS_TIMEOUT_MS,
   analysisMayStart,
+  appealTriageMayStart,
   BACKGROUND_ANALYSIS_TIMEOUT_MS,
+  latestAppealTriage,
   latestCaseAnalysis,
+  runAppealTriage,
   runCaseAnalysis,
   type SecurityAnalysisReport,
   type SecurityAnalyzer,
@@ -876,6 +883,11 @@ async function caseView(
       ? await latestCaseAnalysis(deps, row.id)
       : null;
   const maintainer = roles.has("security-maintainer");
+  // Slopbot's drafted resolution of the open appeal (PRD section 8).
+  const appealTriage =
+    includeHistory && row.appeal_state === "open"
+      ? await latestAppealTriage(deps, row.id)
+      : null;
   return {
     ...shared,
     allowedActions: [
@@ -887,7 +899,15 @@ async function caseView(
       (analysis === null || analysis.retryable)
         ? ["analyze"]
         : []),
+      // A dispute reviewer may run a missing, failed or lost appeal triage.
+      ...(roles.has("dispute") &&
+      includeHistory &&
+      row.appeal_state === "open" &&
+      (appealTriage === null || appealTriage.retryable)
+        ? ["triage-appeal"]
+        : []),
     ],
+    appealTriage,
     view: "restricted",
     reporter: {
       githubId: row.reporter_github_id,
@@ -1265,6 +1285,20 @@ export async function scheduleAnalysis(
 ): Promise<void> {
   const run = (timeoutMs: number) =>
     runCaseAnalysis(analysisDependencies(deps), caseId, report, timeoutMs);
+  if (deps.waitUntil) deps.waitUntil(run(BACKGROUND_ANALYSIS_TIMEOUT_MS));
+  else await run(ANALYSIS_TIMEOUT_MS);
+}
+
+/**
+ * Starts Slopbot's triage of a newly opened appeal, after the response where
+ * the platform allows it and inline otherwise, like the report analysis.
+ */
+async function scheduleAppealTriage(
+  deps: SecurityApiDependencies,
+  caseId: string,
+): Promise<void> {
+  const run = (timeoutMs: number) =>
+    runAppealTriage(analysisDependencies(deps), caseId, timeoutMs);
   if (deps.waitUntil) deps.waitUntil(run(BACKGROUND_ANALYSIS_TIMEOUT_MS));
   else await run(ANALYSIS_TIMEOUT_MS);
 }
@@ -1757,6 +1791,7 @@ type Change = {
    * matches but this condition fails, the request returns `unmet`.
    */
   requireSql?: string;
+  requireValues?: unknown[];
   unmet?: { code: string; message: string };
   /** The change proposes a related-party award for independent review. */
   relatedReview?: boolean;
@@ -1942,7 +1977,7 @@ async function planChange(
         role: "security-maintainer",
         reason: textField(body, "reason", 8, 2000),
         evidenceReference: null,
-        ...(await planAward(deps, row, body, now)),
+        ...(await planAward(deps, row, actor, body, now)),
       };
     }
     case "remediation": {
@@ -2158,6 +2193,7 @@ async function planChange(
         row,
         row.award_gross_minor ?? (frozenTerms(row) as FrozenTerms).grossMinor,
         at,
+        actor,
       );
       return {
         kind: action,
@@ -2467,6 +2503,7 @@ async function planDecision(
       related_party_review: "not-applicable",
       award_state: "pending",
     },
+    actor,
     award,
     deps.now(),
   );
@@ -2506,6 +2543,7 @@ async function reporterIsRelated(
 async function planAward(
   deps: SecurityApiDependencies,
   row: CaseRow,
+  actor: Actor,
   body: Record<string, unknown>,
   now: Date,
 ): Promise<Omit<Change, "kind" | "role" | "reason" | "evidenceReference">> {
@@ -2576,6 +2614,7 @@ async function planAward(
     };
   }
   if (await reporterIsRelated(deps, row)) {
+    await assertNewAwardParticipation(deps, row, actor);
     await assertRootCauseFree(
       deps,
       row.project_id,
@@ -2592,6 +2631,12 @@ async function planAward(
         payment_deadline: paymentDeadline,
       },
       relatedReview: true,
+      requireSql: `NOT EXISTS (${PARTICIPATION_BAN_QUERY}) AND NOT EXISTS (${PARTICIPATION_BAN_QUERY})`,
+      requireValues: [row.reporter_github_id, actor.githubId],
+      unmet: {
+        code: "participation_banned",
+        message: "The award participants can no longer start a new Slop award.",
+      },
     };
   }
   const reservation = await awardReservation(
@@ -2599,6 +2644,7 @@ async function planAward(
     row,
     grossMinor,
     now.toISOString(),
+    actor,
   );
   return {
     detail,
@@ -2639,6 +2685,22 @@ async function assertRootCauseFree(
     );
 }
 
+async function assertNewAwardParticipation(
+  deps: SecurityApiDependencies,
+  row: CaseRow,
+  actor: Actor,
+): Promise<void> {
+  if (
+    (await hasParticipationBan(deps.db, row.reporter_github_id)) ||
+    (await hasParticipationBan(deps.db, actor.githubId))
+  )
+    fail(
+      403,
+      "participation_banned",
+      "A banned account cannot approve or receive a new Slop award. Funded awards and appeals remain available.",
+    );
+}
+
 /**
  * Reserves the approved gross amount for the case's root cause in the same
  * batch as the revision-checked case update (PRD section 10, Capacity: only
@@ -2651,11 +2713,23 @@ async function awardReservation(
   row: CaseRow,
   grossMinor: string,
   at: string,
+  actor: Actor,
 ): Promise<Required<Pick<Change, "before" | "set" | "requireSql" | "unmet">>> {
+  await assertNewAwardParticipation(deps, row, actor);
   const terms = frozenTerms(row);
   const rootCauseKey = row.root_cause_key;
   if (terms === null || rootCauseKey === null)
     fail(409, "action_not_allowed", "The case has no paid terms to reserve");
+  // Approved awards stay owed through a quarantine or a ban, but a
+  // restricted program starts no new commitment (PRD section 11, Restricted
+  // projects).
+  const program = await currentProgram(deps, row.project_id);
+  if (program === null || program.manifest.listingTier === "retired")
+    fail(
+      409,
+      "program_restricted",
+      "A quarantined, banned, or retired program cannot approve a new award",
+    );
   await assertRootCauseFree(deps, row.project_id, row.id, rootCauseKey);
   const snapshotGuards: { sql: string; values: unknown[] }[] = [];
   const funds = await programFunds(deps, row.project_id, snapshotGuards);
@@ -2680,7 +2754,7 @@ async function awardReservation(
     before: [
       deps.db
         .prepare(
-          `INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT revision FROM security_cases WHERE id = ?) = ? AND (${OUTSTANDING_RESERVATIONS}) + CAST(? AS INTEGER) <= CAST(? AS INTEGER) AND ${snapshotGuards.map((guard) => guard.sql).join(" AND ")} AND NOT EXISTS (${ROOT_CAUSE_PENDING_REVIEW})`,
+          `INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT revision FROM security_cases WHERE id = ?) = ? AND (${OUTSTANDING_RESERVATIONS}) + CAST(? AS INTEGER) <= CAST(? AS INTEGER) AND ${snapshotGuards.map((guard) => guard.sql).join(" AND ")} AND NOT EXISTS (${ROOT_CAUSE_PENDING_REVIEW}) AND NOT EXISTS (${PARTICIPATION_BAN_QUERY}) AND NOT EXISTS (${PARTICIPATION_BAN_QUERY})`,
         )
         .bind(
           row.id,
@@ -2701,6 +2775,8 @@ async function awardReservation(
           row.project_id,
           row.id,
           rootCauseKey,
+          row.reporter_github_id,
+          actor.githubId,
         ),
     ],
     set: {
@@ -2713,7 +2789,7 @@ async function awardReservation(
     unmet: {
       code: "insufficient_funds",
       message:
-        "The bounty vault's unreserved finalized balance no longer covers this award",
+        "The award can no longer be reserved. Check the available funds and the recipient’s participation status.",
     },
   };
 }
@@ -2721,14 +2797,15 @@ async function awardReservation(
 /**
  * Actions that ask Slop to do automatic work again, not human decisions:
  * settle an older advisory link against GitHub, or run a missing, failed or
- * lost private analysis. Neither changes a decision or an award.
+ * lost private analysis or appeal triage. None changes a decision or an
+ * award.
  */
 async function automaticAction(
   deps: SecurityApiDependencies,
   row: CaseRow,
   roles: Set<Role>,
   actor: Actor,
-  action: "check-receipt" | "analyze",
+  action: "check-receipt" | "analyze" | "triage-appeal",
   body: Record<string, unknown>,
 ): Promise<Response> {
   exactKeys(body, ["action", "expectedRevision", "idempotencyKey"]);
@@ -2748,6 +2825,21 @@ async function automaticAction(
         "receipt_check_unavailable",
         "Slop could not read GitHub. Do not submit again; check later.",
       );
+  } else if (action === "triage-appeal") {
+    if (!roles.has("dispute") || row.appeal_state !== "open")
+      fail(
+        409,
+        "action_not_allowed",
+        "The case does not allow triage-appeal in its current state",
+      );
+    if (!(await appealTriageMayStart(deps, row.id)))
+      fail(409, "analysis_running", "The appeal triage is already running");
+    // The reviewer asked for it and waits for the full provider time limit.
+    await runAppealTriage(
+      analysisDependencies(deps),
+      row.id,
+      ANALYSIS_TIMEOUT_MS,
+    );
   } else {
     if (
       row.submission_state !== "verified" ||
@@ -2816,7 +2908,11 @@ async function actOnCase(
     fail(400, "invalid_request", "Invalid expectedRevision");
   if (body.expectedRevision !== row.revision)
     fail(409, "stale_revision", "The case changed since you loaded it");
-  if (action === "check-receipt" || action === "analyze")
+  if (
+    action === "check-receipt" ||
+    action === "analyze" ||
+    action === "triage-appeal"
+  )
     return await automaticAction(deps, row, roles, actor, action, body);
   if (row.submission_state !== "verified")
     fail(409, "not_verified", "The case is not verified yet");
@@ -2847,6 +2943,7 @@ async function actOnCase(
       at,
       row.id,
       row.revision,
+      ...(change.requireValues ?? []),
     );
   let results: D1Result[];
   try {
@@ -2906,6 +3003,8 @@ async function actOnCase(
       fail(409, change.unmet.code, change.unmet.message);
     fail(409, "stale_revision", "The case changed since you loaded it");
   }
+  // Slopbot triages every appeal first; a moderator still decides it.
+  if (change.kind === "appeal") await scheduleAppealTriage(deps, row.id);
   const updated = (await loadCase(deps, row.id)) as CaseRow;
   const nextRoles = await caseRoles(
     deps,

@@ -7,6 +7,7 @@ import {
   externalSourceId,
   externalWorkKey,
 } from "./external-sources";
+import { githubUserIdFromNodeId } from "./github-actor";
 import type {
   AttributionAssessment,
   AttributionAssessmentOptions,
@@ -25,6 +26,8 @@ import type {
   MergedPullRequestOutcome,
   MergedPullRequestReviewRecord,
   ModelAttribution,
+  PenaltyFeedRecord,
+  PublishedPenalty,
   PullRequestFile,
   PullRequestRecord,
   PullRequestReview,
@@ -43,6 +46,7 @@ import type {
   WorkItemSelection,
 } from "./leaderboard-types";
 import { isRecord } from "./record-validation.mjs";
+import { penaltyDeductions } from "./score-penalties";
 import {
   allocatePullRequestReviewCredit,
   assertValueScoringPolicy,
@@ -74,6 +78,8 @@ export type {
   MergedPullRequestOutcome,
   MergedPullRequestReviewRecord,
   ModelAttribution,
+  PenaltyFeedRecord,
+  PublishedPenalty,
   PullRequestFile,
   PullRequestRecord,
   PullRequestReview,
@@ -1471,7 +1477,7 @@ export function leaderboardMethodology(
     : "";
   return {
     summary: valuePolicy
-      ? `${policyStart}Slopbot's source-bound value assessments size each accepted pull request and value its reviews; a valid maintainer ratification is the exception that takes precedence. An accepted merge without a current assessment, or assessed at zero, keeps the one-third minimum. Each pull request's review pool is the sum of the highest assessed bands of its first ${valuePolicy.reviewCredit.maxReviewers} distinct qualifying reviewers, capped at the pull request's assessed size and never less than one third; it is split by band in integer thirds by largest remainder. Work accepted earlier keeps the Slop Score v2 and SCR-05 rules unchanged. Payout approval remains separate.`
+      ? `${policyStart}Slopbot's source-bound value assessments size each accepted pull request and value its reviews; a valid maintainer ratification is the exception that takes precedence. An accepted merge without a current assessment, or assessed at zero, keeps the one-third minimum. Each pull request's review pool is the sum of the highest assessed bands of its first ${valuePolicy.reviewCredit.maxReviewers} distinct qualifying reviewers, capped at the pull request's assessed size and never less than one third; it is split by band in integer thirds by largest remainder. Each unreversed debit from Slopbot's published penalty table reduces its author's score for the same project and UTC month once, never below zero; an upheld appeal or a maintainer reopen removes it, and closed reward cycles keep their recorded scores. Work accepted earlier keeps the Slop Score v2 and SCR-05 rules unchanged. Payout approval remains separate.`
       : "Slop Score v2 groups accepted work into logical work units and stores credit in integer thirds. Claude review agents propose effort, complexity, impact, and review load; maintainers ratify the score on GitHub. From October 2026 an unratified merge starts at one point, and a formal review scores 1/3 only when the merged code answered its request for changes, once per pull request. Only the actor's aggregate is rounded down at cycle close.",
     scoringRules: [
       {
@@ -1627,14 +1633,93 @@ export function ledgerWorkUnitId(
   );
 }
 
+/** The project whose UTC month a debit or score event belongs to. */
+export function penaltyProjectOf(repository: string): string {
+  const projectId = findRegisteredRepositoryById(repository)?.projectId;
+  if (!projectId)
+    throw new Error(`Score repository is not registered: ${repository}`);
+  return projectId;
+}
+
+/**
+ * Binds each unreversed feed debit to a closed, unmerged pull request of the
+ * census. GitHub, not the feed, supplies the author and the closure month. A
+ * debit for a pull request outside the census (closed before the window, or
+ * reopened) is not applied. A debit whose recorded author differs from the
+ * GitHub author fails the snapshot instead of debiting another person.
+ */
+function publishedPenalties(
+  records: readonly PenaltyFeedRecord[],
+  closed: readonly PullRequestRecord[],
+): PublishedPenalty[] {
+  const census = new Map(closed.map((pull) => [pull.id, pull]));
+  const seen = new Set<string>();
+  const penalties: PublishedPenalty[] = [];
+  for (const record of records) {
+    if (
+      typeof record !== "object" ||
+      record === null ||
+      typeof record.itemNodeId !== "string" ||
+      !/^[1-9][0-9]*$/u.test(String(record.authorGithubId)) ||
+      typeof record.category !== "string" ||
+      !/^[a-z_]{1,40}$/u.test(record.category) ||
+      typeof record.tableVersion !== "string" ||
+      !/^slopbot-penalties-v[1-9][0-9]*$/u.test(record.tableVersion) ||
+      !Number.isSafeInteger(record.debitThirds) ||
+      record.debitThirds < 1
+    )
+      throw new Error("Penalty feed record is malformed");
+    if (seen.has(record.itemNodeId))
+      throw new Error("Penalty feed repeats a pull request");
+    seen.add(record.itemNodeId);
+    const pull = census.get(record.itemNodeId);
+    if (!pull?.closedAt || pull.mergedAt !== null || !pull.author) continue;
+    if (isBotActor(pull.author)) continue;
+    if (githubUserIdFromNodeId(pull.author.id) !== record.authorGithubId)
+      throw new Error(
+        `Penalty author does not match the GitHub author of ${pull.url}`,
+      );
+    penalties.push({
+      id: `${pull.id}:penalty`,
+      actor: pull.author,
+      repository: repositoryIdFromUrl(pull.url),
+      occurredAt: pull.closedAt,
+      category: record.category,
+      tableVersion: record.tableVersion,
+      debitThirds: record.debitThirds,
+      source: {
+        id: pull.id,
+        kind: "pull-request",
+        number: pull.number,
+        title: pull.title,
+        url: pull.url,
+      },
+    });
+  }
+  return penalties.sort(
+    (left, right) =>
+      left.occurredAt.localeCompare(right.occurredAt) ||
+      left.id.localeCompare(right.id),
+  );
+}
+
 function addScore(
   entries: Map<string, MutableLeaderboardEntry>,
   ledger: ScoreEvent[],
+  participationBans: ReadonlyMap<string, string>,
   event: ScoreEvent,
 ): boolean {
   if (isBotActor(event.actor)) {
     return false;
   }
+  // PRD section 8: a banned account receives no new contribution or review
+  // credit from its ban onward. Earlier credit stays.
+  const bannedAt = participationBans.get(event.actor.id);
+  if (
+    bannedAt !== undefined &&
+    parseIsoTime(event.occurredAt) >= parseIsoTime(bannedAt)
+  )
+    return false;
   const entry = actorEntry(entries, event.actor);
   const projectId = REGISTERED_REPOSITORIES.find(
     (repository) => repository.id === event.repository,
@@ -2715,6 +2800,7 @@ function createSnapshotWithReviewCutoff(
   input: LeaderboardInput,
   reviewCutoff: string,
 ): LeaderboardSnapshot {
+  const participationBans = input.participationBans ?? new Map();
   if (
     input.jointValueDecisions !== undefined &&
     input.valueDecisions === undefined
@@ -3326,7 +3412,7 @@ function createSnapshotWithReviewCutoff(
       if (ratification && scoreThirds === 0) continue;
       const contributionBonus =
         isAuthor && contributionRun?.traceUpload ? 1_500 : 0;
-      const scored = addScore(entries, ledger, {
+      const scored = addScore(entries, ledger, participationBans, {
         id: isAuthor
           ? `${pullRequest.id}:merged`
           : `${pullRequest.id}:merged:${actor.id}`,
@@ -3506,7 +3592,7 @@ function createSnapshotWithReviewCutoff(
       );
       for (const [index, actor] of actors.entries()) {
         const thirds = shares[index] as number;
-        addScore(entries, ledger, {
+        addScore(entries, ledger, participationBans, {
           id: `${completion.pull.node_id}:joint:${unit.workUnitId}:merged:${actor.id}`,
           actor,
           category: "merged-pull-request",
@@ -3654,7 +3740,7 @@ function createSnapshotWithReviewCutoff(
       }
       evaluatedReviewReservations.add(reservationKey);
     }
-    if (addScore(entries, ledger, event) && source) {
+    if (addScore(entries, ledger, participationBans, event) && source) {
       recordScoredSources([source]);
     }
   }
@@ -3832,7 +3918,7 @@ function createSnapshotWithReviewCutoff(
         exclude(candidate.reviewId, "review-credit-zero-share");
         continue;
       }
-      addScore(entries, ledger, {
+      addScore(entries, ledger, participationBans, {
         id: `${pullRequest.id}:value-review:${candidate.reviewId}`,
         actor: candidate.actor,
         category: "substantive-review",
@@ -3884,7 +3970,7 @@ function createSnapshotWithReviewCutoff(
         !explicitPrizeAcceptance &&
         hasMaterialTestChange(detailedPullRequest.files)
       ) {
-        const scored = addScore(entries, ledger, {
+        const scored = addScore(entries, ledger, participationBans, {
           id: `${detailedPullRequest.id}:tests`,
           actor: detailedPullRequest.author,
           category: "material-test-change",
@@ -3925,7 +4011,7 @@ function createSnapshotWithReviewCutoff(
         attributableEvidenceSources.map((source) => [source.id, source]),
       );
       for (const finding of evidence.findings) {
-        const scored = addScore(entries, ledger, {
+        const scored = addScore(entries, ledger, participationBans, {
           id: `${pullRequest.id}:evidence:${finding.category}`,
           actor: detailedPullRequest.author,
           category: "evidence",
@@ -4018,7 +4104,7 @@ function createSnapshotWithReviewCutoff(
       }[record.reviewLoad];
       awardedReviewers.add(source.author.id);
       if (
-        addScore(entries, ledger, {
+        addScore(entries, ledger, participationBans, {
           id: `${pullRequest.id}:automated-review:${source.id}`,
           actor: source.author,
           category: "substantive-review",
@@ -4068,7 +4154,7 @@ function createSnapshotWithReviewCutoff(
             )?.run
           : null;
       awardedReviewers.add(review.author.id);
-      const scored = addScore(entries, ledger, {
+      const scored = addScore(entries, ledger, participationBans, {
         id: `${pullRequest.id}:reviewer:${review.author.id}`,
         actor: review.author,
         category: "substantive-review",
@@ -4230,7 +4316,7 @@ function createSnapshotWithReviewCutoff(
       !hasEvaluatedReviewReservation(ratification.source.author.id) &&
       !awardedReviewers.has(ratification.source.author.id)
     ) {
-      addScore(entries, ledger, {
+      addScore(entries, ledger, participationBans, {
         id: `${pullRequest.id}:ratifier:${ratification.source.id}`,
         actor: ratification.source.author,
         category: "substantive-review",
@@ -4294,7 +4380,7 @@ function createSnapshotWithReviewCutoff(
           `Qualifying resolved issue ${issue.id} is missing its closed timestamp`,
         );
       }
-      const scored = addScore(entries, ledger, {
+      const scored = addScore(entries, ledger, participationBans, {
         id: `${issue.id}:resolved-by:${contributor.id}`,
         actor: contributor.author,
         category: "resolved-issue",
@@ -4387,7 +4473,7 @@ function createSnapshotWithReviewCutoff(
     // survives only when its attribution is independently present and replay
     // checked in the current snapshot.
     delete retained.evidenceBonusBasisPoints;
-    if (addScore(entries, ledger, retained)) {
+    if (addScore(entries, ledger, participationBans, retained)) {
       currentLedgerIds.add(retained.id);
       currentScoreSources.add(`${retained.repository}\0${retained.source.id}`);
       const candidates = (input.retainedReviewAttributions ?? []).filter(
@@ -4537,6 +4623,18 @@ function createSnapshotWithReviewCutoff(
     }
   }
 
+  const publishedLedger = dedupeByNodeId(ledger);
+  const penalties = publishedPenalties(
+    input.penalties ?? [],
+    closedUnmergedPullRequests,
+  );
+  const deductions = penaltyDeductions(
+    publishedLedger,
+    penalties,
+    penaltyProjectOf,
+  ).byActor;
+  for (const entry of entries.values())
+    entry.scoreThirds -= deductions.get(entry.actor.id) ?? 0;
   const leaders = [...entries.values()]
     .filter(
       (entry) =>
@@ -4548,6 +4646,9 @@ function createSnapshotWithReviewCutoff(
       actor: entry.actor,
       score: Math.floor(entry.scoreThirds / 3),
       scoreThirds: entry.scoreThirds,
+      ...(deductions.has(entry.actor.id)
+        ? { penaltyThirds: deductions.get(entry.actor.id) }
+        : {}),
       points: {
         mergedPullRequests: entry.pointThirds.mergedPullRequests / 3,
         resolvedIssues: entry.pointThirds.resolvedIssues / 3,
@@ -4629,7 +4730,7 @@ function createSnapshotWithReviewCutoff(
             };
           }),
         }),
-    ledger: dedupeByNodeId(ledger).sort(
+    ledger: publishedLedger.sort(
       (left, right) =>
         right.points - left.points ||
         left.source.number - right.source.number ||
@@ -4640,6 +4741,7 @@ function createSnapshotWithReviewCutoff(
         left.pullRequestId.localeCompare(right.pullRequestId) ||
         left.reviewId.localeCompare(right.reviewId),
     ),
+    penalties,
     opportunities,
     attributions,
     invalidAttributionMarkers: overallAttribution.invalidMarkers.sort(
@@ -5029,6 +5131,70 @@ function assertReviewExclusionValue(
   );
 }
 
+/** Snapshots published before penalties carry no `penalties` field. */
+function assertPenaltyValues(
+  value: unknown,
+  repositoryIds: readonly string[],
+  windowFrom: string,
+  windowTo: string,
+): PublishedPenalty[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value))
+    throw new Error("snapshot.penalties must be an array");
+  const ids = new Set<string>();
+  return value.map((item, index) => {
+    const path = `snapshot.penalties[${index}]`;
+    const penalty = assertObject(item, path);
+    if (
+      JSON.stringify(Object.keys(penalty).sort()) !==
+      JSON.stringify([
+        "actor",
+        "category",
+        "debitThirds",
+        "id",
+        "occurredAt",
+        "repository",
+        "source",
+        "tableVersion",
+      ])
+    )
+      throw new Error(`${path} must contain exactly the penalty fields`);
+    assertActorValue(penalty.actor, `${path}.actor`);
+    if (isBotActor(penalty.actor as GitHubActor))
+      throw new Error(`${path}.actor cannot be a bot`);
+    assertEnum(penalty.repository, repositoryIds, `${path}.repository`);
+    assertIsoTimestamp(penalty.occurredAt, `${path}.occurredAt`);
+    if (
+      parseIsoTime(penalty.occurredAt as string) < parseIsoTime(windowFrom) ||
+      parseIsoTime(penalty.occurredAt as string) > parseIsoTime(windowTo)
+    )
+      throw new Error(`${path}.occurredAt is outside the snapshot window`);
+    assertString(penalty.category, `${path}.category`);
+    assertString(penalty.tableVersion, `${path}.tableVersion`);
+    assertPositiveInteger(penalty.debitThirds, `${path}.debitThirds`);
+    const source = assertObject(penalty.source, `${path}.source`);
+    assertString(source.id, `${path}.source.id`);
+    assertString(source.title, `${path}.source.title`);
+    assertPositiveInteger(source.number, `${path}.source.number`);
+    if (
+      Object.keys(source).length !== 5 ||
+      source.kind !== "pull-request" ||
+      penalty.id !== `${source.id}:penalty` ||
+      ids.has(penalty.id as string)
+    )
+      throw new Error(`${path} must bind one unique pull request`);
+    ids.add(penalty.id as string);
+    assertRepositoryUrl(
+      source.url,
+      `${path}.source.url`,
+      "pull-request",
+      source.number as number,
+      penalty.repository as RepositoryId,
+    );
+    return penalty as unknown as PublishedPenalty;
+  });
+}
+
 function assertSourceValue(
   value: unknown,
   path: string,
@@ -5241,6 +5407,10 @@ function assertLeaderValue(
       throw new Error(`${path}.points.${key} does not match integer thirds`);
     }
     scoreThirdsTotal += Number(pointThirds[key]);
+  }
+  if (entry.penaltyThirds !== undefined) {
+    assertPositiveInteger(entry.penaltyThirds, `${path}.penaltyThirds`);
+    scoreThirdsTotal -= Number(entry.penaltyThirds);
   }
   if (scoreThirdsTotal !== entry.scoreThirds) {
     throw new Error(`${path}.scoreThirds does not equal its point breakdown`);
@@ -6533,6 +6703,17 @@ export function assertLeaderboardSnapshot(
         }
       });
   }
+  const validatedPenalties = assertPenaltyValues(
+    snapshot.penalties,
+    repositoryIds,
+    windowFrom as string,
+    windowTo as string,
+  );
+  const penaltyThirds = penaltyDeductions(
+    validatedLedger,
+    validatedPenalties,
+    penaltyProjectOf,
+  ).byActor;
   const leaderByActorId = new Map(
     validatedLeaders.map((entry) => [entry.actor.id, entry]),
   );
@@ -6583,11 +6764,14 @@ export function assertLeaderboardSnapshot(
         outcomes.evaluatedContributions += 1;
       }
     }
-    const ledgerThirds = events.reduce(
-      (total, event) => total + (event.scoreThirds ?? event.points * 3),
-      0,
-    );
+    const appliedPenaltyThirds = penaltyThirds.get(leader.actor.id) ?? 0;
+    const ledgerThirds =
+      events.reduce(
+        (total, event) => total + (event.scoreThirds ?? event.points * 3),
+        0,
+      ) - appliedPenaltyThirds;
     if (
+      (leader.penaltyThirds ?? 0) !== appliedPenaltyThirds ||
       Math.floor(ledgerThirds / 3) !== leader.score ||
       ledgerThirds !== leader.scoreThirds ||
       pointThirds.mergedPullRequests !==
