@@ -24,6 +24,10 @@ import {
 } from "../src/lib/scoring-policy";
 import { VALUE_RUBRIC_VERSION } from "../src/lib/value-assessment";
 import { parseGenerationArguments } from "./generate-leaderboard";
+import {
+  fetchValueHistoryPage,
+  ValueFeedUnavailableError,
+} from "./value-ingestion";
 
 const REPO = "SlopDotCash/slopdotcash";
 const REPO_URL = `https://github.com/${REPO}`;
@@ -543,4 +547,58 @@ test("a merge assessed at zero keeps the minimum and a one-third review pool", (
     `value:${"f".repeat(64)}`,
   );
   expect(byId.get("PR_5:value-review:PRR_5_1")?.scoreThirds).toBe(1);
+});
+
+test("value feed transport distinguishes redirects from an interrupted download", async () => {
+  let mode = "redirect";
+  let followed = false;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).pathname === "/unexpected") {
+        followed = true;
+        return new Response("unexpected");
+      }
+      if (mode === "redirect")
+        return new Response(null, {
+          status: 302,
+          headers: { location: "/unexpected" },
+        });
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"schemaVersion":'));
+          },
+        }),
+      );
+    },
+  });
+  const transport = (async (_: unknown, init: RequestInit) => {
+    const interrupted = new AbortController();
+    const response = await fetch(server.url, {
+      ...init,
+      signal: AbortSignal.any([interrupted.signal, init.signal as AbortSignal]),
+    });
+    if (mode === "interrupted") setTimeout(() => interrupted.abort(), 20);
+    return response;
+  }) as typeof fetch;
+  try {
+    const redirect = await fetchValueHistoryPage(REPO, 1, 0, transport).catch(
+      (error) => error,
+    );
+    expect(redirect).toBeInstanceOf(Error);
+    expect(redirect).not.toBeInstanceOf(ValueFeedUnavailableError);
+    expect(followed).toBe(false);
+    mode = "interrupted";
+    const interrupted = await fetchValueHistoryPage(
+      REPO,
+      1,
+      0,
+      transport,
+    ).catch((error) => error);
+    expect(interrupted).toBeInstanceOf(ValueFeedUnavailableError);
+  } finally {
+    server.stop(true);
+  }
 });

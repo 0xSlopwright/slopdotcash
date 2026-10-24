@@ -76,7 +76,7 @@ async function fetchHistoryPage(
   let response: Response;
   try {
     response = await transport(url, {
-      redirect: "error",
+      redirect: "manual",
       cache: "no-store",
       signal: AbortSignal.timeout(30_000),
     });
@@ -95,7 +95,12 @@ async function fetchHistoryPage(
   const chunks: Uint8Array[] = [];
   let size = 0;
   for (;;) {
-    const result = await reader.read();
+    let result: Awaited<ReturnType<typeof reader.read>>;
+    try {
+      result = await reader.read();
+    } catch (error) {
+      throw new ValueFeedUnavailableError(error);
+    }
     if (result.done) break;
     size += result.value.byteLength;
     if (size > 8 * 1024 * 1024) {
