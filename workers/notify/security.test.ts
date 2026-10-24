@@ -36,7 +36,8 @@ async function setup(beforeMailMigration = false) {
             !(
               p.startsWith("0030") ||
               p.startsWith("0063") ||
-              p.startsWith("0065")
+              p.startsWith("0065") ||
+              p.startsWith("0079")
             )),
       )
       .sort(),
@@ -396,6 +397,13 @@ test("pre-pilot inbox history is not mailed and does not expose a dead acknowled
   expect(h.rows()).toEqual([]);
   h.sqlite.exec(
     readFileSync("migrations/0065_slopbot_appeal_notifications.sql", "utf8"),
+  );
+  expect(h.rows()).toEqual([]);
+  h.sqlite.exec(
+    readFileSync(
+      "migrations/0079_slopbot_scam_review_notifications.sql",
+      "utf8",
+    ),
   );
   expect(h.rows()).toEqual([]);
   const response = await handleNotificationsApi(

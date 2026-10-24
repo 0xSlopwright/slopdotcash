@@ -342,7 +342,10 @@ test("discovers projects and one points-ranked homepage leaderboard", async ({
   await expect(
     leaderboard.getByRole("link", { name: firstLogin, exact: true }),
   ).toBeVisible();
-  await expect(page.locator(".hero-typewriter-caret")).toBeHidden();
+  // Sizer phrases reserve caret space invisibly; reduced motion hides the live caret.
+  await expect(
+    page.locator(".hero-typewriter > .hero-typewriter-caret"),
+  ).toBeHidden();
   await expect(
     page.locator("#projects").getByRole("link", { name: "Add a project" }),
   ).toHaveAttribute("href", "/projects/new");
@@ -364,7 +367,7 @@ test("discovers projects and one points-ranked homepage leaderboard", async ({
   ).toBe(true);
 });
 
-test("hides uncleared agent setup and keeps contribution records available", async ({
+test("shows agent setup and keeps contribution records available", async ({
   context,
   page,
   request,
@@ -378,7 +381,7 @@ test("hides uncleared agent setup and keeps contribution records available", asy
   await expect(page.locator(".reward-card")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Copy agent prompt" }),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await expect(page.getByLabel("Manual install command")).toHaveCount(0);
   await expect(page.getByLabel("Solana public address")).toHaveCount(0);
   await expect(page.getByText("Cycle allocation details")).toHaveCount(0);
@@ -399,26 +402,6 @@ test("hides uncleared agent setup and keeps contribution records available", asy
   expect(view.leaders.every((leader) => leader.projectedMinor === "0")).toBe(
     true,
   );
-});
-
-test("links each project's website and X account from its page", async ({
-  page,
-}) => {
-  await page.goto("/projects/thenetwork", { waitUntil: "networkidle" });
-  const network = page.getByRole("navigation", { name: "Project links" });
-  await expect(
-    network.getByRole("link", { name: "ntwrk.party" }),
-  ).toHaveAttribute("href", "https://ntwrk.party");
-  await expect(network.getByRole("link", { name: "GitHub" })).toHaveAttribute(
-    "href",
-    "https://github.com/eliza-research/thenetwork",
-  );
-  await page.goto("/projects/eliza", { waitUntil: "networkidle" });
-  await expect(
-    page
-      .getByRole("navigation", { name: "Project links" })
-      .getByRole("link", { name: "@elizaOS on X" }),
-  ).toHaveAttribute("href", "https://x.com/elizaOS");
 });
 
 test("never presents Delta Star's external prize as platform money", async ({
@@ -1383,7 +1366,7 @@ test("shows an explicit error for invalid data and retries", async ({
   // The frozen fixture is older than eight hours: a retained snapshot shows
   // its stale label instead of passing as current (owner decision D2).
   await expect(
-    page.getByRole("status").filter({ hasText: "Scores may be outdated" }),
+    page.getByRole("status").filter({ hasText: "Points may be outdated" }),
   ).toBeVisible();
 });
 

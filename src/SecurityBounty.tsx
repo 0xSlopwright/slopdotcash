@@ -136,10 +136,15 @@ type Readiness = {
 };
 
 type ReadinessState =
-  | { status: "idle" }
   | { status: "checking" }
   | { status: "error"; message: string }
-  | { status: "checked"; value: Readiness; stale: boolean };
+  | {
+      status: "checked";
+      value: Readiness;
+      stale: boolean;
+      /** A fresh check is running; the page keeps the last answer. */
+      rechecking: boolean;
+    };
 
 const BLOCKED_INTAKE: Record<Exclude<Readiness["state"], "ready">, string> = {
   disabled:
@@ -150,23 +155,59 @@ const BLOCKED_INTAKE: Record<Exclude<Readiness["state"], "ready">, string> = {
     "GitHub did not answer the readiness check. Slop cannot confirm that private reporting is available.",
 };
 
+function automaticReady(value: Readiness): boolean {
+  return (
+    value.state === "ready" &&
+    value.handoffUrl !== null &&
+    value.automatic === "ready"
+  );
+}
+
 /**
- * Checks private reporting and shows the GitHub handoff only while the
- * answer is fresh. Every other state blocks the handoff (SEC-07).
+ * Checks private reporting when the page opens and shows the GitHub handoff
+ * only while the answer is fresh. Every other state blocks the handoff
+ * (SEC-07). The report draft lives here, so an expired or failed check never
+ * discards what the reporter typed; sending checks again first.
  */
 function IntakeHandoff({ project }: { project: ProjectDefinition }) {
-  const [state, setState] = useState<ReadinessState>({ status: "idle" });
-  const check = useCallback(() => {
-    setState({ status: "checking" });
-    projectApiRequest<Readiness>(
+  const [state, setState] = useState<ReadinessState>({ status: "checking" });
+  const [draft, setDraft] = useState<ReportDraft>(EMPTY_DRAFT);
+  const signedIn = useProjectSession().status === "signed-in";
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+  const check = useCallback((): Promise<Readiness | null> => {
+    setState((current) =>
+      current.status === "checked"
+        ? { ...current, rechecking: true }
+        : { status: "checking" },
+    );
+    return projectApiRequest<Readiness>(
       "GET",
       `security-programs/${encodeURIComponent(project.id)}/intake`,
     ).then(
-      (value) => setState({ status: "checked", value, stale: false }),
-      (error: unknown) =>
-        setState({ status: "error", message: errorMessage(error) }),
+      (value) => {
+        setState({ status: "checked", value, stale: false, rechecking: false });
+        return value;
+      },
+      (error: unknown) => {
+        setState({ status: "error", message: errorMessage(error) });
+        return null;
+      },
     );
   }, [project.id]);
+  useEffect(() => {
+    void check();
+  }, [check]);
+  // Sending needs a fresh answer: a stale one is checked again first.
+  const ensureReady = useCallback(async (): Promise<boolean> => {
+    const current = stateRef.current;
+    if (current.status === "checked" && !current.stale && !current.rechecking)
+      return automaticReady(current.value);
+    const value = await check();
+    return value !== null && automaticReady(value);
+  }, [check]);
   // The answer expires on this device's clock from when it arrived, so a
   // skewed clock cannot hide or extend it. The edge serves it at most
   // `maxAgeSeconds` old, so the handoff never relies on an older check.
@@ -181,6 +222,16 @@ function IntakeHandoff({ project }: { project: ProjectDefinition }) {
     );
     return () => window.clearTimeout(timer);
   }, [state]);
+  const checkAgain = (busy: boolean) => (
+    <button
+      className="text-button"
+      disabled={busy}
+      onClick={() => void check()}
+      type="button"
+    >
+      <RotateCcw aria-hidden="true" /> {busy ? "Checking…" : "Check again"}
+    </button>
+  );
   return (
     <section aria-labelledby="security-report" className="admin-card">
       <h2 id="security-report">Report a vulnerability privately</h2>
@@ -189,56 +240,60 @@ function IntakeHandoff({ project }: { project: ProjectDefinition }) {
         severity or potential loss of funds. Keep exploit details out of public
         posts.
       </p>
-      {state.status === "idle" ? (
-        <button className="button primary-button" onClick={check} type="button">
-          Check private reporting
-        </button>
-      ) : state.status === "checking" ? (
+      {state.status === "checking" ? (
         <p aria-live="polite" className="admin-status">
           Checking GitHub private reporting…
         </p>
       ) : state.status === "error" ? (
         <div className="form-error" role="alert">
           <CircleAlert aria-hidden="true" /> {state.message}
-          <button className="text-button" onClick={check} type="button">
-            <RotateCcw aria-hidden="true" /> Check again
-          </button>
-        </div>
-      ) : state.stale ? (
-        <div className="form-error" role="alert">
-          <CircleAlert aria-hidden="true" /> The readiness check from{" "}
-          {formatUtc(state.value.checkedAt)} is out of date.
-          <button className="text-button" onClick={check} type="button">
-            <RotateCcw aria-hidden="true" /> Check again
-          </button>
+          {checkAgain(false)}
         </div>
       ) : state.value.state === "ready" && state.value.handoffUrl ? (
         <div aria-live="polite" className="security-handoff">
-          <p className="admin-status">
-            GitHub private reporting is on (checked{" "}
-            {formatUtc(state.value.checkedAt)}).{" "}
-            {state.value.paidParticipation === "open"
-              ? "This program accepts paid reports."
-              : "This program does not accept new paid reports now. Private reporting stays open."}
-          </p>
+          {state.stale ? (
+            <div className="form-error" role="alert">
+              <CircleAlert aria-hidden="true" /> The readiness check from{" "}
+              {formatUtc(state.value.checkedAt)} is out of date.
+              {state.value.automatic === "ready" && signedIn
+                ? " Your draft is kept; sending checks again first."
+                : ""}
+              {checkAgain(state.rechecking)}
+            </div>
+          ) : (
+            <p className="admin-status">
+              GitHub private reporting is on (checked{" "}
+              {formatUtc(state.value.checkedAt)}).{" "}
+              {state.value.paidParticipation === "open"
+                ? "This program accepts paid reports."
+                : "This program does not accept new paid reports now. Private reporting stays open."}
+            </p>
+          )}
           {state.value.automatic === "ready" ? (
-            <AutomaticReportForm project={project} />
+            <AutomaticReportForm
+              draft={draft}
+              ensureReady={ensureReady}
+              onDraft={setDraft}
+              project={project}
+            />
           ) : null}
-          <a
-            className={
-              state.value.automatic === "ready"
-                ? "text-button"
-                : "button primary-button"
-            }
-            href={state.value.handoffUrl}
-            rel="noreferrer"
-            target="_blank"
-          >
-            {state.value.automatic === "ready"
-              ? "Or report directly on GitHub"
-              : "Report privately on GitHub"}{" "}
-            <ExternalLink aria-hidden="true" />
-          </a>
+          {state.stale ? null : (
+            <a
+              className={
+                state.value.automatic === "ready"
+                  ? "text-button"
+                  : "button primary-button"
+              }
+              href={state.value.handoffUrl}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {state.value.automatic === "ready"
+                ? "Or report directly on GitHub"
+                : "Report privately on GitHub"}{" "}
+              <ExternalLink aria-hidden="true" />
+            </a>
+          )}
         </div>
       ) : (
         <div className="form-error" role="alert">
@@ -250,9 +305,7 @@ function IntakeHandoff({ project }: { project: ProjectDefinition }) {
           }{" "}
           Do not use a public channel. Keep your notes private and check again
           later.
-          <button className="text-button" onClick={check} type="button">
-            <RotateCcw aria-hidden="true" /> Check again
-          </button>
+          {checkAgain(state.rechecking)}
         </div>
       )}
       <p>
@@ -323,6 +376,12 @@ const FAILURE_LABELS: Record<string, string> = {
     "GitHub has this report, but Slop could not confirm it within 24 hours. Link the advisory for a maintainer to verify instead.",
 };
 
+/** Failures whose labels point the reporter to the maintainer-verified link. */
+const LINK_FALLBACK_FAILURES: readonly string[] = [
+  "not-private-report",
+  "unverifiable",
+];
+
 const GRANT_ERRORS: Record<string, string> = {
   grant_identity_mismatch:
     "GitHub authorized a different account than the one signed in to Slop. Nothing was sent.",
@@ -332,25 +391,26 @@ const GRANT_ERRORS: Record<string, string> = {
   grant_flow_missing: "The GitHub authorization expired. Try again.",
 };
 
-function IntakeNotices({ login }: { login: string | null }) {
+/** One consent line before the fields. */
+function IntakeConsent({ login }: { login: string | null }) {
   return (
-    <>
-      <p>Maintainers decide awards; a report does not establish eligibility.</p>
-      <p>
-        GitHub keeps the report private to you and the repository’s
-        administrators and security managers. Slop stores no report text.
-      </p>
-      <p>
-        The Slop private intake app will file this on GitHub as{" "}
-        {login ? `@${login}` : "you"} with your authorization. GitHub records it
-        as made by you through the app.
-      </p>
-      <p>
-        Slop adds one line, “Report reference:” and a random code, to the end of
-        the description so it can find the report again. The line names neither
-        you nor Slop, and it stays if the advisory is published.
-      </p>
-    </>
+    <p>
+      The Slop private intake app will file this on GitHub as{" "}
+      {login ? `@${login}` : "you"} with your authorization, as a private report
+      only you and the repository’s administrators and security managers can
+      read.
+    </p>
+  );
+}
+
+/** One optional explanation after the action (PRD section 7). */
+function IntakeReferenceNote() {
+  return (
+    <p className="field-hint">
+      Slop stores no report text. It adds one line, “Report reference:” and a
+      random code, to the end of the description to find the report again; the
+      line names neither you nor Slop and stays if the advisory is published.
+    </p>
   );
 }
 
@@ -431,11 +491,22 @@ function ReportFields({
 /**
  * Starts an automatic private report from the program page: the draft stays
  * in this tab, Slop creates the private submission and GitHub asks the
- * reporter to authorize the intake app for it.
+ * reporter to authorize the intake app for it. Sending first confirms a
+ * fresh readiness answer; when intake is no longer available the page shows
+ * why and the draft stays with the parent.
  */
-function AutomaticReportForm({ project }: { project: ProjectDefinition }) {
+function AutomaticReportForm({
+  draft,
+  ensureReady,
+  onDraft,
+  project,
+}: {
+  draft: ReportDraft;
+  ensureReady: () => Promise<boolean>;
+  onDraft: (draft: ReportDraft) => void;
+  project: ProjectDefinition;
+}) {
   const session = useProjectSession();
-  const [draft, setDraft] = useState<ReportDraft>(EMPTY_DRAFT);
   const [key] = useState(requestKey);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -446,11 +517,15 @@ function AutomaticReportForm({ project }: { project: ProjectDefinition }) {
         privately through Slop, or report directly on GitHub.
       </p>
     );
-  const submit = (event: FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setError(null);
-    projectApiRequest<{ submission: Submission; authorizeUrl: string }>(
+    if (!(await ensureReady())) {
+      setBusy(false);
+      return;
+    }
+    await projectApiRequest<{ submission: Submission; authorizeUrl: string }>(
       "POST",
       "security-submissions",
       { projectId: project.id, idempotencyKey: key, origin: "slop" },
@@ -466,13 +541,19 @@ function AutomaticReportForm({ project }: { project: ProjectDefinition }) {
     );
   };
   return (
-    <form className="security-form" onSubmit={submit}>
-      <IntakeNotices login={session.session.githubLogin} />
-      <ReportFields draft={draft} onChange={setDraft} />
+    <form
+      className="security-form"
+      onSubmit={(event) => {
+        void submit(event);
+      }}
+    >
+      <IntakeConsent login={session.session.githubLogin} />
+      <ReportFields draft={draft} onChange={onDraft} />
       <FormError message={error} />
       <button className="button primary-button" disabled={busy} type="submit">
         {busy ? "Opening GitHub…" : "Authorize GitHub to submit as you"}
       </button>
+      <IntakeReferenceNote />
     </form>
   );
 }
@@ -554,14 +635,13 @@ export function SecurityProgramPage({
           </Fact>
         </dl>
         <p>
-          Awards are discretionary. Critical bugs and potential loss of funds
-          are priorities, not an automatic payout promise: the project owner
-          decides whether to award a bounty and how much, and approving an award
-          reserves that amount from verified funds. Proven potential loss
-          counts; nobody needs to lose funds. An AI summary helps the owner
-          triage, but it never decides a finding or an award. No additional
-          payout fee applies. The policy in force when GitHub received your
-          report stays fixed for your case.
+          Awards are discretionary. The project owner decides whether to award
+          and how much; critical bugs and potential loss of funds are
+          priorities, not an automatic payout, and a pledge is not a payment
+          guarantee. Proven potential loss counts; nobody needs to lose funds.
+          An AI summary helps triage but never decides. No additional payout fee
+          applies. The policy in force when GitHub received your report stays
+          fixed for your case.
         </p>
       </section>
       <section aria-labelledby="security-scope" className="admin-card">
@@ -635,19 +715,11 @@ export function SecurityProgramPage({
           <Fact term="Safe harbor">{terms.safeHarbor}</Fact>
         </dl>
         <p>
-          Maintainer judgment is part of this program. Validity, severity,
-          scope, duplicates and acceptance cannot be proven from blockchain
-          records. Funding can lower the risk of nonpayment, but it cannot prove
-          that a finding is valid or force a fair classification. A pledge or a
-          reserve label is not a payment guarantee.
-        </p>
-        <p>
-          Slop does not publish cases. Rejected, duplicate, disputed and paid
-          reports stay private. A payment does not publish a report, and you
-          decide separately whether your name is public. GitHub repository
-          administrators and security managers can read GitHub advisories under
-          GitHub's own rules; Slop cannot narrow that access. A public-chain
-          payment shows its addresses, amount and time.
+          Slop does not publish cases or store report text; rejected, duplicate,
+          disputed and paid reports stay private, and you decide separately
+          whether your name is public. GitHub repository administrators and
+          security managers can read the advisory under GitHub's rules. A
+          public-chain payment shows its addresses, amount and time.
         </p>
       </section>
     </main>
@@ -1087,8 +1159,11 @@ function ClaimForm({
  * author and the receipt time, so no maintainer link check is needed.
  */
 function DirectVerifyForm({
+  onUnavailable,
   programProjects,
 }: {
+  /** The program's repository lacks the intake app, so GitHub cannot verify. */
+  onUnavailable: () => void;
   programProjects: ProjectDefinition[];
 }) {
   const [projectId, setProjectId] = useState(programProjects[0]?.id ?? "");
@@ -1118,6 +1193,11 @@ function DirectVerifyForm({
       (caught: unknown) => {
         setBusy(false);
         setError(errorMessage(caught));
+        if (
+          caught instanceof ProjectApiError &&
+          caught.code === "intake_unavailable"
+        )
+          onUnavailable();
       },
     );
   };
@@ -1151,6 +1231,16 @@ function DirectVerifyForm({
   );
 }
 
+/** One wording for how the GitHub receipt time was established. */
+const RECEIVED_AT_SOURCE_LABELS: Record<
+  "github-verified" | "maintainer-attested" | "unknown",
+  string
+> = {
+  "github-verified": " (verified from GitHub)",
+  "maintainer-attested": " (maintainer-attested)",
+  unknown: "",
+};
+
 function submissionStatus(submission: Submission): string {
   switch (submission.state) {
     case "draft":
@@ -1169,7 +1259,7 @@ function submissionStatus(submission: Submission): string {
     case "submitted":
       return "Received by GitHub. Confirming…";
     case "receipt-verified":
-      return `Received by GitHub at ${formatUtc(submission.githubCreatedAt)} (verified with GitHub).`;
+      return `Received by GitHub at ${formatUtc(submission.githubCreatedAt)}${RECEIVED_AT_SOURCE_LABELS["github-verified"]}.`;
     case "failed":
       return (
         FAILURE_LABELS[submission.failureCode ?? ""] ??
@@ -1284,7 +1374,7 @@ function SubmissionCard({
             run("send", { expectedRevision, report: reportBody(draft) });
           }}
         >
-          <IntakeNotices
+          <IntakeConsent
             login={
               session.status === "signed-in"
                 ? session.session.githubLogin
@@ -1307,6 +1397,7 @@ function SubmissionCard({
               ? "Fix and resend"
               : "Submit privately"}
           </button>
+          <IntakeReferenceNote />
         </form>
       ) : null}
       {submission.origin === "direct" && submission.state === "draft" ? (
@@ -1356,15 +1447,28 @@ function SubmissionsPanel({
   focusId,
   grantError,
   onAvailability,
+  onLinkFallback,
   onOpenCase,
 }: {
   focusId: string | null;
   grantError: string | null;
   onAvailability: (available: boolean) => void;
+  /** Whether a report failed in a way GitHub cannot verify automatically. */
+  onLinkFallback: (needed: boolean) => void;
   onOpenCase: (caseId: string) => void;
 }) {
   const [submissions, setSubmissions] = useState<Submission[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (submissions === null) return;
+    onLinkFallback(
+      submissions.some(
+        (entry) =>
+          entry.state === "failed" &&
+          LINK_FALLBACK_FAILURES.includes(entry.failureCode ?? ""),
+      ),
+    );
+  }, [submissions, onLinkFallback]);
   const load = useCallback(() => {
     projectApiRequest<{ automatic: boolean; submissions: Submission[] }>(
       "GET",
@@ -2448,7 +2552,7 @@ function CaseDetail({
         <Fact term="Receipt">
           {SUBMISSION_LABELS[record.submissionState]}
           {record.receivedAt
-            ? ` ${formatUtc(record.receivedAt)}${record.receivedAtSource === "github-verified" ? " (verified from GitHub)" : " (maintainer-attested)"}`
+            ? ` ${formatUtc(record.receivedAt)}${RECEIVED_AT_SOURCE_LABELS[record.receivedAtSource ?? "unknown"]}`
             : ""}
           {record.advisory ? (
             <>
@@ -2479,57 +2583,6 @@ function CaseDetail({
             : ""}
         </Fact>
       </dl>
-      <details className="security-reference">
-        <summary>Case details</summary>
-        <dl className="admin-facts">
-          <Fact term="Your role">{record.viewerRoles.join(", ")}</Fact>
-          <Fact term="Received by GitHub">
-            {formatUtc(record.receivedAt)}
-            {record.receivedAtSource === "maintainer-attested"
-              ? " (maintainer verified)"
-              : record.receivedAtSource === "github-verified"
-                ? " (verified with GitHub)"
-                : ""}
-          </Fact>
-          <Fact term="Policy revision">{record.policyRevision ?? "—"}</Fact>
-          {record.receiptState ? (
-            <>
-              <Fact term="Receipt">{record.receiptState}</Fact>
-              <Fact term="Remediation">{record.remediationState}</Fact>
-              <Fact term="Disclosure">{record.disclosureState}</Fact>
-              <Fact term="Recognition">{record.recognition}</Fact>
-              <Fact term="Severity">{record.severity ?? "—"}</Fact>
-              <Fact term="Loss of funds">{record.lossFinding ?? "—"}</Fact>
-              <Fact term="Appeal">{record.appealState}</Fact>
-            </>
-          ) : null}
-          {record.reporter ? (
-            <Fact term="Reporter">@{record.reporter.githubLogin}</Fact>
-          ) : null}
-          {record.payee ? (
-            <Fact term="Payee">@{record.payee.githubLogin}</Fact>
-          ) : null}
-          {record.view === "restricted" ? (
-            <>
-              <Fact term="Root cause">{record.rootCauseKey ?? "—"}</Fact>
-              <Fact term="Duplicate of">{record.duplicateOf ?? "—"}</Fact>
-              <Fact term="Evidence digest">
-                {record.evidenceDigest ? (
-                  <code>{record.evidenceDigest}</code>
-                ) : (
-                  "—"
-                )}
-              </Fact>
-              <Fact term="Triagers">
-                {(record.triagers ?? [])
-                  .filter((entry) => entry.revokedAt === null)
-                  .map((entry) => `@${entry.githubLogin}`)
-                  .join(", ") || "None"}
-              </Fact>
-            </>
-          ) : null}
-        </dl>
-      </details>
       {owner ? (
         <AnalysisPanel
           onRetry={() => {
@@ -2588,7 +2641,7 @@ function CaseDetail({
           <Fact term="Program terms at receipt">
             {record.terms
               ? `${money(record.terms.grossMinor, record.terms)} published gross per finding (policy revision ${record.policyRevision ?? "—"})`
-              : "No paid program was open"}
+              : `No paid program was open (policy revision ${record.policyRevision ?? "—"})`}
           </Fact>
           {record.receiptState ? (
             <>
@@ -2708,6 +2761,10 @@ export function SecurityCasesPage() {
   const [note, setNote] = useState<string | null>(null);
   // `null` until the submission list answers; false while intake is off.
   const [automatic, setAutomatic] = useState<boolean | null>(null);
+  // The maintainer-verified link appears only after automatic verification
+  // cannot run: a failed submission or a repository without the intake app.
+  const [linkFallback, setLinkFallback] = useState(false);
+  const [directUnavailable, setDirectUnavailable] = useState(false);
   // GitHub's authorization returns here with the submission and any error.
   const [returned] = useState(() => {
     const query = new URLSearchParams(window.location.search);
@@ -2809,6 +2866,7 @@ export function SecurityCasesPage() {
           focusId={returned.submission}
           grantError={returned.error}
           onAvailability={setAutomatic}
+          onLinkFallback={setLinkFallback}
           onOpenCase={openCase}
         />
         {automatic ? (
@@ -2818,20 +2876,23 @@ export function SecurityCasesPage() {
               GitHub’s own record proves you are the author and keeps the
               original receipt time.
             </p>
-            <DirectVerifyForm programProjects={programProjects} />
-            <details>
-              <summary>
-                The project has not installed the Slop private intake app
-              </summary>
-              <p className="admin-status">
-                Link the report instead. A maintainer verifies the link and the
-                original GitHub receipt time.
-              </p>
-              <ClaimForm
-                onCreated={created}
-                programProjects={programProjects}
-              />
-            </details>
+            <DirectVerifyForm
+              onUnavailable={() => setDirectUnavailable(true)}
+              programProjects={programProjects}
+            />
+            {linkFallback || directUnavailable ? (
+              <>
+                <p className="admin-status">
+                  GitHub could not verify this report automatically. Link it
+                  instead; a maintainer verifies the link and the original
+                  GitHub receipt time.
+                </p>
+                <ClaimForm
+                  onCreated={created}
+                  programProjects={programProjects}
+                />
+              </>
+            ) : null}
           </section>
         ) : automatic === false ? (
           <section aria-labelledby="security-link" className="admin-section">

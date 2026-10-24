@@ -12,6 +12,7 @@ import {
   type VaultOperation,
 } from "./lib/evm-vault-actions";
 import { isSolanaTransactionId } from "./lib/funding-address.mjs";
+import { networkLabel } from "./lib/network-names";
 import {
   formatAssetAmount,
   formatBaseUnits,
@@ -133,6 +134,9 @@ export function VaultActions({
         );
       setWallet(connection);
       setReview(null);
+      // Only the owner may withdraw; any other wallet can only deposit.
+      if (!sameWallet(connection.address, deployment.owner))
+        setOperation("deposit");
     });
   const inspect = () =>
     run(async () => {
@@ -283,13 +287,15 @@ export function VaultActions({
       assetAddress: deployment.asset,
       assetDecimals: review?.decimals ?? pending?.decimals ?? 0,
     });
+  const isOwner =
+    wallet !== null && sameWallet(wallet.address, deployment.owner);
   const link = transactionUrl(deployment.network, pending?.hash ?? null);
   return (
     <section
       className="admin-card vault-actions"
-      aria-label={`Fund or withdraw · ${deployment.network}`}
+      aria-label={`Fund or withdraw · ${networkLabel(deployment.network)}`}
     >
-      <h3>Fund or withdraw · {deployment.network}</h3>
+      <h3>Fund or withdraw · {networkLabel(deployment.network)}</h3>
       <p>
         Vault <code>{deployment.vault}</code>
       </p>
@@ -415,7 +421,10 @@ export function VaultActions({
             <legend>Vault action</legend>
             <fieldset className="vault-operation">
               <legend>Action</legend>
-              {(["deposit", "withdraw"] as const).map((choice) => (
+              {(isOwner
+                ? (["deposit", "withdraw"] as const)
+                : (["deposit"] as const)
+              ).map((choice) => (
                 <label key={choice}>
                   <input
                     type="radio"
@@ -430,10 +439,13 @@ export function VaultActions({
                   <span>
                     {choice === "deposit"
                       ? "Deposit tokens"
-                      : "Withdraw free funds (owner only)"}
+                      : "Withdraw free funds"}
                   </span>
                 </label>
               ))}
+              {isOwner ? null : (
+                <p>Only the vault owner's wallet can withdraw free funds.</p>
+              )}
             </fieldset>
             <label>
               Token amount
@@ -486,10 +498,9 @@ export function VaultActions({
               {operation === "deposit" ? (
                 <p>
                   This deposit joins the project's free funds. Only its owner
-                  can approve awards or withdraw free funds, less a 2%
-                  withdrawal fee. Depositors have no refund right. Funding does
-                  not guarantee that the project will deliver work. Your wallet
-                  also charges network gas.
+                  can award or withdraw them, less a 2% withdrawal fee.
+                  Depositors have no refund right. Your wallet also charges
+                  network gas.
                 </p>
               ) : (
                 <p>

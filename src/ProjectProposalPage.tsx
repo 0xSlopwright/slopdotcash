@@ -2574,17 +2574,17 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
   );
 }
 
-/**
- * The signed-in account's projects with their setup status, and any
- * application stored before self-service setup, which its applicant
- * publishes without entering it again.
- */
 /** Readable labels for the stored project status enum. */
 const PROJECT_STATUS_LABEL: Record<ProjectSummary["status"], string> = {
   active: "Live",
   paused: "Paused",
 };
 
+/**
+ * The signed-in account's projects with their setup status, and any
+ * application stored before self-service setup, which its applicant
+ * publishes without entering it again.
+ */
 function OwnerProjects({ refreshKey }: { refreshKey: string }) {
   const session = useProjectSession();
   const [state, setState] = useState<
@@ -2648,8 +2648,9 @@ function OwnerProjects({ refreshKey }: { refreshKey: string }) {
           {state.projects.map((project) => (
             <li key={project.id}>
               <strong>{project.name}</strong> ·{" "}
-              {PROJECT_STATUS_LABEL[project.status]}
-              {project.listingTier === "retired" ? " · delisted" : ""}{" "}
+              {project.listingTier === "retired"
+                ? "Delisted"
+                : PROJECT_STATUS_LABEL[project.status]}{" "}
               <Link href={`/projects/${project.slug}/manage`}>Manage</Link>{" "}
               <button
                 className="text-button"

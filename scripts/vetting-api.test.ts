@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import { handleProjectApi } from "../backend/projects/handler";
+import { evidencePolicy } from "../backend/vetting/evidence";
 import { EVIDENCE_CHUNK_BYTES } from "../backend/vetting/evidence-chunks";
 import {
   handleVettingApi,
@@ -22,7 +23,12 @@ import {
 import { parseVettingResult } from "../backend/vetting/result";
 import { applicationManifest } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
-import { localVettingEvidence } from "../tests/vetting-evidence-fixture";
+import {
+  EVIDENCE_OWNER_GITHUB_ID,
+  EVIDENCE_READER_GITHUB_ID,
+  localEvidencePolicy,
+  localVettingEvidence,
+} from "../tests/vetting-evidence-fixture";
 import {
   signedVettingHeaders,
   VETTING_EVIDENCE_OBJECTS,
@@ -541,17 +547,16 @@ describe("community security vetting", () => {
       (await retained.evidence.run(id, result.environment.runId)).expires_at,
     ).toBeNull();
     const casePolicy = JSON.parse(retained.evidence.deps.policy!);
-    casePolicy.operatorGithubIds.push("900000004");
     casePolicy.externalControls.validUntil = new Date(
       NOW.getTime() + 100 * 86400_000,
     ).toISOString();
     retained.evidence.deps.policy = JSON.stringify(casePolicy);
     expect((await close("900000001"))?.status).toBe(403);
-    expect((await close("900000004"))?.status).toBe(403);
-    expect((await close("900000003", "https://other.invalid"))?.status).toBe(
-      403,
-    );
-    const closed = await close("900000003");
+    expect((await close(EVIDENCE_READER_GITHUB_ID))?.status).toBe(403);
+    expect(
+      (await close(EVIDENCE_OWNER_GITHUB_ID, "https://other.invalid"))?.status,
+    ).toBe(403);
+    const closed = await close(EVIDENCE_OWNER_GITHUB_ID);
     expect(closed?.status).toBe(200);
     const expiry = new Date(NOW.getTime() + 90 * 86400_000).toISOString();
     expect(await closed?.json()).toMatchObject({
@@ -563,7 +568,7 @@ describe("community security vetting", () => {
     ).toBe(expiry);
     // A replay must never restart the retention clock.
     retained.evidence.deps.now = () => new Date(NOW.getTime() + 1000);
-    expect((await close("900000003"))?.status).toBe(200);
+    expect((await close(EVIDENCE_OWNER_GITHUB_ID))?.status).toBe(200);
     expect(
       (await retained.evidence.run(id, result.environment.runId)).expires_at,
     ).toBe(expiry);
@@ -577,7 +582,7 @@ describe("community security vetting", () => {
             headers: {
               origin: ORIGIN,
               "content-type": "application/json",
-              "x-test-operator": "900000003",
+              "x-test-operator": EVIDENCE_OWNER_GITHUB_ID,
             },
             body: JSON.stringify({
               reason: "Verify the closed-case access boundary",
@@ -785,7 +790,7 @@ test("private retained bytes remain inspectable without granting clean clearance
   const key = `vetting/${id}/${run}/${result.traceSha256}`;
   const operator = async (
     path: string,
-    actor = "900000003",
+    actor = EVIDENCE_OWNER_GITHUB_ID,
     body?: unknown,
     grant?: string,
   ) =>
@@ -858,13 +863,15 @@ test("private retained bytes remain inspectable without granting clean clearance
       })
     ).json()
   ).grant;
+  // A policy that names anyone but the recorded readers is inactive, so an
+  // issued grant stops working.
   retained.evidence.deps.policy = JSON.stringify({
     ...JSON.parse(policy),
-    operatorGithubIds: ["900000099"],
+    operatorGithubIds: [EVIDENCE_OWNER_GITHUB_ID, "900000099"],
   });
   expect(
     (await operator(`${base}/body`, undefined, undefined, revokeGrant)).status,
-  ).toBe(403);
+  ).toBe(503);
   retained.evidence.deps.policy = policy;
   expect((await postResult(result)).status).toBe(422);
   expect((await publicVetting()).state).toBe("queued");
@@ -1128,7 +1135,7 @@ test("large retained evidence uses bounded chunks, immutable completion and acto
       new Request(`${ORIGIN}${base}/download-grant`, {
         method: "POST",
         headers: {
-          "x-test-operator": "900000003",
+          "x-test-operator": EVIDENCE_OWNER_GITHUB_ID,
           origin: ORIGIN,
           "content-type": "application/json",
         },
@@ -1139,7 +1146,7 @@ test("large retained evidence uses bounded chunks, immutable completion and acto
     ))!;
   const request = async (
     cookie: string,
-    actor = "900000003",
+    actor = EVIDENCE_OWNER_GITHUB_ID,
     extra: Record<string, string> = {},
   ) =>
     (await retained.evidence.handle(
@@ -1248,3 +1255,44 @@ test("large retained evidence uses bounded chunks, immutable completion and acto
   );
   expect((await grant()).status).toBe(404);
 }, 60_000);
+
+test("the evidence policy is inactive unless it names exactly the recorded owner and readers", () => {
+  const valid = localEvidencePolicy(NOW);
+  expect(evidencePolicy(JSON.stringify(valid), NOW)).toEqual(valid);
+  expect(
+    evidencePolicy(
+      JSON.stringify({
+        ...valid,
+        operatorGithubIds: [
+          EVIDENCE_READER_GITHUB_ID,
+          EVIDENCE_OWNER_GITHUB_ID,
+        ],
+      }),
+      NOW,
+    ),
+  ).not.toBeNull();
+  for (const changed of [
+    // The other reader cannot own the policy or attest its controls.
+    {
+      policyAuthorityGithubId: EVIDENCE_READER_GITHUB_ID,
+      externalControls: {
+        ...valid.externalControls,
+        attestedByGithubId: EVIDENCE_READER_GITHUB_ID,
+      },
+    },
+    { operatorGithubIds: [EVIDENCE_OWNER_GITHUB_ID] },
+    { operatorGithubIds: [EVIDENCE_OWNER_GITHUB_ID, EVIDENCE_OWNER_GITHUB_ID] },
+    {
+      operatorGithubIds: [
+        EVIDENCE_OWNER_GITHUB_ID,
+        EVIDENCE_READER_GITHUB_ID,
+        "900000099",
+      ],
+    },
+    { operatorGithubIds: [EVIDENCE_OWNER_GITHUB_ID, "900000099"] },
+    { operatorGithubIds: [18633264, 202660855] },
+  ])
+    expect(evidencePolicy(JSON.stringify({ ...valid, ...changed }), NOW)).toBe(
+      null,
+    );
+});

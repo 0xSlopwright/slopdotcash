@@ -18,7 +18,11 @@ import {
 import { PENALTY_TABLE } from "../workers/slopbot/penalties";
 import { CycleArchivePage, CyclePage } from "./CyclePages";
 import { EarningsPage } from "./Earnings";
-import { EscrowFunding } from "./EscrowFunding";
+import {
+  EscrowFunding,
+  useVaultTotals,
+  vaultSnapshotStale,
+} from "./EscrowFunding";
 import { Link, useInitialHashScroll } from "./Link";
 import { SlopMark, Wordmark } from "./Logo";
 import {
@@ -34,7 +38,8 @@ import {
   modelIdentityKey,
   summarizeModelOutcomes,
 } from "./lib/model-outcomes";
-import { projectLinks } from "./lib/project-links";
+import { networkLabel } from "./lib/network-names";
+import { formatAssetAmount } from "./lib/payments/contracts";
 import {
   findProject,
   PROJECTS,
@@ -63,7 +68,6 @@ import {
   PointsNav,
   PointsPage,
   PointsProvider,
-  PublicXLink,
 } from "./Points";
 import {
   cycleLifecycleLabel,
@@ -80,6 +84,7 @@ import {
   NotFound,
   PaymentLifecycle,
   reviewBudgetLabel,
+  stale,
   UNFUNDED_POOL_HEADLINE,
 } from "./Presentation";
 import { ProfilePage } from "./ProfilePage";
@@ -536,7 +541,14 @@ function ProjectOwnerAvatar({ project }: { project: ProjectDefinition }) {
   );
 }
 
-function ProjectCard({ project }: { project: ProjectDefinition }) {
+function ProjectCard({
+  project,
+  scoresUpdatedAt,
+}: {
+  project: ProjectDefinition;
+  /** Present only once the shared snapshot covering this project is ready. */
+  scoresUpdatedAt: string | null;
+}) {
   const amount =
     project.reward.kind === "monthly-pool"
       ? monthlyPoolCapLabel(project)
@@ -570,6 +582,14 @@ function ProjectCard({ project }: { project: ProjectDefinition }) {
             + {reviewBudgetLabel(project.reward.reviewBudget)}
           </small>
         ) : null}
+        {scoresUpdatedAt === null ? null : (
+          <small className="project-freshness">
+            {stale({ generatedAt: scoresUpdatedAt })
+              ? "Points may be outdated · updated "
+              : "Points updated "}
+            {formatDateTime(scoresUpdatedAt)}
+          </small>
+        )}
       </div>
     </Link>
   );
@@ -655,13 +675,25 @@ function CommunityProjects({ projects }: { projects: ProjectDefinition[] }) {
   );
 }
 
-function GlobalLeaderboard() {
+function GlobalLeaderboard({
+  state,
+  retry,
+}: {
+  state: DataState;
+  retry: () => void;
+}) {
   return (
     <section
       className="section shell home-leaderboard-section"
       id="leaderboard"
     >
-      <ContributorStandings compact title="Top sloperators" />
+      <ContributorStandings
+        compact
+        retryScore={retry}
+        scoreState={state}
+        showDataNotice
+        title="Top sloperators"
+      />
     </section>
   );
 }
@@ -674,6 +706,14 @@ function bootstrapAgentPrompt(): string {
 function HomePage() {
   const featuredProjects = homeProjects();
   const listedCommunityProjects = communityProjects();
+  // One shared read feeds the leaderboard and card freshness; project cards
+  // never wait for it and never fetch per card.
+  const [scores, retryScores] = useSnapshot(true);
+  const scoresUpdatedAt = (projectId: string) =>
+    scores.status === "ready" &&
+    scores.views.some((view) => view.project.id === projectId)
+      ? scores.snapshot.generatedAt
+      : null;
   return (
     <main>
       <section className="hero shell">
@@ -703,7 +743,11 @@ function HomePage() {
                 <h3 id="featured-projects">Featured</h3>
                 <div className="project-grid">
                   {featuredProjects.map((project) => (
-                    <ProjectCard key={project.id} project={project} />
+                    <ProjectCard
+                      key={project.id}
+                      project={project}
+                      scoresUpdatedAt={scoresUpdatedAt(project.id)}
+                    />
                   ))}
                 </div>
               </section>
@@ -712,7 +756,7 @@ function HomePage() {
           </>
         )}
       </section>
-      <GlobalLeaderboard />
+      <GlobalLeaderboard retry={retryScores} state={scores} />
     </main>
   );
 }
@@ -877,20 +921,6 @@ function AgentPromptBox({
   );
 }
 
-function ProjectLinksLine({ project }: { project: ProjectDefinition }) {
-  const links = projectLinks(project);
-  return (
-    <nav aria-label="Project links" className="project-links-line">
-      {links.map((link, index) => (
-        <span key={link.href}>
-          {index > 0 ? " · " : null}
-          <ExternalLinkAnchor href={link.href}>{link.label}</ExternalLinkAnchor>
-        </span>
-      ))}
-    </nav>
-  );
-}
-
 export function ProjectParticipation({
   project,
   cycles,
@@ -944,13 +974,13 @@ export function ProjectParticipation({
     return <InstallPanel project={project} />;
   return (
     <section className="section" id="start">
-      <h2>Contribution record remains open</h2>
+      <h2>Agent setup</h2>
       <p>
         {cycles === null
-          ? "Funding history must load before skill promotion is available."
+          ? "Loading funding history…"
           : displayCycleId === null
-            ? "Contribution data for this project is not available yet."
-            : "Skill promotion is paused after two unfunded cycles. Accepted work and points continue to be recorded; committed funding is required to resume promotion."}
+            ? "Contribution data appears after the next refresh."
+            : "Agent setup is paused after two unfunded cycles. Accepted work still earns Points."}
       </p>
     </section>
   );
@@ -966,17 +996,21 @@ function InstallPanel({ project }: { project?: ProjectDefinition }) {
   );
 }
 
+/**
+ * PRD section 4: project-specific installation checks restrictions and
+ * clearance. Discovery lists only cleared, unrestricted projects. Until it
+ * confirms this project, the panel offers the generic agent prompt, which
+ * selects only cleared projects itself.
+ */
 function ProjectInstallPanel({ project }: { project: ProjectDefinition }) {
   const projectId = project.id;
   const [eligibility, setEligibility] = useState<
     "loading" | "ready" | "blocked" | "error"
   >("loading");
-  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let active = true;
     setEligibility("loading");
     fetchWithDeadline("/.well-known/slop/projects.json", {
-      cache: attempt > 0 ? "reload" : "default",
       headers: { accept: "application/json" },
     })
       .then(async (response) => {
@@ -1001,45 +1035,33 @@ function ProjectInstallPanel({ project }: { project: ProjectDefinition }) {
     return () => {
       active = false;
     };
-  }, [projectId, attempt]);
+  }, [projectId]);
+  const ready = eligibility === "ready";
   return (
     <div className="install-panel" id="start">
-      {eligibility === "ready" ? (
-        <>
-          <div className="install-heading">
-            <h2>Copy this into your agent.</h2>
-          </div>
-          <AgentPromptBox prompt={projectAgentPrompt(project)} />
-        </>
-      ) : (
-        <>
-          <h2>
-            {eligibility === "loading"
-              ? "Checking agent setup…"
-              : eligibility === "blocked"
-                ? "Agent setup awaiting security review"
-                : "Agent setup unavailable"}
-          </h2>
+      <div className="install-heading">
+        <h2>Copy this into your agent.</h2>
+      </div>
+      {ready ? null : (
+        <p>
+          {eligibility === "loading"
+            ? "Checking project clearance. The general prompt below works now."
+            : eligibility === "blocked"
+              ? "This project revision is not cleared for agent installation. The general prompt below selects only cleared projects."
+              : "Project clearance could not be checked. The general prompt below selects only cleared projects."}
           {eligibility === "blocked" ? (
-            <p>
-              The current project revision is not cleared for agent
-              installation.{" "}
+            <>
+              {" "}
               <Link href={`/projects/${project.slug}/manage`}>
                 Project owner: review setup
               </Link>
-            </p>
+            </>
           ) : null}
-          {eligibility !== "loading" ? (
-            <button
-              className="button secondary-button"
-              type="button"
-              onClick={() => setAttempt((value) => value + 1)}
-            >
-              Check again
-            </button>
-          ) : null}
-        </>
+        </p>
       )}
+      <AgentPromptBox
+        prompt={ready ? projectAgentPrompt(project) : bootstrapAgentPrompt()}
+      />
     </div>
   );
 }
@@ -1157,20 +1179,51 @@ function ProjectPaymentHistory({
   );
 }
 
+/**
+ * The project page's one funding line (PRD section 7: one status summary per
+ * project). Deposits, withdrawals and full vault totals live on the funding
+ * page only.
+ */
 export function ProjectFunding({ project }: { project: ProjectDefinition }) {
+  const totals = useVaultTotals(project);
   if (!project.escrow) return null;
-  // A stale registry may name an old vault, so deposits need the live one.
-  if (globalThis.__SLOP_PROJECT_REGISTRY_STALE__)
-    return (
-      <section className="section project-funding" aria-label="Project escrow">
-        <h2>Escrow</h2>
-        <p role="status">
-          Funding actions are unavailable until the current project registry
-          loads.
-        </p>
-      </section>
-    );
-  return <EscrowFunding project={project} />;
+  const href = `/projects/${project.slug}/funding`;
+  let summary: ReactNode;
+  if (totals.status === "none")
+    summary = `No project vault yet · ${fundingStateLabel(project)}`;
+  else if (totals.status === "loading")
+    summary = <span role="status">Loading vault totals…</span>;
+  else if (totals.status === "error")
+    summary = <span role="alert">Vault totals unavailable</span>;
+  else if (totals.vault.snapshots.length === 0)
+    summary = "Vault recorded · no finalized vault read yet";
+  else
+    summary = totals.vault.snapshots.map((snapshot, index) => {
+      const amount = (value: string | null) =>
+        value === null ? "not reported" : formatAssetAmount(value, snapshot);
+      return (
+        <span key={`${snapshot.network}:${snapshot.vault}`}>
+          {index > 0 ? " · " : null}
+          {networkLabel(snapshot.network)}: {amount(snapshot.freeBalance)}{" "}
+          available · {amount(snapshot.reservedPrincipal ?? snapshot.reserved)}{" "}
+          reserved
+          {vaultSnapshotStale(snapshot, totals.vault.staleAfterMs)
+            ? ` (stale, read ${formatDateTime(snapshot.observedAt)})`
+            : null}
+        </span>
+      );
+    });
+  return (
+    <section
+      className="section project-funding-summary"
+      aria-label="Project funding"
+    >
+      <p>
+        <strong>Funding</strong> {summary}{" "}
+        <Link href={href}>Fund this project</Link>
+      </p>
+    </section>
+  );
 }
 
 function paymentStateLabel(project: ProjectDefinition): string {
@@ -1241,7 +1294,21 @@ function ProjectFundingPage({ project }: { project: ProjectDefinition }) {
             project.
           </p>
         ) : project.escrow ? (
-          <EscrowFunding project={project} />
+          globalThis.__SLOP_PROJECT_REGISTRY_STALE__ ? (
+            // A stale registry may name an old vault, so deposits need the live one.
+            <section
+              className="section project-funding"
+              aria-label="Project escrow"
+            >
+              <h2>Project vault</h2>
+              <p role="status">
+                Funding actions are unavailable until the current project
+                registry loads.
+              </p>
+            </section>
+          ) : (
+            <EscrowFunding project={project} />
+          )
         ) : (
           <div>
             <EmptyState text="This project has no vault yet." />
@@ -1337,37 +1404,13 @@ function ProjectPage({
                   }
                 />
               ) : null}
-              <p className="project-terms-line">
-                By{" "}
-                <ExternalLinkAnchor href={project.steward.github.profileUrl}>
-                  {project.steward.displayName}
-                </ExternalLinkAnchor>{" "}
-                · {project.terms.repositoryLicense.spdx ?? "license unknown"} ·{" "}
-                {project.terms.inbound.mode === "unknown"
-                  ? "inbound terms unknown"
-                  : `${project.terms.inbound.mode} inbound terms`}{" "}
-                · <a href={`/projects/${project.id}/terms.json`}>Terms</a>
-                {project.securityBounty ? (
-                  <>
-                    {" · "}
-                    <Link href={`/projects/${project.slug}/security`}>
-                      Security bounty
-                    </Link>
-                  </>
-                ) : null}
-                {project.steward.github.type === "User" ? (
-                  <PublicXLink actorId={project.steward.github.nodeId} />
-                ) : null}
-                {view ? (
-                  <>
-                    {" · "}
-                    <Link href={`/projects/${project.slug}#contributors`}>
-                      Contributors
-                    </Link>
-                  </>
-                ) : null}
-              </p>
-              <ProjectLinksLine project={project} />
+              {project.securityBounty ? (
+                <p className="project-terms-line">
+                  <Link href={`/projects/${project.slug}/security`}>
+                    Security bounty
+                  </Link>
+                </p>
+              ) : null}
               {project.rewardAsset ? (
                 <p className="project-terms-line">
                   Reward asset: {project.rewardAsset.symbol} on{" "}
@@ -1585,7 +1628,7 @@ function HowItWorksPage() {
           </ol>
         </section>
       </div>
-      <section className="worked-example score-contract">
+      <section className="worked-example score-contract" id="points">
         <div>
           <h2>Points</h2>
           <p>
@@ -1856,7 +1899,7 @@ function HowItWorksPage() {
         <ul>
           <li>
             <ExternalLinkAnchor href={`${protocolRoot}/scoring-v2.md`}>
-              Score v2 contract
+              Points v2 contract
             </ExternalLinkAnchor>
           </li>
           <li>
@@ -1952,9 +1995,7 @@ function WhoBuildsOnSlop({
         building AI agents and LLM tooling, largely in small repositories, and
         some of them have merged into the best-known projects in the field. This
         is what the {count.format(all.size)} contributors on the leaderboard as
-        of {dateLabel} did across the rest of GitHub in 2026. None of it adds
-        points, and none of it is a promise about who will show up for your
-        pool.
+        of {dateLabel} did across the rest of GitHub in 2026.
       </p>
       <div className="money-summary model-outcomes-summary">
         <span>
@@ -2114,7 +2155,6 @@ function SponsorsPage({
   state: DataState;
   retry: () => void;
 }) {
-  const protocolRoot = `${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/protocol`;
   const hasReviewBudget = PROJECTS.some(
     (project) => project.reward.reviewBudget,
   );
@@ -2278,9 +2318,6 @@ function SponsorsPage({
                 monthly cutoff. When payments are enabled, automatic monthly
                 payment is on by default and can be turned off.
               </li>
-              <li>
-                Whether to add a named review budget as a second cash line.
-              </li>
               <li>Withdrawals of unused funds, with the 2% fee.</li>
             </ul>
           </div>
@@ -2306,22 +2343,6 @@ function SponsorsPage({
             </li>
           </ul>
         </section>
-        <section className="custody-proof sponsor-note">
-          <h2>Optional: pay for review as its own line.</h2>
-          <p>
-            Accepted review already earns points from the shared pool. A named
-            review budget is a second monthly cash line that pays accepted
-            review work on top of that unchanged treatment, with its own cap,
-            its own commitment, and separate public arithmetic. It becomes
-            operative only after its own funding is committed, and it cannot be
-            added in the same change that lowers the contributor cap.
-          </p>
-          <p>
-            <ExternalLinkAnchor href={`${protocolRoot}/review-budget-v1.md`}>
-              Additive review budget v1
-            </ExternalLinkAnchor>
-          </p>
-        </section>
       </details>
       <details className="sponsor-details">
         <summary>
@@ -2331,7 +2352,7 @@ function SponsorsPage({
         <WhoBuildsOnSlop retry={retry} state={state} />
       </details>
       <section className="custody-proof mechanism-sources">
-        <h2>Verify before you commit.</h2>
+        <h2>Public records</h2>
         <ul>
           <li>
             <Link href="/#leaderboard">Live leaderboard</Link>
@@ -2543,10 +2564,7 @@ function ModelsPage({ state, retry }: { state: DataState; retry: () => void }) {
     <main className="shell evidence-page">
       <section className="evidence-page-hero">
         <h1>Models</h1>
-        <p>
-          Accepted work, grouped by self-reported model. Declarations and device
-          signatures do not verify the provider or change the points.
-        </p>
+        <p>Accepted work, grouped by the model contributors declared.</p>
         <DataNotice retry={retry} state={state} />
       </section>
       {summary ? <ModelOutcomes summary={summary} /> : null}
@@ -2728,8 +2746,8 @@ function ModelOutcomes({ summary }: { summary: ModelOutcomeSummary }) {
           {count.format(totals.distinctDeclaredIdentifiers)} distinct declared
           strings fold to {count.format(totals.distinctModels)} models by case
           and a short provider alias list. Some rows are still one model under
-          two names. Bars compare merged PR counts. The list shows models with
-          at least one accepted outcome, up to 30.
+          two names. The list shows models with at least one accepted outcome,
+          up to 30.
         </p>
       </section>
 
@@ -2968,8 +2986,8 @@ function AppContent({ route }: { route: Route }) {
       <main className="shell route-main">
         <h1>Project not found</h1>
         <p>
-          This project is not available in the public registry. If you flagged
-          it, sign in to view or withdraw your own flag.
+          This project isn&apos;t listed. If you flagged it, sign in to view or
+          withdraw your flag.
         </p>
         <ProjectRiskFlag
           key={`flag:${route.projectId}`}

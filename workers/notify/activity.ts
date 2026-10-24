@@ -140,6 +140,25 @@ export async function dispatchActivityMail(
         continue;
       }
     }
+    // A scam-closure account review (owner decision D4) mails only a current
+    // moderator, never the author, and only while its penalty stands.
+    if (row.event_key.startsWith("slopbot-scam-review:")) {
+      const penalty = await deps.db
+        .prepare(
+          "SELECT author_github_id, reversed_at FROM slopbot_penalties WHERE item_node_id = ? AND category = 'scam' AND moderator_review = 1",
+        )
+        .bind(row.event_key.slice("slopbot-scam-review:".length))
+        .first<{ author_github_id: string; reversed_at: string | null }>();
+      if (
+        !deps.moderatorGithubIds?.has(row.recipient_github_id) ||
+        !penalty ||
+        penalty.reversed_at !== null ||
+        penalty.author_github_id === row.recipient_github_id
+      ) {
+        await recordDelivery(deps, row, "suppressed", null, "activity");
+        continue;
+      }
+    }
     const destination = await activityMailEligibility(
       deps.config,
       row.recipient_github_id,
