@@ -17,7 +17,7 @@ import {
 } from "../../contracts/solana/monthly-commitment";
 import { decodeBase58Bytes } from "./base58";
 import { readBoundedJson } from "./browser-json";
-import type { EscrowDeployment } from "./escrow-policy.mjs";
+import { ESCROW_NETWORKS, type EscrowDeployment } from "./escrow-policy.mjs";
 import {
   assertVaultWalletAccount,
   readFinalizedWalletTransaction,
@@ -50,15 +50,32 @@ export interface MonthlyReview {
 /**
  * The project's recorded monthly amount in the vault token's base units.
  * Stablecoin amounts are recorded in 6-decimal micro-units and a token amount
- * in that token's verified decimals, so a vault whose token has other
- * decimals fails closed rather than being rescaled.
+ * in that token's verified decimals. The vault must use that asset, not a
+ * different token with the same decimals.
  */
 export function vaultMonthlyCap(
   project: Pick<ProjectDefinition, "reward" | "rewardAsset">,
+  deployment: Pick<EscrowDeployment, "network" | "asset">,
   vaultDecimals: number,
 ): bigint {
   if (project.reward.kind !== "monthly-pool")
     throw new Error("This project has no monthly amount.");
+  const network = ESCROW_NETWORKS[deployment.network];
+  const expectedAsset =
+    project.rewardAsset?.kind === "token"
+      ? project.rewardAsset.address
+      : network.asset;
+  const canonical = (address: string) =>
+    network.family === "evm" ? address.toLowerCase() : address;
+  if (
+    network.chain !== project.reward.chain ||
+    (project.rewardAsset && project.rewardAsset.network !== network.chain) ||
+    !expectedAsset ||
+    canonical(deployment.asset) !== canonical(expectedAsset)
+  )
+    throw new Error(
+      "The vault token differs from the project's reward asset. Record the matching asset in a project revision first.",
+    );
   const recorded =
     project.rewardAsset?.kind === "token" ? project.rewardAsset.decimals : 6;
   if (vaultDecimals !== recorded)
@@ -111,7 +128,7 @@ export async function reviewEvmMonthlySetting(
   const current = { cap: read.cap, enabled: read.enabled };
   const target = monthlyTarget(
     automatic,
-    automatic ? vaultMonthlyCap(project, totals.decimals) : 0n,
+    automatic ? vaultMonthlyCap(project, deployment, totals.decimals) : 0n,
     current,
   );
   if (same(target, current))
@@ -315,7 +332,7 @@ export async function reviewSolanaMonthlySetting(
   const decimals = read.decimals;
   const target = monthlyTarget(
     automatic,
-    automatic ? vaultMonthlyCap(project, decimals) : 0n,
+    automatic ? vaultMonthlyCap(project, deployment, decimals) : 0n,
     read.current,
   );
   if (same(target, read.current))

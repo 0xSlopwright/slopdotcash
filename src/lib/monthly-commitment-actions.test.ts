@@ -9,7 +9,7 @@ import {
   solanaVaultAddress,
 } from "../../contracts/solana/adapter";
 import { solanaMonthlyCommitmentMessage } from "../../contracts/solana/monthly-commitment";
-import type { EscrowDeployment } from "./escrow-policy.mjs";
+import { ESCROW_NETWORKS, type EscrowDeployment } from "./escrow-policy.mjs";
 import {
   monthlyTarget,
   type SolanaMonthlyPlan,
@@ -62,29 +62,45 @@ const monthly = (
   rewardAsset?: ProjectDefinition["rewardAsset"],
 ) =>
   ({
-    reward: { kind: "monthly-pool", monthlyCapMinor },
+    reward: { kind: "monthly-pool", chain: "base", monthlyCapMinor },
     ...(rewardAsset ? { rewardAsset } : {}),
   }) as Pick<ProjectDefinition, "reward" | "rewardAsset">;
+const stablecoinVault = {
+  network: "base-mainnet",
+  asset: ESCROW_NETWORKS["base-mainnet"].asset,
+} as Pick<EscrowDeployment, "network" | "asset">;
 
 describe("the owner's monthly cap in vault base units", () => {
   test("uses stablecoin micro-units only for a 6-decimal vault token", () => {
-    expect(vaultMonthlyCap(monthly("2500000000"), 6)).toBe(2_500_000_000n);
-    expect(() => vaultMonthlyCap(monthly("2500000000"), 18)).toThrow(
-      "decimals differ",
+    expect(vaultMonthlyCap(monthly("2500000000"), stablecoinVault, 6)).toBe(
+      2_500_000_000n,
     );
+    expect(() =>
+      vaultMonthlyCap(monthly("2500000000"), stablecoinVault, 18),
+    ).toThrow("decimals differ");
   });
 
   test("uses a token amount only at the token's recorded decimals", () => {
     const token = {
       kind: "token",
+      network: "base",
+      address: "0x1111111111111111111111111111111111111111",
       decimals: 18,
     } as ProjectDefinition["rewardAsset"];
-    expect(vaultMonthlyCap(monthly("5000000000000000000", token), 18)).toBe(
-      5_000_000_000_000_000_000n,
-    );
-    expect(() => vaultMonthlyCap(monthly("5", token), 6)).toThrow(
+    const vault = { ...stablecoinVault, asset: token?.address as string };
+    expect(
+      vaultMonthlyCap(monthly("5000000000000000000", token), vault, 18),
+    ).toBe(5_000_000_000_000_000_000n);
+    expect(() => vaultMonthlyCap(monthly("5", token), vault, 6)).toThrow(
       "decimals differ",
     );
+    expect(() =>
+      vaultMonthlyCap(
+        monthly("5000000000000000000", token),
+        stablecoinVault,
+        18,
+      ),
+    ).toThrow("vault token differs");
   });
 
   test("refuses a project without a monthly pool", () => {
@@ -93,6 +109,7 @@ describe("the owner's monthly cap in vault base units", () => {
         {
           reward: { kind: "external-prize-share", monthlyCapMinor: "0" },
         } as Pick<ProjectDefinition, "reward">,
+        stablecoinVault,
         6,
       ),
     ).toThrow("no monthly amount");

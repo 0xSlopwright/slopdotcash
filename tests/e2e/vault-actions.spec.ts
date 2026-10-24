@@ -36,6 +36,7 @@ const rpcUrl = `http://127.0.0.1:${anvilPort}`;
 let anvil: ChildProcess;
 let deployment: EscrowDeployment;
 let project: (typeof PROJECTS)[number];
+let otherToken: string;
 async function rpc(method: string, params: unknown[]) {
   const response = await fetch(rpcUrl, {
     method: "POST",
@@ -106,6 +107,7 @@ test.beforeAll(async () => {
   const token = deploy(
     "integration/TestDollar.sol:TestDollar",
   ).deployedTo.toLowerCase() as `0x${string}`;
+  otherToken = deploy("integration/TestDollar.sol:TestDollar").deployedTo;
   const factory = deployUpgradeableFactory(
     (contract, args) => deploy(contract, args).deployedTo,
     [registrar, fee, attester, "3600"],
@@ -850,6 +852,12 @@ test("owner turns automatic monthly payment on by default, then opts out", async
   });
   // A vault starts with the monthly commitment off and a zero cap.
   expect(await onChain()).toEqual({ cap: 0n, enabled: false });
+  const matchingProject = project;
+  if (!project.rewardAsset) throw new Error("Missing token reward fixture");
+  project = {
+    ...project,
+    rewardAsset: { ...project.rewardAsset, address: otherToken.toLowerCase() },
+  };
   const cap = formatAssetAmount(project.reward.monthlyCapMinor, 6);
   await page.goto("/projects/eliza/funding", { waitUntil: "networkidle" });
   const monthly = page.getByRole("region", {
@@ -870,6 +878,19 @@ test("owner turns automatic monthly payment on by default, then opts out", async
   );
   account = owner;
   await monthly.getByRole("button", { name: "Choose another wallet" }).click();
+  await monthly
+    .getByRole("button", { name: "Connect MetaMask", exact: true })
+    .click();
+  await monthly
+    .getByRole("button", { name: "Review monthly payment setting" })
+    .click();
+  await expect(monthly.getByRole("alert")).toContainText(
+    "vault token differs from the project's reward asset",
+  );
+  expect(sends).toHaveLength(0);
+  expect(await onChain()).toEqual({ cap: 0n, enabled: false });
+  project = matchingProject;
+  await page.reload({ waitUntil: "networkidle" });
   await monthly
     .getByRole("button", { name: "Connect MetaMask", exact: true })
     .click();
