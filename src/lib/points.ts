@@ -14,7 +14,8 @@ import { findRegisteredRepositoryById } from "./repositories.mjs";
 import { sha256Hex } from "./sha256";
 
 export const POINTS_RULE = "slop-points-v1";
-export const POINTS_NOTICE = "Points have no cash value.";
+export const POINTS_NOTICE =
+  "Points have no cash value and cannot be transferred or redeemed.";
 export interface PointAward {
   key: string;
   actor: Pick<GitHubActor, "id" | "login">;
