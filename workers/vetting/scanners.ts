@@ -344,13 +344,23 @@ async function reviewOne(
         throw new Error("Missing complete review text");
       output = text(blocks[0].text, 1024 * 1024);
     } else {
+      if (!Array.isArray(body.content))
+        throw new Error("Unexpected provider output");
+      const blocks = body.content.map(record);
+      const answers = blocks.filter((block) => block.type === "text");
+      // Messages may include reasoning blocks before the final answer. Only
+      // the answer is a review; tool calls and unknown blocks still fail.
       if (
-        !Array.isArray(body.content) ||
-        body.content.length !== 1 ||
-        record(body.content[0]).type !== "text"
+        answers.length !== 1 ||
+        blocks.some(
+          (block) =>
+            !["text", "thinking", "redacted_thinking"].includes(
+              String(block.type),
+            ),
+        )
       )
         throw new Error("Unexpected provider output");
-      output = text(record(body.content[0]).text, 1024 * 1024);
+      output = text(answers[0].text, 1024 * 1024);
     }
     const review = record(JSON.parse(output));
     const coverage = record(review.coverage);

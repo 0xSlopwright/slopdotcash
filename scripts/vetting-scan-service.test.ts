@@ -180,7 +180,14 @@ async function surplus(request: Request, path: string): Promise<Response> {
       id: "msg_fixture",
       model: body.model,
       stop_reason: "end_turn",
-      content: [{ type: "text", text: review(items, provider.primary) }],
+      content: [
+        {
+          type: "thinking",
+          thinking: "Synthetic reasoning block",
+          signature: "fixture",
+        },
+        { type: "text", text: review(items, provider.primary) },
+      ],
       usage,
     });
   }
