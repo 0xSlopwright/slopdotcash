@@ -1971,6 +1971,43 @@ async function listPublicProjects(
   });
 }
 
+/**
+ * Public credit input for the score generator (PRD section 8). A banned
+ * account earns no new contribution or review credit from its earliest
+ * active ban. Only immutable GitHub IDs and start times are published; the
+ * reason, evidence, project and login stay private. A released ban leaves
+ * the list.
+ */
+async function listPublicAccountBans(
+  deps: ProjectApiDependencies,
+): Promise<Response> {
+  const since = new Map<string, string>();
+  for (const { account, record } of activeAccountBans(
+    await deps.persistence.listEnforcements(),
+  )) {
+    const current = since.get(account.githubId);
+    if (
+      current === undefined ||
+      Date.parse(record.createdAt) < Date.parse(current)
+    )
+      since.set(account.githubId, record.createdAt);
+  }
+  return publicJson({
+    schemaVersion: "slop-account-bans:v1",
+    bans: [...since]
+      .map(([githubId, bannedAt]) => ({ githubId, bannedAt }))
+      .sort(
+        (left, right) =>
+          left.githubId.length - right.githubId.length ||
+          (left.githubId < right.githubId
+            ? -1
+            : left.githubId > right.githubId
+              ? 1
+              : 0),
+      ),
+  });
+}
+
 async function readPublicProject(
   deps: ProjectApiDependencies,
   projectId: string,
@@ -2116,6 +2153,7 @@ function isProjectRoute(parts: string[]): boolean {
     parts[0] === "project-setup" ||
     parts[0] === "project-applications" ||
     parts[0] === "project-appeals" ||
+    (parts[0] === "project-account-bans" && parts.length === 1) ||
     (parts[0] === "admin" && parts[1] === "projects")
   );
 }
@@ -2173,6 +2211,14 @@ export async function handleProjectApi(
           deps.cache,
           request,
           () => listPublicRevisions(deps),
+          deps.waitUntil,
+          await deps.persistence.enforcementGeneration(),
+        );
+      case "GET project-account-bans":
+        return await cachedPublicResponse(
+          deps.cache,
+          request,
+          () => listPublicAccountBans(deps),
           deps.waitUntil,
           await deps.persistence.enforcementGeneration(),
         );

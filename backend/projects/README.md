@@ -48,6 +48,7 @@ points and profiles still validate.
 | `GET /api/v1/project-setup` | session | The account's projects and its pending stored applications |
 | `POST /api/v1/project-setup/:id/check` | session | Runs every setup check, queues a needed scan, activates a project that passes (optional `requestScan` after an incomplete scan) |
 | `GET /api/v1/project-revisions` | public, edge cached | Full revision history with SHA-256 digests |
+| `GET /api/v1/project-account-bans` | public, edge cached | GitHub ID and earliest start time of each active account ban, for the score generator; no reason, evidence, project or login |
 | `GET /api/v1/project-github/owned-repositories` | session | The signed-in maintainer's public repositories |
 | `GET /api/v1/project-github/repositories/:owner/:name` | session | Public repository facts for `/projects/new` |
 | `GET /api/v1/project-revisions/:id/:revision` | public, immutable | One revision's exact stored `manifestText` and digest, for generated-skill installers |
@@ -336,10 +337,11 @@ rate limit, and caches each answer for five minutes. The browser never calls
   intake refuses new submissions and sends, but keeps reconciliation of a
   report already received by GitHub. Banned accounts cannot file new project
   flags, including during a concurrent ban. They can read and withdraw
-  existing flags. PRD
-  section 8 still requires account checks on all other new participation and
-  an appeal path for responsible accounts after a transfer. These checks
-  alone do not complete that requirement.
+  existing flags. The score generator reads
+  `GET /api/v1/project-account-bans` and gives a banned account no
+  contribution or review credit for events at or after its ban start
+  (`scripts/value-ingestion.ts`, `addScore` in `src/lib/leaderboard.ts`).
+  Earlier credit stays. A feed outage keeps the last published snapshot.
 - Two standing rules act without a moderator (PRD section 8; see
   `backend/vetting/README.md`). The second distinct active contributor flag
   appends a `quarantine` record whose issuer is `contributor-flags`, and a
