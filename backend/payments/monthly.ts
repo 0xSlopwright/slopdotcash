@@ -258,10 +258,7 @@ async function loadRun(
 
 export type { MonthlyAwardState };
 
-/**
- * An award's reserved or paid state comes from the finalized chain projection,
- * never from this record; the recorded ban decision sets excluded.
- */
+/** Chain evidence sets reserved/paid; the recorded ban decision sets excluded. */
 async function awardStates(
   db: D1Database,
   run: StoredRun,
