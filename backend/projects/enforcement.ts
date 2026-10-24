@@ -138,13 +138,14 @@ export function accountAppealState(
   restriction: ProjectRestriction,
   githubId: string,
 ): AppealState {
+  const newestFirst = [...restriction.records].reverse();
   const boundary =
-    restriction.records.findLast((record) =>
+    newestFirst.find((record) =>
       ["ban", "quarantine", "reinstate", "deny_reinstatement"].includes(
         record.action,
       ),
     )?.sequence ?? 0;
-  const request = restriction.records.findLast(
+  const request = newestFirst.find(
     (record) =>
       record.action === "request_reinstatement" &&
       record.actor?.githubId === githubId &&
