@@ -950,7 +950,7 @@ export function ProjectParticipation({
           ? "Loading funding history…"
           : displayCycleId === null
             ? "Contribution data appears after the next refresh."
-            : "Agent setup returns when the project vault is funded. Accepted work still earns Slop Score."}
+            : "Agent setup returns when the project vault is funded. Accepted work still earns Points."}
       </p>
     </section>
   );
