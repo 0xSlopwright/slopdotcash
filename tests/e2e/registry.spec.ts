@@ -737,13 +737,21 @@ test("the applicant's inbox lists each decision and revision once and keeps the 
   const inbox = await (
     await page.request.get("/api/v1/notifications", { headers: { cookie } })
   ).json();
-  // One row per event: the decision and the revision, never a duplicate.
-  const mine = inbox.notifications.filter(
+  // One row per event: the revision and, once per assessment, each earlier
+  // scan that could not establish clearance. Never a duplicate.
+  const mine: { kind: string; eventKey: string }[] = inbox.notifications.filter(
     (entry: { subject: string }) => entry.subject === project.id,
   );
-  expect(mine.map((entry: { kind: string }) => entry.kind).sort()).toEqual([
-    "project_revision",
-  ]);
+  const scans = mine.filter((entry) => entry.kind === "project_scan_failed");
+  expect(scans.length).toBeGreaterThan(0);
+  for (const scan of scans)
+    expect(scan.eventKey).toMatch(/^project-scan:[A-Za-z0-9_-]+$/u);
+  expect(
+    mine
+      .filter((entry) => entry.kind !== "project_scan_failed")
+      .map((entry) => entry.kind)
+      .sort(),
+  ).toEqual(["project_revision"]);
   const keys = inbox.notifications.map(
     (entry: { eventKey: string }) => entry.eventKey,
   );
@@ -1140,6 +1148,14 @@ test("an owner resumes setup after installing Slopbot; a failed scan and lost ac
   await expect(resumed.locator("h2")).toHaveText(
     "Setup status: Waiting for the security scan",
   );
+  await expectAccessible(page);
+  // The failed scan reaches the owner's inbox once (PRD NOT-01).
+  await page.goto("/inbox", { waitUntil: "networkidle" });
+  await expect(
+    page.locator(".inbox-item", {
+      hasText: `The security scan of ${project.id} could not finish.`,
+    }),
+  ).toHaveCount(1);
   await expectAccessible(page);
 
   // Owner edit: a text-only change publishes at once as revision 2.
