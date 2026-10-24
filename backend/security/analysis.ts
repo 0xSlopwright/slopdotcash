@@ -5,8 +5,8 @@
  * The analysis proposes a summary, severity, potential loss of funds,
  * possible duplicates, a root-cause key and remediation. It is advice to the
  * project owner only: it never decides a finding, reserves funds or approves
- * an award. The report text goes only to Anthropic's own API with the
- * dedicated operator key. Slop never stores or logs that text or sends it
+ * an award. The report text goes only to Surplus Intelligence with the
+ * operator account key. Slop never stores or logs that text or sends it
  * through a public channel such as the Slopbot review path. D1 keeps the
  * proposal and the digest of the advisory text it read.
  */
