@@ -12,12 +12,6 @@ import {
   type EvidencePolicy,
   VettingEvidence,
 } from "../backend/vetting/evidence";
-
-/** The recorded evidence policy owner, who is also an evidence reader. */
-export const EVIDENCE_OWNER_GITHUB_ID = EVIDENCE_POLICY_AUTHORITY_GITHUB_ID;
-/** The recorded evidence reader who does not own the policy. */
-export const EVIDENCE_READER_GITHUB_ID = "202660855";
-
 import { signedVettingRequest } from "../backend/vetting/handler";
 import {
   signedVettingHeaders,
@@ -25,6 +19,17 @@ import {
   VETTING_TRACE_SHA,
   vettingKeyPair,
 } from "./vetting-fixtures";
+
+/** The recorded evidence policy owner, who is also an evidence reader. */
+export const EVIDENCE_OWNER_GITHUB_ID = EVIDENCE_POLICY_AUTHORITY_GITHUB_ID;
+/** The recorded evidence reader who does not own the policy. */
+export const EVIDENCE_READER_GITHUB_ID = (() => {
+  const others = EVIDENCE_OPERATOR_GITHUB_IDS.filter(
+    (id) => id !== EVIDENCE_POLICY_AUTHORITY_GITHUB_ID,
+  );
+  if (others.length !== 1) throw new Error("Expected one non-owner reader");
+  return others[0];
+})();
 
 export function localEvidencePolicy(now: Date): EvidencePolicy {
   return {
