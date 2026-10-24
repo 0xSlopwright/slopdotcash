@@ -794,8 +794,8 @@ function FundingFields({
       </fieldset>
       {choice.mode === "none" ? (
         <p className="field-hint">
-          The project works without funding. Contributors still earn Slop Score
-          for accepted work, and you can add a monthly amount later.
+          The project works without funding. Contributors still earn points for
+          accepted work, and you can add a monthly amount later.
         </p>
       ) : (
         <>

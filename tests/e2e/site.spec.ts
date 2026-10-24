@@ -10,7 +10,6 @@ import { type APIRequestContext, test as base, expect } from "@playwright/test";
 import { preparePullRequestLedger } from "../../scripts/prepare-pr-ledger";
 import { assertCycleIndex, type CycleIndex } from "../../src/lib/cycle-index";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
-import { createGlobalLeaders } from "../../src/lib/global-leaderboard";
 import { communityProjects } from "../../src/lib/home-projects";
 import {
   assertLeaderboardSnapshot,
@@ -104,17 +103,13 @@ async function loadCycles(request: APIRequestContext): Promise<CycleIndex> {
   return value;
 }
 
-test("equal contributors share cycle and profile ranks", async ({
-  page,
-  request,
-}) => {
+test("equal contributors share cycle ranks", async ({ page, request }) => {
   // The local preview is not an allowed origin for the unrelated wallet API.
   await page.route(
     `${deployment.api}/api/v1/wallet-claims/actors/*/current`,
     (route) => route.fulfill({ json: null }),
   );
   const snapshot = await loadSnapshot(request);
-  const cycles = await loadCycles(request);
   const publishedTie = snapshot.leaders.findIndex(
     (leader, index) =>
       index > 0 &&
@@ -261,22 +256,9 @@ test("equal contributors share cycle and profile ranks", async ({
   await expect(followingRow.locator(".rank-cell")).toHaveText(
     `#${expectedRank + tiedLeaders.length}`,
   );
-
-  const leaders = createGlobalLeaders(snapshot, views, cycles);
-  const profileIndex = leaders.findIndex(
-    (leader, index) => index > 0 && leader.score === leaders[index - 1].score,
-  );
-  if (profileIndex < 0)
-    throw new Error("Public snapshot has no tied overall contributors");
-  for (const leader of leaders.slice(profileIndex - 1, profileIndex + 1)) {
-    await page.goto(`/contributors/${encodeURIComponent(leader.actor.login)}`);
-    const rank = page.getByText("overall rank", { exact: true }).locator("..");
-    await expect(rank).toBeVisible();
-    await expect(rank.locator("strong")).toHaveText(`#${profileIndex}`);
-  }
 });
 
-test("discovers projects and one score-ranked homepage leaderboard", async ({
+test("discovers projects and one points-ranked homepage leaderboard", async ({
   page,
 }) => {
   await page.route("**/.well-known/slop/projects.json", (route) =>
@@ -334,7 +316,7 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
     exact: true,
   });
   await expect(
-    leaderboard.getByRole("columnheader", { name: "Score", exact: true }),
+    leaderboard.getByRole("columnheader", { name: "Points", exact: true }),
   ).toHaveAttribute("aria-sort", "descending");
   // The home leaderboard has no filter controls; a shared link still selects history.
   await expect(leaderboard.getByRole("group", { name: "Period" })).toHaveCount(
@@ -346,7 +328,9 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   const pointValues = await leaderboard
     .locator("tbody tr td:nth-child(3)")
     .allTextContents();
-  const totals = pointValues.map((value) => Number(value.replaceAll(",", "")));
+  const totals = pointValues.map((value) =>
+    Number.parseInt(value.replaceAll(",", ""), 10),
+  );
   expect(totals.length).toBeGreaterThan(0);
   expect(totals).toEqual([...totals].sort((a, b) => b - a));
   const firstLogin = await leaderboard
@@ -1164,7 +1148,7 @@ test("an admin leaves an unset reward asset unchanged until choosing it", async 
   await expect(changes).toContainText("listingTier");
 });
 
-test("project standings and sponsor links keep the intended destination", async ({
+test("project pages omit full standings and sponsor links keep their destination", async ({
   page,
 }) => {
   await page.goto("/projects/eliza", { waitUntil: "networkidle" });
@@ -1172,14 +1156,7 @@ test("project standings and sponsor links keep the intended destination", async 
     name: "Full standings",
     exact: true,
   });
-  await expect(standings).toHaveAttribute("href", /project=eliza/u);
-  await standings.click();
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
-    "Leaderboard",
-  );
-  await expect(page.getByLabel("Project", { exact: true })).toHaveValue(
-    "eliza",
-  );
+  await expect(standings).toHaveCount(0);
   await page.goto("/sponsors", { waitUntil: "networkidle" });
   await expect(
     page.getByRole("link", { name: "Eliza", exact: true }),

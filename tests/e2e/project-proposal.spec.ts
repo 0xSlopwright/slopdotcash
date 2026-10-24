@@ -362,6 +362,33 @@ test("drafts a project through the setup steps and creates it without an admin",
       name: "Setup status: Waiting for the security scan",
     }),
   ).toBeVisible();
+  const setupPanel = page.locator(".project-setup-status");
+  await expect(setupPanel.locator(".setup-badge")).toContainText([
+    "Confirmed",
+    "Installed",
+    "Queued",
+  ]);
+  const details = setupPanel.locator("details");
+  await expect(details).not.toHaveAttribute("open", "");
+  await details.locator("summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(details).toHaveAttribute("open", "");
+  await expect(details).toContainText("@example-maintainer has admin access");
+  await expectAccessibleSetup();
+  async function expectAccessibleSetup() {
+    expect(
+      (
+        await new AxeBuilder({ page })
+          .include(".project-setup-status")
+          .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+          .analyze()
+      ).violations,
+    ).toEqual([]);
+  }
+  await page.screenshot({
+    path: test.info().outputPath("setup-status-badges.png"),
+    fullPage: true,
+  });
   expect(submitted).toMatchObject({
     referrer: "example-referrer",
     // Whole USDC units; the server stores them in the asset's base units.
