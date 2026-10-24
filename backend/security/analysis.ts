@@ -423,7 +423,7 @@ export async function runCaseAnalysis(
 ): Promise<void> {
   const row = await deps.db
     .prepare(
-      "SELECT c.project_id, c.advisory_repository, c.advisory_ghsa, c.reporter_github_id, c.submission_state, p.manifest FROM security_cases c JOIN projects p ON p.id = c.project_id WHERE c.id = ?",
+      "SELECT c.project_id, c.advisory_repository, c.advisory_ghsa, c.reporter_github_id, c.submission_state, p.manifest FROM security_cases c LEFT JOIN project_revisions p ON p.project_id = c.project_id AND p.revision = c.policy_revision WHERE c.id = ?",
     )
     .bind(caseId)
     .first<{
@@ -432,7 +432,7 @@ export async function runCaseAnalysis(
       advisory_ghsa: string;
       reporter_github_id: string;
       submission_state: string;
-      manifest: string;
+      manifest: string | null;
     }>();
   if (row === null || row.submission_state !== "verified") return;
   const latest = await deps.db
@@ -513,7 +513,7 @@ export async function runCaseAnalysis(
       report.packages,
     ]),
   );
-  const manifest = JSON.parse(row.manifest) as {
+  const manifest = (row.manifest === null ? {} : JSON.parse(row.manifest)) as {
     securityBounty?: {
       scope?: {
         includedAssets: string[];
@@ -736,7 +736,7 @@ export async function runAppealTriage(
   }
   const row = await deps.db
     .prepare(
-      "SELECT c.appeal_from_state, c.severity, c.loss_finding, c.root_cause_key, c.award_state, p.manifest, (SELECT e.reason FROM security_case_events e WHERE e.case_id = c.id AND e.case_revision < ? AND e.kind IN ('decide', 'award', 'decide-related-party') ORDER BY e.case_revision DESC LIMIT 1) AS decision_reason, (SELECT a.summary FROM security_case_analyses a WHERE a.case_id = c.id AND a.state = 'complete' ORDER BY a.attempt DESC LIMIT 1) AS summary FROM security_cases c JOIN projects p ON p.id = c.project_id WHERE c.id = ?",
+      "SELECT c.appeal_from_state, c.severity, c.loss_finding, c.root_cause_key, c.award_state, p.manifest, (SELECT e.reason FROM security_case_events e WHERE e.case_id = c.id AND e.case_revision < ? AND e.kind IN ('decide', 'award', 'decide-related-party') ORDER BY e.case_revision DESC LIMIT 1) AS decision_reason, (SELECT a.summary FROM security_case_analyses a WHERE a.case_id = c.id AND a.state = 'complete' ORDER BY a.attempt DESC LIMIT 1) AS summary FROM security_cases c LEFT JOIN project_revisions p ON p.project_id = c.project_id AND p.revision = c.policy_revision WHERE c.id = ?",
     )
     .bind(appeal.revision, caseId)
     .first<{
@@ -745,7 +745,7 @@ export async function runAppealTriage(
       loss_finding: string | null;
       root_cause_key: string | null;
       award_state: string;
-      manifest: string;
+      manifest: string | null;
       decision_reason: string | null;
       summary: string | null;
     }>();
@@ -754,7 +754,7 @@ export async function runAppealTriage(
     return;
   }
   const scope = (
-    JSON.parse(row.manifest) as {
+    (row.manifest === null ? {} : JSON.parse(row.manifest)) as {
       securityBounty?: { scope?: NonNullable<SecurityAnalysisInput["scope"]> };
     }
   ).securityBounty?.scope;
