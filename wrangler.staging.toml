@@ -32,6 +32,10 @@ binding = "VETTING_EVIDENCE"
 bucket_name = "slop-staging-vetting-evidence"
 
 [[services]]
+binding = "VETTING_SANDBOX"
+service = "slop-vetting-sandbox-staging"
+
+[[services]]
 binding = "SLOP_IDENTITY"
 service = "slop-identity-staging"
 

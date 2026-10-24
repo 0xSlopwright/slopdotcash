@@ -52,6 +52,8 @@ const PROJECT_ID = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/u;
 export type VettingApiDependencies = {
   vetting: CloudflareVettingPersistence;
   evidence?: VettingEvidence;
+  /** Private disposable runner; receives no credentials or session headers. */
+  sandbox?: { fetch(request: Request): Promise<Response> };
   projects: Pick<
     ProjectPersistence,
     "getProject" | "listProjects" | "enforcementGeneration" | "listEnforcements"
@@ -671,6 +673,42 @@ export async function handleVettingApi(
         return await adminOverview(request, deps);
       case "POST admin/vetting/assessments":
         return await requestAssessment(request, deps);
+      case "GET vetting/sandbox":
+      case "POST vetting/sandbox": {
+        const signed = await signedVettingRequest(
+          request,
+          deps,
+          3 * 1024 * 1024,
+        );
+        if (!deps.sandbox)
+          fail(
+            503,
+            "sandbox_unavailable",
+            "The isolated runner is not configured",
+          );
+        const response = await deps.sandbox.fetch(
+          new Request(
+            `https://vetting-sandbox.internal/${request.method === "GET" ? "health" : "run"}`,
+            {
+              method: request.method,
+              headers: { "content-type": "application/json" },
+              ...(request.method === "POST"
+                ? { body: new Uint8Array(signed.body) }
+                : {}),
+            },
+          ),
+        );
+        return new Response(response.body, {
+          status: response.status,
+          headers: {
+            "content-type":
+              response.headers.get("content-type") ?? "text/plain",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer",
+          },
+        });
+      }
       case "GET vetting/requests":
         return await serviceQueue(request, deps);
       case "POST vetting/results":

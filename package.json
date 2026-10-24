@@ -62,10 +62,12 @@
     "build:contracts:solana": "bash contracts/solana/scripts/build-local.sh",
     "test:contracts:solana": "bash contracts/solana/scripts/test-e2e.sh",
     "escrow:acceptance": "bun scripts/escrow-acceptance.ts",
-    "test:escrow-acceptance:local": "bun scripts/escrow-acceptance/local.ts"
+    "test:escrow-acceptance:local": "bun scripts/escrow-acceptance/local.ts",
+    "test:vetting:sandbox": "bun workers/vetting-sandbox/workflow.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.126.0",
+    "@cloudflare/sandbox": "0.12.14",
     "@fontsource-variable/bricolage-grotesque": "5.2.10",
     "@fontsource/jetbrains-mono": "5.2.8",
     "@noble/hashes": "2.4.0",
