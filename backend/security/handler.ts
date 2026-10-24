@@ -62,8 +62,8 @@ export type SecurityApiDependencies = {
    */
   advisories?: AdvisoryReader | null;
   /**
-   * The direct Anthropic analyzer under the operator's zero-data-retention
-   * key (owner decision D10); absent = unavailable.
+   * The direct Anthropic analyzer with the dedicated operator key
+   * (PRD section 8); absent = unavailable.
    */
   analyzer?: SecurityAnalyzer | null;
   /**

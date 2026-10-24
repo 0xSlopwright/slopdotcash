@@ -5,10 +5,10 @@
  * The analysis proposes a summary, severity, potential loss of funds,
  * possible duplicates, a root-cause key and remediation. It is advice to the
  * project owner only: it never decides a finding, reserves funds or approves
- * an award. The report text goes only to Anthropic's own API under the
- * operator's zero-data-retention key (owner decision D10) and is never stored, logged or sent through a public channel such
- * as the Slopbot review path. D1 keeps the proposal and the digest of the
- * advisory text it read.
+ * an award. The report text goes only to Anthropic's own API with the
+ * dedicated operator key. Slop never stores or logs that text or sends it
+ * through a public channel such as the Slopbot review path. D1 keeps the
+ * proposal and the digest of the advisory text it read.
  */
 import type { D1Database, D1QueryStatement } from "../d1";
 import type { AdvisoryReader } from "./advisories";
@@ -157,10 +157,10 @@ function analysisMessage(input: SecurityAnalysisInput): string {
 }
 
 /**
- * Owner decision D10 (24 October 2026): private report text goes only to
+ * PRD section 8: private report text goes only to
  * Claude Opus 5.5 through Anthropic's own Messages API, with the dedicated
- * `ANTHROPIC_SECURITY_API_KEY` that the operator holds under a
- * zero-data-retention agreement. It never goes through a model marketplace
+ * `ANTHROPIC_SECURITY_API_KEY`. A zero-data-retention agreement is not
+ * required by the current PRD. It never goes through a model marketplace
  * or a second provider, and there is no fallback model.
  */
 export const SECURITY_ANALYSIS_MODEL = "claude-opus-5-5";

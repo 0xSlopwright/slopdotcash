@@ -116,8 +116,8 @@ and the manual flow below applies.
 - After verified receipt, `analysis.ts` schedules a private proposal. Owner
   decision D10: the report text goes only to Claude Opus 5.5
   (`claude-opus-5-5`) through Anthropic's own Messages API with
-  `ANTHROPIC_SECURITY_API_KEY`, a key the operator holds under a
-  zero-data-retention agreement. It never goes through the Surplus
+  `ANTHROPIC_SECURITY_API_KEY`. A zero-data-retention agreement is not
+  required. Provider retention follows the applicable account terms. It never goes through the Surplus
   marketplace or another provider, and there is no fallback: without the key
   every analysis is `unavailable`. A refusal or a cut-off answer is `failed`.
   The automatic attempt runs after the response and has 25 seconds, because
@@ -284,5 +284,5 @@ the ordinary attester. Missing service configuration fails closed.
   tokens on `/reports`, installation tokens on advisory lists, error shapes)
   is not yet qualified on a real repository, and the App permission must be
   accepted on each installation.
-- Private analysis needs `ANTHROPIC_SECURITY_API_KEY` under a
-  zero-data-retention agreement; the live provider is not yet exercised.
+- Private analysis needs `ANTHROPIC_SECURITY_API_KEY`; a zero-data-retention
+  agreement is not required. The live provider is not yet exercised.
