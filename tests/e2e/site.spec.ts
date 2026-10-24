@@ -380,7 +380,7 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   ).toBe(true);
 });
 
-test("blocks uncleared agent setup and keeps contribution records available", async ({
+test("hides uncleared agent setup and keeps contribution records available", async ({
   context,
   page,
   request,
@@ -393,14 +393,8 @@ test("blocks uncleared agent setup and keeps contribution records available", as
   // An unfunded pool shows no funding card.
   await expect(page.locator(".reward-card")).toHaveCount(0);
   await expect(
-    page.getByRole("heading", { name: "Agent setup awaiting security review" }),
-  ).toBeVisible();
-  await expect(
     page.getByRole("button", { name: "Copy agent prompt" }),
   ).toHaveCount(0);
-  await expect(
-    page.getByRole("link", { name: "Project owner: review setup" }),
-  ).toHaveAttribute("href", "/projects/eliza/manage");
   await expect(page.getByLabel("Manual install command")).toHaveCount(0);
   await expect(page.getByLabel("Solana public address")).toHaveCount(0);
   await expect(page.getByText("Cycle allocation details")).toHaveCount(0);

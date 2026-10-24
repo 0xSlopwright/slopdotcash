@@ -217,10 +217,12 @@ export class CloudflareVettingPersistence {
   /** A scan can resolve only the flags present when it was queued. */
   async assessmentCoversActiveFlags(assessmentId: string): Promise<boolean> {
     const row = await this.db
-      .prepare(`SELECT NOT EXISTS (
+      .prepare(
+        `SELECT NOT EXISTS (
       SELECT 1 FROM project_flags f WHERE f.project_id = a.project_id
         AND f.state = 'active' AND f.id NOT IN (SELECT value FROM json_each(a.flag_ids))
-    ) AS covered FROM vetting_assessments a WHERE a.id = ?`)
+    ) AS covered FROM vetting_assessments a WHERE a.id = ?`,
+      )
       .bind(assessmentId)
       .first<{ covered: number }>();
     return row?.covered === 1;
@@ -444,7 +446,8 @@ export class CloudflareVettingPersistence {
 
   /**
    * The clearance of a project's content digest through a revision. A
-   * confirmed-malicious result bans the project until an independent ADM-06
+   * grandfathered project is cleared without a scan unless a finding bans
+   * it. A confirmed-malicious result bans the project until an independent ADM-06
    * decision explicitly covers that exact finding with a later clean scan.
    * A clean scan alone cannot lift it. Otherwise only scans of the unbroken run of
    * revisions with the same content count, and of those only scans of the
@@ -481,6 +484,14 @@ export class CloudflareVettingPersistence {
     const malicious = findings.at(-1);
     if (malicious && !forReinstatement)
       return { state: "banned", assessment: summarize(malicious) };
+    const grandfathered = await this.db
+      .prepare(
+        `SELECT 1 AS found FROM vetting_grandfathered_projects WHERE project_id = ?`,
+      )
+      .bind(projectId)
+      .first<{ found: number }>();
+    if (grandfathered && !malicious && !forReinstatement)
+      return { state: "cleared", assessment: null, grandfathered: true };
     const window = new Set<number>();
     const revisions = await this.revisionContents(projectId);
     for (let index = revisions.length - 1; index >= 0; index -= 1) {

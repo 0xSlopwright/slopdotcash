@@ -424,12 +424,6 @@ function Footer() {
           <SlopMark inverse size={104} />
           <div className="wordmark footer-wordmark">{domain}</div>
         </div>
-        <nav className="footer-links" aria-label="Product">
-          <Link href="/">Projects</Link>
-          <Link href="/how-it-works">How it works</Link>
-          <Link href="/projects/new">Add a project</Link>
-          <Link href="/account">Account</Link>
-        </nav>
         <nav className="footer-links" aria-label="Records">
           <Link href="/points">Leaderboard</Link>
           <Link href="/cycles">Cycles</Link>
@@ -580,11 +574,7 @@ function ProjectCard({ project }: { project: ProjectDefinition }) {
         </p>
         {monthlyPoolPointsOnly(project.reward) ? (
           <small className="project-money-state">Points only</small>
-        ) : project.reward.kind === "monthly-pool" ? (
-          project.reward.paymentMode !== "enabled" ? (
-            <small className="project-money-state">Payments not active</small>
-          ) : null
-        ) : (
+        ) : project.reward.kind === "monthly-pool" ? null : (
           <small className="project-money-state">External prize</small>
         )}
         {project.reward.reviewBudget ? (
@@ -612,10 +602,6 @@ function ProjectRow({ project }: { project: ProjectDefinition }) {
           <small>{project.description}</small>
           {project.status === "paused" ? (
             <small className="project-money-state">Paused</small>
-          ) : project.reward.kind === "monthly-pool" &&
-            !monthlyPoolPointsOnly(project.reward) &&
-            project.reward.paymentMode !== "enabled" ? (
-            <small className="project-money-state">Payments not active</small>
           ) : null}
         </span>
         <span className="project-row-amount">
@@ -986,15 +972,11 @@ export function ProjectParticipation({
 
 function InstallPanel({ project }: { project?: ProjectDefinition }) {
   const projectId = project?.id;
-  const [eligibility, setEligibility] = useState<
-    "loading" | "ready" | "blocked" | "error"
-  >("loading");
-  const [attempt, setAttempt] = useState(0);
+  const [ready, setReady] = useState(false);
   useEffect(() => {
     let active = true;
-    setEligibility("loading");
+    setReady(false);
     fetchWithDeadline("/.well-known/slop/projects.json", {
-      cache: attempt > 0 ? "reload" : "default",
       headers: { accept: "application/json" },
     })
       .then(async (response) => {
@@ -1007,80 +989,34 @@ function InstallPanel({ project }: { project?: ProjectDefinition }) {
         if (body.schemaVersion !== "1" || !Array.isArray(body.projects))
           throw new Error("Invalid discovery registry");
         if (active)
-          setEligibility(
-            (
-              projectId
-                ? body.projects.some((entry) => entry.project_id === projectId)
-                : body.projects.length > 0
-            )
-              ? "ready"
-              : "blocked",
+          setReady(
+            projectId
+              ? body.projects.some((entry) => entry.project_id === projectId)
+              : body.projects.length > 0,
           );
       })
-      .catch(() => {
-        if (active) setEligibility("error");
-      });
+      .catch(() => undefined);
     return () => {
       active = false;
     };
-  }, [projectId, attempt]);
+  }, [projectId]);
+  if (!ready) return null;
   return (
     <div
       className={project ? "install-panel" : "home-agent-setup"}
       id={project ? "start" : undefined}
     >
-      {eligibility === "ready" ? (
-        <>
-          {project ? (
-            <div className="install-heading">
-              <h2>Copy this into your agent.</h2>
-            </div>
-          ) : (
-            <p className="hero-copy">Paste this into your coding agent.</p>
-          )}
-          <AgentPromptBox
-            openIn={!project}
-            prompt={
-              project ? projectAgentPrompt(project) : bootstrapAgentPrompt()
-            }
-          />
-        </>
+      {project ? (
+        <div className="install-heading">
+          <h2>Copy this into your agent.</h2>
+        </div>
       ) : (
-        <>
-          <h2>
-            {eligibility === "loading"
-              ? "Checking agent setup…"
-              : eligibility === "blocked"
-                ? "Agent setup awaiting security review"
-                : "Agent setup unavailable"}
-          </h2>
-          {eligibility === "blocked" ? (
-            project ? (
-              <p>
-                The current project revision is not cleared for agent
-                installation.{" "}
-                <Link href={`/projects/${project.slug}/manage`}>
-                  Project owner: review setup
-                </Link>
-              </p>
-            ) : (
-              <p>
-                No projects are cleared for agent setup yet. Browse the projects
-                below.
-              </p>
-            )
-          ) : null}
-          {eligibility !== "loading" ? (
-            <button
-              className="button secondary-button"
-              type="button"
-              onClick={() => setAttempt((value) => value + 1)}
-            >
-              Check again
-            </button>
-          ) : null}
-        </>
+        <p className="hero-copy">Paste this into your coding agent.</p>
       )}
+      <AgentPromptBox
+        openIn={!project}
+        prompt={project ? projectAgentPrompt(project) : bootstrapAgentPrompt()}
+      />
     </div>
   );
 }

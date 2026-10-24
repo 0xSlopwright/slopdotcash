@@ -378,12 +378,15 @@ export function VettingSection({ projectId }: { projectId: string }) {
                             ? "No scan of this content yet"
                             : clearance.state === "unverified"
                               ? clearance.reason
-                              : clearance.state === "stale"
-                                ? `No scan of the live branch head ${clearance.live.commitSha} with skill template ${clearance.live.templateSha256}. The last scan covered ${clearance.assessment.commitSha}.`
-                                : `Scan of revision ${clearance.assessment.revision} · ${STATE_TEXT[clearance.assessment.state]}`}
+                              : clearance.assessment === null
+                                ? "Grandfathered: registered before security scans"
+                                : clearance.state === "stale"
+                                  ? `No scan of the live branch head ${clearance.live.commitSha} with skill template ${clearance.live.templateSha256}. The last scan covered ${clearance.assessment.commitSha}.`
+                                  : `Scan of revision ${clearance.assessment.revision} · ${STATE_TEXT[clearance.assessment.state]}`}
                         </dd>
                       </div>
-                      {"assessment" in clearance ? (
+                      {"assessment" in clearance &&
+                      clearance.assessment !== null ? (
                         <div>
                           <dt>Held artifacts</dt>
                           <dd>
