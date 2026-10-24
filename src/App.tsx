@@ -114,7 +114,7 @@ const ProjectUpdatePage = lazy(() =>
 const SOCIAL_X = "https://x.com/SlopCash";
 const SOCIAL_LINKEDIN = "https://www.linkedin.com/company/slop-cash";
 const SOCIAL_TELEGRAM = "https://t.me/slopcashofficial";
-// DSC-01: the hero names only launched work.
+// Original campaign rotation restored by owner request (24 October 2026).
 const HERO_ACTIONS = [
   "SHIPPING OPEN SOURCE.",
   "SECURING THE WEB.",
