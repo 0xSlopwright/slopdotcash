@@ -45,7 +45,7 @@ export function AccountAppeals() {
       ) : appeals === null ? (
         <p role="status">Loading account restrictions…</p>
       ) : appeals.length === 0 ? (
-        <p>No active account bans.</p>
+        <p>No account restrictions.</p>
       ) : (
         <>
           <p>

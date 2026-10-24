@@ -10,7 +10,6 @@ type SavedWallet = {
   claimId: string;
   address: string;
   authorized: boolean;
-  activationEligibleAt: null;
 };
 
 async function payments(page: Page, wallets: SavedWallet[] = []) {
@@ -633,7 +632,6 @@ const savedBase = (authorized: boolean): SavedWallet => ({
   claimId: "saved-claim",
   address: savedAddress,
   authorized,
-  activationEligibleAt: null,
 });
 const walletCalls = (page: Page) =>
   page.evaluate(

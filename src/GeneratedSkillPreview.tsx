@@ -105,8 +105,8 @@ export function GeneratedSkillPreview({
     <>
       {draft ? (
         <p>
-          Draft skill preview. Approval determines the published revision and
-          digest.
+          Draft preview. The revision and digest are set when you create the
+          project.
         </p>
       ) : null}
       {previews.map(({ role, files }) => (

@@ -49,20 +49,39 @@ test("agent setup retries unavailable discovery and only copies a cleared projec
   state = "blocked";
   await page.goto("/", { waitUntil: "networkidle" });
   await expect(
-    page.getByText("No projects are cleared for agent setup yet.", {
-      exact: false,
-    }),
+    page.getByRole("heading", { name: "Projects", exact: true }),
   ).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Agent setup/u })).toHaveCount(
+    0,
+  );
   await expect(
     page.getByRole("button", { name: "Copy agent prompt" }),
-  ).toHaveCount(0);
+  ).toBeVisible();
   await page.screenshot({
     path: info.outputPath("home-no-cleared-projects.png"),
     fullPage: true,
   });
   state = "cleared";
-  await page.getByRole("button", { name: "Check again", exact: true }).click();
+  await page.reload({ waitUntil: "networkidle" });
   await expect(
     page.getByRole("status", { name: "Agent prompt" }),
   ).toContainText("/SKILL.md");
+});
+
+test("home agent setup stays usable when discovery is unavailable", async ({
+  page,
+  context,
+}) => {
+  await page.route("**/.well-known/slop/projects.json", (route) =>
+    route.fulfill({ status: 503, body: "Unavailable" }),
+  );
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Copy agent prompt" }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(
+    "/SKILL.md",
+  );
+  await expect(
+    page.getByRole("heading", { name: "Agent setup unavailable" }),
+  ).toHaveCount(0);
 });

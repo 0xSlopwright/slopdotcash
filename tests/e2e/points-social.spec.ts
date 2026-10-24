@@ -51,6 +51,9 @@ test("social membership preserves past points and connection privacy without new
       ),
     });
   });
+  await page.route(`${site}/api/v1/project-appeals`, (route) =>
+    route.fulfill({ json: { appeals: [] } }),
+  );
   await page.route(`${site}/api/v1/project-session`, (route) =>
     route.fulfill({
       json: {
@@ -200,9 +203,7 @@ test("social membership preserves past points and connection privacy without new
   ).toHaveCount(0);
   const social = page.getByRole("region", { name: "Connections" });
   await expect(social.getByRole("checkbox")).toHaveCount(2);
-  await expect(social).toContainText(
-    "Connections grant no points or authority.",
-  );
+  await expect(social).toContainText("Connections grant no authority.");
   await expect(social).not.toContainText("+10 points");
   await page.screenshot({
     path: info.outputPath("account-connections.png"),

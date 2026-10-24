@@ -36,7 +36,6 @@ export interface AccountPayment extends PaymentAsset {
 export type MonthlyAwardState =
   | "excluded"
   | "underfunded"
-  | "excluded"
   | "awaiting-reservation"
   | "reserved"
   | "paid";
@@ -60,7 +59,6 @@ export interface PaymentsAccount {
     claimId: string;
     address: string;
     authorized: boolean;
-    activationEligibleAt: string | null;
   }[];
   payments: AccountPayment[];
   /** Approved monthly awards not yet reserved; never counted in `balances`. */
