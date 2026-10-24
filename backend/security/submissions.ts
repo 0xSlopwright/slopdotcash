@@ -22,6 +22,7 @@ import type { GithubActor as Actor } from "../../src/lib/project-contracts";
 import type { SecurityBountyTerms } from "../../src/lib/security-bounty.mjs";
 import { fail } from "../api-error";
 import type { D1QueryStatement as D1Statement } from "../d1";
+import { notifySecurityReportReceived } from "../notifications/events";
 import {
   type AdvisoryFacts,
   type FailureCode,
@@ -44,6 +45,7 @@ import {
   pvrState,
   requireActor,
   type SecurityApiDependencies,
+  scheduleAnalysis,
   stringField,
   termsAtReceipt,
 } from "./handler";
@@ -766,6 +768,8 @@ async function writeVerifiedCase(
         "INSERT INTO security_case_access_log (case_id, actor_github_id, actor_role, action, at) SELECT ?, ?, 'reporter', 'write', ? WHERE EXISTS (SELECT 1 FROM security_cases WHERE id = ?)",
       )
       .bind(caseId, reporter.githubId, at, caseId),
+    // The reporter's receipt: generic, and it asks for no acknowledgment.
+    notifySecurityReportReceived(deps.db, caseId),
     ...inboxStatements(deps, {
       caseId,
       revision: 1,
@@ -827,6 +831,17 @@ async function writeVerifiedCase(
     updated.state !== "receipt-verified"
   )
     fail(409, "stale_revision", "The submission changed since you loaded it");
+  // The owner's private AI analysis reads the content GitHub returned to this
+  // request, in memory; no second credential or read is needed.
+  if (updated.case_id)
+    await scheduleAnalysis(deps, updated.case_id, {
+      summary: facts.analysisInput.summary,
+      description: facts.analysisInput.description,
+      severity: facts.analysisInput.severity ?? null,
+      cvss: facts.analysisInput.cvss ?? null,
+      cweIds: facts.analysisInput.cweIds ?? [],
+      packages: [],
+    });
   return { status: 200, row: updated };
 }
 

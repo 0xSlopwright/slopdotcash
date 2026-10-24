@@ -24,6 +24,10 @@ export async function securityPaymentNotices(
       SELECT c.id,json_extract(a.value,'$.githubId') FROM security_cases c
         JOIN projects p ON p.id=c.project_id,
         json_each(p.manifest,'$.securityBounty.approvers.financial') a
+      UNION
+      SELECT c.id,json_extract(a.value,'$.githubId') FROM security_cases c
+        JOIN projects p ON p.id=c.project_id,
+        json_each(p.manifest,'$.securityBounty.approvers.technical') a
     ) recipients ON recipients.case_id=s.case_id
     WHERE s.obligation_id=?
     ON CONFLICT(event_key,recipient_github_id) DO NOTHING`)
@@ -84,6 +88,9 @@ import {
 } from "../../src/lib/escrow-policy.mjs";
 import { payoutFee } from "../../src/lib/payments/contracts";
 import { fail } from "../api-error";
+
+/** A private vault snapshot older than this does not prove free funds. */
+export const VAULT_SNAPSHOT_MAX_AGE_MS = 30 * 60_000;
 
 export async function prepareSecuritySettlement(
   db: Database<D1QueryStatement>,
@@ -148,7 +155,8 @@ export async function prepareSecuritySettlement(
     !snapshot ||
     snapshot.asset_address !== deployment.asset ||
     snapshot.asset_decimals !== input.decimals ||
-    Date.parse(input.at) - Date.parse(snapshot.observed_at) > 30 * 60_000
+    Date.parse(input.at) - Date.parse(snapshot.observed_at) >
+      VAULT_SNAPSHOT_MAX_AGE_MS
   )
     fail(
       409,
