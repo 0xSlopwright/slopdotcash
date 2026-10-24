@@ -235,9 +235,12 @@ period is open at a time.
    `release_monthly_award(period, source_digest, actor_id, gross, index, count,
    proof)`. The leaf must prove against the recorded month, and its source must
    already have an `origin` (it was committed before the month was admitted, or
-   it repeats a source) or its actor must be zero; otherwise the call fails with
-   `AwardCommittable`. A `["release", month, source_digest]` PDA lets each source
-   release once. The allocation builder in `adapter.ts` rejects repeated sources
+   by another month) or its actor must be zero; otherwise the call fails with
+   `AwardCommittable`. Both `commit_monthly_award` and `release_monthly_award`
+   create the `["settled", month, source_digest]` PDA, so each source of a month
+   settles once: a committed award cannot also be released. A source repeated
+   inside one allocation could settle only once and would leave the second copy
+   reserved, so the allocation builder in `adapter.ts` rejects repeated sources
    before the identity authority signs.
 
 Two steps are necessary because one Solana transaction cannot create the

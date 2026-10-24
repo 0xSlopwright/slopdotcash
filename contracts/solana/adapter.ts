@@ -666,7 +666,7 @@ export function solanaPaymentAdapter(
         hex(data.slice(0, 8)) === COMMIT_MONTHLY_AWARD
       ) {
         // commit_monthly_award(period, award_id, source_digest, actor_id, gross, index, count,
-        // proof); accounts: payer, project, vault, month, origin, obligation. Ordinary only.
+        // proof); accounts: payer, project, vault, month, origin, obligation, settled. Ordinary only.
         if (
           config.payoutPolicy === "security-bounty" ||
           data.length < 104 ||

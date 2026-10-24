@@ -391,8 +391,9 @@ pub mod slop_escrow {
     }
     // Anyone returns one award of a recorded allocation to free balance when it can never
     // commit: its source was consumed before the month was admitted (direct commits are
-    // refused while a month is outstanding), it repeats an earlier source, or its actor is
-    // zero. Without this its reserve would stay locked forever. Each source releases once.
+    // refused while a month is outstanding) or by another month, or its actor is zero.
+    // Without this its reserve would stay locked forever. The `settled` marker, shared with
+    // commit_monthly_award, lets each source of a month commit or release only once.
     #[allow(clippy::too_many_arguments)]
     pub fn release_monthly_award(
         mut ctx: Context<ReleaseMonthlyAward>,
@@ -1053,12 +1054,15 @@ pub struct CommitMonthlyAward<'info> {
     pub origin: Account<'info, Origin>,
     #[account(init,payer=payer,space=8+Obligation::INIT_SPACE,seeds=[b"award",project.key().as_ref(),&award_id],bump)]
     pub obligation: Box<Account<'info, Obligation>>,
+    /// Exists once per source in a month, so a committed award cannot also be released.
+    #[account(init,payer=payer,space=8+BindingVeto::INIT_SPACE,seeds=[b"settled",month.key().as_ref(),&source_digest],bump)]
+    pub settled: Account<'info, BindingVeto>,
     pub system_program: Program<'info, System>,
 }
 #[derive(Accounts)]
 #[instruction(period:u32, source_digest:[u8;32])]
 pub struct ReleaseMonthlyAward<'info> {
-    /// Anyone; pays the release marker's rent.
+    /// Anyone; pays the settlement marker's rent.
     #[account(mut)]
     pub payer: Signer<'info>,
     #[account(mut)]
@@ -1068,9 +1072,9 @@ pub struct ReleaseMonthlyAward<'info> {
     /// CHECK: the source's origin address; the handler requires an initialized origin unless the actor is zero.
     #[account(seeds=[b"origin",project.key().as_ref(),&source_digest],bump)]
     pub origin: UncheckedAccount<'info>,
-    /// Exists once per released source, so a source cannot release twice.
-    #[account(init,payer=payer,space=8+BindingVeto::INIT_SPACE,seeds=[b"release",month.key().as_ref(),&source_digest],bump)]
-    pub release: Account<'info, BindingVeto>,
+    /// The same marker as commit_monthly_award, so a source settles once per month.
+    #[account(init,payer=payer,space=8+BindingVeto::INIT_SPACE,seeds=[b"settled",month.key().as_ref(),&source_digest],bump)]
+    pub settled: Account<'info, BindingVeto>,
     pub system_program: Program<'info, System>,
 }
 #[derive(Accounts)]

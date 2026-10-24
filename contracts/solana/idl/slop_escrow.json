@@ -505,6 +505,29 @@
           }
         },
         {
+          "name": "settled",
+          "docs": [
+            "Exists once per source in a month, so a committed award cannot also be released."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [115, 101, 116, 116, 108, 101, 100]
+              },
+              {
+                "kind": "account",
+                "path": "month"
+              },
+              {
+                "kind": "arg",
+                "path": "source_digest"
+              }
+            ]
+          }
+        },
+        {
           "name": "system_program",
           "address": "11111111111111111111111111111111"
         }
@@ -943,7 +966,7 @@
       "accounts": [
         {
           "name": "payer",
-          "docs": ["Anyone; pays the release marker's rent."],
+          "docs": ["Anyone; pays the settlement marker's rent."],
           "writable": true,
           "signer": true
         },
@@ -992,16 +1015,16 @@
           }
         },
         {
-          "name": "release",
+          "name": "settled",
           "docs": [
-            "Exists once per released source, so a source cannot release twice."
+            "The same marker as commit_monthly_award, so a source settles once per month."
           ],
           "writable": true,
           "pda": {
             "seeds": [
               {
                 "kind": "const",
-                "value": [114, 101, 108, 101, 97, 115, 101]
+                "value": [115, 101, 116, 116, 108, 101, 100]
               },
               {
                 "kind": "account",
