@@ -9,6 +9,8 @@
  * from `fromCycle` up to, but not including, `untilCycle` (null: open-ended).
  */
 
+import { githubUserIdFromNodeId } from "./github-actor.ts";
+
 export const PAYOUT_EXCLUSION_RELATIONSHIPS = Object.freeze([
   "owner",
   "funded-employee",
@@ -50,7 +52,7 @@ export function validatePayoutExclusions(value, field) {
       typeof entry.actorId !== "string" ||
       !/^[1-9][0-9]{0,19}$/u.test(entry.actorId) ||
       typeof entry.nodeId !== "string" ||
-      !/^[A-Za-z0-9_=-]{1,100}$/u.test(entry.nodeId) ||
+      githubUserIdFromNodeId(entry.nodeId) !== entry.actorId ||
       typeof entry.login !== "string" ||
       !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/u.test(entry.login)
     )

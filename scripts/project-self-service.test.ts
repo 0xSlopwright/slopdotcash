@@ -409,7 +409,7 @@ test("a payout exclusion starts with the next UTC month on every revision path",
   await create("open-registry", "example/open-registry");
   const exclusion = (fromCycle: string) => ({
     actorId: OTHER,
-    nodeId: "U_kgDOOtherOwner",
+    nodeId: btoa(`04:User${OTHER}`),
     login: "other",
     relationship: "funded-employee" as const,
     fromCycle,
@@ -447,6 +447,17 @@ test("a payout exclusion starts with the next UTC month on every revision path",
         message: "payout exclusions apply prospectively; 2026-10 cannot change",
       },
     });
+  // Public shares and private allocation must name the same account.
+  expect(
+    (
+      await revise("projects/open-registry", OWNER, [
+        {
+          ...exclusion("2026-11"),
+          actorId: OWNER,
+        },
+      ])
+    ).status,
+  ).toBe(422);
   const recorded = await revise("projects/open-registry", OWNER, [
     exclusion("2026-11"),
   ]);
