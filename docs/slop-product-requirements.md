@@ -8,7 +8,7 @@ Slop connects useful open-source contributions and private security reports to h
 
 The minimum viable product (MVP) supports two journeys: contribute useful work, or report a vulnerability privately. Published rules and Slopbot make routine decisions; humans decide exceptions, escalated disputes, and bounty awards. Both end with verified payment when eligible. Security clearance protects both.
 
-Contributors use any disclosed agent/model or work manually. Maintainers define scope and accept outcomes. Researchers report privately. Funders review terms before depositing. Moderators decide escalated disputes, escalated appeals, and confirmed-malicious bans. Operators manage access and incidents.
+Contributors use any disclosed agent/model or work manually. Maintainers define scope and accept outcomes. Researchers report privately. Funders review terms before depositing. Moderators decide escalated disputes, escalated appeals, and confirmed-malicious bans. Operators handle incidents, audited access to private evidence, and redirected wallet recovery. Neither role approves routine project admission.
 
 Scope: accounts, wallets, projects, generated skills, Slopbot, security checks, rankings, vaults, private bounties and automatic private-report submission, and fee-wallet conversion. Networks: Base, Solana, Robinhood Chain, and Ethereum, using approved stablecoins or supported project tokens. Maintainers can pay in their own token if it’s a standard ERC-20 or SPL token. Measure accepted work, validated reports, verified fixes, eligible payments, delays, missed notices, and reconciliation errors.
 
@@ -38,7 +38,7 @@ Users can add EVM and Solana payout wallets. If users have not added wallets, th
 
 ## 4. Projects and contribution skills
 
-Setup has four steps: Repository, Contribution rules, Rewards, Review. Funding terms belong in Rewards. Project owners must be logged in with Github to create a project. Preview the page and both skills; show application status.
+Setup has four steps: Repository, Contribution rules, Rewards, Review. Funding terms belong in Rewards. Project owners must be logged in with Github to create a project. Preview the page and both skills. Show one setup status that reports GitHub authority, Slopbot installation, the security scan, and funding separately, with the next action.
 
 Projects start without routine admin approval after complete setup, verified GitHub authority, Slopbot installation, and a successful security scan. Funding is optional and has a separate status. Contributor skills check for malicious code and injection risks before installation or execution. They report risks and stop the local workflow. Two distinct contributor flags pause the project and remove it from available work. A clean fresh scan reinstates a project that flags alone paused.
 
@@ -66,7 +66,7 @@ Support the approved stablecoin, ERC-20, or classic SPL token. Exclude transfer-
 
 Awards: projected, under review, approved, excluded. Payments: underfunded, awaiting wallet, ready, held, submitted, paid. A failed attempt preserves the award and reserve; one recipient's failure cannot block others.
 
-Automatic monthly payment is the default for every project with funds committed in its vault. The owner sets the monthly amount during setup, can change allocations before execution, and can turn the default off. If the owner does not distribute the funds, the automatic monthly process distributes the current allocations. Do not create unfunded obligations or pay twice. The draft's 30-day fallback applies only to projects that use automatic monthly payment; define its exact UTC cutoff and start event before activation. Private bounty awards remain discretionary.
+Automatic monthly payment is the default for every project with funds committed in its vault. The owner sets the monthly amount during setup, can change allocations before execution, and can turn the default off. If the owner does not distribute the funds, the automatic monthly process distributes the current allocations. Do not create unfunded obligations or pay twice. The draft's 30-day fallback applies only to projects that use automatic monthly payment; its period model, UTC start event, and cutoff are open owner decisions (section 11) and must be recorded before activation. Private bounty awards remain discretionary.
 
 Ordinary award and free-fund withdrawal fee: floor(gross / 50) (2%). A 100 USDC award pays 98 and 2. Project-token awards pay both amounts in that token. No second fee at claim/retry. Preserve historical terms. Private bounties instead use section 8's 75/25 split.
 
@@ -118,7 +118,7 @@ Use the existing routes and shared controls. These are acceptance requirements, 
 | Funder or owner | Project funding → terms and balance → deposit, approve, or withdraw → receipt | Separate available and reserved funds; show asset, gross, fee, net, signer, and finality; reconcile an uncertain send before retry |
 | Member | GitHub login → Account → connections, wallets, sessions → Inbox/Payouts | Preserve return destination and drafts; independent consent; revoke sessions; private recovery and account closure |
 | Moderator | Admin → escalated dispute, appeal, or confirmed-malicious result → evidence and Slopbot triage → decision | Current authority, saved reason, fresh scan; flag-only pauses reinstate automatically after a clean scan; preserve awards |
-| Security operator | Private vetting evidence → authorized reasoned grant → inspect → record result | Exact retained bytes, explicit coverage gaps, audited access; no clean result from incomplete evidence |
+| Security operator | Private vetting evidence → authorized reasoned grant → inspect → record result | Exact retained bytes, explicit coverage gaps, audited access; "scan passed" only when every defined check ran (section 8) |
 | Visitor | Projects, profiles, shared rankings, models/clients, receipts, cycles, sponsors, How it works | Consistent amounts and periods; explain score, funding, and verification once; retain old URLs and raw downloads |
 
 
@@ -127,7 +127,13 @@ Use the existing routes and shared controls. These are acceptance requirements, 
 
 ### Clear a project before execution
 
-Scan submitted project code for malicious behavior, including wallet drainers, password and credential theft, secret exfiltration, harmful installation scripts, and agent prompt injection. Bind the result to the checked revision. A scan is not a guarantee of safety. Incomplete scans do not establish clearance. Confirmed malicious projects leave contributor discovery. Two distinct contributor flags automatically pause a project and notify moderators. Skills must refuse installation and work on flagged projects. A clean fresh scan reinstates a project that flags alone paused.
+Scan submitted project code for malicious behavior, including wallet drainers, password and credential theft, secret exfiltration, harmful installation scripts, unsafe execution, suspicious downloads, and agent prompt injection.
+
+The scan is bounded. By default it checks the supported source files, manifests and dependencies, install and build scripts, and agent instructions (skills, AGENTS.md, and similar files) of the checked revision. Run code in isolation only for artifacts that these checks mark as risky, for example an install script that downloads or runs code, or an opaque binary. Use a second model or a specialist investigation only for ambiguous or high-risk results, not for every clean project. Put no secrets in untrusted execution. A full runtime of every project is not required.
+
+Bind the result to the checked revision and reuse it for identical content. A change to executable source, dependencies, install instructions, or skill content needs a fresh scan; a presentation-only change does not.
+
+"Scan passed" means that every defined check ran on the bound revision and found no malicious result. It is not a guarantee of safety and does not claim complete runtime coverage. Record which checks ran and which content they did not cover. A scan is incomplete when a defined check did not run, or when content that runs at install or execution time was not covered by a check, isolated execution, or specialist review. An incomplete scan does not establish clearance and is never recorded as passed; do not convert earlier incomplete results to passed. Confirmed malicious projects leave contributor discovery. Two distinct contributor flags automatically pause a project and notify moderators. Skills must refuse installation and work on flagged projects. A clean fresh scan reinstates a project that flags alone paused.
 
 After a confirmed malicious result, the owner can appeal. A moderator decides whether to reinstate the project or ban it and the maintainer.
 
@@ -172,7 +178,7 @@ Recheck roles and destinations before sending. Verify actual inbox receipt separ
 | Fee conversion | Automatic conversion of received project-token fees to USDC; separate owner-controlled fee signer; human withdrawals | Routes, limits, custody, and Solana role separation |
 | Slopbot | Required and always free; registered repositories only; size-based PR scoring and useful review credit | Verified closure scope, Slopbot appeal triage with moderator escalation, free-service capacity limits, and production qualification |
 | Private programs | Automatic private reporting; discretionary owner awards; Slopbot-triaged disputes with moderator escalation; 75/25 payment | Published program terms, safe testing, verified reserves after approval, and activation per program |
-| Moderation and evidence | Staging pilot: lalalune (18633264), drew-dot-com (202660855) | Qualify staging, an isolated scanner runtime (a lighter isolated runner than Linux/KVM is acceptable), external retention/recovery controls, and production release |
+| Moderation and evidence | Staging pilot: lalalune (18633264), drew-dot-com (202660855) | Qualify staging, the bounded malicious-code scan in section 8 with an isolated runner for risky artifacts (a universal Linux/KVM runtime is not required), external retention/recovery controls, and production release |
 
 
 
@@ -200,10 +206,22 @@ Recheck roles and destinations before sending. Verify actual inbox receipt separ
 
 ## 11. Source, delivery, and acceptance
 
-The repository PRD is canonical. The Google Docs copy mirrors it after repository review. Owner decisions in this revision supersede conflicting older requirements: self-service admission; required free Slopbot on registered repositories; size-based PR scores and useful review credit; two-flag pauses; automatic private reporting with discretionary bounty payouts; no public award-adjustment history; automatic monthly payment by default for funded projects; and received-fee conversion to USDC. The 23 October 2026 revision adds: automatic reinstatement after flag-only pauses; a 7-day maintainer window before Slopbot labels uncertain findings; one published penalty table; Slopbot-first triage of appeals and disputes; two bounty authorities; one operator for redirected wallet recovery; and a lighter isolated scanner runtime. Independent audit and explicit mainnet activation remain required.
+The repository PRD is canonical. The Google Docs copy mirrors it after repository review. Owner decisions in this revision supersede conflicting older requirements: self-service admission; required free Slopbot on registered repositories; size-based PR scores and useful review credit; two-flag pauses; automatic private reporting with discretionary bounty payouts; no public award-adjustment history; automatic monthly payment by default for funded projects; and received-fee conversion to USDC. The 23 October 2026 revision adds: automatic reinstatement after flag-only pauses; a 7-day maintainer window before Slopbot labels uncertain findings; one published penalty table; Slopbot-first triage of appeals and disputes; two bounty authorities; one operator for redirected wallet recovery; and a lighter isolated scanner runtime, used only for risky artifacts within the bounded scan in section 8. Independent audit and explicit mainnet activation remain required.
 
-These are target requirements, not claims that current code or deployed services implement them. Preserve existing funded obligations and historical scoring terms. Keep implementation and evidence in the existing GitHub issues. Stable requirement and MVP package IDs remain usable; the old detailed delivery prose is superseded where it conflicts with this revision.
+These are target requirements, not claims that current code or deployed services implement them. Preserve existing funded obligations and historical scoring terms. Keep implementation and evidence in the existing GitHub issues. This revision defines no requirement or MVP work-package IDs. Cite the section number and the acceptance result. Older IDs (for example PAY-05, SKL-03, TOK-07, and MVP-07c) remain valid references in existing records, code, and decisions. The old detailed delivery prose is superseded where it conflicts with this revision.
 
 Before release, prove self-service setup, malicious-code detection, two-flag pause and skill refusal, automatic reinstatement after a clean scan, moderator decisions on confirmed-malicious results, free registered-repository bot review, scoring without duplicate review credit, monthly payment fallback, discretionary private reporting and settlement, and USDC fee conversion. Include failed, unavailable, and uncertain paths. Verify the exact source and deployed revision, real browser flows, access controls, recovery, and required network evidence. Independent audit and explicit mainnet activation gates remain in force. Maintainers approve completion from evidence; a source merge alone is not completion.
 
-Remaining implementation decisions: the monthly fallback's UTC start and cutoff; the owner-controlled signer connection and network-specific USDC routes; review-credit allocation rounding; the penalty table values; and the criteria that escalate an appeal or dispute to a moderator. Until those are defined, do not activate dependent payments or silently change historical scores.
+### Open owner decisions
+
+These choices are not settled. Agents and implementations must not choose them. Until the owner records a decision in this section, treat each value as required configuration that is absent: fail closed, keep the dependent behavior inactive, and do not change historical scores or awards.
+
+| Decision | Open question | Behavior that waits on it |
+| --- | --- | --- |
+| Monthly period model | UTC start event and cutoff; whether the 30-day fallback means a calendar month or elapsed time | Automatic monthly allocation freeze and payment |
+| Review-credit pool | The share of a pull request's credit that goes to useful reviews, and the integer remainder rule among up to five distinct reviewers | Splitting review credit for new work; earlier periods keep their recorded terms |
+| Flag lifetime and resolution | How long a contributor flag counts, and whether flags stop counting after a clean-scan reinstatement, a moderator decision, or withdrawal, so that the same flags do not pause a reinstated project again | Counting flags toward a pause after a reinstatement |
+| Fee conversion timing and dust | The minimum balance worth converting; conversion on each receipt or on a schedule with recovery; the signer connection and network-specific USDC routes. Section 6 says raw private keys are not stored in application environment variables, and AGENTS.md records the per-network fee-wallet key of 18 October 2026; the owner must reconcile these two records | Signing of fee conversions |
+| Attribution for automatic closure | The minimum evidence that proves slop.cash membership and skill use (for example signed attribution or a verified skill marker); a copied marker alone is not proof | Automatic closure; advisory review does not wait |
+| Penalty table | The values in the one published penalty table | Penalties |
+| Escalation criteria | When an appeal or dispute goes from Slopbot triage to a moderator | Moderator escalation |

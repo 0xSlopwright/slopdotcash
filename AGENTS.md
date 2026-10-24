@@ -48,12 +48,16 @@ alias only.
 ## MVP scope and phase gate
 
 The [canonical Slop PRD](docs/slop-product-requirements.md) defines
-product scope, MVP delivery packages, acceptance, and completion.
+product scope, acceptance, and completion.
 The Google Docs version mirrors the repository PRD. The repository governs.
 Read the PRD before selecting work, proposing a change, reviewing a PR, or
-implementing a feature. Link the exact PRD requirement and MVP work-package ID
-in every implementation PR. Existing code, an open issue, a model suggestion,
-or a PRD entry marked Future does not approve implementation.
+implementing a feature. In every implementation PR, cite the PRD section that
+the change serves (for example "PRD section 5, Slopbot") and the acceptance
+result that it proves. The PRD defines no work-package IDs; cite an older
+requirement or package ID only where existing records already use it, and do
+not ask maintainers for IDs that the PRD does not define. Existing code, an
+open issue, a model suggestion, or a PRD entry marked Future does not approve
+implementation.
 
 Work must correct a demonstrated defect in the MVP, fulfill a missing approved
 MVP requirement, or prove a relevant improvement to that required behavior.
@@ -188,9 +192,11 @@ a project that flags alone paused; a moderator decides only after a confirmed
 malicious result. Contributor skills must not install or work on flagged
 projects.
 
-The current application still uses admin approval in `backend/projects/`.
-That is implementation to migrate, not the target product rule. Do not bypass
-its deployed checks before the reviewed replacement is implemented.
+Where code in `backend/projects/` still requires admin approval, that step is
+implementation to migrate, not the target product rule. Replace it only through
+a reviewed change, and keep the GitHub repository identity and current
+write/maintain authority checks. Do not bypass deployed checks outside that
+change.
 
 A paused project is registered and listed, but none of its repositories is
 collected, so nothing on them reaches the ledger or the leaderboard. It
@@ -333,9 +339,10 @@ Private reports are automatic; bounty awards and payouts remain discretionary.
 Slopbot triages disputes first, and a moderator decides escalated disputes.
 Preserve already funded obligations.
 
-The current payment implementation retains its older review rules until the
-reviewed migration. Do not infer that this policy change has altered contracts
-or authorized live transactions.
+Where payment code still applies older review rules, such as a 14-day review
+window or a public reason for a changed amount, that is implementation to
+migrate. Do not infer that this policy change has altered contracts or
+authorized live transactions.
 
 One funding mode exists: the project vault contract (PRD FND-01, owner
 decision of 18 October 2026). Squads v4, Sablier, legacy direct and committed
@@ -501,8 +508,9 @@ slop.cash. Do not add the ordinary 2% fee to a private security bounty.
 For a project-token reward (PRD TOK-06, owner decision of 14 October 2026),
 the 2% is deducted in that token and paid in that token to the network fee
 wallet at payout. No contract converts it. A scheduled backend job converts
-fees already in the fee wallet to the network stablecoin inside that wallet
-(TOK-07, MVP-07c); it never blocks or touches a contributor payment.
+fees already in the fee wallet to USDC (PRD section 6) inside that wallet
+(TOK-07, MVP-07c); a network without a verified USDC route keeps the fee token
+pending. It never blocks or touches a contributor payment.
 Unused-fund withdrawals deduct the same 2%, `floor(gross / 50)`, enforced in the
 contracts, and reach only the owner's refund destination; funded
 obligations cannot be withdrawn.
