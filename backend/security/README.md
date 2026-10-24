@@ -230,7 +230,10 @@ Slopbot triages every appeal first (PRD section 8). When the reporter files
 the appeal, the same analyzer as the report analysis (Surplus
 `claude-opus-5.5`, prompt `slop-security-appeal-triage-1`) reads the appealed
 decision, its reason, the appeal reason, Slopbot's earlier report summary and
-the program scope. It reads no advisory text again. It drafts `uphold` or
+the program scope from the case's recorded policy revision. Both report
+analysis and appeal triage use that revision, not later project edits. If no
+policy revision was recorded at receipt, the scope is unknown. The appeal
+triage reads no advisory text again. It drafts `uphold` or
 `return`, a rationale and a confidence (`security_appeal_triages`, migration
 0069). The draft is advice only: it never decides the appeal, changes the case
 or moves funds. Under the recorded escalation criteria a private security
