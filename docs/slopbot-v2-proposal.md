@@ -419,7 +419,7 @@ the cost ledger in the first 30 days; this table is only for sizing.
 | 11 | Policy weakening by PR | A PR edits CONTRIBUTING.md to allow itself. | Always review against the base-branch policy at its SHA (BOT-04). |
 | 12 | Leaderboard optics | "Slop pays itself on its own leaderboard." | Separate Automation section; "cost recovery" label; public invoices and cost ledger; never ranked with people. |
 | 13 | Gaming the bot | Spammers learn phrasing that passes. | It is a filter, not a guarantee: the human merge gate stays. Update fingerprints. Track misses that maintainers close later. |
-| 14 | Private data | Private repository content sent to resellers. | v2 supports public repositories only. Private support later needs direct providers. The current PRD does not require a zero-data-retention agreement. |
+| 14 | Private data | Private repository content sent to resellers. | v2 supports public repositories only. The separate private-report analyzer uses Surplus only under the current PRD; the owner does not require a zero-data-retention agreement. Never publish private report text. |
 | 15 | Unpaid bills or empty balance | Protection stops silently. | Low-balance alerts at 25% and 10%; Suspended state is visible on the dashboard and in a one-time repository notice; nothing is closed without budget. |
 | 16 | Over-reach into scoring | The bot's verdict changes contributor pay. | The verdict never scores, excludes or pays. Only the published penalty for consenting participants applies (SCR-01), with reversal. |
 | 17 | Uninstall or repository transfer | Queued jobs act after removal. | Recheck installation and config just before every action (BOT-01). |

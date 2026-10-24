@@ -157,24 +157,24 @@ function analysisMessage(input: SecurityAnalysisInput): string {
 }
 
 /**
- * PRD section 8: private report text goes only to
- * Claude Opus 5.5 through Anthropic's own Messages API, with the dedicated
- * `ANTHROPIC_SECURITY_API_KEY`. A zero-data-retention agreement is not
- * required by the current PRD. It never goes through a model marketplace
- * or a second provider, and there is no fallback model.
+ * PRD section 8: private analysis uses only the owner's Surplus account.
+ * The requested model is not proof of the model served by the marketplace.
+ * There is no fallback provider or zero-retention guarantee.
  */
-export const SECURITY_ANALYSIS_MODEL = "claude-opus-5-5";
-const ANTHROPIC_MESSAGES = new URL("https://api.anthropic.com/v1/messages");
+export const SECURITY_ANALYSIS_MODEL = "claude-opus-5.5";
+const SURPLUS_MESSAGES = new URL(
+  "https://api.surplusintelligence.ai/anthropic/v1/messages",
+);
 const MAX_OUTPUT_TOKENS = 16000;
 /** Local browser tests only: a loopback provider fixture on 127.0.0.1. */
 const LOOPBACK_ORIGIN = /^http:\/\/127\.0\.0\.1:[1-9][0-9]{3,4}$/u;
 
 /**
- * The direct Anthropic analyzer, or null without the dedicated key. Null
+ * The Surplus analyzer, or null without the account key. Null
  * records every analysis as unavailable: Slop never falls back to another
  * route.
  */
-export function anthropicSecurityAnalyzer(options: {
+export function surplusSecurityAnalyzer(options: {
   apiKey: string | undefined;
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   loopbackOrigin?: string;
@@ -185,10 +185,10 @@ export function anthropicSecurityAnalyzer(options: {
   const endpoint =
     options.loopbackOrigin !== undefined &&
     LOOPBACK_ORIGIN.test(options.loopbackOrigin)
-      ? `${options.loopbackOrigin}${ANTHROPIC_MESSAGES.pathname}`
-      : ANTHROPIC_MESSAGES.href;
+      ? `${options.loopbackOrigin}${SURPLUS_MESSAGES.pathname}`
+      : SURPLUS_MESSAGES.href;
   return {
-    provider: "anthropic",
+    provider: "surplus",
     model: SECURITY_ANALYSIS_MODEL,
     async analyze(input, timeoutMs) {
       const response = await options.fetch(endpoint, {
@@ -198,7 +198,7 @@ export function anthropicSecurityAnalyzer(options: {
         signal: AbortSignal.timeout(timeoutMs),
         headers: {
           "content-type": "application/json",
-          "x-api-key": apiKey,
+          authorization: `Bearer ${apiKey}`,
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({

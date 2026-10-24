@@ -198,15 +198,15 @@ async function handlePrivateIntake(state, request, response, url) {
     state.faults[faultControl[1]] = faultControl[2];
     return send(204);
   }
-  // A loopback stand-in for the Anthropic Messages API that the private AI
+  // A loopback stand-in for the Surplus Messages API that the private AI
   // analysis calls in the private-intake lane. It answers one fixed
   // proposal and keeps each request so a test can see what the model read.
-  if (request.method === "POST" && path === "/v1/messages") {
-    if (request.headers["x-api-key"] !== "e2e-fixture-analysis-key")
+  if (request.method === "POST" && path === "/anthropic/v1/messages") {
+    if (request.headers.authorization !== "Bearer e2e-fixture-analysis-key")
       return send(401, { type: "error" });
     const body = await readBody(request);
-    // Owner decision D10: Claude Opus 5.5 directly, never another model.
-    if (JSON.parse(body).model !== "claude-opus-5-5")
+    // Owner decision: request Opus 5.5 through Surplus only.
+    if (JSON.parse(body).model !== "claude-opus-5.5")
       return send(400, { type: "error" });
     state.analysisRequests.push(body);
     return send(200, {

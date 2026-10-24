@@ -45,7 +45,7 @@ import {
 import { assetTemplateSource } from "../../../backend/projects/skill-publication";
 import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata";
 import { githubAdvisoryReader } from "../../../backend/security/advisories";
-import { anthropicSecurityAnalyzer } from "../../../backend/security/analysis";
+import { surplusSecurityAnalyzer } from "../../../backend/security/analysis";
 import {
   githubAdvisoryClient,
   githubAppAdvisoryToken,
@@ -151,11 +151,11 @@ type Env = {
   /** Local browser tests only: a loopback GitHub OAuth fixture origin. */
   SLOP_GITHUB_OAUTH_ORIGIN?: string;
   /**
-   * Owner decision D10: an Anthropic API key under a zero-data-retention
-   * agreement, used only for private security case analysis. Unset records
+   * Owner decision: use the Surplus account key for private security
+   * case analysis. No zero-data-retention agreement is required. Unset records
    * every analysis as unavailable; there is no other provider.
    */
-  ANTHROPIC_SECURITY_API_KEY?: string;
+  SURPLUS_API_KEY?: string;
   /** Local browser tests only: a loopback analysis provider fixture origin. */
   SLOP_ANALYSIS_API_ORIGIN?: string;
   /** Notification Worker; absent where no notifier is deployed. */
@@ -675,8 +675,8 @@ export async function onRequest(context: PagesContext): Promise<Response> {
             }),
           })
         : null,
-    analyzer: anthropicSecurityAnalyzer({
-      apiKey: context.env.ANTHROPIC_SECURITY_API_KEY,
+    analyzer: surplusSecurityAnalyzer({
+      apiKey: context.env.SURPLUS_API_KEY,
       fetch: (url, init) => fetch(url, init),
       loopbackOrigin: context.env.SLOP_ANALYSIS_API_ORIGIN,
     }),

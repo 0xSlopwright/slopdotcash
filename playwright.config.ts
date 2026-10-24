@@ -71,7 +71,7 @@ if (
   throw new Error("Private intake e2e needs the loopback fixture and keys");
 const registryIntake =
   process.env.SLOP_E2E_PRIVATE_INTAKE === "1"
-    ? ` --binding SLOP_PRIVATE_INTAKE_MODE=on --binding GITHUB_INTAKE_APP_CLIENT_ID=Iv1.e2efixture --binding GITHUB_INTAKE_APP_CLIENT_SECRET=e2e-fixture-secret --binding SLOP_INTAKE_GRANT_KEY=${registryIntakeGrant} --binding SLOP_GITHUB_OAUTH_ORIGIN=${registryGitHub} --binding ANTHROPIC_SECURITY_API_KEY=e2e-fixture-analysis-key --binding SLOP_ANALYSIS_API_ORIGIN=${registryGitHub}`
+    ? ` --binding SLOP_PRIVATE_INTAKE_MODE=on --binding GITHUB_INTAKE_APP_CLIENT_ID=Iv1.e2efixture --binding GITHUB_INTAKE_APP_CLIENT_SECRET=e2e-fixture-secret --binding SLOP_INTAKE_GRANT_KEY=${registryIntakeGrant} --binding SLOP_GITHUB_OAUTH_ORIGIN=${registryGitHub} --binding SURPLUS_API_KEY=e2e-fixture-analysis-key --binding SLOP_ANALYSIS_API_ORIGIN=${registryGitHub}`
     : "";
 const registryVettingKey = process.env.SLOP_E2E_VETTING_PUBLIC_KEY;
 if (

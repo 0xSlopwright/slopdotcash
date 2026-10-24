@@ -62,7 +62,7 @@ export type SecurityApiDependencies = {
    */
   advisories?: AdvisoryReader | null;
   /**
-   * The direct Anthropic analyzer with the dedicated operator key
+   * The Surplus analyzer with the operator account key
    * (PRD section 8); absent = unavailable.
    */
   analyzer?: SecurityAnalyzer | null;
