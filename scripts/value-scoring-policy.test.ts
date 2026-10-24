@@ -694,3 +694,84 @@ test("reviews outside the scoring window do not consume review credit", () => {
   expect(exclusions.get("PRR_9_2")).toBeUndefined();
   expect(exclusions.get("PRR_9_3")).toBeUndefined();
 });
+
+test("excluding an old joint review does not shrink the pull request size", () => {
+  const pull = outcome(10, "2026-10-20T10:00:00.000Z");
+  const reviews = [
+    review(10, 1, bob as GitHubActor, "APPROVED", "2026-09-01T00:00:00.000Z"),
+    review(10, 2, carol as GitHubActor, "APPROVED", "2026-10-19T00:00:00.000Z"),
+  ];
+  const decision = {
+    status: "assessed",
+    latestDigest: "c".repeat(64),
+    history: [{ recorded_at: "2026-10-22T00:00:00.000Z" }],
+    record: {
+      sources: [{ pullRequestNodeId: pull.id, headSha: HEAD }],
+      units: reviews.map((item, index) => ({
+        workUnitId: `wu_unit-${index}`,
+        claimIds: [`claim-${index}`],
+        assessment: {
+          tier: index === 0 ? "medium" : "micro",
+          rationale: "An independently accepted part of the pull request.",
+          reviews: [
+            {
+              sourceId: item.id,
+              tier: "standard",
+              finding: "Verified the fix.",
+              outcome: "The accepted head retains it.",
+            },
+          ],
+        },
+      })),
+    },
+    evidence: {
+      claims: reviews.map((_, index) => ({
+        id: `claim-${index}`,
+        carrierPullRequestIds: [pull.id],
+        creditPullRequestId: pull.id,
+        implementationActorNodeIds: [alice?.id],
+      })),
+      sources: [
+        {
+          evidence: {
+            repository: REPO,
+            pull: {
+              node_id: pull.id,
+              head: { sha: HEAD },
+              updated_at: pull.updatedAt,
+              merged_at: pull.mergedAt,
+              user: { node_id: alice?.id },
+              html_url: pull.url,
+              number: pull.number,
+              title: pull.title,
+            },
+            comments: [],
+            reviews: reviews.map((item) => ({
+              node_id: item.id,
+              body: item.body,
+              user: { node_id: item.author?.id },
+              submitted_at: item.submittedAt,
+            })),
+          },
+        },
+      ],
+    },
+  };
+  const result = createLeaderboardSnapshot(
+    input({
+      mergedPullRequestOutcomes: [pull],
+      reviewedMergedPullRequests: [reviewed(pull, reviews)],
+      valuePolicy: POLICY,
+      valueDecisions: new Map(),
+      valueActors: new Map([[(alice as GitHubActor).id, alice as GitHubActor]]),
+      jointValueDecisions: new Map([
+        [pull.id, decision],
+      ]) as unknown as LeaderboardInput["jointValueDecisions"],
+    }),
+  );
+  expect(
+    result.ledger
+      .filter((event) => event.category === "substantive-review")
+      .map((event) => [event.actor.id, event.scoreThirds]),
+  ).toEqual([[carol?.id, 3]]);
+});

@@ -3811,10 +3811,11 @@ function createSnapshotWithReviewCutoff(
       inWindow.map((candidate) => [candidate.reviewId, candidate]),
     );
     // A joint member's reviews can sit in several units; the largest assessed
-    // unit is the pull request's size.
+    // unit is the pull request's size. An old review losing its share must
+    // not shrink that recorded size.
     const allocation = allocatePullRequestReviewCredit(
       inWindow,
-      Math.max(...inWindow.map((candidate) => candidate.assessedSizeThirds)),
+      Math.max(...eligible.map((candidate) => candidate.assessedSizeThirds)),
     );
     const exclude = (reviewId: string, reason: ReviewExclusionReason) => {
       const candidate = byId.get(reviewId);
