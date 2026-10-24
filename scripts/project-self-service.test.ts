@@ -404,6 +404,106 @@ test("owner revisions publish presentation at once, rescan skill inputs and appl
   expect(budget.body.error).toBe("financial_change_restricted");
 });
 
+test("a payout exclusion starts with the next UTC month on every revision path", async () => {
+  const { persistence, call, create, deps } = registry();
+  await create("open-registry", "example/open-registry");
+  const exclusion = (fromCycle: string) => ({
+    actorId: OTHER,
+    nodeId: btoa(`04:User${OTHER}`),
+    login: "other",
+    relationship: "funded-employee" as const,
+    fromCycle,
+    untilCycle: null,
+  });
+  const revise = async (
+    path: string,
+    actor: string,
+    exclusions: unknown[] | undefined,
+  ) => {
+    const current = await persistence.getProject("open-registry");
+    if (current?.manifest.reward.kind !== "monthly-pool")
+      throw new Error("monthly reward expected");
+    const { payoutExclusions: _old, ...reward } = current.manifest.reward;
+    return call("PUT", path, actor, {
+      manifest: {
+        ...current.manifest,
+        reward: exclusions
+          ? { ...reward, payoutExclusions: exclusions }
+          : reward,
+      },
+      expectedRevision: current.revision,
+      reason: "Record a payout exclusion",
+    });
+  };
+  // NOW is in October 2026: the open month cannot change.
+  for (const [path, actor] of [
+    ["projects/open-registry", OWNER],
+    ["admin/projects/open-registry/manifest", ADMIN],
+  ])
+    expect(await revise(path, actor, [exclusion("2026-10")])).toEqual({
+      status: 422,
+      body: {
+        error: "invalid_manifest",
+        message: "payout exclusions apply prospectively; 2026-10 cannot change",
+      },
+    });
+  // Public shares and private allocation must name the same account.
+  expect(
+    (
+      await revise("projects/open-registry", OWNER, [
+        {
+          ...exclusion("2026-11"),
+          actorId: OWNER,
+        },
+      ])
+    ).status,
+  ).toBe(422);
+  const recorded = await revise("projects/open-registry", OWNER, [
+    exclusion("2026-11"),
+  ]);
+  expect(recorded.status).toBe(200);
+  expect(recorded.body.changes).toMatchObject({ financial: ["reward"] });
+  expect(
+    (await persistence.getProject("open-registry"))?.manifest.reward
+      .payoutExclusions,
+  ).toEqual([exclusion("2026-11")]);
+  // A presentation edit keeps the exclusion.
+  const current = await persistence.getProject("open-registry");
+  expect(
+    (
+      await call("PUT", "projects/open-registry", OWNER, {
+        manifest: { ...current?.manifest, headline: "A clearer summary." },
+        expectedRevision: current?.revision,
+      })
+    ).status,
+  ).toBe(200);
+  // Before November starts, the future exclusion may still be withdrawn.
+  expect(
+    (await revise("admin/projects/open-registry/manifest", ADMIN, undefined))
+      .status,
+  ).toBe(200);
+  expect(
+    (await revise("projects/open-registry", OWNER, [exclusion("2026-11")]))
+      .status,
+  ).toBe(200);
+  deps.now = () => new Date("2026-11-01T00:00:00.000Z");
+  // The numeric account ID controls private allocation checks. Keeping the
+  // node ID must not allow an owner or admin to replace that identity now.
+  for (const [path, actor] of [
+    ["projects/open-registry", OWNER],
+    ["admin/projects/open-registry/manifest", ADMIN],
+  ]) {
+    const changed = await revise(path, actor, [
+      { ...exclusion("2026-11"), actorId: OWNER },
+    ]);
+    expect(changed.status).toBe(422);
+    expect(
+      (await persistence.getProject("open-registry"))?.manifest.reward
+        .payoutExclusions,
+    ).toEqual([exclusion("2026-11")]);
+  }
+});
+
 test("an application stored before self-service setup publishes once, by its applicant", async () => {
   const { persistence, sqlite, call, state } = registry();
   // Submission stored the verified reward asset with the manifest.
