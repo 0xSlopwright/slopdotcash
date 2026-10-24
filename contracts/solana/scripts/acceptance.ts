@@ -127,6 +127,7 @@ function escrow(programId: PublicKey) {
       authority: PublicKey,
       identity: PublicKey,
       fees: PublicKey,
+      rotation: PublicKey,
     ) =>
       ix(
         "initialize_config",
@@ -144,6 +145,7 @@ function escrow(programId: PublicKey) {
         ],
         identity.toBuffer(),
         fees.toBuffer(),
+        rotation.toBuffer(),
       ),
     initialize: (input: {
       owner: PublicKey;
@@ -450,6 +452,7 @@ export async function prepareLocalnet(input: {
   upgradeAuthority: string;
   identity: string;
   feeRecipient: string;
+  rotationAuthority: string;
   fund: string[];
   holders: string[];
 }): Promise<string[]> {
@@ -475,6 +478,7 @@ export async function prepareLocalnet(input: {
       authority.publicKey,
       new PublicKey(input.identity),
       new PublicKey(input.feeRecipient),
+      new PublicKey(input.rotationAuthority),
     ),
   );
   await sendAndConfirmTransaction(connection, tx, [authority], {
@@ -589,6 +593,7 @@ export async function runSolana(
     throw new Error("Escrow Config is missing for this program");
   const configIdentity = new PublicKey(configInfo.data.subarray(8, 40));
   const feeRecipient = new PublicKey(configInfo.data.subarray(40, 72));
+  const rotationAuthority = new PublicKey(configInfo.data.subarray(72, 104));
   if (!configIdentity.equals(identity.publicKey))
     throw new Error(
       "ESCROW_ACCEPTANCE_IDENTITY_KEY is not the Config identity authority",
@@ -608,6 +613,7 @@ export async function runSolana(
     identityAuthority: identity.publicKey.toBase58(),
     relayer: keys.relayer.publicKey.toBase58(),
     feeRecipient: feeRecipient.toBase58(),
+    rotationAuthority: rotationAuthority.toBase58(),
   };
   if (!evidence) {
     evidence = newEvidence({
@@ -827,6 +833,7 @@ export async function runSolana(
             owner: keys.owner.publicKey.toBase58(),
             identityAuthority: identity.publicKey.toBase58(),
             feeRecipient: feeRecipient.toBase58(),
+            rotationAuthority: rotationAuthority.toBase58(),
             deploymentTransaction: null,
             sourceCommit: run.sourceCommit,
             codeSha256,

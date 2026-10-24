@@ -43,6 +43,9 @@ const identity = enabled
 const fee = enabled
   ? web3.Keypair.fromSeed(hash("slop-browser-local-fee"))
   : null;
+const rotation = enabled
+  ? web3.Keypair.fromSeed(hash("slop-browser-local-rotation"))
+  : null;
 const connection = enabled ? new web3.Connection(rpcUrl, "confirmed") : null;
 let validator: ChildProcess;
 let ledger = "";
@@ -129,7 +132,7 @@ test.beforeAll(async () => {
     new web3.PublicKey("BPFLoaderUpgradeab1e11111111111111111111111"),
   )[0];
   await program.methods
-    .initializeConfig(identity.publicKey, fee.publicKey)
+    .initializeConfig(identity.publicKey, fee.publicKey, rotation.publicKey)
     .accountsStrict({
       authority: owner.publicKey,
       config: configPda,
@@ -207,6 +210,7 @@ test.beforeAll(async () => {
     owner: owner.publicKey.toBase58(),
     identityAuthority: identity.publicKey.toBase58(),
     feeRecipient: fee.publicKey.toBase58(),
+    rotationAuthority: rotation.publicKey.toBase58(),
     programId: idl.address,
     projectPda: projectPda.toBase58(),
     networkDomain: domain.toString("hex"),

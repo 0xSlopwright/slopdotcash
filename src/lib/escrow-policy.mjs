@@ -300,6 +300,7 @@ function validateEscrowPolicy(value, feeBasisPoints) {
       "owner",
       "identityAuthority",
       "feeRecipient",
+      ...(chainFamily(value.chain) === "solana" ? ["rotationAuthority"] : []),
       "deploymentTransaction",
       "sourceCommit",
       "codeSha256",
@@ -327,6 +328,17 @@ function validateEscrowPolicy(value, feeBasisPoints) {
       ].every((address) => isFundingAddress(value.chain, address))
     )
       throw new TypeError("Invalid escrow address");
+    if (
+      chainFamily(value.chain) === "solana" &&
+      (!isFundingAddress(value.chain, deployment.rotationAuthority) ||
+        [
+          deployment.owner,
+          deployment.identityAuthority,
+          deployment.feeRecipient,
+          deployment.vault,
+        ].includes(deployment.rotationAuthority))
+    )
+      throw new TypeError("Solana requires an independent rotation authority");
     // Any standard token is allowed (TOK-01); the adapter reads its decimals
     // from chain and rejects a vault whose token differs from the manifest.
     if (
@@ -349,7 +361,7 @@ function validateEscrowPolicy(value, feeBasisPoints) {
           !/^[0-9a-f]{64}$/.test(deployment.networkDomain)
     )
       throw new TypeError("Escrow program does not match the network");
-    // The owner proposes and the fee recipient confirms a new identity
+    // The owner proposes and the rotation authority confirms a new identity
     // authority; the notice period gives every binding made with a stolen
     // key time to be vetoed. Base fixes 7 days in the factory contract.
     if (

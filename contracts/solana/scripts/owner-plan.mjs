@@ -119,24 +119,24 @@ export async function ownerPlan(input, runtime) {
   const instructions = [];
   // The project purpose is the last project PDA seed: a private bounty project is separate.
   const bounty = d.payoutPolicy === "security-bounty";
-  // The transaction fee payer and only signer: the owner, or the depositor of a deposit.
+  // The fee payer and only signer is selected for the requested operation.
   let signer = owner;
-  if (input.operation === "initialize") {
-    // L-3: the program accepts only the identity authority and fee recipient pinned in
-    // its Config; refuse early, before the owner signs.
-    const configAddress = pda(Buffer.from("config"));
-    const config = await program.account.config.fetchNullable(
-      configAddress,
-      "finalized",
+  // Verify all three fixed roles before constructing any signing request.
+  const configAddress = pda(Buffer.from("config"));
+  const config = await program.account.config.fetchNullable(
+    configAddress,
+    "finalized",
+  );
+  if (!config) throw new Error("Escrow Config missing");
+  if (
+    !config.identityAuthority.equals(new PublicKey(d.identityAuthority)) ||
+    !config.feeRecipient.equals(new PublicKey(d.feeRecipient)) ||
+    !config.rotationAuthority.equals(new PublicKey(d.rotationAuthority))
+  )
+    throw new Error(
+      "Reviewed authorities differ from the pinned escrow Config",
     );
-    if (!config) throw new Error("Escrow Config missing");
-    if (
-      !config.identityAuthority.equals(new PublicKey(d.identityAuthority)) ||
-      !config.feeRecipient.equals(new PublicKey(d.feeRecipient))
-    )
-      throw new Error(
-        "Reviewed authorities differ from the pinned escrow Config",
-      );
+  if (input.operation === "initialize") {
     if (
       !pda(
         Buffer.from("project"),
@@ -186,10 +186,26 @@ export async function ownerPlan(input, runtime) {
       instructions.push(
         await program.methods
           .proposeAuthorityRotation(new PublicKey(input.nextIdentityAuthority))
-          .accountsStrict({ owner, project })
+          .accountsStrict({
+            owner,
+            project,
+            config: pda(Buffer.from("config")),
+          })
           .instruction(),
       );
-    else if (input.operation === "cancel-rotation")
+    else if (input.operation === "confirm-rotation") {
+      signer = new PublicKey(d.rotationAuthority);
+      instructions.push(
+        await program.methods
+          .confirmAuthorityRotation()
+          .accountsStrict({
+            rotationAuthority: signer,
+            config: configAddress,
+            project,
+          })
+          .instruction(),
+      );
+    } else if (input.operation === "cancel-rotation")
       instructions.push(
         await program.methods
           .cancelAuthorityRotation()

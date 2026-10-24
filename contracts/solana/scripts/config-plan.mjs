@@ -10,7 +10,7 @@
  *     Lists every Project account of the program and whether the Config pins it.
  *
  * The input file holds `programId`, `upgradeAuthority`, `codeSha256`,
- * `identityAuthority` and `feeRecipient`. RPC URL, expected genesis and a fresh
+ * `identityAuthority`, `feeRecipient` and `rotationAuthority`. RPC URL, expected genesis and a fresh
  * blockhash come from SLOP_SOLANA_RPC_URL, SLOP_SOLANA_GENESIS and
  * SLOP_SOLANA_RECENT_BLOCKHASH. The output omits the RPC URL.
  */
@@ -60,13 +60,19 @@ export async function configPlan(input, runtime) {
   await verifyProgram(connection, program.programId, input);
   const authority = new PublicKey(input.upgradeAuthority),
     identity = new PublicKey(input.identityAuthority),
-    fees = new PublicKey(input.feeRecipient);
-  if (identity.equals(fees) || identity.equals(PublicKey.default))
-    throw new Error("Identity authority and fee recipient must differ");
+    fees = new PublicKey(input.feeRecipient),
+    rotation = new PublicKey(input.rotationAuthority);
+  if (
+    [identity, fees, rotation].some((key) => key.equals(PublicKey.default)) ||
+    new Set([identity, fees, rotation].map((key) => key.toBase58())).size !== 3
+  )
+    throw new Error(
+      "Identity, fee and rotation authorities must be nonzero and distinct",
+    );
   if (await connection.getAccountInfo(config, "finalized"))
     throw new Error("Config already exists; it cannot change");
   const instruction = await program.methods
-    .initializeConfig(identity, fees)
+    .initializeConfig(identity, fees, rotation)
     .accountsStrict({
       authority,
       config,
@@ -90,6 +96,7 @@ export async function configPlan(input, runtime) {
     config: config.toBase58(),
     identityAuthority: identity.toBase58(),
     feeRecipient: fees.toBase58(),
+    rotationAuthority: rotation.toBase58(),
     requiredSigner: authority.toBase58(),
     recentBlockhash: blockhash,
     transactionBase64: transaction
@@ -129,6 +136,7 @@ export async function listProjects(input, runtime) {
           address: config.toBase58(),
           identityAuthority: pinned.identityAuthority.toBase58(),
           feeRecipient: pinned.feeRecipient.toBase58(),
+          rotationAuthority: pinned.rotationAuthority.toBase58(),
         }
       : null,
     projects: accounts
