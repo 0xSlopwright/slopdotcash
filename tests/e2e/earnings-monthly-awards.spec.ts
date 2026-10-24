@@ -73,8 +73,8 @@ test("Your payouts lists approved monthly awards with their payment state", asyn
   const rows = table.locator("tbody tr");
   await expect(rows).toHaveCount(3);
   await expect(rows.nth(0)).toContainText("eliza (November 2026)");
-  await expect(rows.nth(0)).toContainText("$600.00");
-  await expect(rows.nth(0)).toContainText("$588.00");
+  await expect(rows.nth(0)).toContainText("600 USDC");
+  await expect(rows.nth(0)).toContainText("588 USDC");
   await expect(rows.nth(0)).toContainText(
     "Approved, underfunded: waiting for the project to add funds",
   );
