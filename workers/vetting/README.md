@@ -143,7 +143,7 @@ VM.
 | Item | Status |
 | --- | --- |
 | Scanner service deployment | Not deployed by this source. It needs its Ed25519 key, the public key in `VETTING_RESULT_PUBLIC_KEYS`, a provider profile and the evidence store policy. |
-| Provider and model | The operator selects and pins the primary and specialist models; no default exists. |
-| Isolated runner | PRD section 9 accepts a lighter isolated runner than Linux/KVM. Its selection and acceptance remain open. |
-| Specialist authority | Who may supply a malicious `confirmation` is an operator trust boundary; a model label cannot. |
+| Provider and model | Owner decision D16: Surplus `claude-opus-5.5` is the primary model and Surplus `gpt-6.1-sol` is the specialist, only for ambiguous or high-risk artifacts. The operator pins both in the provider profile; the source has no default. |
+| Isolated runner | Owner decision D16: Cloudflare Sandboxes/Containers, one disposable sandbox per risky artifact, with `enableInternet: false` set explicitly and no secrets. Adapting this worker from the Bubblewrap host to that runner is follow-up work. |
+| Specialist authority | Owner decision D3: moderators confirm malice and release quarantined artifacts. A model label alone cannot; a signed malicious result restricts the project until a moderator decides. |
 | Live acceptance | Clean, incomplete, malicious, flag and reinstatement paths on staging with the real services. |
