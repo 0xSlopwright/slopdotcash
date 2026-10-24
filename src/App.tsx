@@ -1184,7 +1184,7 @@ export function ProjectFunding({ project }: { project: ProjectDefinition }) {
       </span>
     );
   else if (totals.vault.snapshots.length === 0)
-    summary = "Vault live · no finalized vault read yet";
+    summary = "Vault recorded · no finalized vault read yet";
   else
     summary = totals.vault.snapshots.map((snapshot, index) => {
       const amount = (value: string | null) =>
@@ -1207,8 +1207,11 @@ export function ProjectFunding({ project }: { project: ProjectDefinition }) {
       aria-label="Project funding"
     >
       <p>
-        <strong>Funding</strong> {summary}{" "}
-        <Link href={href}>Fund this project</Link>
+        <strong>Funding</strong>{" "}
+        {project.reward.paymentMode === "enabled"
+          ? null
+          : "Payments disabled · "}
+        {summary} <Link href={href}>Fund this project</Link>
       </p>
     </section>
   );
