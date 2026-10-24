@@ -1,4 +1,5 @@
 import type { EscrowPolicy } from "./escrow-policy.mjs";
+import type { PayoutExclusion } from "./payout-exclusions.mjs";
 import type { ContributionField } from "./project-schema.mjs";
 /** Types for the public project and reward-policy registry. */
 
@@ -56,6 +57,8 @@ export interface ProjectRewardPolicy {
   readonly unusedFunds: "not-applicable" | "rollover-without-cap-increase";
   readonly fundingState: "committed" | "external-opportunity" | "pledged";
   readonly reviewBudget?: ProjectReviewBudgetPolicy;
+  /** Owners, funded employees and related parties excluded from payout. */
+  readonly payoutExclusions?: readonly PayoutExclusion[];
   /**
    * Opt-in for maintainer-awarded contributions that live outside GitHub
    * (posts, support answers, tutorials, videos). Absent means such awards are

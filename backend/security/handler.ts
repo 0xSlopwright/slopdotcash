@@ -33,8 +33,11 @@ import type { AdvisoryReader, GithubPrivateReport } from "./advisories";
 import {
   ANALYSIS_TIMEOUT_MS,
   analysisMayStart,
+  appealTriageMayStart,
   BACKGROUND_ANALYSIS_TIMEOUT_MS,
+  latestAppealTriage,
   latestCaseAnalysis,
+  runAppealTriage,
   runCaseAnalysis,
   type SecurityAnalysisReport,
   type SecurityAnalyzer,
@@ -880,6 +883,11 @@ async function caseView(
       ? await latestCaseAnalysis(deps, row.id)
       : null;
   const maintainer = roles.has("security-maintainer");
+  // Slopbot's drafted resolution of the open appeal (PRD section 8).
+  const appealTriage =
+    includeHistory && row.appeal_state === "open"
+      ? await latestAppealTriage(deps, row.id)
+      : null;
   return {
     ...shared,
     allowedActions: [
@@ -891,7 +899,15 @@ async function caseView(
       (analysis === null || analysis.retryable)
         ? ["analyze"]
         : []),
+      // A dispute reviewer may run a missing, failed or lost appeal triage.
+      ...(roles.has("dispute") &&
+      includeHistory &&
+      row.appeal_state === "open" &&
+      (appealTriage === null || appealTriage.retryable)
+        ? ["triage-appeal"]
+        : []),
     ],
+    appealTriage,
     view: "restricted",
     reporter: {
       githubId: row.reporter_github_id,
@@ -1269,6 +1285,20 @@ export async function scheduleAnalysis(
 ): Promise<void> {
   const run = (timeoutMs: number) =>
     runCaseAnalysis(analysisDependencies(deps), caseId, report, timeoutMs);
+  if (deps.waitUntil) deps.waitUntil(run(BACKGROUND_ANALYSIS_TIMEOUT_MS));
+  else await run(ANALYSIS_TIMEOUT_MS);
+}
+
+/**
+ * Starts Slopbot's triage of a newly opened appeal, after the response where
+ * the platform allows it and inline otherwise, like the report analysis.
+ */
+async function scheduleAppealTriage(
+  deps: SecurityApiDependencies,
+  caseId: string,
+): Promise<void> {
+  const run = (timeoutMs: number) =>
+    runAppealTriage(analysisDependencies(deps), caseId, timeoutMs);
   if (deps.waitUntil) deps.waitUntil(run(BACKGROUND_ANALYSIS_TIMEOUT_MS));
   else await run(ANALYSIS_TIMEOUT_MS);
 }
@@ -2690,6 +2720,16 @@ async function awardReservation(
   const rootCauseKey = row.root_cause_key;
   if (terms === null || rootCauseKey === null)
     fail(409, "action_not_allowed", "The case has no paid terms to reserve");
+  // Approved awards stay owed through a quarantine or a ban, but a
+  // restricted program starts no new commitment (PRD section 11, Restricted
+  // projects).
+  const program = await currentProgram(deps, row.project_id);
+  if (program === null || program.manifest.listingTier === "retired")
+    fail(
+      409,
+      "program_restricted",
+      "A quarantined, banned, or retired program cannot approve a new award",
+    );
   await assertRootCauseFree(deps, row.project_id, row.id, rootCauseKey);
   const snapshotGuards: { sql: string; values: unknown[] }[] = [];
   const funds = await programFunds(deps, row.project_id, snapshotGuards);
@@ -2757,14 +2797,15 @@ async function awardReservation(
 /**
  * Actions that ask Slop to do automatic work again, not human decisions:
  * settle an older advisory link against GitHub, or run a missing, failed or
- * lost private analysis. Neither changes a decision or an award.
+ * lost private analysis or appeal triage. None changes a decision or an
+ * award.
  */
 async function automaticAction(
   deps: SecurityApiDependencies,
   row: CaseRow,
   roles: Set<Role>,
   actor: Actor,
-  action: "check-receipt" | "analyze",
+  action: "check-receipt" | "analyze" | "triage-appeal",
   body: Record<string, unknown>,
 ): Promise<Response> {
   exactKeys(body, ["action", "expectedRevision", "idempotencyKey"]);
@@ -2784,6 +2825,21 @@ async function automaticAction(
         "receipt_check_unavailable",
         "Slop could not read GitHub. Do not submit again; check later.",
       );
+  } else if (action === "triage-appeal") {
+    if (!roles.has("dispute") || row.appeal_state !== "open")
+      fail(
+        409,
+        "action_not_allowed",
+        "The case does not allow triage-appeal in its current state",
+      );
+    if (!(await appealTriageMayStart(deps, row.id)))
+      fail(409, "analysis_running", "The appeal triage is already running");
+    // The reviewer asked for it and waits for the full provider time limit.
+    await runAppealTriage(
+      analysisDependencies(deps),
+      row.id,
+      ANALYSIS_TIMEOUT_MS,
+    );
   } else {
     if (
       row.submission_state !== "verified" ||
@@ -2852,7 +2908,11 @@ async function actOnCase(
     fail(400, "invalid_request", "Invalid expectedRevision");
   if (body.expectedRevision !== row.revision)
     fail(409, "stale_revision", "The case changed since you loaded it");
-  if (action === "check-receipt" || action === "analyze")
+  if (
+    action === "check-receipt" ||
+    action === "analyze" ||
+    action === "triage-appeal"
+  )
     return await automaticAction(deps, row, roles, actor, action, body);
   if (row.submission_state !== "verified")
     fail(409, "not_verified", "The case is not verified yet");
@@ -2943,6 +3003,8 @@ async function actOnCase(
       fail(409, change.unmet.code, change.unmet.message);
     fail(409, "stale_revision", "The case changed since you loaded it");
   }
+  // Slopbot triages every appeal first; a moderator still decides it.
+  if (change.kind === "appeal") await scheduleAppealTriage(deps, row.id);
   const updated = (await loadCase(deps, row.id)) as CaseRow;
   const nextRoles = await caseRoles(
     deps,

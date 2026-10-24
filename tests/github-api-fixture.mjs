@@ -39,24 +39,6 @@ export const E2E_SECURITY_ACCOUNTS = Object.freeze({
 });
 
 /**
- * One maintainer session per browser viewport. A moderator bans each one
- * with its project after a confirmed malicious result, so the shared D1
- * keeps every other session able to list projects.
- */
-export const E2E_MAINTAINER_ACCOUNTS = Object.freeze({
-  "maintainer-wide-desktop": "900000021",
-  "maintainer-desktop": "900000022",
-  "maintainer-tablet": "900000023",
-  "maintainer-narrow-mobile": "900000024",
-});
-
-/** A fixture user's GitHub actor ID, from its `e2e-<role>` login. */
-function fixtureMemberId(login) {
-  const role = login.replace(/^e2e-/, "");
-  return E2E_SECURITY_ACCOUNTS[role] ?? E2E_MAINTAINER_ACCOUNTS[role];
-}
-
-/**
  * The installation token the fixture mints for the slopdotcash App stand-in,
  * only for a repository-scoped "Repository security advisories: read"
  * request. The fixture refuses advisory reads without it.
@@ -67,7 +49,9 @@ const E2E_INSTALLATION_TOKEN = "ghs_e2e-fixture-advisory-read-token";
 export function fixtureRepository(fullName) {
   const [ownerLogin, name] = fullName.split("/");
   const memberId =
-    ownerLogin === "e2e-applicant" ? "900000002" : fixtureMemberId(ownerLogin);
+    ownerLogin === "e2e-applicant"
+      ? "900000002"
+      : E2E_SECURITY_ACCOUNTS[ownerLogin.replace(/^e2e-/, "")];
   const owner = memberId
     ? { login: ownerLogin, id: Number(memberId), type: "User" }
     : ownerLogin === E2E_OWNER.login
@@ -230,6 +214,24 @@ async function handlePrivateIntake(state, request, response, url) {
     if (JSON.parse(body).model !== "claude-opus-5.5")
       return send(400, { type: "error" });
     state.analysisRequests.push(body);
+    // Slopbot's appeal triage drafts a resolution for a moderator.
+    if (JSON.parse(body).system.includes("first triage step for appeals"))
+      return send(200, {
+        type: "message",
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              proposedOutcome: "return",
+              rationale:
+                "Fixture draft: the appeal names a separate withdrawal path that the decision did not review.",
+              confidence: 0.72,
+            }),
+          },
+        ],
+      });
     return send(200, {
       type: "message",
       role: "assistant",
@@ -621,7 +623,7 @@ export function startGitHubApiFixture(port) {
         owner === E2E_OWNER.login ||
         owner === E2E_ORGANIZATION.login ||
         owner === "e2e-applicant" ||
-        fixtureMemberId(owner) !== undefined
+        Object.hasOwn(E2E_SECURITY_ACCOUNTS, owner.replace(/^e2e-/, ""))
       ) {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify(fixtureRepository(repository[1])));

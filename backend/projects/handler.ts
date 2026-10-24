@@ -1,3 +1,4 @@
+import { assertPayoutExclusionTransition } from "../../src/lib/payout-exclusions.mjs";
 import type {
   EnforcementPreview,
   ProjectEnforcementState,
@@ -342,6 +343,8 @@ function prospectiveFinancialChange(
       chain: _chain,
       currency: _currency,
       feeBasisPoints: _fee,
+      // Checked for every revision by assertPayoutExclusionTransition.
+      payoutExclusions: _exclusions,
       ...rest
     } = reward;
     return rest;
@@ -1366,6 +1369,7 @@ async function appendRevision(
     );
   try {
     assertProjectPolicyTransition(current.manifest, manifest);
+    assertPayoutExclusionTransition(current.manifest, manifest, deps.now());
   } catch (error) {
     invalidManifest(error);
   }

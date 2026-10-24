@@ -1,4 +1,5 @@
 import { Link } from "./Link";
+import type { PayoutExclusionRelationship } from "./lib/payout-exclusions.mjs";
 import type { ProjectContributor, ProjectView } from "./lib/project-view";
 import {
   formatThirds,
@@ -19,6 +20,12 @@ import {
   reviewBudgetLabel,
   UNFUNDED_POOL_HEADLINE,
 } from "./Presentation";
+
+const PAYOUT_EXCLUSION_LABELS: Record<PayoutExclusionRelationship, string> = {
+  owner: "owner",
+  "funded-employee": "funded employee",
+  "related-party": "related party",
+};
 
 interface CycleAllocationProps {
   updatedAt: string;
@@ -125,6 +132,12 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
                       <ReviewContribution
                         reviewer={reviewers.get(leader.actor.id)}
                       />
+                      {leader.penaltyThirds > 0 ? (
+                        <small>
+                          After a {formatThirds(leader.penaltyThirds)} point
+                          Slopbot penalty
+                        </small>
+                      ) : null}
                       {leader.computeBonusBasisPoints > 0 ? (
                         <small>
                           +{leader.computeBonusBasisPoints / 100}% receipt
@@ -155,6 +168,12 @@ export function RewardValue({
   leader: ProjectContributor;
   view: ProjectView;
 }) {
+  if (leader.payoutExclusion)
+    return (
+      <>
+        Excluded from payout ({PAYOUT_EXCLUSION_LABELS[leader.payoutExclusion]})
+      </>
+    );
   // Token amounts are in the token's base units, never dollars.
   if (
     leader.simulatedMinor === null ||
