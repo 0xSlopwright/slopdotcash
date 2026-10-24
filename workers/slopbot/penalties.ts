@@ -94,7 +94,8 @@ export async function recordPenalty(
       input.closedAt.toISOString().slice(0, 7),
       rule.moderatorReview ? 1 : 0,
       input.reviewKey,
-      new Date().toISOString(),
+      // The close time, so the recorded debit and its month always agree.
+      input.closedAt.toISOString(),
     )
     .run();
   return activePenalty(db, input.itemNodeId);

@@ -6,14 +6,14 @@
 import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { readdirSync } from "node:fs";
+import { handleNotificationsApi } from "../../backend/notifications/handler";
 import { fetchProjectPenalties } from "../../scripts/value-ingestion";
 import {
   createLeaderboardSnapshot,
   type LeaderboardSnapshot,
 } from "../../src/lib/leaderboard";
-import { createProjectView } from "../../src/lib/project-view";
-import { handleNotificationsApi } from "../../backend/notifications/handler";
 import { parseNotificationsResponse } from "../../src/lib/notifications";
+import { createProjectView } from "../../src/lib/project-view";
 import { findProject } from "../../src/lib/projects.mjs";
 import {
   GENERATED_AT,

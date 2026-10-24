@@ -227,6 +227,9 @@ export async function fetchProjectPenalties(
       });
     }
     if (body.nextAfter === null) return records;
+    // The cursor must be the page's last record, or rows between are skipped.
+    if (body.nextAfter !== records.at(-1)?.itemNodeId)
+      throw new Error("Penalty feed cursor skips records");
     after = body.nextAfter;
   }
 }
