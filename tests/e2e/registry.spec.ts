@@ -707,8 +707,8 @@ test("the applicant's inbox lists each decision and revision once and keeps the 
   const inbox = await (
     await page.request.get("/api/v1/notifications", { headers: { cookie } })
   ).json();
-  // One row per event: the revision and, once per assessment,
-  // each earlier scan that could not establish clearance. Never a duplicate.
+  // One row per event: the revision and, once per assessment, each earlier
+  // scan that could not establish clearance. Never a duplicate.
   const mine: { kind: string; eventKey: string }[] = inbox.notifications.filter(
     (entry: { subject: string }) => entry.subject === project.id,
   );
@@ -1117,6 +1117,14 @@ test("an owner resumes setup after installing Slopbot; a failed scan and lost ac
   await expect(resumed.locator("h2")).toHaveText(
     "Setup status: Waiting for the security scan",
   );
+  await expectAccessible(page);
+  // The failed scan reaches the owner's inbox once (PRD NOT-01).
+  await page.goto("/inbox", { waitUntil: "networkidle" });
+  await expect(
+    page.locator(".inbox-item", {
+      hasText: `The security scan of ${project.id} could not finish.`,
+    }),
+  ).toHaveCount(1);
   await expectAccessible(page);
 
   // Owner edit: a text-only change publishes at once as revision 2.

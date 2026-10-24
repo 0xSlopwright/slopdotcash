@@ -50,9 +50,8 @@ const GITHUB_ID = (column: string) =>
    AND ${column} GLOB '[1-9]*' AND ${column} NOT GLOB '*[^0-9]*'`;
 
 /**
- * The people who answer for a project: the applicant who listed it (legacy
- * admission path) and its current GitHub steward. `project` is a SQL
- * expression for the project id.
+ * The people who answer for a project: the account that listed it and its
+ * current GitHub steward. `project` is a SQL expression for the project id.
  */
 const PROJECT_OWNERS = (project: string) => `(
   ${LISTED_BY(project)}
@@ -63,12 +62,13 @@ const PROJECT_OWNERS = (project: string) => `(
 )`;
 
 /**
- * A manifest revision reaches the applicant who listed the project and its
- * GitHub steward, never the person who published it. A revision that makes
- * the project active, from nothing or from paused, is setup completion or a
- * return to work and is reported as `project_ready`; any other later revision
- * is `project_revision`. A paused first revision is the legacy approval,
- * which has its own event, so it writes nothing here.
+ * A manifest revision reaches the account that listed the project (its
+ * applicant, or its self-service creator) and its GitHub steward, never the
+ * account that made the revision. A revision that makes the project active,
+ * from nothing or from paused, is setup completion or a return to work and is
+ * reported as `project_ready`; any other later revision is
+ * `project_revision`. A first revision that is not active only lists the
+ * project, so it writes nothing.
  */
 export function notifyProjectRevision<S>(
   db: Preparer<S>,

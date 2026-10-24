@@ -3,7 +3,7 @@
 /**
  * Every inbox kind (migration 0063). Writers live in
  * backend/notifications/events.ts. `application_approved` and
- * `application_rejected` come only from the legacy admin admission path and
+ * `application_rejected` came from the removed admin admission path and
  * stay readable as history.
  */
 export const NOTIFICATION_KINDS = [
