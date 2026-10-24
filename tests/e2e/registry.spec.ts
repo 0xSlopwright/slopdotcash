@@ -1131,6 +1131,8 @@ test("a moderator decides a confirmed malicious result and bans the project and 
   expect((await request.get(`/api/v1/projects/${project.id}`)).status()).toBe(
     410,
   );
+  expect(maintainerErrors).toEqual([]);
+  await maintainerContext.close();
 
   // Without an appeal, the moderator queue lists the result for a decision.
   const moderatorContext = await browser.newContext(walkthroughOptions());
@@ -1209,38 +1211,43 @@ test("a moderator decides a confirmed malicious result and bans the project and 
     410,
   );
 
-  // The banned maintainer cannot list another project.
+  // The banned maintainer returns in a new session and cannot list another
+  // project.
+  const returningContext = await browser.newContext(walkthroughOptions());
+  const returning = await returningContext.newPage();
+  const returningErrors = observe(returning);
+  await signIn(returning, token);
   await setSlopbot(`${next.repository}/installed`);
-  await draftApplication(maintainer, next);
-  await maintainer
+  await draftApplication(returning, next);
+  await returning
     .getByRole("button", { name: "Create project", exact: true })
     .click();
-  await expect(maintainer.getByRole("alert").first()).toContainText(
+  await expect(returning.getByRole("alert").first()).toContainText(
     "A moderator banned this maintainer",
   );
-  expect(await listedProject(maintainer, next.id)).toBeUndefined();
-  expect(maintainerErrors).toEqual([
+  expect(await listedProject(returning, next.id)).toBeUndefined();
+  expect(returningErrors).toEqual([
     "Failed to load resource: the server responded with a status of 403 (Forbidden)",
   ]);
-  maintainerErrors.length = 0;
-  await expectAccessible(maintainer);
-  await maintainer.screenshot({
+  returningErrors.length = 0;
+  await expectAccessible(returning);
+  await returning.screenshot({
     path: test.info().outputPath("banned-maintainer-refused.png"),
     fullPage: true,
   });
 
   // The maintainer's inbox has the automatic ban and the moderator decision,
   // without the private reason or evidence reference.
-  await maintainer.goto("/inbox", { waitUntil: "networkidle" });
+  await returning.goto("/inbox", { waitUntil: "networkidle" });
   await expect(
-    maintainer.locator(".inbox-item", {
+    returning.locator(".inbox-item", {
       hasText: `The ${project.id} project is banned.`,
     }),
   ).toHaveCount(2);
-  await expect(maintainer.locator("main")).not.toContainText("steals tokens");
-  await expect(maintainer.locator("main")).not.toContainText(evidence);
-  expect(maintainerErrors).toEqual([]);
-  await maintainerContext.close();
+  await expect(returning.locator("main")).not.toContainText("steals tokens");
+  await expect(returning.locator("main")).not.toContainText(evidence);
+  expect(returningErrors).toEqual([]);
+  await returningContext.close();
 });
 
 test("an owner installs Slopbot before creation and resumes setup; a failed scan and lost access each show the next action @registry", async ({
