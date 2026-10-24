@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { readBoundedJson } from "./lib/browser-json";
 import { ESCROW_NETWORKS } from "./lib/escrow-policy.mjs";
+import { CHAIN_NAMES, networkLabel } from "./lib/network-names";
 import {
   formatAssetAmount,
   isAssetDecimals,
@@ -17,12 +18,6 @@ interface VaultResponse {
   staleAfterMs: number;
   servedAt: string;
 }
-const chainNames = {
-  base: "Base",
-  solana: "Solana",
-  robinhood: "Robinhood Chain",
-  ethereum: "Ethereum",
-} as const;
 const CUMULATIVE = [
   "totalDeposited",
   "totalPaid",
@@ -43,7 +38,7 @@ function validSnapshot(s: VaultSnapshot, projectId: string): boolean {
     !!s &&
     s.projectId === projectId &&
     typeof s.network === "string" &&
-    Object.hasOwn(chainNames, s.chain) &&
+    Object.hasOwn(CHAIN_NAMES, s.chain) &&
     typeof s.vault === "string" &&
     typeof s.assetAddress === "string" &&
     /^[0-9A-Za-z]{32,44}$/.test(s.assetAddress) &&
@@ -69,10 +64,9 @@ function VaultTotals({
       : formatAssetAmount(amount, snapshot);
   // EVM vaults split reserved principal and fees; Solana reports one reserved total.
   const reservedAwards = snapshot.reservedPrincipal ?? snapshot.reserved;
-  // Measured against the viewer's clock: the response itself can be edge-cached.
-  const stale = Date.now() - Date.parse(snapshot.observedAt) > staleAfterMs;
+  const stale = vaultSnapshotStale(snapshot, staleAfterMs);
   const network = Object.hasOwn(ESCROW_NETWORKS, snapshot.network)
-    ? snapshot.network
+    ? networkLabel(snapshot.network)
     : `${snapshot.network} (not a registry network)`;
   return (
     <>
@@ -115,14 +109,20 @@ function VaultTotals({
   );
 }
 
-export function EscrowFunding({ project }: { project: ProjectDefinition }) {
+export type VaultTotalsState =
+  | { status: "none" }
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "ready"; vault: VaultResponse };
+
+/** Loads the cached, finalized vault counters for a project with a deployed vault. */
+export function useVaultTotals(
+  project: ProjectDefinition,
+  revision = 0,
+): VaultTotalsState {
   const [vault, setVault] = useState<VaultResponse | null>(null);
   const [error, setError] = useState("");
-  const [revision, setRevision] = useState(0);
   const deployed = Boolean(project.escrow?.deployments.length);
-  const withdrawalFee = project.escrow
-    ? project.escrow.withdrawalFeeBasisPoints / 100
-    : null;
   // biome-ignore lint/correctness/useExhaustiveDependencies: explicit refresh reloads the cached vault totals.
   useEffect(() => {
     setVault(null);
@@ -160,9 +160,29 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
       });
     return () => controller.abort();
   }, [project.id, deployed, revision]);
+  if (!deployed) return { status: "none" };
+  if (error) return { status: "error", message: error };
+  return vault ? { status: "ready", vault } : { status: "loading" };
+}
+
+/** Measured against the viewer's clock: the response itself can be edge-cached. */
+export function vaultSnapshotStale(
+  snapshot: VaultSnapshot,
+  staleAfterMs: number,
+): boolean {
+  return Date.now() - Date.parse(snapshot.observedAt) > staleAfterMs;
+}
+
+export function EscrowFunding({ project }: { project: ProjectDefinition }) {
+  const [revision, setRevision] = useState(0);
+  const totals = useVaultTotals(project, revision);
+  const deployed = totals.status !== "none";
+  const withdrawalFee = project.escrow
+    ? project.escrow.withdrawalFeeBasisPoints / 100
+    : null;
   return (
     <section className="section project-funding" aria-label="Project escrow">
-      <h2>Project vault · {chainNames[project.escrow?.chain ?? "solana"]}</h2>
+      <h2>Project vault · {CHAIN_NAMES[project.escrow?.chain ?? "solana"]}</h2>
       <p>
         Awards pay out after a 2% fee in the reward token. Reserved awards
         cannot be withdrawn.
@@ -177,21 +197,21 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
             Use the deposit action below to fund this project. Direct token
             transfers are not credited.
           </p>
-          {error ? (
-            <p role="alert">{error}</p>
-          ) : !vault ? (
+          {totals.status === "error" ? (
+            <p role="alert">{totals.message}</p>
+          ) : totals.status !== "ready" ? (
             <p role="status">Loading the cached vault totals…</p>
-          ) : vault.snapshots.length === 0 ? (
+          ) : totals.vault.snapshots.length === 0 ? (
             <p role="status">
               No finalized vault read is recorded yet. Totals appear after the
               next payments scan.
             </p>
           ) : (
-            vault.snapshots.map((snapshot) => (
+            totals.vault.snapshots.map((snapshot) => (
               <VaultTotals
                 key={`${snapshot.network}:${snapshot.vault}`}
                 snapshot={snapshot}
-                staleAfterMs={vault.staleAfterMs}
+                staleAfterMs={totals.vault.staleAfterMs}
               />
             ))
           )}

@@ -310,9 +310,19 @@ test("depositor funds a real vault, recovers a submitted transaction and owner w
   await page.route("**/api/v1/project-session", (route) =>
     route.fulfill({ json: { session: null } }),
   );
+  // The project page shows one funding line; actions live on the funding page.
+  await page.goto("/projects/eliza", { waitUntil: "networkidle" });
+  const summary = page.getByRole("region", { name: "Project funding" });
+  await expect(summary).toContainText("no finalized vault read yet");
+  await expect(
+    summary.getByRole("link", { name: "Fund this project", exact: true }),
+  ).toHaveAttribute("href", "/projects/eliza/funding");
+  await expect(
+    page.getByRole("region", { name: /^Fund or withdraw/u }),
+  ).toHaveCount(0);
   await page.goto("/projects/eliza/funding", { waitUntil: "networkidle" });
   const actions = page.getByRole("region", {
-    name: "Fund or withdraw · base-sepolia",
+    name: "Fund or withdraw · Base Sepolia (test)",
   });
   await actions
     .getByRole("button", { name: "Connect MetaMask", exact: true })
@@ -403,17 +413,12 @@ test("depositor funds a real vault, recovers a submitted transaction and owner w
         log.topics[0] === EVM_ESCROW_EVENT_TOPICS.Deposited,
     ),
   ).toBe(true);
-  await actions
-    .getByRole("radio", {
-      name: "Withdraw free funds (owner only)",
-      exact: true,
-    })
-    .check();
-  await actions
-    .getByRole("button", { name: "Review withdrawal", exact: true })
-    .click();
-  await expect(actions.getByRole("alert")).toContainText(
-    "Only the vault owner's wallet",
+  // A depositor's wallet is offered no withdrawal; the owner's wallet is.
+  await expect(
+    actions.getByRole("radio", { name: "Withdraw free funds", exact: true }),
+  ).toHaveCount(0);
+  await expect(actions).toContainText(
+    "Only the vault owner's wallet can withdraw free funds.",
   );
   account = owner;
   ambiguous = false;
@@ -421,6 +426,9 @@ test("depositor funds a real vault, recovers a submitted transaction and owner w
   await actions
     .getByRole("button", { name: "Connect MetaMask", exact: true })
     .click();
+  await actions
+    .getByRole("radio", { name: "Withdraw free funds", exact: true })
+    .check();
   await actions.getByLabel("Token amount", { exact: true }).fill("11");
   await actions
     .getByRole("button", { name: "Review withdrawal", exact: true })

@@ -18,7 +18,11 @@ import {
 import { PENALTY_TABLE } from "../workers/slopbot/penalties";
 import { CycleArchivePage, CyclePage } from "./CyclePages";
 import { EarningsPage } from "./Earnings";
-import { EscrowFunding } from "./EscrowFunding";
+import {
+  EscrowFunding,
+  useVaultTotals,
+  vaultSnapshotStale,
+} from "./EscrowFunding";
 import { Link, useInitialHashScroll } from "./Link";
 import { SlopMark, Wordmark } from "./Logo";
 import {
@@ -34,6 +38,8 @@ import {
   modelIdentityKey,
   summarizeModelOutcomes,
 } from "./lib/model-outcomes";
+import { networkLabel } from "./lib/network-names";
+import { formatAssetAmount } from "./lib/payments/contracts";
 import { projectLinks } from "./lib/project-links";
 import {
   findProject,
@@ -1179,20 +1185,55 @@ function ProjectPaymentHistory({
   );
 }
 
+/**
+ * The project page's one funding line (PRD section 7: one status summary per
+ * project). Deposits, withdrawals and full vault totals live on the funding
+ * page only.
+ */
 export function ProjectFunding({ project }: { project: ProjectDefinition }) {
+  const totals = useVaultTotals(project);
   if (!project.escrow) return null;
-  // A stale registry may name an old vault, so deposits need the live one.
-  if (globalThis.__SLOP_PROJECT_REGISTRY_STALE__)
-    return (
-      <section className="section project-funding" aria-label="Project escrow">
-        <h2>Escrow</h2>
-        <p role="status">
-          Funding actions are unavailable until the current project registry
-          loads.
-        </p>
-      </section>
+  const href = `/projects/${project.slug}/funding`;
+  let summary: ReactNode;
+  if (totals.status === "none")
+    summary = `No project vault yet · ${fundingStateLabel(project)}`;
+  else if (totals.status === "loading")
+    summary = <span role="status">Loading vault totals…</span>;
+  else if (totals.status === "error")
+    summary = (
+      <span role="alert">
+        Vault totals unavailable · {fundingStateLabel(project)}
+      </span>
     );
-  return <EscrowFunding project={project} />;
+  else if (totals.vault.snapshots.length === 0)
+    summary = "Vault live · no finalized vault read yet";
+  else
+    summary = totals.vault.snapshots.map((snapshot, index) => {
+      const amount = (value: string | null) =>
+        value === null ? "not reported" : formatAssetAmount(value, snapshot);
+      return (
+        <span key={`${snapshot.network}:${snapshot.vault}`}>
+          {index > 0 ? " · " : null}
+          {networkLabel(snapshot.network)}: {amount(snapshot.freeBalance)}{" "}
+          available · {amount(snapshot.reservedPrincipal ?? snapshot.reserved)}{" "}
+          reserved
+          {vaultSnapshotStale(snapshot, totals.vault.staleAfterMs)
+            ? ` (stale, read ${formatDateTime(snapshot.observedAt)})`
+            : null}
+        </span>
+      );
+    });
+  return (
+    <section
+      className="section project-funding-summary"
+      aria-label="Project funding"
+    >
+      <p>
+        <strong>Funding</strong> {summary}{" "}
+        <Link href={href}>Fund this project</Link>
+      </p>
+    </section>
+  );
 }
 
 function fundingStateLabel(project: ProjectDefinition): string {
@@ -1243,7 +1284,21 @@ function ProjectFundingPage({ project }: { project: ProjectDefinition }) {
           </div>
         </dl>
         {project.escrow ? (
-          <EscrowFunding project={project} />
+          globalThis.__SLOP_PROJECT_REGISTRY_STALE__ ? (
+            // A stale registry may name an old vault, so deposits need the live one.
+            <section
+              className="section project-funding"
+              aria-label="Project escrow"
+            >
+              <h2>Project vault</h2>
+              <p role="status">
+                Funding actions are unavailable until the current project
+                registry loads.
+              </p>
+            </section>
+          ) : (
+            <EscrowFunding project={project} />
+          )
         ) : (
           <div>
             <EmptyState text="This project has no vault yet." />

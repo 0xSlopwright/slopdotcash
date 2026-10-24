@@ -6,6 +6,7 @@ import { parseVaultAmount } from "./lib/payments/vault-amount";
 import type { ProjectDefinition } from "./lib/projects.mjs";
 import OwnerCommitment, { recoverOwnerCommitments } from "./OwnerCommitment";
 import { loginHref } from "./Points";
+import { formatDateTime } from "./Presentation";
 
 function previousMonth() {
   const now = new Date();
@@ -258,7 +259,7 @@ export default function OwnerAwards({
               ? cutoffPassed
                 ? "The cutoff has passed. The automatic process finalizes the current allocations."
                 : view.cutoffAt
-                  ? `Unless you finalize earlier, the current allocations are finalized at ${new Date(view.cutoffAt).toLocaleString()}.`
+                  ? `Unless you finalize earlier, the current allocations are finalized at ${formatDateTime(view.cutoffAt)}.`
                   : "Automatic payment starts with a later month, so finalize this month yourself when it is ready."
               : "Finalize each month yourself."}
           </p>
@@ -351,7 +352,7 @@ export default function OwnerAwards({
                 {view.run.trigger === "automatic" ? "automatically" : "by you"}{" "}
                 on{" "}
                 <time dateTime={view.run.frozenAt}>
-                  {new Date(view.run.frozenAt).toLocaleString()}
+                  {formatDateTime(view.run.frozenAt)}
                 </time>
                 .{" "}
                 {view.run.funded

@@ -446,7 +446,7 @@ test("Solana wallet deposits, recovers after reload, and owner withdraws with ve
   );
   await page.goto("/projects/eliza/funding", { waitUntil: "networkidle" });
   const actions = page.getByRole("region", {
-    name: "Fund or withdraw · solana-devnet",
+    name: "Fund or withdraw · Solana Devnet (test)",
     exact: true,
   });
   const connect = () =>
@@ -510,22 +510,20 @@ test("Solana wallet deposits, recovers after reload, and owner withdraws with ve
     .getByRole("button", { name: "Check transaction", exact: true })
     .click();
   await expect(actions.getByRole("status")).toContainText("Deposit verified");
-  await actions
-    .getByRole("radio", {
-      name: "Withdraw free funds (owner only)",
-      exact: true,
-    })
-    .check();
-  await actions
-    .getByRole("button", { name: "Review withdrawal", exact: true })
-    .click();
-  await expect(actions.getByRole("alert")).toContainText(
-    "Only the vault owner's wallet",
+  // A depositor's wallet is offered no withdrawal; the owner's wallet is.
+  await expect(
+    actions.getByRole("radio", { name: "Withdraw free funds", exact: true }),
+  ).toHaveCount(0);
+  await expect(actions).toContainText(
+    "Only the vault owner's wallet can withdraw free funds.",
   );
   selected = owner;
   interrupted = false;
   await actions.getByRole("button", { name: "Choose another wallet" }).click();
   await connect();
+  await actions
+    .getByRole("radio", { name: "Withdraw free funds", exact: true })
+    .check();
   await actions.getByLabel("Token amount", { exact: true }).fill("5");
   await actions
     .getByRole("button", { name: "Review withdrawal", exact: true })

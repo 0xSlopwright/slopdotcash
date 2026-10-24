@@ -6,6 +6,7 @@ import { cycleSettlementReminder } from "./lib/funding-reminders";
 import { createProjectView, type ProjectView } from "./lib/project-view";
 import { findProject, type ProjectDefinition } from "./lib/projects.mjs";
 import { formatThirds } from "./lib/reviewer-leaders";
+import { resolveRewardCapMinor } from "./lib/reward-cap.mjs";
 import type { CycleIndexState } from "./lib/use-cycle-index";
 import type { DataState } from "./lib/use-snapshot";
 import {
@@ -73,6 +74,12 @@ export function CyclePage({
     record?.state ?? (view?.cycle.status === "live" ? "live" : "closed");
   const reminder = cycleSettlementReminder({
     closesAt: to,
+    funding: {
+      capMinor:
+        record?.reward.capMinor ?? resolveRewardCapMinor(project, cycleId),
+      committedMinor: project.reward.committedMinor,
+      fundingState: project.reward.fundingState,
+    },
     kind:
       record?.kind ??
       (view?.reward.kind === "external-prize-share"

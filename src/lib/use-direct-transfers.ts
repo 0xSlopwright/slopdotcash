@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { browserDeployment } from "./browser-deployment";
 import { fetchWithDeadline, readBoundedJson } from "./browser-json";
+import { isEscrowChain } from "./escrow-policy.mjs";
 import type { DirectTransfer } from "./payments/contracts";
 import { usePublicResource } from "./use-public-resource";
 
@@ -17,7 +18,7 @@ export function isDirectTransfer(t: unknown): t is DirectTransfer {
     /^[1-9]\d*$/u.test(v.githubUserId) &&
     typeof v.login === "string" &&
     typeof v.network === "string" &&
-    (v.chain === "solana" || v.chain === "base") &&
+    isEscrowChain(v.chain) &&
     typeof v.recipient === "string" &&
     money(v.amountMicro) &&
     typeof v.transactionId === "string" &&
