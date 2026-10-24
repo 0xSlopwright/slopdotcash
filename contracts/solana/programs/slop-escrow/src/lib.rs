@@ -422,8 +422,7 @@ pub mod slop_escrow {
         proof: Vec<AllocationNode>,
     ) -> Result<()> {
         require!(gross > 0, EscrowError::AwardCommittable);
-        let monthly = &ctx.accounts.monthly_source;
-        if actor_id != 0 && !(monthly.owner == ctx.program_id && !monthly.data_is_empty()) {
+        if actor_id != 0 {
             let origin = &ctx.accounts.origin;
             require!(
                 origin.owner == ctx.program_id && !origin.data_is_empty(),
@@ -436,8 +435,19 @@ pub mod slop_escrow {
                 .as_ref()
                 .ok_or(error!(EscrowError::AwardCommittable))?;
             require!(
-                consumed.key() == recorded.obligation
-                    && consumed.committed_at < ctx.accounts.month.frozen_at,
+                consumed.key() == recorded.obligation,
+                EscrowError::AwardCommittable
+            );
+            // Another month's award to the same actor for at least this gross already paid
+            // the source, or the owner consumed it by hand before the freeze. A smaller or
+            // different award leaves this gross reserved rather than refunding the gap.
+            let monthly = &ctx.accounts.monthly_source;
+            let by_month = monthly.owner == ctx.program_id
+                && !monthly.data_is_empty()
+                && consumed.actor_id == actor_id
+                && consumed.gross >= gross;
+            require!(
+                by_month || consumed.committed_at < ctx.accounts.month.frozen_at,
                 EscrowError::AwardCommittable
             );
         }

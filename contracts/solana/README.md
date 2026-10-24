@@ -238,14 +238,18 @@ period is open at a time.
    after a month's window closes, anyone can call `expire_month(period)` once.
    It removes that month's unsettled gross from `monthly_outstanding`, so an
    allocation that can never settle cannot block the owner's direct awards for
-   ever. That gross stays reserved, and its awards can still commit or release.
+   ever. That gross stays reserved, and its awards can still commit or release;
+   a remainder that can never settle stays reserved for good.
 4. An award that can never commit is returned to free balance by anyone with
    `release_monthly_award(period, source_digest, actor_id, gross, index, count,
    proof)`, passing the source's `origin`, its `monthly-source` marker and the
    obligation the origin records. The leaf must prove against the recorded
    month, and one of these must hold: its actor is zero; another month's award
-   consumed the source (the marker exists); or the recorded obligation was
-   committed strictly before the month's `frozen_at`. Otherwise the call fails
+   to the same actor for at least this gross consumed the source (the marker
+   exists); or the recorded obligation was committed strictly before the month's
+   `frozen_at`. The attester takes `frozen_at` from the block time of the
+   finalized slot at which it checked that no included source has an `origin`,
+   and never repeats a source of any admitted month. Otherwise the call fails
    with `AwardCommittable`. A source the owner consumes by hand after the freeze
    therefore stays reserved and never becomes a refund. Both `commit_monthly_award` and `release_monthly_award`
    create the `["settled", month, source_digest]` PDA, so each source of a month
