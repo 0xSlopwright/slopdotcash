@@ -34,7 +34,6 @@ import {
   modelIdentityKey,
   summarizeModelOutcomes,
 } from "./lib/model-outcomes";
-import { projectLinks } from "./lib/project-links";
 import {
   findProject,
   PROJECTS,
@@ -63,7 +62,6 @@ import {
   PointsNav,
   PointsPage,
   PointsProvider,
-  PublicXLink,
 } from "./Points";
 import {
   cycleLifecycleLabel,
@@ -92,7 +90,7 @@ import { ProjectRiskFlag } from "./ProjectRiskFlag";
  * validated before money, score, work, or usage is presented as healthy data.
  */
 
-import { fetchWithDeadline, readBoundedJson } from "./lib/browser-json";
+export { readBoundedJson } from "./lib/browser-json";
 
 const OwnerAwardsPage = lazy(() => import("./OwnerAwards"));
 const ProjectProposalPage = lazy(() => import("./ProjectProposalPage"));
@@ -877,20 +875,6 @@ function AgentPromptBox({
   );
 }
 
-function ProjectLinksLine({ project }: { project: ProjectDefinition }) {
-  const links = projectLinks(project);
-  return (
-    <nav aria-label="Project links" className="project-links-line">
-      {links.map((link, index) => (
-        <span key={link.href}>
-          {index > 0 ? " · " : null}
-          <ExternalLinkAnchor href={link.href}>{link.label}</ExternalLinkAnchor>
-        </span>
-      ))}
-    </nav>
-  );
-}
-
 export function ProjectParticipation({
   project,
   cycles,
@@ -957,89 +941,22 @@ export function ProjectParticipation({
 }
 
 function InstallPanel({ project }: { project?: ProjectDefinition }) {
-  if (project) return <ProjectInstallPanel project={project} />;
   return (
-    <div className="home-agent-setup">
-      <p className="hero-copy">Paste this into your coding agent.</p>
-      <AgentPromptBox openIn prompt={bootstrapAgentPrompt()} />
-    </div>
-  );
-}
-
-function ProjectInstallPanel({ project }: { project: ProjectDefinition }) {
-  const projectId = project.id;
-  const [eligibility, setEligibility] = useState<
-    "loading" | "ready" | "blocked" | "error"
-  >("loading");
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    let active = true;
-    setEligibility("loading");
-    fetchWithDeadline("/.well-known/slop/projects.json", {
-      cache: attempt > 0 ? "reload" : "default",
-      headers: { accept: "application/json" },
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Discovery unavailable");
-        const body = (await readBoundedJson(
-          response,
-          4 * 1024 * 1024,
-          "Agent setup",
-        )) as { schemaVersion?: unknown; projects?: { project_id: string }[] };
-        if (body.schemaVersion !== "1" || !Array.isArray(body.projects))
-          throw new Error("Invalid discovery registry");
-        if (active)
-          setEligibility(
-            body.projects.some((entry) => entry.project_id === projectId)
-              ? "ready"
-              : "blocked",
-          );
-      })
-      .catch(() => {
-        if (active) setEligibility("error");
-      });
-    return () => {
-      active = false;
-    };
-  }, [projectId, attempt]);
-  return (
-    <div className="install-panel" id="start">
-      {eligibility === "ready" ? (
-        <>
-          <div className="install-heading">
-            <h2>Copy this into your agent.</h2>
-          </div>
-          <AgentPromptBox prompt={projectAgentPrompt(project)} />
-        </>
+    <div
+      className={project ? "install-panel" : "home-agent-setup"}
+      id={project ? "start" : undefined}
+    >
+      {project ? (
+        <div className="install-heading">
+          <h2>Copy this into your agent.</h2>
+        </div>
       ) : (
-        <>
-          <h2>
-            {eligibility === "loading"
-              ? "Checking agent setup…"
-              : eligibility === "blocked"
-                ? "Agent setup awaiting security review"
-                : "Agent setup unavailable"}
-          </h2>
-          {eligibility === "blocked" ? (
-            <p>
-              The current project revision is not cleared for agent
-              installation.{" "}
-              <Link href={`/projects/${project.slug}/manage`}>
-                Project owner: review setup
-              </Link>
-            </p>
-          ) : null}
-          {eligibility !== "loading" ? (
-            <button
-              className="button secondary-button"
-              type="button"
-              onClick={() => setAttempt((value) => value + 1)}
-            >
-              Check again
-            </button>
-          ) : null}
-        </>
+        <p className="hero-copy">Paste this into your coding agent.</p>
       )}
+      <AgentPromptBox
+        openIn={!project}
+        prompt={project ? projectAgentPrompt(project) : bootstrapAgentPrompt()}
+      />
     </div>
   );
 }
@@ -1337,37 +1254,13 @@ function ProjectPage({
                   }
                 />
               ) : null}
-              <p className="project-terms-line">
-                By{" "}
-                <ExternalLinkAnchor href={project.steward.github.profileUrl}>
-                  {project.steward.displayName}
-                </ExternalLinkAnchor>{" "}
-                · {project.terms.repositoryLicense.spdx ?? "license unknown"} ·{" "}
-                {project.terms.inbound.mode === "unknown"
-                  ? "inbound terms unknown"
-                  : `${project.terms.inbound.mode} inbound terms`}{" "}
-                · <a href={`/projects/${project.id}/terms.json`}>Terms</a>
-                {project.securityBounty ? (
-                  <>
-                    {" · "}
-                    <Link href={`/projects/${project.slug}/security`}>
-                      Security bounty
-                    </Link>
-                  </>
-                ) : null}
-                {project.steward.github.type === "User" ? (
-                  <PublicXLink actorId={project.steward.github.nodeId} />
-                ) : null}
-                {view ? (
-                  <>
-                    {" · "}
-                    <Link href={`/projects/${project.slug}#contributors`}>
-                      Contributors
-                    </Link>
-                  </>
-                ) : null}
-              </p>
-              <ProjectLinksLine project={project} />
+              {project.securityBounty ? (
+                <p className="project-terms-line">
+                  <Link href={`/projects/${project.slug}/security`}>
+                    Security bounty
+                  </Link>
+                </p>
+              ) : null}
               {project.rewardAsset ? (
                 <p className="project-terms-line">
                   Reward asset: {project.rewardAsset.symbol} on{" "}
