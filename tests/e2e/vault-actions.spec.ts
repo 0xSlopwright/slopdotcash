@@ -1275,6 +1275,7 @@ test("owner creates, registers and funds a vault through the real API", async ({
     await expect(setup).toHaveCount(0);
     const state = await (await page.request.get(`${origin}/__fixture`)).json();
     expect(state.project.revision).toBe(2);
+    expect(state.scanReads).toBe(0);
     expect(state.revisions.n).toBe(2);
     const created = state.project.manifest.escrow.deployments[0];
     expect(created.owner).toBe(donor);
@@ -1355,6 +1356,33 @@ test("owner creates, registers and funds a vault through the real API", async ({
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
     await page.screenshot({
       path: info.outputPath("owner-vault-funded.png"),
+      fullPage: true,
+    });
+    await page.goto(`${origin}/projects/${project.slug}/manage`, {
+      waitUntil: "networkidle",
+    });
+    await expect(
+      page.getByRole("region", { name: "Setup status: Ready" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", {
+        name: "View vault funds and automatic payment",
+      }),
+    ).toHaveCount(2);
+    await expect(
+      page.getByText(/Deposit needed|Payments off|Payouts are disabled/),
+    ).toHaveCount(0);
+    expect(errors).toEqual([]);
+    expect(failedRequests).toEqual([]);
+    expect(
+      (
+        await new AxeBuilder({ page })
+          .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+          .analyze()
+      ).violations,
+    ).toEqual([]);
+    await page.screenshot({
+      path: info.outputPath("owner-project-payment-links.png"),
       fullPage: true,
     });
   } finally {

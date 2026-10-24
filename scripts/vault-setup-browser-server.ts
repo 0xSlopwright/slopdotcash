@@ -68,6 +68,7 @@ sqlite
   );
 let permitted = true;
 let templatesEnabled = true;
+let scanReads = 0;
 const deps: ProjectApiDependencies = {
   persistence,
   adminGithubIds: new Set(),
@@ -91,7 +92,8 @@ const deps: ProjectApiDependencies = {
     },
   },
   vettingClearance: async () => {
-    throw new Error("Vault registration must not rescan unchanged code");
+    scanReads++;
+    return { state: "cleared", assessment: null, grandfathered: true };
   },
   vaultSetup: ownerVaultSetupService({
     db,
@@ -116,6 +118,7 @@ Bun.serve({
         }
         return Response.json({
           token,
+          scanReads,
           project: await persistence.getProject(input.project.id),
           revisions: sqlite
             .prepare(
