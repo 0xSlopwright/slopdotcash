@@ -931,7 +931,7 @@ describe("D1 contract", () => {
     ).toThrow(/final/);
   });
 
-  test("the pending migration keeps every earlier record and its guards", async () => {
+  test("fee conversion rebuilds keep every earlier record and its guards", async () => {
     const { Database } = await import("bun:sqlite");
     const { readdirSync, readFileSync } = await import("node:fs");
     const dir = new URL("../../migrations/", import.meta.url);
@@ -948,6 +948,12 @@ describe("D1 contract", () => {
       VALUES ('id-earlier', 'run-earlier', 'base', 'dry_run', '${WALLET}', '${TOKEN}', '${USDC}',
        '7', 'skipped', 'below the minimum conversion value', 'then', 'then')`);
     sqlite.exec(readFileSync(new URL(pendingMigration, dir), "utf8"));
+    sqlite.exec(
+      readFileSync(
+        new URL("0078_fee_conversion_transaction_size.sql", dir),
+        "utf8",
+      ),
+    );
     expect(
       sqlite
         .query("SELECT id, state, reason, amount_in FROM fee_conversions")

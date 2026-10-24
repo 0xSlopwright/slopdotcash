@@ -124,7 +124,19 @@ try {
         if (when === "after" && sends === 2) await fetch(input, init);
         throw new Error("simulated network fault");
       }
-      return fetch(input, init);
+      const response = await fetch(input, init);
+      if (when === "before" && String(input).endsWith("/api/v1/route/build")) {
+        // ABI trailing bytes do not change the swap. Keep the real route and
+        // router execution, but guarantee this recovery case exceeds 8 KiB
+        // even when Kyber returns a short route on the day of the test.
+        const result = await response.json();
+        if (typeof result.data?.data === "string")
+          result.data.data = result.data.data.padEnd(20_482, "0");
+        return new Response(JSON.stringify(result), {
+          status: response.status,
+        });
+      }
+      return response;
     }) as typeof fetch;
   };
   const state = (token = AERO) =>
@@ -173,11 +185,28 @@ try {
   await seed();
   await runOnce(env, undefined, { fetch: faulty("before") });
   expect(state(), "unknown", "2 after lost send");
+  const largeSend = sqlite
+    .query(
+      "SELECT tx_id, length(raw_tx) AS length FROM fee_conversions WHERE state = 'unknown'",
+    )
+    .get() as { tx_id: string; length: number };
+  if (largeSend.length <= 16384)
+    throw new Error(
+      "large-route recovery did not exceed the old storage limit",
+    );
+  console.log(`2 persisted signed transaction: ${largeSend.length} characters`);
   await runOnce(env);
   expect(state(), "submitted", "2 after rebroadcast");
   await rpc("anvil_mine", ["0x80"]);
   await runOnce(env);
   expect(state(), "finalized", "2 after reconcile");
+  const recoveredSend = sqlite
+    .query("SELECT state FROM fee_conversions WHERE tx_id = ?")
+    .get(largeSend.tx_id) as { state: string };
+  if (recoveredSend.state !== "finalized")
+    throw new Error(
+      "large-route recovery did not finalize the original transaction",
+    );
 
   // 3. Swap delivered but the response lost: reconciled from the receipt, no resend.
   await seed();
