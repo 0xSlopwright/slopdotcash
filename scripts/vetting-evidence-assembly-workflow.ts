@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { ProjectD1Database } from "../backend/projects/cloudflare-persistence";
 import { EVIDENCE_CHUNK_BYTES } from "../backend/vetting/evidence-chunks";
 import {
+  EVIDENCE_OWNER_GITHUB_ID,
   localEvidencePolicy,
   localVettingEvidence,
 } from "../tests/vetting-evidence-fixture";
@@ -364,7 +365,7 @@ export async function retainActualAssembly(input: {
   const overview = await retained.evidence.handle(
     new Request(
       `https://slop.cash/api/v1/operator/vetting-evidence?assessmentId=${assessmentId}&runId=${runId}`,
-      { headers: { "x-test-operator": "900000003" } },
+      { headers: { "x-test-operator": EVIDENCE_OWNER_GITHUB_ID } },
     ),
   );
   assert.equal(overview?.status, 200);
@@ -427,7 +428,7 @@ export async function captureAssemblyConsole(
       await mkdir(directory, { recursive: true });
       const context = await browser.newContext({
         viewport,
-        extraHTTPHeaders: { "x-test-operator": "900000003" },
+        extraHTTPHeaders: { "x-test-operator": EVIDENCE_OWNER_GITHUB_ID },
         recordVideo: { dir: directory },
       });
       const page = await context.newPage();

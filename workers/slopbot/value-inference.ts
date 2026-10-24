@@ -20,7 +20,7 @@ export type ValueInferenceBudget = {
   installationId: number;
   attemptId: string;
   maximumMicroUsd: number;
-  approvedMonthlyMicroUsd: number;
+  approvedMonthlyMicroUsd: number | null;
 };
 
 export async function runValueInference<T>(

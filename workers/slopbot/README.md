@@ -954,8 +954,10 @@ including an appeal retry after a failed send, with zero score or cost rows.
 ### Valuation budget admission
 
 Migration `0051_slopbot_value_budget.sql` stores immutable attempt reservations
-and reconciliations. `reserveValueBudget` requires an explicit approved monthly
-allowance and a conservative maximum attempt cost. It atomically counts the
+and reconciliations. Migration `0077_slopbot_alerts_only.sql` preserves those
+records and permits a null monthly allowance for explicit alerts-only approval.
+`reserveValueBudget` requires an approved spending mode and a conservative maximum
+attempt cost. In capped mode, it atomically counts the
 current month's recorded provider costs (or estimates) across installations and
 all unreconciled reservations. Prior-month reservations remain held because an
 unresolved provider request can be charged later. A repeated attempt ID does
@@ -1033,6 +1035,11 @@ Required operator settings have no defaults:
 model credential, and the deployed `SLOPBOT_PRODUCER_REVISION`. The start date
 separates ongoing API assessment from the subscription-only historical backfill;
 set it after the historical cutoff. No production settings are enabled here.
+Set `SLOPBOT_VALUE_MONTHLY_BUDGET_MICRO_USD=alerts-only` for the owner-approved
+24 October 2026 policy: email every crossed $500 milestone without a monthly hard
+cap. A positive integer instead selects a capped allowance. Missing or malformed
+configuration still stops inference. Both modes retain every attempt and cost;
+alerts-only records a null monthly limit rather than an invented finite cap.
 The attempt reservation must cover the entire permitted model route.
 
 The consumer replay uses actual SQLite migrations, collector, policy loader,
