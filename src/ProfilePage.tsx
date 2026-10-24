@@ -231,7 +231,7 @@ export function ProfilePage({
             <span>{penalties.length} recorded</span>
           </div>
           <p>
-            <Link href="/how-it-works#slop-score">How penalties work</Link>
+            <Link href="/how-it-works#points">How penalties work</Link>
           </p>
           <ul className="profile-penalties">
             {penalties.map((penalty) => (
