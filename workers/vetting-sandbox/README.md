@@ -45,6 +45,9 @@ It builds and uploads the image, reads its registry digest, and deploys that
 immutable digest with the same digest in the Worker environment. Results carry
 the image digest, source revision, run ID and execution times. Local developer
 runs leave image and source identity null; they cannot prove a deployed image.
+The isolated-artifact CI job sets the locally built image ID and checkout SHA
+so that the scan controller workflow can bind them. These values identify that
+CI runner only.
 The release script rejects local, pull-request and mismatched checkouts.
 
 To run the local integration workflow, start the Worker with
@@ -60,8 +63,14 @@ case the runner must refuse execution. The native Linux CI job must pass.
 The existing release quality gate requires this job before staging or production
 can deploy.
 
-This implementation is not deployed. Scanner-controller integration and real
-Cloudflare execution qualification remain required before it is operational.
+The same CI job then runs the complete scan pass for a harmless native Linux
+program and an unsupported Windows executable. The controller sends the native
+program through this runner, reviews its bounded output, retains the exact
+response as private evidence and publishes an incomplete result. Both
+artifacts stay quarantined and project activation is refused.
+
+This implementation is not deployed. Real Cloudflare execution qualification
+remains required before it is operational.
 No new credential is needed: the bridge reuses `VETTING_RESULT_PUBLIC_KEYS`.
 Keep scanned output private. Never use the local developer server to execute
 untrusted artifacts; its Docker privileges differ from Cloudflare's isolated

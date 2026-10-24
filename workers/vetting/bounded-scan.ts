@@ -573,6 +573,7 @@ export function composeScanResult(input: {
   primary: ScannerEvidence;
   specialist?: ScannerEvidence | null;
   execution?: VettingScanResult["execution"];
+  executionEvidenceSha256s?: string[];
   /** A separate trusted reviewer, never a model response or repository text. */
   confirmation?: NonNullable<VettingScanResult["confirmation"]>;
 }) {
@@ -590,6 +591,8 @@ export function composeScanResult(input: {
       inventorySha256: inspection.inventorySha256,
       findings: inspection.findings,
       downloads: inspection.downloads,
+      execution: input.execution ?? null,
+      executionEvidenceSha256s: input.executionEvidenceSha256s ?? [],
       visibilityGaps: inspection.visibilityGaps,
       reviews: [input.primary, ...(input.specialist ? [input.specialist] : [])],
     }),
