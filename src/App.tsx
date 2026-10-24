@@ -424,12 +424,6 @@ function Footer() {
           <SlopMark inverse size={104} />
           <div className="wordmark footer-wordmark">{domain}</div>
         </div>
-        <nav className="footer-links" aria-label="Product">
-          <Link href="/">Projects</Link>
-          <Link href="/how-it-works">How it works</Link>
-          <Link href="/projects/new">Add a project</Link>
-          <Link href="/account">Account</Link>
-        </nav>
         <nav className="footer-links" aria-label="Records">
           <Link href="/points">Leaderboard</Link>
           <Link href="/cycles">Cycles</Link>
@@ -580,11 +574,7 @@ function ProjectCard({ project }: { project: ProjectDefinition }) {
         </p>
         {monthlyPoolPointsOnly(project.reward) ? (
           <small className="project-money-state">Points only</small>
-        ) : project.reward.kind === "monthly-pool" ? (
-          project.reward.paymentMode !== "enabled" ? (
-            <small className="project-money-state">Payments not active</small>
-          ) : null
-        ) : (
+        ) : project.reward.kind === "monthly-pool" ? null : (
           <small className="project-money-state">External prize</small>
         )}
         {project.reward.reviewBudget ? (
@@ -612,10 +602,6 @@ function ProjectRow({ project }: { project: ProjectDefinition }) {
           <small>{project.description}</small>
           {project.status === "paused" ? (
             <small className="project-money-state">Paused</small>
-          ) : project.reward.kind === "monthly-pool" &&
-            !monthlyPoolPointsOnly(project.reward) &&
-            project.reward.paymentMode !== "enabled" ? (
-            <small className="project-money-state">Payments not active</small>
           ) : null}
         </span>
         <span className="project-row-amount">

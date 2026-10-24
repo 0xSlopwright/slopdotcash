@@ -204,7 +204,10 @@ function scanCheck(
     case "cleared":
       return {
         state: "cleared",
-        message: "The security scan of this revision is clean.",
+        message:
+          clearance.assessment === null
+            ? "This project predates security scans and is grandfathered."
+            : "The security scan of this revision is clean.",
       };
     case "queued":
       return {
