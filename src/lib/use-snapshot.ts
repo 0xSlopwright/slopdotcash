@@ -24,6 +24,11 @@ export type DataState =
       snapshot: LeaderboardSnapshot;
       views: ProjectView[];
       cycleIndex: CycleIndex;
+      /**
+       * PRD section 9: a refresh that fails keeps the last good snapshot and
+       * reports why, instead of replacing published data with an outage.
+       */
+      refreshError?: string;
     };
 
 export function useSnapshot(enabled: boolean): [DataState, () => void] {
@@ -35,7 +40,10 @@ export function useSnapshot(enabled: boolean): [DataState, () => void] {
     if (!enabled) return;
     let controller: AbortController | null = null;
     let retryTimer: number | null = null;
-    setState({ status: "loading" });
+    // A refresh keeps showing the last good snapshot while it runs.
+    setState((previous) =>
+      previous.status === "ready" ? previous : { status: "loading" },
+    );
 
     const load = async (retry: number): Promise<void> => {
       const requestController = new AbortController();
@@ -97,14 +105,18 @@ export function useSnapshot(enabled: boolean): [DataState, () => void] {
         if (retry < SNAPSHOT_RETRIES) {
           retryTimer = window.setTimeout(() => void load(retry + 1), 400);
         } else {
+          const message =
+            error instanceof Error
+              ? error.message
+              : "snapshot could not be read";
           // error-policy:J1 The browser boundary renders invalid or unavailable public data explicitly.
-          setState({
-            status: "error",
-            message:
-              error instanceof Error
-                ? error.message
-                : "snapshot could not be read",
-          });
+          // Without a prior good snapshot this stays an error; nothing is
+          // fabricated. With one, the last good data stays, marked stale.
+          setState((previous) =>
+            previous.status === "ready"
+              ? { ...previous, refreshError: message }
+              : { status: "error", message },
+          );
         }
       } finally {
         requestController.abort();

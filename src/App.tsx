@@ -86,6 +86,7 @@ import {
   NotFound,
   PaymentLifecycle,
   reviewBudgetLabel,
+  stale,
   UNFUNDED_POOL_HEADLINE,
 } from "./Presentation";
 import { ProfilePage } from "./ProfilePage";
@@ -542,7 +543,14 @@ function ProjectOwnerAvatar({ project }: { project: ProjectDefinition }) {
   );
 }
 
-function ProjectCard({ project }: { project: ProjectDefinition }) {
+function ProjectCard({
+  project,
+  scoresUpdatedAt,
+}: {
+  project: ProjectDefinition;
+  /** Present only once the shared snapshot covering this project is ready. */
+  scoresUpdatedAt: string | null;
+}) {
   const amount =
     project.reward.kind === "monthly-pool"
       ? monthlyPoolCapLabel(project)
@@ -576,6 +584,14 @@ function ProjectCard({ project }: { project: ProjectDefinition }) {
             + {reviewBudgetLabel(project.reward.reviewBudget)}
           </small>
         ) : null}
+        {scoresUpdatedAt === null ? null : (
+          <small className="project-freshness">
+            {stale({ generatedAt: scoresUpdatedAt })
+              ? "Points may be outdated · updated "
+              : "Points updated "}
+            {formatDateTime(scoresUpdatedAt)}
+          </small>
+        )}
       </div>
     </Link>
   );
@@ -661,13 +677,25 @@ function CommunityProjects({ projects }: { projects: ProjectDefinition[] }) {
   );
 }
 
-function GlobalLeaderboard() {
+function GlobalLeaderboard({
+  state,
+  retry,
+}: {
+  state: DataState;
+  retry: () => void;
+}) {
   return (
     <section
       className="section shell home-leaderboard-section"
       id="leaderboard"
     >
-      <ContributorStandings compact title="Top sloperators" />
+      <ContributorStandings
+        compact
+        retryScore={retry}
+        scoreState={state}
+        showDataNotice
+        title="Top sloperators"
+      />
     </section>
   );
 }
@@ -680,6 +708,14 @@ function bootstrapAgentPrompt(): string {
 function HomePage() {
   const featuredProjects = homeProjects();
   const listedCommunityProjects = communityProjects();
+  // One shared read feeds the leaderboard and card freshness; project cards
+  // never wait for it and never fetch per card.
+  const [scores, retryScores] = useSnapshot(true);
+  const scoresUpdatedAt = (projectId: string) =>
+    scores.status === "ready" &&
+    scores.views.some((view) => view.project.id === projectId)
+      ? scores.snapshot.generatedAt
+      : null;
   return (
     <main>
       <section className="hero shell">
@@ -709,7 +745,11 @@ function HomePage() {
                 <h3 id="featured-projects">Featured</h3>
                 <div className="project-grid">
                   {featuredProjects.map((project) => (
-                    <ProjectCard key={project.id} project={project} />
+                    <ProjectCard
+                      key={project.id}
+                      project={project}
+                      scoresUpdatedAt={scoresUpdatedAt(project.id)}
+                    />
                   ))}
                 </div>
               </section>
@@ -718,7 +758,7 @@ function HomePage() {
           </>
         )}
       </section>
-      <GlobalLeaderboard />
+      <GlobalLeaderboard retry={retryScores} state={scores} />
     </main>
   );
 }
