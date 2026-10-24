@@ -1680,12 +1680,13 @@ test("private settlement requires visibility consent and produces an unsigned re
 
 /**
  * PRD section 10, Continuity: an approved award and its reservation stay
- * owed through role loss, a project transfer, a quarantine, and a ban. Case
- * roles come from the current revision on each request, so a replaced
+ * owed through role loss, an approver replacement, a quarantine, and a ban.
+ * Case roles come from the current revision on each request, so a replaced
  * approver loses access at once, the new owner gets it, and the reporter
- * keeps the case. A restricted project takes no new reports.
+ * keeps the case. A restricted project takes no new reports and starts no
+ * new award commitment (PRD section 11, Restricted projects).
  */
-test("private bounty obligations continue through role loss, project transfer, and a ban @registry", async ({
+test("private bounty obligations continue through role loss, approver replacement, and a ban @registry", async ({
   request,
 }) => {
   test.setTimeout(180_000);
@@ -1734,6 +1735,27 @@ test("private bounty obligations continue through role loss, project transfer, a
         caseId,
         "assign-triager",
         account("triager"),
+      )
+    ).status,
+  ).toBe(200);
+
+  // A second confirmed finding that has no award yet.
+  const pendingId = await importCase(
+    request,
+    id,
+    repository,
+    "GHSA-5678-9cfg-hjmp",
+    "reporter-b",
+    new Date().toISOString(),
+  );
+  expect(
+    (
+      await act(
+        request,
+        "security",
+        pendingId,
+        "decide",
+        decision({ rootCauseKey: "vault-oracle-staleness" }),
       )
     ).status,
   ).toBe(200);
@@ -1907,6 +1929,16 @@ test("private bounty obligations continue through role loss, project transfer, a
       expect(obligation((await read("security-b")).body)).toEqual(owed);
       expect((await read("security")).status).toBe(404);
       expect((await read("finance")).status).toBe(404);
+      // Funds cover a second award, but no new commitment starts.
+      await vaultSnapshot(id, deployment, "20000000000");
+      const refused = await award(
+        request,
+        "security-b",
+        pendingId,
+        "10000000000",
+      );
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      expect(refused.body.error).toBe("program_restricted");
     });
   }
 

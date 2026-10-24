@@ -2656,6 +2656,16 @@ async function awardReservation(
   const rootCauseKey = row.root_cause_key;
   if (terms === null || rootCauseKey === null)
     fail(409, "action_not_allowed", "The case has no paid terms to reserve");
+  // Approved awards stay owed through a quarantine or a ban, but a
+  // restricted program starts no new commitment (PRD section 11, Restricted
+  // projects).
+  const program = await currentProgram(deps, row.project_id);
+  if (program === null || program.manifest.listingTier === "retired")
+    fail(
+      409,
+      "program_restricted",
+      "A quarantined, banned, or retired program cannot approve a new award",
+    );
   await assertRootCauseFree(deps, row.project_id, row.id, rootCauseKey);
   const snapshotGuards: { sql: string; values: unknown[] }[] = [];
   const funds = await programFunds(deps, row.project_id, snapshotGuards);
