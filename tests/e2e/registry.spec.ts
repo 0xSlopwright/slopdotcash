@@ -1088,6 +1088,142 @@ test("moderators restrict a project and refuse reinstatement without canonical s
   await applicantContext.close();
 });
 
+test("a moderator denies a malicious project's appeal and bans its maintainer, who cannot list another project @registry", async ({
+  browser,
+  request,
+}) => {
+  // PRD section 8: after a confirmed malicious result, a moderator decides
+  // whether to reinstate the project or ban it and the maintainer.
+  const suffix = test.info().project.name.replace(/-chromium$/u, "");
+  const login = `e2e-maintainer-${suffix}`;
+  const token = (
+    JSON.parse(process.env.SLOP_E2E_MAINTAINER_TOKENS ?? "{}") as Record<
+      string,
+      string
+    >
+  )[`maintainer-${suffix}`];
+  const project = {
+    repository: `${login}/drainer-registry-${suffix}`,
+    id: `drainer-registry-${suffix}`,
+    name: `Drainer Registry ${suffix.replaceAll("-", " ")}`,
+  };
+  const evidence = `https://github.com/${project.repository}/security/advisories/GHSA-e2e`;
+  const maintainerContext = await browser.newContext(walkthroughOptions());
+  const maintainer = await maintainerContext.newPage();
+  const maintainerErrors = observe(maintainer);
+  await signIn(maintainer, token);
+  await setSlopbot(`${project.repository}/installed`);
+  await draftApplication(maintainer, project);
+  await maintainer
+    .getByRole("button", { name: "Create project", exact: true })
+    .click();
+  await expect(
+    maintainer.getByRole("heading", { name: "Project created" }),
+  ).toBeVisible();
+
+  // The first scan confirms malice, so the signed vetting service bans the
+  // project, and its maintainer appeals.
+  await postVettingResult(request, project.id, project.repository, "malicious");
+  const origin = new URL(maintainer.url()).origin;
+  const appealed = await maintainer.request.post("/api/v1/project-appeals", {
+    headers: { origin, cookie: `__Host-slop_points=${token}` },
+    data: {
+      projectId: project.id,
+      reason: "The script was a test and is gone",
+      evidenceReference: evidence,
+    },
+  });
+  expect(appealed.status()).toBe(200);
+  expect((await appealed.json()).record).toMatchObject({
+    stateAfter: "banned",
+    appealAfter: "requested",
+  });
+  expect(maintainerErrors).toEqual([]);
+  await maintainerContext.close();
+
+  const moderatorContext = await browser.newContext(walkthroughOptions());
+  const moderator = await moderatorContext.newPage();
+  const moderatorErrors = observe(moderator);
+  await signIn(moderator, MODERATOR_TOKEN);
+  await moderator.goto(`/admin?project=${project.id}`, {
+    waitUntil: "networkidle",
+  });
+  const panel = moderator
+    .locator(".admin-card", {
+      has: moderator.getByText(project.id, { exact: true }),
+    })
+    .getByRole("region", { name: "Enforcement", exact: true });
+  await expect(panel).toContainText("Banned");
+  await expect(panel).toContainText("Reinstatement requested");
+  await panel
+    .getByLabel("Action")
+    .selectOption({ label: "Deny reinstatement" });
+  const banMaintainer = panel.getByLabel(/Also ban the maintainer/u);
+  await expect(panel).toContainText(`Also ban the maintainer (@${login}`);
+  await banMaintainer.check();
+  await panel
+    .getByLabel("Reason (private audit record)")
+    .fill("Confirmed wallet drainer; the appeal shows no fix");
+  await panel.getByLabel("Evidence reference (link or case id)").fill(evidence);
+  await panel.getByRole("button", { name: "Preview action" }).click();
+  const preview = panel.getByRole("group", {
+    name: "Preview: check it, then confirm",
+  });
+  await expect(preview).toContainText(`Maintainer ban@${login}`);
+  await expect(preview).toContainText("Banned → Banned");
+  await expectAccessible(moderator);
+  await moderator.screenshot({
+    path: test.info().outputPath("maintainer-ban-preview.png"),
+    fullPage: true,
+  });
+  await preview
+    .getByRole("button", { name: "Confirm: Deny reinstatement" })
+    .click();
+  await expect(moderator.getByRole("status").first()).toContainText(
+    "Deny reinstatement recorded",
+  );
+  await moderator.reload({ waitUntil: "networkidle" });
+  await expect(panel).toContainText(
+    `Banned maintainers@${login} (cannot create, publish or change a project)`,
+  );
+  await panel.getByText(/Enforcement history/u).click();
+  await expect(panel).toContainText(`Maintainers banned: @${login}`);
+  await expectAccessible(moderator);
+  expect(moderatorErrors).toEqual([]);
+  await moderatorContext.close();
+
+  // The banned maintainer cannot list another repository it owns. A new
+  // context starts without the first draft.
+  const refusedContext = await browser.newContext(walkthroughOptions());
+  const refused = await refusedContext.newPage();
+  const refusedErrors = observe(refused);
+  await signIn(refused, token);
+  const second = {
+    repository: `${login}/second-registry-${suffix}`,
+    name: `Second Registry ${suffix.replaceAll("-", " ")}`,
+  };
+  await setSlopbot(`${second.repository}/installed`);
+  await draftApplication(refused, second);
+  await refused
+    .getByRole("button", { name: "Create project", exact: true })
+    .click();
+  await expect(refused.getByRole("alert")).toContainText(
+    `A moderator banned this maintainer with project ${project.id}.`,
+  );
+  expect(
+    (await request.get(`/api/v1/projects/second-registry-${suffix}`)).status(),
+  ).toBe(404);
+  await expectAccessible(refused);
+  await refused.screenshot({
+    path: test.info().outputPath("maintainer-ban-refusal.png"),
+    fullPage: true,
+  });
+  expect(refusedErrors).toEqual([
+    "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+  ]);
+  await refusedContext.close();
+});
+
 test("an owner installs Slopbot before creation and resumes setup; a failed scan and lost access each show the next action @registry", async ({
   browser,
   request,

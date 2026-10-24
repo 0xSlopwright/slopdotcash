@@ -288,6 +288,18 @@ rate limit, and caches each answer for five minutes. The browser never calls
   paused, `retired` revision of the restriction is still pending. It appends a paused `community` revision only if
   the project was listed when the restriction began; it never restores
   featuring, activation or money. A denial keeps the restriction.
+- PRD section 8: after a confirmed malicious result, a moderator decides
+  whether to reinstate the project or ban it and the maintainer. A moderator's
+  Ban, or a denied appeal that leaves the project banned, may set
+  `banMaintainer: true`. The record then bans the project steward named in
+  the manifest and the account that listed the project, by immutable GitHub
+  actor ID (`project_maintainer_bans`, migration 0066), in the same D1 batch.
+  The preview names those accounts. While the project stays banned, a banned
+  maintainer cannot create, publish or change a project, and no new project
+  can name that account as its steward (`maintainer_banned`, HTTP 403). An
+  independent reinstatement of the project ends the maintainer ban. Existing
+  projects that the maintainer stewards are not restricted automatically; a
+  moderator restricts each one on its own evidence.
 - Two standing rules act without a moderator (PRD section 8; see
   `backend/vetting/README.md`). The second distinct active contributor flag
   appends a `quarantine` record whose issuer is `contributor-flags`, and a
