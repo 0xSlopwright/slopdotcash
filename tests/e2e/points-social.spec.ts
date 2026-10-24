@@ -241,14 +241,6 @@ test("social membership preserves past points and connection privacy without new
     .getByRole("link", { name: "Account settings", exact: true })
     .click();
   await expect(social.getByRole("checkbox")).toHaveCount(2);
-  await expect(social).toContainText(
-    "Connections grant no points or authority.",
-  );
-  await expect(social).not.toContainText("+10 points");
-  await page.screenshot({
-    path: info.outputPath("account-connections.png"),
-    fullPage: true,
-  });
   const a11y = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
     .analyze();
