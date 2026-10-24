@@ -781,6 +781,132 @@ test("excluding an old joint review does not shrink the pull request size", () =
   ).toEqual([[carol?.id, 3]]);
 });
 
+test("an evaluated review award does not shrink the pull request size", () => {
+  // Bob already received an evaluated award for the medium unit. That award
+  // takes his pool share. Carol's standard review is on the micro unit, and
+  // the pull request size stays the larger unit (PRD section 7).
+  const pull = outcome(11, "2026-10-20T10:00:00.000Z");
+  const reviews = [
+    review(11, 1, bob as GitHubActor, "APPROVED", "2026-10-19T00:00:00.000Z"),
+    review(11, 2, carol as GitHubActor, "APPROVED", "2026-10-19T01:00:00.000Z"),
+  ];
+  const bobReview = reviews[0] as PullRequestReview;
+  const decision = {
+    status: "assessed",
+    latestDigest: "d".repeat(64),
+    history: [{ recorded_at: "2026-10-22T00:00:00.000Z" }],
+    record: {
+      sources: [{ pullRequestNodeId: pull.id, headSha: HEAD }],
+      units: reviews.map((item, index) => ({
+        workUnitId: `wu_unit-${index}`,
+        claimIds: [`claim-${index}`],
+        assessment: {
+          tier: index === 0 ? "medium" : "micro",
+          rationale: "An independently accepted part of the pull request.",
+          reviews: [
+            {
+              sourceId: item.id,
+              tier: "standard",
+              finding: "Verified the fix.",
+              outcome: "The accepted head retains it.",
+            },
+          ],
+        },
+      })),
+    },
+    evidence: {
+      claims: reviews.map((_, index) => ({
+        id: `claim-${index}`,
+        carrierPullRequestIds: [pull.id],
+        creditPullRequestId: pull.id,
+        implementationActorNodeIds: [alice?.id],
+      })),
+      sources: [
+        {
+          evidence: {
+            repository: REPO,
+            pull: {
+              node_id: pull.id,
+              head: { sha: HEAD },
+              updated_at: pull.updatedAt,
+              merged_at: pull.mergedAt,
+              user: { node_id: alice?.id },
+              html_url: pull.url,
+              number: pull.number,
+              title: pull.title,
+            },
+            comments: [],
+            reviews: reviews.map((item) => ({
+              node_id: item.id,
+              body: item.body,
+              user: { node_id: item.author?.id },
+              submitted_at: item.submittedAt,
+            })),
+          },
+        },
+      ],
+    },
+  };
+  const result = createLeaderboardSnapshot(
+    input({
+      mergedPullRequestOutcomes: [pull],
+      reviewedMergedPullRequests: [reviewed(pull, reviews)],
+      valuePolicy: POLICY,
+      valueDecisions: new Map(),
+      valueActors: new Map([[(alice as GitHubActor).id, alice as GitHubActor]]),
+      jointValueDecisions: new Map([
+        [pull.id, decision],
+      ]) as unknown as LeaderboardInput["jointValueDecisions"],
+      evaluatedContributions: [
+        {
+          id: "award_joint_medium_review",
+          actor: bob as GitHubActor,
+          category: "evaluated-contribution",
+          points: 2,
+          occurredAt: bobReview.submittedAt as string,
+          repository: REPO,
+          source: {
+            id: bobReview.id,
+            kind: "review",
+            number: pull.number,
+            title: pull.title,
+            url: bobReview.url,
+          },
+          reason:
+            "The maintainer awarded this review directly, so it must not also take a share of the review pool.",
+          evaluation: {
+            decisionUrl: "https://github.com/SlopDotCash/slopdotcash/pull/900",
+            reviewedAt: "2026-10-19T12:00:00.000Z",
+            reviewer: "lalalune",
+            manifestPath:
+              "evaluations/slopdotcash/award-joint-medium-review.json",
+            manifestSha256: "e".repeat(64),
+          },
+        },
+      ],
+    }),
+  );
+  expect(
+    result.ledger
+      .filter((event) => event.category === "substantive-review")
+      .map((event) => [event.actor.id, event.scoreThirds]),
+  ).toEqual([[carol?.id, 3]]);
+  expect(
+    result.ledger.some(
+      (event) =>
+        event.category === "evaluated-contribution" &&
+        event.actor.id === bob?.id &&
+        event.source.id === bobReview.id,
+    ),
+  ).toBe(true);
+  expect(
+    result.ledger.some(
+      (event) =>
+        event.category === "substantive-review" && event.actor.id === bob?.id,
+    ),
+  ).toBe(false);
+});
+
 test("published account bans remove new merge and review credit but retain earlier work", async () => {
   const bannedAt = "2026-10-19T04:00:00.000Z";
   const bans = await loadParticipationBans(
