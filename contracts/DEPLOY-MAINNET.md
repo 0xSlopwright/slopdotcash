@@ -543,16 +543,23 @@ commit. Then:
   Pages. The release then deploys the attester with the commit SHA as its
   version tag and checks that the active version has that tag.
 
-Do these steps from a clean checkout of the current `main`, after an admin
+Install the secrets before the first snapshot that pins a Base vault reaches
+`main`. The push of that snapshot to `main` starts a release, and that release
+stops while the Worker or a secret is missing, as does every later release of
+the site. Do these steps from a clean checkout of `development` after an admin
 revision records the project's Base vault and the registry snapshot that
-contains it is on `main`:
+contains it is on `development`:
 
-1. Generate the configuration that the release will deploy:
+1. Generate the configuration. The secrets belong to the Worker name, so this
+   configuration also serves the later `main` release:
 
    ```sh
    bun install --frozen-lockfile --ignore-scripts
    bun run payments:deployments mainnet base-mainnet > /tmp/base-mainnet-pinned.json
-   node workers/payment-executor/configure.mjs --stack production      --network base-mainnet      --deployments /tmp/base-mainnet-pinned.json      --output workers/payment-executor/.generated
+   node workers/payment-executor/configure.mjs --stack production \
+     --network base-mainnet \
+     --deployments /tmp/base-mainnet-pinned.json \
+     --output workers/payment-executor/.generated
    CONFIG=workers/payment-executor/.generated/slop-payments-base-mainnet-attester.json
    ```
 
@@ -587,11 +594,21 @@ contains it is on `main`:
 
 4. Fund `0x31B87d13f9091bC3b8A5cb6F45C8b3cB99Ed6d70` with a small Base ETH
    balance. The attester signs and pays gas for each destination binding
-   transaction. It never pays out an award.
+   transaction. It never pays out an award. See the limit below: nothing
+   uses this balance until a binding trigger exists.
 
-5. Optional: run the readiness report of section 3.3 with
-   `--config "$CONFIG"`. `factory`, `attester` and `rpc` must pass;
-   `executor` reports `missing`.
+5. Optional: run the readiness report of section 3.3. Enter the RPC map at a
+   silent prompt so that it is not in the command or the shell history:
+
+   ```sh
+   read -rs PAYMENT_RPC_URLS && export PAYMENT_RPC_URLS
+   bun run payments:readiness --registry-origin https://slop.cash \
+     --config "$CONFIG" --probe
+   unset PAYMENT_RPC_URLS
+   ```
+
+   For `base-mainnet`, `factory` and `attester` must be `configured` and
+   `rpc` must be `finalized`. `executor` reports `missing`.
 
 6. Approve the production release: merge the reviewed promotion pull request
    from `development` to `main`. The `deploy` job checks the secrets and
@@ -613,5 +630,10 @@ an operator decision on how bindings are submitted.
 
 To stop new Slop attestations on a network, change its
 `mainnet-execution.mjs` value back to `false` through a reviewed pull request
-and redeploy the attester Worker. Slop cannot stop a payment that the project
+and redeploy the attester Worker. On Base the release redeploys it only while
+the snapshot pins a Base vault, so stop the attester this way before a
+snapshot removes the last pinned Base vault; a release with no pinned vault
+leaves an existing attester unchanged. Do not delete `SIGNER_PRIVATE_KEY` to
+stop it: every later release of the site then stops at the secret check. Do
+not delete the Worker: that deletes its signing journal. Slop cannot stop a payment that the project
 or a permissionless executor submits for an approved and funded obligation.

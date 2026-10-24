@@ -722,14 +722,14 @@ jobs:
           attester_dir="$RUNNER_TEMP/slop-payment-attester"
           attester_config="$attester_dir/slop-payments-base-mainnet-attester.json"
           mkdir -p "$attester_dir"
-          attester_vaults="$(bun --eval '
+          attester_vaults="$(ATTESTER_PINS="$attester_dir/pinned.json" bun --eval '
           import { writeFileSync } from "node:fs";
           import { HISTORICAL_PROJECTS } from "./src/lib/projects.mjs";
           import { paymentDeployments } from "./scripts/prepare-payment-deployments.ts";
           const pinned = paymentDeployments(HISTORICAL_PROJECTS, "mainnet", "base-mainnet");
-          writeFileSync(process.argv[1], JSON.stringify(pinned));
+          writeFileSync(process.env.ATTESTER_PINS, JSON.stringify(pinned));
           process.stdout.write(String(pinned.length));
-          ' "$attester_dir/pinned.json")"
+          ')"
           if ! [[ "$attester_vaults" =~ ^[0-9]+$ ]]; then
             echo "::error::The Base mainnet attester pin count is invalid."
             exit 1
@@ -773,6 +773,8 @@ jobs:
           }
           NODE
           else
+            # An attester released earlier stays unchanged; stop it first
+            # (contracts/DEPLOY-MAINNET.md section 3.6).
             echo "::notice::The registry snapshot pins no Base mainnet vault; the attester is not released."
           fi
 
