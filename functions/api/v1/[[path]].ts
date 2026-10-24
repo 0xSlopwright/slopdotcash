@@ -46,8 +46,11 @@ import {
 } from "../../../backend/projects/setup";
 import { assetTemplateSource } from "../../../backend/projects/skill-publication";
 import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata";
+import { githubAdvisoryReader } from "../../../backend/security/advisories";
+import { surplusSecurityAnalyzer } from "../../../backend/security/analysis";
 import {
   githubAdvisoryClient,
+  githubAppAdvisoryToken,
   githubInstallationCheck,
 } from "../../../backend/security/github-advisories";
 import { handleSecurityApi } from "../../../backend/security/handler";
@@ -135,21 +138,34 @@ type Env = {
   SLOP_GITHUB_READ_TOKEN?: string;
   /**
    * Automatic private security intake (PRD section 8, SEC-07). Off unless
-   * exactly "on" and every intake App secret below is set; any missing
-   * value keeps the existing manual flow. The intake App is separate from
-   * the identity App and holds only repository security advisories and
-   * metadata permissions (pending owner approval).
+   * exactly "on" and every App secret below is set; any missing value keeps
+   * the existing manual flow. Owner decision D10: these hold the existing
+   * slopdotcash GitHub App (5257625) with "Repository security advisories:
+   * read"; there is no separate intake App.
    */
   SLOP_PRIVATE_INTAKE_MODE?: string;
   GITHUB_INTAKE_APP_CLIENT_ID?: string;
   GITHUB_INTAKE_APP_CLIENT_SECRET?: string;
   GITHUB_INTAKE_APP_ID?: string;
-  /** Used only for the App installation check, never to read advisories. */
+  /**
+   * The App's private key. It signs the installation check and mints
+   * repository-scoped advisory-read installation tokens that verify private
+   * report receipts; it never files an advisory. Without the App ID and key,
+   * receipt checks stay unavailable; nothing is verified by hand.
+   */
   GITHUB_INTAKE_APP_PRIVATE_KEY?: string;
   /** 32-byte base64url AES-GCM key for the reporter grant cookie. */
   SLOP_INTAKE_GRANT_KEY?: string;
   /** Local browser tests only: a loopback GitHub OAuth fixture origin. */
   SLOP_GITHUB_OAUTH_ORIGIN?: string;
+  /**
+   * Owner decision: use the Surplus account key for private security
+   * case analysis. No zero-data-retention agreement is required. Unset records
+   * every analysis as unavailable; there is no other provider.
+   */
+  SURPLUS_API_KEY?: string;
+  /** Local browser tests only: a loopback analysis provider fixture origin. */
+  SLOP_ANALYSIS_API_ORIGIN?: string;
   /** Notification Worker; absent where no notifier is deployed. */
   SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
   /**
@@ -652,6 +668,27 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       token: context.env.SLOP_GITHUB_READ_TOKEN,
       apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
     },
+    advisories:
+      context.env.GITHUB_INTAKE_APP_ID &&
+      context.env.GITHUB_INTAKE_APP_PRIVATE_KEY
+        ? githubAdvisoryReader({
+            fetch: (url, init) => fetch(url, init),
+            apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
+            token: githubAppAdvisoryToken({
+              fetch: (url, init) => fetch(url, init),
+              apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
+              appId: context.env.GITHUB_INTAKE_APP_ID,
+              privateKey: context.env.GITHUB_INTAKE_APP_PRIVATE_KEY,
+              now: () => new Date(),
+            }),
+          })
+        : null,
+    analyzer: surplusSecurityAnalyzer({
+      apiKey: context.env.SURPLUS_API_KEY,
+      fetch: (url, init) => fetch(url, init),
+      loopbackOrigin: context.env.SLOP_ANALYSIS_API_ORIGIN,
+    }),
+    moderatorGithubIds: githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),
     cache: edgeCache(),
     waitUntil: context.waitUntil?.bind(context),
     intake: privateIntake(context.env),
