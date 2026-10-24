@@ -193,8 +193,8 @@ export function reviewBudgetLabel(
   reviewBudget: NonNullable<ProjectDefinition["reward"]["reviewBudget"]>,
 ): string {
   return reviewBudget.fundingState === "committed"
-    ? `${formatMicroUsdc(reviewBudget.committedMinor)} committed of ${reviewBudget.monthlyCapDisplay} cap · accessibility unknown · additive review line`
-    : `${reviewBudget.monthlyCapDisplay} cap · additive review line · uncommitted pledge`;
+    ? `${formatMicroUsdc(reviewBudget.committedMinor)} of ${reviewBudget.monthlyCapDisplay} review budget funded`
+    : `${reviewBudget.monthlyCapDisplay} review budget · not funded`;
 }
 
 /**
@@ -216,8 +216,8 @@ export function monthlyPoolLabel(
   >,
 ): string {
   return monthlyPoolUnfunded(reward)
-    ? `unfunded, target ${reward.monthlyCapDisplay}`
-    : `${formatMicroUsdc(reward.committedMinor)} committed · accessibility unknown · target ${reward.monthlyCapDisplay}`;
+    ? `${reward.monthlyCapDisplay} monthly target · not funded`
+    : `${formatMicroUsdc(reward.committedMinor)} funded · ${reward.monthlyCapDisplay} monthly target`;
 }
 
 export function Avatar({
@@ -305,7 +305,10 @@ export function PaymentLifecycle() {
         </li>
         <li>
           <strong>Under review</strong>
-          <span>A frozen proposal in its public review window.</span>
+          <span>
+            A closed month&apos;s allocations, adjustable by the owner until the
+            monthly cutoff.
+          </span>
         </li>
         <li>
           <strong>Approved</strong>

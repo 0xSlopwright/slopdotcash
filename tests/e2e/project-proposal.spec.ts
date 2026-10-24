@@ -315,7 +315,7 @@ test("drafts a project through the setup steps and creates it without an admin",
   await page.getByRole("button", { name: "Next: Review" }).click();
 
   const preview = page.getByRole("article", { name: "Listing preview" });
-  await expect(preview).toContainText("Draft · not listed");
+  await expect(preview).toContainText("Preview");
   await expect(preview).toContainText("Open Protein");
   await expect(preview).toContainText("2,500 USDC on Solana · pledge");
   await expect(preview).not.toContainText("$");

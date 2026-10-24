@@ -42,7 +42,7 @@ test("disabled payouts are visible from discovery through the project page", asy
     page.getByRole("heading", { name: "Eliza", exact: true, level: 1 }),
   ).toBeVisible();
   await expect(page.locator(".project-reward-status")).toContainText(
-    "payments not active",
+    "not funded yet",
   );
   await page.screenshot({
     path: info.outputPath("project-payment-unavailable.png"),

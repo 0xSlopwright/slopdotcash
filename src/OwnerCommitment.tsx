@@ -299,8 +299,9 @@ export default function OwnerCommitment({
             ))
           ) : (
             <p>
-              Open this page in an EVM wallet browser or enable its browser
-              extension.
+              {solana
+                ? "Install or enable a Solana wallet extension, then reload."
+                : "Open this page in an EVM wallet browser or enable its browser extension."}
             </p>
           )}
         </fieldset>
