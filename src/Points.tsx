@@ -1165,11 +1165,12 @@ const countFormat = new Intl.NumberFormat("en-US");
 /** The bounds and source counts the published snapshot states, verbatim. */
 function StandingsCoverage({
   state,
-  period,
+  month,
   projectId,
 }: {
   state: Extract<DataState, { status: "ready" }>;
-  period: string;
+  /** The ranked UTC month, or null for recorded history. */
+  month: string | null;
   projectId: string;
 }) {
   const { snapshot, cycleIndex } = state;
@@ -1177,14 +1178,28 @@ function StandingsCoverage({
   const closedCycles = cycleIndex.cycles.filter(
     (cycle) => !projectId || cycle.projectId === projectId,
   ).length;
+  // "This month" ranks only the snapshot entries inside the UTC month, so its
+  // exact period starts at the later of the month start and the window start.
+  const monthStart = month === null ? null : `${month}-01T00:00:00.000Z`;
+  const rankedFrom =
+    monthStart === null
+      ? null
+      : Date.parse(monthStart) > Date.parse(snapshot.window.from)
+        ? monthStart
+        : snapshot.window.from;
   return (
     <p className="points-meta points-coverage">
-      Score window: {formatDateTime(snapshot.window.from)} to{" "}
-      {formatDateTime(snapshot.window.to)} ({snapshot.window.days} days).
-      Source: {countFormat.format(counts.mergedPullRequests)} merged pull
-      requests and {countFormat.format(counts.closedIssues)} closed issues
-      across {countFormat.format(snapshot.repositories.length)} repositories.
-      {period === "lifetime"
+      {rankedFrom !== null &&
+      Date.parse(rankedFrom) < Date.parse(snapshot.window.to)
+        ? `This month ranks ${formatDateTime(rankedFrom)} to ${formatDateTime(snapshot.window.to)}. `
+        : null}
+      Snapshot window: {formatDateTime(snapshot.window.from)} to{" "}
+      {formatDateTime(snapshot.window.to)} ({snapshot.window.days} days). Source
+      {projectId ? " (all projects)" : ""}:{" "}
+      {countFormat.format(counts.mergedPullRequests)} merged pull requests and{" "}
+      {countFormat.format(counts.closedIssues)} closed issues across{" "}
+      {countFormat.format(snapshot.repositories.length)} repositories.
+      {month === null
         ? ` Recorded history adds ${countFormat.format(closedCycles)} closed ${closedCycles === 1 ? "cycle" : "cycles"}.`
         : null}
     </p>
@@ -1386,7 +1401,13 @@ export function ContributorStandings({
         </div>
       ) : null}
       {!compact && scores.status === "ready" ? (
-        <StandingsCoverage period={period} projectId={project} state={scores} />
+        <StandingsCoverage
+          month={
+            period === "month" ? new Date().toISOString().slice(0, 7) : null
+          }
+          projectId={project}
+          state={scores}
+        />
       ) : null}
       {(
         sort === "points"

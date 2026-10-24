@@ -31,7 +31,7 @@ test(
     // The period states the snapshot's exact bounds and source coverage.
     const coverage = page.locator(".points-coverage");
     await expect(coverage).toHaveText(
-      /^Score window: .+ UTC to .+ UTC \(\d+ days\)\. Source: [\d,]+ merged pull requests and [\d,]+ closed issues across [\d,]+ repositories\.$/u,
+      /^(This month ranks .+ UTC to .+ UTC\. )?Snapshot window: .+ UTC to .+ UTC \(\d+ days\)\. Source: [\d,]+ merged pull requests and [\d,]+ closed issues across [\d,]+ repositories\.$/u,
     );
     await page
       .getByRole("button", { name: "Recorded history", exact: true })
