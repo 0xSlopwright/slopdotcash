@@ -30,20 +30,29 @@ refuses, and the award waits for the contributor. On a test stack the
 relayer requests the binding. A mainnet has no Slop relayer (PAY-04), so the
 production EVM attester's own five-minute cron run requests it
 (`/v1/bind-destinations` on its journal, reached only from `scheduled`).
-After the run indexes the finalized vault events, it reads from D1 each
-reserved award on a pinned vault whose contributor has a current signed
-wallet authorization and a stored binding signature that is valid for at
-least 10 more minutes, one per contributor and vault. The stack, network
-and preflight checks pass before it reads the key. For each candidate it
-does the same checks as `/v1/pay` without a payout attempt: the GitHub
-actor, the claim digest and the wallet signature of the current claim, the
-finalized unpaid award, the identity signer, the successor lineage for a
-rotation, and the stored binding signature for the current on-chain
-version. A binding that is already current needs nothing. Its journal key
-names the vault, actor, claim and finalized binding version, so a binding
-whose broadcast result is unknown is broadcast again with the same bytes
-and never signed a second time. A rejected or held candidate makes the run
-fail in the Worker logs; the other candidates continue. The payout `pay`
+The production EVM attester refuses `/v1/pay`, so this run is its only
+binding path. Each run first passes the stack, network and preflight
+checks of every pinned vault. After the run indexes the finalized vault
+events, it reads from D1 each reserved award on a pinned vault whose
+contributor has a current signed wallet authorization and a stored binding
+signature that is valid for at least 10 more minutes, one per contributor
+and vault. It reads the key only when there is work. It checks at most 10
+candidates per run, the least recently checked first. For each candidate
+it does the same checks as `/v1/pay` without a payout attempt: the GitHub
+actor, the claim digest and the wallet signature of the named current
+claim, the finalized unpaid award, the identity signer, the successor
+lineage for a rotation, and the stored binding signature for the current
+on-chain version. A binding that is already current needs nothing. Its
+journal key names the vault, actor, claim and finalized binding version,
+so a binding whose broadcast result is unknown is broadcast again with the
+same bytes and never signed a second time. Every signed binding stays on a
+pending list until it is finalized or a finalized revert proof retires it.
+Each run broadcasts the pending bindings again first, also when their
+contributor is no longer a candidate, so a lost transaction never blocks
+the identity key's later nonces. A rejected or held candidate makes the run
+fail in the Worker logs; the other candidates continue. A binding that the
+project owner cancelled fails the same way until an identity review. The
+payout `pay`
 stays permissionless: the project owner or any wallet submits it, with no
 Slop key (`contracts/DEPLOY-MAINNET.md` section 3.6). On Solana the destination keypair must sign
 the same transaction: `POST /v1/pay` on the attester prepares, half-signs and
@@ -286,7 +295,9 @@ the fee recipient and the owner withdraws the rest. It also shows that an
 expired binding signature is never submitted, that a signature from
 another GitHub actor is refused by the API and by the attester, and that a
 binding whose broadcast is lost twice stays one journaled transaction with
-one nonce until the same bytes are broadcast.
+one nonce until the same bytes are broadcast. A second contributor's lost
+binding is broadcast again after she changes wallets and is no longer a
+candidate.
 
 Local execution is not public testnet evidence. Public-chain acceptance still
 needs isolated D1 and service bindings, dedicated funded gas/identity signers,

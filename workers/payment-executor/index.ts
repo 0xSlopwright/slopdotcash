@@ -19,14 +19,16 @@ import {
 import { parseMonthlySchedule } from "../../src/lib/payments/monthly-allocation";
 import { runMonthlyCoordinator, syncRegistryVaults } from "../payments/index";
 import {
+  type BindingRunReport,
   bindingCandidates,
-  bindStoredDestination,
   createEvmAttester,
   createEvmExecutor,
   type JournalStore,
   lookupAttempt,
+  pendingStoredBindings,
   preflightEvmDeployment,
   retireUnsignedAttempt,
+  runStoredBindings,
   type Signer,
   submitEvmMonthly,
 } from "./core";
@@ -77,16 +79,6 @@ interface Environment {
 interface State {
   storage: JournalStore;
 }
-/** One scheduled binding run of the production EVM attester. */
-export interface BindingRunReport {
-  candidates: number;
-  current: number;
-  waiting: number;
-  failed: number;
-  /** Binding transactions submitted or found again in the journal. */
-  submitted: string[];
-}
-
 /** One instance per signer role serializes nonce allocation and preserves signed bytes before broadcast. */
 export class PaymentSignerJournal {
   constructor(
@@ -126,6 +118,20 @@ export class PaymentSignerJournal {
           this.env.PAYMENT_SCOPE === "security-bounty"
         )
           return new Response("Not found", { status: 404 });
+        // The stack, network and preflight checks of every pinned vault pass
+        // on every run, before D1 is read and before the secret is read, as
+        // on every other signing route.
+        const pinned = JSON.parse(this.env.PAYMENT_DEPLOYMENTS) as {
+          network: string;
+          vault: string;
+        }[];
+        if (
+          !pinned.length ||
+          pinned.some((target) => !stackServesNetwork(stack, target.network))
+        )
+          throw new Error("Signer stack does not serve this network");
+        for (const target of pinned)
+          await preflightEvmDeployment(this.env, target);
         const environment = {
           PAYMENTS_DB: database,
           PAYMENT_DEPLOYMENTS: this.env.PAYMENT_DEPLOYMENTS,
@@ -133,23 +139,18 @@ export class PaymentSignerJournal {
           JOURNAL: this.state.storage,
         };
         const candidates = await bindingCandidates(environment);
-        const report: BindingRunReport = {
-          candidates: candidates.length,
-          current: 0,
-          waiting: 0,
-          failed: 0,
-          submitted: [],
-        };
-        if (!candidates.length) return Response.json(report);
-        // The stack, network and preflight checks pass before the secret
-        // is read, as on every other signing route.
-        for (const target of new Set(
-          candidates.map((c) => JSON.stringify([c.network, c.vault])),
-        )) {
-          const [network, vault] = JSON.parse(target) as [string, string];
-          if (!stackServesNetwork(stack, network))
-            throw new Error("Signer stack does not serve this network");
-          await preflightEvmDeployment(this.env, { network, vault });
+        if (
+          !candidates.length &&
+          !(await pendingStoredBindings(this.state.storage)).length
+        ) {
+          const idle: BindingRunReport = {
+            candidates: 0,
+            current: 0,
+            waiting: 0,
+            failed: 0,
+            submitted: [],
+          };
+          return Response.json(idle);
         }
         const key = this.env[SIGNER_STACKS[stack].evmSecret];
         if (!key) throw new Error("Signer unavailable");
@@ -159,22 +160,14 @@ export class PaymentSignerJournal {
           signTransaction: (transaction) =>
             account.signTransaction(transaction),
         };
-        for (const candidate of candidates) {
-          try {
-            const outcome = await bindStoredDestination(
-              { ...environment, SIGNER: signer },
-              candidate,
-            );
-            if (outcome.state === "submitted")
-              report.submitted.push(outcome.transactionId);
-            else report[outcome.state] += 1;
-          } catch {
-            // One contributor's held or rejected binding never stops the
-            // others. The failure count makes the scheduled run fail.
-            report.failed += 1;
-          }
-        }
-        return Response.json(report);
+        // One contributor's held or rejected binding never stops the others;
+        // the failure count makes the scheduled run fail.
+        return Response.json(
+          await runStoredBindings(
+            { ...environment, SIGNER: signer },
+            candidates,
+          ),
+        );
       }
       if (pathname === "/v1/commit-monthly") {
         // Hosted relayers are test-only. Production submission belongs to a
@@ -367,6 +360,11 @@ export class PaymentSignerJournal {
       // PRD PAY-04: Slop holds no relayer key and runs no payment dispatch on
       // a mainnet. A production stack is the PAY-05 identity attester only.
       if (stack === "production" && this.env.SIGNER_ROLE !== "attester")
+        return new Response("Not found", { status: 404 });
+      // A production EVM attester binds only through its scheduled run
+      // (/v1/bind-destinations), so one journal key per binding version is
+      // the only path that can sign a binding.
+      if (stack === "production" && this.env.CHAIN_FAMILY === "evm")
         return new Response("Not found", { status: 404 });
       if (["/v1/attempt-status", "/v1/cancel-unsubmitted"].includes(pathname)) {
         if (this.env.SIGNER_ROLE !== "relayer")

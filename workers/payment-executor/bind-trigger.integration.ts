@@ -40,7 +40,7 @@ import { paymentDeploymentRecord } from "../../src/lib/escrow-policy.mjs";
 import { assertProjectDefinition } from "../../src/lib/project-schema.mjs";
 import { sha256Hex } from "../identity/crypto";
 import { paymentStack } from "./configure.mjs";
-import type { JournalStore } from "./core";
+import { type JournalStore, pendingStoredBindings } from "./core";
 import worker, { PaymentSignerJournal, runDestinationBindings } from "./index";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -436,11 +436,17 @@ try {
   await mine(64);
 
   // The contributor alice (GitHub 123) signs in and confirms her wallet;
-  // bob (GitHub 456) is another signed-in member.
-  const sessions = { alice: "a".repeat(43), bob: "b".repeat(43) };
+  // bob (GitHub 456) is another signed-in member, and carol (GitHub 789)
+  // a second contributor.
+  const sessions = {
+    alice: "a".repeat(43),
+    bob: "b".repeat(43),
+    carol: "c".repeat(43),
+  };
   for (const [login, github] of [
     ["alice", "123"],
     ["bob", "456"],
+    ["carol", "789"],
   ] as const) {
     sql
       .prepare(
@@ -670,10 +676,118 @@ try {
   // (9) Anyone moves the 2% fee to the fee recipient.
   await send(vault, "claimFees()", [], payer);
   assert.equal(await balance(asset, fee), 200_000n);
-  // (10) The owner withdraws the unused 40 USDC, less the 2% fee.
-  await send(vault, "withdrawUnused(uint128)", ["40000000"], owner);
-  assert.equal(await balance(asset, owner), 39_200_000n);
-  assert.equal(await balance(asset, vault), 800_000n);
+
+  // Failure: a signed binding whose contributor stops being a candidate.
+  // Carol's binding is signed and its broadcast is lost; she then changes
+  // wallets, so the old claim is no longer current. The attester still
+  // broadcasts the journaled bytes, so its nonce never stays blocked.
+  const carolWallet = privateKeyToAccount(`0x${"0".repeat(63)}2`);
+  const carolAward = evmAwardId(8453n, vault, `0x${"3".padStart(64, "0")}`);
+  await send(
+    vault,
+    "commitAward(bytes32,uint64,uint128,bytes32)",
+    [carolAward, "789", "1000000", `0x${"3".padStart(64, "0")}`],
+    owner,
+  );
+  await mine(64);
+  const carolClaim = (await (
+    await account("carol", "/wallets/register", {
+      chain: "base",
+      address: carolWallet.address.toLowerCase(),
+    })
+  ).json()) as { claimId: string };
+  const carolChallenge = (await (
+    await account("carol", "/wallets/challenge", {
+      claimId: carolClaim.claimId,
+    })
+  ).json()) as { message: string; challengeId: string };
+  assert.equal(
+    (
+      await account("carol", "/wallets/authorize", {
+        claimId: carolClaim.claimId,
+        challengeId: carolChallenge.challengeId,
+        signature: await carolWallet.signMessage({
+          message: carolChallenge.message,
+        }),
+      })
+    ).status,
+    200,
+  );
+  const carolConsent = {
+    claimId: carolClaim.claimId,
+    network: "base-mainnet",
+    vault,
+    expectedVersion: "0",
+  };
+  const carolTyped = (
+    (await (
+      await account("carol", "/wallets/bind-challenge", carolConsent)
+    ).json()) as { typedData: ReturnType<typeof evmBindingTypedData> }
+  ).typedData;
+  const { EIP712Domain: _carolDomain, ...carolTypes } = carolTyped.types;
+  assert.equal(
+    (
+      await account("carol", "/wallets/bind-authorize", {
+        ...carolConsent,
+        expiresAt: carolTyped.message.expiresAt,
+        signature: await carolWallet.signTypedData({
+          domain: {
+            ...carolTyped.domain,
+            chainId: Number(carolTyped.domain.chainId),
+            verifyingContract: carolTyped.domain
+              .verifyingContract as `0x${string}`,
+          },
+          types: carolTypes,
+          primaryType: carolTyped.primaryType,
+          message: {
+            actorId: BigInt(carolTyped.message.actorId),
+            destination: carolTyped.message.destination as `0x${string}`,
+            expectedVersion: BigInt(carolTyped.message.expectedVersion),
+            claimDigest: carolTyped.message.claimDigest as `0x${string}`,
+            expiresAt: BigInt(carolTyped.message.expiresAt),
+          },
+        } as never),
+      })
+    ).status,
+    200,
+  );
+  dropBroadcast = true;
+  await bindingHeld();
+  const carolHeld = bindEntries().filter(
+    (entry) => entry.transactionId !== held[0].transactionId,
+  );
+  assert.equal(carolHeld.length, 1);
+  assert.equal((await pendingStoredBindings(journal)).length, 1);
+  // Carol registers another wallet and has not confirmed it yet.
+  assert.equal(
+    (
+      await account("carol", "/wallets/register", {
+        chain: "base",
+        address: privateKeyToAccount(
+          `0x${"0".repeat(63)}3`,
+        ).address.toLowerCase(),
+      })
+    ).status,
+    200,
+  );
+  dropBroadcast = false;
+  assert.deepEqual(await runDestinationBindings(env as never), {
+    candidates: 0,
+    current: 0,
+    waiting: 0,
+    failed: 0,
+    submitted: [carolHeld[0].transactionId],
+  });
+  await mine(64);
+  await scheduled();
+  assert.deepEqual(await pendingStoredBindings(journal), []);
+  assert.equal(await nonce(attester), 2, "Both signed bindings were mined");
+
+  // (10) The owner withdraws the unused 39 USDC, less the 2% fee.
+  await send(vault, "withdrawUnused(uint128)", ["39000000"], owner);
+  assert.equal(await balance(asset, owner), 38_220_000n);
+  // Carol's reserved 1 USDC and the 0.78 USDC withdrawal fee remain.
+  assert.equal(await balance(asset, vault), 1_780_000n);
 
   // The binding run exists only on a production EVM attester.
   for (const other of [
@@ -686,7 +800,7 @@ try {
       null,
     );
   console.log(
-    `base-mainnet bind trigger: bound ${held[0].transactionId} after two lost broadcasts; paid ${recipient} 9.8 USDC; fee 0.2 USDC claimed`,
+    `base-mainnet bind trigger: bound ${held[0].transactionId} after two lost broadcasts; paid ${recipient} 9.8 USDC; fee 0.2 USDC claimed; a non-candidate pending binding was broadcast again`,
   );
 } finally {
   anvil.kill();

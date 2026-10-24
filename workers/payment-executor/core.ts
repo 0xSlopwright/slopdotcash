@@ -67,6 +67,7 @@ type Input = DispatchPayment & { idempotencyKey: string };
  * (PRD PAY-04).
  */
 type BindingRequest = DispatchPayment & { idempotencyKey: string | null };
+type AttemptMode = "required" | "none";
 interface Deployment {
   payoutPolicy?: PayoutPolicy;
   projectId: string;
@@ -169,16 +170,25 @@ export async function authorizeRegistry(
   env: { PAYMENTS_DB: D1Database },
   input: BindingRequest,
   chain: EscrowChain,
+  /** Request handlers name a payout attempt; only the scheduled binding names none. */
+  attempt: AttemptMode = "required",
 ): Promise<Authorization> {
+  if (
+    attempt === "none"
+      ? input.idempotencyKey !== null
+      : typeof input.idempotencyKey !== "string"
+  )
+    throw new Error("Payout attempt mode mismatch");
   const select =
     "SELECT o.id obligationId,o.project_id projectId,o.network,o.vault,o.github_user_id githubUserId,o.gross_base grossBase,o.fee_base feeBase,o.source_digest sourceDigest,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,c.message,a.signature,c.id challengeId,c.expires_at expiresAt FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id AND a.github_user_id=o.github_user_id JOIN payment_wallet_challenges c ON c.id=a.challenge_id AND c.claim_id=w.id AND c.github_user_id=o.github_user_id";
   const current =
     "o.chain=? AND c.consumed_at IS NOT NULL AND c.consumed_at<=c.expires_at AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)";
-  // Without a payout attempt, only an unpaid reserved award qualifies.
-  const authorization = await (input.idempotencyKey === null
+  // Without a payout attempt, only an unpaid reserved award of the named
+  // claim qualifies.
+  const authorization = await (attempt === "none"
     ? env.PAYMENTS_DB.prepare(
-        `${select} WHERE o.id=? AND o.state='reserved' AND ${current}`,
-      ).bind(input.obligationId, chain)
+        `${select} WHERE o.id=? AND w.id=? AND o.state='reserved' AND ${current}`,
+      ).bind(input.obligationId, input.claimId, chain)
     : env.PAYMENTS_DB.prepare(
         `${select} JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND t.id=? AND ${current}`,
       ).bind(input.obligationId, input.idempotencyKey, chain)
@@ -307,7 +317,7 @@ async function authorize(
   env: ExecutorEnvironment,
   input: BindingRequest,
   /** Request handlers name a payout attempt; only the scheduled binding names none. */
-  attempt: "required" | "none" = "required",
+  attempt: AttemptMode = "required",
 ): Promise<{ authorization: Authorization; deployment: Deployment }> {
   if (
     !input ||
@@ -327,7 +337,7 @@ async function authorize(
   )
     throw new Error("Invalid payout request");
   const { chain } = selectReviewedEvmDeployment(env, input);
-  const authorization = await authorizeRegistry(env, input, chain);
+  const authorization = await authorizeRegistry(env, input, chain, attempt);
   const deployment = await preflightEvmDeployment(env, input);
   if (deployment.projectId !== authorization.projectId)
     throw new Error("Reviewed project deployment mismatch");
@@ -436,6 +446,9 @@ async function signAndSubmit(
   if (attempt && attempt.fingerprint !== fingerprint)
     throw new Error("Idempotency key reused for another operation");
   if (!attempt) {
+    // Empty calldata means "reconcile the journaled transaction"; it never
+    // signs a new one, even when the entry was retired meanwhile.
+    if (!data) throw new Error("No journaled transaction to reconcile");
     const chainNonce = Number(
       BigInt(
         (await rpc(config, "eth_getTransactionCount", [
@@ -632,9 +645,10 @@ async function authorizeBindingVersion(
   env: ExecutorEnvironment,
   input: BindingRequest,
   current: { version: string; claimDigest: string },
+  attempt: AttemptMode,
 ) {
   if (current.version !== "0")
-    await authorizeWalletRotation(env, input, current.claimDigest);
+    await authorizeWalletRotation(env, input, current.claimDigest, attempt);
   else await requireWalletAuthorization(env, input);
 }
 
@@ -711,7 +725,7 @@ export function createEvmAttester(env: ExecutorEnvironment): PaymentExecutor {
       if ((await obligation(deployment, authorization)).paid)
         throw new Error("Award already paid");
       const current = await binding(deployment, input.githubUserId);
-      await authorizeBindingVersion(env, input, current);
+      await authorizeBindingVersion(env, input, current, "required");
       const data = await storedBindingCalldata(
         env,
         deployment,
@@ -744,7 +758,7 @@ export type BindingOutcome =
 export async function bindingCandidates(
   env: Pick<ExecutorEnvironment, "PAYMENTS_DB" | "PAYMENT_DEPLOYMENTS">,
   now = new Date(),
-  limit = 10,
+  limit = 500,
 ): Promise<BindingCandidate[]> {
   const pinned = JSON.parse(env.PAYMENT_DEPLOYMENTS) as {
     network: string;
@@ -811,7 +825,7 @@ export async function bindStoredDestination(
       current.version,
     ]),
   );
-  const key = `bind:stored:${operation.slice(2)}`;
+  const key = `${STORED_BINDING}${operation.slice(2)}`;
   const journaled = { ...input, idempotencyKey: operation.slice(2) };
   const existing = await env.JOURNAL.get<Attempt | null>(key);
   if (
@@ -824,7 +838,7 @@ export async function bindStoredDestination(
     };
   if ((await obligation(deployment, authorization)).paid)
     throw new Error("Award already paid");
-  await authorizeBindingVersion(env, input, current);
+  await authorizeBindingVersion(env, input, current, "none");
   const data = await storedBindingCalldata(
     env,
     deployment,
@@ -832,10 +846,140 @@ export async function bindStoredDestination(
     current.version,
   );
   if (!data) return { state: "waiting" };
+  // Tracked before signing, so the signed bytes are reconciled even after
+  // this contributor stops being a candidate.
+  await env.JOURNAL.transaction(async (store) => {
+    const keys = (await store.get<string[]>(PENDING_BINDINGS)) ?? [];
+    if (!keys.includes(key)) await store.put(PENDING_BINDINGS, [...keys, key]);
+  });
   return {
     state: "submitted",
     ...(await signAndSubmit(env, deployment, key, operation, data, journaled)),
   };
+}
+
+const STORED_BINDING = "bind:stored:";
+/** Journal keys of stored bindings signed but not yet finalized. */
+const PENDING_BINDINGS = "pending-stored-bindings";
+
+/**
+ * Reconciles one signed stored binding, whether or not its contributor is
+ * still a candidate. A later attester transaction cannot be mined while an
+ * earlier nonce is unsent, so every signed binding is broadcast again with
+ * its same bytes until it is finalized or a finalized revert proof retires
+ * it. Returns true when nothing more is needed.
+ */
+async function reconcileStoredBinding(
+  env: ExecutorEnvironment,
+  key: string,
+): Promise<{ settled: boolean; transactionId?: string }> {
+  const attempt = await env.JOURNAL.get<Attempt | null>(key);
+  if (!attempt) return { settled: true };
+  const deployment = await preflightEvmDeployment(env, attempt);
+  const receipt = (await rpc(deployment, "eth_getTransactionReceipt", [
+    attempt.transactionId,
+  ])) as { status: string; blockNumber: string } | null;
+  if (receipt) {
+    if (receipt.status !== "0x1") {
+      if (await retireRevertedAttempt(env, deployment, key, attempt))
+        return { settled: true };
+      throw new Error(
+        "Recorded binding reverted; operator reconciliation required",
+      );
+    }
+    const finalized = (await rpc(deployment, "eth_getBlockByNumber", [
+      "finalized",
+      false,
+    ])) as { number: string };
+    return {
+      settled: BigInt(receipt.blockNumber) <= BigInt(finalized.number),
+    };
+  }
+  return {
+    settled: false,
+    ...(await signAndSubmit(env, deployment, key, attempt.fingerprint, "", {
+      network: attempt.network,
+      vault: attempt.vault,
+      obligationId: attempt.obligationId,
+      idempotencyKey: key.slice(STORED_BINDING.length),
+    })),
+  };
+}
+
+/** One scheduled binding run of the production EVM attester. */
+export interface BindingRunReport {
+  candidates: number;
+  current: number;
+  waiting: number;
+  failed: number;
+  /** Binding transactions signed or broadcast again in this run. */
+  submitted: string[];
+}
+
+/** Journal keys of signed stored bindings that are not finalized yet. */
+export async function pendingStoredBindings(journal: JournalStore) {
+  return (await journal.get<string[]>(PENDING_BINDINGS)) ?? [];
+}
+
+/**
+ * The scheduled binding run, after the caller's preflight. It first
+ * reconciles every pending signed binding, then checks at most `perRun`
+ * candidates, the least recently checked first, so no contributor waits
+ * behind others. One failure never stops the other contributors; it is
+ * counted in `failed`.
+ */
+export async function runStoredBindings(
+  env: ExecutorEnvironment,
+  candidates: BindingCandidate[],
+  now = new Date(),
+  perRun = 10,
+): Promise<BindingRunReport> {
+  const submitted = new Set<string>();
+  const report = {
+    candidates: candidates.length,
+    current: 0,
+    waiting: 0,
+    failed: 0,
+  };
+  for (const key of await pendingStoredBindings(env.JOURNAL)) {
+    try {
+      const result = await reconcileStoredBinding(env, key);
+      if (result.transactionId) submitted.add(result.transactionId);
+      if (result.settled)
+        await env.JOURNAL.transaction(async (store) => {
+          const keys = (await store.get<string[]>(PENDING_BINDINGS)) ?? [];
+          await store.put(
+            PENDING_BINDINGS,
+            keys.filter((item) => item !== key),
+          );
+        });
+    } catch {
+      report.failed += 1;
+    }
+  }
+  const checked = (candidate: BindingCandidate) =>
+    `binding-checked:${candidate.network}:${candidate.vault.toLowerCase()}:${candidate.githubUserId}`;
+  const order = await Promise.all(
+    candidates.map(
+      async (candidate) =>
+        [
+          (await env.JOURNAL.get<number>(checked(candidate))) ?? 0,
+          candidate,
+        ] as const,
+    ),
+  );
+  order.sort((a, b) => a[0] - b[0]);
+  for (const [, candidate] of order.slice(0, perRun)) {
+    await env.JOURNAL.put(checked(candidate), now.getTime());
+    try {
+      const outcome = await bindStoredDestination(env, candidate);
+      if (outcome.state === "submitted") submitted.add(outcome.transactionId);
+      else report[outcome.state] += 1;
+    } catch {
+      report.failed += 1;
+    }
+  }
+  return { ...report, submitted: [...submitted] };
 }
 
 export function createEvmExecutor(env: ExecutorEnvironment): PaymentExecutor {
@@ -943,6 +1087,7 @@ export async function authorizeWalletRotation(
   env: { PAYMENTS_DB: D1Database },
   input: BindingRequest,
   oldClaimDigest: string,
+  attempt: AttemptMode = "required",
 ): Promise<void> {
   const current = await env.PAYMENTS_DB.prepare(
     "SELECT w.chain FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id AND a.github_user_id=w.github_user_id WHERE w.id=? AND w.github_user_id=?",
@@ -953,7 +1098,7 @@ export async function authorizeWalletRotation(
     }>();
   if (!current || !isEscrowChain(current.chain))
     throw new Error("Wallet rotation authorization missing");
-  await authorizeRegistry(env, input, current.chain);
+  await authorizeRegistry(env, input, current.chain, attempt);
   const lineage =
     "WITH RECURSIVE lineage(id,supersedes_claim_id,record_sha256,depth) AS (SELECT id,supersedes_claim_id,record_sha256,0 FROM wallet_claims WHERE id=? AND github_user_id=? AND chain=? UNION ALL SELECT w.id,w.supersedes_claim_id,w.record_sha256,l.depth+1 FROM wallet_claims w JOIN lineage l ON l.supersedes_claim_id=w.id WHERE w.github_user_id=? AND w.chain=? AND l.depth<100) ";
   const args = [

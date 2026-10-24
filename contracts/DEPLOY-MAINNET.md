@@ -629,9 +629,11 @@ minutes. For each one it checks the award, the GitHub actor, the claim
 digest and the wallet signature again, then submits `bindDestination` with
 the identity key. It journals the signed transaction before the first
 broadcast. When a broadcast result is unknown, the next run broadcasts the
-same bytes again and never signs a second binding for that version. A
-failed binding makes the cron run fail in the Worker logs. Slop does not
-submit the payout: `pay` is permissionless (step 8 below).
+same bytes again and never signs a second binding for that version. It
+checks at most 10 contributors per run. A failed binding makes the cron run
+fail in the Worker logs. The attester refuses `/v1/pay`; the cron run is its
+only binding path. Slop does not submit the payout: `pay` is permissionless
+(step 8 below).
 
 #### Base test payout, owner sequence
 
