@@ -5,23 +5,29 @@ const attempt = (value: string) => /^value:[a-f0-9-]{36}$/.test(value);
 
 /** One atomic admission check across all installations. The caller supplies an
  * operator-approved allowance and a conservative maximum for this attempt.
+ * A null monthly allowance explicitly means alerts only, without a monthly cap.
+ * Per-attempt accounting and duplicate protection still apply.
  * A retry cannot reuse a reservation as permission for another provider call.
  */
 export async function reserveValueBudget(
   db: D1Database,
   attemptId: string,
   maximumMicroUsd: number,
-  approvedMonthlyMicroUsd: number,
+  approvedMonthlyMicroUsd: number | null,
   at = new Date(),
 ): Promise<boolean> {
   if (
     !attempt(attemptId) ||
     !positive(maximumMicroUsd) ||
-    !positive(approvedMonthlyMicroUsd) ||
+    (approvedMonthlyMicroUsd !== null && !positive(approvedMonthlyMicroUsd)) ||
     !Number.isFinite(at.getTime())
   )
     throw new Error("Explicit valid value inference budget is required");
-  if (maximumMicroUsd > approvedMonthlyMicroUsd) return false;
+  if (
+    approvedMonthlyMicroUsd !== null &&
+    maximumMicroUsd > approvedMonthlyMicroUsd
+  )
+    return false;
   const stamp = at.toISOString();
   const row = await db
     .prepare(
@@ -36,7 +42,7 @@ export async function reserveValueBudget(
        ) INSERT INTO slopbot_value_budget_reservations
          (attempt_id,month,reserved_micro_usd,approved_limit_micro_usd,reserved_at)
        SELECT ?2,?1,?3,?4,?5 FROM used,held
-       WHERE used.cost<=?4-?3 AND held.cost<=?4-?3-used.cost
+       WHERE (?4 IS NULL OR (used.cost<=?4-?3 AND held.cost<=?4-?3-used.cost))
        AND NOT EXISTS(SELECT 1 FROM slopbot_value_budget_reservations WHERE attempt_id=?2)
        RETURNING attempt_id`,
     )
