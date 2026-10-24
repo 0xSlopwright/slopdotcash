@@ -1979,8 +1979,11 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
     grossMicro: String((3 - i) * 10_000_000),
     sourceDigest: Buffer.from(hash(`source:${name}`)).toString("hex"),
   }));
-  // The owner consumes leaf B's source before the month is admitted.
+  // The owner consumes leaf B's source before the allocation freezes.
   await commit("leaf-b", 999, 1);
+  const consumedAt = await chainTime();
+  while ((await chainTime()) <= consumedAt) await sleep(500);
+  const frozenAt = String(await chainTime());
   const root = solanaAllocationRoot(entries),
     total = solanaAllocationTotal(entries);
   const nodeSigner = (keypair) => {
@@ -2005,6 +2008,7 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
     period,
     root,
     total,
+    frozenAt,
     Buffer.from(network).toString("hex"),
   );
   const config = {
@@ -2056,6 +2060,7 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
       deployment: config,
       allocationRoot: root,
       totalGrossBase: total,
+      frozenAt,
       entries,
       messageHex: Buffer.from(signed).toString("hex"),
     },
@@ -2141,6 +2146,7 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
         month,
         origin: pda(seed("origin"), key(project), digest),
         settled: pda(seed("settled"), key(month), digest),
+        monthlySource: pda(seed("monthly-source"), key(project), digest),
         systemProgram: SystemProgram.programId,
       },
       tail = [bn(entry.githubUserId), bn(entry.grossMicro), index, 3, proof];
@@ -2155,7 +2161,7 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
             })
         : program.methods
             .releaseMonthlyAward(n, [...digest], ...tail)
-            .accountsStrict(shared)
+            .accountsStrict({ ...shared, obligation: null })
     )
       .signers([stranger])
       .rpc();

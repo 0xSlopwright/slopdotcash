@@ -41,7 +41,7 @@ import {
   createSolanaExecutor,
   preflightSolanaDeployment,
 } from "./solana";
-import { submitSolanaMonthly } from "./solana-monthly";
+import { freezeSolanaMonthly, submitSolanaMonthly } from "./solana-monthly";
 
 export { createEvmAttester, createEvmExecutor } from "./core";
 
@@ -146,6 +146,9 @@ export class PaymentSignerJournal {
               },
               authorization,
               new URL(request.url).searchParams.get("admit") !== "false",
+              // Settle every remaining leaf promptly after admission, bounded
+              // per call by Worker subrequest limits.
+              16,
             ),
           );
         }
@@ -239,6 +242,14 @@ export class PaymentSignerJournal {
                 await preflightEvmDeployment(this.env, target);
               else await preflightSolanaDeployment(this.env, target);
             },
+            freeze: async (plan) =>
+              freezeSolanaMonthly(
+                await preflightSolanaDeployment(this.env, {
+                  network: input.network,
+                  vault: plan.deployment.vault,
+                }),
+                plan,
+              ),
             sign: async (plan) => {
               if (plan.family === "evm") {
                 const key = this.env[secrets.evmSecret];
