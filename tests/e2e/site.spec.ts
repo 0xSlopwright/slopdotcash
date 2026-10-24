@@ -342,7 +342,10 @@ test("discovers projects and one points-ranked homepage leaderboard", async ({
   await expect(
     leaderboard.getByRole("link", { name: firstLogin, exact: true }),
   ).toBeVisible();
-  await expect(page.locator(".hero-typewriter-caret")).toBeHidden();
+  // Each rotating phrase reserves its own caret; reduced motion hides all.
+  const carets = page.locator(".hero-typewriter-caret");
+  await expect(carets).not.toHaveCount(0);
+  for (const caret of await carets.all()) await expect(caret).toBeHidden();
   await expect(
     page.locator("#projects").getByRole("link", { name: "Add a project" }),
   ).toHaveAttribute("href", "/projects/new");

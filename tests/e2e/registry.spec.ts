@@ -14,6 +14,7 @@ import AxeBuilder from "@axe-core/playwright";
 import {
   type APIRequestContext,
   expect,
+  type Locator,
   type Page,
   test,
 } from "@playwright/test";
@@ -257,6 +258,25 @@ function observe(page: Page) {
       errors.push(message.text());
   });
   return errors;
+}
+
+/** One setup check shows its state badge and, under Check details, its message. */
+async function expectSetupCheck(
+  setup: Locator,
+  check: "GitHub access" | "Slopbot" | "Security scan",
+  state: string,
+  message: string,
+) {
+  const badge = setup
+    .locator(".setup-checks dt", { hasText: check })
+    .locator("xpath=following-sibling::dd[1]");
+  await expect(badge).toBeVisible();
+  await expect(badge).toHaveText(state);
+  await expect(
+    setup
+      .locator(".setup-details dt", { hasText: check })
+      .locator("xpath=following-sibling::dd[1]"),
+  ).toHaveText(message);
 }
 
 async function expectAccessible(page: Page) {
@@ -1359,12 +1379,18 @@ test("an owner installs Slopbot before creation and resumes setup; a failed scan
   await expect(created.locator("h2")).toHaveText(
     "Setup status: Waiting for the security scan",
   );
-  await expect(created.getByText("Confirmed", { exact: true })).toBeVisible();
-  await expect(created.getByText("Queued", { exact: true })).toBeVisible();
-  await expect(created).toContainText(
+  await expectSetupCheck(
+    created,
+    "GitHub access",
+    "Confirmed",
     `@e2e-owner has admin access to ${project.repository}.`,
   );
-  await expect(created).toContainText("The security scan is queued.");
+  await expectSetupCheck(
+    created,
+    "Security scan",
+    "Queued",
+    "The security scan is queued. Nothing is needed from you.",
+  );
   await expectAccessible(page);
 
   // Resumed setup: the owner checks again from "Your projects" on a new
@@ -1377,11 +1403,16 @@ test("an owner installs Slopbot before creation and resumes setup; a failed scan
   await expect(resumed.locator("h2")).toHaveText(
     "Setup status: Waiting for the security scan",
   );
-  await expect(resumed).toContainText(
+  await expectSetupCheck(
+    resumed,
+    "GitHub access",
+    "Confirmed",
     `@e2e-owner has admin access to ${project.repository}.`,
   );
-  await expect(resumed.getByText("Installed", { exact: true })).toBeVisible();
-  await expect(resumed).toContainText(
+  await expectSetupCheck(
+    resumed,
+    "Slopbot",
+    "Installed",
     `Slopbot is installed on ${project.repository}.`,
   );
 
@@ -1467,11 +1498,11 @@ test("an owner installs Slopbot before creation and resumes setup; a failed scan
   await page.reload({ waitUntil: "networkidle" });
   const managed = page.locator(".project-setup-status");
   await expect(managed.locator("h2")).toHaveText("Setup status: Action needed");
-  await expect(
-    managed.getByText("Not confirmed", { exact: true }),
-  ).toBeVisible();
-  await expect(managed).toContainText(
-    `@e2e-owner has read access to ${project.repository}. Write, maintain or admin access is required.`,
+  await expectSetupCheck(
+    managed,
+    "GitHub access",
+    "Not confirmed",
+    `@e2e-owner has read access to ${project.repository}. Write, maintain or admin access is required. Ask a maintainer with that access to finish setup.`,
   );
   await page
     .getByRole("textbox", { name: "Short description", exact: true })
@@ -1583,7 +1614,10 @@ test("an applicant publishes an application stored before self-service setup wit
   await expect(entry.locator(".project-setup-status h2")).toHaveText(
     "Setup status: Waiting for the security scan",
   );
-  await expect(entry.locator(".project-setup-status")).toContainText(
+  await expectSetupCheck(
+    entry.locator(".project-setup-status"),
+    "GitHub access",
+    "Confirmed",
     `@e2e-owner has admin access to ${project.repository}.`,
   );
   expect(await listedProject(page, project.id)).toMatchObject({
