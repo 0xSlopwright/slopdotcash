@@ -693,6 +693,17 @@ type Analysis = {
   retryable: boolean;
 };
 
+/** Slopbot's drafted resolution of the open appeal; a moderator decides. */
+type AppealTriage = {
+  state: "running" | "complete" | "failed" | "unavailable";
+  model: string | null;
+  proposedOutcome: "uphold" | "return" | null;
+  rationale: string | null;
+  confidence: number | null;
+  escalationReasons: string[];
+  retryable: boolean;
+};
+
 type SecurityCase = {
   id: string;
   projectId: string;
@@ -741,6 +752,7 @@ type SecurityCase = {
   reporter?: { githubId: string; githubLogin: string };
   payee?: { githubLogin: string };
   analysis?: Analysis | null;
+  appealTriage?: AppealTriage | null;
   awardFunds?: {
     currency: "USD" | "USDC";
     decimals: number;
@@ -2237,6 +2249,104 @@ function AnalysisPanel({
   );
 }
 
+const ESCALATION_LABELS: Record<string, string> = {
+  "private-security-case": "Every private security case goes to a moderator",
+  "confidence-below-floor": "Slopbot's confidence is below 0.9",
+};
+
+/**
+ * Slopbot's first triage of an open appeal (PRD section 8). It is a draft
+ * for the moderator who decides; it never decides the appeal.
+ */
+function AppealTriagePanel({
+  record,
+  onRetry,
+}: {
+  record: SecurityCase;
+  onRetry: () => void;
+}) {
+  const triage = record.appealTriage ?? null;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const retry = () => {
+    setBusy(true);
+    setError(null);
+    projectApiRequest<{ case: SecurityCase }>(
+      "POST",
+      `security-cases/${encodeURIComponent(record.id)}/actions`,
+      {
+        action: "triage-appeal",
+        expectedRevision: record.revision,
+        idempotencyKey: requestKey(),
+      },
+    ).then(
+      () => {
+        setBusy(false);
+        onRetry();
+      },
+      (caught: unknown) => {
+        setBusy(false);
+        setError(errorMessage(caught));
+      },
+    );
+  };
+  return (
+    <section aria-labelledby={`appeal-triage-${record.id}`}>
+      <h4 id={`appeal-triage-${record.id}`}>Slopbot appeal triage</h4>
+      {triage === null ? (
+        <p className="admin-status">No appeal triage yet.</p>
+      ) : triage.state === "running" ? (
+        <p aria-live="polite" className="admin-status">
+          Slopbot is drafting a resolution…
+        </p>
+      ) : triage.state === "complete" ? (
+        <>
+          <dl className="admin-facts">
+            <Fact term="Drafted resolution">
+              {triage.proposedOutcome === "return"
+                ? "Return the case for a new technical review"
+                : "Keep the decision"}
+            </Fact>
+            <Fact term="Confidence">
+              {triage.confidence === null
+                ? "—"
+                : `${Math.round(triage.confidence * 100)}%`}
+            </Fact>
+            <Fact term="Escalated to a moderator">
+              {triage.escalationReasons
+                .map((reason) => ESCALATION_LABELS[reason] ?? reason)
+                .join("; ")}
+            </Fact>
+          </dl>
+          <p>{triage.rationale}</p>
+          <p className="field-hint">
+            A draft from {triage.model ?? "Slopbot"}. The appeal text can try to
+            influence it; a moderator decides the appeal.
+          </p>
+        </>
+      ) : (
+        <p className="admin-status">
+          {triage.state === "unavailable"
+            ? "The appeal triage was unavailable: no analysis model is configured. A moderator decides without a draft."
+            : "The appeal triage failed. A moderator decides without a draft."}
+        </p>
+      )}
+      {record.allowedActions.includes("triage-appeal") ? (
+        <button
+          className="text-button"
+          disabled={busy}
+          onClick={retry}
+          type="button"
+        >
+          <RotateCcw aria-hidden="true" />{" "}
+          {busy ? "Starting…" : "Run the appeal triage again"}
+        </button>
+      ) : null}
+      <FormError message={error} />
+    </section>
+  );
+}
+
 /** Owner and reviewer decisions shown at once; access tools stay folded. */
 const PRIMARY_ACTIONS = [
   "request-information",
@@ -2422,6 +2532,15 @@ function CaseDetail({
       </details>
       {owner ? (
         <AnalysisPanel
+          onRetry={() => {
+            reload();
+            onChanged();
+          }}
+          record={record}
+        />
+      ) : null}
+      {owner && record.appealState === "open" ? (
+        <AppealTriagePanel
           onRetry={() => {
             reload();
             onChanged();

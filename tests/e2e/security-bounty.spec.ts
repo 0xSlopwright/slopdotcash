@@ -1152,6 +1152,86 @@ test("private security bounty programs keep cases restricted from intake to awar
       receiptState: "disputed",
       allowedActions: ["decide-appeal"],
     });
+    // PRD section 8: Slopbot triages the appeal first and drafts a
+    // resolution; a private security case always escalates to a moderator.
+    await expect
+      .poll(
+        async () =>
+          (
+            (
+              await api(
+                request,
+                "GET",
+                `security-cases/${caseB}`,
+                TOKENS.dispute,
+              )
+            ).body.case as { appealTriage: { state: string } | null }
+          ).appealTriage?.state,
+      )
+      .toBe("complete");
+    const triaged = (
+      await api(request, "GET", `security-cases/${caseB}`, TOKENS.dispute)
+    ).body.case as {
+      projectId: string;
+      advisory: { ghsa: string };
+      allowedActions: string[];
+      appealTriage: Record<string, unknown>;
+    };
+    expect(triaged.appealTriage).toMatchObject({
+      state: "complete",
+      provider: "surplus",
+      model: "claude-opus-5.5",
+      promptRevision: "slop-security-appeal-triage-1",
+      proposedOutcome: "return",
+      confidence: 0.72,
+      escalationReasons: ["private-security-case", "confidence-below-floor"],
+    });
+    expect(triaged.allowedActions).toEqual(["decide-appeal"]);
+    // The reporter's own view shows no draft.
+    expect(
+      (
+        await api(
+          request,
+          "GET",
+          `security-cases/${caseB}`,
+          TOKENS["reporter-b"],
+        )
+      ).body.case,
+    ).not.toHaveProperty("appealTriage");
+    const context = await browser.newContext({
+      viewport: test.info().project.use.viewport,
+      recordVideo: { dir: test.info().outputPath("appeal-triage-video") },
+    });
+    const page = await context.newPage();
+    const errors = observe(page);
+    await signIn(page, TOKENS.dispute);
+    await page.goto("/security", { waitUntil: "networkidle" });
+    await page
+      .getByRole("button", {
+        name: new RegExp(`^${triaged.projectId} ${triaged.advisory.ghsa} `),
+      })
+      .click();
+    const panel = page.getByRole("region", { name: "Slopbot appeal triage" });
+    await expect(panel).toContainText(
+      "Return the case for a new technical review",
+    );
+    await expect(panel).toContainText("72%");
+    await expect(panel).toContainText(
+      "Every private security case goes to a moderator; Slopbot's confidence is below 0.9",
+    );
+    await expect(panel).toContainText(
+      "Fixture draft: the appeal names a separate withdrawal path",
+    );
+    await expect(
+      panel.getByRole("button", { name: "Run the appeal triage again" }),
+    ).toHaveCount(0);
+    await expectAccessible(page);
+    await page.screenshot({
+      path: test.info().outputPath("appeal-triage.png"),
+      fullPage: true,
+    });
+    expect(errors).toEqual([]);
+    await context.close();
     // The technical decider is not a dispute reviewer.
     expect(
       (
