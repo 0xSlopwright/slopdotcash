@@ -81,7 +81,7 @@ retained evidence only for a clean result: the quarantine is recorded and the
 models are not called again on every pass. A published attempt is journaled, so a
 later pass never sends it again; an uncertain or rejected attempt waits for
 an operator. The pass removes the acquired bytes after each assessment. It
-never executes repository content, never confirms malice and never releases
+never executes repository content on its host, never confirms malice and never releases
 a quarantined artifact.
 
 The source-inventory gaps of the historical secure-VM contract that this scan
@@ -209,3 +209,18 @@ VM.
 | Isolated runner | Owner decision D16: Cloudflare Sandboxes/Containers, one disposable sandbox per risky artifact, with `enableInternet: false` set explicitly and no secrets. Adapting this worker from the Bubblewrap host to that runner is follow-up work. |
 | Specialist authority | Owner decision D3: moderators confirm malice and release quarantined artifacts. A model label alone cannot; a signed malicious result restricts the project until a moderator decides. |
 | Live acceptance | Clean, incomplete, malicious, flag and reinstatement paths on staging with the real services. |
+
+### Private artifact execution
+
+The scan service sends acquired Linux x86-64 native artifacts to the signed
+private sandbox route before model review. It requires a released image identity,
+adds execution output to the bounded review inventory, and submits each exact
+execution response to private evidence storage. Clean publication requires retained
+evidence; an incomplete publication records a storage failure and stays quarantined.
+A runner failure leaves the assessment pending. Unsupported artifacts and incomplete output remain explicit coverage
+gaps. Execution does not release quarantine or confirm malice. The controller
+never executes repository content on its host.
+
+The disposable runner and release requirements are documented in
+[the sandbox guide](../vetting-sandbox/README.md). Native Linux isolation and live
+provider qualification remain required before production activation.

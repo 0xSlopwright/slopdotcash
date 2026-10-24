@@ -7,14 +7,13 @@
  * publishes the result once.
  *
  * A service failure (an unavailable queue, source or provider) publishes
- * nothing and leaves the assessment pending, so the next pass retries it. A
- * clean result is never published without its retained evidence. An
- * incomplete result is published even when the evidence store fails, so the
- * quarantine is recorded and the models are not called again on every pass
- * (the intake requires retained evidence only for a clean result). A
- * published attempt is journaled and never sent again; an
- * uncertain or rejected attempt waits for an operator. The service never
- * executes repository content, never confirms malice and never releases a
+ * nothing and leaves the assessment pending, so the next pass retries it.
+ * A clean result is never published without its retained evidence. An
+ * incomplete result records quarantine even when evidence storage fails.
+ * A published attempt is journaled and never sent again; an uncertain or
+ * rejected attempt waits for an operator. The service executes acquired
+ * native artifacts only through the private disposable sandbox, never on
+ * the controller host. It never confirms malice or releases a
  * quarantined artifact: moderators decide those (owner decision D3).
  */
 import { randomUUID } from "node:crypto";
@@ -27,6 +26,7 @@ import {
   readAcquiredSource,
   type ScanInputFile,
 } from "./bounded-scan";
+import { inspectIsolatedArtifacts } from "./isolated-inspection";
 import { publishResult } from "./publication";
 import {
   acquireQueuedAssessment,
@@ -78,7 +78,12 @@ export type AssessmentOutcome =
       assessmentId: string;
       /** Left pending; the next pass tries again. */
       state: "retry";
-      step: "acquire" | "primary-review" | "specialist-review" | "evidence";
+      step:
+        | "acquire"
+        | "isolated-execution"
+        | "primary-review"
+        | "specialist-review"
+        | "evidence";
     }
   | {
       assessmentId: string;
@@ -266,6 +271,19 @@ async function scanOne(
       return { assessmentId, state: "retry", step: "acquire" };
     }
     const inspection = inspectRepository(inputs);
+    let isolated: Awaited<ReturnType<typeof inspectIsolatedArtifacts>>;
+    try {
+      isolated = await inspectIsolatedArtifacts({
+        connection,
+        files: inputs.files,
+        inspection,
+      });
+    } catch {
+      return { assessmentId, state: "retry", step: "isolated-execution" };
+    }
+    const executionEvidenceSha256s = await Promise.all(
+      isolated.reports.map(sha256Hex),
+    );
     const evidence = new TextDecoder().decode(inspection.inventory);
     const review = (profile: ScannerProfile) =>
       reviewScan({
@@ -290,6 +308,8 @@ async function scanOne(
         completedAt: now().toISOString(),
         primary,
         specialist,
+        execution: isolated.execution,
+        executionEvidenceSha256s,
       });
     let composed = compose(null);
     let specialist = false;
@@ -320,6 +340,12 @@ async function scanOne(
         label: "Reviewed scan inventory",
         contentType: "application/json",
       },
+      ...isolated.reports.map((bytes, index) => ({
+        bytes,
+        kind: "trace" as const,
+        label: `Isolated artifact execution ${index + 1}`,
+        contentType: "application/json",
+      })),
       ...named.map((sha256) => {
         const file = bySha.get(sha256);
         if (!file) throw new Error("A named object was not acquired");

@@ -452,8 +452,8 @@ jobs:
             echo "No repository payment records to import."
           fi
           ./node_modules/.bin/wrangler deploy --config workers/identity/wrangler.staging.toml
-          bun scripts/release-vetting-sandbox.mjs staging
           ./node_modules/.bin/wrangler deploy --config workers/slopbot/wrangler.repository-access-staging.toml
+          bun scripts/release-vetting-sandbox.mjs staging
           node scripts/configure-staging-secrets.mjs
           if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
             bun scripts/release-notify.mjs deploy staging "$RUNNER_TEMP/slop-notify-staging-release"
