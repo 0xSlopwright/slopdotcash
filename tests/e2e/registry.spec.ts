@@ -1666,9 +1666,16 @@ test("an unavailable registry shows an error, never an empty list @registry", as
   await page.route("**/api/v1/projects", (route) =>
     route.fulfill({ status: 503, json: { error: "unavailable" } }),
   );
+  // A trusted build publishes the last good registry from projects:sync, and
+  // a PR build publishes none. This test covers a failure with no last good
+  // registry, so it removes that file in every build. home-cache.spec.ts
+  // covers the stale list.
+  await page.route("**/data/project-registry.json", (route) =>
+    route.fulfill({ status: 404, body: "Not Found" }),
+  );
   await page.goto("/", { waitUntil: "networkidle" });
-  // This build has no synced snapshot to publish as the last good registry,
-  // so the failure is an alert with its status and a retry, never a list.
+  // With no last good registry, the failure is an alert with its status and
+  // a retry, never a list.
   const alert = page.getByRole("alert");
   await expect(alert).toContainText("503");
   await expect(alert.getByRole("button")).toBeVisible();
