@@ -91,6 +91,8 @@ let server: ReturnType<typeof Bun.serve>;
 let config: ScanServiceConfig;
 let resultPublicKeys: string;
 let ids = 0;
+/** The inventory items the primary reviewer last received. */
+let reviewedItems: { id: string; text: string }[] = [];
 /** What the synthetic Surplus provider answers on each transport. */
 let provider: {
   up: boolean;
@@ -110,7 +112,10 @@ const git = (...args: string[]) => {
 };
 
 /** Commits files to the fixture repository; the live pin follows it. */
-async function commit(files: Record<string, string>, message: string) {
+async function commit(
+  files: Record<string, string | Uint8Array>,
+  message: string,
+) {
   for (const [path, text] of Object.entries(files)) {
     await mkdir(join(repository, path, ".."), { recursive: true });
     await writeFile(join(repository, path), text);
@@ -178,6 +183,7 @@ async function surplus(request: Request, path: string): Promise<Response> {
   };
   if (path === "/anthropic/v1/messages") {
     const items = JSON.parse(body.messages?.[0].content ?? "{}").items;
+    reviewedItems = items;
     return Response.json({
       id: "msg_fixture",
       model: body.model,
@@ -223,7 +229,25 @@ const randomId = () =>
   `00000000-0000-4000-8000-${String(++ids).padStart(12, "0")}`;
 const actorOf = (request: Request) =>
   ACTORS[request.headers.get("x-test-actor") ?? ""] ?? null;
+/**
+ * The real disposable runner from `workers/vetting-sandbox`, when the
+ * isolated-artifact CI job starts it. Without it the route answers 503.
+ */
+const SANDBOX_URL = process.env.SLOP_SANDBOX_TEST_URL;
+const sandbox = SANDBOX_URL
+  ? {
+      fetch: async (request: Request) =>
+        fetch(`${SANDBOX_URL}${new URL(request.url).pathname}`, {
+          method: request.method,
+          headers: { "content-type": "application/json" },
+          ...(request.method === "POST"
+            ? { body: await request.arrayBuffer() }
+            : {}),
+        }),
+    }
+  : undefined;
 const vettingDeps = () => ({
+  sandbox,
   evidence: retained.evidence,
   vetting,
   flags,
@@ -845,3 +869,106 @@ test("unsupported artifacts produce an incomplete scan rather than aborting the 
   expect((await activate()).status).toBe(422);
   expect((await runScanPass(config)).assessments).toEqual([]);
 }, 30000);
+
+/**
+ * A harmless static Linux x86-64 program: write(1, "isolated\n") and exit(0).
+ * One read-execute segment at 0x400000; entry 0x400078.
+ */
+function nativeProbe(): Uint8Array {
+  const message = [...new TextEncoder().encode("isolated\n")];
+  const code = [
+    ...[0xb8, 1, 0, 0, 0], // mov eax, 1 (write)
+    ...[0xbf, 1, 0, 0, 0], // mov edi, 1 (stdout)
+    ...[0x48, 0x8d, 0x35, 0x10, 0, 0, 0], // lea rsi, [rip + 16]
+    ...[0xba, message.length, 0, 0, 0], // mov edx, length
+    ...[0x0f, 0x05], // syscall
+    ...[0xb8, 60, 0, 0, 0], // mov eax, 60 (exit)
+    ...[0x31, 0xff], // xor edi, edi
+    ...[0x0f, 0x05], // syscall
+  ];
+  const size = 64 + 56 + code.length + message.length;
+  const bytes = new Uint8Array(size);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1]);
+  view.setUint16(16, 2, true); // ET_EXEC
+  view.setUint16(18, 0x3e, true); // x86-64
+  view.setUint32(20, 1, true);
+  view.setBigUint64(24, 0x400078n, true);
+  view.setBigUint64(32, 64n, true);
+  view.setUint16(52, 64, true);
+  view.setUint16(54, 56, true);
+  view.setUint16(56, 1, true);
+  view.setUint32(64, 1, true); // PT_LOAD
+  view.setUint32(68, 5, true); // read + execute
+  view.setBigUint64(80, 0x400000n, true);
+  view.setBigUint64(88, 0x400000n, true);
+  view.setBigUint64(96, BigInt(size), true);
+  view.setBigUint64(104, BigInt(size), true);
+  view.setBigUint64(112, 0x1000n, true);
+  bytes.set([...code, ...message], 120);
+  return bytes;
+}
+
+test.skipIf(!SANDBOX_URL)(
+  "a native artifact runs only in the real disposable sandbox and stays quarantined",
+  async () => {
+    const probe = nativeProbe();
+    await commit(
+      {
+        "bin/probe": probe,
+        "artifacts/unsupported.exe": "MZharmless unsupported fixture",
+      },
+      "Add native and unsupported artifacts",
+    );
+    const report = await runScanPass(config);
+    expect(report.assessments).toHaveLength(1);
+    expect(report.assessments[0]).toMatchObject({
+      state: "published",
+      disposition: "incomplete",
+      outcome: "accepted",
+    });
+    const { assessmentId } = report.assessments[0];
+    const result = (await vetting.getAssessment(assessmentId))?.result;
+    if (!result || !isScanResult(result)) throw new Error("no bounded result");
+    // The released identity comes from the runner, never from the controller.
+    expect(result.execution).toMatchObject({
+      isolation: "sandbox",
+      imageSha256: process.env.RUNNER_IMAGE_SHA256,
+      secretsProvided: false,
+      egress: "default-deny",
+    });
+    const native = result.artifacts.find((item) => item.path === "bin/probe");
+    expect(native).toMatchObject({
+      sha256: digest(probe),
+      state: "quarantined",
+      requestedExecution: true,
+    });
+    expect(
+      result.artifacts.find(
+        (item) => item.path === "artifacts/unsupported.exe",
+      ),
+    ).toMatchObject({ state: "quarantined", requestedExecution: false });
+    expect(result.visibilityGaps).toContain(
+      "Isolated analysis does not yet support these artifacts: 1 artifact records",
+    );
+    // The reviewer read the bounded execution output as an inventory item.
+    expect(reviewedItems.some((item) => item.id.startsWith("execution:"))).toBe(
+      true,
+    );
+    expect(
+      reviewedItems.find((item) => item.id.startsWith("execution:"))?.text,
+    ).toContain('"stdout":"isolated\\n"');
+    // The exact runner response is retained as private evidence.
+    const labels = sqlite
+      .query(
+        "SELECT label FROM vetting_evidence_objects WHERE assessment_id = ?",
+      )
+      .all(assessmentId) as { label: string }[];
+    expect(labels.map((row) => row.label)).toContain(
+      "Isolated artifact execution 1",
+    );
+    expect((await activate()).status).toBe(422);
+    expect((await runScanPass(config)).assessments).toEqual([]);
+  },
+  120000,
+);

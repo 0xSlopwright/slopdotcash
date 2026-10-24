@@ -22,13 +22,18 @@ jobs:
         with:
           bun-version: "1.3.14"
       - run: bun install --frozen-lockfile --ignore-scripts
-      - name: Exercise signed requests and real disposable containers
+      - name: Exercise signed requests, real disposable containers and the scan controller
         env:
           CI: "true"
           SLOP_SANDBOX_TEST_URL: http://127.0.0.1:8896
         run: |
           set -euo pipefail
-          ./node_modules/.bin/wrangler dev --config workers/vetting-sandbox/wrangler.toml --ip 127.0.0.1 --port 8896 > "$RUNNER_TEMP/sandbox.log" 2>&1 &
+          # The locally built image ID and checkout identify this CI runner.
+          # They do not prove a deployed Cloudflare image.
+          image="$(docker build --quiet workers/vetting-sandbox)"
+          export RUNNER_IMAGE_SHA256="${image#sha256:}"
+          ./node_modules/.bin/wrangler dev --config workers/vetting-sandbox/wrangler.toml --ip 127.0.0.1 --port 8896 \
+            --var "RUNNER_IMAGE_SHA256:$RUNNER_IMAGE_SHA256" --var "SLOP_RELEASE_SHA:$GITHUB_SHA" > "$RUNNER_TEMP/sandbox.log" 2>&1 &
           runner_pid=$!
           trap 'kill "$runner_pid" 2>/dev/null || true' EXIT
           for attempt in $(seq 1 120); do
@@ -38,3 +43,4 @@ jobs:
           done
           curl --fail --silent "$SLOP_SANDBOX_TEST_URL/health"
           bun run test:vetting:sandbox
+          bun test ./scripts/vetting-scan-service.test.ts --test-name-pattern "native artifact runs only in the real disposable sandbox"
