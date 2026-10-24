@@ -759,8 +759,9 @@ export async function onRequest(context: PagesContext): Promise<Response> {
             actor,
             context.env.SLOP_GITHUB_READ_TOKEN,
           ),
-        // Display only; the payments Worker applies the cutoff and fails
-        // loudly on a malformed value.
+        // The cutoff display and the owner's cutoff lock. A malformed value
+        // turns both off; the payments Worker then fails loudly and freezes
+        // nothing automatically, so the allocations stay owner-controlled.
         schedule: () => {
           try {
             return parseMonthlySchedule(context.env.MONTHLY_PAYMENT_SCHEDULE);
