@@ -7,6 +7,7 @@ import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { loadPenaltyDebits } from "../../scripts/penalty-ingestion";
+import { ValueFeedUnavailableError } from "../../scripts/value-ingestion";
 import { createLeaderboardSnapshot } from "../../src/lib/leaderboard";
 import type {
   GitHubActor,
@@ -815,10 +816,12 @@ test("a recorded debit lowers only its project month on the published Slop Score
       const snapshot = createLeaderboardSnapshot(
         scoreInput(await loadPenaltyDebits(graphql, transport)),
       );
-      const month = (projectId: string, cycle: string) =>
+      const leader = (projectId: string, cycle: string) =>
         createPaymentProjectView(snapshot, projectId, cycle).leaders.find(
-          (leader) => leader.actor.id === SLOP_AUTHOR.id,
-        )?.scoreThirds;
+          (entry) => entry.actor.id === SLOP_AUTHOR.id,
+        );
+      const month = (projectId: string, cycle: string) =>
+        leader(projectId, cycle)?.scoreThirds;
       return {
         total: snapshot.leaders.find(
           (leader) => leader.actor.id === SLOP_AUTHOR.id,
@@ -833,6 +836,8 @@ test("a recorded debit lowers only its project month on the published Slop Score
         asiSeptember: month("asi", "2026-09"),
         asiOctober: month("asi", "2026-10"),
         elizaOctober: month("eliza", "2026-10"),
+        // The monthly payment weight follows the debited score.
+        asiOctoberWeight: leader("asi", "2026-10")?.adjustedWeight,
       };
     };
     // Before any close: September micro 1, October small 3 in each project.
@@ -842,6 +847,7 @@ test("a recorded debit lowers only its project month on the published Slop Score
       asiSeptember: 1,
       asiOctober: 3,
       elizaOctober: 3,
+      asiOctoberWeight: 30_000,
     });
     expect(lookups).toBe(0);
 
@@ -867,6 +873,7 @@ test("a recorded debit lowers only its project month on the published Slop Score
       asiSeptember: 1,
       asiOctober: 0,
       elizaOctober: 3,
+      asiOctoberWeight: 0,
     });
     // A replayed review adds no second debit.
     await run.review();
@@ -883,6 +890,7 @@ test("a recorded debit lowers only its project month on the published Slop Score
       asiSeptember: 1,
       asiOctober: 3,
       elizaOctober: 3,
+      asiOctoberWeight: 30_000,
     });
   });
 });
@@ -943,5 +951,13 @@ test("the penalty route serves identifiers and outcomes only, and the producer r
         (url, init) => run.fetchWorker(new Request(url, init)),
       ),
     ).rejects.toThrow("does not match its recorded item or author");
+    // A release that runs before Slopbot serves this route keeps the last
+    // published snapshot (owner decision D2) instead of assuming no debits.
+    await expect(
+      loadPenaltyDebits(
+        async () => ({ nodes: [] }),
+        async () => new Response("not found", { status: 404 }),
+      ),
+    ).rejects.toBeInstanceOf(ValueFeedUnavailableError);
   });
 });

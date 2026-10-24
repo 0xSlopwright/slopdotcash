@@ -93,7 +93,11 @@ export async function fetchPenaltyHistory(
         cache: "no-store",
         signal: AbortSignal.timeout(30_000),
       });
+      // A release generates the leaderboard before it deploys Slopbot, so
+      // the first release with this reader finds no route yet (404). That
+      // run keeps the last published snapshot; the next run reads the route.
       if (
+        response.status === 404 ||
         response.status === 408 ||
         response.status === 429 ||
         response.status >= 500

@@ -249,13 +249,19 @@ only, with no verdict, review or model text. The leaderboard producer
 unreversed row to its live GitHub item and checks the recorded repository
 and author IDs. `createLeaderboardSnapshot` then adds one `penalty-debit`
 ledger event per row. The event takes at most the author's credit in the
-same project and UTC month, so that month never goes below zero. A reversed
+same project and UTC month, so that month never goes below zero. The
+monthly payment weight falls by the same share as the score. A reversed
 row is not applied, so the next publication restores the month. A closed
 cycle keeps its frozen source snapshot, so a debit never changes an
-approved, scheduled or paid award. Points keep earned awards only. An outage
-of this route is a value-feed outage (owner decision D2); any other failure
-stops the publication. Evidence: `bun test
-workers/slopbot/penalty-appeal.test.ts`.
+approved, scheduled or paid award. Points keep earned awards only.
+
+An outage of this route is a value-feed outage (owner decision D2): the
+release keeps the last published snapshot with its stale label. A release
+generates the leaderboard before it deploys Slopbot, so the route answers
+404 until the first production release with this route completes; those
+runs also keep the last snapshot. Any other failure stops the publication.
+Evidence: `bun test workers/slopbot/penalty-appeal.test.ts` and
+`tests/e2e/penalty-debit.spec.ts`.
 
 ## Not yet implemented
 

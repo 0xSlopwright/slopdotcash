@@ -556,17 +556,32 @@ export function createProjectView(
       (total, event) => total + (event.scoreThirds ?? event.points * 3),
       0,
     );
-    const weightedThirdBasisPoints = events.reduce(
+    const credited = events.filter(
+      (event) => event.category !== "penalty-debit",
+    );
+    const creditedThirds = credited.reduce(
+      (total, event) => total + (event.scoreThirds ?? event.points * 3),
+      0,
+    );
+    const creditedWeight = credited.reduce(
       (total, event) =>
         total +
         (event.scoreThirds ?? event.points * 3) *
           (10_000 + (event.evidenceBonusBasisPoints ?? 0)),
       0,
     );
+    // A penalty debit lowers the payment weight by the same share as the
+    // score, bonus included, so a month at zero score has zero weight.
+    const weightedThirdBasisPoints =
+      creditedThirds === rawThirds
+        ? creditedWeight
+        : creditedThirds === 0
+          ? 0
+          : Math.floor((creditedWeight * rawThirds) / creditedThirds);
     const computeBonus =
-      rawThirds === 0
+      creditedThirds === 0
         ? 0
-        : Math.floor(weightedThirdBasisPoints / rawThirds) - 10_000;
+        : Math.floor(creditedWeight / creditedThirds) - 10_000;
     const score = Math.floor(rawThirds / 3);
     const points = {
       "merged-pull-request": 0,
