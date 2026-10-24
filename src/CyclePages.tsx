@@ -3,8 +3,13 @@ import { useEffect, useState } from "react";
 import { Link } from "./Link";
 import type { CycleIndexEntry } from "./lib/cycle-index";
 import { cycleSettlementReminder } from "./lib/funding-reminders";
+import {
+  monthlyCutoff,
+  PRD_MONTHLY_SCHEDULE,
+} from "./lib/payments/monthly-allocation";
 import { createProjectView, type ProjectView } from "./lib/project-view";
 import { findProject, type ProjectDefinition } from "./lib/projects.mjs";
+import { resolveRewardCapMinor } from "./lib/reward-cap.mjs";
 import type { CycleIndexState } from "./lib/use-cycle-index";
 import type { DataState } from "./lib/use-snapshot";
 import {
@@ -16,6 +21,7 @@ import {
   ExternalLinkAnchor,
   formatCycleMonth,
   formatDate,
+  formatDateTime,
   formatMicroUsdc,
   NotFound,
   stale,
@@ -71,6 +77,8 @@ export function CyclePage({
     record?.state ?? (view?.cycle.status === "live" ? "live" : "closed");
   const reminder = cycleSettlementReminder({
     closesAt: to,
+    capMinor:
+      record?.reward.capMinor ?? resolveRewardCapMinor(project, cycleId),
     kind:
       record?.kind ??
       (view?.reward.kind === "external-prize-share"
@@ -81,6 +89,9 @@ export function CyclePage({
     state: record?.state ?? (view?.cycle.status === "live" ? "live" : "review"),
   });
   const reviewClosed = record ? awaitingApproval(record) : false;
+  // From 2026-11, owners change allocations until the monthly cutoff instead
+  // of a 14-day review (PRD section 6). Earlier records keep their review.
+  const ownerCutoff = monthlyCutoff(PRD_MONTHLY_SCHEDULE, cycleId);
   const currentStage =
     record?.state === "paid" || record?.state === "settlement-planned"
       ? 3
@@ -160,7 +171,12 @@ export function CyclePage({
           role="status"
         >
           <CircleAlert aria-hidden="true" size={18} />
-          <span>{reminder.message}</span>
+          <span>
+            {reminder.message}{" "}
+            <Link href={`/projects/${project.slug}/funding`}>
+              View project funding
+            </Link>
+          </span>
         </div>
       ) : null}
       {record?.kind === "external-prize-share" ? (
@@ -176,12 +192,17 @@ export function CyclePage({
         <ol className="cycle-status-grid" aria-label="Cycle progress">
           {[
             ["Contribution", `${formatDate(from)}–${formatDate(to)}`],
-            [
-              "Review",
-              record?.reviewEndsAt
-                ? `Review ${reviewClosed ? "ended" : "ends"} ${formatDate(record.reviewEndsAt)}`
-                : "Review has not started",
-            ],
+            ownerCutoff
+              ? [
+                  "Owner changes",
+                  `Owner changes ${ownerCutoff.getTime() <= Date.now() ? "closed" : "close"} ${formatDateTime(ownerCutoff.toISOString())}`,
+                ]
+              : [
+                  "Review",
+                  record?.reviewEndsAt
+                    ? `Review ${reviewClosed ? "ended" : "ends"} ${formatDate(record.reviewEndsAt)}`
+                    : "Review has not started",
+                ],
             [
               "Approval",
               record?.approvedAt
@@ -195,7 +216,7 @@ export function CyclePage({
               record?.settledAt
                 ? `Paid ${formatDate(record.settledAt)}`
                 : record?.state === "settlement-planned"
-                  ? "Unsigned plan; payment not verified"
+                  ? "Ready; payment not verified"
                   : "Payment not verified",
             ],
           ].map(([label, description], index) => (
@@ -336,7 +357,7 @@ function CycleArtifacts({ cycle }: { cycle: CycleIndexEntry }) {
     ["Frozen source", cycle.files.sourceSnapshot],
     ["Proposal", cycle.files.proposal],
     ["Approved allocation", cycle.files.allocation],
-    ["Unsigned transfer plan", cycle.files.executionPlan],
+    ["Payment plan", cycle.files.executionPlan],
     ["Verified settlement", cycle.files.settlement],
   ] as const;
   return (

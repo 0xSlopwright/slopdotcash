@@ -6,6 +6,7 @@ import { parseVaultAmount } from "./lib/payments/vault-amount";
 import type { ProjectDefinition } from "./lib/projects.mjs";
 import OwnerCommitment, { recoverOwnerCommitments } from "./OwnerCommitment";
 import { loginHref } from "./Points";
+import { formatDateTime } from "./Presentation";
 
 function previousMonth() {
   const now = new Date();
@@ -35,10 +36,10 @@ const STATE_TEXT: Record<
   NonNullable<MonthlyOwnerView["run"]>["awards"][number]["state"],
   string
 > = {
-  underfunded: "Waiting for free vault funds",
-  excluded: "Excluded from payment: account banned",
-  "awaiting-reservation": "Ready for your reservation",
-  reserved: "Reserved; pays when the contributor's wallet is ready",
+  underfunded: "Underfunded: waiting for free vault funds",
+  excluded: "Excluded: account banned",
+  "awaiting-reservation": "Approved and funded: ready for your reservation",
+  reserved: "Reserved in the vault; payment not yet verified",
   paid: "Paid",
 };
 
@@ -258,7 +259,7 @@ export default function OwnerAwards({
               ? cutoffPassed
                 ? "The cutoff has passed. The automatic process finalizes the current allocations."
                 : view.cutoffAt
-                  ? `Unless you finalize earlier, the current allocations are finalized at ${new Date(view.cutoffAt).toLocaleString()}.`
+                  ? `Unless you finalize earlier, the current allocations are finalized at ${formatDateTime(view.cutoffAt)}.`
                   : "Automatic payment starts with a later month, so finalize this month yourself when it is ready."
               : "Finalize each month yourself."}
             {project.reward.paymentMode !== "enabled" &&
@@ -353,7 +354,7 @@ export default function OwnerAwards({
                 {view.run.trigger === "automatic" ? "automatically" : "by you"}{" "}
                 on{" "}
                 <time dateTime={view.run.frozenAt}>
-                  {new Date(view.run.frozenAt).toLocaleString()}
+                  {formatDateTime(view.run.frozenAt)}
                 </time>
                 .{" "}
                 {view.run.funded

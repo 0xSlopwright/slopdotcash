@@ -163,6 +163,8 @@ test("owner edits monthly allocations privately, finalizes them and keeps sign-i
   cutoffAt = "2026-12-04T00:00:00.000Z";
   await load.click();
   await expect(awards).toContainText("Unless you finalize earlier");
+  // The cutoff is a calendar UTC instant, shown in UTC for every viewer.
+  await expect(awards).toContainText("finalized at Dec 4, 2026, 00:00 UTC.");
   await expect(awards.getByLabel("Award for second-contributor")).toBeEnabled();
   await awards
     .getByRole("button", { name: "Turn off automatic payment" })
@@ -188,7 +190,10 @@ test("owner edits monthly allocations privately, finalizes them and keeps sign-i
     .getByRole("button", { name: "Finalize these awards now" })
     .click();
   await expect(awards).toContainText("Finalized by you");
-  await expect(awards).toContainText("Waiting for free vault funds");
+  await expect(awards).toContainText("Dec 2, 2026, 00:00 UTC");
+  await expect(awards).toContainText(
+    "Underfunded: waiting for free vault funds",
+  );
   await expect(awards.getByLabel("Award for second-contributor")).toHaveCount(
     0,
   );
