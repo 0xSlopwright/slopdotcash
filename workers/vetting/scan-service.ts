@@ -23,6 +23,7 @@ import {
   inspectRepository,
   readQueuedScanInput,
 } from "./bounded-scan";
+import { inspectIsolatedArtifacts } from "./isolated-inspection";
 import { publishResult } from "./publication";
 import {
   acquireQueuedAssessment,
@@ -92,14 +93,14 @@ export type ScanOutcome = {
     | "journaled-earlier"
     | "acquisition-failed"
     | "scan-failed"
+    | "isolated-execution-failed"
     | "retention-failed"
     | "publication-failed";
   disposition: "clean" | "incomplete" | null;
   specialistReviewed: boolean;
   /**
-   * A clean result is never published without retained evidence. An
-   * incomplete result is published even when retention failed, so a
-   * quarantine is recorded and the scan is not repeated every cycle.
+   * No result is published without retained evidence. Storage failures
+   * leave the assessment pending for retry.
    */
   evidence: "retained" | "failed" | null;
   publication: "accepted" | "rejected" | "unknown" | null;
@@ -248,6 +249,13 @@ export async function scanAssessment(
       files: input.files,
       acquisitionGaps: input.acquisitionGaps,
     });
+    outcome.stage = "isolated-execution-failed";
+    const isolated = await inspectIsolatedArtifacts({
+      connection,
+      files: input.files,
+      inspection,
+    });
+    outcome.stage = "scan-failed";
     const evidence = new TextDecoder().decode(inspection.inventory);
     const review = (profile: ScannerProfile) =>
       reviewScan({
@@ -270,6 +278,8 @@ export async function scanAssessment(
         completedAt: now().toISOString(),
         primary,
         specialist,
+        execution: isolated.execution,
+        executionEvidenceSha256s: isolated.reports.map(sha256),
       });
     const primary = await review(deps.primary);
     let composed = compose(primary, null);
@@ -327,6 +337,13 @@ export async function scanAssessment(
         contentType: "application/json",
         bytes: inspection.inventory,
       },
+      ...isolated.reports.map((bytes) => ({
+        sha256: sha256(bytes),
+        kind: "trace" as const,
+        label: "Isolated execution evidence",
+        contentType: "application/json" as const,
+        bytes,
+      })),
       ...lockObjects,
       ...artifactObjects,
     ]).then(
@@ -334,8 +351,7 @@ export async function scanAssessment(
       () => "failed" as const,
     );
     outcome.evidence = await retained;
-    if (outcome.evidence === "failed" && result.disposition === "clean")
-      return outcome;
+    if (outcome.evidence === "failed") return outcome;
 
     outcome.stage = "publication-failed";
     const receipt = await publishResult({

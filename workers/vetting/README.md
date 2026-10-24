@@ -96,10 +96,13 @@ calls the signed refresh, reads the signed queue and, in queue order:
 An assessment whose publication the journal already reserved is skipped, so
 an uncertain earlier attempt is never sent again; an operator reconciles it.
 Each step that fails stops only that assessment, and the next cycle scans it
-again. A clean result is never published without its retained evidence. An
-incomplete result is published even when retention failed, so the
-quarantine is recorded and the scan is not repeated every cycle. The service never executes repository content, so it never needs the
-isolated runner for ordinary source. It never sets a confirmation, so it never
+again. No result is published without its retained evidence. The controller
+never executes repository content on its own host. Acquired Linux x86-64
+native artifacts run through the signed private sandbox route. The controller
+requires a released image identity, adds output to the bounded review inventory,
+and retains the exact execution responses before publication. Unsupported
+formats, oversized artifacts and incomplete output remain coverage gaps.
+Ordinary source does not need isolated execution. It never sets a confirmation, so it never
 publishes `malicious`; a moderator confirms malice.
 
 Run one cycle from an operator host:
@@ -200,6 +203,6 @@ VM.
 | --- | --- |
 | Scanner service deployment | `scan-service.ts` runs the complete cycle. It is not deployed by this source: a scheduled operator host (or the D16 fallback VM) runs it with its Ed25519 key, the public key in `VETTING_RESULT_PUBLIC_KEYS`, `SURPLUS_API_KEY`, the rate cards and the evidence store policy. |
 | Provider and model | Owner decision D16: Surplus `claude-opus-5.5` is the primary model and Surplus `gpt-6.1-sol` is the specialist, only for ambiguous or high-risk results. `surplusScanProfiles` pins both; the operator supplies the key and rate cards. Surplus's returned model name is not independent proof of the served model. |
-| Isolated runner | Owner decision D16: Cloudflare Sandboxes/Containers, one disposable sandbox per risky artifact, with `enableInternet: false` set explicitly and no secrets. Not in this source. Until it exists, a committed binary, archive or install-time download stays quarantined and its result stays incomplete for a moderator. |
+| Isolated runner | Owner decision D16: Cloudflare Sandboxes/Containers, one disposable sandbox per risky artifact, with `enableInternet: false` set explicitly and no secrets. The private runner is integrated for acquired Linux x86-64 native artifacts. Archives, other executable formats and unretrieved downloads remain incomplete. Execution alone never releases quarantine. Live image and service qualification are still required. |
 | Specialist authority | Owner decision D3: moderators confirm malice and release quarantined artifacts. A model label alone cannot; a signed malicious result restricts the project until a moderator decides. |
 | Live acceptance | Clean, incomplete, malicious, flag and reinstatement paths on staging with the real services. |
