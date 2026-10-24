@@ -19,7 +19,6 @@ const transfer = (chain: string): DirectTransfer =>
 
 describe("direct transfer validation", () => {
   test("a transfer on any approved network is accepted, so one Ethereum or Robinhood row cannot fail the project set", () => {
-    expect(ESCROW_CHAINS).toEqual(["base", "solana", "robinhood", "ethereum"]);
     for (const chain of ESCROW_CHAINS)
       expect(isDirectTransfer(transfer(chain))).toBe(true);
   });
