@@ -586,7 +586,7 @@ export function solanaPaymentAdapter(
         throw new Error("Invalid instruction index");
       if (decodeBase58Bytes(input.transactionId).length !== 64)
         throw new Error("Invalid signature");
-      const project = await verifySolanaDeployment(config);
+      await verifySolanaDeployment(config);
       const status = object(
         await rpc(config, "getSignatureStatuses", [
           [input.transactionId],
