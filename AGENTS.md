@@ -241,7 +241,9 @@ Slop-skill participants, excluding maintainers: a slop.cash member whose own
 authenticated Slop run records a `pull_request_opened` event for that exact PR
 (PRD section 11). A copied marker is never proof. An uncertain finding goes to
 the maintainer first; after 7 days without maintainer action, Slopbot applies
-its verdict as a label only and never closes. Slopbot triages each appeal first,
+its verdict as a label only and never closes. A Scam or malicious closure also
+creates one idempotent moderator Inbox notice to review the account (PRD
+section 7 penalty table). Slopbot triages each appeal first,
 and a moderator decides escalated appeals. Do not charge project vaults for bot
 reviews. The current global closure switch stays off until reviewed production
 activation. Document changes alone do not activate closure, payments, or
@@ -321,12 +323,16 @@ automatic monthly distribution.
 ## Participation points
 
 Slop Points are the single contribution and participation unit governed by
-`protocol/points-v1.md`. Welcome and verified X-connection awards are not accepted-work score.
+`protocol/points-v1.md`. From 24 October 2026, grant no welcome or
+X-connection points (PRD section 11, Participation points). Keep every award
+recorded before that date unchanged; never delete, rewrite, or reissue one.
+Earned-point standings and rewards already exclude them. The X connection
+stays a consented profile link with no points.
 Verified payout recognition is fixed per recipient/project/cycle, never per dollar
 or transfer. X or Telegram control never confers GitHub, organization, or payment
 authority; a Telegram connection earns no points (PRD SOC-02).
 Only accepted-work points for the project and period determine reward shares;
-never feed welcome, social or payout-recognition bonuses into rewards. Preserve
+never feed historical participation or payout-recognition bonuses into rewards. Preserve
 historical settlements and compatibility fields without exposing a separate
 score metric. Preserve the append-only journal,
 source coverage, original contribution dates, and distinct recording dates.
@@ -512,7 +518,6 @@ only when genuinely inapplicable. Captured evidence is not committed.
 A local test is not proof of merge. A merge is not proof of deployment. A
 deployment is not proof of provider, device, identity, wallet, or settlement
 availability. Report each boundary precisely.
-
 
 ## Escrow payout migration
 
