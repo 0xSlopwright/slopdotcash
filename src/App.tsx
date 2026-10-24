@@ -972,11 +972,15 @@ export function ProjectParticipation({
 
 function InstallPanel({ project }: { project?: ProjectDefinition }) {
   const projectId = project?.id;
-  const [ready, setReady] = useState(false);
+  const [eligibility, setEligibility] = useState<
+    "loading" | "ready" | "blocked" | "error"
+  >("loading");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let active = true;
-    setReady(false);
+    setEligibility("loading");
     fetchWithDeadline("/.well-known/slop/projects.json", {
+      cache: attempt > 0 ? "reload" : "default",
       headers: { accept: "application/json" },
     })
       .then(async (response) => {
@@ -989,34 +993,80 @@ function InstallPanel({ project }: { project?: ProjectDefinition }) {
         if (body.schemaVersion !== "1" || !Array.isArray(body.projects))
           throw new Error("Invalid discovery registry");
         if (active)
-          setReady(
-            projectId
-              ? body.projects.some((entry) => entry.project_id === projectId)
-              : body.projects.length > 0,
+          setEligibility(
+            (
+              projectId
+                ? body.projects.some((entry) => entry.project_id === projectId)
+                : body.projects.length > 0
+            )
+              ? "ready"
+              : "blocked",
           );
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (active) setEligibility("error");
+      });
     return () => {
       active = false;
     };
-  }, [projectId]);
-  if (!ready) return null;
+  }, [projectId, attempt]);
   return (
     <div
       className={project ? "install-panel" : "home-agent-setup"}
       id={project ? "start" : undefined}
     >
-      {project ? (
-        <div className="install-heading">
-          <h2>Copy this into your agent.</h2>
-        </div>
+      {eligibility === "ready" ? (
+        <>
+          {project ? (
+            <div className="install-heading">
+              <h2>Copy this into your agent.</h2>
+            </div>
+          ) : (
+            <p className="hero-copy">Paste this into your coding agent.</p>
+          )}
+          <AgentPromptBox
+            openIn={!project}
+            prompt={
+              project ? projectAgentPrompt(project) : bootstrapAgentPrompt()
+            }
+          />
+        </>
       ) : (
-        <p className="hero-copy">Paste this into your coding agent.</p>
+        <>
+          <h2>
+            {eligibility === "loading"
+              ? "Checking agent setup…"
+              : eligibility === "blocked"
+                ? "Agent setup awaiting security review"
+                : "Agent setup unavailable"}
+          </h2>
+          {eligibility === "blocked" ? (
+            project ? (
+              <p>
+                The current project revision is not cleared for agent
+                installation.{" "}
+                <Link href={`/projects/${project.slug}/manage`}>
+                  Project owner: review setup
+                </Link>
+              </p>
+            ) : (
+              <p>
+                No projects are cleared for agent setup yet. Browse the projects
+                below.
+              </p>
+            )
+          ) : null}
+          {eligibility !== "loading" ? (
+            <button
+              className="button secondary-button"
+              type="button"
+              onClick={() => setAttempt((value) => value + 1)}
+            >
+              Check again
+            </button>
+          ) : null}
+        </>
       )}
-      <AgentPromptBox
-        openIn={!project}
-        prompt={project ? projectAgentPrompt(project) : bootstrapAgentPrompt()}
-      />
     </div>
   );
 }
