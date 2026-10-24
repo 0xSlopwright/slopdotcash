@@ -146,11 +146,12 @@ canonical assembly. No recorded incomplete result is reinterpreted as clean.
 
 ## Remaining service implementation and operation
 
-The intake, automatic queue, flags and scan composition are source. The
-deployed scanner service, its Ed25519 key, the public key in
-`VETTING_RESULT_PUBLIC_KEYS`, a pinned primary and specialist provider profile,
-the evidence store policy, an accepted isolated runner for risky artifacts and
-staging acceptance remain operational work. Until then no community project
+The intake, automatic queue, flags, scan composition and the scan service
+pass (`workers/vetting/run.ts`) are source. Deploying the scanner service, its
+Ed25519 key, the public key in `VETTING_RESULT_PUBLIC_KEYS`, the Surplus key,
+the pinned primary and specialist profiles, the evidence store policy, an
+accepted isolated runner for risky artifacts and staging acceptance remain
+operational work. Until then no community project
 can be cleared, so no project skill is served. The earlier secure-VM
 components stay available for advanced detonation; they are no longer a
 prerequisite for an ordinary clean result.
