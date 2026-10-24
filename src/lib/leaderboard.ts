@@ -173,11 +173,13 @@ export const SCORE_CAPS = {
 } as const;
 export const DETAILED_MERGED_PULL_REQUESTS_PER_MONTH = 5;
 /**
- * Under the value policy an accepted merge without a current assessment keeps
- * the repository minimum ("every accepted merge gets at least one-third
- * point") until Slopbot assesses it. It is not an assessed tier.
+ * Under the value policy every accepted merge keeps the repository minimum
+ * ("every accepted merge gets positive credit"): an unassessed merge, and a
+ * merge Slopbot assesses at zero, both score one third (owner decision D2).
+ * The maintainer's merge is the acceptance; an assessment can size it but
+ * cannot erase it. The minimum is not an assessed tier.
  */
-export const UNASSESSED_VALUE_MERGE_THIRDS = 1 as const;
+export const MIN_VALUE_MERGE_THIRDS = 1 as const;
 
 /**
  * Provisional score thirds for a v2 merge without a maintainer slop-score
@@ -1468,7 +1470,7 @@ export function leaderboardMethodology(
     : "";
   return {
     summary: valuePolicy
-      ? `${policyStart}Slopbot's source-bound value assessments size each accepted pull request and value its reviews; a valid maintainer ratification is the exception that takes precedence. An accepted merge without a current assessment keeps the one-third minimum until it is assessed. Each pull request's ${valuePolicy.reviewCredit.poolThirds}-third review credit is split by assessed review band among its first ${valuePolicy.reviewCredit.maxReviewers} distinct qualifying reviewers, in integer thirds by largest remainder. Work accepted earlier keeps the Slop Score v2 and SCR-05 rules unchanged. Payout approval remains separate.`
+      ? `${policyStart}Slopbot's source-bound value assessments size each accepted pull request and value its reviews; a valid maintainer ratification is the exception that takes precedence. An accepted merge without a current assessment, or assessed at zero, keeps the one-third minimum. Each pull request's review pool is the sum of the highest assessed bands of its first ${valuePolicy.reviewCredit.maxReviewers} distinct qualifying reviewers, capped at the pull request's assessed size and never less than one third; it is split by band in integer thirds by largest remainder. Work accepted earlier keeps the Slop Score v2 and SCR-05 rules unchanged. Payout approval remains separate.`
       : "Slop Score v2 groups accepted work into logical work units and stores credit in integer thirds. Claude review agents propose effort, complexity, impact, and review load; maintainers ratify the score on GitHub. From October 2026 an unratified merge starts at one point, and a formal review scores 1/3 only when the merged code answered its request for changes, once per pull request. Only the actor's aggregate is rounded down at cycle close.",
     scoringRules: [
       {
@@ -1476,7 +1478,7 @@ export function leaderboardMethodology(
         points: "micro 1/3; small 1; medium 3; large 8; XL 15; exceptional 25",
         cap: "uncapped; related or split pull requests share one workUnitId",
         qualification: provisionalValues
-          ? `${policyStart}a complete exact-head assessment or valid human ratification binds the accepted outcome. Provisional credit is shared among verified implementation identities without increasing its total. Overlapping accepted commits require joint work-unit assessment. Missing, incomplete, stale or unresolved value keeps the one-third minimum, shared at least one third per credit actor. Earlier merges keep the Score v2 provisional and ratified rules.`
+          ? `${policyStart}a complete exact-head assessment or valid human ratification binds the accepted outcome. Provisional credit is shared among verified implementation identities without increasing its total. Overlapping accepted commits require joint work-unit assessment. Missing, incomplete, stale, unresolved or zero value keeps the one-third minimum, shared at least one third per credit actor. Earlier merges keep the Score v2 provisional and ratified rules.`
           : "Authored pull request merged during the rolling window. Unratified work merged before 2026-10-01 receives provisional micro credit and later work provisional small credit; other tiers require an immutable exact-head maintainer slop-score record. Integration-branch merge credit is split equally, at least 1/3 each, among the author and linked non-bot commit authors; each commit scores only in its earliest merged pull request.",
       },
       {
@@ -1504,7 +1506,7 @@ export function leaderboardMethodology(
         points:
           "triage 1/3; standard 1; deep reproduction 3; specialist 8; ratification 1/3",
         cap: valuePolicy
-          ? `one pool of ${valuePolicy.reviewCredit.poolThirds} thirds per pull request, split among at most ${valuePolicy.reviewCredit.maxReviewers} distinct reviewers; one credited record per reviewer`
+          ? `one pool per pull request: the credited reviewers' bands, capped at the pull request's assessed size, minimum 1/3; at most ${valuePolicy.reviewCredit.maxReviewers} distinct reviewers; one credited record per reviewer`
           : "from 2026-10-01, one ordinary review award per merged pull request; no self-review and no duplicate reviewer credit on one artifact",
         qualification: valuePolicy
           ? `${policyStart}complete source-bound assessments value distinct evidenced review outcomes, including useful validation; a request for changes is not required. Reviews by implementation actors, bots, after merge or closure, and duplicate findings do not qualify. Qualifying reviews are grouped by immutable reviewer ID; reviewers are ordered by their first qualifying review's submission time, then review node ID, and the first ${valuePolicy.reviewCredit.maxReviewers} share the pull request's review pool by their highest assessed band using integer largest remainder, earlier reviewers first on equal remainders. Later reviewers publish review-credit-reviewer-limit. Valid human decisions and reviewed evaluation awards take precedence. Missing, stale or unresolved assessments do not receive legacy review credit. Reviews of pull requests accepted earlier keep the SCR-05 rule.`
@@ -3279,9 +3281,12 @@ function createSnapshotWithReviewCutoff(
       ratification?.record.scoreThirds ??
       (valueRecord?.assessment.tier !== undefined &&
       valueRecord.assessment.tier !== null
-        ? VALUE_TIERS[valueRecord.assessment.tier]
+        ? Math.max(
+            MIN_VALUE_MERGE_THIRDS,
+            VALUE_TIERS[valueRecord.assessment.tier],
+          )
         : valuePolicyApplies
-          ? UNASSESSED_VALUE_MERGE_THIRDS
+          ? MIN_VALUE_MERGE_THIRDS
           : unratifiedMergeScoreThirds(pullRequest.mergedAt));
     const shares = shareScoreThirds(
       totalThirds,
@@ -3310,7 +3315,7 @@ function createSnapshotWithReviewCutoff(
     const baseReason = ratification
       ? `Maintainer-ratified ${ratification.record.tier} accepted outcome: ${ratification.record.reason}`
       : valueRecord
-        ? `Provisional value assessment (${valueRecord.assessment.tier}): ${valueRecord.assessment.rationale}`
+        ? `Provisional value assessment (${valueRecord.assessment.tier}): ${valueRecord.assessment.rationale}${valueRecord.assessment.tier === "none" ? " The accepted merge keeps the one-third minimum." : ""}`
         : valuePolicyApplies
           ? "Accepted outcome awaits a current Slopbot value assessment; it keeps the one-third minimum until assessed."
           : `Accepted outcome has provisional ${totalThirds === 3 ? "small" : "micro"} credit pending immutable maintainer ratification.`;
@@ -3492,7 +3497,12 @@ function createSnapshotWithReviewCutoff(
         );
       if (!actors.length)
         throw new Error("Joint implementation has no eligible recipient");
-      const shares = shareScoreThirds(VALUE_TIERS[tier], actors.length, 0);
+      // An accepted unit assessed at zero keeps the minimum (owner decision D2).
+      const shares = shareScoreThirds(
+        Math.max(MIN_VALUE_MERGE_THIRDS, VALUE_TIERS[tier]),
+        actors.length,
+        0,
+      );
       for (const [index, actor] of actors.entries()) {
         const thirds = shares[index] as number;
         addScore(entries, ledger, {
@@ -3651,6 +3661,8 @@ function createSnapshotWithReviewCutoff(
   type ValueReviewCandidate = QualifyingReview<GitHubActor> & {
     review: PullRequestReview;
     value: { tier: string; finding: string; outcome: string };
+    /** The pull request's assessed size; it caps the review pool. */
+    assessedSizeThirds: number;
     decision: {
       latestDigest: string | null;
       history: { recorded_at: string }[];
@@ -3677,6 +3689,7 @@ function createSnapshotWithReviewCutoff(
         }
       | undefined;
     let implementationActorNodeIds: string[];
+    let assessedTier: keyof typeof VALUE_TIERS | null;
     if (joint) {
       if (joint.status !== "assessed") return null;
       const member = joint.record.sources.find(
@@ -3705,6 +3718,7 @@ function createSnapshotWithReviewCutoff(
       value = unit.assessment.reviews.find(
         (item) => item.sourceId === review.id,
       );
+      assessedTier = unit.assessment.tier;
       implementationActorNodeIds = [
         ...new Set(claims.flatMap((claim) => claim.implementationActorNodeIds)),
       ];
@@ -3720,6 +3734,7 @@ function createSnapshotWithReviewCutoff(
       value = single.assessment.reviews.find(
         (item) => item.sourceId === review.id,
       );
+      assessedTier = single.record.assessment.tier;
       implementationActorNodeIds = single.implementationActorNodeIds;
     }
     if (!value)
@@ -3747,6 +3762,7 @@ function createSnapshotWithReviewCutoff(
       thirds,
       review,
       value,
+      assessedSizeThirds: assessedTier === null ? 0 : VALUE_TIERS[assessedTier],
       decision,
     };
   };
@@ -3775,9 +3791,11 @@ function createSnapshotWithReviewCutoff(
     const byId = new Map(
       eligible.map((candidate) => [candidate.reviewId, candidate]),
     );
+    // A joint member's reviews can sit in several units; the largest assessed
+    // unit is the pull request's size.
     const allocation = allocatePullRequestReviewCredit(
       eligible,
-      valuePolicy.reviewCredit.poolThirds,
+      Math.max(...eligible.map((candidate) => candidate.assessedSizeThirds)),
     );
     const exclude = (reviewId: string, reason: ReviewExclusionReason) => {
       const candidate = byId.get(reviewId);
@@ -3815,7 +3833,7 @@ function createSnapshotWithReviewCutoff(
           title: pullRequest.title,
           url: candidate.review.url,
         },
-        reason: `Provisional ${candidate.value.tier} review value; reviewer ${index + 1} of ${allocation.credited.length} credited, ${credited.shareThirds} of ${valuePolicy.reviewCredit.poolThirds} review-credit thirds: ${candidate.value.finding} ${candidate.value.outcome}`,
+        reason: `Provisional ${candidate.value.tier} review value; reviewer ${index + 1} of ${allocation.credited.length} credited, ${credited.shareThirds} of ${allocation.poolThirds} review-credit thirds: ${candidate.value.finding} ${candidate.value.outcome}`,
       });
     }
     return allocation.credited.map((credited) => credited.actor.id);

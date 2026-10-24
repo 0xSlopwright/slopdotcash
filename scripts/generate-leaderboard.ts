@@ -1,5 +1,9 @@
 import { GitHubClient } from "../workers/slopbot/github";
-import { loadValueInputs } from "./value-ingestion";
+import {
+  loadValueInputs,
+  VALUE_FEED_UNAVAILABLE_EXIT_CODE,
+  ValueFeedUnavailableError,
+} from "./value-ingestion";
 /**
  * Collects the rolling contribution ledger and current work queues from the
  * authenticated GitHub GraphQL API. Time slicing, cursor pagination, runtime
@@ -265,9 +269,10 @@ export interface GenerationProgress {
 export interface GenerateOptions {
   /**
    * The versioned producer for new work. Defaults to the recorded owner
-   * decision; generation refuses to start while that decision is pending.
-   * Value assessments come only from the authoritative hosted feed, and a feed
-   * failure prevents publication instead of falling back to legacy scoring.
+   * decision. Value assessments come only from the authoritative hosted feed.
+   * A feed failure prevents this publication instead of falling back to
+   * legacy scoring; an outage exits with VALUE_FEED_UNAVAILABLE_EXIT_CODE so
+   * the release keeps the last published snapshot and retries.
    */
   scoringPolicy?: ValueScoringPolicy;
   now?: Date;
@@ -3671,7 +3676,7 @@ export async function generateLeaderboardFromGitHub(
   );
   const onProgress = options.onProgress ?? (() => undefined);
   const stats = { searchSliceCount: 0 };
-  // Select the policy before any collection: an undecided policy publishes nothing.
+  // Select the policy before any collection; it binds every accepted source.
   const scoringPolicy = assertValueScoringPolicy(
     options.scoringPolicy ?? valueScoringPolicy(),
   );
@@ -4212,6 +4217,13 @@ if (import.meta.main) {
         process.stderr.write(progressLine(progress));
       }
     },
+  }).catch((error: unknown) => {
+    // error-policy:J2 a feed outage writes nothing; the caller keeps the last published snapshot.
+    if (!(error instanceof ValueFeedUnavailableError)) throw error;
+    process.stderr.write(
+      `[slop.cash] ${error.message} (${String(error.cause)}); no snapshot written\n`,
+    );
+    process.exit(VALUE_FEED_UNAVAILABLE_EXIT_CODE);
   });
   process.stdout.write(
     `[slop.cash] wrote ${DEFAULT_OUTPUT_PATH} (${snapshot.leaders.length} leaders, ${snapshot.ledger.length} score events, ${snapshot.source.requestCount} GitHub requests, ${snapshot.source.rateLimit.remaining}/${snapshot.source.rateLimit.limit} GraphQL points remaining)\n`,

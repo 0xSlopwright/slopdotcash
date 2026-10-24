@@ -18,7 +18,7 @@ import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
 import {
   allocatePullRequestReviewCredit,
   allocateReviewCredit,
-  ScoringPolicyDecisionPendingError,
+  assertValueScoringPolicy,
   type ValueScoringPolicy,
   valueScoringPolicy,
 } from "../src/lib/scoring-policy";
@@ -30,12 +30,13 @@ const REPO_URL = `https://github.com/${REPO}`;
 const AT = "2026-10-23T12:00:00.000Z";
 const FROM = "2026-09-18T12:00:00.000Z";
 const HEAD = "a".repeat(40);
-// Test-only policy values; the production decision is still pending.
+// A test-only effective instant before the recorded one, so October fixtures
+// exercise the value policy.
 const POLICY: ValueScoringPolicy = {
   id: "slop-value-v1",
   rubricVersion: VALUE_RUBRIC_VERSION,
   effectiveAt: "2026-10-15T00:00:00.000Z",
-  reviewCredit: { maxReviewers: 5, poolThirds: 24 },
+  reviewCredit: { maxReviewers: 5, pool: "credited-bands-capped-at-size" },
 };
 
 setSystemTime(new Date(AT));
@@ -277,33 +278,17 @@ function snapshot(policy: ValueScoringPolicy | null = POLICY) {
   );
 }
 
-test("the normal command takes no opt-in flag and the policy decision gates publication", () => {
+test("the normal command takes no opt-in flag and uses the recorded policy", () => {
   expect(parseGenerationArguments([])).toEqual({});
   expect(() => parseGenerationArguments(["--value-assessments"])).toThrow(
     "Usage: generate-leaderboard.ts [--cutoff YYYY-MM-DDTHH:mm:ss.sssZ]",
   );
-  let pendingError: unknown;
-  try {
-    valueScoringPolicy();
-  } catch (error) {
-    pendingError = error;
-  }
-  expect(pendingError).toBeInstanceOf(ScoringPolicyDecisionPendingError);
-  expect((pendingError as ScoringPolicyDecisionPendingError).missing).toEqual([
-    "effectiveAt",
-    "reviewCreditPoolThirds",
-  ]);
-  expect(
-    valueScoringPolicy({
-      effectiveAt: POLICY.effectiveAt,
-      reviewCreditPoolThirds: 24,
-    }),
-  ).toEqual(POLICY);
+  expect(valueScoringPolicy()).toEqual({
+    ...POLICY,
+    effectiveAt: "2026-11-01T00:00:00.000Z",
+  });
   expect(() =>
-    valueScoringPolicy({
-      effectiveAt: "2026-10-15",
-      reviewCreditPoolThirds: 24,
-    }),
+    assertValueScoringPolicy({ ...POLICY, effectiveAt: "2026-10-15" }),
   ).toThrow("exact UTC timestamp");
 });
 
@@ -364,6 +349,8 @@ test("review credit dedupes reviewers, orders by verified time, and credits five
     ],
     24,
   );
+  // The five credited bands (23 thirds) fit under the 24-third size cap.
+  expect(allocation.poolThirds).toBe(23);
   expect(
     allocation.credited.map((item) => [
       item.actor.id,
@@ -372,13 +359,30 @@ test("review credit dedupes reviewers, orders by verified time, and credits five
       item.repeatedReviewIds,
     ]),
   ).toEqual([
-    ["b", "R4", 10, ["R1"]],
+    ["b", "R4", 9, ["R1"]],
     ["c", "R2", 9, []],
     ["d", "R3", 1, []],
     ["e", "R5", 3, []],
     ["f", "R6", 1, []],
   ]);
   expect(allocation.beyondLimitReviewIds).toEqual(["R7"]);
+});
+
+test("the review pool is capped at the assessed size and is at least one third", () => {
+  const reviews = [
+    { reviewId: "R1", actor: { id: "a" }, thirds: 24 },
+    { reviewId: "R2", actor: { id: "b" }, thirds: 3 },
+  ].map((item, index) => ({
+    ...item,
+    submittedAt: `2026-11-02T0${index}:00:00.000Z`,
+  }));
+  const capped = allocatePullRequestReviewCredit(reviews, 9);
+  expect(capped.poolThirds).toBe(9);
+  expect(capped.credited.map((item) => item.shareThirds)).toEqual([8, 1]);
+  const floor = allocatePullRequestReviewCredit(reviews.slice(0, 1), 0);
+  expect(floor.poolThirds).toBe(1);
+  expect(floor.credited.map((item) => item.shareThirds)).toEqual([1]);
+  expect(allocatePullRequestReviewCredit([], 9).poolThirds).toBe(0);
 });
 
 test("new work uses value assessments while earlier work keeps its historical rules", () => {
@@ -399,17 +403,16 @@ test("new work uses value assessments while earlier work keeps its historical ru
   const reviewCredit = result.ledger
     .filter((event) => event.id.startsWith("PR_2:value-review:"))
     .map((event) => [event.actor.id, event.source.id, event.scoreThirds]);
+  // The bands sum to 23 thirds; the medium merge caps the pool at 9.
   expect(reviewCredit.sort()).toEqual(
     [
-      ["U_bob", "PRR_2_4", 10],
-      ["U_carol", "PRR_2_2", 9],
-      ["U_dave", "PRR_2_3", 1],
-      ["U_erin", "PRR_2_5", 3],
-      ["U_frank", "PRR_2_6", 1],
+      ["U_bob", "PRR_2_4", 4],
+      ["U_carol", "PRR_2_2", 4],
+      ["U_erin", "PRR_2_5", 1],
     ].sort(),
   );
   // A useful approval earns credit without requesting changes.
-  expect(byId.get("PR_2:value-review:PRR_2_5")?.scoreThirds).toBe(3);
+  expect(byId.get("PR_2:value-review:PRR_2_5")?.scoreThirds).toBe(1);
   const exclusions = new Map(
     (result.reviewExclusions ?? [])
       .filter((exclusion) => exclusion.pullRequestId === "PR_2")
@@ -417,6 +420,8 @@ test("new work uses value assessments while earlier work keeps its historical ru
   );
   expect(exclusions.get("PRR_2_1")).toBe("already-awarded-reviewer");
   expect(exclusions.get("PRR_2_7")).toBe("review-credit-reviewer-limit");
+  expect(exclusions.get("PRR_2_3")).toBe("review-credit-zero-share");
+  expect(exclusions.get("PRR_2_6")).toBe("review-credit-zero-share");
 
   // An accepted merge awaiting assessment keeps the one-third minimum.
   expect(byId.get("PR_3:merged")?.scoreThirds).toBe(1);
@@ -501,7 +506,41 @@ test("a maintainer correction overrides only the implementation score", () => {
   expect(byId.get("PR_4:merged")?.scoreThirds).toBe(1);
   expect(byId.get("PR_4:merged")?.scoreDecisionSourceId).toBe("IC_ratify");
   // The approval keeps its value allocation instead of the SCR-05 rule.
-  expect(byId.get("PR_4:value-review:PRR_4_1")?.scoreThirds).toBe(24);
+  // The small assessed size caps the standard review's pool at 3 thirds.
+  expect(byId.get("PR_4:value-review:PRR_4_1")?.scoreThirds).toBe(3);
   expect(byId.get("PR_4:ratifier:IC_ratify")?.scoreThirds).toBe(1);
   expect(result.valueAssessmentCoverage?.[0]?.status).toBe("human-ratified");
+});
+
+test("a merge assessed at zero keeps the minimum and a one-third review pool", () => {
+  const zero = outcome(5, "2026-10-21T10:00:00.000Z");
+  const result = createLeaderboardSnapshot(
+    input({
+      mergedPullRequestOutcomes: [zero],
+      reviewedMergedPullRequests: [
+        reviewed(zero, [
+          review(
+            5,
+            1,
+            bob as GitHubActor,
+            "APPROVED",
+            "2026-10-21T09:00:00.000Z",
+          ),
+        ]),
+      ],
+      valuePolicy: POLICY,
+      valueDecisions: new Map<string, unknown>([
+        [
+          zero.id,
+          assessed(zero, "f", "none", [{ sourceId: "PRR_5_1", tier: "deep" }]),
+        ],
+      ]) as unknown as LeaderboardInput["valueDecisions"],
+    }),
+  );
+  const byId = new Map(result.ledger.map((event) => [event.id, event]));
+  expect(byId.get("PR_5:merged")?.scoreThirds).toBe(1);
+  expect(byId.get("PR_5:merged")?.scoreDecisionSourceId).toBe(
+    `value:${"f".repeat(64)}`,
+  );
+  expect(byId.get("PR_5:value-review:PRR_5_1")?.scoreThirds).toBe(1);
 });

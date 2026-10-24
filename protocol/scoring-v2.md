@@ -196,6 +196,9 @@ Work accepted from that instant:
   exception and takes precedence for the implementation score;
 - keeps the one-third minimum while its assessment is missing, incomplete,
   stale or unresolved. This is an unassessed state, not an assessed tier;
+- keeps the same one-third minimum when Slopbot assesses the accepted merge at
+  zero. The maintainer's merge is the acceptance; an assessment can size it
+  but cannot erase it. A joint work unit assessed at zero also keeps one third;
 - earns review credit only from assessed, non-duplicate review value. A useful
   approval or comment qualifies; a request for changes is not required.
 
@@ -205,8 +208,12 @@ duplicate findings. They are grouped by immutable reviewer node ID. Reviewers
 are ordered by their first qualifying review's submission time, then review
 node ID. The first five share the pull request's review pool, weighted by each
 reviewer's highest assessed band (triage 1, standard 3, deep 9, specialist 24
-thirds). Shares are integer thirds by largest remainder; equal remainders go to
-the earlier reviewer, and the shares always sum to the pool. Each credited
+thirds). The pool is the sum of those five highest bands, capped at the pull
+request's own assessed size in thirds, and never less than one third. Each
+useful review thus earns its band until the reviews would outweigh the work,
+and a small review never earns a large fixed pool. Shares are integer thirds
+by largest remainder; equal remainders go to the earlier reviewer, and the
+shares always sum to the pool. Each credited
 reviewer has one ledger record, sourced from that reviewer's highest-band
 review. Their other reviews publish `already-awarded-reviewer`; later reviewers
 publish `review-credit-reviewer-limit`; a zero rounded share publishes
@@ -214,9 +221,14 @@ publish `review-credit-reviewer-limit`; a zero rounded share publishes
 effective instant is not applied, so legacy work is never scored twice; its
 new member keeps the one-third minimum.
 
-The effective instant and the per-pull-request review pool await an owner
-decision (PRD section 11, "Open owner decisions": review-credit pool). Until
-both are recorded in `VALUE_SCORING_POLICY_DECISION`, generation stops before
-collecting any source and publishes nothing; it does not fall back to the
-legacy producer. Accepted-source identity, the earliest-merge commit rule and
+Owner decision D2 (24 October 2026) sets the effective instant to
+`2026-11-01T00:00:00.000Z` (`VALUE_SCORING_POLICY_EFFECTIVE_AT`) and selects
+the capped pool above. When the hosted value feed does not answer (a transport
+failure, a timeout, HTTP 408, 429 or 5xx), generation writes nothing and exits
+with status 75. The release retries once, then keeps the last published
+snapshot, and the site labels a snapshot older than eight hours as possibly
+outdated (PRD section 9). The next scheduled release retries. There is no
+fallback to the legacy producer, and an outage does not stop the rest of the
+release. Any other feed failure, such as a redirect or an invalid or changed
+page, stops the release. Accepted-source identity, the earliest-merge commit rule and
 separate payment authority are unchanged. A score is never a payment approval.

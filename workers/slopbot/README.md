@@ -556,15 +556,18 @@ The leaderboard generator accepts verified `valueDecisions` and GitHub-resolved
 `valueActors` for outcomes accepted under the `slop-value-v1` policy. Valid
 human ratifications take precedence for the implementation score. Missing,
 incomplete, stale and unresolved decisions receive no review award; their
-accepted merge keeps only the repository's one-third minimum until assessed. The snapshot retains a
-coverage row for every accepted source. Assessed zeroes retain their ledger
-source and actor, while integer-third shares preserve the assessed total.
+accepted merge keeps only the repository's one-third minimum until assessed.
+An accepted merge assessed at zero keeps the same one-third minimum. The
+snapshot retains a coverage row for every accepted source, and integer-third
+shares preserve the scored total.
 
 Positive assessments require exact-head source agreement, hydrated human and
 review decisions, complete implementation identities, and no overlapping
 accepted commits that need joint assessment. Distinct positive review outcomes
-share one per-pull-request review pool among the first five distinct reviewers;
-duplicate and zero-valued reviews do not multiply credit. Existing reviewed evaluator awards keep their precedence.
+share one per-pull-request review pool among the first five distinct reviewers.
+The pool is their summed bands, capped at the pull request's assessed size,
+minimum one third. Duplicate and zero-valued reviews do not multiply credit.
+Existing reviewed evaluator awards keep their precedence.
 
 A local integration passed collected Eliza #34772 through the journal reader
 and real snapshot generator and validator: nine implementation thirds, one
@@ -580,7 +583,8 @@ inputs and frozen cycle files retain their existing behavior.
 `bun run leaderboard:generate` reads the fixed
 `https://slopbot.slop.cash/v1/value-assessments` feed for every outcome accepted
 under the `slop-value-v1` scoring policy; there is no opt-in flag. Policy
-selection, its pending owner decision and the review-credit allocation are in
+selection, the recorded owner decision, feed-outage handling and the
+review-credit allocation are in
 [`protocol/scoring-v2.md`](../../protocol/scoring-v2.md#current-producer-slop-value-v1).
 Release workflows run the same command. Hosted publisher operation and its
 production records remain unverified.

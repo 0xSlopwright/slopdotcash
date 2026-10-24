@@ -16,24 +16,19 @@ export const VALUE_SCORING_POLICY_ID = "slop-value-v1" as const;
 export const MAX_CREDITED_REVIEWERS = 5 as const;
 
 /**
- * AWAITING OWNER DECISION. The PRD does not yet set these values (section 11,
- * "Open owner decisions": review-credit pool).
+ * Owner decision D2 (24 Oct 2026).
  *
- * - `effectiveAt`: exact UTC instant from which accepted work uses the value
+ * - `effectiveAt`: work accepted from this exact UTC instant uses the value
  *   policy. Earlier work keeps its historical policy.
- * - `reviewCreditPoolThirds`: review credit, in integer score thirds, that one
- *   pull request shares among its credited reviewers.
- *
- * While either value is null, leaderboard generation refuses to publish
- * instead of choosing an economic value or silently keeping the old producer.
+ * - Review pool: one pool per pull request. It is the sum of the credited
+ *   reviewers' highest assessed bands, capped at the pull request's own
+ *   assessed size in thirds, and never less than one third.
  */
-export const VALUE_SCORING_POLICY_DECISION: Readonly<ValueScoringPolicyDecision> =
-  Object.freeze({ effectiveAt: null, reviewCreditPoolThirds: null });
-
-export interface ValueScoringPolicyDecision {
-  effectiveAt: string | null;
-  reviewCreditPoolThirds: number | null;
-}
+export const VALUE_SCORING_POLICY_EFFECTIVE_AT =
+  "2026-11-01T00:00:00.000Z" as const;
+export const REVIEW_CREDIT_POOL_RULE = "credited-bands-capped-at-size" as const;
+/** The smallest review pool of a pull request with a credited reviewer. */
+export const MIN_REVIEW_CREDIT_POOL_THIRDS = 1 as const;
 
 export interface ValueScoringPolicy {
   id: typeof VALUE_SCORING_POLICY_ID;
@@ -41,19 +36,8 @@ export interface ValueScoringPolicy {
   effectiveAt: string;
   reviewCredit: {
     maxReviewers: typeof MAX_CREDITED_REVIEWERS;
-    poolThirds: number;
+    pool: typeof REVIEW_CREDIT_POOL_RULE;
   };
-}
-
-export class ScoringPolicyDecisionPendingError extends Error {
-  constructor(readonly missing: readonly string[]) {
-    super(
-      `Scoring policy ${VALUE_SCORING_POLICY_ID} awaits an owner decision for ${missing.join(
-        " and ",
-      )}; refusing to publish scores under an undecided policy`,
-    );
-    this.name = "ScoringPolicyDecisionPendingError";
-  }
 }
 
 const EXACT_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
@@ -65,7 +49,8 @@ export function assertValueScoringPolicy(
   if (
     policy.id !== VALUE_SCORING_POLICY_ID ||
     policy.rubricVersion !== VALUE_RUBRIC_VERSION ||
-    policy.reviewCredit.maxReviewers !== MAX_CREDITED_REVIEWERS
+    policy.reviewCredit.maxReviewers !== MAX_CREDITED_REVIEWERS ||
+    policy.reviewCredit.pool !== REVIEW_CREDIT_POOL_RULE
   )
     throw new TypeError("Value scoring policy has an unknown version");
   if (
@@ -75,41 +60,38 @@ export function assertValueScoringPolicy(
     throw new TypeError(
       "Value scoring policy effectiveAt must be an exact UTC timestamp",
     );
-  if (
-    !Number.isSafeInteger(policy.reviewCredit.poolThirds) ||
-    policy.reviewCredit.poolThirds < 1
-  )
-    throw new TypeError(
-      "Value scoring review credit pool must be a positive integer of thirds",
-    );
   return policy;
 }
 
-/** The current policy, or a pending-decision error naming what is missing. */
-export function valueScoringPolicy(
-  decision: Readonly<ValueScoringPolicyDecision> = VALUE_SCORING_POLICY_DECISION,
-): ValueScoringPolicy {
-  const missing = [
-    ...(decision.effectiveAt === null ? ["effectiveAt"] : []),
-    ...(decision.reviewCreditPoolThirds === null
-      ? ["reviewCreditPoolThirds"]
-      : []),
-  ];
-  if (
-    missing.length ||
-    decision.effectiveAt === null ||
-    decision.reviewCreditPoolThirds === null
-  )
-    throw new ScoringPolicyDecisionPendingError(missing);
+/** The recorded policy for new work. */
+export function valueScoringPolicy(): ValueScoringPolicy {
   return assertValueScoringPolicy({
     id: VALUE_SCORING_POLICY_ID,
     rubricVersion: VALUE_RUBRIC_VERSION,
-    effectiveAt: decision.effectiveAt,
+    effectiveAt: VALUE_SCORING_POLICY_EFFECTIVE_AT,
     reviewCredit: {
       maxReviewers: MAX_CREDITED_REVIEWERS,
-      poolThirds: decision.reviewCreditPoolThirds,
+      pool: REVIEW_CREDIT_POOL_RULE,
     },
   });
+}
+
+/**
+ * The review pool of one pull request: the credited reviewers' bands, capped
+ * at the pull request's assessed size, with a minimum of one third. A lone
+ * small review cannot earn a large pool, and reviews cannot outweigh the work.
+ */
+export function reviewCreditPoolThirds(
+  creditedBands: readonly number[],
+  assessedSizeThirds: number,
+): number {
+  if (!Number.isSafeInteger(assessedSizeThirds) || assessedSizeThirds < 0)
+    throw new RangeError("Assessed size must be a non-negative integer");
+  const bands = creditedBands.reduce((sum, band) => sum + band, 0);
+  return Math.max(
+    MIN_REVIEW_CREDIT_POOL_THIRDS,
+    Math.min(bands, assessedSizeThirds),
+  );
 }
 
 /**
@@ -171,6 +153,8 @@ export interface CreditedReviewer<Actor extends { id: string }> {
 }
 
 export interface ReviewCreditAllocation<Actor extends { id: string }> {
+  /** The pool shared by the credited reviewers; zero when nobody qualifies. */
+  poolThirds: number;
   credited: CreditedReviewer<Actor>[];
   /** Qualifying reviews by reviewers after the first five. */
   beyondLimitReviewIds: string[];
@@ -193,14 +177,15 @@ function compareReviewTime(
 /**
  * One explicit allocation for one pull request: dedupe by immutable reviewer
  * ID, order reviewers by their first qualifying review (submission time, then
- * review node ID), credit the first five, and split the pool by assessed band.
+ * review node ID), credit the first five, and split the pull request's pool
+ * (`reviewCreditPoolThirds`) by assessed band.
  * A reviewer's weight is their highest band, so repeated reviews cannot grow a
  * share. Callers exclude self-review, bot, post-merge and duplicate findings
  * before this step.
  */
 export function allocatePullRequestReviewCredit<Actor extends { id: string }>(
   reviews: readonly QualifyingReview<Actor>[],
-  poolThirds: number,
+  assessedSizeThirds: number,
 ): ReviewCreditAllocation<Actor> {
   const seen = new Set<string>();
   const byReviewer = new Map<string, QualifyingReview<Actor>[]>();
@@ -231,13 +216,13 @@ export function allocatePullRequestReviewCredit<Actor extends { id: string }>(
         (left.first.actor.id < right.first.actor.id ? -1 : 1),
     );
   const creditedReviewers = reviewers.slice(0, MAX_CREDITED_REVIEWERS);
-  const shares = creditedReviewers.length
-    ? allocateReviewCredit(
-        poolThirds,
-        creditedReviewers.map((reviewer) => reviewer.source.thirds),
-      )
-    : [];
+  const bands = creditedReviewers.map((reviewer) => reviewer.source.thirds);
+  const poolThirds = bands.length
+    ? reviewCreditPoolThirds(bands, assessedSizeThirds)
+    : 0;
+  const shares = bands.length ? allocateReviewCredit(poolThirds, bands) : [];
   return {
+    poolThirds,
     credited: creditedReviewers.map((reviewer, index) => ({
       actor: reviewer.source.actor,
       source: reviewer.source,
