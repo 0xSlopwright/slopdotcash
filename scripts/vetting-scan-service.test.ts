@@ -170,10 +170,7 @@ async function surplus(request: Request, path: string): Promise<Response> {
     model: body.model,
     authorization: request.headers.get("authorization"),
   });
-  if (
-    !provider.up ||
-    (!provider.specialistUp && path === "/v1/responses")
-  )
+  if (!provider.up || (!provider.specialistUp && path === "/v1/responses"))
     return new Response("unavailable", { status: 503 });
   const usage = {
     input_tokens: 8,
