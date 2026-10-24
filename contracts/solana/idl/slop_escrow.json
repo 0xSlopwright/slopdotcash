@@ -880,6 +880,48 @@
       ]
     },
     {
+      "name": "release_monthly",
+      "discriminator": [9, 152, 23, 151, 98, 176, 142, 7],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": ["project"]
+        },
+        {
+          "name": "project",
+          "writable": true,
+          "relations": ["month"]
+        },
+        {
+          "name": "month",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [109, 111, 110, 116, 104]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "period"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "period",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "set_monthly_commitment",
       "discriminator": [204, 64, 188, 96, 90, 158, 14, 235],
       "accounts": [
@@ -1115,6 +1157,10 @@
       "discriminator": [21, 90, 254, 60, 119, 79, 65, 193]
     },
     {
+      "name": "MonthlyRemainderReleased",
+      "discriminator": [179, 101, 22, 249, 248, 55, 224, 8]
+    },
+    {
       "name": "UnusedWithdrawn",
       "discriminator": [158, 175, 215, 198, 157, 135, 114, 234]
     },
@@ -1278,6 +1324,16 @@
       "code": 6030,
       "name": "MonthlyCapExceeded",
       "msg": "Monthly awards would exceed the owner's monthly cap"
+    },
+    {
+      "code": 6031,
+      "name": "MonthlyWindowOpen",
+      "msg": "The period's window has not closed"
+    },
+    {
+      "code": 6032,
+      "name": "MonthlyReleased",
+      "msg": "The owner released this period's remainder"
     }
   ],
   "types": [
@@ -1580,6 +1636,13 @@
           {
             "name": "total",
             "type": "u64"
+          },
+          {
+            "name": "released",
+            "docs": [
+              "The owner returned the uncommitted remainder after the window closed."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -1625,6 +1688,26 @@
           },
           {
             "name": "total",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MonthlyRemainderReleased",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "period",
+            "type": "u32"
+          },
+          {
+            "name": "released",
             "type": "u64"
           }
         ]
