@@ -31,7 +31,10 @@ import {
   solanaMonthlyMessage,
   solanaPaymentAdapter,
 } from "../.local/adapter.mjs";
-import { submitSolanaMonthly } from "../.local/monthly-executor.mjs";
+import {
+  freezeSolanaMonthly,
+  submitSolanaMonthly,
+} from "../.local/monthly-executor.mjs";
 import {
   configAddress,
   configFees,
@@ -1988,7 +1991,8 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
     sourceDigest: Buffer.from(hash(`source:${name}`)).toString("hex"),
   }));
   // The owner consumes leaf B's source before the month is admitted.
-  await commit("leaf-b", 999, 1);
+  const consumedSignature = await commit("leaf-b", 999, 1);
+  await provider.connection.confirmTransaction(consumedSignature, "finalized");
   const consumedAt = (
     await program.account.obligation.fetch(obligation("leaf-b"))
   ).committedAt.toNumber();
@@ -2078,6 +2082,22 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
       await nodeSigner(authority).signMessage(signed),
     ).toString("hex"),
   };
+  const freezeConfig = {
+    ...config,
+    mint: config.asset,
+    rpcUrl: provider.connection.rpcEndpoint,
+  };
+  await assert.rejects(
+    freezeSolanaMonthly(freezeConfig, authorization.plan),
+    /already consumed/,
+  );
+  const observedFreeze = await freezeSolanaMonthly(freezeConfig, {
+    ...authorization.plan,
+    entries: entries.filter((_, index) => index !== 1),
+  });
+  assert.ok(
+    Number(observedFreeze) > 0 && Number(observedFreeze) <= (await chainTime()),
+  );
   await assert.rejects(
     submitSolanaMonthly(environment, {
       ...authorization,
