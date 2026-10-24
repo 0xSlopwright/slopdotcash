@@ -32,7 +32,7 @@ GitHub is the only login. Use its permanent actor ID through renames. Account ho
 
 Public GitHub work stays public. Show private case status only in the authorized user's private account area. Keep private case amounts out of ordinary balances and public rankings. X connection shows on the profile with consent and permits no posting or messaging. Support account closure.
 
-Store only ID, optional username, verification time, and visibility. Reserve that ID to the first verified GitHub identity, including after disconnect. Public display requires membership and link consent. Grant no points or authority.
+Store only ID, optional username, verification time, and visibility. Reserve that ID to the first verified GitHub identity, including after disconnect. Public display requires membership and link consent. Grant no points or authority. Joining earns no welcome points (Participation points, section 11).
 
 Users can add EVM and Solana payout wallets. If users have not added wallets, they can claim payouts they should have already received.
 
@@ -78,7 +78,7 @@ Automatically sell project-token fees into USDC when the fee wallet receives the
 
 ## 7. Points, discovery, and clear pages
 
-Use one public Points measure; do not show a separate Slop Score. Accepted-work credits already convert into the points journal and must not be added a second time. Money received remains a separate record of verified payments. Owner decision, 24 October 2026: consolidate score into Points. Only accepted-work points for the project and payment period determine reward shares. Welcome, social, payment-recognition and other participation bonuses never affect payouts. Monthly and lifetime totals are views of the same points history. Preserve funded awards, historical payment calculations and source identifiers; old score fields are compatibility encodings, not another public metric.
+Use one public Points measure; do not show a separate Slop Score. Accepted-work credits already convert into the points journal and must not be added a second time. Money received remains a separate record of verified payments. Owner decision, 24 October 2026: consolidate score into Points. Only accepted-work points for the project and payment period determine reward shares. Joining and connecting X earn no points from 24 October 2026 (Participation points, section 11). Welcome and X-connection awards recorded before that date stay unchanged; earned-point standings and payouts already exclude them. Payment-recognition and other bonuses never affect payouts. Monthly and lifetime totals are views of the same points history. Preserve funded awards, historical payment calculations and source identifiers; old score fields are compatibility encodings, not another public metric.
 
 The homepage cycles the original campaign phrases with typing and deletion (owner decision, 24 October 2026). Keep a stable accessible heading and disable the animation for reduced motion.
 
@@ -261,5 +261,9 @@ The owner recorded these values. They apply prospectively and do not change hist
 | Slopbot spending limit | Alerts-only: no monthly hard cap on Slopbot inference spending. Email the owner at every crossed $500 milestone. Per-attempt cost reservations, duplicate refusal and queue limits still apply, and missing or malformed configuration still stops inference (owner decision, 24 October 2026, in #1141) |
 | Existing-project scan exemption | Permanently exempt the projects captured by migration `0075_vetting_grandfathered_projects.sql` from normal scan clearance, including future code changes. Later projects still require scans. Flags, pauses, confirmed-malicious bans and fresh-scan reinstatement remain effective. An exemption is not a passed scan ([owner decision](https://github.com/SlopDotCash/slopdotcash/pull/1114#issuecomment-6382081150)) |
 | Scanner and runner | Surplus Opus 5.5 first; GPT-6.1 Sol only for ambiguous or high-risk results. One disposable Cloudflare sandbox per risky artifact, with internet access off and no secrets |
+| Participation points | Grant no new welcome (5) or X-connection (10) points to anyone from 24 October 2026. Keep every award recorded before that date unchanged; never delete, rewrite, or reissue one. The X connection stays as a consented profile link with no points. Payout shares stay accepted-work points only (owner decision, 24 October 2026: “for 1154 we're ending welcome points and x connection points”) |
+| Scam closure notice | Implementation note for the "Scam or malicious" row of the section 7 penalty table, not a separate decision: the closure creates one idempotent moderator Inbox notice to review the account, alongside the label (#1155) |
 | Moderators | lalalune (18633264) and drew-dot-com (202660855) |
 | Launch order | The non-money product launches first. Mainnet requires explicit activation, one network at a time: Base, Solana, Ethereum, then Robinhood Chain |
+
+Proposed, not approved by the owner (from #1154; do not implement or treat as decided): vault creation turns on the monthly commitment unless the owner opts out; every new project draft uses 200 bps and vault-custody wording, including drafts without a vault; historical welcome and X-connection awards are removed from displayed totals.
