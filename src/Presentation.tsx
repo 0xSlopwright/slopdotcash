@@ -31,6 +31,19 @@ export function DataNotice({
       </div>
     );
   }
+  // PRD section 9: a refresh that fails keeps the last good snapshot.
+  if (state.refreshError !== undefined) {
+    return (
+      <p className="data-notice data-stale" role="status">
+        Scores may be outdated · updated{" "}
+        {formatDateTime(state.snapshot.generatedAt)}. Refresh failed:{" "}
+        {state.refreshError}
+        <button onClick={retry} type="button">
+          <RotateCcw aria-hidden="true" size={15} /> Retry
+        </button>
+      </p>
+    );
+  }
   // PRD section 9: a release that cannot refresh keeps the last good snapshot.
   if (stale(state.snapshot)) {
     return (

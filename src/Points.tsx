@@ -46,6 +46,7 @@ import { useAllDirectTransfers } from "./lib/use-direct-transfers";
 import { type DataState, useSnapshot } from "./lib/use-snapshot";
 import {
   DataNotice,
+  formatDateTime,
   formatMicroUsdc,
   formatScore,
   NotFound,
@@ -1154,18 +1155,52 @@ export function PointsPage() {
     </main>
   );
 }
+const countFormat = new Intl.NumberFormat("en-US");
+
+/** The bounds and source counts the published snapshot states, verbatim. */
+function StandingsCoverage({
+  state,
+  period,
+  projectId,
+}: {
+  state: Extract<DataState, { status: "ready" }>;
+  period: string;
+  projectId: string;
+}) {
+  const { snapshot, cycleIndex } = state;
+  const { counts } = snapshot.source;
+  const closedCycles = cycleIndex.cycles.filter(
+    (cycle) => !projectId || cycle.projectId === projectId,
+  ).length;
+  return (
+    <p className="points-meta points-coverage">
+      Score window: {formatDateTime(snapshot.window.from)} to{" "}
+      {formatDateTime(snapshot.window.to)} ({snapshot.window.days} days).
+      Source: {countFormat.format(counts.mergedPullRequests)} merged pull
+      requests and {countFormat.format(counts.closedIssues)} closed issues
+      across {countFormat.format(snapshot.repositories.length)} repositories.
+      {period === "lifetime"
+        ? ` Recorded history adds ${countFormat.format(closedCycles)} closed ${closedCycles === 1 ? "cycle" : "cycles"}.`
+        : null}
+    </p>
+  );
+}
+
 export function ContributorStandings({
   scoreState,
   retryScore,
   projectId,
   compact = false,
   title,
+  showDataNotice = !scoreState,
 }: {
   projectId?: string;
   compact?: boolean;
   title?: string;
   scoreState?: DataState;
   retryScore?: () => void;
+  /** Shows score loading, error and stale states for a caller's shared read. */
+  showDataNotice?: boolean;
 }) {
   const [loadedScore, retryLoadedScore] = useSnapshot(!scoreState);
   const scores = scoreState ?? loadedScore;
@@ -1292,7 +1327,7 @@ export function ContributorStandings({
           </Link>
         </p>
       ) : null}
-      {!scoreState ? (
+      {showDataNotice ? (
         <DataNotice state={scores} retry={retryScore ?? retryLoadedScore} />
       ) : null}
       <Notice />
@@ -1365,6 +1400,9 @@ export function ContributorStandings({
             />
           </label>
         </div>
+      ) : null}
+      {!compact && scores.status === "ready" ? (
+        <StandingsCoverage period={period} projectId={project} state={scores} />
       ) : null}
       {(
         sort === "points"
