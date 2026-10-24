@@ -297,7 +297,9 @@ the ordinary attester. Missing service configuration fails closed.
 - Private analysis needs `SURPLUS_API_KEY`; a zero-data-retention
   agreement is not required. The live provider is not yet exercised.
 
-A moderator account ban prevents a new bounty reservation for that researcher,
-including a ban recorded between the approval read and the database write.
+A moderator account ban prevents an account from proposing or approving a new
+bounty award, or receiving a new bounty reservation. The database checks both
+the decision maker and researcher again when it writes, including related-party
+proposals. A ban recorded during approval cannot create the award.
 Existing reservations are unchanged. The researcher can still read the case
 and appeal. This check does not replace account checks on other new Slop work.

@@ -663,6 +663,19 @@ describe("discretionary awards", () => {
     ).toBe(200);
   });
 
+  for (const relatedParty of [false, true])
+    for (const racing of [false, true])
+      test(`a banned maintainer cannot create a new bounty award (race: ${racing}, related: ${relatedParty})`, async () => {
+        const env = open();
+        const pending = await env.receive(REPORTER, "2026-10-19T09:10:00.000Z");
+        await env.decide(pending, "maintainer-ban-root", { relatedParty });
+        if (racing) env.setBeforeBatch(() => env.ban(MAINTAINER));
+        else env.ban(MAINTAINER);
+        const result = await env.award(pending, "1000000");
+        expect(result.status).toBe(racing ? 409 : 403);
+        expect(env.reservations()).toEqual([]);
+      });
+
   test("a ban that arrives during bounty approval prevents its reservation", async () => {
     const env = open();
     const pending = await env.receive(REPORTER, "2026-10-19T09:10:00.000Z");
@@ -952,6 +965,7 @@ describe("discretionary awards", () => {
     expect((await env.award(id, "800000")).body.error).toBe(
       "award_obligation_exists",
     );
+    env.ban(MAINTAINER);
     const approved = await env.award(id, "1000000");
     expect(approved.status).toBe(200);
     expect(approved.body.case.awardState).toBe("approved");
