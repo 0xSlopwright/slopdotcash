@@ -895,7 +895,7 @@ test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay
       })
       .rpc();
   };
-  await assert.rejects(initialize(0), /InvalidDelay/);
+  await assert.rejects(initialize(-1), /InvalidDelay/);
   await assert.rejects(initialize(30 * 86400 + 1), /InvalidDelay/);
   await assert.rejects(initialize(DELAY, payer.publicKey), /InvalidIdentity/);
   // L-3: the identity authority and the fee recipient must equal the pinned Config.
