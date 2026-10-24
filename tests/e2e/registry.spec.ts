@@ -27,6 +27,7 @@ import {
 const APPLICANT_TOKEN = process.env.SLOP_E2E_APPLICANT_TOKEN ?? "";
 const ADMIN_TOKEN = process.env.SLOP_E2E_ADMIN_TOKEN ?? "";
 const OWNER_TOKEN = process.env.SLOP_E2E_OWNER_TOKEN ?? "";
+const EVIDENCE_OWNER_TOKEN = process.env.SLOP_E2E_EVIDENCE_OWNER_TOKEN ?? "";
 const MODERATOR_TOKEN = process.env.SLOP_E2E_MODERATOR_TOKEN ?? "";
 const VETTING_PUBLIC_KEY = process.env.SLOP_E2E_VETTING_PUBLIC_KEY ?? "";
 const VETTING_PRIVATE_KEY = process.env.SLOP_E2E_VETTING_PRIVATE_KEY ?? "";
@@ -1691,7 +1692,7 @@ test.describe("private evidence console", () => {
       .locator("summary")
       .click();
     await expect(consoleLink).toHaveText("Open restricted evidence console");
-    await signIn(page, OWNER_TOKEN);
+    await signIn(page, EVIDENCE_OWNER_TOKEN);
     await page.goto(path, { waitUntil: "networkidle" });
     await expect(
       page.getByRole("heading", {

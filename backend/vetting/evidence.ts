@@ -45,6 +45,16 @@ const KINDS = new Set([
   "manifest",
   "disk-diff",
 ]);
+/**
+ * The approved evidence policy owner and readers (PRD section 11; owner
+ * decision on #909): lalalune (18633264) owns the policy, and lalalune and
+ * drew-dot-com (202660855) are the only evidence readers.
+ */
+export const EVIDENCE_POLICY_AUTHORITY_GITHUB_ID = "18633264";
+export const EVIDENCE_OPERATOR_GITHUB_IDS: readonly string[] = [
+  "18633264",
+  "202660855",
+];
 export type EvidencePolicy = {
   version: string;
   policyAuthorityGithubId: string;
@@ -106,12 +116,15 @@ export function evidencePolicy(
       "recoveryPolicyReference",
     ])
       text(p[key]);
+    // Only the recorded owner and readers (PRD section 11) are accepted; a
+    // policy that names anyone else, or omits either reader, is inactive.
     if (
+      p.policyAuthorityGithubId !== EVIDENCE_POLICY_AUTHORITY_GITHUB_ID ||
       !Array.isArray(p.operatorGithubIds) ||
-      !p.operatorGithubIds.length ||
-      p.operatorGithubIds.some(
-        (v) => typeof v !== "string" || !/^[1-9][0-9]{0,19}$/u.test(v),
-      )
+      p.operatorGithubIds.length !== EVIDENCE_OPERATOR_GITHUB_IDS.length ||
+      p.operatorGithubIds.some((id) => typeof id !== "string") ||
+      [...p.operatorGithubIds].sort().join() !==
+        [...EVIDENCE_OPERATOR_GITHUB_IDS].sort().join()
     )
       return null;
     for (const key of [

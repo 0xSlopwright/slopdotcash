@@ -1,11 +1,23 @@
-/** Real local workerd R2 for the connected vetting workflows; no live policy. */
+/**
+ * Real local workerd R2 for the connected vetting workflows. The policy names
+ * the recorded owner and readers, which the policy parser requires; its
+ * references and attestation are fixtures, never a live policy.
+ */
 import { fileURLToPath } from "node:url";
 import type { ProjectD1Database } from "../backend/projects/cloudflare-persistence";
 import type { R2Bucket } from "../backend/trace/cloudflare-persistence";
 import {
+  EVIDENCE_OPERATOR_GITHUB_IDS,
+  EVIDENCE_POLICY_AUTHORITY_GITHUB_ID,
   type EvidencePolicy,
   VettingEvidence,
 } from "../backend/vetting/evidence";
+
+/** The recorded evidence policy owner, who is also an evidence reader. */
+export const EVIDENCE_OWNER_GITHUB_ID = EVIDENCE_POLICY_AUTHORITY_GITHUB_ID;
+/** The recorded evidence reader who does not own the policy. */
+export const EVIDENCE_READER_GITHUB_ID = "202660855";
+
 import { signedVettingRequest } from "../backend/vetting/handler";
 import {
   signedVettingHeaders,
@@ -17,8 +29,8 @@ import {
 export function localEvidencePolicy(now: Date): EvidencePolicy {
   return {
     version: "isolated-fixture-only",
-    policyAuthorityGithubId: "900000003",
-    operatorGithubIds: ["900000003"],
+    policyAuthorityGithubId: EVIDENCE_POLICY_AUTHORITY_GITHUB_ID,
+    operatorGithubIds: [...EVIDENCE_OPERATOR_GITHUB_IDS],
     postClosureRetentionSeconds: 90 * 86400,
     readGrantDurationSeconds: 900,
     maxObjectBytes: 8 * 1024 * 1024,
@@ -29,7 +41,7 @@ export function localEvidencePolicy(now: Date): EvidencePolicy {
     recoveryPolicyReference: "fixture:external-recovery",
     externalControls: {
       evidenceReference: "fixture:authority-attestation",
-      attestedByGithubId: "900000003",
+      attestedByGithubId: EVIDENCE_POLICY_AUTHORITY_GITHUB_ID,
       attestedAt: new Date(now.getTime() - 1000).toISOString(),
       validUntil: new Date(now.getTime() + 7200_000).toISOString(),
     },

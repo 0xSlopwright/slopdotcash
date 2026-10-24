@@ -113,6 +113,9 @@ const wrangler = join(
 const E2E_ADMIN_GITHUB_ID = "900000001";
 // A second admin with the moderator role decides appeals independently.
 const E2E_MODERATOR_GITHUB_ID = "900000004";
+// The recorded evidence policy owner (backend/vetting/evidence.ts). The
+// evidence policy accepts only the recorded owner and readers.
+const E2E_EVIDENCE_OWNER_GITHUB_ID = "18633264";
 
 function sessionToken() {
   return randomBytes(32).toString("base64url");
@@ -135,6 +138,10 @@ function prepareRegistryDatabase() {
     applicant: { token: sessionToken(), githubId: "900000002" },
     moderator: { token: sessionToken(), githubId: E2E_MODERATOR_GITHUB_ID },
     owner: { token: sessionToken(), githubId: E2E_OWNER.githubId },
+    evidenceOwner: {
+      token: sessionToken(),
+      githubId: E2E_EVIDENCE_OWNER_GITHUB_ID,
+    },
     ...Object.fromEntries(
       Object.entries(E2E_EMAIL_ACCOUNTS).map(([role, githubId]) => [
         role,
@@ -210,6 +217,7 @@ function prepareRegistryDatabase() {
       ),
       SLOP_E2E_MODERATOR_TOKEN: sessions.moderator.token,
       SLOP_E2E_OWNER_TOKEN: sessions.owner.token,
+      SLOP_E2E_EVIDENCE_OWNER_TOKEN: sessions.evidenceOwner.token,
       SLOP_E2E_SECURITY_TOKENS: JSON.stringify(
         Object.fromEntries(
           Object.keys(E2E_SECURITY_ACCOUNTS).map((role) => [
