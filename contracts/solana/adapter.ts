@@ -473,13 +473,16 @@ export function solanaAllocationProof(
   }
   return proof;
 }
-/** The bytes the identity authority signs for one period ("YYYY-MM") of one project. */
+/** The bytes the identity authority signs for one period ("YYYY-MM") of one project.
+ * `frozenAt` is the Unix second at which the attester froze the allocation, after it
+ * checked that no included source was consumed. */
 export function solanaMonthlyMessage(
   programId: string,
   projectPda: string,
   period: string,
   allocationRoot: string,
   total: string,
+  frozenAt: string,
   network: string,
 ) {
   const match = /^([2-9][0-9]{3})-(0[1-9]|1[0-2])$/.exec(period);
@@ -487,12 +490,13 @@ export function solanaMonthlyMessage(
   const yyyymm = new Uint8Array(4);
   new DataView(yyyymm.buffer).setUint32(0, Number(match[1] + match[2]), true);
   return concat(
-    new TextEncoder().encode("slop-monthly-allocation-v2"),
+    new TextEncoder().encode("slop-monthly-allocation-v3"),
     publicKeyBytes(programId),
     publicKeyBytes(projectPda),
     yyyymm,
     digest(allocationRoot),
     le(total, 8),
+    le(frozenAt, 8),
     digest(network),
   );
 }

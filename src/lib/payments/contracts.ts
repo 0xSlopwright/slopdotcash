@@ -34,6 +34,7 @@ export interface AccountPayment extends PaymentAsset {
  * decision.
  */
 export type MonthlyAwardState =
+  | "excluded"
   | "underfunded"
   | "excluded"
   | "awaiting-reservation"

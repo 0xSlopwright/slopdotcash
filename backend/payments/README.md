@@ -293,11 +293,29 @@ sections 6 and 7). Migration `0062` adds its private records.
    during the write forces a retry. Previously funded obligations remain valid.
    The owner sees excluded entries with zero payable amounts; they cannot obtain
    a reservation plan for those entries.
-5. **Reservation and payment.** The coordinator does not yet submit the D13
-   bounded monthly commitment (`commitMonthly` on EVM, `commit_monthly` and
-   `commit_monthly_award` on Solana; see the contract READMEs), because that
-   needs the attester signing service. Until then each obligation uses the
-   owner-only `commitAward` and waits for the owner on the Awards page. `POST .../monthly/:YYYY-MM/commitment` and
+5. **Authorization and execution.** The ordinary attester's scheduled job
+   refreshes the finalized vault projection, runs the coordinator, and signs
+   each funded month's eligible allocation. The Durable Object records the
+   first intent before signing and refuses a different root for that month.
+   Funding-time exclusions are omitted; later bans preserve funded awards.
+   The signed allocation is immutable in `monthly_payment_authorizations`.
+   `GET /api/v1/payments/projects/:projectId/monthly/:YYYY-MM/authorization/:network`
+   returns only this final authorization and its publication time, without
+   calling a signer or RPC. It exposes no private adjustment history.
+   Publication is not a reservation or payment. A project-operated or
+   permissionless executor must still submit the bounded commitment and
+   reconcile finalized results. The payments scheduler sends published allocations
+   to the configured executor's `/v1/commit-monthly` service. Hosted relayers
+   accept this only on the test stack; production requires a separately operated
+   executor. EVM admission reserves its awards in one transaction. Solana admits
+   the total, then commits or releases one proven leaf per invocation. Only a
+   consumed source or zero actor can release its leaf; valid funded awards never
+   expire. An admitted Solana month continues after opt-out or its admission
+   window closes. `monthly_payment_execution` tracks fair retries and completed
+   execution, not public payment state. Signed transactions are journaled before
+   broadcast and reused after an uncertain response.
+   The owner can still prepare individual awards through the Awards page.
+   `POST .../monthly/:YYYY-MM/commitment` and
    `.../solana-commitment` recheck the steward, repository authority, project
    revision, enforcement state, served network, execution snapshot digest and
    funded obligation, and return an unsigned plan for that award. Each source
