@@ -379,7 +379,13 @@ try {
   const manifest = JSON.stringify({
     id: "fee-claim-fork",
     status: "active",
-    escrow: { deployments: [{ network: "base-mainnet", vault, asset: AERO }] },
+    // The fee claim must also discover a bounty-only program. The shared
+    // claim path collects accrued fees regardless of their original rate.
+    securityBounty: {
+      settlement: {
+        deployments: [{ network: "base-mainnet", vault, asset: AERO }],
+      },
+    },
   });
   sqlite.exec(`INSERT INTO project_revisions (project_id, revision, manifest, manifest_sha256, reason, created_at)
     VALUES ('fee-claim-fork', 1, '${manifest}', '${"a".repeat(64)}', 'fork', 'now')`);

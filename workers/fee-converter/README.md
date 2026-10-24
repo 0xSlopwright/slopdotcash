@@ -349,3 +349,8 @@ Whirlpool programs and one JUP/USDC route. The Solana harness lifts the
 Solana block with a local-only option that the hosted Worker never sets.
 They need `anvil` and `solana-test-validator` on `PATH` and never touch a real
 chain.
+
+The registry discovery includes ordinary `escrow.deployments` and private
+bounty `securityBounty.settlement.deployments`. Both supply fee assets and
+vaults. A bounty-only project does not need an ordinary vault or reward token
+entry for its fees to be claimed and converted.
