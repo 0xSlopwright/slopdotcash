@@ -37,6 +37,10 @@ binding = "SLOPBOT"
 service = "slop-repository-access-staging"
 
 [[services]]
+binding = "VETTING_SANDBOX"
+service = "slop-vetting-sandbox-staging"
+
+[[services]]
 binding = "SLOP_IDENTITY"
 service = "slop-identity-staging"
 

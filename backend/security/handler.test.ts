@@ -7,7 +7,11 @@ import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { sqliteD1 } from "../../tests/sqlite-d1";
 import type { AdvisoryReader, GithubPrivateReport } from "./advisories";
-import type { SecurityAnalysisInput, SecurityAnalyzer } from "./analysis";
+import type {
+  SecurityAnalysisInput,
+  SecurityAnalyzer,
+  SecurityAppealInput,
+} from "./analysis";
 import { handleSecurityApi, type SecurityD1Database } from "./handler";
 
 const migrations = readdirSync("migrations")
@@ -204,11 +208,20 @@ function open(securityBounty: Record<string, unknown> = OPEN_PROGRAM) {
     },
   };
   const analyzed: SecurityAnalysisInput[] = [];
+  const appealInputs: SecurityAppealInput[] = [];
   let analyzerFails = false;
   let analyzerConfigured = true;
   const analyzer: SecurityAnalyzer = {
     provider: "fixture",
     model: "fixture-model",
+    triageAppeal: async (input) => {
+      appealInputs.push(input);
+      return {
+        proposedOutcome: "return",
+        rationale: "Review the receipt-time scope.",
+        confidence: 0.95,
+      };
+    },
     analyze: async (input) => {
       analyzed.push(input);
       if (analyzerFails) throw new Error("provider down");
@@ -348,6 +361,7 @@ function open(securityBounty: Record<string, unknown> = OPEN_PROGRAM) {
     inbox,
     reports,
     analyzed,
+    appealInputs,
     reservations,
     setIntake: (state: typeof intake) => {
       intake = state;
@@ -1030,4 +1044,52 @@ describe("related-party awards", () => {
     expect(approved.status).toBe(200);
     expect(approved.body.case.awardState).toBe("approved");
   });
+});
+
+test("report analysis and appeal triage keep the scope recorded at receipt", async () => {
+  const env = open();
+  const changed = programManifest({
+    ...OPEN_PROGRAM,
+    scope: {
+      includedAssets: ["A different asset added after the report"],
+      severityRubric: "A later rubric",
+      lossDefinition: "A later loss definition",
+    },
+  });
+  const digest = createHash("sha256").update(changed).digest("hex");
+  env.sqlite
+    .query(
+      "INSERT INTO project_revisions(project_id,revision,manifest,manifest_sha256,reason,created_at) VALUES (?,2,?,?,'Later scope','2026-10-19T09:30:00.000Z')",
+    )
+    .run(PROJECT, changed, digest);
+  env.sqlite
+    .query(
+      "UPDATE projects SET revision=2,manifest=?,manifest_sha256=?,updated_at='2026-10-19T09:30:00.000Z' WHERE id=?",
+    )
+    .run(changed, digest, PROJECT);
+  const id = await env.receive(REPORTER, "2026-10-19T09:10:00.000Z");
+  expect(env.analyzed[0].scope).toEqual(OPEN_PROGRAM.scope);
+  expect((await env.decide(id, "receipt-time-scope")).status).toBe(200);
+  expect(
+    (
+      await env.act(MAINTAINER, id, {
+        action: "award",
+        decision: "none",
+        reason: "Owner decision for review",
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await env.act(REPORTER, id, {
+        action: "appeal",
+        reason: "Review the scope that applied at receipt",
+      })
+    ).status,
+  ).toBe(200);
+  expect(env.appealInputs).toHaveLength(1);
+  expect(env.appealInputs[0].scope).toEqual(OPEN_PROGRAM.scope);
+  await env.receive(OTHER, "2026-10-19T08:59:00.000Z");
+  expect(env.analyzed[1].scope).toBeNull();
+  env.sqlite.close();
 });

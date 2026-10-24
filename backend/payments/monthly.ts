@@ -34,6 +34,7 @@ import {
   monthlyCutoff,
   periodEnd,
 } from "../../src/lib/payments/monthly-allocation";
+import { payoutExcludedGithubUserIds } from "../../src/lib/payout-exclusions.mjs";
 import type {
   GithubActor,
   ProjectRecord,
@@ -871,6 +872,8 @@ export function monthlyOwnerService(deps: {
           currentAllocations(base.rows, changes),
           base.capBase,
           { ...change, actorId: actor.githubId },
+          // The proposal's own manifest revision fixes the month's exclusions.
+          payoutExcludedGithubUserIds(base.manifest, period),
         );
       } catch (error) {
         if (error instanceof MonthlyAllocationError)
