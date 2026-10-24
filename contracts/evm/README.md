@@ -381,13 +381,15 @@ of wrong chains, vaults, obligations, event indices, and nonfinalized receipts.
 ## Testnet deployment
 
 Each checked-in script rejects every chain except its own. Every script reads
-three public addresses from the environment: `ESCROW_REGISTRAR`,
-`ESCROW_FEE_RECIPIENT` and `ESCROW_IDENTITY_AUTHORITY`. Each is required.
+four public addresses from the environment: `ESCROW_REGISTRAR`,
+`ESCROW_FEE_RECIPIENT`, `ESCROW_IDENTITY_AUTHORITY` and
+`ESCROW_UPGRADE_AUTHORITY`. Each is required.
 Only `DeployBase.s.sol` defaults `ESCROW_FEE_RECIPIENT` to Slop's published
 Base fee recipient `0x8f77C37D8650776bFe73c9b12B15209eE15D9b86` when it is not
 set. No script fixes a token: one factory serves every ERC-20 on its chain.
 Supply a dedicated test-only external signer through Foundry's account or
-hardware-wallet options. The signer only pays gas and holds no role. Do not put
+hardware-wallet options. The signer pays gas and holds a role only if explicitly
+selected for it. Do not put
 a private key in a command, environment dump, source file, or evidence.
 
 First simulate the exact compiled source:
@@ -409,8 +411,10 @@ only humans run them. Keep transaction artifacts in ignored `broadcast/`, and
 publish only reviewed safe deployment evidence.
 
 Record the source SHA, compiler settings, factory address, deployment
-transaction, chain ID, registrar and its custody, fee address, and identity
-authority. Verify runtime bytecode and constructor configuration. The project
+transaction, chain ID, registrar and its custody, fee address, identity
+authority and upgrade authority. Verify proxy and implementation bytecode,
+atomic initialization, and zero binding and rotation delays as described in
+the mainnet guide. The project
 owner creates each vault from its own account with
 `create(projectId, token, purpose)`; then verify its owner, purpose, token,
 decimals, project ID, and authority. Export the ABI from

@@ -15,12 +15,15 @@ contract and adapter are described in
 - Foundry 1.7.1 (commit `4072e48705af9d93e3c0f6e29e93b5e9a40caed8`).
 - A clean checkout of the reviewed source commit. Record its SHA.
 - A dedicated test deployer in a Foundry keystore, for example
-  `slop-test-deployer`. It pays gas only and holds no escrow role.
+  `slop-test-deployer`. It pays gas and holds a role only if explicitly selected
+  for it.
 - Testnet ETH for gas on the deployer. Get it from the Robinhood Chain Testnet
   faucet, `https://faucet.testnet.chain.robinhood.com`.
-- Three test addresses, each controlled by a separate test key:
-  `ESCROW_REGISTRAR`, `ESCROW_IDENTITY_AUTHORITY` and `ESCROW_FEE_RECIPIENT`.
-  The registrar must differ from the identity authority.
+- Explicit test-role addresses: `ESCROW_REGISTRAR`,
+  `ESCROW_IDENTITY_AUTHORITY`, `ESCROW_FEE_RECIPIENT` and
+  `ESCROW_UPGRADE_AUTHORITY`. The registrar must differ from the identity
+  authority. The upgrade authority must differ from the identity authority
+  and fee recipient; it may be the registrar.
 - `ROBINHOOD_TESTNET_RPC_URL`. The public RPC
   `https://rpc.testnet.chain.robinhood.com` is rate-limited. It is acceptable
   for a one-off deployment, not for the scanner.
@@ -97,12 +100,14 @@ cd contracts/evm
 export ESCROW_REGISTRAR=0x...
 export ESCROW_IDENTITY_AUTHORITY=0x...
 export ESCROW_FEE_RECIPIENT=0x...
+export ESCROW_UPGRADE_AUTHORITY=0x...
 forge script script/DeployRobinhoodTestnet.s.sol:DeployRobinhoodTestnet \
   --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" --account slop-test-deployer
 ```
 
-Review the simulation: chain 46630, the three addresses, and a binding delay
-of 172800 seconds. Then run the same command with `--broadcast`. The script
+Review the simulation: chain 46630, the four role addresses, atomic proxy
+initialization, and zero binding and authority-rotation delays. Then run the
+same command with `--broadcast`. The script
 reverts with `wrong chain` on any other chain, and reverts when an environment
 address is missing.
 
@@ -110,19 +115,25 @@ address is missing.
 
 ```sh
 FACTORY=0x...
-cast call "$FACTORY" 'registrar()(address)' --rpc-url "$ROBINHOOD_TESTNET_RPC_URL"
-cast call "$FACTORY" 'feeRecipient()(address)' --rpc-url "$ROBINHOOD_TESTNET_RPC_URL"
-cast call "$FACTORY" 'identityAuthority()(address)' --rpc-url "$ROBINHOOD_TESTNET_RPC_URL"
-cast call "$FACTORY" 'bindingDelay()(uint64)' --rpc-url "$ROBINHOOD_TESTNET_RPC_URL"
-cast call "$FACTORY" 'AUTHORITY_ROTATION_DELAY()(uint64)' --rpc-url "$ROBINHOOD_TESTNET_RPC_URL"
-cast code "$FACTORY" --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" | xxd -r -p | shasum -a 256
+BLOCK=$(cast block finalized --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" --field number)
+cast call "$FACTORY" 'registrar()(address)' --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" --block "$BLOCK"
+cast call "$FACTORY" 'feeRecipient()(address)' --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" --block "$BLOCK"
+cast call "$FACTORY" 'identityAuthority()(address)' --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" --block "$BLOCK"
+cast call "$FACTORY" 'upgradeAuthority()(address)' --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" --block "$BLOCK"
+cast call "$FACTORY" 'bindingDelay()(uint64)' --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" --block "$BLOCK"
+cast call "$FACTORY" 'AUTHORITY_ROTATION_DELAY()(uint64)' --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" --block "$BLOCK"
+cast code "$FACTORY" --rpc-url "$ROBINHOOD_TESTNET_RPC_URL" --block "$BLOCK" | xxd -r -p | shasum -a 256
 ```
 
-Compare the runtime code digest with the digest of the same build on a local
-Anvil deployment with the same constructor arguments. Verify the source on the
+Record both implementation addresses and code digests along with the proxy
+digests and upgrade authority, using the same finalized block for all reads
+as required by [`contracts/DEPLOY-MAINNET.md`](../contracts/DEPLOY-MAINNET.md).
+Compare them with the same build on a local Anvil deployment. Verify the
+factory implementation, vault implementation and proxy separately on the
 Robinhood Chain Testnet explorer (`https://explorer.testnet.chain.robinhood.com`)
-with `forge verify-contract`, using the explorer's Blockscout API URL and the
-constructor arguments from step 4.
+with `forge verify-contract`, using the explorer's Blockscout API URL. The
+implementations take no constructor arguments; the factory proxy takes its
+implementation address and encoded initialization call from step 4.
 
 ## 6. Create and exercise one vault (human only)
 
@@ -148,7 +159,7 @@ Then run the acceptance scenario with finalized receipts:
 2. The owner commits one award with `awardId(sourceDigest)`.
 3. The attester binds the contributor wallet with the wallet's EIP-712
    signature (domain `SlopProjectEscrow`, version `5`).
-4. After the award's commit delay, anyone calls `pay`.
+4. Anyone calls `pay`; the replacement deployment has no mandatory award delay.
 5. The owner withdraws part of the free balance. Check the fee is
    `floor(gross / 50)` (2%) and only `gross - fee` reaches the owner.
 6. Anyone calls `claimFees`.
