@@ -9,7 +9,7 @@ export type VettingServiceSigner = {
 
 export async function signedServiceHeaders(input: {
   signer: VettingServiceSigner;
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "PUT";
   pathAndQuery: string;
   body: Uint8Array;
   at?: Date;

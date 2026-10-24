@@ -121,12 +121,14 @@ export class MonthlyAllocationError extends Error {}
 /**
  * Checks one private change. The month's total may never exceed its cap, so
  * an unallocated amount never rolls over into a larger later month. A person
- * cannot change their own allocation.
+ * cannot change their own allocation, and a person with an explicit payout
+ * exclusion for the month cannot receive an amount (PRD section 7).
  */
 export function assertAllocationChange(
   allocations: readonly MonthlyAllocation[],
   capBase: string,
   change: { githubUserId: string; grossBase: string; actorId: string },
+  excludedGithubUserIds: ReadonlySet<string> = new Set(),
 ): void {
   if (!ACTOR.test(change.githubUserId) || !BASE_UNITS.test(change.grossBase))
     throw new MonthlyAllocationError(
@@ -137,6 +139,10 @@ export function assertAllocationChange(
     throw new MonthlyAllocationError("The amount exceeds the supported range.");
   if (change.githubUserId === change.actorId)
     throw new MonthlyAllocationError("You cannot change your own allocation.");
+  if (amount > 0n && excludedGithubUserIds.has(change.githubUserId))
+    throw new MonthlyAllocationError(
+      "This person has a payout exclusion for this month.",
+    );
   if (!allocations.some((row) => row.githubUserId === change.githubUserId))
     throw new MonthlyAllocationError(
       "This person has no allocation this month.",

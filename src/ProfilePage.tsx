@@ -5,10 +5,11 @@ import { browserDeployment } from "./lib/browser-deployment";
 import { readBoundedJson } from "./lib/browser-json";
 import { isFundingAddress } from "./lib/funding-address.mjs";
 import { githubUserIdFromNodeId } from "./lib/github-actor";
-import { createGlobalLeaders } from "./lib/global-leaderboard";
+import { createGlobalLeaders, openMonthScores } from "./lib/global-leaderboard";
 import {
   type GitHubActor,
   PROFILE_OPPORTUNITY_LIMIT,
+  penaltyProjectOf,
   type ScoreOpportunity,
 } from "./lib/leaderboard";
 import { findProject, type ProjectDefinition } from "./lib/projects.mjs";
@@ -27,6 +28,14 @@ import {
 } from "./Presentation";
 import { useProfiles } from "./Profiles";
 import { RewardValue } from "./ProjectLeaderboard";
+
+/** The categories of the published penalty table (PRD section 7). */
+const PENALTY_CATEGORY_LABELS: Record<string, string> = {
+  spam: "Spam",
+  scam: "Scam or malicious",
+  busywork: "Clear violation of a quoted project rule",
+  gaming: "Clear violation of a quoted project rule",
+};
 
 export function ProfilePage({
   login,
@@ -131,6 +140,12 @@ export function ProfilePage({
   const events = state.snapshot.ledger.filter(
     (event) => event.actor.id === actor.id,
   );
+  const penalties = (state.snapshot.penalties ?? []).filter(
+    (penalty) => penalty.actor.id === actor.id,
+  );
+  // The same open-month deductions as the Slop Score shown above.
+  const appliedPenalties = openMonthScores(state.snapshot, state.cycleIndex)
+    .deductions.byPenalty;
   const opportunities = actorOpportunities
     .sort(
       (left, right) =>
@@ -231,6 +246,40 @@ export function ProfilePage({
           </section>
         ) : null}
       </ProfilePoints>
+      {penalties.length > 0 ? (
+        <section
+          className="section profile-section"
+          aria-labelledby="profile-penalties"
+        >
+          <div className="profile-section-heading">
+            <h2 id="profile-penalties">Penalties</h2>
+            <span>{penalties.length} recorded</span>
+          </div>
+          <p>
+            Slopbot debits a closed pull request once, from its published
+            penalty table. A debit lowers only that project and UTC month, never
+            below zero. An upheld appeal or a maintainer reopen removes it.
+          </p>
+          <ul className="profile-penalties">
+            {penalties.map((penalty) => (
+              <li key={penalty.id}>
+                <ExternalLinkAnchor href={penalty.source.url}>
+                  {findProject(penaltyProjectOf(penalty.repository))?.name ??
+                    penalty.repository}{" "}
+                  #{penalty.source.number}
+                </ExternalLinkAnchor>{" "}
+                <span>
+                  {PENALTY_CATEGORY_LABELS[penalty.category] ??
+                    penalty.category}{" "}
+                  · {formatCycleMonth(penalty.occurredAt.slice(0, 7))} · −
+                  {formatThirds(penalty.debitThirds)} point debit ·{" "}
+                  {formatThirds(appliedPenalties.get(penalty.id) ?? 0)} applied
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       {opportunities.length > 0 ? (
         <section className="section profile-section">
           <div className="profile-section-heading">
