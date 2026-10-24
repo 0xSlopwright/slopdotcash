@@ -577,6 +577,13 @@ export function ProfilePoints({
       <ProfileActivity
         work={work}
         awards={m?.awards}
+        pointsMissing={
+          state.status === "ready"
+            ? undefined
+            : state.status === "loading"
+              ? "Points loading…"
+              : "Points unavailable"
+        }
         revisions={
           state.status === "ready" && (resolvedActorId ?? m?.actor.id)
             ? state.journal.revisions.filter(

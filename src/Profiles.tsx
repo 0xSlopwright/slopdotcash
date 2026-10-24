@@ -60,6 +60,7 @@ function dollars(n: bigint) {
 export function ProfileActivity({
   work,
   awards,
+  pointsMissing,
   revisions,
   login,
   actorId,
@@ -73,6 +74,8 @@ export function ProfileActivity({
   login: string;
   work?: readonly ScoreEvent[];
   awards?: PointsMember["awards"];
+  /** Shown per record while the points journal is loading or unavailable. */
+  pointsMissing?: string;
   revisions?: readonly PointRevision[];
   actorId?: string;
   showIdentity?: boolean;
@@ -176,7 +179,11 @@ export function ProfileActivity({
       {revisions ? <PointsRevisionHistory revisions={revisions} /> : null}
       {children}
       <PayoutList payments={payments ?? []} direct={direct} />
-      <ProfileTimeline work={work} awards={awards} />
+      <ProfileTimeline
+        work={work}
+        awards={awards}
+        pointsMissing={pointsMissing}
+      />
       {state.status === "ready" && id ? (
         <IssueOutcomes key={id} index={state.index} actorId={id} />
       ) : null}
@@ -424,9 +431,11 @@ function PointsRevisionHistory({
 function ProfileTimeline({
   work = [],
   awards = [],
+  pointsMissing,
 }: {
   work?: readonly ScoreEvent[];
   awards?: PointsMember["awards"];
+  pointsMissing?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const unmatchedAwards = new Map(awards.map((award) => [award.key, award]));
@@ -459,7 +468,7 @@ function ProfileTimeline({
         detail: `${project.name} · ${event.category.replaceAll("-", " ")}${event.evaluation ? ` · reviewed by ${event.evaluation.reviewer}` : ""}`,
         amount: award
           ? `+${award.amount.toLocaleString()} Points${award.provisional ? " · Provisional tier" : ""}`
-          : "Points pending",
+          : (pointsMissing ?? "Points pending"),
       };
     }),
     ...[...unmatchedAwards.values()].map((award) => ({
@@ -485,7 +494,7 @@ function ProfileTimeline({
   return (
     <section className="profile-timeline" aria-label="Contribution activity">
       <h2>Activity</h2>
-      {awards ? <ActivityChart awards={awards} /> : null}
+      {pointsMissing ? null : <ActivityChart awards={awards} />}
       {records.length > 10 ? (
         <button
           type="button"

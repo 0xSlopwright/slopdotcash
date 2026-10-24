@@ -967,7 +967,7 @@ function InstallPanel({ project }: { project?: ProjectDefinition }) {
 }
 
 function ProjectInstallPanel({ project }: { project: ProjectDefinition }) {
-  const projectId = project?.id;
+  const projectId = project.id;
   const [eligibility, setEligibility] = useState<
     "loading" | "ready" | "blocked" | "error"
   >("loading");
@@ -990,11 +990,7 @@ function ProjectInstallPanel({ project }: { project: ProjectDefinition }) {
           throw new Error("Invalid discovery registry");
         if (active)
           setEligibility(
-            (
-              projectId
-                ? body.projects.some((entry) => entry.project_id === projectId)
-                : body.projects.length > 0
-            )
+            body.projects.some((entry) => entry.project_id === projectId)
               ? "ready"
               : "blocked",
           );
@@ -1007,25 +1003,13 @@ function ProjectInstallPanel({ project }: { project: ProjectDefinition }) {
     };
   }, [projectId, attempt]);
   return (
-    <div
-      className={project ? "install-panel" : "home-agent-setup"}
-      id={project ? "start" : undefined}
-    >
+    <div className="install-panel" id="start">
       {eligibility === "ready" ? (
         <>
-          {project ? (
-            <div className="install-heading">
-              <h2>Copy this into your agent.</h2>
-            </div>
-          ) : (
-            <p className="hero-copy">Paste this into your coding agent.</p>
-          )}
-          <AgentPromptBox
-            openIn={!project}
-            prompt={
-              project ? projectAgentPrompt(project) : bootstrapAgentPrompt()
-            }
-          />
+          <div className="install-heading">
+            <h2>Copy this into your agent.</h2>
+          </div>
+          <AgentPromptBox prompt={projectAgentPrompt(project)} />
         </>
       ) : (
         <>
@@ -1036,7 +1020,7 @@ function ProjectInstallPanel({ project }: { project: ProjectDefinition }) {
                 ? "Agent setup awaiting security review"
                 : "Agent setup unavailable"}
           </h2>
-          {eligibility === "blocked" && project ? (
+          {eligibility === "blocked" ? (
             <p>
               The current project revision is not cleared for agent
               installation.{" "}
