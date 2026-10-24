@@ -10,6 +10,11 @@ import { signedServiceHeaders } from "./service";
 export type ArtifactInterpreter = "shell" | "python" | "node" | "binary";
 export type IsolatedArtifactEvidence = {
   schema: "slop-isolated-artifact-v1";
+  runId: string;
+  startedAt: string;
+  completedAt: string;
+  imageSha256: string | null;
+  sourceSha: string | null;
   artifactSha256: string;
   interpreter: ArtifactInterpreter;
   internetEnabled: false;
@@ -74,6 +79,23 @@ export async function runIsolatedArtifact(input: {
   if (
     !isRecord(evidence) ||
     evidence.schema !== "slop-isolated-artifact-v1" ||
+    typeof evidence.runId !== "string" ||
+    !/^[a-f0-9-]{36}$/.test(evidence.runId) ||
+    typeof evidence.startedAt !== "string" ||
+    typeof evidence.completedAt !== "string" ||
+    !Number.isFinite(Date.parse(evidence.startedAt)) ||
+    !Number.isFinite(Date.parse(evidence.completedAt)) ||
+    Date.parse(evidence.completedAt) < Date.parse(evidence.startedAt) ||
+    !(
+      evidence.imageSha256 === null ||
+      (typeof evidence.imageSha256 === "string" &&
+        /^[a-f0-9]{64}$/.test(evidence.imageSha256))
+    ) ||
+    !(
+      evidence.sourceSha === null ||
+      (typeof evidence.sourceSha === "string" &&
+        /^[a-f0-9]{40}$/.test(evidence.sourceSha))
+    ) ||
     evidence.artifactSha256 !== artifactSha256 ||
     evidence.interpreter !== interpreter ||
     evidence.internetEnabled !== false ||

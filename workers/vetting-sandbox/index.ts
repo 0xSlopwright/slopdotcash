@@ -14,6 +14,7 @@ export class OfflineSandbox extends Sandbox {
 
 interface Env {
   SLOP_RELEASE_SHA?: string;
+  RUNNER_IMAGE_SHA256?: string;
   RUNNER: Parameters<typeof getSandbox>[0];
 }
 
@@ -27,6 +28,7 @@ export default {
         service: "vetting-sandbox",
         ok: true,
         revision: env.SLOP_RELEASE_SHA ?? null,
+        imageSha256: env.RUNNER_IMAGE_SHA256 ?? null,
       });
     if (request.method !== "POST")
       return new Response("Method not allowed", { status: 405 });
@@ -62,7 +64,9 @@ export default {
       return new Response("Invalid artifact request", { status: 400 });
     }
     // A fresh ID per execution prevents reuse of any earlier artifact's filesystem.
-    const sandbox = getSandbox(env.RUNNER, crypto.randomUUID());
+    const runId = crypto.randomUUID();
+    const startedAt = new Date().toISOString();
+    const sandbox = getSandbox(env.RUNNER, runId);
     try {
       const write = await sandbox.writeFile(
         "/analysis/artifact",
@@ -93,6 +97,11 @@ export default {
       return Response.json(
         {
           schema: "slop-isolated-artifact-v1",
+          runId,
+          startedAt,
+          completedAt: new Date().toISOString(),
+          imageSha256: env.RUNNER_IMAGE_SHA256 ?? null,
+          sourceSha: env.SLOP_RELEASE_SHA ?? null,
           artifactSha256: body.artifactSha256,
           interpreter: body.interpreter,
           internetEnabled: false,

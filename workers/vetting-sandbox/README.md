@@ -39,6 +39,11 @@ controller requests, verifies the returned artifact identity and output limits,
 and returns the exact response bytes for private evidence retention. Production and
 staging bind different Worker names. Preview deployments have no binding.
 The checked-in release workflow deploys the selected Worker before Pages.
+It builds and uploads the image, reads its registry digest, and deploys that
+immutable digest with the same digest in the Worker environment. Results carry
+the image digest, source revision, run ID and execution times. Local developer
+runs leave image and source identity null; they cannot prove a deployed image.
+The release script rejects local, pull-request and mismatched checkouts.
 
 To run the local integration workflow, start the Worker with
 `bunx wrangler dev --config workers/vetting-sandbox/wrangler.toml --port 8896`.
