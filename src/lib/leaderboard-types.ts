@@ -626,4 +626,6 @@ export interface LeaderboardInput {
   /** Signed attributions recovered from the same accepted snapshot. */
   retainedReviewAttributions?: ModelAttribution[];
   verifyRunReceipt?: (value: unknown) => ProjectRunReceipt;
+  /** Active account bans: GitHub actor node ID to the earliest ban start. */
+  participationBans?: ReadonlyMap<string, string>;
 }

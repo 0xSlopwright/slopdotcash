@@ -1,5 +1,6 @@
 import { GitHubClient } from "../workers/slopbot/github";
 import {
+  loadParticipationBans,
   loadValueInputs,
   VALUE_FEED_UNAVAILABLE_EXIT_CODE,
   ValueFeedUnavailableError,
@@ -4069,6 +4070,12 @@ export async function generateLeaderboardFromGitHub(
       )),
     );
   }
+  const participationBans = await loadParticipationBans({
+    get: <T>(path: string) => {
+      valueRestRequests += 1;
+      return github.get<T>(path);
+    },
+  });
   const fetchedAt = new Date().toISOString();
   const rateLimit = client.getRateLimit();
   const source: LeaderboardSourceMetadata = {
@@ -4133,6 +4140,7 @@ export async function generateLeaderboardFromGitHub(
     retainedReviewEvents: options.retainedReviewEvents,
     retainedReviewAttributions: options.retainedReviewAttributions,
     verifyRunReceipt: verifyRunReceiptSignature,
+    participationBans,
   });
   return snapshot;
 }
