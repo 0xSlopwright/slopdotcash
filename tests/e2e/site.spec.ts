@@ -1031,7 +1031,7 @@ test("an admin leaves an unset reward asset unchanged until choosing it", async 
   await expect(changes).toContainText("listingTier");
 });
 
-test("project standings and sponsor links keep the intended destination", async ({
+test("project pages omit full standings and sponsor links keep their destination", async ({
   page,
 }) => {
   await page.goto("/projects/eliza", { waitUntil: "networkidle" });
@@ -1039,14 +1039,7 @@ test("project standings and sponsor links keep the intended destination", async 
     name: "Full standings",
     exact: true,
   });
-  await expect(standings).toHaveAttribute("href", /project=eliza/u);
-  await standings.click();
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
-    "Leaderboard",
-  );
-  await expect(page.getByLabel("Project", { exact: true })).toHaveValue(
-    "eliza",
-  );
+  await expect(standings).toHaveCount(0);
   await page.goto("/sponsors", { waitUntil: "networkidle" });
   await expect(
     page.getByRole("link", { name: "Eliza", exact: true }),

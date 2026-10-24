@@ -1279,15 +1279,6 @@ export function ContributorStandings({
       aria-label={title ?? "Contributor standings"}
     >
       <h2>{title ?? "Contributor standings"}</h2>
-      {compact && projectId ? (
-        <p className="points-meta">
-          <Link
-            href={`/points?${new URLSearchParams({ project: projectId, period, sort })}`}
-          >
-            Full standings
-          </Link>
-        </p>
-      ) : null}
       {!scoreState ? (
         <DataNotice state={scores} retry={retryScore ?? retryLoadedScore} />
       ) : null}
