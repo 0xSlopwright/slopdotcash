@@ -19,7 +19,7 @@ endpoint, reviewed model version, API key, output-token limit and rate card.
 The endpoint must be the official endpoint for that transport, or the same
 transport through Surplus Intelligence
 (`https://api.surplusintelligence.ai/anthropic/v1/messages` or
-`https://api.surplusintelligence.ai/openai/v1/responses`, owner decision D16).
+`https://api.surplusintelligence.ai/v1/responses`, owner decision D16).
 Surplus takes the account key as a bearer token and records the provider as
 `surplus`. The marketplace model identity is not independently verified. The model has
 no default. Its returned identity must equal the configured identity. Operators

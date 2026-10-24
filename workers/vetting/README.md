@@ -104,6 +104,44 @@ endpoint with `claude-opus-5.5` and the specialist to the Surplus OpenAI
 Responses endpoint with `gpt-6.1-sol`. Both use `SURPLUS_API_KEY`. The output
 lists safe assessment identities and states only.
 
+### Protected scheduled controller
+
+`.github/workflows/vetting-controller.yml` runs this same controller on an
+ephemeral trusted GitHub runner. It dispatches the reviewed `main` and
+`development` revisions to their existing protected environments. Source and
+model responses stay in private temporary files and are deleted at the end of
+the pass; no workflow artifact contains them. Risky artifacts still execute
+only through the separate Cloudflare sandbox.
+
+The scheduled controller uses the selected environment's D1 database for its
+publication journal. Migration `0074_vetting_publication_journal.sql` stores
+only assessment identity, result digest, disposition and receipt metadata.
+The intent is reserved atomically before submission and cannot be changed or
+deleted. Restarting a job does not forget an accepted, rejected or uncertain
+attempt. An uncertain attempt remains an explicit reconciliation exception.
+The local CLI retains its filesystem journal.
+
+Before activation, supply the existing scanner key as
+`SLOP_VETTING_SIGNING_JWK` and the existing provider key as `SURPLUS_API_KEY`
+in each protected environment. Reuse its Cloudflare account ID and API token.
+Set its `VETTING_RATE_CARDS` variable to an object with `primary` and
+`specialist` rate cards, each containing the four nano-USD-per-token fields
+from `ScannerProfile`. Verify those rates against the provider account; do not
+copy test rates. The controller pins the approved Surplus models and endpoints.
+
+Deploy the journal migration, Pages bridge and sandbox through the normal
+release first. The controller refuses to scan until the signed sandbox health
+response reports the same source revision and a real image digest. Set the
+environment's `VETTING_CONTROLLER_RELEASE` to `enabled`, then dispatch the
+workflow on that branch for qualification. Set the repository's
+`VETTING_CONTROLLER_SCHEDULE` to `enabled` only after qualification. Scheduled
+dispatch occurs every 15 minutes and skips a branch with an active controller
+run. These settings do not attest evidence retention or recovery controls.
+
+The workflow and journal source do not establish deployment or provider
+acceptance. Verify the full scan, private evidence, publication and recovery
+paths before recording the controller as operational.
+
 ### Cache and rescans
 
 The inventory digest covers executable content only. Documentation that is

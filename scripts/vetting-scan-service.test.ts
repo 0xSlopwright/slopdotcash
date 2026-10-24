@@ -170,10 +170,7 @@ async function surplus(request: Request, path: string): Promise<Response> {
     model: body.model,
     authorization: request.headers.get("authorization"),
   });
-  if (
-    !provider.up ||
-    (!provider.specialistUp && path === "/openai/v1/responses")
-  )
+  if (!provider.up || (!provider.specialistUp && path === "/v1/responses"))
     return new Response("unavailable", { status: 503 });
   const usage = {
     input_tokens: 8,
@@ -446,7 +443,7 @@ const profile = (
   endpoint:
     transport === "anthropic-messages"
       ? "https://api.surplusintelligence.ai/anthropic/v1/messages"
-      : "https://api.surplusintelligence.ai/openai/v1/responses",
+      : "https://api.surplusintelligence.ai/v1/responses",
   model,
   apiKey: "fixture-surplus-key",
   maxOutputTokens: 1024,
@@ -627,7 +624,7 @@ test("an ambiguous primary review runs the Surplus specialist once before public
   ]);
   expect(provider.calls.map((call) => [call.path, call.model])).toEqual([
     ["/anthropic/v1/messages", "claude-opus-5.5"],
-    ["/openai/v1/responses", "gpt-6.1-sol"],
+    ["/v1/responses", "gpt-6.1-sol"],
   ]);
   const assessment = await vetting.getAssessment(assessmentId);
   expect(assessment?.state).toBe("clean");
@@ -645,7 +642,7 @@ test("a failed specialist is a service failure: nothing is published and the sca
   });
   expect(provider.calls.map((call) => call.path)).toEqual([
     "/anthropic/v1/messages",
-    "/openai/v1/responses",
+    "/v1/responses",
   ]);
   expect((await vetting.getAssessment(assessmentId))?.state).toBe("pending");
   expect(await readdir(config.journalDirectory)).toEqual([]);
