@@ -241,7 +241,9 @@ Slop-skill participants, excluding maintainers: a slop.cash member whose own
 authenticated Slop run records a `pull_request_opened` event for that exact PR
 (PRD section 11). A copied marker is never proof. An uncertain finding goes to
 the maintainer first; after 7 days without maintainer action, Slopbot applies
-its verdict as a label only and never closes. Slopbot triages each appeal first,
+its verdict as a label only and never closes. A Scam or malicious closure also
+creates one idempotent moderator Inbox notice to review the account (PRD
+section 11, D4). Slopbot triages each appeal first,
 and a moderator decides escalated appeals. Do not charge project vaults for bot
 reviews. The current global closure switch stays off until reviewed production
 activation. Document changes alone do not activate closure, payments, or
@@ -321,12 +323,15 @@ automatic monthly distribution.
 ## Participation points
 
 Slop Points are the single contribution and participation unit governed by
-`protocol/points-v1.md`. Welcome and verified X-connection awards are not accepted-work score.
+`protocol/points-v1.md`. Welcome and X-connection points are discontinued
+from 24 October 2026 (PRD section 11, D2): grant none, and exclude recorded
+awards from every displayed total and ranking. Keep those records in the
+append-only journal; never delete or rewrite them.
 Verified payout recognition is fixed per recipient/project/cycle, never per dollar
 or transfer. X or Telegram control never confers GitHub, organization, or payment
 authority; a Telegram connection earns no points (PRD SOC-02).
 Only accepted-work points for the project and period determine reward shares;
-never feed welcome, social or payout-recognition bonuses into rewards. Preserve
+never feed historical participation or payout-recognition bonuses into rewards. Preserve
 historical settlements and compatibility fields without exposing a separate
 score metric. Preserve the append-only journal,
 source coverage, original contribution dates, and distinct recording dates.
@@ -348,9 +353,10 @@ budgets and their terms; do not offer a second review budget for new projects.
 Review credit follows the canonical scoring policy.
 
 Automatic monthly payment is the PRD default for every project with funds
-committed in its vault. The owner sets the monthly amount during setup, can
-adjust allocations before execution, and can turn the default off; do not show
-adjustment history or require public reasons. Distribute the current
+committed in its vault. Vault creation sets the monthly commitment with the
+owner's monthly cap unless the owner opts out (PRD section 11, D1); the owner
+can turn it on or off later, and can adjust allocations before execution; do
+not show adjustment history or require public reasons. Distribute the current
 allocations at the monthly cutoff if the owner has not done so. The period is
 the calendar UTC month, starting with 2026-11, and the cutoff is 72 hours after
 the month ends (PRD sections 6 and 11). Keep internal reconciliation and prevent
@@ -523,6 +529,9 @@ executor services may execute isolated test-chain transactions under those rules
 This supersedes the legacy unsigned-only model for that protocol only. Never
 use production credentials or move mainnet funds during testnet qualification.
 New ordinary public-work awards deduct 2% before display or payment.
+Every new project draft uses the 2% fee (200 bps) and vault-custody wording,
+including drafts without a vault; historical projects and revisions keep their
+recorded terms (PRD section 11, D3).
 Private security bounties use SEC-05 instead: 75% to the researcher and 25% to
 slop.cash. Do not add the ordinary 2% fee to a private security bounty.
 For a project-token reward (PRD TOK-06, owner decision of 14 October 2026),
