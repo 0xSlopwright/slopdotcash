@@ -281,7 +281,7 @@ export async function syncProjectRegistry(checkOnly = false) {
   const { projects, revisions, withheld } = registry;
   for (const projectId of withheld)
     process.stdout.write(
-      `::warning::Project ${projectId} is restricted but its paused, retired revision is pending; the snapshot stores it paused and retired until the project owner publishes that revision (or an admin delists the project)\n`,
+      `::warning::Project ${projectId} is restricted but its paused, retired revision is pending; the snapshot stores it paused and retired until an admin appends that revision at /admin\n`,
     );
   const rendered = await renderProjectRegistry(
     projects,
