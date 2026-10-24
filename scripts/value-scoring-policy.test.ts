@@ -602,3 +602,95 @@ test("value feed transport distinguishes redirects from an interrupted download"
     server.stop(true);
   }
 });
+
+test("reviews outside the scoring window do not consume review credit", () => {
+  // The rolling window starts on 18 September. These reviews qualify the
+  // accepted head, but their submission times are already outside that window.
+  const outside = "2026-09-01T00:00:00.000Z";
+  const blocked = outcome(8, "2026-10-20T10:00:00.000Z");
+  const split = outcome(9, "2026-10-20T11:00:00.000Z");
+  const outsideReviewers = [bob, dave, erin, frank, grace] as GitHubActor[];
+  const blockedReviews = [
+    ...outsideReviewers.map((reviewer, index) =>
+      review(
+        8,
+        index + 1,
+        reviewer,
+        "APPROVED",
+        `2026-09-0${index + 1}T00:00:00.000Z`,
+      ),
+    ),
+    review(8, 6, carol as GitHubActor, "APPROVED", "2026-10-19T06:00:00.000Z"),
+  ];
+  const splitReviews = [
+    review(9, 1, bob as GitHubActor, "APPROVED", outside),
+    review(9, 2, bob as GitHubActor, "APPROVED", "2026-10-19T01:00:00.000Z"),
+    review(9, 3, carol as GitHubActor, "APPROVED", "2026-10-19T02:00:00.000Z"),
+  ];
+  const result = createLeaderboardSnapshot(
+    input({
+      mergedPullRequestOutcomes: [blocked, split],
+      reviewedMergedPullRequests: [
+        reviewed(blocked, blockedReviews),
+        reviewed(split, splitReviews),
+      ],
+      valuePolicy: POLICY,
+      valueDecisions: new Map<string, unknown>([
+        [
+          blocked.id,
+          assessed(
+            blocked,
+            "a",
+            "medium",
+            blockedReviews.map((item) => ({
+              sourceId: item.id,
+              tier: "standard",
+            })),
+          ),
+        ],
+        [
+          split.id,
+          assessed(split, "b", "medium", [
+            { sourceId: "PRR_9_1", tier: "deep" },
+            { sourceId: "PRR_9_2", tier: "standard" },
+            { sourceId: "PRR_9_3", tier: "standard" },
+          ]),
+        ],
+      ]) as unknown as LeaderboardInput["valueDecisions"],
+    }),
+  );
+  const reviewCredit = result.ledger
+    .filter((event) => event.category === "substantive-review")
+    .map((event) => [event.id, event.actor.id, event.scoreThirds]);
+  // Carol is the only in-window reviewer. Her standard band is the whole pool.
+  // Five earlier reviewers must not fill the five-reviewer cap.
+  expect(
+    reviewCredit.filter((row) => String(row[0]).startsWith("PR_8:")),
+  ).toEqual([["PR_8:value-review:PRR_8_6", "U_carol", 3]]);
+  // Bob's in-window standard review is his weight. The older deep review is
+  // not moved into this window and does not shrink Carol's share.
+  expect(
+    reviewCredit.filter((row) => String(row[0]).startsWith("PR_9:")),
+  ).toEqual([
+    ["PR_9:value-review:PRR_9_2", "U_bob", 3],
+    ["PR_9:value-review:PRR_9_3", "U_carol", 3],
+  ]);
+  const exclusions = new Map(
+    (result.reviewExclusions ?? []).map((exclusion) => [
+      exclusion.reviewId,
+      exclusion.reason,
+    ]),
+  );
+  for (const reviewId of [
+    "PRR_8_1",
+    "PRR_8_2",
+    "PRR_8_3",
+    "PRR_8_4",
+    "PRR_8_5",
+  ])
+    expect(exclusions.get(reviewId)).toBe("review-credit-outside-window");
+  expect(exclusions.get("PRR_8_6")).toBeUndefined();
+  expect(exclusions.get("PRR_9_1")).toBe("review-credit-outside-window");
+  expect(exclusions.get("PRR_9_2")).toBeUndefined();
+  expect(exclusions.get("PRR_9_3")).toBeUndefined();
+});
