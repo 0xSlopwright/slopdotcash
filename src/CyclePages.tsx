@@ -73,12 +73,8 @@ export function CyclePage({
     record?.state ?? (view?.cycle.status === "live" ? "live" : "closed");
   const reminder = cycleSettlementReminder({
     closesAt: to,
-    funding: {
-      capMinor:
-        record?.reward.capMinor ?? resolveRewardCapMinor(project, cycleId),
-      committedMinor: project.reward.committedMinor,
-      fundingState: project.reward.fundingState,
-    },
+    capMinor:
+      record?.reward.capMinor ?? resolveRewardCapMinor(project, cycleId),
     kind:
       record?.kind ??
       (view?.reward.kind === "external-prize-share"
@@ -169,7 +165,12 @@ export function CyclePage({
           role="status"
         >
           <CircleAlert aria-hidden="true" size={18} />
-          <span>{reminder.message}</span>
+          <span>
+            {reminder.message}{" "}
+            <Link href={`/projects/${project.slug}/funding`}>
+              View project funding
+            </Link>
+          </span>
         </div>
       ) : null}
       {record?.kind === "external-prize-share" ? (
