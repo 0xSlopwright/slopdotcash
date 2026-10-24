@@ -195,8 +195,7 @@ export function PointsProvider({
         if (!controller.signal.aborted)
           setState({
             status: "error",
-            message:
-              "Points are unavailable. Your recorded points have not been reset.",
+            message: "Points could not load. Retry.",
           });
       });
     return () => controller.abort();
@@ -618,8 +617,8 @@ export function ProfilePoints({
                 {joinStatus === "loading"
                   ? "Looking up membership…"
                   : joinStatus === "unavailable"
-                    ? "Membership is temporarily unavailable."
-                    : "No recorded points for this account yet. Join to get started."}
+                    ? "Membership could not load."
+                    : "No recorded points yet."}
               </p>
             ) : null}
           </>
@@ -1142,8 +1141,7 @@ export function PointsPage() {
           Only accepted-work points count toward payouts; welcome, social, and
           payment-recognition bonuses do not. Money received records verified
           payments separately. Points persist across months, and corrections
-          stay in the history. Review coverage before scoring records is
-          limited.
+          stay in the history.
         </p>
         <a href="/protocol/points-v1.md">Read the points rules</a> ·{" "}
         <a href="/#projects">Find a project</a> ·{" "}
@@ -1996,10 +1994,7 @@ function People() {
   return (
     <section className="points-panel" id="people" aria-labelledby="people-h">
       <h2 id="people-h">People</h2>
-      <p>
-        Public members and everyone with a recorded pull request, including
-        people without points yet.
-      </p>
+      <p>Members and contributors with a recorded pull request.</p>
       <label>
         GitHub username{" "}
         <input

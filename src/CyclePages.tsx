@@ -56,10 +56,9 @@ export function CyclePage({
       return (
         <NotFound title={`No ${formatCycleMonth(cycleId)} cycle record`}>
           <p>
-            {project.name} has no frozen cycle record for this month, and the
-            live leaderboard does not cover it. Any payment sent outside the
-            cycle flow is listed on the{" "}
-            <Link href={`/projects/${project.slug}`}>project page</Link>.
+            {project.name} has no record for this month. See the{" "}
+            <Link href={`/projects/${project.slug}`}>project page</Link> for
+            payments.
           </p>
         </NotFound>
       );
@@ -152,8 +151,7 @@ export function CyclePage({
           {formatMicroUsdc(record.reward.lines.sharedPool.suggestedMinor)} +
           additive review{" "}
           {formatMicroUsdc(record.reward.lines.reviewBudget.suggestedMinor)}{" "}
-          suggested. The combined amount uses one wallet and one dust-floor
-          decision.
+          suggested.
         </p>
       ) : null}
       {reminder ? (

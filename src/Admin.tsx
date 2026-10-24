@@ -375,7 +375,7 @@ function ProjectEditor({
       <p role="status">
         {draftError
           ? "This browser cannot preserve your draft. Keep this editor open until saved."
-          : "Draft kept in this browser tab for this project revision."}
+          : "Draft kept in this tab."}
       </p>
       <fieldset className="admin-fieldset" disabled={projectFields === null}>
         <legend>Project details</legend>
@@ -428,10 +428,9 @@ function ProjectEditor({
           </select>
         </label>
         <p className="admin-status">
-          Activation requires verified authority, approved terms, generated
-          skills and security clearance for this exact revision. Save content
-          changes paused, review both skill previews, then complete the{" "}
-          <a href="#admin-vetting">security review</a> before activation.
+          Setup checks activate the project: verified authority, Slopbot
+          installation and a passing <a href="#admin-vetting">security scan</a>{" "}
+          or the existing-project exemption.
         </p>
       </fieldset>
       <fieldset className="admin-fieldset">
@@ -979,7 +978,7 @@ export function AdminPage() {
     body = (
       <SignInPanel
         next={`${window.location.pathname}${window.location.search}`}
-        purpose="Admins sign in with GitHub to handle registry exceptions."
+        purpose="Sign in with GitHub to open the admin console."
         state={state}
       />
     );

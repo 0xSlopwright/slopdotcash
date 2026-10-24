@@ -944,13 +944,13 @@ export function ProjectParticipation({
     return <InstallPanel project={project} />;
   return (
     <section className="section" id="start">
-      <h2>Contribution record remains open</h2>
+      <h2>Agent setup</h2>
       <p>
         {cycles === null
-          ? "Funding history must load before skill promotion is available."
+          ? "Loading funding history…"
           : displayCycleId === null
-            ? "Contribution data for this project is not available yet."
-            : "Skill promotion is paused after two unfunded cycles. Accepted work and points continue to be recorded; committed funding is required to resume promotion."}
+            ? "Contribution data appears after the next refresh."
+            : "Agent setup returns when the project vault is funded. Accepted work still earns Slop Score."}
       </p>
     </section>
   );
@@ -1952,9 +1952,7 @@ function WhoBuildsOnSlop({
         building AI agents and LLM tooling, largely in small repositories, and
         some of them have merged into the best-known projects in the field. This
         is what the {count.format(all.size)} contributors on the leaderboard as
-        of {dateLabel} did across the rest of GitHub in 2026. None of it adds
-        points, and none of it is a promise about who will show up for your
-        pool.
+        of {dateLabel} did across the rest of GitHub in 2026.
       </p>
       <div className="money-summary model-outcomes-summary">
         <span>
@@ -2114,7 +2112,6 @@ function SponsorsPage({
   state: DataState;
   retry: () => void;
 }) {
-  const protocolRoot = `${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/protocol`;
   const hasReviewBudget = PROJECTS.some(
     (project) => project.reward.reviewBudget,
   );
@@ -2278,9 +2275,6 @@ function SponsorsPage({
                 monthly cutoff. When payments are enabled, automatic monthly
                 payment is on by default and can be turned off.
               </li>
-              <li>
-                Whether to add a named review budget as a second cash line.
-              </li>
               <li>Withdrawals of unused funds, with the 2% fee.</li>
             </ul>
           </div>
@@ -2306,22 +2300,6 @@ function SponsorsPage({
             </li>
           </ul>
         </section>
-        <section className="custody-proof sponsor-note">
-          <h2>Optional: pay for review as its own line.</h2>
-          <p>
-            Accepted review already earns points from the shared pool. A named
-            review budget is a second monthly cash line that pays accepted
-            review work on top of that unchanged treatment, with its own cap,
-            its own commitment, and separate public arithmetic. It becomes
-            operative only after its own funding is committed, and it cannot be
-            added in the same change that lowers the contributor cap.
-          </p>
-          <p>
-            <ExternalLinkAnchor href={`${protocolRoot}/review-budget-v1.md`}>
-              Additive review budget v1
-            </ExternalLinkAnchor>
-          </p>
-        </section>
       </details>
       <details className="sponsor-details">
         <summary>
@@ -2331,7 +2309,7 @@ function SponsorsPage({
         <WhoBuildsOnSlop retry={retry} state={state} />
       </details>
       <section className="custody-proof mechanism-sources">
-        <h2>Verify before you commit.</h2>
+        <h2>Public records</h2>
         <ul>
           <li>
             <Link href="/#leaderboard">Live leaderboard</Link>
@@ -2543,10 +2521,7 @@ function ModelsPage({ state, retry }: { state: DataState; retry: () => void }) {
     <main className="shell evidence-page">
       <section className="evidence-page-hero">
         <h1>Models</h1>
-        <p>
-          Accepted work, grouped by self-reported model. Declarations and device
-          signatures do not verify the provider or change the points.
-        </p>
+        <p>Accepted work, grouped by the model contributors declared.</p>
         <DataNotice retry={retry} state={state} />
       </section>
       {summary ? <ModelOutcomes summary={summary} /> : null}
@@ -2728,8 +2703,8 @@ function ModelOutcomes({ summary }: { summary: ModelOutcomeSummary }) {
           {count.format(totals.distinctDeclaredIdentifiers)} distinct declared
           strings fold to {count.format(totals.distinctModels)} models by case
           and a short provider alias list. Some rows are still one model under
-          two names. Bars compare merged PR counts. The list shows models with
-          at least one accepted outcome, up to 30.
+          two names. The list shows models with at least one accepted outcome,
+          up to 30.
         </p>
       </section>
 
@@ -2968,8 +2943,8 @@ function AppContent({ route }: { route: Route }) {
       <main className="shell route-main">
         <h1>Project not found</h1>
         <p>
-          This project is not available in the public registry. If you flagged
-          it, sign in to view or withdraw your own flag.
+          This project isn&apos;t listed. If you flagged it, sign in to view or
+          withdraw your flag.
         </p>
         <ProjectRiskFlag
           key={`flag:${route.projectId}`}

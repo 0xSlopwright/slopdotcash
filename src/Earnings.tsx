@@ -78,7 +78,7 @@ async function request(path: string, body?: unknown, signal?: AbortSignal) {
         "Your wallet changed. Refresh and confirm the current address.",
       );
     throw new Error(
-      "The payment service is unavailable. Your recorded awards are unchanged. Please retry.",
+      "Payments could not load. Your awards are unchanged. Retry.",
     );
   }
   return readBoundedJson(response, 1_048_576, "payment account");
