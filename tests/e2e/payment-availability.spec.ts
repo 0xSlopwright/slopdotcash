@@ -33,12 +33,9 @@ test("disabled payouts are visible from discovery through the project page", asy
     card.getByText("Payments not active", { exact: true }),
   ).toHaveCount(0);
   await expect(card).toContainText("/mo target");
-  // Discovery states the committed funding beside the target, never implied.
+  // Registry commitments cannot prove the current escrow balance.
   await expect(card.locator(".project-money-state")).toHaveText(
-    project.reward.fundingState !== "committed" ||
-      BigInt(project.reward.committedMinor) === 0n
-      ? "Not funded yet"
-      : /^\$[\d,.]+ funded$/,
+    "Check project vault funding",
   );
   await page.screenshot({
     path: info.outputPath("home-payment-unavailable.png"),

@@ -41,7 +41,12 @@ import { useProjectSession } from "./lib/project-api";
 import { findProject, PROJECTS } from "./lib/projects.mjs";
 import { useAllDirectTransfers } from "./lib/use-direct-transfers";
 import { type DataState, useSnapshot } from "./lib/use-snapshot";
-import { DataNotice, formatDateTime, formatMicroUsdc, NotFound } from "./Presentation";
+import {
+  DataNotice,
+  formatDateTime,
+  formatMicroUsdc,
+  NotFound,
+} from "./Presentation";
 import { ProfileActivity, useProfiles } from "./Profiles";
 
 const productOrigin = () =>

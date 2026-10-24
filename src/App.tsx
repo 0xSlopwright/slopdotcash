@@ -572,9 +572,7 @@ function ProjectCard({
           <small className="project-money-state">Points only</small>
         ) : project.reward.kind === "monthly-pool" ? (
           <small className="project-money-state">
-            {monthlyPoolUnfunded(project.reward)
-              ? UNFUNDED_POOL_HEADLINE
-              : `${formatMicroUsdc(project.reward.committedMinor)} funded`}
+            Check project vault funding
           </small>
         ) : (
           <small className="project-money-state">External prize</small>
