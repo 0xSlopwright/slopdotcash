@@ -5,7 +5,7 @@
 // with one moderator notice, and a clean fresh scan reinstates a flag-only
 // pause while a confirmed malicious result stays with a moderator.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import { handleProjectApi } from "../backend/projects/handler";
 import { flaggerAuthority } from "../backend/projects/setup";
@@ -936,4 +936,85 @@ test("a concurrent account ban cannot supply the flag that pauses another projec
     (await flags.activeFlags(clock)).map((entry) => entry.reporter.githubId),
   ).toEqual([ALICE.githubId]);
   expect((await publicProject()).status).toBe(200);
+});
+
+test("the existing-project exemption is permanent but cannot clear reinstatement or later projects", async () => {
+  const migration = "0074_vetting_grandfathered_projects.sql";
+  const database = sqliteD1(
+    readdirSync(new URL("../migrations", import.meta.url))
+      .filter((name) => name.endsWith(".sql") && name !== migration)
+      .sort(),
+  );
+  try {
+    const registry = new CloudflareProjectPersistence(database.db);
+    const clearance = new CloudflareVettingPersistence(database.db);
+    const canonical = async (id: string) => {
+      const response = await projectApi(
+        sessionRequest("POST", "projects", "applicant", {
+          manifest: applicationManifest(id, `example/${id}`),
+        }),
+      );
+      expect(response.status).toBe(201);
+      const project = await projects.getProject(id);
+      if (!project) throw new Error("The created project was not persisted");
+      return project.manifest;
+    };
+    const existing = await canonical("existing-exempt");
+    const later = await canonical("later-scanned");
+    const create = async (manifest: typeof existing) =>
+      registry.createProject({
+        manifest,
+        manifestText: JSON.stringify(manifest),
+        manifestSha256: "a".repeat(64),
+        reason: "Owner creates a test project",
+        actor: APPLICANT,
+        at: NOW.toISOString(),
+        referrer: null,
+      });
+    expect(await create(existing)).toBe("created");
+    database.sqlite.exec(
+      readFileSync(
+        new URL(`../migrations/${migration}`, import.meta.url),
+        "utf8",
+      ),
+    );
+    expect(await create(later)).toBe("created");
+    const inspect = (manifest: typeof existing, reinstating = false) =>
+      clearance.manifestClearance(
+        manifest.id,
+        manifest,
+        1,
+        async () => ({
+          commitSha: "b".repeat(40),
+          templateSha256: "c".repeat(64),
+        }),
+        reinstating,
+      );
+    expect(await inspect(existing)).toEqual({
+      state: "cleared",
+      assessment: null,
+      grandfathered: true,
+    });
+    expect((await inspect(later)).state).not.toBe("cleared");
+    expect((await inspect(existing, true)).state).not.toBe("cleared");
+    // A later executable head still receives exemption, without a fabricated scan.
+    expect(
+      await clearance.manifestClearance(existing.id, existing, 1, async () => ({
+        commitSha: "d".repeat(40),
+        templateSha256: "e".repeat(64),
+      })),
+    ).toEqual({ state: "cleared", assessment: null, grandfathered: true });
+    expect(() =>
+      database.sqlite.exec(
+        "INSERT INTO vetting_grandfathered_projects VALUES ('later-scanned', '2026-10-24T00:00:00Z')",
+      ),
+    ).toThrow("grandfathered projects are fixed");
+    expect(() =>
+      database.sqlite.exec(
+        "DELETE FROM vetting_grandfathered_projects WHERE project_id = 'existing-exempt'",
+      ),
+    ).toThrow("grandfathered projects are permanent");
+  } finally {
+    database.sqlite.close();
+  }
 });
