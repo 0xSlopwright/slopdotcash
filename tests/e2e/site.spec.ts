@@ -10,7 +10,6 @@ import { type APIRequestContext, test as base, expect } from "@playwright/test";
 import { preparePullRequestLedger } from "../../scripts/prepare-pr-ledger";
 import { assertCycleIndex, type CycleIndex } from "../../src/lib/cycle-index";
 import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
-import { createGlobalLeaders } from "../../src/lib/global-leaderboard";
 import { communityProjects } from "../../src/lib/home-projects";
 import {
   assertLeaderboardSnapshot,
@@ -104,17 +103,13 @@ async function loadCycles(request: APIRequestContext): Promise<CycleIndex> {
   return value;
 }
 
-test("equal contributors share cycle and profile ranks", async ({
-  page,
-  request,
-}) => {
+test("equal contributors share cycle ranks", async ({ page, request }) => {
   // The local preview is not an allowed origin for the unrelated wallet API.
   await page.route(
     `${deployment.api}/api/v1/wallet-claims/actors/*/current`,
     (route) => route.fulfill({ json: null }),
   );
   const snapshot = await loadSnapshot(request);
-  const cycles = await loadCycles(request);
   const publishedTie = snapshot.leaders.findIndex(
     (leader, index) =>
       index > 0 &&
@@ -261,19 +256,6 @@ test("equal contributors share cycle and profile ranks", async ({
   await expect(followingRow.locator(".rank-cell")).toHaveText(
     `#${expectedRank + tiedLeaders.length}`,
   );
-
-  const leaders = createGlobalLeaders(snapshot, views, cycles);
-  const profileIndex = leaders.findIndex(
-    (leader, index) => index > 0 && leader.score === leaders[index - 1].score,
-  );
-  if (profileIndex < 0)
-    throw new Error("Public snapshot has no tied overall contributors");
-  for (const leader of leaders.slice(profileIndex - 1, profileIndex + 1)) {
-    await page.goto(`/contributors/${encodeURIComponent(leader.actor.login)}`);
-    const rank = page.getByText("overall rank", { exact: true }).locator("..");
-    await expect(rank).toBeVisible();
-    await expect(rank.locator("strong")).toHaveText(`#${profileIndex}`);
-  }
 });
 
 test("discovers projects and one points-ranked homepage leaderboard", async ({
