@@ -555,7 +555,9 @@ test("Solana wallet deposits, recovers after reload, and owner withdraws with ve
     ),
   );
   expect(account.amount).toBe(4_900_000n);
-  expect(apiRejections).toEqual([422, 422, 422]);
+  // The donor withdrawal is blocked by the UI; only the oversized deposit
+  // and mismatched recovery signature reach the API and fail.
+  expect(apiRejections).toEqual([422, 422]);
   // Finalized awards and session are controlled fixtures; the API planner, wallet and
   // finalized commitment verifier below use the actual local Solana program.
   const commitment = {
