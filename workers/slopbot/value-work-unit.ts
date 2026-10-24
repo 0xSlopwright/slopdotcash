@@ -128,6 +128,54 @@ export async function prepareWorkUnitEvidence(
       ]),
     );
     const covered = new Set<string>();
+    const relocated = new Map<string, Set<string>>();
+    for (const resolution of evidence.mergeResolutions ?? []) {
+      if (!resolution.automaticRelocations?.length) continue;
+      const merge = evidence.commits.find(
+        (entry) => entry.sha === resolution.commitSha,
+      );
+      if (
+        !merge ||
+        !mergeResolutionMatches(resolution, merge) ||
+        (await sha256Hex(resolution.patch)) !== resolution.patchSha256
+      ) {
+        limitations.add(
+          `${pull.node_id}: invalid automatic relocation evidence`,
+        );
+        continue;
+      }
+      for (const move of resolution.automaticRelocations) {
+        if (move.headSha !== pull.head.sha || !changedPaths.has(move.path)) {
+          limitations.add(
+            `${pull.node_id}: automatic relocation head or path mismatch`,
+          );
+          continue;
+        }
+        for (const sha of move.sourceCommitShas) {
+          const attribution = evidence.commitAttribution.find(
+            (entry) => entry.sha === sha,
+          );
+          if (
+            !attribution ||
+            attribution.limitations.length ||
+            !attribution.changedPaths?.includes(move.sourcePath)
+          ) {
+            limitations.add(
+              `${pull.node_id}: automatic relocation source scope missing`,
+            );
+            continue;
+          }
+          const key = JSON.stringify([sha, move.sourcePath]);
+          const destinations = relocated.get(key) ?? new Set<string>();
+          destinations.add(move.path);
+          relocated.set(key, destinations);
+        }
+      }
+    }
+    const retainedPaths = (sha: string, path: string) => [
+      ...(changedPaths.has(path) ? [path] : []),
+      ...(relocated.get(JSON.stringify([sha, path])) ?? []),
+    ];
     for (const commit of evidence.commits.filter(
       (entry) =>
         (entry.parents.length <= 1 ||
@@ -194,8 +242,11 @@ export async function prepareWorkUnitEvidence(
         origins.length > 0 ||
         evidence.acceptedRange?.parentSha === commit.sha
       ) {
-        for (const path of paths.filter((path) => changedPaths.has(path))) {
-          covered.add(path);
+        for (const path of paths.filter(
+          (path) => retainedPaths(commit.sha, path).length,
+        )) {
+          for (const accepted of retainedPaths(commit.sha, path))
+            covered.add(accepted);
           if (
             origins.length !== 1 ||
             origins[0].evidence.limitations.length > 0
@@ -229,8 +280,9 @@ export async function prepareWorkUnitEvidence(
       )
         actors.add(commit.author.node_id);
       for (const path of paths) {
-        if (!changedPaths.has(path)) continue;
-        covered.add(path);
+        const retained = retainedPaths(commit.sha, path);
+        if (!retained.length) continue;
+        for (const accepted of retained) covered.add(accepted);
         const key = JSON.stringify([
           evidence.repositoryNodeId,
           commit.sha,
