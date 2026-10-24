@@ -5,6 +5,7 @@ import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
 import { resumeBudgetBlocks } from "./budget-blocks";
 import type { Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
+import { dispatchMaintainerHolds } from "./maintainer-holds";
 import * as store from "./persistence";
 import { QUALITY_MARKER } from "./quality";
 import { registeredRepository, reviewRegistration } from "./registry";
@@ -12,7 +13,7 @@ import {
   handleRepositoryAccess,
   REPOSITORY_ACCESS_URL,
 } from "./repository-access";
-import { recordHumanSignal, reviewItem } from "./review";
+import { applyMaintainerHold, recordHumanSignal, reviewItem } from "./review";
 import { dispatchSpendAlert } from "./spend-alerts";
 import {
   consumePendingValueRequest,
@@ -384,6 +385,7 @@ export default {
 
   async scheduled(_event: unknown, env: Env) {
     await resumeBudgetBlocks(env.SLOPBOT_DB, env.SLOPBOT_QUEUE);
+    await dispatchMaintainerHolds(env.SLOPBOT_DB, env.SLOPBOT_QUEUE);
     if (env.SLOP_NOTIFY)
       await dispatchSpendAlert(env.SLOPBOT_DB, env.SLOP_NOTIFY);
     await consumePendingValueRequest(env);
@@ -404,7 +406,9 @@ export default {
         const outcome =
           message.body.kind === "review"
             ? await reviewItem(env, message.body)
-            : await recordHumanSignal(env, message.body);
+            : message.body.kind === "maintainer_hold"
+              ? await applyMaintainerHold(env, message.body)
+              : await recordHumanSignal(env, message.body);
         console.log(
           JSON.stringify({
             delivery: message.body.deliveryId,
