@@ -153,7 +153,8 @@ textarea:focus-visible {
 }
 
 .project-money-state,
-.project-review-budget {
+.project-review-budget,
+.project-freshness {
   display: block;
   margin-top: 7px;
   color: var(--muted);
@@ -631,6 +632,10 @@ textarea:focus-visible {
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+.data-notice.data-stale {
+  flex-wrap: wrap;
 }
 
 .registry-stale .data-notice {

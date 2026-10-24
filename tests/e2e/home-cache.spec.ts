@@ -191,3 +191,75 @@ test("a failed registry read keeps the last good projects with a stale label", a
     ),
   ).toEqual([]);
 });
+
+test("a failed snapshot refresh keeps the last good scores with a stale label", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  const project = homeProjects().find(
+    (candidate) => candidate.listingTier === "featured",
+  );
+  if (!project) throw new Error("Missing featured project fixture");
+  let failSnapshot = false;
+  await page.route("**/data/leaderboard.json?*", (route) =>
+    failSnapshot
+      ? route.fulfill({ status: 503, json: { error: "unavailable" } })
+      : route.fallback(),
+  );
+  await page.goto(`/projects/${project.slug}`, { waitUntil: "networkidle" });
+  await expect(
+    page.getByRole("heading", { level: 1, name: project.name }),
+  ).toBeVisible();
+  const scoreRows = page.locator(".points-table tbody tr");
+  await expect(scoreRows.first()).toBeVisible();
+  const rowCount = await scoreRows.count();
+
+  // Leave for a snapshot-free route, then return: the shared read refreshes.
+  failSnapshot = true;
+  await page
+    .locator(".breadcrumb")
+    .getByRole("link", { name: "Projects" })
+    .click();
+  await expect(page.locator(".project-card").first()).toBeVisible();
+  // With no prior home snapshot, a failed first read is an error, never empty.
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Live totals unavailable" }),
+  ).toContainText("snapshot returned 503");
+  await page.goBack();
+  await expect(
+    page.getByRole("heading", { level: 1, name: project.name }),
+  ).toBeVisible();
+  const notice = page
+    .locator(".project-hero")
+    .getByRole("status")
+    .filter({ hasText: "Refresh failed" });
+  await expect(notice).toContainText("Points may be outdated");
+  await expect(notice).toContainText("Refresh failed: snapshot returned 503");
+  await expect(notice.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(scoreRows).toHaveCount(rowCount);
+  await expect(page.getByText("Live totals unavailable")).toHaveCount(0);
+  await page.screenshot({
+    path: test.info().outputPath("stale-snapshot-project.png"),
+    fullPage: true,
+  });
+  const accessibility = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+    .analyze();
+  expect(accessibility.violations).toEqual([]);
+
+  // A successful retry clears the stale label and keeps the scores.
+  failSnapshot = false;
+  await notice.getByRole("button", { name: "Retry" }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(scoreRows).toHaveCount(rowCount);
+  expect(
+    errors.filter(
+      (error) =>
+        !error.startsWith("Failed to load resource: the server responded"),
+    ),
+  ).toEqual([]);
+});

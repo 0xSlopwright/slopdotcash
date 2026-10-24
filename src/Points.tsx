@@ -41,7 +41,12 @@ import { useProjectSession } from "./lib/project-api";
 import { findProject, PROJECTS } from "./lib/projects.mjs";
 import { useAllDirectTransfers } from "./lib/use-direct-transfers";
 import { type DataState, useSnapshot } from "./lib/use-snapshot";
-import { DataNotice, formatMicroUsdc, NotFound } from "./Presentation";
+import {
+  DataNotice,
+  formatDateTime,
+  formatMicroUsdc,
+  NotFound,
+} from "./Presentation";
 import { ProfileActivity, useProfiles } from "./Profiles";
 
 const productOrigin = () =>
@@ -1155,18 +1160,67 @@ export function PointsPage() {
     </main>
   );
 }
+const countFormat = new Intl.NumberFormat("en-US");
+
+/** The bounds and source counts the published snapshot states, verbatim. */
+function StandingsCoverage({
+  state,
+  month,
+  projectId,
+}: {
+  state: Extract<DataState, { status: "ready" }>;
+  /** The ranked UTC month, or null for recorded history. */
+  month: string | null;
+  projectId: string;
+}) {
+  const { snapshot, cycleIndex } = state;
+  const { counts } = snapshot.source;
+  const closedCycles = cycleIndex.cycles.filter(
+    (cycle) => !projectId || cycle.projectId === projectId,
+  ).length;
+  // "This month" ranks only the snapshot entries inside the UTC month, so its
+  // exact period starts at the later of the month start and the window start.
+  const monthStart = month === null ? null : `${month}-01T00:00:00.000Z`;
+  const rankedFrom =
+    monthStart === null
+      ? null
+      : Date.parse(monthStart) > Date.parse(snapshot.window.from)
+        ? monthStart
+        : snapshot.window.from;
+  return (
+    <p className="points-meta points-coverage">
+      {rankedFrom !== null &&
+      Date.parse(rankedFrom) < Date.parse(snapshot.window.to)
+        ? `This month ranks ${formatDateTime(rankedFrom)} to ${formatDateTime(snapshot.window.to)}. `
+        : null}
+      Snapshot window: {formatDateTime(snapshot.window.from)} to{" "}
+      {formatDateTime(snapshot.window.to)} ({snapshot.window.days} days). Source
+      {projectId ? " (all projects)" : ""}:{" "}
+      {countFormat.format(counts.mergedPullRequests)} merged pull requests and{" "}
+      {countFormat.format(counts.closedIssues)} closed issues across{" "}
+      {countFormat.format(snapshot.repositories.length)} repositories.
+      {month === null
+        ? ` Recorded history adds ${countFormat.format(closedCycles)} closed ${closedCycles === 1 ? "cycle" : "cycles"}.`
+        : null}
+    </p>
+  );
+}
+
 export function ContributorStandings({
   scoreState,
   retryScore,
   projectId,
   compact = false,
   title,
+  showDataNotice = !scoreState,
 }: {
   projectId?: string;
   compact?: boolean;
   title?: string;
   scoreState?: DataState;
   retryScore?: () => void;
+  /** Shows score loading, error and stale states for a caller's shared read. */
+  showDataNotice?: boolean;
 }) {
   const [loadedScore, retryLoadedScore] = useSnapshot(!scoreState);
   const scores = scoreState ?? loadedScore;
@@ -1279,7 +1333,7 @@ export function ContributorStandings({
       aria-label={title ?? "Contributor standings"}
     >
       <h2>{title ?? "Contributor standings"}</h2>
-      {!scoreState ? (
+      {showDataNotice ? (
         <DataNotice state={scores} retry={retryScore ?? retryLoadedScore} />
       ) : null}
       <Notice />
@@ -1346,6 +1400,15 @@ export function ContributorStandings({
           </label>
         </div>
       ) : null}
+      {!compact && scores.status === "ready" ? (
+        <StandingsCoverage
+          month={
+            period === "month" ? new Date().toISOString().slice(0, 7) : null
+          }
+          projectId={project}
+          state={scores}
+        />
+      ) : null}
       {(
         sort === "points"
           ? state.status === "ready"
@@ -1353,7 +1416,7 @@ export function ContributorStandings({
       ) ? (
         <>
           <p className="standings-scroll-hint">
-            Scroll the table to see Points and Paid.
+            Scroll the table to see Points and Money received.
           </p>
           <section
             className="points-table"
@@ -1369,7 +1432,7 @@ export function ContributorStandings({
                   {(
                     [
                       ["points", "Points"],
-                      ["money", "Paid"],
+                      ["money", "Money received"],
                     ] as const
                   ).map(([key, label]) => (
                     <th

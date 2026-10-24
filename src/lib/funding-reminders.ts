@@ -1,6 +1,9 @@
 /** Deterministic, non-custodial cycle funding reminder copy. */
 
-export type CycleReminder = { kind: "unfunded"; message: string };
+export type CycleReminder = {
+  kind: "funding-check";
+  message: string;
+};
 
 export type CycleReminderLifecycle =
   | "closed-no-awards"
@@ -13,15 +16,16 @@ export type CycleReminderLifecycle =
   | "wound-up";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
+const MINOR = /^(0|[1-9][0-9]*)$/u;
 
 /**
- * Escrow is the only funding mode, and no manifest instrument can commit
- * funds, so a monthly pool stays projected. The reminder starts seven days
- * before the cycle closes and never applies to a settled, external-prize, or
- * zero-award cycle.
+ * Remind the viewer to check current vault funding near cycle close. A public
+ * cycle record and its manifest do not establish the monthly payment run's
+ * funding state. Only that run can qualify obligations against current funds.
  */
 export function cycleSettlementReminder(input: {
   closesAt: string;
+  capMinor: string;
   kind: "external-prize-share" | "monthly-pool";
   now: string;
   settledAt: string | null;
@@ -36,6 +40,8 @@ export function cycleSettlementReminder(input: {
   ) {
     throw new TypeError("cycle reminder timestamps are invalid");
   }
+  if (!MINOR.test(input.capMinor))
+    throw new TypeError("cycle reminder cap is invalid");
   if (
     input.kind !== "monthly-pool" ||
     input.settledAt !== null ||
@@ -47,9 +53,10 @@ export function cycleSettlementReminder(input: {
   ) {
     return null;
   }
+  if (BigInt(input.capMinor) === 0n) return null;
   return {
-    kind: "unfunded",
+    kind: "funding-check",
     message:
-      "Unfunded pool reminder: allocations stay projected. Awards are paid only from funds in the project escrow vault.",
+      "Check current vault funds before this cycle is paid. This record does not verify the month's funding status.",
   };
 }
