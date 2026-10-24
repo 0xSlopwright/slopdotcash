@@ -559,7 +559,11 @@ export function githubAdvisoryClient(options: {
               matches.push(facts);
           }
           if (reachedSince) break;
-          next = nextPage(link, first);
+          const continued = nextPage(link, first);
+          // A next link we will not follow is not the end of the list.
+          // An empty complete list lets reconcile send the report again.
+          if (continued === "refused") return { kind: "error" };
+          next = continued;
         }
       } catch {
         return { kind: "error" };
@@ -569,22 +573,37 @@ export function githubAdvisoryClient(options: {
   };
 }
 
-/** The `rel="next"` page of the same listing, or null. */
-function nextPage(link: string | null, first: URL): URL | null {
+/**
+ * The next page of this security-advisory list.
+ * `null` means the header has no `rel="next"`.
+ * `"refused"` means a next link is present but is not a continuation of
+ * this list. GitHub rewrites `/repos/{owner}/{repo}/security-advisories`
+ * to `/repositories/{id}/security-advisories` in that header.
+ */
+function nextPage(link: string | null, first: URL): URL | null | "refused" {
   if (link === null) return null;
   for (const part of link.split(",")) {
     const match = /^\s*<([^>]+)>\s*;\s*rel="next"\s*$/u.exec(part);
     if (!match) continue;
+    let url: URL;
     try {
-      const url = new URL(match[1]);
-      return url.origin === first.origin && url.pathname === first.pathname
-        ? url
-        : null;
+      url = new URL(match[1]);
     } catch {
-      return null;
+      return "refused";
     }
+    if (url.origin !== first.origin) return "refused";
+    if (url.pathname === first.pathname) return url;
+    if (acceptableRepositoryContinuation(first, url)) return url;
+    return "refused";
   }
   return null;
+}
+
+function acceptableRepositoryContinuation(first: URL, next: URL): boolean {
+  return (
+    first.pathname.endsWith("/security-advisories") &&
+    /^\/repositories\/[1-9]\d{0,19}\/security-advisories$/u.test(next.pathname)
+  );
 }
 
 function derLength(length: number): number[] {

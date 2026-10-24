@@ -1,0 +1,479 @@
+/**
+ * The bounded malicious-code scan service (PRD section 8; issue #909). One
+ * pass asks Slop to queue changed content, reads the signed queue, and for
+ * each pending assessment: acquires the exact queued inputs, inspects them,
+ * runs the primary model review, runs the specialist review only when the
+ * result is ambiguous or high risk, retains the private evidence and
+ * publishes the result once.
+ *
+ * A service failure (an unavailable queue, source or provider) publishes
+ * nothing and leaves the assessment pending, so the next pass retries it.
+ * A clean result is never published without its retained evidence. An
+ * incomplete result records quarantine even when evidence storage fails.
+ * A published attempt is journaled and never sent again; an uncertain or
+ * rejected attempt waits for an operator. The service executes acquired
+ * native artifacts only through the private disposable sandbox, never on
+ * the controller host. It never confirms malice or releases a
+ * quarantined artifact: moderators decide those (owner decision D3).
+ */
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { sha256Hex } from "../../backend/trace/validation";
+import {
+  composeScanResult,
+  inspectRepository,
+  readAcquiredSource,
+  type ScanInputFile,
+} from "./bounded-scan";
+import { inspectIsolatedArtifacts } from "./isolated-inspection";
+import { publishResult } from "./publication";
+import {
+  acquireQueuedAssessment,
+  type QueueConnection,
+  readPendingAssessments,
+} from "./queue";
+import { reviewScan, type ScannerProfile } from "./scanners";
+import { signedServiceHeaders } from "./service";
+
+/**
+ * Source-inventory gaps of the historical secure-VM contract that the
+ * bounded scan covers itself: it reads the queued skill template, checks
+ * dependency manifests and lockfiles, and runs its own model review. A full
+ * runtime is not required (PRD section 8). Every other acquisition gap
+ * (submodules, links, LFS objects) still keeps the source surface partial.
+ */
+const COVERED_BY_BOUNDED_SCAN = new Set([
+  "execution-dependencies-and-release-assets-not-acquired",
+  "skill-template-inputs-not-acquired",
+  "runtime-and-model-review-not-performed",
+]);
+/** Template inputs are scanned under this prefix, apart from repository paths. */
+export const TEMPLATE_PREFIX = "slop-skill-template";
+
+export type ScanServiceConfig = {
+  connection: QueueConnection;
+  /** Surplus `claude-opus-5.5`: every scan (owner decision D16). */
+  primary: ScannerProfile;
+  /** Surplus `gpt-6.1-sol`: only ambiguous or high-risk results. */
+  specialist: ScannerProfile;
+  policyVersion: string;
+  /** Operator-private scratch space for acquired bytes. */
+  workDirectory: string;
+  /** Operator-private publication journal (publication.ts). */
+  journalDirectory: string;
+  randomId?: () => string;
+};
+
+export type AssessmentOutcome =
+  | {
+      assessmentId: string;
+      state: "published";
+      disposition: string;
+      outcome: "accepted" | "rejected" | "unknown";
+      specialist: boolean;
+      evidence: "retained" | "failed";
+    }
+  | {
+      assessmentId: string;
+      /** Left pending; the next pass tries again. */
+      state: "retry";
+      step:
+        | "acquire"
+        | "isolated-execution"
+        | "primary-review"
+        | "specialist-review"
+        | "evidence";
+    }
+  | {
+      assessmentId: string;
+      /** A journaled attempt exists; an operator reconciles it. */
+      state: "journaled";
+    };
+
+export type ScanPassReport = {
+  refreshed: boolean;
+  assessments: AssessmentOutcome[];
+};
+
+const encoder = new TextEncoder();
+
+async function signedRequest(
+  connection: QueueConnection,
+  method: "POST" | "PUT",
+  path: string,
+  body: Uint8Array,
+  contentType: string,
+): Promise<Response> {
+  return (connection.fetch ?? fetch)(`${connection.origin}${path}`, {
+    method,
+    redirect: "error",
+    signal: AbortSignal.timeout(30_000),
+    headers: {
+      "content-type": contentType,
+      ...(await signedServiceHeaders({
+        signer: connection,
+        method,
+        pathAndQuery: path,
+        body,
+        at: connection.now?.(),
+      })),
+    },
+    body: new Uint8Array(body),
+  });
+}
+
+/** POST /api/v1/vetting/refresh: Slop queues every changed project. */
+async function refresh(connection: QueueConnection): Promise<boolean> {
+  try {
+    const response = await signedRequest(
+      connection,
+      "POST",
+      "/api/v1/vetting/refresh",
+      encoder.encode("{}"),
+      "application/json",
+    );
+    await response.body?.cancel();
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The repository source and the queued skill-template inputs, each reread
+ * by its SHA-256. Template inputs keep their queued paths under
+ * `TEMPLATE_PREFIX`, so agent instructions in the template are scanned.
+ */
+async function acquiredInputs(directory: string) {
+  const source = await readAcquiredSource(directory);
+  const queued = JSON.parse(
+    await readFile(join(directory, "queued-inputs.json"), "utf8"),
+  ) as {
+    schema: string;
+    manifestText: string;
+    repositoryIdentity: { fullName: string };
+    inputs: { path: string; sha256: string }[];
+  };
+  if (queued.schema !== "slop-queued-inputs-v1")
+    throw new Error("Unknown queued input bundle");
+  const templates: ScanInputFile[] = [];
+  for (const input of queued.inputs) {
+    // The digest names the object file, so it must not name another path.
+    if (!/^[0-9a-f]{64}$/u.test(input.sha256))
+      throw new Error("Invalid template object digest");
+    const bytes = new Uint8Array(
+      await readFile(join(directory, "objects", input.sha256)),
+    );
+    if ((await sha256Hex(bytes)) !== input.sha256)
+      throw new Error("Acquired template bytes changed");
+    templates.push({ path: `${TEMPLATE_PREFIX}/${input.path}`, bytes });
+  }
+  return {
+    repository: queued.repositoryIdentity.fullName,
+    files: [...source.files, ...templates],
+    acquisitionGaps: source.acquisitionGaps.filter(
+      (gap) => !COVERED_BY_BOUNDED_SCAN.has(gap),
+    ),
+  };
+}
+
+/**
+ * Registers and uploads the private report, the inventory the reviews read,
+ * every dependency lock and every named artifact under the scan run, as the
+ * signed intake requires before it records the result.
+ */
+async function retainEvidence(
+  connection: QueueConnection,
+  assessmentId: string,
+  runId: string,
+  objects: {
+    bytes: Uint8Array;
+    kind: "trace" | "manifest" | "artifact";
+    label: string;
+    contentType: string;
+  }[],
+): Promise<boolean> {
+  const unique = new Map<string, (typeof objects)[number]>();
+  for (const object of objects)
+    unique.set(await sha256Hex(object.bytes), object);
+  const trace = [...unique].find(([, object]) => object.kind === "trace");
+  if (!trace) throw new Error("The scan report is required");
+  const path = `/api/v1/vetting/evidence/${assessmentId}/${runId}`;
+  const register = await signedRequest(
+    connection,
+    "POST",
+    path,
+    encoder.encode(
+      JSON.stringify({
+        traceSha256: trace[0],
+        objects: [...unique].map(([sha256, object]) => ({
+          sha256,
+          sizeBytes: object.bytes.byteLength,
+          kind: object.kind,
+          label: object.label.slice(0, 200),
+          contentType: object.contentType,
+        })),
+      }),
+    ),
+    "application/json",
+  );
+  await register.body?.cancel();
+  if (!register.ok) return false;
+  for (const [sha256, object] of unique) {
+    const upload = await signedRequest(
+      connection,
+      "PUT",
+      `${path}/${sha256}`,
+      object.bytes,
+      object.contentType,
+    );
+    await upload.body?.cancel();
+    if (!upload.ok) return false;
+  }
+  return true;
+}
+
+async function scanOne(
+  config: ScanServiceConfig,
+  assessment: Awaited<ReturnType<typeof readPendingAssessments>>[number],
+): Promise<AssessmentOutcome> {
+  const { assessmentId } = assessment;
+  const { connection } = config;
+  const now = () => connection.now?.() ?? new Date();
+  let directory: string;
+  try {
+    directory = (
+      await acquireQueuedAssessment(
+        connection,
+        assessmentId,
+        config.workDirectory,
+      )
+    ).directory;
+  } catch {
+    return { assessmentId, state: "retry", step: "acquire" };
+  }
+  try {
+    const startedAt = now().toISOString();
+    let inputs: Awaited<ReturnType<typeof acquiredInputs>>;
+    try {
+      inputs = await acquiredInputs(directory);
+    } catch {
+      return { assessmentId, state: "retry", step: "acquire" };
+    }
+    const inspection = inspectRepository(inputs);
+    let isolated: Awaited<ReturnType<typeof inspectIsolatedArtifacts>>;
+    try {
+      isolated = await inspectIsolatedArtifacts({
+        connection,
+        files: inputs.files,
+        inspection,
+      });
+    } catch {
+      return { assessmentId, state: "retry", step: "isolated-execution" };
+    }
+    const executionEvidenceSha256s = await Promise.all(
+      isolated.reports.map(sha256Hex),
+    );
+    const evidence = new TextDecoder().decode(inspection.inventory);
+    const review = (profile: ScannerProfile) =>
+      reviewScan({
+        evidence,
+        inputSha256: inspection.inventorySha256,
+        profile,
+        fetch: connection.fetch,
+      });
+    // A failed review is a service failure, never an incomplete scan.
+    const primary = await review(config.primary);
+    if (primary.review.status !== "completed")
+      return { assessmentId, state: "retry", step: "primary-review" };
+    const runId = `scan_${(config.randomId ?? randomUUID)().replaceAll("-", "")}`;
+    const queued = { ...assessment, repository: inputs.repository };
+    const compose = (specialist: typeof primary | null) =>
+      composeScanResult({
+        queued,
+        inspection,
+        policyVersion: config.policyVersion,
+        runId,
+        startedAt,
+        completedAt: now().toISOString(),
+        primary,
+        specialist,
+        execution: isolated.execution,
+        executionEvidenceSha256s,
+      });
+    let composed = compose(null);
+    let specialist = false;
+    if (composed.needsSpecialist) {
+      const second = await review(config.specialist);
+      if (second.review.status !== "completed")
+        return { assessmentId, state: "retry", step: "specialist-review" };
+      composed = compose(second);
+      specialist = true;
+    }
+    const bySha = new Map<string, ScanInputFile>();
+    for (const file of inputs.files)
+      bySha.set(await sha256Hex(file.bytes), file);
+    const named = [
+      ...composed.result.assessed.dependencyLocks.map((lock) => lock.sha256),
+      ...composed.result.artifacts.map((artifact) => artifact.sha256),
+    ];
+    const retained = await retainEvidence(connection, assessmentId, runId, [
+      {
+        bytes: composed.report,
+        kind: "trace",
+        label: "Bounded scan report",
+        contentType: "application/json",
+      },
+      {
+        bytes: inspection.inventory,
+        kind: "manifest",
+        label: "Reviewed scan inventory",
+        contentType: "application/json",
+      },
+      ...isolated.reports.map((bytes, index) => ({
+        bytes,
+        kind: "trace" as const,
+        label: `Isolated artifact execution ${index + 1}`,
+        contentType: "application/json",
+      })),
+      ...named.map((sha256) => {
+        const file = bySha.get(sha256);
+        if (!file) throw new Error("A named object was not acquired");
+        return {
+          bytes: file.bytes,
+          kind: "artifact" as const,
+          label: file.path,
+          contentType: "application/octet-stream",
+        };
+      }),
+    ]).catch(() => false);
+    // The intake refuses a clean result without its evidence; retry it.
+    if (!retained && composed.result.disposition === "clean")
+      return { assessmentId, state: "retry", step: "evidence" };
+    const body = JSON.stringify(composed.result);
+    const receipt = await publishResult({
+      origin: connection.origin,
+      body,
+      approvedSha256: await sha256Hex(encoder.encode(body)),
+      signer: connection,
+      journalDirectory: config.journalDirectory,
+      at: connection.now?.(),
+      fetch: connection.fetch,
+    });
+    return {
+      assessmentId,
+      state: "published",
+      disposition: composed.result.disposition,
+      outcome: receipt.outcome,
+      specialist,
+      evidence: retained ? "retained" : "failed",
+    };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+/** One scan pass. Assessments run one at a time, in queue order. */
+export async function runScanPass(
+  config: ScanServiceConfig,
+): Promise<ScanPassReport> {
+  await mkdir(config.workDirectory, { recursive: true, mode: 0o700 });
+  await mkdir(config.journalDirectory, { recursive: true, mode: 0o700 });
+  const refreshed = await refresh(config.connection);
+  const pending = await readPendingAssessments(config.connection);
+  const assessments: AssessmentOutcome[] = [];
+  for (const assessment of pending) {
+    if (await exists(join(config.journalDirectory, assessment.assessmentId))) {
+      assessments.push({
+        assessmentId: assessment.assessmentId,
+        state: "journaled",
+      });
+      continue;
+    }
+    assessments.push(await scanOne(config, assessment));
+  }
+  return { refreshed, assessments };
+}
+
+type ProfileConfig = Omit<ScannerProfile, "apiKey">;
+
+/**
+ * Reads the operator configuration: a private JSON file that names the
+ * service origin, policy version, directories and both pinned profiles
+ * without keys; the Ed25519 signing key as a JWK in
+ * `SLOP_VETTING_SIGNING_JWK`; and the Surplus key in `SURPLUS_API_KEY`.
+ */
+export async function serviceConfigFrom(
+  path: string,
+  env: Record<string, string | undefined>,
+): Promise<ScanServiceConfig> {
+  const file = JSON.parse(await readFile(path, "utf8")) as {
+    origin: string;
+    policyVersion: string;
+    workDirectory: string;
+    journalDirectory: string;
+    primary: ProfileConfig;
+    specialist: ProfileConfig;
+  };
+  const apiKey = env.SURPLUS_API_KEY?.trim();
+  const jwk = env.SLOP_VETTING_SIGNING_JWK;
+  if (!apiKey || !jwk)
+    throw new Error(
+      "SURPLUS_API_KEY and SLOP_VETTING_SIGNING_JWK are required",
+    );
+  const key = JSON.parse(jwk) as JsonWebKey;
+  const privateKey = await crypto.subtle.importKey(
+    "jwk",
+    key,
+    { name: "Ed25519" },
+    false,
+    ["sign"],
+  );
+  const publicKey = await crypto.subtle.importKey(
+    "jwk",
+    { kty: key.kty, crv: key.crv, x: key.x },
+    { name: "Ed25519" },
+    true,
+    ["verify"],
+  );
+  return {
+    connection: { origin: file.origin, privateKey, publicKey },
+    primary: { ...file.primary, apiKey },
+    specialist: { ...file.specialist, apiKey },
+    policyVersion: file.policyVersion,
+    workDirectory: file.workDirectory,
+    journalDirectory: file.journalDirectory,
+  };
+}
+
+if (import.meta.main) {
+  const [configPath, mode, seconds] = process.argv.slice(2);
+  if (!configPath || (mode !== undefined && mode !== "--every"))
+    throw new Error(
+      "Usage: bun workers/vetting/run.ts CONFIG.json [--every SECONDS]",
+    );
+  const interval = mode === "--every" ? Number(seconds) : 0;
+  if (mode === "--every" && (!Number.isSafeInteger(interval) || interval < 60))
+    throw new Error("--every needs a whole number of seconds, at least 60");
+  const config = await serviceConfigFrom(configPath, process.env);
+  do {
+    try {
+      // Safe identities and states only: no source, prompt or key.
+      console.log(JSON.stringify(await runScanPass(config)));
+    } catch {
+      console.error("Scan pass failed; pending assessments stay queued.");
+      process.exitCode = 1;
+    }
+    if (interval > 0) await Bun.sleep(interval * 1000);
+  } while (interval > 0);
+}

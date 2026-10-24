@@ -204,12 +204,14 @@ without the owner's wallet, an ordinary vault has one more path:
 - Anyone calls `commitMonthly(period, awards, signature)` inside the window.
   `awards` is the list of `(actorId, gross, sourceDigest)` in allocation order.
   The vault rebuilds `allocationRoot(awards)` and requires the authority's
-  signature over it. The gross total must be within `monthlyCap` and the free
-  balance. `monthlyRoots(period)` must be empty, so each period commits once.
-  Each award then commits as an ordinary award: it takes the 2% payout fee,
-  consumes its source digest, gets the ID `awardId(sourceDigest)`, and pays
-  through the ordinary binding and delay rules. A source digest that the owner
-  already committed by hand makes the whole call revert.
+  signature over it. The full gross total must be within `monthlyCap`; the free
+  balance must cover all awards that are not already reserved or paid.
+  `monthlyRoots(period)` must be empty, so each period commits once.
+  Each new award takes the 2% payout fee, consumes its source digest, gets the
+  ID `awardId(sourceDigest)`, and pays through the ordinary binding rules.
+  An award already committed by the owner is counted once when its actor,
+  gross amount, source digest and fee match. Its payment state and commitment
+  time stay unchanged. A conflicting award makes the whole call revert.
 - The allocation root is a Merkle tree over the awards in order. A leaf is
   `keccak256(0x00, actorId, gross, sourceDigest)` and a node is
   `keccak256(0x01, left, right)`, both packed. An odd last node moves up

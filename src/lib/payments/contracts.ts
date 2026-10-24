@@ -30,10 +30,12 @@ export interface AccountPayment extends PaymentAsset {
 /**
  * A monthly award's state before and after its vault reservation. Owners and
  * contributors read the same value; a reserved or paid state comes only from
- * the finalized chain projection.
+ * the finalized chain projection, and excluded only from a recorded ban
+ * decision.
  */
 export type MonthlyAwardState =
   | "underfunded"
+  | "excluded"
   | "awaiting-reservation"
   | "reserved"
   | "paid";

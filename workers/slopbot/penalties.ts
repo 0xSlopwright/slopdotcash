@@ -94,7 +94,8 @@ export async function recordPenalty(
       input.closedAt.toISOString().slice(0, 7),
       rule.moderatorReview ? 1 : 0,
       input.reviewKey,
-      new Date().toISOString(),
+      // The close time, so the recorded debit and its month always agree.
+      input.closedAt.toISOString(),
     )
     .run();
   return activePenalty(db, input.itemNodeId);
@@ -127,4 +128,49 @@ export async function reversePenalty(
     .bind(new Date().toISOString(), reason, itemNodeId)
     .run();
   return (result.meta?.changes ?? 0) === 1;
+}
+
+/** One unreversed debit as the score producer reads it. No review key,
+ * verdict, source or model text leaves the worker. */
+export type PublishedPenalty = {
+  item_node_id: string;
+  repository_id: number;
+  author_github_id: string;
+  category: Category;
+  table_version: string;
+  debit_thirds: number;
+  period: string;
+  recorded_at: string;
+};
+
+export const PENALTY_PAGE_SIZE = 100;
+
+/** The unreversed debits of one project in item node ID order. A reversed
+ * debit is absent, so the next published score no longer applies it. */
+export async function activePenaltyPage(
+  db: D1Database,
+  projectId: string,
+  after: string,
+): Promise<{ records: PublishedPenalty[]; nextAfter: string | null }> {
+  const row = await db
+    .prepare(`SELECT json_group_array(json_object(
+    'item_node_id', item_node_id, 'repository_id', repository_id,
+    'author_github_id', author_github_id, 'category', category,
+    'table_version', table_version, 'debit_thirds', debit_thirds,
+    'period', period, 'recorded_at', recorded_at)) AS records_json
+    FROM (SELECT * FROM slopbot_penalties
+      WHERE project_id = ? AND reversed_at IS NULL AND item_node_id > ?
+      ORDER BY item_node_id LIMIT ?)`)
+    .bind(projectId, after, PENALTY_PAGE_SIZE + 1)
+    .first<{ records_json: string }>();
+  if (!row) throw new Error("Penalty read failed");
+  const records = JSON.parse(row.records_json) as PublishedPenalty[];
+  const page = records.slice(0, PENALTY_PAGE_SIZE);
+  return {
+    records: page,
+    nextAfter:
+      records.length > PENALTY_PAGE_SIZE
+        ? page[page.length - 1].item_node_id
+        : null,
+  };
 }

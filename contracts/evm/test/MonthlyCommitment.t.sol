@@ -246,10 +246,24 @@ contract MonthlyCommitmentTest {
         vm.prank(OWNER);
         vault.commitAward(id, 12, 200e6, source);
         bytes memory signature = attest(AUTHORITY_KEY, vault, PERIOD, entries);
+        submit(PERIOD, entries, signature);
+        require(vault.monthlyRoots(PERIOD) == vault.allocationRoot(entries), "month completes");
+        require(vault.freeBalance() == 9_400e6, "each source reserved once");
+        require(vault.reservedPrincipal() + vault.reservedFees() == 600e6, "exact total reserved");
+    }
+
+    function test_monthlyRejectsAConflictingManualAward() public {
+        vm.warp(NOVEMBER_OPENS);
+        ProjectEscrow.MonthlyAward[] memory entries = allocation(100e6, 200e6, 300e6);
+        bytes32 source = entries[1].sourceDigest;
+        bytes32 id = vault.awardId(source);
+        vm.prank(OWNER);
+        vault.commitAward(id, 12, 199e6, source);
+        bytes memory signature = attest(AUTHORITY_KEY, vault, PERIOD, entries);
         vm.prank(SUBMITTER);
         vm.expectRevert(ProjectEscrow.DuplicateAward.selector);
         vault.commitMonthly(PERIOD, entries, signature);
-        require(vault.monthlyRoots(PERIOD) == bytes32(0), "the failed commit used nothing");
+        require(vault.monthlyRoots(PERIOD) == bytes32(0), "conflicting month stays uncommitted");
     }
 
     function test_emptyAllocationIsRejected() public {

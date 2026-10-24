@@ -26,6 +26,7 @@ import { VALUE_RUBRIC_VERSION } from "../src/lib/value-assessment";
 import { parseGenerationArguments } from "./generate-leaderboard";
 import {
   fetchValueHistoryPage,
+  loadParticipationBans,
   ValueFeedUnavailableError,
 } from "./value-ingestion";
 
@@ -244,7 +245,10 @@ const valueReviews = [
   review(2, 8, alice as GitHubActor, "APPROVED", "2026-10-19T07:00:00.000Z"),
 ];
 
-function snapshot(policy: ValueScoringPolicy | null = POLICY) {
+function snapshot(
+  policy: ValueScoringPolicy | null = POLICY,
+  participationBans?: ReadonlyMap<string, string>,
+) {
   return createLeaderboardSnapshot(
     input({
       mergedPullRequestOutcomes: [legacy, valued, pending],
@@ -254,6 +258,7 @@ function snapshot(policy: ValueScoringPolicy | null = POLICY) {
         reviewed(pending, []),
       ],
       valuePolicy: policy ?? undefined,
+      participationBans,
       valueDecisions: new Map<string, unknown>([
         [
           valued.id,
@@ -601,4 +606,222 @@ test("value feed transport distinguishes redirects from an interrupted download"
   } finally {
     server.stop(true);
   }
+});
+
+test("reviews outside the scoring window do not consume review credit", () => {
+  // The rolling window starts on 18 September. These reviews qualify the
+  // accepted head, but their submission times are already outside that window.
+  const outside = "2026-09-01T00:00:00.000Z";
+  const blocked = outcome(8, "2026-10-20T10:00:00.000Z");
+  const split = outcome(9, "2026-10-20T11:00:00.000Z");
+  const outsideReviewers = [bob, dave, erin, frank, grace] as GitHubActor[];
+  const blockedReviews = [
+    ...outsideReviewers.map((reviewer, index) =>
+      review(
+        8,
+        index + 1,
+        reviewer,
+        "APPROVED",
+        `2026-09-0${index + 1}T00:00:00.000Z`,
+      ),
+    ),
+    review(8, 6, carol as GitHubActor, "APPROVED", "2026-10-19T06:00:00.000Z"),
+  ];
+  const splitReviews = [
+    review(9, 1, bob as GitHubActor, "APPROVED", outside),
+    review(9, 2, bob as GitHubActor, "APPROVED", "2026-10-19T01:00:00.000Z"),
+    review(9, 3, carol as GitHubActor, "APPROVED", "2026-10-19T02:00:00.000Z"),
+  ];
+  const result = createLeaderboardSnapshot(
+    input({
+      mergedPullRequestOutcomes: [blocked, split],
+      reviewedMergedPullRequests: [
+        reviewed(blocked, blockedReviews),
+        reviewed(split, splitReviews),
+      ],
+      valuePolicy: POLICY,
+      valueDecisions: new Map<string, unknown>([
+        [
+          blocked.id,
+          assessed(
+            blocked,
+            "a",
+            "medium",
+            blockedReviews.map((item) => ({
+              sourceId: item.id,
+              tier: "standard",
+            })),
+          ),
+        ],
+        [
+          split.id,
+          assessed(split, "b", "medium", [
+            { sourceId: "PRR_9_1", tier: "deep" },
+            { sourceId: "PRR_9_2", tier: "standard" },
+            { sourceId: "PRR_9_3", tier: "standard" },
+          ]),
+        ],
+      ]) as unknown as LeaderboardInput["valueDecisions"],
+    }),
+  );
+  const reviewCredit = result.ledger
+    .filter((event) => event.category === "substantive-review")
+    .map((event) => [event.id, event.actor.id, event.scoreThirds]);
+  // Carol is the only in-window reviewer. Her standard band is the whole pool.
+  // Five earlier reviewers must not fill the five-reviewer cap.
+  expect(
+    reviewCredit.filter((row) => String(row[0]).startsWith("PR_8:")),
+  ).toEqual([["PR_8:value-review:PRR_8_6", "U_carol", 3]]);
+  // Bob's in-window standard review is his weight. The older deep review is
+  // not moved into this window and does not shrink Carol's share.
+  expect(
+    reviewCredit.filter((row) => String(row[0]).startsWith("PR_9:")),
+  ).toEqual([
+    ["PR_9:value-review:PRR_9_2", "U_bob", 3],
+    ["PR_9:value-review:PRR_9_3", "U_carol", 3],
+  ]);
+  const exclusions = new Map(
+    (result.reviewExclusions ?? []).map((exclusion) => [
+      exclusion.reviewId,
+      exclusion.reason,
+    ]),
+  );
+  for (const reviewId of [
+    "PRR_8_1",
+    "PRR_8_2",
+    "PRR_8_3",
+    "PRR_8_4",
+    "PRR_8_5",
+  ])
+    expect(exclusions.get(reviewId)).toBe("review-credit-outside-window");
+  expect(exclusions.get("PRR_8_6")).toBeUndefined();
+  expect(exclusions.get("PRR_9_1")).toBe("review-credit-outside-window");
+  expect(exclusions.get("PRR_9_2")).toBeUndefined();
+  expect(exclusions.get("PRR_9_3")).toBeUndefined();
+});
+
+test("excluding an old joint review does not shrink the pull request size", () => {
+  const pull = outcome(10, "2026-10-20T10:00:00.000Z");
+  const reviews = [
+    review(10, 1, bob as GitHubActor, "APPROVED", "2026-09-01T00:00:00.000Z"),
+    review(10, 2, carol as GitHubActor, "APPROVED", "2026-10-19T00:00:00.000Z"),
+  ];
+  const decision = {
+    status: "assessed",
+    latestDigest: "c".repeat(64),
+    history: [{ recorded_at: "2026-10-22T00:00:00.000Z" }],
+    record: {
+      sources: [{ pullRequestNodeId: pull.id, headSha: HEAD }],
+      units: reviews.map((item, index) => ({
+        workUnitId: `wu_unit-${index}`,
+        claimIds: [`claim-${index}`],
+        assessment: {
+          tier: index === 0 ? "medium" : "micro",
+          rationale: "An independently accepted part of the pull request.",
+          reviews: [
+            {
+              sourceId: item.id,
+              tier: "standard",
+              finding: "Verified the fix.",
+              outcome: "The accepted head retains it.",
+            },
+          ],
+        },
+      })),
+    },
+    evidence: {
+      claims: reviews.map((_, index) => ({
+        id: `claim-${index}`,
+        carrierPullRequestIds: [pull.id],
+        creditPullRequestId: pull.id,
+        implementationActorNodeIds: [alice?.id],
+      })),
+      sources: [
+        {
+          evidence: {
+            repository: REPO,
+            pull: {
+              node_id: pull.id,
+              head: { sha: HEAD },
+              updated_at: pull.updatedAt,
+              merged_at: pull.mergedAt,
+              user: { node_id: alice?.id },
+              html_url: pull.url,
+              number: pull.number,
+              title: pull.title,
+            },
+            comments: [],
+            reviews: reviews.map((item) => ({
+              node_id: item.id,
+              body: item.body,
+              user: { node_id: item.author?.id },
+              submitted_at: item.submittedAt,
+            })),
+          },
+        },
+      ],
+    },
+  };
+  const result = createLeaderboardSnapshot(
+    input({
+      mergedPullRequestOutcomes: [pull],
+      reviewedMergedPullRequests: [reviewed(pull, reviews)],
+      valuePolicy: POLICY,
+      valueDecisions: new Map(),
+      valueActors: new Map([[(alice as GitHubActor).id, alice as GitHubActor]]),
+      jointValueDecisions: new Map([
+        [pull.id, decision],
+      ]) as unknown as LeaderboardInput["jointValueDecisions"],
+    }),
+  );
+  expect(
+    result.ledger
+      .filter((event) => event.category === "substantive-review")
+      .map((event) => [event.actor.id, event.scoreThirds]),
+  ).toEqual([[carol?.id, 3]]);
+});
+
+test("published account bans remove new merge and review credit but retain earlier work", async () => {
+  const bannedAt = "2026-10-19T04:00:00.000Z";
+  const bans = await loadParticipationBans(
+    {
+      get: async <T>(path: string) =>
+        ({
+          id: path === "/user/11" ? 11 : 12,
+          node_id: path === "/user/11" ? "U_alice" : "U_bob",
+        }) as T,
+    },
+    (async () =>
+      Response.json({
+        schemaVersion: "slop-account-bans:v1",
+        bans: [
+          { githubId: "11", bannedAt },
+          { githubId: "12", bannedAt },
+        ],
+      })) as unknown as typeof fetch,
+  );
+  const before = snapshot().ledger;
+  const after = snapshot(POLICY, bans).ledger;
+  const blocked = before.filter(
+    (event) => bans.has(event.actor.id) && event.occurredAt >= bannedAt,
+  );
+  expect(
+    blocked.some((event) => event.category === "merged-pull-request"),
+  ).toBe(true);
+  expect(blocked.some((event) => event.category === "substantive-review")).toBe(
+    true,
+  );
+  expect(after).toEqual(before.filter((event) => !blocked.includes(event)));
+  expect(
+    after.some(
+      (event) => event.actor.id === "U_alice" && event.occurredAt < bannedAt,
+    ),
+  ).toBe(true);
+  await expect(
+    loadParticipationBans(
+      { get: async () => null },
+      (async () =>
+        new Response(null, { status: 503 })) as unknown as typeof fetch,
+    ),
+  ).rejects.toBeInstanceOf(ValueFeedUnavailableError);
 });

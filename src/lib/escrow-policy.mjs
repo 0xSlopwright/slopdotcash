@@ -165,7 +165,9 @@ export const ESCROW_NETWORKS = Object.freeze({
       family: "evm",
       testnet: true,
       chainId: "11155111",
-      gasCeiling: "500000",
+      // The deployed test USDC payout estimates 681836 gas; the executor
+      // adds a 20% margin. Keep a bounded allowance above that live estimate.
+      gasCeiling: "1000000",
       scanPageBlocks: "2000",
     },
     [

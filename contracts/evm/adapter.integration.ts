@@ -791,6 +791,23 @@ try {
     digest,
     "the digest binds the vault, so a signature for one vault never commits in another",
   );
+  // A manual reservation lands after the allocation was signed. The batch must
+  // keep it intact and reserve the remaining awards rather than revert or pay twice.
+  const manualEntry = entries[1];
+  const manualTx = await rpc("eth_sendTransaction", [
+    {
+      from: owner,
+      to: vault,
+      gas: "0x7a1200",
+      data: buildCommitAwardCalldata({
+        obligationId: evmAwardId(31337n, vault, manualEntry.sourceDigest),
+        githubUserId: manualEntry.githubUserId,
+        grossMicro: manualEntry.grossMicro,
+        sourceDigest: manualEntry.sourceDigest,
+      }),
+    },
+  ]);
+  await rpc("anvil_mine", ["0x1"]);
   const monthlyTx = await rpc("eth_sendTransaction", [
     { from: donor, to: vault, gas: "0x7a1200", data: monthly },
   ]);
@@ -802,7 +819,12 @@ try {
   );
   for (const [index, entry] of entries.entries()) {
     const monthlyId = evmAwardId(31337n, vault, entry.sourceDigest);
-    const reserved = await verifyReserve(config, monthlyTx, index, monthlyId);
+    const reserved = await verifyReserve(
+      config,
+      index === 1 ? manualTx : monthlyTx,
+      index === 2 ? 1 : 0,
+      monthlyId,
+    );
     assert.equal(reserved.githubUserId, entry.githubUserId);
     assert.equal(reserved.grossMicro, entry.grossMicro);
     assert.equal(

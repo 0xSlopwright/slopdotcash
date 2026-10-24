@@ -386,8 +386,8 @@ contract ProjectEscrow is Initializable, UUPSUpgradeable {
 
     /// @notice Anyone may commit one period's allocation inside its window, once per period, while the owner
     /// has monthly commitments on. The identity authority must have signed monthlyDigest(period, root) for
-    /// exactly these awards, and their gross total must be within monthlyCap and the free balance. Each award
-    /// takes the ordinary payout fee and pays through the ordinary binding and delay rules.
+    /// exactly these awards, and their gross total must be within monthlyCap. The free balance covers new
+    /// awards only; matching existing awards retain their payment state and are never reserved twice.
     function commitMonthly(uint32 period, MonthlyAward[] calldata entries, bytes calldata attestation) external {
         if (purpose != Purpose.Ordinary) revert WrongPurpose();
         if (!monthlyEnabled) revert MonthlyDisabled();
@@ -399,14 +399,28 @@ contract ProjectEscrow is Initializable, UUPSUpgradeable {
             revert InvalidAttestation();
         }
         uint256 total;
+        bool[] memory alreadyCommitted = new bool[](entries.length);
         for (uint256 i; i < entries.length; ++i) {
             total += entries[i].gross;
+            alreadyCommitted[i] = awards[awardId(entries[i].sourceDigest)].actorId != 0;
         }
         if (total > monthlyCap) revert MonthlyCapExceeded();
         monthlyRoots[period] = root;
         for (uint256 i; i < entries.length; ++i) {
             MonthlyAward calldata entry = entries[i];
-            commit(awardId(entry.sourceDigest), entry.actorId, entry.gross, entry.sourceDigest, payoutFee(entry.gross));
+            bytes32 id = awardId(entry.sourceDigest);
+            Award storage existing = awards[id];
+            uint128 fee = payoutFee(entry.gross);
+            if (alreadyCommitted[i]) {
+                // An owner can reserve or pay an award while this signed allocation is in transit.
+                // Count the exact same obligation once; a changed award must still fail closed.
+                if (
+                    existing.actorId != entry.actorId || existing.gross != entry.gross
+                        || existing.sourceDigest != entry.sourceDigest || existing.fee != fee
+                ) revert DuplicateAward();
+            } else {
+                commit(id, entry.actorId, entry.gross, entry.sourceDigest, fee);
+            }
         }
         emit MonthlyCommitted(period, root, uint128(total), entries.length);
     }

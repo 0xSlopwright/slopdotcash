@@ -7,6 +7,7 @@ import {
   externalSourceId,
   externalWorkKey,
 } from "./external-sources";
+import { githubUserIdFromNodeId } from "./github-actor";
 import type {
   AttributionAssessment,
   AttributionAssessmentOptions,
@@ -25,6 +26,8 @@ import type {
   MergedPullRequestOutcome,
   MergedPullRequestReviewRecord,
   ModelAttribution,
+  PenaltyFeedRecord,
+  PublishedPenalty,
   PullRequestFile,
   PullRequestRecord,
   PullRequestReview,
@@ -43,6 +46,7 @@ import type {
   WorkItemSelection,
 } from "./leaderboard-types";
 import { isRecord } from "./record-validation.mjs";
+import { penaltyDeductions } from "./score-penalties";
 import {
   allocatePullRequestReviewCredit,
   assertValueScoringPolicy,
@@ -74,6 +78,8 @@ export type {
   MergedPullRequestOutcome,
   MergedPullRequestReviewRecord,
   ModelAttribution,
+  PenaltyFeedRecord,
+  PublishedPenalty,
   PullRequestFile,
   PullRequestRecord,
   PullRequestReview,
@@ -234,6 +240,7 @@ export const REVIEW_EXCLUSION_REASONS = [
   "pull-request-review-awarded",
   "review-credit-reviewer-limit",
   "review-credit-zero-share",
+  "review-credit-outside-window",
 ] as const;
 
 function exactEvidenceBonusRun(
@@ -1470,7 +1477,7 @@ export function leaderboardMethodology(
     : "";
   return {
     summary: valuePolicy
-      ? `${policyStart}Slopbot's source-bound value assessments size each accepted pull request and value its reviews; a valid maintainer ratification is the exception that takes precedence. An accepted merge without a current assessment, or assessed at zero, keeps the one-third minimum. Each pull request's review pool is the sum of the highest assessed bands of its first ${valuePolicy.reviewCredit.maxReviewers} distinct qualifying reviewers, capped at the pull request's assessed size and never less than one third; it is split by band in integer thirds by largest remainder. Work accepted earlier keeps the Slop Score v2 and SCR-05 rules unchanged. Payout approval remains separate.`
+      ? `${policyStart}Slopbot's source-bound value assessments size each accepted pull request and value its reviews; a valid maintainer ratification is the exception that takes precedence. An accepted merge without a current assessment, or assessed at zero, keeps the one-third minimum. Each pull request's review pool is the sum of the highest assessed bands of its first ${valuePolicy.reviewCredit.maxReviewers} distinct qualifying reviewers, capped at the pull request's assessed size and never less than one third; it is split by band in integer thirds by largest remainder. Each unreversed debit from Slopbot's published penalty table reduces its author's score for the same project and UTC month once, never below zero; an upheld appeal or a maintainer reopen removes it, and closed reward cycles keep their recorded scores. Work accepted earlier keeps the Slop Score v2 and SCR-05 rules unchanged. Payout approval remains separate.`
       : "Slop Score v2 groups accepted work into logical work units and stores credit in integer thirds. Claude review agents propose effort, complexity, impact, and review load; maintainers ratify the score on GitHub. From October 2026 an unratified merge starts at one point, and a formal review scores 1/3 only when the merged code answered its request for changes, once per pull request. Only the actor's aggregate is rounded down at cycle close.",
     scoringRules: [
       {
@@ -1509,7 +1516,7 @@ export function leaderboardMethodology(
           ? `one pool per pull request: the credited reviewers' bands, capped at the pull request's assessed size, minimum 1/3; at most ${valuePolicy.reviewCredit.maxReviewers} distinct reviewers; one credited record per reviewer`
           : "from 2026-10-01, one ordinary review award per merged pull request; no self-review and no duplicate reviewer credit on one artifact",
         qualification: valuePolicy
-          ? `${policyStart}complete source-bound assessments value distinct evidenced review outcomes, including useful validation; a request for changes is not required. Reviews by implementation actors, bots, after merge or closure, and duplicate findings do not qualify. Qualifying reviews are grouped by immutable reviewer ID; reviewers are ordered by their first qualifying review's submission time, then review node ID, and the first ${valuePolicy.reviewCredit.maxReviewers} share the pull request's review pool by their highest assessed band using integer largest remainder, earlier reviewers first on equal remainders. Later reviewers publish review-credit-reviewer-limit. Valid human decisions and reviewed evaluation awards take precedence. Missing, stale or unresolved assessments do not receive legacy review credit. Reviews of pull requests accepted earlier keep the SCR-05 rule.`
+          ? `${policyStart}complete source-bound assessments value distinct evidenced review outcomes, including useful validation; a request for changes is not required. Reviews by implementation actors, bots, after merge or closure, and duplicate findings do not qualify. A qualifying review submitted outside the scoring window publishes review-credit-outside-window and takes no reviewer slot or share. The remaining reviews are grouped by immutable reviewer ID and ordered by their first in-window qualifying review's submission time, then review node ID. The first ${valuePolicy.reviewCredit.maxReviewers} share the pull request's review pool by their highest in-window assessed band using integer largest remainder, earlier reviewers first on equal remainders. Later reviewers publish review-credit-reviewer-limit. Valid human decisions and reviewed evaluation awards take precedence. Missing, stale or unresolved assessments do not receive legacy review credit. Reviews of pull requests accepted earlier keep the SCR-05 rule.`
           : "Every merged pull request with a formal review is selected through a separate bounded review census, independent of the pull-request author's detail cap. A pre-merge APPROVED or CHANGES_REQUESTED review of human-authored work has substantive text or inline discussion. Before 2026-10-01 such a review scores standard credit. From 2026-10-01 only the latest CHANGES_REQUESTED review on a commit other than the merged head scores, at triage credit; approvals and ignored requests do not. Higher review tiers require maintainer ratification. Excluded formal reviews publish a machine-readable reason.",
       },
       {
@@ -1626,14 +1633,93 @@ export function ledgerWorkUnitId(
   );
 }
 
+/** The project whose UTC month a debit or score event belongs to. */
+export function penaltyProjectOf(repository: string): string {
+  const projectId = findRegisteredRepositoryById(repository)?.projectId;
+  if (!projectId)
+    throw new Error(`Score repository is not registered: ${repository}`);
+  return projectId;
+}
+
+/**
+ * Binds each unreversed feed debit to a closed, unmerged pull request of the
+ * census. GitHub, not the feed, supplies the author and the closure month. A
+ * debit for a pull request outside the census (closed before the window, or
+ * reopened) is not applied. A debit whose recorded author differs from the
+ * GitHub author fails the snapshot instead of debiting another person.
+ */
+function publishedPenalties(
+  records: readonly PenaltyFeedRecord[],
+  closed: readonly PullRequestRecord[],
+): PublishedPenalty[] {
+  const census = new Map(closed.map((pull) => [pull.id, pull]));
+  const seen = new Set<string>();
+  const penalties: PublishedPenalty[] = [];
+  for (const record of records) {
+    if (
+      typeof record !== "object" ||
+      record === null ||
+      typeof record.itemNodeId !== "string" ||
+      !/^[1-9][0-9]*$/u.test(String(record.authorGithubId)) ||
+      typeof record.category !== "string" ||
+      !/^[a-z_]{1,40}$/u.test(record.category) ||
+      typeof record.tableVersion !== "string" ||
+      !/^slopbot-penalties-v[1-9][0-9]*$/u.test(record.tableVersion) ||
+      !Number.isSafeInteger(record.debitThirds) ||
+      record.debitThirds < 1
+    )
+      throw new Error("Penalty feed record is malformed");
+    if (seen.has(record.itemNodeId))
+      throw new Error("Penalty feed repeats a pull request");
+    seen.add(record.itemNodeId);
+    const pull = census.get(record.itemNodeId);
+    if (!pull?.closedAt || pull.mergedAt !== null || !pull.author) continue;
+    if (isBotActor(pull.author)) continue;
+    if (githubUserIdFromNodeId(pull.author.id) !== record.authorGithubId)
+      throw new Error(
+        `Penalty author does not match the GitHub author of ${pull.url}`,
+      );
+    penalties.push({
+      id: `${pull.id}:penalty`,
+      actor: pull.author,
+      repository: repositoryIdFromUrl(pull.url),
+      occurredAt: pull.closedAt,
+      category: record.category,
+      tableVersion: record.tableVersion,
+      debitThirds: record.debitThirds,
+      source: {
+        id: pull.id,
+        kind: "pull-request",
+        number: pull.number,
+        title: pull.title,
+        url: pull.url,
+      },
+    });
+  }
+  return penalties.sort(
+    (left, right) =>
+      left.occurredAt.localeCompare(right.occurredAt) ||
+      left.id.localeCompare(right.id),
+  );
+}
+
 function addScore(
   entries: Map<string, MutableLeaderboardEntry>,
   ledger: ScoreEvent[],
+  participationBans: ReadonlyMap<string, string>,
   event: ScoreEvent,
 ): boolean {
   if (isBotActor(event.actor)) {
     return false;
   }
+  // PRD section 8: a banned account receives no new contribution or review
+  // credit from its ban onward. Earlier credit stays.
+  const bannedAt = participationBans.get(event.actor.id);
+  if (
+    bannedAt !== undefined &&
+    parseIsoTime(event.occurredAt) >= parseIsoTime(bannedAt)
+  )
+    return false;
   const entry = actorEntry(entries, event.actor);
   const projectId = REGISTERED_REPOSITORIES.find(
     (repository) => repository.id === event.repository,
@@ -2714,6 +2800,7 @@ function createSnapshotWithReviewCutoff(
   input: LeaderboardInput,
   reviewCutoff: string,
 ): LeaderboardSnapshot {
+  const participationBans = input.participationBans ?? new Map();
   if (
     input.jointValueDecisions !== undefined &&
     input.valueDecisions === undefined
@@ -3325,7 +3412,7 @@ function createSnapshotWithReviewCutoff(
       if (ratification && scoreThirds === 0) continue;
       const contributionBonus =
         isAuthor && contributionRun?.traceUpload ? 1_500 : 0;
-      const scored = addScore(entries, ledger, {
+      const scored = addScore(entries, ledger, participationBans, {
         id: isAuthor
           ? `${pullRequest.id}:merged`
           : `${pullRequest.id}:merged:${actor.id}`,
@@ -3505,7 +3592,7 @@ function createSnapshotWithReviewCutoff(
       );
       for (const [index, actor] of actors.entries()) {
         const thirds = shares[index] as number;
-        addScore(entries, ledger, {
+        addScore(entries, ledger, participationBans, {
           id: `${completion.pull.node_id}:joint:${unit.workUnitId}:merged:${actor.id}`,
           actor,
           category: "merged-pull-request",
@@ -3653,7 +3740,7 @@ function createSnapshotWithReviewCutoff(
       }
       evaluatedReviewReservations.add(reservationKey);
     }
-    if (addScore(entries, ledger, event) && source) {
+    if (addScore(entries, ledger, participationBans, event) && source) {
       recordScoredSources([source]);
     }
   }
@@ -3788,13 +3875,32 @@ function createSnapshotWithReviewCutoff(
     }
     if (!eligible.length) return [];
     const repositoryId = repositoryIdFromUrl(pullRequest.url);
+    // Review credit keeps the review's submission time. A review outside this
+    // scoring window cannot be published here, so it must not take one of the
+    // five reviewer slots or a share of the pool from a review that can.
+    const scoringFrom = parseIsoTime(input.windowFrom);
+    const inWindow: ValueReviewCandidate[] = [];
+    for (const candidate of eligible) {
+      const reviewedAt = parseIsoTime(candidate.submittedAt);
+      if (reviewedAt < scoringFrom || reviewedAt >= windowTo) {
+        excludeReview(
+          pullRequest,
+          candidate.review,
+          "review-credit-outside-window",
+        );
+        continue;
+      }
+      inWindow.push(candidate);
+    }
+    if (!inWindow.length) return [];
     const byId = new Map(
-      eligible.map((candidate) => [candidate.reviewId, candidate]),
+      inWindow.map((candidate) => [candidate.reviewId, candidate]),
     );
     // A joint member's reviews can sit in several units; the largest assessed
-    // unit is the pull request's size.
+    // unit is the pull request's size. An old review losing its share must
+    // not shrink that recorded size.
     const allocation = allocatePullRequestReviewCredit(
-      eligible,
+      inWindow,
       Math.max(...eligible.map((candidate) => candidate.assessedSizeThirds)),
     );
     const exclude = (reviewId: string, reason: ReviewExclusionReason) => {
@@ -3812,10 +3918,7 @@ function createSnapshotWithReviewCutoff(
         exclude(candidate.reviewId, "review-credit-zero-share");
         continue;
       }
-      const reviewedAt = parseIsoTime(candidate.submittedAt);
-      if (reviewedAt < parseIsoTime(input.windowFrom) || reviewedAt >= windowTo)
-        continue;
-      addScore(entries, ledger, {
+      addScore(entries, ledger, participationBans, {
         id: `${pullRequest.id}:value-review:${candidate.reviewId}`,
         actor: candidate.actor,
         category: "substantive-review",
@@ -3867,7 +3970,7 @@ function createSnapshotWithReviewCutoff(
         !explicitPrizeAcceptance &&
         hasMaterialTestChange(detailedPullRequest.files)
       ) {
-        const scored = addScore(entries, ledger, {
+        const scored = addScore(entries, ledger, participationBans, {
           id: `${detailedPullRequest.id}:tests`,
           actor: detailedPullRequest.author,
           category: "material-test-change",
@@ -3908,7 +4011,7 @@ function createSnapshotWithReviewCutoff(
         attributableEvidenceSources.map((source) => [source.id, source]),
       );
       for (const finding of evidence.findings) {
-        const scored = addScore(entries, ledger, {
+        const scored = addScore(entries, ledger, participationBans, {
           id: `${pullRequest.id}:evidence:${finding.category}`,
           actor: detailedPullRequest.author,
           category: "evidence",
@@ -4001,7 +4104,7 @@ function createSnapshotWithReviewCutoff(
       }[record.reviewLoad];
       awardedReviewers.add(source.author.id);
       if (
-        addScore(entries, ledger, {
+        addScore(entries, ledger, participationBans, {
           id: `${pullRequest.id}:automated-review:${source.id}`,
           actor: source.author,
           category: "substantive-review",
@@ -4051,7 +4154,7 @@ function createSnapshotWithReviewCutoff(
             )?.run
           : null;
       awardedReviewers.add(review.author.id);
-      const scored = addScore(entries, ledger, {
+      const scored = addScore(entries, ledger, participationBans, {
         id: `${pullRequest.id}:reviewer:${review.author.id}`,
         actor: review.author,
         category: "substantive-review",
@@ -4213,7 +4316,7 @@ function createSnapshotWithReviewCutoff(
       !hasEvaluatedReviewReservation(ratification.source.author.id) &&
       !awardedReviewers.has(ratification.source.author.id)
     ) {
-      addScore(entries, ledger, {
+      addScore(entries, ledger, participationBans, {
         id: `${pullRequest.id}:ratifier:${ratification.source.id}`,
         actor: ratification.source.author,
         category: "substantive-review",
@@ -4277,7 +4380,7 @@ function createSnapshotWithReviewCutoff(
           `Qualifying resolved issue ${issue.id} is missing its closed timestamp`,
         );
       }
-      const scored = addScore(entries, ledger, {
+      const scored = addScore(entries, ledger, participationBans, {
         id: `${issue.id}:resolved-by:${contributor.id}`,
         actor: contributor.author,
         category: "resolved-issue",
@@ -4370,7 +4473,7 @@ function createSnapshotWithReviewCutoff(
     // survives only when its attribution is independently present and replay
     // checked in the current snapshot.
     delete retained.evidenceBonusBasisPoints;
-    if (addScore(entries, ledger, retained)) {
+    if (addScore(entries, ledger, participationBans, retained)) {
       currentLedgerIds.add(retained.id);
       currentScoreSources.add(`${retained.repository}\0${retained.source.id}`);
       const candidates = (input.retainedReviewAttributions ?? []).filter(
@@ -4520,6 +4623,18 @@ function createSnapshotWithReviewCutoff(
     }
   }
 
+  const publishedLedger = dedupeByNodeId(ledger);
+  const penalties = publishedPenalties(
+    input.penalties ?? [],
+    closedUnmergedPullRequests,
+  );
+  const deductions = penaltyDeductions(
+    publishedLedger,
+    penalties,
+    penaltyProjectOf,
+  ).byActor;
+  for (const entry of entries.values())
+    entry.scoreThirds -= deductions.get(entry.actor.id) ?? 0;
   const leaders = [...entries.values()]
     .filter(
       (entry) =>
@@ -4531,6 +4646,9 @@ function createSnapshotWithReviewCutoff(
       actor: entry.actor,
       score: Math.floor(entry.scoreThirds / 3),
       scoreThirds: entry.scoreThirds,
+      ...(deductions.has(entry.actor.id)
+        ? { penaltyThirds: deductions.get(entry.actor.id) }
+        : {}),
       points: {
         mergedPullRequests: entry.pointThirds.mergedPullRequests / 3,
         resolvedIssues: entry.pointThirds.resolvedIssues / 3,
@@ -4612,7 +4730,7 @@ function createSnapshotWithReviewCutoff(
             };
           }),
         }),
-    ledger: dedupeByNodeId(ledger).sort(
+    ledger: publishedLedger.sort(
       (left, right) =>
         right.points - left.points ||
         left.source.number - right.source.number ||
@@ -4623,6 +4741,7 @@ function createSnapshotWithReviewCutoff(
         left.pullRequestId.localeCompare(right.pullRequestId) ||
         left.reviewId.localeCompare(right.reviewId),
     ),
+    penalties,
     opportunities,
     attributions,
     invalidAttributionMarkers: overallAttribution.invalidMarkers.sort(
@@ -5012,6 +5131,70 @@ function assertReviewExclusionValue(
   );
 }
 
+/** Snapshots published before penalties carry no `penalties` field. */
+function assertPenaltyValues(
+  value: unknown,
+  repositoryIds: readonly string[],
+  windowFrom: string,
+  windowTo: string,
+): PublishedPenalty[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value))
+    throw new Error("snapshot.penalties must be an array");
+  const ids = new Set<string>();
+  return value.map((item, index) => {
+    const path = `snapshot.penalties[${index}]`;
+    const penalty = assertObject(item, path);
+    if (
+      JSON.stringify(Object.keys(penalty).sort()) !==
+      JSON.stringify([
+        "actor",
+        "category",
+        "debitThirds",
+        "id",
+        "occurredAt",
+        "repository",
+        "source",
+        "tableVersion",
+      ])
+    )
+      throw new Error(`${path} must contain exactly the penalty fields`);
+    assertActorValue(penalty.actor, `${path}.actor`);
+    if (isBotActor(penalty.actor as GitHubActor))
+      throw new Error(`${path}.actor cannot be a bot`);
+    assertEnum(penalty.repository, repositoryIds, `${path}.repository`);
+    assertIsoTimestamp(penalty.occurredAt, `${path}.occurredAt`);
+    if (
+      parseIsoTime(penalty.occurredAt as string) < parseIsoTime(windowFrom) ||
+      parseIsoTime(penalty.occurredAt as string) > parseIsoTime(windowTo)
+    )
+      throw new Error(`${path}.occurredAt is outside the snapshot window`);
+    assertString(penalty.category, `${path}.category`);
+    assertString(penalty.tableVersion, `${path}.tableVersion`);
+    assertPositiveInteger(penalty.debitThirds, `${path}.debitThirds`);
+    const source = assertObject(penalty.source, `${path}.source`);
+    assertString(source.id, `${path}.source.id`);
+    assertString(source.title, `${path}.source.title`);
+    assertPositiveInteger(source.number, `${path}.source.number`);
+    if (
+      Object.keys(source).length !== 5 ||
+      source.kind !== "pull-request" ||
+      penalty.id !== `${source.id}:penalty` ||
+      ids.has(penalty.id as string)
+    )
+      throw new Error(`${path} must bind one unique pull request`);
+    ids.add(penalty.id as string);
+    assertRepositoryUrl(
+      source.url,
+      `${path}.source.url`,
+      "pull-request",
+      source.number as number,
+      penalty.repository as RepositoryId,
+    );
+    return penalty as unknown as PublishedPenalty;
+  });
+}
+
 function assertSourceValue(
   value: unknown,
   path: string,
@@ -5224,6 +5407,10 @@ function assertLeaderValue(
       throw new Error(`${path}.points.${key} does not match integer thirds`);
     }
     scoreThirdsTotal += Number(pointThirds[key]);
+  }
+  if (entry.penaltyThirds !== undefined) {
+    assertPositiveInteger(entry.penaltyThirds, `${path}.penaltyThirds`);
+    scoreThirdsTotal -= Number(entry.penaltyThirds);
   }
   if (scoreThirdsTotal !== entry.scoreThirds) {
     throw new Error(`${path}.scoreThirds does not equal its point breakdown`);
@@ -6516,6 +6703,17 @@ export function assertLeaderboardSnapshot(
         }
       });
   }
+  const validatedPenalties = assertPenaltyValues(
+    snapshot.penalties,
+    repositoryIds,
+    windowFrom as string,
+    windowTo as string,
+  );
+  const penaltyThirds = penaltyDeductions(
+    validatedLedger,
+    validatedPenalties,
+    penaltyProjectOf,
+  ).byActor;
   const leaderByActorId = new Map(
     validatedLeaders.map((entry) => [entry.actor.id, entry]),
   );
@@ -6566,11 +6764,14 @@ export function assertLeaderboardSnapshot(
         outcomes.evaluatedContributions += 1;
       }
     }
-    const ledgerThirds = events.reduce(
-      (total, event) => total + (event.scoreThirds ?? event.points * 3),
-      0,
-    );
+    const appliedPenaltyThirds = penaltyThirds.get(leader.actor.id) ?? 0;
+    const ledgerThirds =
+      events.reduce(
+        (total, event) => total + (event.scoreThirds ?? event.points * 3),
+        0,
+      ) - appliedPenaltyThirds;
     if (
+      (leader.penaltyThirds ?? 0) !== appliedPenaltyThirds ||
       Math.floor(ledgerThirds / 3) !== leader.score ||
       ledgerThirds !== leader.scoreThirds ||
       pointThirds.mergedPullRequests !==
