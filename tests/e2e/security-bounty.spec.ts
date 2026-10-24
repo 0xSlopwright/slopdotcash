@@ -37,6 +37,65 @@ function account(role: Role) {
 
 type Reply = { status: number; body: Record<string, unknown> };
 
+/** The reviewed USDC asset on Base Sepolia. */
+const BASE_SEPOLIA_USDC = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
+
+/** A synthetic reviewed bounty vault for one program repository. */
+function bountyDeployment(repository: string) {
+  const id = fixtureRepository(repository).id.toString(16);
+  return {
+    network: "base-sepolia",
+    vault: `0x1${id.padStart(39, "0")}`,
+    asset: BASE_SEPOLIA_USDC,
+    owner: "0x2000000000000000000000000000000000000002",
+    identityAuthority: "0x3000000000000000000000000000000000000003",
+    feeRecipient: "0x4000000000000000000000000000000000000004",
+    factory: "0x5000000000000000000000000000000000000005",
+    registrar: "0x6000000000000000000000000000000000000006",
+    factoryCodeSha256: "cd".repeat(32),
+    codeSha256: "ab".repeat(32),
+    deploymentTransaction: `0x${"ab".repeat(32)}`,
+    sourceCommit: "a".repeat(40),
+    bindingDelaySeconds: "3600",
+    rotationDelaySeconds: null,
+    programId: null,
+    projectPda: null,
+    networkDomain: null,
+    upgradeAuthority: null,
+  };
+}
+
+/**
+ * Seeds the local scanner output only: a finalized snapshot of the program's
+ * bounty vault. No hosted database or chain is used. Owner decision D10:
+ * this free balance, not the published terms, bounds award reservations.
+ */
+async function vaultSnapshot(
+  projectId: string,
+  deployment: { vault: string; asset: string },
+  freeMinor: string,
+  observedAt = new Date().toISOString(),
+) {
+  const persist = process.env.SLOP_E2E_PERSIST_TO;
+  expect(persist).toBeTruthy();
+  const { execFileSync } = await import("node:child_process");
+  execFileSync(
+    "node",
+    [
+      "node_modules/wrangler/bin/wrangler.js",
+      "d1",
+      "execute",
+      "slop-private",
+      "--local",
+      "--persist-to",
+      persist as string,
+      "--command",
+      `INSERT INTO security_vault_snapshots(project_id,network,chain,vault,asset_address,asset_decimals,total_deposited,total_paid,total_payout_fees,total_gross_withdrawn,total_withdrawal_fees,total_service_fees,free_balance,reserved_principal,reserved_fees,accrued_fees,reserved,block_number,block_time,observed_at) VALUES('${projectId}','base-sepolia','base','${deployment.vault}','${deployment.asset}',6,'${freeMinor}','0','0','0','0','0','${freeMinor}',NULL,NULL,NULL,'0','64','${observedAt}','${observedAt}') ON CONFLICT(project_id,network,vault) DO UPDATE SET total_deposited=excluded.total_deposited, free_balance=excluded.free_balance, block_number=CAST(CAST(block_number AS INTEGER)+1 AS TEXT), block_time=excluded.block_time, observed_at=excluded.observed_at`,
+    ],
+    { stdio: "pipe" },
+  );
+}
+
 async function api(
   request: APIRequestContext,
   method: "GET" | "POST" | "PUT",
@@ -66,10 +125,19 @@ function bountyTerms(
     rewardMode: "bounty-only",
     eligibility: "critical-loss-of-funds",
     amount: {
-      currency: "USD",
-      decimals: 2,
-      network: null,
-      grossMinor: "1000000",
+      currency: "USDC",
+      decimals: 6,
+      network: "base",
+      grossMinor: "10000000000",
+    },
+    settlement: {
+      schemaVersion: "1",
+      effectiveCycle: "2026-11",
+      chain: "base",
+      feeBasisPoints: 2500,
+      withdrawalFeeBasisPoints: 200,
+      feeMode: "deduct-from-gross",
+      deployments: [bountyDeployment(repository)],
     },
     split: { researcherBasisPoints: 7500, slopBasisPoints: 2500 },
     sponsor: { name: "Slop", githubId: null },
@@ -430,19 +498,8 @@ test("private security bounty programs keep cases restricted from intake to awar
         ...m,
         securityBounty: openTerms({ ...bTerms, rewardMode: "bounty-only" }),
       })),
-      revise(request, b.id, (m) => ({
-        ...m,
-        securityBounty: openTerms({
-          ...bTerms,
-          approvers: {
-            technical: [account("security-b")],
-            financial: [account("finance")],
-            dispute: [account("security-b")],
-          },
-        }),
-      })),
     ]);
-    expect(refusals.map((reply) => reply.status)).toEqual([422, 422, 422, 422]);
+    expect(refusals.map((reply) => reply.status)).toEqual([422, 422, 422]);
     expect(String(refusals[0].body.message)).toContain("divisible by four");
     expect(String(refusals[1].body.message)).toContain(
       "open requires verified available funding",
@@ -471,7 +528,7 @@ test("private security bounty programs keep cases restricted from intake to awar
       securityBounty: {
         status: "open",
         rewardMode: "bounty-only",
-        amount: { grossMinor: "1000000", currency: "USD" },
+        amount: { grossMinor: "10000000000", currency: "USDC" },
       },
     });
     const revisions = await api(request, "GET", "project-revisions", null);
@@ -500,15 +557,15 @@ test("private security bounty programs keep cases restricted from intake to awar
     await page.goto(`/projects/${a.id}/security`, { waitUntil: "networkidle" });
     await expect(page.locator("h1")).toHaveText("Security bounty");
     await expect(page.locator(".security-lead")).toHaveText(
-      "Published award: $10,000 gross per finding, $7,500 to the researcher. Funded by Slop.",
+      "Published award: 10,000 USDC gross per finding, 7,500 USDC to the researcher. Funded by Slop.",
     );
     const facts = page.getByRole("region", { name: "Award terms" });
-    await expect(facts).toContainText("Researcher · 75%$7,500");
+    await expect(facts).toContainText("Researcher · 75%7,500 USDC");
     await expect(facts).toContainText(
-      "Published gross award per finding$10,000",
+      "Published gross award per finding10,000 USDC",
     );
     await expect(facts).toContainText("Awards are discretionary.");
-    await expect(facts).toContainText("Slop · 25%$2,500");
+    await expect(facts).toContainText("Slop · 25%2,500 USDC");
     await expect(facts).toContainText("Bounty only.");
     await expectAccessible(page);
     await page.screenshot({
@@ -533,6 +590,14 @@ test("private security bounty programs keep cases restricted from intake to awar
 
   await test.step("intake readiness gates the GitHub handoff", async () => {
     await setIntake(request, b.repository, "disabled");
+    // Without the slopdotcash App the page offers only the GitHub handoff,
+    // also in the lane where automatic intake is on.
+    const app = (state: "installed" | "missing") =>
+      request.fetch(
+        `${GITHUB_FIXTURE}/__fixture/intake-app/${a.repository}/${state}`,
+        { method: "PUT" },
+      );
+    expect((await app("missing")).status()).toBe(204);
     const context = await browser.newContext({
       viewport: test.info().project.use.viewport,
       recordVideo: { dir: test.info().outputPath("workflow-video") },
@@ -575,6 +640,8 @@ test("private security bounty programs keep cases restricted from intake to awar
       );
       expect(checked.body).toMatchObject({ state, handoffUrl: null });
     }
+    // The App reads the program's private reports from here on.
+    expect((await app("installed")).status()).toBe(204);
   });
 
   let caseA = "";
@@ -614,9 +681,9 @@ test("private security bounty programs keep cases restricted from intake to awar
         receivedAtSource: "github-verified",
         policyRevision: opened.revision,
         terms: {
-          grossMinor: "1000000",
-          researcherMinor: "750000",
-          slopMinor: "250000",
+          grossMinor: "10000000000",
+          researcherMinor: "7500000000",
+          slopMinor: "2500000000",
         },
         awardState: "pending",
       });
@@ -777,22 +844,24 @@ test("private security bounty programs keep cases restricted from intake to awar
       reservation: null,
     });
     // Neither the reporter nor finance can award.
-    expect((await award(request, "reporter-a", caseA, "1000000")).status).toBe(
-      403,
-    );
-    const awarded = await award(request, "security", caseA, "1000000");
+    expect(
+      (await award(request, "reporter-a", caseA, "10000000000")).status,
+    ).toBe(403);
+    // The bounty vault's finalized free balance holds one published award.
+    await vaultSnapshot(a.id, bountyDeployment(a.repository), "10000000000");
+    const awarded = await award(request, "security", caseA, "10000000000");
     expect(awarded.status, JSON.stringify(awarded.body)).toBe(200);
     expect(awarded.body.case).toMatchObject({
       awardState: "approved",
       paymentState: "rail-unavailable",
       award: {
-        grossMinor: "1000000",
-        researcherMinor: "750000",
-        slopMinor: "250000",
+        grossMinor: "10000000000",
+        researcherMinor: "7500000000",
+        slopMinor: "2500000000",
       },
       reservation: {
         rootCauseKey: "vault-share-rounding",
-        grossMinor: "1000000",
+        grossMinor: "10000000000",
       },
     });
     // The same root cause cannot hold a second award through another report.
@@ -848,8 +917,8 @@ test("private security bounty programs keep cases restricted from intake to awar
       receiptState: "confirmed",
       awardState: "pending",
     });
-    // The verified funds (one published award) are already reserved.
-    const short = await award(request, "security", third, "400000");
+    // The vault's finalized free balance (one award) is already reserved.
+    const short = await award(request, "security", third, "4000000000");
     expect(short.status).toBe(409);
     expect(short.body.error).toBe("insufficient_funds");
     expect(
@@ -857,26 +926,27 @@ test("private security bounty programs keep cases restricted from intake to awar
         .body.case,
     ).toMatchObject({ awardState: "pending", reservation: null });
     // An amount that cannot split exactly 75/25 is refused.
-    expect((await award(request, "security", third, "400002")).body.error).toBe(
-      "invalid_amount",
+    expect(
+      (await award(request, "security", third, "4000000002")).body.error,
+    ).toBe("invalid_amount");
+    // A stale snapshot proves nothing, even when it shows enough money.
+    await vaultSnapshot(
+      a.id,
+      bountyDeployment(a.repository),
+      "14000000000",
+      new Date(Date.now() - 31 * 60_000).toISOString(),
     );
-    const raised = await revise(request, a.id, (m) => ({
-      ...m,
-      securityBounty: {
-        ...(m.securityBounty as Record<string, unknown>),
-        capacity: {
-          ...((m.securityBounty as Record<string, unknown>).capacity as object),
-          awards: 2,
-        },
-      },
-    }));
-    expect(raised.status).toBe(200);
-    const funded = await award(request, "security", third, "400000");
+    expect(
+      (await award(request, "security", third, "4000000000")).body.error,
+    ).toBe("funds_unavailable");
+    // A finalized deposit raises the free balance; the terms do not change.
+    await vaultSnapshot(a.id, bountyDeployment(a.repository), "14000000000");
+    const funded = await award(request, "security", third, "4000000000");
     expect(funded.status, JSON.stringify(funded.body)).toBe(200);
     expect(funded.body.case).toMatchObject({
       awardState: "approved",
       receivedAtSource: "github-verified",
-      reservation: { grossMinor: "400000" },
+      reservation: { grossMinor: "4000000000" },
     });
     const history = await api(
       request,
@@ -926,6 +996,7 @@ test("private security bounty programs keep cases restricted from intake to awar
         )
       ).status,
     ).toBe(200);
+    await vaultSnapshot(b.id, bountyDeployment(b.repository), "100000000000");
     const pending = await award(request, "security-b", declared, "40000000000");
     expect(pending.body.case).toMatchObject({
       receiptState: "confirmed",
@@ -1020,7 +1091,8 @@ test("private security bounty programs keep cases restricted from intake to awar
       awardState: "approved",
       relatedPartyReview: "approved",
       award: { grossMinor: "40000000000" },
-      allowedActions: [],
+      // The program's reviewed bounty vault is the payment rail.
+      allowedActions: ["prepare-payment"],
     });
 
     // A refusal makes the award ineligible; the refuser cannot hear the appeal.
@@ -1105,9 +1177,10 @@ test("private security bounty programs keep cases restricted from intake to awar
       view: "financial",
       awardState: "approved",
       paymentState: "rail-unavailable",
+      // No settlement exists yet; the reviewed bounty vault allows one.
       paymentRail: "unavailable",
       payee: { githubLogin: "e2e-reporter-a" },
-      allowedActions: [],
+      allowedActions: ["prepare-payment"],
     });
     expect(finance.body.case).not.toHaveProperty("analysis");
     expect(finance.body.case).not.toHaveProperty("advisory");
@@ -1386,7 +1459,7 @@ test("private security bounty programs keep cases restricted from intake to awar
       .click();
     const detail = page.locator(`[aria-labelledby="case-${caseA}"]`);
     await expect(detail).toContainText(
-      "$7,500 to the researcher · $2,500 to Slop · $10,000 gross",
+      "7,500 USDC to the researcher · 2,500 USDC to Slop · 10,000 USDC gross",
     );
     await expect(detail).toContainText("Approved, not paid yet");
     await expect(detail).toContainText("Received by GitHub");
@@ -1490,6 +1563,7 @@ test("private settlement requires visibility consent and produces an unsigned re
     "reporter-a",
     new Date().toISOString(),
   );
+  await vaultSnapshot(id, deployment, "100000000");
   expect(
     (await act(request, "security", caseId, "decide", decision())).status,
   ).toBe(200);
@@ -1521,6 +1595,13 @@ test("private settlement requires visibility consent and produces an unsigned re
   await page
     .getByRole("button", { name: "Accept visibility", exact: true })
     .click();
+  // An old snapshot does not prove the vault still holds the award.
+  await vaultSnapshot(
+    id,
+    deployment,
+    "100000000",
+    new Date(Date.now() - 31 * 60_000).toISOString(),
+  );
   await expect
     .poll(
       async () =>
@@ -1532,26 +1613,8 @@ test("private settlement requires visibility consent and produces an unsigned re
         ).body.error,
     )
     .toBe("payment_vault_unverified");
-  // Seed the local scanner output only. No hosted database or chain is used.
-  const persist = process.env.SLOP_E2E_PERSIST_TO;
-  expect(persist).toBeTruthy();
-  const { execFileSync } = await import("node:child_process");
-  const now = new Date().toISOString();
-  execFileSync(
-    "node",
-    [
-      "node_modules/wrangler/bin/wrangler.js",
-      "d1",
-      "execute",
-      "slop-private",
-      "--local",
-      "--persist-to",
-      persist as string,
-      "--command",
-      `INSERT INTO security_vault_snapshots(project_id,network,chain,vault,asset_address,asset_decimals,total_deposited,total_paid,total_payout_fees,total_gross_withdrawn,total_withdrawal_fees,total_service_fees,free_balance,reserved_principal,reserved_fees,accrued_fees,reserved,block_number,block_time,observed_at) VALUES('${id}','base-sepolia','base','${deployment.vault}','${deployment.asset}',6,'100000000','0','0','0','0','0','100000000',NULL,NULL,NULL,'0','64','${now}','${now}')`,
-    ],
-    { stdio: "pipe" },
-  );
+  // A current finalized snapshot lets finance prepare the payment.
+  await vaultSnapshot(id, deployment, "100000000");
   await signIn(page, TOKENS.finance);
   await page.goto("/security", { waitUntil: "networkidle" });
   await page.getByRole("button", { name: new RegExp(`^${id} `) }).click();
@@ -1728,6 +1791,12 @@ test("automatic private intake files as the reporter and verifies receipt @regis
       securityBounty: openTerms(m.securityBounty as Record<string, unknown>),
     }));
     expect(opened.status).toBe(200);
+    // The bounty vault holds one published award of finalized free funds.
+    await vaultSnapshot(
+      program.id,
+      bountyDeployment(program.repository),
+      "10000000000",
+    );
     await setIntake(request, program.repository, "enabled");
     const installed = await request.fetch(
       `${GITHUB_FIXTURE}/__fixture/intake-app/${program.repository}/installed`,
@@ -1942,9 +2011,9 @@ test("automatic private intake files as the reporter and verifies receipt @regis
       "Next step: Choose an award amount or no award.",
     );
     const form = page.getByRole("form", { name: "Award" });
-    await form.getByLabel("Gross award (USD)").fill("4000");
+    await form.getByLabel("Gross award (USDC)").fill("4000");
     await expect(form.getByRole("status")).toHaveText(
-      "Researcher $3,000 · Slop $1,000",
+      "Researcher 3,000 USDC · Slop 1,000 USDC",
     );
     const deadline = new Date(Date.now() + 14 * 86_400_000)
       .toISOString()
@@ -1964,7 +2033,7 @@ test("automatic private intake files as the reporter and verifies receipt @regis
       "Award: saved.",
     );
     await expect(detail).toContainText(
-      "$3,000 to the researcher · $1,000 to Slop · $4,000 gross",
+      "3,000 USDC to the researcher · 1,000 USDC to Slop · 4,000 USDC gross",
     );
     expect(errors).toEqual([]);
     await context.close();
@@ -1972,14 +2041,14 @@ test("automatic private intake files as the reporter and verifies receipt @regis
     expect(await ownerCase(firstCase)).toMatchObject({
       awardState: "approved",
       award: {
-        grossMinor: "400000",
-        researcherMinor: "300000",
-        slopMinor: "100000",
+        grossMinor: "4000000000",
+        researcherMinor: "3000000000",
+        slopMinor: "1000000000",
       },
-      reservation: { grossMinor: "400000" },
+      reservation: { grossMinor: "4000000000" },
     });
-    // The verified funds are one published award (10,000 USD); 6,000 USD is
-    // left, so a larger second award reserves nothing.
+    // The vault's finalized free balance is 10,000 USDC; 6,000 USDC is left,
+    // so a larger second award reserves nothing.
     expect(
       (
         await act(
@@ -1991,7 +2060,7 @@ test("automatic private intake files as the reporter and verifies receipt @regis
         )
       ).status,
     ).toBe(200);
-    const short = await award(request, "security", secondCase, "800000");
+    const short = await award(request, "security", secondCase, "8000000000");
     expect(short.status).toBe(409);
     expect(short.body.error).toBe("insufficient_funds");
     expect(await ownerCase(secondCase)).toMatchObject({
@@ -2008,10 +2077,10 @@ test("automatic private intake files as the reporter and verifies receipt @regis
     expect(reporter.body.case).toMatchObject({
       view: "reporter",
       awardState: "approved",
-      award: { researcherMinor: "300000", slopMinor: "100000" },
-      // The intake program has no reviewed private payment rail.
+      award: { researcherMinor: "3000000000", slopMinor: "1000000000" },
+      // The program has a reviewed private payment rail; the reporter acts next.
       nextStep:
-        "The award is approved and reserved. Payment waits for the program's reviewed private payment rail.",
+        "Accept payment visibility so the payer can prepare your payment.",
     });
     expect(reporter.body.case).not.toHaveProperty("analysis");
     expect(reporter.body.case).not.toHaveProperty("rootCauseKey");

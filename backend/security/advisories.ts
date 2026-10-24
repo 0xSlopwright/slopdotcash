@@ -130,24 +130,24 @@ function nextPage(link: string | null): string | null {
 }
 
 /**
- * A reader that authenticates with one read-only advisory token. Any
- * failure, including a missing permission, is `unavailable`: the caller must
- * never treat it as "no report".
+ * A reader that authenticates with a read-only advisory token for each
+ * repository: the slopdotcash App installation token (owner decision D10).
+ * Any failure, including a missing installation or permission, is
+ * `unavailable`: the caller must never treat it as "no report".
  */
 export function githubAdvisoryReader(options: {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   apiOrigin: string;
-  token: string;
+  token: (repository: string) => Promise<string | null>;
 }): AdvisoryReader {
-  const headers = {
-    accept: "application/vnd.github+json",
-    authorization: `Bearer ${options.token}`,
-    "user-agent": "slop.cash-security-intake",
-    "x-github-api-version": "2022-11-28",
-  };
-  const get = (url: string) =>
+  const get = (url: string, token: string) =>
     options.fetch(url, {
-      headers,
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${token}`,
+        "user-agent": "slop.cash-security-intake",
+        "x-github-api-version": "2022-11-28",
+      },
       // Workers support only "follow" and "manual"; a redirect is not ok.
       redirect: "manual",
       signal: AbortSignal.timeout(10_000),
@@ -160,10 +160,12 @@ export function githubAdvisoryReader(options: {
         `${origin}/repos/${repository}/security-advisories?per_page=${PAGE_SIZE}&sort=created&direction=asc`;
       const reports: GithubPrivateReport[] = [];
       try {
+        const token = await options.token(repository);
+        if (token === null) return { state: "unavailable" };
         for (let page = 0; url !== null; page += 1) {
           // A partial list could hide a report, so it is not an answer.
           if (page === MAX_PAGES) return { state: "unavailable" };
-          const response = await get(url);
+          const response = await get(url, token);
           if (!response.ok) return { state: "unavailable" };
           const body = await boundedJson(response);
           if (!Array.isArray(body)) return { state: "unavailable" };
@@ -190,8 +192,11 @@ export function githubAdvisoryReader(options: {
       if (!REPOSITORY.test(repository) || !GHSA.test(ghsa))
         return { state: "unavailable" };
       try {
+        const token = await options.token(repository);
+        if (token === null) return { state: "unavailable" };
         const response = await get(
           `${new URL(options.apiOrigin).origin}/repos/${repository}/security-advisories/${ghsa}`,
+          token,
         );
         if (!response.ok) return { state: "unavailable" };
         const report = parsePrivateReport(await boundedJson(response));

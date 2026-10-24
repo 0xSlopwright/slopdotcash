@@ -34,10 +34,11 @@ export const E2E_SECURITY_ACCOUNTS = Object.freeze({
 });
 
 /**
- * The read token the local Pages server presents for private advisories. It
- * is a fixture value; the fixture refuses advisory reads without it.
+ * The installation token the fixture mints for the slopdotcash App stand-in,
+ * only for a repository-scoped "Repository security advisories: read"
+ * request. The fixture refuses advisory reads without it.
  */
-export const E2E_ADVISORY_READ_TOKEN = "e2e-fixture-advisory-read-token";
+const E2E_INSTALLATION_TOKEN = "ghs_e2e-fixture-advisory-read-token";
 
 /** Deterministic public facts for a fixture repository. */
 export function fixtureRepository(fullName) {
@@ -78,7 +79,8 @@ const GHSA_ALPHABET = "23456789cfghjmpqrvwx";
 
 /** The fixture's private advisory store and intake App state. */
 function privateIntakeFixture() {
-  const installed = new Set();
+  // The App is installed on every fixture repository unless a test removes it.
+  const uninstalled = new Set();
   const advisories = [];
   const tokens = new Map();
   const codes = new Map();
@@ -130,7 +132,7 @@ function privateIntakeFixture() {
     return advisory;
   };
   return {
-    installed,
+    uninstalled,
     advisories,
     analysisRequests,
     tokens,
@@ -186,8 +188,8 @@ async function handlePrivateIntake(state, request, response, url) {
     );
   if (request.method === "PUT" && appControl) {
     if (appControl[2] === "installed")
-      state.installed.add(appControl[1].toLowerCase());
-    else state.installed.delete(appControl[1].toLowerCase());
+      state.uninstalled.delete(appControl[1].toLowerCase());
+    else state.uninstalled.add(appControl[1].toLowerCase());
     return send(204);
   }
   const faultControl =
@@ -203,6 +205,9 @@ async function handlePrivateIntake(state, request, response, url) {
     if (request.headers["x-api-key"] !== "e2e-fixture-analysis-key")
       return send(401, { type: "error" });
     const body = await readBody(request);
+    // Owner decision D10: Claude Opus 5.5 directly, never another model.
+    if (JSON.parse(body).model !== "claude-opus-5-5")
+      return send(400, { type: "error" });
     state.analysisRequests.push(body);
     return send(200, {
       type: "message",
@@ -271,12 +276,30 @@ async function handlePrivateIntake(state, request, response, url) {
     return send(200, { access_token: token, token_type: "bearer" });
   }
   const installation = /^\/repos\/([^/]+\/[^/]+)\/installation$/u.exec(path);
+  const appJwt = /^Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u;
   if (request.method === "GET" && installation)
-    return state.installed.has(
-      decodeURIComponent(installation[1]).toLowerCase(),
-    )
+    return appJwt.test(request.headers.authorization ?? "") &&
+      !state.uninstalled.has(decodeURIComponent(installation[1]).toLowerCase())
       ? send(200, { id: 4242 })
       : send(404, { message: "Not Found" });
+  // Owner decision D10: the App mints one repository-scoped token with
+  // advisory read only. Any broader request is refused.
+  if (
+    request.method === "POST" &&
+    path === "/app/installations/4242/access_tokens"
+  ) {
+    const scope = JSON.parse(await readBody(request));
+    return appJwt.test(request.headers.authorization ?? "") &&
+      Array.isArray(scope.repositories) &&
+      scope.repositories.length === 1 &&
+      JSON.stringify(scope.permissions) ===
+        JSON.stringify({ repository_advisories: "read" })
+      ? send(201, {
+          token: E2E_INSTALLATION_TOKEN,
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        })
+      : send(422, { message: "Invalid scope" });
+  }
   const advisoryPath =
     /^\/repos\/([^/]+\/[^/]+)\/security-advisories(?:\/(reports|GHSA-[^/]+))?$/u.exec(
       path,
@@ -285,7 +308,7 @@ async function handlePrivateIntake(state, request, response, url) {
   const token = (request.headers.authorization ?? "").replace(/^Bearer /u, "");
   const user = state.tokens.get(token);
   const readOnly =
-    token === E2E_ADVISORY_READ_TOKEN &&
+    token === E2E_INSTALLATION_TOKEN &&
     request.method === "GET" &&
     advisoryPath;
   if (user === undefined && !readOnly)

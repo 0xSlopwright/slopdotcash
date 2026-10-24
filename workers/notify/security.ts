@@ -21,6 +21,8 @@ export type SecurityMailConfig = {
 export type SecurityMailDependencies = {
   db: SecurityD1Database;
   config: SecurityMailConfig;
+  /** Slop moderators, who decide escalated private-case disputes. */
+  moderatorGithubIds?: ReadonlySet<string>;
   fromAddress: string;
   now(): Date;
   sendEmail(from: string, to: string, mime: string): Promise<void>;
@@ -157,7 +159,14 @@ async function escalate(deps: SecurityMailDependencies, row: Delivery) {
     deps.config.recipients[row.recipient_github_id]?.backupGithubId;
   if (!backupId || !deps.config.recipients[backupId]) return;
   if (
-    !(await securityNotificationAccess(deps.db, row.case_id, backupId)).allowed
+    !(
+      await securityNotificationAccess(
+        deps.db,
+        row.case_id,
+        backupId,
+        deps.moderatorGithubIds,
+      )
+    ).allowed
   )
     return;
   const at = deps.now().toISOString();
@@ -206,6 +215,7 @@ export async function dispatchSecurityMail(
       deps.db,
       row.case_id,
       row.recipient_github_id,
+      deps.moderatorGithubIds,
     );
     if (!access.allowed) {
       await recordDelivery(deps, row, "suppressed");
@@ -267,6 +277,7 @@ export async function dispatchSecurityMail(
       deps.db,
       row.case_id,
       row.recipient_github_id,
+      deps.moderatorGithubIds,
     );
     if (!access.allowed) continue;
     const overdue =

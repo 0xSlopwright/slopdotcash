@@ -19,11 +19,16 @@ removed, because its approvers govern restricted case access after closure.
 - `rewardMode: "bounty-only"` requires a `$0` monthly pool with payments
   disabled. `separate` keeps the project's ordinary rewards.
 - `status: "open"` requires `funding.state: "verified-available"` with an
-  evidence reference. A pledge never opens paid capacity. The funds an owner
-  can reserve are `amount.grossMinor × capacity.awards` of the current
-  revision, minus every reservation in that currency (awaiting owner decision:
-  see "Open decisions").
-- `approvers.dispute` must not include a technical or financial approver.
+  evidence reference. A pledge never opens paid capacity. Owner decision
+  D10: the funds an owner can reserve are the finalized free balance of the
+  program's reviewed bounty vaults (`settlement.deployments`), from a
+  `security_vault_snapshots` row in the program asset no older than 30
+  minutes, minus every approved reservation that has not yet left that free
+  balance through a finalized on-chain commitment. Published amounts and
+  award counts are terms, not funds. A program without a reviewed vault
+  reserves nothing.
+- `approvers.dispute` names the program's dispute contact. A Slop moderator
+  decides escalated disputes (see "Roles").
 - `intake.repository` must be one of the project repositories.
 
 `/projects/:id/terms.json` and `/projects/:id/security` publish these terms.
@@ -53,10 +58,11 @@ Every `security-submissions` route returns 404 unless
 `SLOP_PRIVATE_INTAKE_MODE=on` and all intake App secrets are set
 (`GITHUB_INTAKE_APP_CLIENT_ID`, `GITHUB_INTAKE_APP_CLIENT_SECRET`,
 `GITHUB_INTAKE_APP_ID`, `GITHUB_INTAKE_APP_PRIVATE_KEY`,
-`SLOP_INTAKE_GRANT_KEY`). The dedicated intake GitHub App (repository
-security advisories read and write, metadata read, no webhooks) still needs
-owner approval in the PRD and a maintainer installation on each program
-repository. Until then intake stays off and the manual flow below applies.
+`SLOP_INTAKE_GRANT_KEY`). Owner decision D10: these hold the existing
+slopdotcash GitHub App (5257625) with "Repository security advisories:
+read"; there is no separate intake App and no long-lived token. Each
+installation owner must accept that permission. Until then intake stays off
+and the manual flow below applies.
 
 - Authorization: a per-submission PKCE consent for the intake App. The
   callback checks that `/user` is the account that began the consent and
@@ -106,17 +112,23 @@ repository. Until then intake stays off and the manual flow below applies.
   only; the case's owner, neutral next action and due time (the published
   acknowledgement target) do not depend on it, because the reporter sees
   them. It never sets severity, receipt, award or disclosure.
-- After verified receipt, `analysis.ts` schedules a private proposal using the
-  configured advisory reader and analysis provider. It records unavailable
-  when either is absent. Only maintainers and assigned triagers see the proposal.
-  Provider selection requires an explicit configuration; this change does not
-  activate a provider or authorize sending live private evidence. The
-  provider endpoints are fixed; only local browser tests may point them at a
-  loopback fixture with `SLOP_ANALYSIS_API_ORIGIN` (`http://127.0.0.1:<port>`).
+- After verified receipt, `analysis.ts` schedules a private proposal. Owner
+  decision D10: the report text goes only to Claude Opus 5.5
+  (`claude-opus-5-5`) through Anthropic's own Messages API with
+  `ANTHROPIC_SECURITY_API_KEY`, a key the operator holds under a
+  zero-data-retention agreement. It never goes through the Surplus
+  marketplace or another provider, and there is no fallback: without the key
+  every analysis is `unavailable`. A refusal or a cut-off answer is `failed`.
+  Only maintainers and assigned triagers see the proposal. The endpoint is
+  fixed; only local browser tests may point it at a loopback fixture with
+  `SLOP_ANALYSIS_API_ORIGIN` (`http://127.0.0.1:<port>`).
 - Maintainers can import reports filed directly on GitHub through `mode: import`.
   This uses the same case and analysis records, not a second submission system.
-  `SECURITY_ADVISORY_READ_TOKEN` needs advisory-read access to the program
-  repository. It cannot submit a report as the researcher.
+  Receipt checks, imports and analysis retries read advisories with a
+  repository-scoped installation token of the slopdotcash App that asks only
+  for `repository_advisories: read` (`GITHUB_INTAKE_APP_ID` and
+  `GITHUB_INTAKE_APP_PRIVATE_KEY`). Without them receipt checks are
+  unavailable. The token cannot submit a report as the researcher.
 
 ## Roles
 
@@ -131,8 +143,9 @@ revision, so a revision or a revoked session removes access at once.
 - Triager: only assigned cases; request information and remediation.
 - Financial approver: only cases with an approved (or older reserved) award,
   and only award and payment fields; prepares the unsigned payment.
-- Dispute reviewer: only cases with an appeal or a related-party award
-  review.
+- Moderator (`PROJECT_MODERATOR_GITHUB_IDS`): only cases with an appeal or a
+  related-party award review; decides them. The notify Worker suppresses
+  moderator mail unless it has the same list.
 - Platform admins, sponsors and the public: nothing.
 
 A reporter never acts on their own case. PRD section 10 names two
@@ -141,7 +154,8 @@ disclosure questions, so the decider may also approve the award and prepare
 its payment. The technical decider cannot decide the appeal or the
 related-party review, and the related-party reviewer cannot decide an appeal
 of that review, or review the same case again once an appeal has returned it
-for a new decision.
+for a new decision. Owner decision D10 dropped the older rule that separate
+people hold the technical, financial and dispute roles.
 
 ## States
 
@@ -173,15 +187,16 @@ owner's award decision (`award`, or an `award` object inside `decide`):
   reporter can appeal it.
 - `decision: "amount"` with `grossMinor`, `paymentDeadline` and confirmation
   approves that exact gross amount and reserves it in the same batch. The
-  reservation insert itself checks that the program's unreserved verified
-  funds cover it; otherwise nothing is written (`409 insufficient_funds`). A
-  pledge reserves nothing (`409 funds_unavailable`). Only a security
+  reservation insert itself checks that the bounty vault's unreserved
+  finalized free balance covers it; otherwise nothing is written
+  (`409 insufficient_funds`). A pledge, a program without a reviewed vault,
+  or a missing or stale snapshot reserves nothing (`409 funds_unavailable`). Only a security
   maintainer of the program decides; a reporter never decides their own case.
 
 One root cause reserves once per project (`root_cause_reserved`). A reserved
 or approved award is never redecided or withdrawn. A related-party reporter
 (declared, a program approver, or the sponsor account) gets a proposed amount
-that reserves nothing until an independent dispute reviewer approves it
+that reserves nothing until a moderator approves it
 (`decide-related-party`); the approval then reserves the proposed amount if
 funds exist. Once related, a case stays related, and earlier reviewers stay
 recorded.
@@ -258,8 +273,11 @@ the ordinary attester. Missing service configuration fails closed.
   never contains a case identifier, amount, project or advisory. The inbox
   action **Acknowledge** records the recipient's authenticated response;
   **Mark read** is a separate state and never acknowledges a notice.
-- On the manual path GitHub advisory content is never fetched; maintainers
-  verify claims by hand on GitHub. Automatic intake reads only the
-  reporter's own advisory with the reporter's token and keeps only its
-  digest. Its GitHub behaviour (user tokens on `/reports`, error shapes,
-  listing visibility) is not yet qualified on a real repository.
+- Automatic intake reads only the reporter's own advisory with the
+  reporter's token; imports and retries read with the slopdotcash App
+  installation token. Slop keeps only digests. This GitHub behaviour (user
+  tokens on `/reports`, installation tokens on advisory lists, error shapes)
+  is not yet qualified on a real repository, and the App permission must be
+  accepted on each installation.
+- Private analysis needs `ANTHROPIC_SECURITY_API_KEY` under a
+  zero-data-retention agreement; the live provider is not yet exercised.

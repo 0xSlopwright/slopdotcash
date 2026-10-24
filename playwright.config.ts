@@ -48,15 +48,19 @@ for (const [name, value] of [
   if (value !== undefined && !/^[1-9][0-9]*(?:,[1-9][0-9]*)*$/u.test(value))
     throw new Error(`${name} must list GitHub actor IDs`);
 const registryGitHub = process.env.SLOP_E2E_GITHUB_API_ORIGIN;
-// The fixture's read token for synthetic private advisories.
-const registryAdvisoryToken = process.env.SLOP_E2E_ADVISORY_READ_TOKEN;
 if (
   registryGitHub !== undefined &&
   !/^http:\/\/127\.0\.0\.1:[0-9]{4,5}$/u.test(registryGitHub)
 )
   throw new Error("SLOP_E2E_GITHUB_API_ORIGIN must be a loopback origin");
-// Automatic private intake bindings (opt-in; tests/e2e/security-bounty.spec.ts).
+// The slopdotcash App stand-in key (advisory reads) and the automatic
+// private intake bindings (opt-in; tests/e2e/security-bounty.spec.ts).
 const registryIntakeKey = process.env.SLOP_E2E_INTAKE_APP_KEY;
+if (
+  registryIntakeKey !== undefined &&
+  !/^[A-Za-z0-9+/]+={0,2}$/u.test(registryIntakeKey)
+)
+  throw new Error("SLOP_E2E_INTAKE_APP_KEY must be a base64 PKCS#8 key");
 const registryIntakeGrant = process.env.SLOP_E2E_INTAKE_GRANT_KEY;
 if (
   process.env.SLOP_E2E_PRIVATE_INTAKE === "1" &&
@@ -67,7 +71,7 @@ if (
   throw new Error("Private intake e2e needs the loopback fixture and keys");
 const registryIntake =
   process.env.SLOP_E2E_PRIVATE_INTAKE === "1"
-    ? ` --binding SLOP_PRIVATE_INTAKE_MODE=on --binding GITHUB_INTAKE_APP_CLIENT_ID=Iv1.e2efixture --binding GITHUB_INTAKE_APP_CLIENT_SECRET=e2e-fixture-secret --binding GITHUB_INTAKE_APP_ID=1 --binding 'GITHUB_INTAKE_APP_PRIVATE_KEY=${registryIntakeKey}' --binding SLOP_INTAKE_GRANT_KEY=${registryIntakeGrant} --binding SLOP_GITHUB_OAUTH_ORIGIN=${registryGitHub} --binding 'SECURITY_ANALYSIS_PROFILE={"transport":"anthropic-messages","model":"e2e-fixture-model","maxOutputTokens":1024}' --binding SECURITY_ANALYSIS_API_KEY=e2e-fixture-analysis-key --binding SLOP_ANALYSIS_API_ORIGIN=${registryGitHub}`
+    ? ` --binding SLOP_PRIVATE_INTAKE_MODE=on --binding GITHUB_INTAKE_APP_CLIENT_ID=Iv1.e2efixture --binding GITHUB_INTAKE_APP_CLIENT_SECRET=e2e-fixture-secret --binding SLOP_INTAKE_GRANT_KEY=${registryIntakeGrant} --binding SLOP_GITHUB_OAUTH_ORIGIN=${registryGitHub} --binding ANTHROPIC_SECURITY_API_KEY=e2e-fixture-analysis-key --binding SLOP_ANALYSIS_API_ORIGIN=${registryGitHub}`
     : "";
 const registryVettingKey = process.env.SLOP_E2E_VETTING_PUBLIC_KEY;
 if (
@@ -87,8 +91,8 @@ const registryArguments = registryPersistTo
         ? ` --binding SLOP_GITHUB_API_ORIGIN=${registryGitHub}`
         : ""
     }${
-      registryAdvisoryToken
-        ? ` --binding SECURITY_ADVISORY_READ_TOKEN=${registryAdvisoryToken}`
+      registryIntakeKey
+        ? ` --binding GITHUB_INTAKE_APP_ID=1 --binding 'GITHUB_INTAKE_APP_PRIVATE_KEY=${registryIntakeKey}'`
         : ""
     }${
       registryVettingKey

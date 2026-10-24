@@ -52,7 +52,7 @@ describe("GitHub private reports", () => {
     let pages: Record<string, Response> = {};
     const reader = githubAdvisoryReader({
       apiOrigin: API,
-      token: "fixture-read-token",
+      token: async () => "fixture-read-token",
       fetch: async (url, init) => {
         requests.push({
           url,

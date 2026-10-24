@@ -624,9 +624,10 @@ export function SecurityProgramPage({
             {people(terms.approvers.technical)}
           </Fact>
           <Fact term="Payment">{people(terms.approvers.financial)}</Fact>
-          <Fact term="Independent dispute review">
-            {people(terms.approvers.dispute)} ({terms.dispute.authority}).{" "}
-            {terms.dispute.process}
+          <Fact term="Disputes">
+            Contact {people(terms.approvers.dispute)}. {terms.dispute.process} A
+            Slop moderator decides escalated appeals and related-party awards;
+            nobody reviews their own decision.
           </Fact>
           <Fact term="Response targets">
             Acknowledge within {terms.responseTargets.acknowledgeHours} hours;

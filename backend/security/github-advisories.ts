@@ -1,9 +1,11 @@
 /**
  * GitHub private vulnerability reporting for automatic private intake (PRD
- * section 8, SEC-07, SEC-17). Every advisory call uses the reporter's own
- * user access token from the dedicated intake App, so GitHub records the
- * reporter as the author; the App never files or reads an advisory with its
- * installation token. Report content is sent, digested and dropped: nothing
+ * section 8, SEC-07, SEC-17). The reporter's own submission uses the
+ * reporter's user access token, so GitHub records the reporter as the
+ * author. Slop holds no user token beyond the request. The slopdotcash App
+ * (owner decision D10: App 5257625, no separate intake App) never files an
+ * advisory; its installation token only reads private reports through
+ * `githubAppAdvisoryToken`. Report content is sent, digested and dropped: nothing
  * here logs, and results carry only typed enum values and identifiers.
  */
 import { encodeBase64Url, ownedBuffer } from "../../src/lib/byte-encoding";
@@ -640,49 +642,104 @@ async function appJwt(
   return `${unsigned}.${encodeBase64Url(new Uint8Array(signature))}`;
 }
 
-/**
- * Whether the intake App is installed on the program repository. Uses the
- * App JWT for repository installation metadata only; it never reads an
- * advisory.
- */
-export function githubInstallationCheck(options: {
+/** The slopdotcash GitHub App (owner decision D10: App 5257625). */
+type AppCredentials = {
   fetch: Fetch;
   apiOrigin: string;
   appId: string;
   privateKey: string;
   now: () => Date;
-}): IntakeInstallationCheck {
+};
+
+/** The App installation on a repository, with the App JWT that found it. */
+async function repositoryInstallation(
+  options: AppCredentials,
+  repository: string,
+): Promise<
+  { state: "yes"; id: string; jwt: string } | { state: "no" | "unknown" }
+> {
+  try {
+    const jwt = await appJwt(options.appId, options.privateKey, options.now());
+    const response = await options.fetch(
+      `${options.apiOrigin}/repos/${repositoryPath(repository)}/installation`,
+      {
+        headers: headers(jwt),
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (response.status !== 200) {
+      await response.body?.cancel().catch(() => undefined);
+      return { state: response.status === 404 ? "no" : "unknown" };
+    }
+    const body = (await readBoundedJson(response, 64 * 1024)) as {
+      id?: unknown;
+    };
+    const id = githubId(body?.id);
+    return id === null ? { state: "unknown" } : { state: "yes", id, jwt };
+  } catch {
+    return { state: "unknown" };
+  }
+}
+
+/**
+ * Whether the slopdotcash App is installed on the program repository. Uses
+ * the App JWT for repository installation metadata only.
+ */
+export function githubInstallationCheck(
+  options: AppCredentials,
+): IntakeInstallationCheck {
   return {
     async installed(repository) {
-      try {
-        const jwt = await appJwt(
-          options.appId,
-          options.privateKey,
-          options.now(),
-        );
-        const response = await options.fetch(
-          `${options.apiOrigin}/repos/${repositoryPath(repository)}/installation`,
-          {
-            headers: headers(jwt),
-            redirect: "manual",
-            signal: AbortSignal.timeout(10_000),
-          },
-        );
-        if (response.status === 404) {
-          await response.body?.cancel().catch(() => undefined);
-          return "no";
-        }
-        if (response.status !== 200) {
-          await response.body?.cancel().catch(() => undefined);
-          return "unknown";
-        }
-        const body = (await readBoundedJson(response, 64 * 1024)) as {
-          id?: unknown;
-        };
-        return githubId(body?.id) === null ? "unknown" : "yes";
-      } catch {
-        return "unknown";
-      }
+      return (await repositoryInstallation(options, repository)).state;
     },
+  };
+}
+
+/**
+ * A short-lived installation token of the slopdotcash App, narrowed to one
+ * repository and to "Repository security advisories: read" (owner decision
+ * D10). It reads private reports to verify receipt and to run the private
+ * analysis; it never files, changes or publishes an advisory. Null when the
+ * App is not installed or GitHub refuses: the caller treats that as
+ * unavailable, never as "no report".
+ */
+export function githubAppAdvisoryToken(
+  options: AppCredentials,
+): (repository: string) => Promise<string | null> {
+  return async (repository) => {
+    const installation = await repositoryInstallation(options, repository);
+    if (installation.state !== "yes") return null;
+    try {
+      const response = await options.fetch(
+        `${options.apiOrigin}/app/installations/${installation.id}/access_tokens`,
+        {
+          method: "POST",
+          headers: {
+            ...headers(installation.jwt),
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            repositories: [repository.split("/")[1]],
+            permissions: { repository_advisories: "read" },
+          }),
+          redirect: "manual",
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      if (response.status !== 201) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      const body = (await readBoundedJson(response, 64 * 1024)) as {
+        token?: unknown;
+      };
+      return typeof body?.token === "string" &&
+        /^[A-Za-z0-9_-]{20,255}$/u.test(body.token)
+        ? body.token
+        : null;
+    } catch {
+      return null;
+    }
   };
 }

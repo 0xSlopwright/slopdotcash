@@ -89,6 +89,9 @@ import {
 import { payoutFee } from "../../src/lib/payments/contracts";
 import { fail } from "../api-error";
 
+/** A private vault snapshot older than this does not prove free funds. */
+export const VAULT_SNAPSHOT_MAX_AGE_MS = 30 * 60_000;
+
 export async function prepareSecuritySettlement(
   db: Database<D1QueryStatement>,
   input: {
@@ -152,7 +155,8 @@ export async function prepareSecuritySettlement(
     !snapshot ||
     snapshot.asset_address !== deployment.asset ||
     snapshot.asset_decimals !== input.decimals ||
-    Date.parse(input.at) - Date.parse(snapshot.observed_at) > 30 * 60_000
+    Date.parse(input.at) - Date.parse(snapshot.observed_at) >
+      VAULT_SNAPSHOT_MAX_AGE_MS
   )
     fail(
       409,

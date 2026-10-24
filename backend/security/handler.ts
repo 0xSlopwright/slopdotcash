@@ -34,7 +34,11 @@ import {
   type SecurityAnalyzer,
 } from "./analysis";
 import type { IntakeConfig } from "./intake-grant";
-import { prepareSecuritySettlement, securitySettlementView } from "./payments";
+import {
+  prepareSecuritySettlement,
+  securitySettlementView,
+  VAULT_SNAPSHOT_MAX_AGE_MS,
+} from "./payments";
 import { handleSubmissionRoute } from "./submissions";
 export type SecurityD1Database = D1TransactionalDatabase<D1Statement>;
 
@@ -55,8 +59,18 @@ export type SecurityApiDependencies = {
    * unavailable: nothing is verified and nothing is rejected.
    */
   advisories?: AdvisoryReader | null;
-  /** The operator-configured private analysis model; absent = unavailable. */
+  /**
+   * The direct Anthropic analyzer under the operator's zero-data-retention
+   * key (owner decision D10); absent = unavailable.
+   */
   analyzer?: SecurityAnalyzer | null;
+  /**
+   * Slop moderators (`PROJECT_MODERATOR_GITHUB_IDS`). PRD section 10 has two
+   * authorities: the project owner or maintainer decides technical, award
+   * and disclosure questions, and a moderator decides escalated appeals and
+   * related-party award reviews (the `dispute` role).
+   */
+  moderatorGithubIds?: ReadonlySet<string>;
   cache?: EdgeCache;
   waitUntil?: (promise: Promise<unknown>) => void;
   /**
@@ -319,6 +333,7 @@ async function programs(
 function programRoles(
   terms: SecurityBountyTerms | undefined,
   githubId: string,
+  moderators: ReadonlySet<string>,
 ): Set<Role> {
   const roles = new Set<Role>();
   if (terms === undefined) return roles;
@@ -326,8 +341,8 @@ function programRoles(
     roles.add("security-maintainer");
   if (terms.approvers.financial.some((entry) => entry.githubId === githubId))
     roles.add("financial");
-  if (terms.approvers.dispute.some((entry) => entry.githubId === githubId))
-    roles.add("dispute");
+  // The program names a dispute contact; a Slop moderator decides.
+  if (moderators.has(githubId)) roles.add("dispute");
   return roles;
 }
 
@@ -348,14 +363,18 @@ async function activeTriager(
 
 /** Current roles; recomputed on every request so revocation is immediate. */
 async function caseRoles(
-  deps: Pick<SecurityApiDependencies, "db">,
+  deps: Pick<SecurityApiDependencies, "db" | "moderatorGithubIds">,
   row: CaseRow,
   actor: Actor,
   terms: SecurityBountyTerms | undefined,
 ): Promise<Set<Role>> {
-  const roles = programRoles(terms, actor.githubId);
-  // A dispute reviewer reads only cases with an appeal or a related-party
-  // award review.
+  const roles = programRoles(
+    terms,
+    actor.githubId,
+    deps.moderatorGithubIds ?? new Set(),
+  );
+  // A moderator reads only cases with an appeal or a related-party award
+  // review.
   if (
     row.appeal_state === "none" &&
     row.related_party_review === "not-applicable"
@@ -379,12 +398,13 @@ export async function securityNotificationAccess(
   db: SecurityD1Database,
   caseId: string,
   githubId: string,
+  moderatorGithubIds: ReadonlySet<string> = new Set(),
 ): Promise<{ allowed: boolean; acknowledgeHours: number }> {
   const row = await loadCase({ db }, caseId);
   if (row === null) return { allowed: false, acknowledgeHours: 0 };
   const program = await currentProgram({ db }, row.project_id);
   const roles = await caseRoles(
-    { db },
+    { db, moderatorGithubIds },
     row,
     { githubId, githubLogin: "" },
     program?.manifest.securityBounty,
@@ -600,40 +620,75 @@ function nextStep(
 }
 
 /**
- * The program's money that an owner can still reserve: the published gross
- * amount per finding times the published award count of the current
- * revision, minus every reservation already made in that currency. Only
- * verified available funding counts; a pledge is not funds (PRD section 10,
- * Capacity). Null when nothing can be reserved.
+ * Approved award reservations whose money is still inside the vault's free
+ * balance: no finalized on-chain commitment exists for them yet, or that
+ * commitment is newer than the snapshot (`?` = the oldest snapshot time).
+ * Bind order: project id, currency, snapshot time.
+ */
+const OUTSTANDING_RESERVATIONS = `SELECT COALESCE(SUM(CAST(r.gross_minor AS INTEGER)), 0) FROM security_award_reservations r WHERE r.project_id = ? AND r.currency = ? AND NOT EXISTS (SELECT 1 FROM security_settlements s JOIN security_payment_obligations o ON o.id = s.obligation_id WHERE s.case_id = r.case_id AND o.created_at <= ?)`;
+
+/**
+ * The program's money that an owner can still reserve (owner decision D10,
+ * PRD section 10 "verified funds versus pledges"): the finalized free
+ * balance of the program's reviewed bounty vaults, from a current snapshot
+ * in the program's asset, minus every approved reservation that has not yet
+ * left that free balance. Published amounts and award counts are terms, not
+ * funds. Null when no reviewed vault has a current finalized snapshot.
  */
 async function programFunds(
-  deps: Pick<SecurityApiDependencies, "db">,
+  deps: Pick<SecurityApiDependencies, "db" | "now">,
   projectId: string,
 ): Promise<{
   currency: SecurityBountyTerms["amount"]["currency"];
   decimals: number;
   network: SecurityBountyTerms["amount"]["network"];
-  budgetMinor: string;
+  freeMinor: string;
+  snapshotAt: string;
   availableMinor: string;
 } | null> {
   const program = (await currentProgram(deps, projectId))?.manifest
     .securityBounty;
   if (program === undefined || program.funding.state !== "verified-available")
     return null;
-  const budget =
-    BigInt(program.amount.grossMinor) * BigInt(program.capacity.awards);
-  const reserved = await deps.db
-    .prepare(
-      "SELECT CAST(COALESCE(SUM(CAST(gross_minor AS INTEGER)), 0) AS TEXT) AS total FROM security_award_reservations WHERE project_id = ? AND currency = ?",
+  const now = deps.now().getTime();
+  let free = 0n;
+  let snapshotAt: string | null = null;
+  for (const deployment of program.settlement?.deployments ?? []) {
+    const snapshot = await deps.db
+      .prepare(
+        "SELECT asset_address, asset_decimals, observed_at, free_balance FROM security_vault_snapshots WHERE project_id = ? AND network = ? AND vault = ?",
+      )
+      .bind(projectId, deployment.network, deployment.vault)
+      .first<{
+        asset_address: string;
+        asset_decimals: number;
+        observed_at: string;
+        free_balance: string | null;
+      }>();
+    if (
+      snapshot === null ||
+      snapshot.free_balance === null ||
+      snapshot.asset_address !== deployment.asset ||
+      snapshot.asset_decimals !== program.amount.decimals ||
+      !(now - Date.parse(snapshot.observed_at) <= VAULT_SNAPSHOT_MAX_AGE_MS)
     )
-    .bind(projectId, program.amount.currency)
+      continue;
+    free += BigInt(snapshot.free_balance);
+    if (snapshotAt === null || snapshot.observed_at < snapshotAt)
+      snapshotAt = snapshot.observed_at;
+  }
+  if (snapshotAt === null) return null;
+  const outstanding = await deps.db
+    .prepare(`SELECT CAST((${OUTSTANDING_RESERVATIONS}) AS TEXT) AS total`)
+    .bind(projectId, program.amount.currency, snapshotAt)
     .first<{ total: string }>();
-  const available = budget - BigInt(reserved?.total ?? 0);
+  const available = free - BigInt(outstanding?.total ?? 0);
   return {
     currency: program.amount.currency,
     decimals: program.amount.decimals,
     network: program.amount.network,
-    budgetMinor: budget.toString(),
+    freeMinor: free.toString(),
+    snapshotAt,
     availableMinor: (available > 0n ? available : 0n).toString(),
   };
 }
@@ -887,7 +942,14 @@ async function listCases(
   const actor = await requireActor(request, deps);
   const all = await programs(deps);
   const projectIds = [...all.entries()]
-    .filter(([, terms]) => programRoles(terms, actor.githubId).size > 0)
+    .filter(
+      ([, terms]) =>
+        programRoles(
+          terms,
+          actor.githubId,
+          deps.moderatorGithubIds ?? new Set(),
+        ).size > 0,
+    )
     .map(([id]) => id);
   const placeholders = projectIds.map(() => "?").join(", ");
   const result = await deps.db
@@ -911,7 +973,13 @@ async function listCases(
   if (reads.length > 0) await deps.db.batch(reads);
   const programsForActor = projectIds.map((id) => ({
     projectId: id,
-    roles: [...programRoles(all.get(id), actor.githubId)].sort(),
+    roles: [
+      ...programRoles(
+        all.get(id),
+        actor.githubId,
+        deps.moderatorGithubIds ?? new Set(),
+      ),
+    ].sort(),
   }));
   return json(200, {
     viewer: { githubId: actor.githubId, githubLogin: actor.githubLogin },
@@ -1020,8 +1088,7 @@ export function eventStatement(
 /**
  * Inbox rows for one case event (NOT-01, SEC-09): the reporter for every
  * event their own view shows, the security maintainers for a verified
- * receipt, the dispute reviewers for an appeal or a proposed related-party
- * award, the assigned triager, and the financial approvers when an award was
+ * receipt, the moderators for an appeal or a proposed related-party award, the assigned triager, and the financial approvers when an award was
  * approved and reserved. The actor is never notified of their own action.
  */
 export function inboxStatements(
@@ -1038,7 +1105,7 @@ export function inboxStatements(
     relatedReview?: boolean;
   },
 ): D1Statement[] {
-  const ids = (role: keyof SecurityBountyTerms["approvers"]) =>
+  const ids = (role: "technical" | "financial") =>
     (input.terms?.approvers[role] ?? []).map((entry) => entry.githubId);
   const event = {
     caseId: input.caseId,
@@ -1053,7 +1120,9 @@ export function inboxStatements(
     input.kind === "submit-direct"
       ? ids("technical")
       : []),
-    ...(input.kind === "appeal" || input.relatedReview ? ids("dispute") : []),
+    ...(input.kind === "appeal" || input.relatedReview
+      ? [...(deps.moderatorGithubIds ?? [])]
+      : []),
     ...(input.kind === "assign-triager" &&
     typeof input.detail.githubId === "string"
       ? [input.detail.githubId]
@@ -1485,7 +1554,13 @@ async function createCase(
     reporter = actor;
     role = "reporter";
   } else {
-    if (!programRoles(terms, actor.githubId).has("security-maintainer"))
+    if (
+      !programRoles(
+        terms,
+        actor.githubId,
+        deps.moderatorGithubIds ?? new Set(),
+      ).has("security-maintainer")
+    )
       fail(403, "forbidden", "Only a security maintainer can record a case");
     if (body.confirmation !== true)
       fail(
@@ -1615,7 +1690,13 @@ async function importReports(
   if (body.mode !== "import") fail(400, "invalid_request", "Invalid mode");
   const projectId = stringField(body, "projectId", PROJECT_ID);
   const terms = await programOrNotFound(deps, projectId);
-  if (!programRoles(terms, actor.githubId).has("security-maintainer"))
+  if (
+    !programRoles(
+      terms,
+      actor.githubId,
+      deps.moderatorGithubIds ?? new Set(),
+    ).has("security-maintainer")
+  )
     fail(403, "forbidden", "Only a security maintainer can import reports");
   const result = await reconcileProgram(deps, projectId, terms, actor, "all");
   return json(200, {
@@ -2369,7 +2450,10 @@ async function reporterIsRelated(
   const program = (await currentProgram(deps, row.project_id))?.manifest
     .securityBounty;
   return (
-    programRoles(program, row.reporter_github_id).size > 0 ||
+    programRoles(program, row.reporter_github_id, new Set()).size > 0 ||
+    program?.approvers.dispute.some(
+      (entry) => entry.githubId === row.reporter_github_id,
+    ) ||
     program?.sponsor.githubId === row.reporter_github_id
   );
 }
@@ -2546,19 +2630,19 @@ async function awardReservation(
     fail(
       409,
       "funds_unavailable",
-      "The program has no verified available funds in this award's currency",
+      "The program's bounty vault has no current finalized balance in this award's asset",
     );
   if (BigInt(grossMinor) > BigInt(funds.availableMinor))
     fail(
       409,
       "insufficient_funds",
-      "The program's unreserved verified funds do not cover this award",
+      "The bounty vault's unreserved finalized balance does not cover this award",
     );
   return {
     before: [
       deps.db
         .prepare(
-          `INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT revision FROM security_cases WHERE id = ?) = ? AND (SELECT COALESCE(SUM(CAST(gross_minor AS INTEGER)), 0) FROM security_award_reservations WHERE project_id = ? AND currency = ?) + CAST(? AS INTEGER) <= CAST(? AS INTEGER) AND NOT EXISTS (${ROOT_CAUSE_PENDING_REVIEW})`,
+          `INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT revision FROM security_cases WHERE id = ?) = ? AND (${OUTSTANDING_RESERVATIONS}) + CAST(? AS INTEGER) <= CAST(? AS INTEGER) AND NOT EXISTS (${ROOT_CAUSE_PENDING_REVIEW})`,
         )
         .bind(
           row.id,
@@ -2572,8 +2656,9 @@ async function awardReservation(
           row.revision,
           row.project_id,
           terms.currency,
+          funds.snapshotAt,
           grossMinor,
-          funds.budgetMinor,
+          funds.freeMinor,
           row.project_id,
           row.id,
           rootCauseKey,
@@ -2589,7 +2674,7 @@ async function awardReservation(
     unmet: {
       code: "insufficient_funds",
       message:
-        "The program's unreserved verified funds no longer cover this award",
+        "The bounty vault's unreserved finalized balance no longer covers this award",
     },
   };
 }
@@ -2901,6 +2986,7 @@ async function acknowledgeNotice(
     deps.db,
     caseId,
     actor.githubId,
+    deps.moderatorGithubIds,
   );
   if (!access.allowed) notFound();
   const body = await readJsonObject(request);

@@ -5,8 +5,8 @@
  * The analysis proposes a summary, severity, potential loss of funds,
  * possible duplicates, a root-cause key and remediation. It is advice to the
  * project owner only: it never decides a finding, reserves funds or approves
- * an award. The report text goes only to the operator-configured model
- * provider and is never stored, logged or sent through a public channel such
+ * an award. The report text goes only to Anthropic's own API under the
+ * operator's zero-data-retention key (owner decision D10) and is never stored, logged or sent through a public channel such
  * as the Slopbot review path. D1 keeps the proposal and the digest of the
  * advisory text it read.
  */
@@ -144,129 +144,69 @@ function analysisMessage(input: SecurityAnalysisInput): string {
   });
 }
 
-export type AnalysisProfile = {
-  transport: "anthropic-messages" | "openai-responses";
-  model: string;
-  apiKey: string;
-  maxOutputTokens: number;
-  endpoint: string;
-};
-
-const ENDPOINTS: Record<AnalysisProfile["transport"], URL> = {
-  "anthropic-messages": new URL("https://api.anthropic.com/v1/messages"),
-  "openai-responses": new URL("https://api.openai.com/v1/responses"),
-};
+/**
+ * Owner decision D10 (24 October 2026): private report text goes only to
+ * Claude Opus 5.5 through Anthropic's own Messages API, with the dedicated
+ * `ANTHROPIC_SECURITY_API_KEY` that the operator holds under a
+ * zero-data-retention agreement. It never goes through a model marketplace
+ * or a second provider, and there is no fallback model.
+ */
+export const SECURITY_ANALYSIS_MODEL = "claude-opus-5-5";
+const ANTHROPIC_MESSAGES = new URL("https://api.anthropic.com/v1/messages");
+const MAX_OUTPUT_TOKENS = 16000;
 /** Local browser tests only: a loopback provider fixture on 127.0.0.1. */
 const LOOPBACK_ORIGIN = /^http:\/\/127\.0\.0\.1:[1-9][0-9]{3,4}$/u;
 
 /**
- * Reads the operator's explicit provider choice. Without a complete profile
- * there is no analyzer, and every case records the analysis as unavailable.
+ * The direct Anthropic analyzer, or null without the dedicated key. Null
+ * records every analysis as unavailable: Slop never falls back to another
+ * route.
  */
-export function analysisProfileFromEnv(
-  profileJson: string | undefined,
-  apiKey: string | undefined,
-  loopbackOrigin?: string,
-): AnalysisProfile | null {
-  if (!profileJson || !apiKey) return null;
-  try {
-    const value = record(JSON.parse(profileJson));
-    const transport = value.transport;
-    const model = value.model;
-    const maxOutputTokens = value.maxOutputTokens;
-    if (
-      (transport !== "anthropic-messages" &&
-        transport !== "openai-responses") ||
-      typeof model !== "string" ||
-      !/^[A-Za-z0-9._:-]{1,128}$/u.test(model) ||
-      !Number.isSafeInteger(maxOutputTokens) ||
-      Number(maxOutputTokens) < 512 ||
-      Number(maxOutputTokens) > 16384
-    )
-      return null;
-    const endpoint = ENDPOINTS[transport];
-    return {
-      transport,
-      model,
-      apiKey,
-      maxOutputTokens: Number(maxOutputTokens),
-      // Only a loopback origin replaces the provider's fixed origin.
-      endpoint:
-        loopbackOrigin !== undefined && LOOPBACK_ORIGIN.test(loopbackOrigin)
-          ? `${loopbackOrigin}${endpoint.pathname}`
-          : endpoint.href,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** A provider-backed analyzer with a fixed endpoint per transport. */
-export function providerSecurityAnalyzer(
-  profile: AnalysisProfile,
-  fetcher: (url: string, init: RequestInit) => Promise<Response>,
-): SecurityAnalyzer {
-  const anthropic = profile.transport === "anthropic-messages";
+export function anthropicSecurityAnalyzer(options: {
+  apiKey: string | undefined;
+  fetch: (url: string, init: RequestInit) => Promise<Response>;
+  loopbackOrigin?: string;
+}): SecurityAnalyzer | null {
+  const apiKey = options.apiKey?.trim();
+  if (!apiKey) return null;
+  // Only a loopback origin replaces the provider's fixed origin.
+  const endpoint =
+    options.loopbackOrigin !== undefined &&
+    LOOPBACK_ORIGIN.test(options.loopbackOrigin)
+      ? `${options.loopbackOrigin}${ANTHROPIC_MESSAGES.pathname}`
+      : ANTHROPIC_MESSAGES.href;
   return {
-    provider: anthropic ? "anthropic" : "openai",
-    model: profile.model,
+    provider: "anthropic",
+    model: SECURITY_ANALYSIS_MODEL,
     async analyze(input) {
-      const response = await fetcher(profile.endpoint, {
+      const response = await options.fetch(endpoint, {
         method: "POST",
         // Workers support only "follow" and "manual"; a redirect is not ok.
         redirect: "manual",
         signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
         headers: {
           "content-type": "application/json",
-          ...(anthropic
-            ? {
-                "x-api-key": profile.apiKey,
-                "anthropic-version": "2023-06-01",
-              }
-            : { authorization: `Bearer ${profile.apiKey}` }),
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
         },
-        body: JSON.stringify(
-          anthropic
-            ? {
-                model: profile.model,
-                system: PROMPT,
-                messages: [{ role: "user", content: analysisMessage(input) }],
-                max_tokens: profile.maxOutputTokens,
-              }
-            : {
-                model: profile.model,
-                instructions: PROMPT,
-                input: analysisMessage(input),
-                tools: [],
-                store: false,
-                max_output_tokens: profile.maxOutputTokens,
-              },
-        ),
+        body: JSON.stringify({
+          model: SECURITY_ANALYSIS_MODEL,
+          system: PROMPT,
+          messages: [{ role: "user", content: analysisMessage(input) }],
+          max_tokens: MAX_OUTPUT_TOKENS,
+          output_config: { effort: "high" },
+        }),
       });
       if (!response.ok) throw new Error("Provider unavailable");
       const body = record(await response.json());
-      let output = "";
-      if (anthropic) {
-        if (body.stop_reason !== "end_turn" || !Array.isArray(body.content))
-          throw new Error("Incomplete analysis");
-        output = body.content
-          .map((block) => record(block))
-          .filter((block) => block.type === "text")
-          .map((block) => String(block.text))
-          .join("");
-      } else {
-        if (body.status !== "completed" || !Array.isArray(body.output))
-          throw new Error("Incomplete analysis");
-        output = body.output
-          .map((item) => record(item))
-          .filter((item) => item.type === "message")
-          .flatMap((item) =>
-            Array.isArray(item.content) ? item.content.map(record) : [],
-          )
-          .filter((block) => block.type === "output_text")
-          .map((block) => String(block.text))
-          .join("");
-      }
+      // A refusal, a cut-off answer or any other stop is not a proposal.
+      if (body.stop_reason !== "end_turn" || !Array.isArray(body.content))
+        throw new Error("Incomplete analysis");
+      const output = body.content
+        .map((block) => record(block))
+        .filter((block) => block.type === "text")
+        .map((block) => String(block.text))
+        .join("");
       return parseAnalysisProposal(
         output,
         new Set(input.priorCases.map((entry) => entry.id)),

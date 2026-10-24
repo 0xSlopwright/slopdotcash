@@ -71,15 +71,27 @@ type Reply = {
   case: CaseReply;
 };
 
-// An open paid program: 2 awards of 10,000.00 USD of verified funds.
+const VAULT = `0x${"b".repeat(40)}`;
+const ASSET = `0x${"a".repeat(40)}`;
+// Slop moderators decide escalated appeals and related-party reviews.
+const MODERATORS = new Set(
+  [DISPUTE, DISPUTE_2, DISPUTE_3, DISPUTE_4, DISPUTE_5].map((a) => a.githubId),
+);
+
+// An open paid program of 1.000000 USDC per finding. Its bounty vault holds
+// a finalized free balance of two awards (see `fund`).
 const OPEN_PROGRAM = {
   status: "open",
   intake: { repository: REPOSITORY },
   amount: {
-    currency: "USD",
-    decimals: 2,
-    network: null,
+    currency: "USDC",
+    decimals: 6,
+    network: "base",
     grossMinor: "1000000",
+  },
+  settlement: {
+    chain: "base",
+    deployments: [{ network: "base-sepolia", vault: VAULT, asset: ASSET }],
   },
   funding: {
     state: "verified-available",
@@ -146,6 +158,23 @@ function open(securityBounty: Record<string, unknown> = OPEN_PROGRAM) {
   let actor = MAINTAINER;
   let ids = 0;
   let clock = Date.parse("2026-10-19T10:00:00.000Z");
+  /** A current finalized snapshot of the bounty vault's free balance. */
+  const fund = (freeMinor: string) =>
+    sqlite
+      .query(
+        `INSERT INTO security_vault_snapshots(project_id,network,chain,vault,asset_address,asset_decimals,total_deposited,total_paid,total_payout_fees,total_gross_withdrawn,total_withdrawal_fees,total_service_fees,free_balance,reserved_principal,reserved_fees,accrued_fees,reserved,block_number,block_time,observed_at) VALUES(?, 'base-sepolia', 'base', ?, ?, 6, ?, '0', '0', '0', '0', '0', ?, NULL, NULL, NULL, '0', '64', ?, ?)
+        ON CONFLICT(project_id,network,vault) DO UPDATE SET free_balance = excluded.free_balance, total_deposited = excluded.total_deposited, block_number = CAST(CAST(block_number AS INTEGER) + 1 AS TEXT), observed_at = excluded.observed_at`,
+      )
+      .run(
+        PROJECT,
+        VAULT,
+        ASSET,
+        freeMinor,
+        freeMinor,
+        new Date(clock).toISOString(),
+        new Date(clock).toISOString(),
+      );
+  fund("2000000");
   // Runs before the next write batch, after the handler read the case.
   let beforeBatch: (() => void) | null = null;
   const securityDb = db as unknown as SecurityD1Database;
@@ -226,6 +255,7 @@ function open(securityBounty: Record<string, unknown> = OPEN_PROGRAM) {
         },
         advisories,
         analyzer: analyzerConfigured ? analyzer : null,
+        moderatorGithubIds: MODERATORS,
       },
     );
     return {
@@ -308,6 +338,7 @@ function open(securityBounty: Record<string, unknown> = OPEN_PROGRAM) {
       .all() as { case_id: string; gross_minor: string }[];
   return {
     sqlite,
+    fund,
     call,
     key,
     act,
@@ -594,6 +625,7 @@ describe("discretionary awards", () => {
       amount: { ...OPEN_PROGRAM.amount, grossMinor: "1000000000000000" },
       capacity: { awards: 40, closesAt: null },
     });
+    env.fund("40000000000000000");
     let last = "";
     for (let i = 0; i < 37; i += 1) {
       last = await env.receive(REPORTER, "2026-10-19T09:10:00.000Z");
@@ -748,7 +780,7 @@ describe("discretionary awards", () => {
     env.setBeforeBatch(() => {
       env.sqlite
         .query(
-          "INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) VALUES (?, ?, 'oracle-skew', 1, '1500000', 'USD', ?)",
+          "INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) VALUES (?, ?, 'oracle-skew', 1, '1500000', 'USDC', ?)",
         )
         .run(second, PROJECT, REVISION_AT);
     });
@@ -776,6 +808,62 @@ describe("discretionary awards", () => {
         })
       ).body.case.awardState,
     ).toBe("ineligible");
+  });
+
+  test("reservations follow the vault's finalized free balance, not the published terms", async () => {
+    // Published terms promise 2 x 1,000,000; the vault holds 1,200,000.
+    const env = open();
+    env.fund("1200000");
+    const first = await env.receive(REPORTER, "2026-10-19T09:10:00.000Z");
+    const second = await env.receive(REPORTER, "2026-10-19T09:20:00.000Z");
+    await env.decide(first, "vault-drain");
+    await env.decide(second, "oracle-skew");
+    expect((await env.award(first, "1000000")).status).toBe(200);
+    expect((await env.award(second, "1000000")).body.error).toBe(
+      "insufficient_funds",
+    );
+    // The owner commits the first award on chain. Once a newer finalized
+    // snapshot shows the vault without it, it no longer counts twice.
+    env.sqlite
+      .query(
+        `INSERT INTO security_settlements (case_id, obligation_id, source_digest, network, vault, asset, asset_decimals, gross_base, fee_base, reporter_github_id, approved_by, approved_at, case_revision, deployment) VALUES (?, 'obligation-1', ?, 'base-sepolia', ?, ?, 6, '1000000', '250000', ?, ?, ?, 3, '{}')`,
+      )
+      .run(
+        first,
+        "c".repeat(64),
+        VAULT,
+        ASSET,
+        REPORTER.githubId,
+        MAINTAINER.githubId,
+        REVISION_AT,
+      );
+    env.sqlite
+      .query(
+        `INSERT INTO security_payment_obligations (id, project_id, github_user_id, network, chain, vault, asset_address, asset_decimals, gross_base, fee_base, source_digest, state, created_at) VALUES ('obligation-1', ?, ?, 'base-sepolia', 'base', ?, ?, 6, '1000000', '250000', ?, 'reserved', ?)`,
+      )
+      .run(
+        PROJECT,
+        REPORTER.githubId,
+        VAULT,
+        ASSET,
+        "c".repeat(64),
+        "2026-10-19T10:00:00.000Z",
+      );
+    env.advance(60_000);
+    env.fund("200000");
+    const read = await env.call(MAINTAINER, "GET", `security-cases/${second}`);
+    expect(read.body.case.awardFunds).toMatchObject({
+      availableMinor: "200000",
+    });
+    // A deposit raises the free balance; a stale snapshot proves nothing.
+    env.fund("1200000");
+    env.advance(31 * 60_000);
+    expect((await env.award(second, "1000000")).body.error).toBe(
+      "funds_unavailable",
+    );
+    env.fund("1200000");
+    expect((await env.award(second, "1000000")).status).toBe(200);
+    env.sqlite.close();
   });
 
   test("a pledge reserves nothing", async () => {
