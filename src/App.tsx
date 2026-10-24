@@ -1178,11 +1178,7 @@ export function ProjectFunding({ project }: { project: ProjectDefinition }) {
   else if (totals.status === "loading")
     summary = <span role="status">Loading vault totals…</span>;
   else if (totals.status === "error")
-    summary = (
-      <span role="alert">
-        Vault totals unavailable · {fundingStateLabel(project)}
-      </span>
-    );
+    summary = <span role="alert">Vault totals unavailable</span>;
   else if (totals.vault.snapshots.length === 0)
     summary = "Vault recorded · no finalized vault read yet";
   else
@@ -1207,11 +1203,8 @@ export function ProjectFunding({ project }: { project: ProjectDefinition }) {
       aria-label="Project funding"
     >
       <p>
-        <strong>Funding</strong>{" "}
-        {project.reward.paymentMode === "enabled"
-          ? null
-          : "Payments disabled · "}
-        {summary} <Link href={href}>Fund this project</Link>
+        <strong>Funding</strong> {summary}{" "}
+        <Link href={href}>Fund this project</Link>
       </p>
     </section>
   );
