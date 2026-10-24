@@ -713,17 +713,18 @@ p {
   text-wrap: balance;
 }
 
-.hero-typewriter {
+.hero-typewriter,
+.hero-switch-sizer {
   grid-area: 1 / 1;
+}
+
+.hero-switch-sizer {
+  visibility: hidden;
 }
 
 .hero-typewriter {
   position: relative;
   align-self: start;
-}
-
-.hero-mobile-action {
-  display: none;
 }
 
 .hero-typewriter-caret {
@@ -2335,15 +2336,6 @@ small {
     font-size: clamp(36px, 11.5vw, 52px);
     letter-spacing: -0.04em;
     line-height: 0.9;
-  }
-
-  .hero-typewriter {
-    display: none;
-  }
-
-  .hero-mobile-action {
-    display: block;
-    grid-area: 1 / 1;
   }
 
   .hero-copy {
