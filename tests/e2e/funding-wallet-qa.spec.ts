@@ -125,6 +125,9 @@ test("funding and wallet keyboard flows remain accessible at 200 percent text si
       },
     }),
   );
+  await page.route("**/api/v1/project-session", (route) =>
+    route.fulfill({ json: { session: null } }),
+  );
   const evidence = observe(page);
   for (const path of ["/wallet", "/projects/eliza/funding"]) {
     await page.goto(path, { waitUntil: "networkidle" });

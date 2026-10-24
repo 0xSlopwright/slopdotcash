@@ -10,10 +10,11 @@ import { configFees, configIdentity } from "./deployment.mjs";
  * can run migrate_project against real legacy bytes. Public seeds: test use only.
  */
 const sha256 = (value) => createHash("sha256").update(value).digest();
+export const sha256Seed = sha256;
 const TOKEN_PROGRAM = new PublicKey(
   "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
 );
-const programId = new PublicKey(
+export const programId = new PublicKey(
   JSON.parse(
     readFileSync(
       fileURLToPath(new URL("../idl/slop_escrow.json", import.meta.url)),
@@ -43,7 +44,7 @@ function mintData() {
   data[45] = 1;
   return data;
 }
-function projectData() {
+export function projectData() {
   const data = Buffer.alloc(316);
   Buffer.from("cda8bdcab5f78e13", "hex").copy(data, 0);
   legacyOwner.publicKey.toBuffer().copy(data, 8);
@@ -61,13 +62,12 @@ function projectData() {
   return data;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+/** Writes each [name, address, owner, data] account under .local and returns the
+ * solana-test-validator --account arguments that preload them. */
+export function preloadArgs(accounts) {
   mkdirSync(".local", { recursive: true });
   const args = [];
-  for (const [name, address, owner, data] of [
-    ["legacy-mint", legacyMint.publicKey, TOKEN_PROGRAM, mintData()],
-    ["legacy-project", legacyProject, programId, projectData()],
-  ]) {
+  for (const [name, address, owner, data] of accounts) {
     const file = `.local/${name}.json`;
     writeFileSync(
       file,
@@ -85,5 +85,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     );
     args.push("--account", address.toBase58(), file);
   }
-  console.log(args.join(" "));
+  return args;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  console.log(
+    preloadArgs([
+      ["legacy-mint", legacyMint.publicKey, TOKEN_PROGRAM, mintData()],
+      ["legacy-project", legacyProject, programId, projectData()],
+    ]).join(" "),
+  );
 }
