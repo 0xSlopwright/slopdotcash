@@ -281,7 +281,7 @@ expected results, actual results, the exact tested revision, and limitations.
 Include `Made via @slopdotcash` on PRs without replacing required model
 attribution. Owners and maintainers write issues; contributors write PRs.
 
-The attribution rule (owner decision D6, PRD sections 4, 5, and 11) has two
+The attribution rule (the recorded decision in PRD section 11; sections 4 and 5) has two
 levels:
 
 | Purpose | Required evidence |

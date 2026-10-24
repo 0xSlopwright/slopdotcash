@@ -1885,7 +1885,7 @@ function projectPullRequestUrl(value) {
 
 /**
  * Records the pull_request_opened event that automatic closure and penalties
- * require (owner decision D6; PRD sections 4, 5 and 11). Run it after the pull
+ * require (the attribution decision in PRD section 11). Run it after the pull
  * request exists, so it never blocks submission. It uploads no trace, usage,
  * prompt or source bytes. The server binds the run and the event to the
  * GitHub account that authorized this session, so a copied footer or marker
