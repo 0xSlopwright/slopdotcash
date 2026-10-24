@@ -58,6 +58,9 @@ test("social membership preserves past points and connection privacy without new
       },
     }),
   );
+  await page.route(`${site}/api/v1/project-appeals`, (route) =>
+    route.fulfill({ json: { appeals: [] } }),
+  );
   await page.route(`${site}/api/v1/payments/me`, (route) =>
     route.fulfill({
       json: {
