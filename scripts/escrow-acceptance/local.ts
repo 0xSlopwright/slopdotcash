@@ -235,7 +235,12 @@ async function solanaLocalnet() {
     "deploy",
     "slop_escrow.so",
   );
-  const programId = "4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj";
+  const programId: string = JSON.parse(
+    readFileSync(
+      join(root, "contracts", "solana", "idl", "slop_escrow.json"),
+      "utf8",
+    ),
+  ).address;
   const seed = () =>
     Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
   const pubkey = (hex: string) =>

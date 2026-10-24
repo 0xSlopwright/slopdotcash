@@ -156,7 +156,14 @@ token, decimals, creation transaction and `codeSha256`.
 ## 2. Solana program upgrade and finalization
 
 Program: `slop-escrow`, ID `7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ`
-(upgradeable, already on mainnet).
+(upgradeable). This ID is on devnet. It is not on mainnet yet, so the first
+mainnet release deploys it with its program keypair (step 5). Later releases
+upgrade it.
+
+The earlier ID `4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj` is on mainnet
+with no program accounts. Its code declares that earlier ID, and the current
+source declares the new ID, so the current source cannot upgrade it. Do not
+record it in a manifest.
 
 A human operator does every step below. An agent never runs these commands,
 never holds the upgrade authority or payer key, and never signs or broadcasts.
@@ -170,6 +177,8 @@ Placeholders:
 - `$UPGRADE_AUTHORITY` = the current upgrade authority signer (keypair path or
   `usb://ledger?key=N`)
 - `$PAYER` = the fee payer keypair for the buffer
+- `$PROGRAM_KEYPAIR` = the program identity keypair, held outside the
+  repository and used only for the first deployment
 - `$IDENTITY` = the published Slop identity authority (attester) public key
 - `$FEES` = the published Slop fee recipient public key
 
@@ -206,6 +215,9 @@ A second operator repeats this step on a different machine. Both hashes must
 match. Record them in the release issue.
 
 ### 3. Record the current deployed program
+
+Skip this step for the first mainnet deployment, when
+`solana program show "$PROGRAM" -u "$RPC"` reports no account.
 
 ```bash
 solana program show "$PROGRAM" -u "$RPC"           # record Authority and Data Length
@@ -246,6 +258,16 @@ PY
 ```
 
 ### 5. Upgrade
+
+For the first mainnet deployment, the program keypair file for `$PROGRAM`
+signs instead of an upgrade:
+
+```bash
+solana program deploy --program-id "$PROGRAM_KEYPAIR" --buffer "$BUFFER" \
+  --upgrade-authority "$UPGRADE_AUTHORITY" -u "$RPC" --keypair "$PAYER"
+```
+
+For every later release:
 
 ```bash
 solana program upgrade "$BUFFER" "$PROGRAM" \
