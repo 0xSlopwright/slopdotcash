@@ -87,7 +87,9 @@ export default {
       if (
         !isRecord(evidence) ||
         typeof evidence.status !== "string" ||
-        !["exited", "timeout", "output-limit"].includes(evidence.status) ||
+        !["exited", "timeout", "output-limit", "not-executable"].includes(
+          evidence.status,
+        ) ||
         typeof evidence.exitCode !== "number" ||
         typeof evidence.stdoutBase64 !== "string" ||
         typeof evidence.stderrBase64 !== "string" ||

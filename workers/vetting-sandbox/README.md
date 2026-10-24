@@ -17,7 +17,9 @@ failed requests. A cleanup failure must not be counted as a completed run.
 
 The response is private execution evidence. Standard output and error are
 base64-encoded exact bytes, bounded to 64 KiB each. An output limit or timeout
-is explicit and does not establish complete coverage. No response declares
+is explicit and does not establish complete coverage. An unsupported executable
+or unavailable loader returns `not-executable`, not a retryable service outage.
+A failure to establish isolation still fails the service request. No response declares
 an artifact safe, releases quarantine, grants project clearance or makes a
 moderator decision. Preserve the response in the existing private evidence
 store before relying on it.

@@ -1,6 +1,7 @@
 """Run one retained artifact without inherited environment or service authority."""
 import base64
 import ctypes
+import errno
 import json
 import os
 import resource
@@ -67,16 +68,30 @@ def main():
     interpreter = sys.argv[1]
     if interpreter not in COMMANDS:
         raise ValueError("Unsupported interpreter")
-    child = subprocess.Popen(
-        COMMANDS[interpreter],
-        cwd="/analysis/work",
-        env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/analysis/work", "TMPDIR": "/analysis/work"},
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        preexec_fn=restrict,
-    )
+    try:
+        child = subprocess.Popen(
+            COMMANDS[interpreter],
+            cwd="/analysis/work",
+            env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/analysis/work", "TMPDIR": "/analysis/work"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            preexec_fn=restrict,
+        )
+    except OSError as error:
+        # An unsupported executable or missing loader is an artifact result.
+        # A failed preexec security setup raises SubprocessError instead and
+        # must still fail the service request without running the artifact.
+        if error.errno not in (errno.ENOEXEC, errno.ENOENT, errno.EACCES):
+            raise
+        print(json.dumps({
+            "status": "not-executable", "exitCode": 126,
+            "stdoutBase64": "",
+            "stderrBase64": base64.b64encode(b"Artifact cannot execute in this image").decode("ascii"),
+            "outputComplete": False,
+        }))
+        return
     streams = {"stdout": bytearray(), "stderr": bytearray()}
     status = "exited"
     selector = selectors.DefaultSelector()

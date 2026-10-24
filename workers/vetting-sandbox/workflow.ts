@@ -123,6 +123,11 @@ try {
     400,
   );
 
+  const unsupported = await execute("not an executable format", "binary");
+  assert.equal(unsupported.status, "not-executable");
+  assert.equal(unsupported.exitCode, 126);
+  assert.equal(unsupported.outputComplete, false);
+
   const identity = await execute(
     "import os,json\nprint(os.getuid(), os.getgid())\nprint(json.dumps(sorted(os.environ)))\nopen('/analysis/work/marker', 'w').write('private')",
   );
