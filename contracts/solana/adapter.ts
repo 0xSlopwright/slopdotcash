@@ -446,6 +446,7 @@ export function solanaMonthlyMessage(
   projectPda: string,
   period: string,
   allocationRoot: string,
+  network: string,
 ) {
   const match = /^([2-9][0-9]{3})-(0[1-9]|1[0-2])$/.exec(period);
   if (!match) throw new Error("Invalid monthly period");
@@ -457,6 +458,7 @@ export function solanaMonthlyMessage(
     publicKeyBytes(projectPda),
     yyyymm,
     digest(allocationRoot),
+    digest(network),
   );
 }
 

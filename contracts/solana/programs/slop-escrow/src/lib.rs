@@ -23,7 +23,7 @@ const MAX_ROTATION_DELAY: i64 = 90 * 86400;
 /// until this delay after the next month ends (owner decision D1: 00:00 UTC on the 4th).
 const MONTHLY_CUTOFF_DELAY: i64 = 72 * 3600;
 /// The identity authority signs this prefix, the program ID, the project, the period (u32 LE,
-/// YYYYMM) and the allocation root.
+/// YYYYMM), the allocation root and the stored network domain.
 pub const MONTHLY_MESSAGE_PREFIX: &[u8] = b"slop-monthly-allocation-v1";
 /// The native Ed25519 signature verification program.
 const ED25519_PROGRAM: Pubkey =
@@ -291,7 +291,7 @@ pub mod slop_escrow {
     // Anyone records one period's allocation root inside the period's window, once per
     // period, while the owner has monthly commitments on. The instruction just before this
     // one must be an Ed25519 program check of the project's identity authority signature
-    // over monthly_message(program, project, period, root).
+    // over monthly_message(program, project, period, root, network).
     pub fn commit_monthly(
         ctx: Context<CommitMonthly>,
         period: u32,
@@ -306,7 +306,13 @@ pub mod slop_escrow {
             now >= opens_at && now < closes_at,
             EscrowError::MonthlyWindowClosed
         );
-        let message = monthly_message(ctx.program_id, &p.key(), period, &allocation_root);
+        let message = monthly_message(
+            ctx.program_id,
+            &p.key(),
+            period,
+            &allocation_root,
+            &p.network,
+        );
         verify_attestation(&ctx.accounts.instructions, &p.identity_authority, &message)?;
         let m = &mut ctx.accounts.month;
         m.project = p.key();
@@ -623,6 +629,7 @@ pub fn monthly_message(
     project: &Pubkey,
     period: u32,
     allocation_root: &[u8; 32],
+    network: &[u8; 32],
 ) -> Vec<u8> {
     [
         MONTHLY_MESSAGE_PREFIX,
@@ -630,6 +637,7 @@ pub fn monthly_message(
         project.as_ref(),
         &period.to_le_bytes(),
         allocation_root,
+        network,
     ]
     .concat()
 }

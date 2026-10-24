@@ -232,7 +232,7 @@ period is open at a time.
    while the switch is on. The instruction just before it in the same
    transaction must be an Ed25519 program check of one signature by the
    project's identity authority over
-   `"slop-monthly-allocation-v1" || program ID || project PDA || period (u32 LE) || allocation root`.
+   `"slop-monthly-allocation-v1" || program ID || project PDA || period (u32 LE) || allocation root || network domain (32 bytes)`.
    The program reads that instruction from the instructions sysvar and requires
    every offset to point inside it. The `month` PDA
    (`["month", project, period LE]`) records the root once, so each period

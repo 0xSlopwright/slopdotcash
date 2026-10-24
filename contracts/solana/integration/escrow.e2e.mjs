@@ -1476,8 +1476,14 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
     },
   ];
   const root = solanaAllocationRoot(entries);
-  const message = (p = period, r = root, at = project) =>
-    solanaMonthlyMessage(program.programId.toBase58(), at.toBase58(), p, r);
+  const message = (p = period, r = root, at = project, domain = network) =>
+    solanaMonthlyMessage(
+      program.programId.toBase58(),
+      at.toBase58(),
+      p,
+      r,
+      Buffer.from(domain).toString("hex"),
+    );
   const attestation = (signer = authority, bytes = message()) =>
     Ed25519Program.createInstructionWithPrivateKey({
       privateKey: signer.secretKey,
@@ -1558,7 +1564,7 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
   );
   await assert.rejects(record(later), /MonthlyWindowClosed/);
 
-  // The signature binds the program, project, period and root, and only the
+  // The signature binds the network, program, project, period and root, and only the
   // project's identity authority attests.
   await assert.rejects(record(period, root, []), /InvalidAttestation/);
   await assert.rejects(
@@ -1567,6 +1573,15 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
   );
   await assert.rejects(
     record(period, root, [attestation(authority, message(later))]),
+    /InvalidAttestation/,
+  );
+  await assert.rejects(
+    record(period, root, [
+      attestation(
+        authority,
+        message(period, root, project, hash("another-network")),
+      ),
+    ]),
     /InvalidAttestation/,
   );
   const otherRoot = solanaAllocationRoot(entries.slice(0, 2));
