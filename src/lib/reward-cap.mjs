@@ -6,7 +6,6 @@ export function resolveRewardCapMinor(project, cycleId) {
     !/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(cycleId)
   )
     throw new TypeError("reward cap requires a valid UTC cycle month");
-  if (cycleId < project.reward.rewardStartAt.slice(0, 7)) return "0";
   return (
     project.reward.cycleCaps?.find((cap) => cap.cycleId === cycleId)
       ?.monthlyCapMinor ?? project.reward.monthlyCapMinor

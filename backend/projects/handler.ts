@@ -360,16 +360,23 @@ function prospectiveFinancialChange(
   const cycleId = now.toISOString().slice(0, 7);
   if (assetChanged) {
     // Old caps remain in immutable revisions of the old asset. The new
-    // asset starts next month and must never fund an earlier period.
+    // asset starts next month: every month from the reward start through
+    // the open month has no pool in the new asset. The reward start, and
+    // with it the accepted score history, does not move.
+    const zeroCaps: { cycleId: string; monthlyCapMinor: string }[] = [];
+    const month = new Date(`${before.rewardStartAt.slice(0, 7)}-01T00:00:00Z`);
+    for (
+      let id = month.toISOString().slice(0, 7);
+      id <= cycleId;
+      month.setUTCMonth(month.getUTCMonth() + 1),
+        id = month.toISOString().slice(0, 7)
+    )
+      zeroCaps.push({ cycleId: id, monthlyCapMinor: "0" });
+    const { cycleCaps: _none, ...reward } = after;
     return {
       ...next,
-      reward: {
-        ...after,
-        rewardStartAt: new Date(
-          Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
-        ).toISOString(),
-        cycleCaps: [{ cycleId, monthlyCapMinor: "0" }],
-      },
+      reward:
+        zeroCaps.length === 0 ? reward : { ...reward, cycleCaps: zeroCaps },
     };
   }
   if (before.monthlyCapMinor === after.monthlyCapMinor) return next;

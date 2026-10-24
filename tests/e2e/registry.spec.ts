@@ -1170,9 +1170,9 @@ test("an owner installs Slopbot before creation and resumes setup; a failed scan
     rewardAsset: { network: "ethereum", kind: "stablecoin" },
     reward: {
       monthlyCapMinor: "1200000000",
-      rewardStartAt: new Date(
-        Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
-      ).toISOString(),
+      cycleCaps: [
+        { cycleId: now.toISOString().slice(0, 7), monthlyCapMinor: "0" },
+      ],
     },
   });
   await page.screenshot({

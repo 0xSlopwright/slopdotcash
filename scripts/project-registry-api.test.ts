@@ -526,7 +526,7 @@ describe("project registry API", () => {
     expect(changed.manifest.reward).toMatchObject({
       currency: "USDC",
       monthlyCapMinor: "1000000000",
-      rewardStartAt: "2026-12-01T00:00:00.000Z",
+      rewardStartAt: current.manifest.reward.rewardStartAt,
     });
     expect(resolveRewardCapMinor(changed.manifest, "2026-10")).toBe("0");
     expect(resolveRewardCapMinor(changed.manifest, "2026-11")).toBe("0");
