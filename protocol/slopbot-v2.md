@@ -46,6 +46,10 @@ v2 keeps every v1 rule except the ones listed under "Changes from v1".
   within 7 days, Slopbot adds the `slopbot:uncertain` label only and keeps
   its verdict in the comment. An uncertain finding never closes an item (PRD
   section 5, owner decision D8).
+- On a paused, flagged or quarantined project, Slopbot comments and adds the
+  scam label only (owner decision D12). It adds no other label there,
+  including the uncertain, appeal and moderator labels. A retired project gets
+  no review.
 
 ## Penalty table
 

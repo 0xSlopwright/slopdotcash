@@ -63,8 +63,11 @@ disabled by `SLOPBOT_CLOSURE_ENABLED = "false"`.
    labeled, assigned or changed the item in that time, the bot adds the
    `slopbot:uncertain` label only (owner decision D8); the verdict stays in the
    review comment. An uncertain finding never closes an item. A closed,
-   merged or changed item, or a paused project for a non-security finding,
-   ends the hold without a label. Unknown maintainer status retries the hold.
+   merged or changed item, or a paused, flagged or quarantined project, ends
+   the hold without a label. On such a restricted project Slopbot comments and
+   adds the scam label only (owner decision D12), so an uncertain finding
+   there stays a comment and records no hold. Unknown maintainer status
+   retries the hold.
 8. A confirmed close of a closure-eligible author records one debit from the
    published penalty table (`penalties.ts`, owner decision D7) in
    `slopbot_penalties`. The row is written once per pull request and reverses
@@ -200,9 +203,10 @@ Do these in order. Each step names who does it and how to verify it.
       `bunx wrangler queues consumer add slopbot-jobs slop-slopbot --batch-size 5 --message-retries 5 --dead-letter-queue slopbot-jobs-dlq`.
    5. In GitHub → repository Settings → Variables, set `SLOPBOT_RELEASE` to
       `enabled`.
-   6. Set the Worker variable `PROJECT_MODERATOR_GITHUB_IDS` to the approved
-      moderators' immutable GitHub IDs (owner decision D15). Without it,
-      escalated appeals wait and no moderator command is accepted.
+   6. `wrangler.toml` sets `PROJECT_MODERATOR_GITHUB_IDS` to the approved
+      moderators' immutable GitHub IDs: lalalune (18633264) and drew-dot-com
+      (202660855), PRD section 11. A change to this list needs an owner
+      decision and a reviewed pull request.
 
    The next protected release runs these steps:
    - checks the secret inventory;

@@ -646,11 +646,13 @@ export function commentBody(input: {
     "",
     rules,
     "",
-    input.action === "hold"
-      ? `_Slopbot is not certain about this finding (${input.blockedClose ?? "uncertain result"}), so a maintainer decides first. If no maintainer acts within ${MAINTAINER_HOLD_DAYS} days, Slopbot adds the \`${UNCERTAIN_LABEL}\` label only and keeps this verdict here. An uncertain finding never closes this item._`
-      : input.blockedClose === null
-        ? ""
-        : `_This item was not closed: ${input.blockedClose}._`,
+    input.action === "hold" && context.registration.scope === "security"
+      ? `_Slopbot is not certain about this finding (${input.blockedClose ?? "uncertain result"}), so a maintainer decides. This project is restricted: Slopbot adds no label and never closes this item._`
+      : input.action === "hold"
+        ? `_Slopbot is not certain about this finding (${input.blockedClose ?? "uncertain result"}), so a maintainer decides first. If no maintainer acts within ${MAINTAINER_HOLD_DAYS} days, Slopbot adds the \`${UNCERTAIN_LABEL}\` label only and keeps this verdict here. An uncertain finding never closes this item._`
+        : input.blockedClose === null
+          ? ""
+          : `_This item was not closed: ${input.blockedClose}._`,
     penalty
       ? `_Under the published penalty table, this close removes ${penalty.debit_thirds} thirds of a point from the author's ${penalty.period} Slop Score. A month never goes below zero, and approved, scheduled or paid awards do not change.${penalty.moderator_review === 1 ? " A Slop moderator also reviews the account." : ""}_`
       : "",
@@ -692,7 +694,9 @@ async function addLabels(
   github: GitHubClient,
   labels: string[],
 ): Promise<void> {
-  await requireScope(env.SLOPBOT_DB, job, "security");
+  for (const label of labels)
+    if (!(await mayAddLabel(env.SLOPBOT_DB, job, label)))
+      throw new Error(`Label ${label} is not allowed on this project now`);
   const result = await github.request<{ name: string }[]>(
     "POST",
     `/repos/${job.owner}/${job.repo}/issues/${job.number}/labels`,
@@ -707,6 +711,22 @@ async function addLabels(
       result.status,
       "GitHub did not confirm the label addition",
     );
+}
+
+/** Owner decision D12: on a paused, flagged or quarantined project, Slopbot
+ * may comment and add the scam label only. Every other label needs a project
+ * that is open to contributor work.
+ */
+async function mayAddLabel(
+  db: store.D1Database,
+  job: Job,
+  label: string,
+): Promise<boolean> {
+  return scopeAllowed(
+    db,
+    job,
+    label === categoryLabel("scam") ? "security" : "contributor",
+  );
 }
 
 async function upsertComment(
@@ -1121,6 +1141,13 @@ async function runReview(
       category,
     );
     await store.assertReviewClaim(db, claim);
+    if (scope === "security") {
+      await store.finishReview(db, reviewKey, claimToken, "completed", {
+        verdict,
+        action: "hold",
+      });
+      return `uncertain; comment only on a restricted project (${category})`;
+    }
     const dueAt = await recordMaintainerHold(db, reviewKey, job, {
       nodeId: issue.node_id,
       revision: context.revision,
@@ -1583,8 +1610,12 @@ export async function recordHumanSignal(
     }
     return kind;
   }
-  if (!(await store.hasRecordedAction(db, signalKey, "label"))) {
-    const label = "slopbot: appeal";
+  const appealLabel = "slopbot: appeal";
+  if (
+    !(await store.hasRecordedAction(db, signalKey, "label")) &&
+    (await mayAddLabel(db, job, appealLabel))
+  ) {
+    const label = appealLabel;
     // Reconcile a successful write whose response or local record was lost.
     if (!hasLabel(issue, label)) await addLabels(env, job, github, [label]);
     await store.recordAction(
@@ -1834,7 +1865,8 @@ async function publishAppealState(
   if (
     appeal.escalated_at !== null &&
     stage !== "resolution" &&
-    !(await store.hasRecordedAction(db, labelKey, "label"))
+    !(await store.hasRecordedAction(db, labelKey, "label")) &&
+    (await mayAddLabel(db, job, MODERATOR_LABEL))
   ) {
     if (!hasLabel(session.issue, MODERATOR_LABEL))
       await addLabels(env, job, session.github, [MODERATOR_LABEL]);
@@ -2117,10 +2149,9 @@ export async function applyMaintainerHold(
   const registration = await reviewRegistration(db, job);
   if (registration === null)
     return supersede("repository is not registered in the Slop registry");
-  if (
-    registration.scope === "security" &&
-    !SECURITY_CATEGORIES.has(hold.category)
-  )
+  // D12: a restricted project gets a comment and the scam label only, so an
+  // uncertain finding there stays a comment.
+  if (registration.scope === "security")
     return supersede("security review only");
   const install = await store.installation(db, job.installationId);
   if (
@@ -2149,16 +2180,9 @@ export async function applyMaintainerHold(
     await resolveHold(db, job.reviewKey, "maintainer_acted");
     return "maintainer acted; no label";
   }
-  const label = UNCERTAIN_LABEL;
   // Reconcile a successful write whose response or local record was lost.
-  if (
-    !issue.labels?.some((entry) =>
-      typeof entry === "string" ? entry === label : entry.name === label,
-    )
-  ) {
-    await requireScope(db, job, registration.scope);
-    await addLabels(env, job, github, [label]);
-  }
+  if (!hasLabel(issue, UNCERTAIN_LABEL))
+    await addLabels(env, job, github, [UNCERTAIN_LABEL]);
   await store.recordAction(
     db,
     job.reviewKey,
