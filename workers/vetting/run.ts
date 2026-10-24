@@ -37,7 +37,12 @@ import {
   type QueueConnection,
   readPendingAssessments,
 } from "./queue";
-import { reviewScan, type ScannerProfile } from "./scanners";
+import {
+  PINNED_SCANNER_PROFILES,
+  reviewScan,
+  type ScannerProfile,
+  validateProfile,
+} from "./scanners";
 import { signedServiceHeaders } from "./service";
 
 /**
@@ -54,6 +59,28 @@ const COVERED_BY_BOUNDED_SCAN = new Set([
 ]);
 /** Template inputs are scanned under this prefix, apart from repository paths. */
 export const TEMPLATE_PREFIX = "slop-skill-template";
+
+/**
+ * Fails closed unless the primary is the pinned Surplus `claude-opus-5.5`
+ * profile and the specialist the pinned Surplus `gpt-6.1-sol` profile, so
+ * `SURPLUS_API_KEY` reaches only the approved Surplus endpoints.
+ */
+export function assertPinnedProfiles(
+  primary: ScannerProfile,
+  specialist: ScannerProfile,
+) {
+  if (
+    primary.transport !== "anthropic-messages" ||
+    specialist.transport !== "openai-responses" ||
+    primary.model !== PINNED_SCANNER_PROFILES["anthropic-messages"].model ||
+    specialist.model !== PINNED_SCANNER_PROFILES["openai-responses"].model
+  )
+    throw new Error(
+      "The primary review must be Surplus claude-opus-5.5 and the specialist Surplus gpt-6.1-sol",
+    );
+  validateProfile(primary);
+  validateProfile(specialist);
+}
 
 export type ScanServiceConfig = {
   connection: QueueConnection;
@@ -384,6 +411,8 @@ async function scanOne(
 export async function runScanPass(
   config: ScanServiceConfig,
 ): Promise<ScanPassReport> {
+  // Before the queue or any provider is contacted.
+  assertPinnedProfiles(config.primary, config.specialist);
   await mkdir(config.workDirectory, { recursive: true, mode: 0o700 });
   await mkdir(config.journalDirectory, { recursive: true, mode: 0o700 });
   const refreshed = await refresh(config.connection);
@@ -445,10 +474,13 @@ export async function serviceConfigFrom(
     true,
     ["verify"],
   );
+  const primary = { ...file.primary, apiKey };
+  const specialist = { ...file.specialist, apiKey };
+  assertPinnedProfiles(primary, specialist);
   return {
     connection: { origin: file.origin, privateKey, publicKey },
-    primary: { ...file.primary, apiKey },
-    specialist: { ...file.specialist, apiKey },
+    primary,
+    specialist,
     policyVersion: file.policyVersion,
     workDirectory: file.workDirectory,
     journalDirectory: file.journalDirectory,

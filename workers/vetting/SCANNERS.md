@@ -14,17 +14,22 @@ transports. It makes one call per configured reviewer. It does not choose a
 model, replace a failed provider, retry an uncertain request, or make a project
 clearance or ban decision.
 
-The operator supplies both profiles: reviewer class, documented provider
-endpoint, reviewed model version, API key, output-token limit and rate card.
-The endpoint must be the official endpoint for that transport, or the same
-transport through Surplus Intelligence
-(`https://api.surplusintelligence.ai/anthropic/v1/messages` or
-`https://api.surplusintelligence.ai/v1/responses`, owner decision D16).
-Surplus takes the account key as a bearer token and records the provider as
-`surplus`. The marketplace model identity is not independently verified. The model has
-no default. Its returned identity must equal the configured identity. Operators
-must select an approved immutable model version; matching a provider's echoed
-alias alone does not establish version immutability or reviewer-class approval.
+The operator supplies both profiles: reviewer class, endpoint, model, API key,
+output-token limit and rate card. Owner decision D16 approves exactly two
+profiles (`PINNED_SCANNER_PROFILES`), both through Surplus Intelligence:
+
+| Transport | Reviewer | Endpoint | Model |
+| --- | --- | --- | --- |
+| Anthropic Messages | `opus` | `https://api.surplusintelligence.ai/anthropic/v1/messages` | `claude-opus-5.5` |
+| OpenAI Responses | `astra` | `https://api.surplusintelligence.ai/v1/responses` | `gpt-6.1-sol` |
+
+Any other endpoint, including the providers' own APIs, any other model and any
+other reviewer class fails readiness with "Unapproved scanner profile" before
+a provider is contacted. Surplus takes the account key as a bearer token and
+records the provider as `surplus`. The marketplace model identity is not
+independently verified. Its returned identity must equal the pinned identity;
+matching a provider's echoed alias alone does not establish version
+immutability.
 The two profiles must use different reviewer classes and transports. Both must
 pass readiness checks before either provider is contacted.
 

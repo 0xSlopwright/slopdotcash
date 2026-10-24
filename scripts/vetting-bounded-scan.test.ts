@@ -109,9 +109,9 @@ afterAll(() => server.stop(true));
 const profile: ScannerProfile = {
   reviewer: "opus",
   transport: "anthropic-messages",
-  endpoint: "https://api.anthropic.com/v1/messages",
-  model: "operator-pinned-fixture",
-  apiKey: "fixture-anthropic-key",
+  endpoint: "https://api.surplusintelligence.ai/anthropic/v1/messages",
+  model: "claude-opus-5.5",
+  apiKey: "fixture-surplus-key",
   maxOutputTokens: 1024,
   rateCard: {
     uncachedInputNanoUsdPerToken: "3",

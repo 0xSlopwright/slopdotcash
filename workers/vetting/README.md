@@ -101,8 +101,11 @@ The configuration file names `origin`, `policyVersion`, `workDirectory`,
 `journalDirectory`, and the `primary` and `specialist` profiles without
 keys. Owner decision D16 pins the primary to the Surplus Anthropic Messages
 endpoint with `claude-opus-5.5` and the specialist to the Surplus OpenAI
-Responses endpoint with `gpt-6.1-sol`. Both use `SURPLUS_API_KEY`. The output
-lists safe assessment identities and states only.
+Responses endpoint with `gpt-6.1-sol`. Both use `SURPLUS_API_KEY`. The
+service refuses to start, and a scan pass refuses to contact the queue or a
+provider, when either profile names another endpoint, model or reviewer, so
+the key never reaches any other endpoint. The output lists safe assessment
+identities and states only.
 
 ### Protected scheduled controller
 
@@ -243,7 +246,7 @@ VM.
 | Item | Status |
 | --- | --- |
 | Scanner service deployment | `run.ts` is the service source; it is not deployed by this source. It needs a private host, its Ed25519 key, the public key in `VETTING_RESULT_PUBLIC_KEYS`, `SURPLUS_API_KEY` and the evidence store policy. |
-| Provider and model | Owner decision D16: Surplus `claude-opus-5.5` is the primary model and Surplus `gpt-6.1-sol` is the specialist, only for ambiguous or high-risk results. Scanner profiles accept the Surplus endpoints. The operator pins both in the configuration file; the source has no default. |
+| Provider and model | Owner decision D16: Surplus `claude-opus-5.5` is the primary model and Surplus `gpt-6.1-sol` is the specialist, only for ambiguous or high-risk results. Scanner profiles accept only these two Surplus endpoint and model pairs (`PINNED_SCANNER_PROFILES` in `scanners.ts`) and fail closed on any other. The operator names both in the configuration file; the source has no default. |
 | Isolated runner | Owner decision D16: Cloudflare Sandboxes/Containers, one disposable sandbox per risky artifact, with `enableInternet: false` set explicitly and no secrets. Adapting this worker from the Bubblewrap host to that runner is follow-up work. |
 | Specialist authority | Owner decision D3: moderators confirm malice and release quarantined artifacts. A model label alone cannot; a signed malicious result restricts the project until a moderator decides. |
 | Live acceptance | Clean, incomplete, malicious, flag and reinstatement paths on staging with the real services. |
