@@ -23,6 +23,10 @@ import type {
   D1TransactionalDatabase,
 } from "../d1";
 import { notifySecurityCase } from "../notifications/events";
+import {
+  hasParticipationBan,
+  PARTICIPATION_BAN_QUERY,
+} from "../projects/account-bans";
 import { cachedPublicResponse, type EdgeCache } from "../projects/edge-cache";
 import { readJsonObject } from "../trace/validation";
 import type { AdvisoryReader, GithubPrivateReport } from "./advisories";
@@ -2652,6 +2656,12 @@ async function awardReservation(
   grossMinor: string,
   at: string,
 ): Promise<Required<Pick<Change, "before" | "set" | "requireSql" | "unmet">>> {
+  if (await hasParticipationBan(deps.db, row.reporter_github_id))
+    fail(
+      403,
+      "participation_banned",
+      "This account cannot receive a new Slop award. Funded awards and appeals remain available.",
+    );
   const terms = frozenTerms(row);
   const rootCauseKey = row.root_cause_key;
   if (terms === null || rootCauseKey === null)
@@ -2680,7 +2690,7 @@ async function awardReservation(
     before: [
       deps.db
         .prepare(
-          `INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT revision FROM security_cases WHERE id = ?) = ? AND (${OUTSTANDING_RESERVATIONS}) + CAST(? AS INTEGER) <= CAST(? AS INTEGER) AND ${snapshotGuards.map((guard) => guard.sql).join(" AND ")} AND NOT EXISTS (${ROOT_CAUSE_PENDING_REVIEW})`,
+          `INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT revision FROM security_cases WHERE id = ?) = ? AND (${OUTSTANDING_RESERVATIONS}) + CAST(? AS INTEGER) <= CAST(? AS INTEGER) AND ${snapshotGuards.map((guard) => guard.sql).join(" AND ")} AND NOT EXISTS (${ROOT_CAUSE_PENDING_REVIEW}) AND NOT EXISTS (${PARTICIPATION_BAN_QUERY})`,
         )
         .bind(
           row.id,
@@ -2701,6 +2711,7 @@ async function awardReservation(
           row.project_id,
           row.id,
           rootCauseKey,
+          row.reporter_github_id,
         ),
     ],
     set: {
@@ -2713,7 +2724,7 @@ async function awardReservation(
     unmet: {
       code: "insufficient_funds",
       message:
-        "The bounty vault's unreserved finalized balance no longer covers this award",
+        "The award can no longer be reserved. Check the available funds and the recipient’s participation status.",
     },
   };
 }

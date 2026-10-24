@@ -336,7 +336,53 @@ function open(securityBounty: Record<string, unknown> = OPEN_PROGRAM) {
         "SELECT case_id, gross_minor FROM security_award_reservations ORDER BY case_id",
       )
       .all() as { case_id: string; gross_minor: string }[];
+  const ban = (account: Account) => {
+    const projectId = `malicious-${account.githubId}`;
+    const manifest = JSON.stringify({ id: projectId, status: "paused" });
+    const digest = createHash("sha256").update(manifest).digest("hex");
+    sqlite
+      .query(
+        "INSERT INTO project_revisions (project_id,revision,manifest,manifest_sha256,reason,created_at) VALUES (?,1,?,?,'fixture',?)",
+      )
+      .run(projectId, manifest, digest, REVISION_AT);
+    sqlite
+      .query(
+        "INSERT INTO projects (id,status,revision,manifest,manifest_sha256,created_at,updated_at) VALUES (?,'paused',1,?,?,?,?)",
+      )
+      .run(projectId, manifest, digest, REVISION_AT, REVISION_AT);
+    for (const sequence of [1, 2]) {
+      sqlite
+        .query(`INSERT INTO project_enforcements (id,project_id,sequence,action,state_after,appeal_after,reason,evidence_reference,repository_github_id,repository_keys,actor_github_id,actor_github_login,system_issuer,actor_role,decision_source,before_revision,before_manifest_sha256,after_revision,after_manifest_sha256,result,created_at)
+        VALUES (?,?,?,'ban','banned','none','Synthetic malicious finding','private-fixture','123','["example/malicious"]',?,?,?,?,?,1,?,NULL,NULL,'revision_pending',?)`)
+        .run(
+          `enf_${projectId}_${sequence}`,
+          projectId,
+          sequence,
+          sequence === 1 ? null : DISPUTE.githubId,
+          sequence === 1 ? null : DISPUTE.githubLogin,
+          sequence === 1
+            ? JSON.stringify({
+                kind: "vetting-service",
+                keySha256: "a".repeat(64),
+                assessmentId: "vet_fixture",
+                policyVersion: "fixture",
+                rule: "confirmed-malicious",
+              })
+            : null,
+          sequence === 1 ? "vetting-service" : "project-moderator",
+          sequence === 1 ? "standing-rule" : "admin-panel",
+          digest,
+          REVISION_AT,
+        );
+    }
+    sqlite
+      .query(
+        "INSERT INTO project_maintainer_bans (enforcement_id,github_id,github_login) VALUES (?,?,?)",
+      )
+      .run(`enf_${projectId}_2`, account.githubId, account.githubLogin);
+  };
   return {
+    ban,
     sqlite,
     fund,
     call,
@@ -619,6 +665,55 @@ describe("automatic private intake", () => {
 });
 
 describe("discretionary awards", () => {
+  test("a banned researcher keeps funded awards and appeals but receives no new bounty award", async () => {
+    const env = open();
+    const funded = await env.receive(REPORTER, "2026-10-19T09:10:00.000Z");
+    await env.decide(funded, "funded-root");
+    expect((await env.award(funded, "1000000")).status).toBe(200);
+    const pending = await env.receive(REPORTER, "2026-10-19T09:20:00.000Z");
+    await env.decide(pending, "pending-root");
+    env.ban(REPORTER);
+    const refused = await env.award(pending, "1000000");
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toBe("participation_banned");
+    expect(env.reservations()).toEqual([
+      { case_id: funded, gross_minor: "1000000" },
+    ]);
+    const existing = await env.call(
+      REPORTER,
+      "GET",
+      `security-cases/${funded}`,
+    );
+    expect(existing.status).toBe(200);
+    expect(existing.body.case.award?.researcherMinor).toBe("750000");
+    expect(
+      (
+        await env.act(MAINTAINER, pending, {
+          action: "award",
+          decision: "none",
+          reason: "Account ban prevents a new award",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await env.act(REPORTER, pending, {
+          action: "appeal",
+          reason: "Please review this ban",
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  test("a ban that arrives during bounty approval prevents its reservation", async () => {
+    const env = open();
+    const pending = await env.receive(REPORTER, "2026-10-19T09:10:00.000Z");
+    await env.decide(pending, "racing-root");
+    env.setBeforeBatch(() => env.ban(REPORTER));
+    expect((await env.award(pending, "1000000")).status).toBe(409);
+    expect(env.reservations()).toEqual([]);
+  });
+
   test("large program balances keep every minor unit after approved awards", async () => {
     const env = open({
       ...OPEN_PROGRAM,

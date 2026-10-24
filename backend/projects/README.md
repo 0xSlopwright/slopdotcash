@@ -306,10 +306,12 @@ rate limit, and caches each answer for five minutes. The browser never calls
   an owner revision, as the actor or as the named steward
   (`maintainer_banned`). The steward or applicant can still appeal the
   project. A later reinstatement of that project lifts the maintainer ban.
-  The ban does not erase an approved funded award. PRD section 8 also requires
-  blocking all new Slop participation and preserving appeals by responsible
-  accounts after a transfer; the project-write checks alone do not meet that
-  requirement.
+  The ban does not erase an approved funded award. The trace API refuses new
+  contribution runs and progress events. Bounty approval refuses new
+  reservations for a banned researcher, including concurrent bans. PRD
+  section 8 still requires account checks on all other new participation and
+  an appeal path for responsible accounts after a transfer. These checks
+  alone do not complete that requirement.
 - Two standing rules act without a moderator (PRD section 8; see
   `backend/vetting/README.md`). The second distinct active contributor flag
   appends a `quarantine` record whose issuer is `contributor-flags`, and a
