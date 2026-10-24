@@ -13,7 +13,7 @@
 
 These are the exact human steps to deploy the escrow v4 `EscrowFactory` on
 Base, Robinhood Chain and Ethereum, to verify its source, and to upgrade the
-Solana program to the current source and make it immutable.
+Solana program to the current source while retaining owner-controlled upgrades.
 
 **Agents must not run any step in this file.** Agents never hold mainnet keys,
 never sign, and never broadcast. An agent may prepare a command or review a
@@ -94,7 +94,7 @@ forge script script/DeployEthereum.s.sol:DeployEthereum \
 
 Replace the script and RPC for Base or Robinhood Chain. Read the simulated
 `FactoryDeployed` event: chain id, registrar, identity authority, fee
-recipient, and `bindingDelay = 172800`. A second person checks each address
+recipient, and `bindingDelay = 0`. A second person checks each address
 against the recorded decision.
 
 ### 1.3 Broadcast

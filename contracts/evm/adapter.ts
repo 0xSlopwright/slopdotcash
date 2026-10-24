@@ -26,7 +26,7 @@ export type EvmEscrowConfig = EvmRpc & {
   asset: string;
   owner: string;
   /** The identity authority at activation. Later authorities come only from the factory's
-   * registrar-proposed 7-day timelock, so it is not compared with live state. */
+   * registrar-proposed rotation, so it is not compared with live state. */
   identityAuthority: string;
   feeRecipient: string;
   codeSha256: string;
@@ -34,7 +34,7 @@ export type EvmEscrowConfig = EvmRpc & {
   bindingDelaySeconds: string;
   /** The EscrowFactory that created the vault and holds the identity authority. */
   factory: string;
-  /** sha256 of the factory's runtime code: its rotation rules and 7-day delay. */
+  /** sha256 of the factory runtime code; proxy implementation evidence is separate. */
   factoryCodeSha256: string;
   /** The factory registrar, the only account that can propose an authority rotation. */
   registrar: string;
@@ -195,7 +195,7 @@ export function evmVaultKey(input: {
 }
 
 /**
- * codeSha256 and factoryCodeSha256 hash decoded immutable runtime code bytes, not hex text or
+ * codeSha256 and factoryCodeSha256 hash decoded runtime code bytes, not hex text or
  * creation code. The vault must be the one its pinned factory created for its owner, project,
  * asset and purpose, and the factory must have the reviewed registrar, fee recipient, delays and
  * code, so a vault from a factory with other rotation rules fails. The purpose follows the payout
@@ -771,7 +771,7 @@ export function buildCancelBindingCalldata(
     throw new Error("Invalid binding cancellation");
   return `0x92be84fc${word(githubUserId)}${word(bindingVersion)}`;
 }
-/** Permissionless: moves accrued fees to the immutable fee recipient. */
+/** Permissionless: moves accrued fees to the configured fee recipient. */
 export function buildClaimFeesCalldata() {
   return "0xd294f093";
 }
