@@ -78,6 +78,7 @@ import {
 } from "./Presentation";
 import { ProfilePage } from "./ProfilePage";
 import { ProjectLeaderboard } from "./ProjectLeaderboard";
+import { ProjectRiskFlag } from "./ProjectRiskFlag";
 
 export { safeProposalHttpsUrl } from "./lib/project-proposal";
 export {
@@ -951,7 +952,10 @@ export function ProjectParticipation({
     return (
       <section className="section" id="start">
         <h2>Project paused</h2>
-        <p>A Slop admin opens the project after review.</p>
+        <p>
+          Do not install this project's skill or start work while the project is
+          paused.
+        </p>
       </section>
     );
   }
@@ -1503,6 +1507,7 @@ function ProjectPage({
             view={view}
           />
         ) : null}
+        <ProjectRiskFlag key={`flag:${project.id}`} projectId={project.id} />
       </div>
     </main>
   );
@@ -3017,7 +3022,20 @@ function AppContent({ route }: { route: Route }) {
     content = project ? (
       <ProjectPage project={project} retry={retry} state={state} />
     ) : (
-      <NotFound title="Project not found" />
+      <main className="shell route-main">
+        <h1>Project not found</h1>
+        <p>
+          This project is not available in the public registry. If you flagged
+          it, sign in to view or withdraw your own flag.
+        </p>
+        <ProjectRiskFlag
+          key={`flag:${route.projectId}`}
+          projectId={route.projectId ?? ""}
+        />
+        <p>
+          <Link href="/">See open projects</Link>
+        </p>
+      </main>
     );
   } else if (route.kind === "funding-project") {
     const project = findProject(route.projectId ?? "");

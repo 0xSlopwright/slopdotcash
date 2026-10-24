@@ -31,11 +31,25 @@ const MODERATOR_TOKEN = process.env.SLOP_E2E_MODERATOR_TOKEN ?? "";
 const VETTING_PUBLIC_KEY = process.env.SLOP_E2E_VETTING_PUBLIC_KEY ?? "";
 const VETTING_PRIVATE_KEY = process.env.SLOP_E2E_VETTING_PRIVATE_KEY ?? "";
 const GITHUB_FIXTURE = process.env.SLOP_E2E_GITHUB_API_ORIGIN ?? "";
+/** A contributor session from the security roles, used as a flagger. */
+const SECURITY_ACCOUNT = {
+  id: "900000011",
+  login: "e2e-reporter-a",
+  token: (
+    JSON.parse(process.env.SLOP_E2E_SECURITY_TOKENS ?? "{}") as Record<
+      string,
+      string
+    >
+  )["reporter-a"],
+};
 
 function walkthroughOptions() {
-  return process.env.SLOP_E2E_VIDEO === "1"
-    ? { recordVideo: { dir: test.info().outputPath("walkthrough-videos") } }
-    : {};
+  return {
+    viewport: test.info().project.use.viewport,
+    ...(process.env.SLOP_E2E_VIDEO === "1"
+      ? { recordVideo: { dir: test.info().outputPath("walkthrough-videos") } }
+      : {}),
+  };
 }
 
 /** Posts a harmless signed scan result for the project's queued scan. */
@@ -191,6 +205,22 @@ function fixtureProjects() {
       name: `Stored Registry ${words}`,
     },
   };
+}
+
+/** Sets the GitHub account facts that flag eligibility reads. */
+async function setGithubUser(
+  id: string,
+  login: string,
+  createdAt: string,
+  merged: number,
+) {
+  if (!GITHUB_FIXTURE) throw new Error("Missing E2E GitHub fixture");
+  const url = new URL(`${GITHUB_FIXTURE}/__fixture/github-users/${id}`);
+  url.searchParams.set("login", login);
+  url.searchParams.set("createdAt", createdAt);
+  url.searchParams.set("merged", String(merged));
+  const response = await fetch(url, { method: "PUT" });
+  if (response.status !== 204) throw new Error("GitHub fixture refused");
 }
 
 /** Sets what the Slopbot GitHub App reads in the loopback GitHub fixture. */
@@ -880,6 +910,7 @@ test("moderators restrict a project and refuse reinstatement without canonical s
   await adminContext.close();
 
   const moderatorContext = await browser.newContext({
+    viewport: test.info().project.use.viewport,
     recordVideo: { dir: test.info().outputPath("enforcement-video") },
   });
   const moderator = await moderatorContext.newPage();
@@ -1478,4 +1509,165 @@ test("repository lookup failures explain the next action and preserve the draft 
     fullPage: true,
   });
   await context.close();
+});
+
+test("two contributors flag through the form, pause the project and notify moderators @registry", async ({
+  browser,
+}) => {
+  const readPrivate = (page: Page, path: string) =>
+    page.evaluate(async (url) => (await fetch(url)).json(), path);
+  const suffix = test.info().project.name.replace(/-chromium$/u, "");
+  const project = {
+    id: `flag-flow-${suffix}`,
+    repository: `e2e-owner/flag-flow-${suffix}`,
+    name: `Flag flow ${suffix}`,
+  };
+  // Owner decision D3: a flagger's GitHub account is at least 30 days old
+  // and has at least 1 merged pull request in a registered project.
+  await setGithubUser("900000002", "e2e-applicant", "2020-01-01T00:00:00Z", 2);
+  await setGithubUser(
+    SECURITY_ACCOUNT.id,
+    SECURITY_ACCOUNT.login,
+    "2021-06-01T00:00:00Z",
+    1,
+  );
+  await setGithubUser(
+    "900000004",
+    "e2e-moderator",
+    new Date().toISOString(),
+    3,
+  );
+
+  const ownerContext = await browser.newContext(walkthroughOptions());
+  const owner = await ownerContext.newPage();
+  const ownerErrors = observe(owner);
+  await signIn(owner, OWNER_TOKEN);
+  await draftApplication(owner, project);
+  await owner
+    .getByRole("button", { name: "Create project", exact: true })
+    .click();
+  await expect(
+    owner.getByRole("heading", { name: "Project created" }),
+  ).toBeVisible();
+  expect(await listedProject(owner, project.id)).toMatchObject({
+    status: "paused",
+  });
+  const fileFlag = (token: string) =>
+    owner.request.post(`/api/v1/project-flags/${project.id}`, {
+      headers: {
+        origin: new URL(owner.url()).origin,
+        cookie: `__Host-slop_points=${token}`,
+      },
+      data: {
+        category: "other",
+        evidence: "Synthetic fixture: a refused flag must not be recorded.",
+      },
+    });
+  // The project's own owner and a new GitHub account cannot flag.
+  const ownFlag = await fileFlag(OWNER_TOKEN);
+  expect(ownFlag.status()).toBe(403);
+  expect(await ownFlag.json()).toMatchObject({ error: "owner_cannot_flag" });
+  const newAccount = await fileFlag(MODERATOR_TOKEN);
+  expect(newAccount.status()).toBe(403);
+  expect(await newAccount.json()).toMatchObject({
+    error: "flagger_account_too_new",
+  });
+
+  const adminContext = await browser.newContext(walkthroughOptions());
+  const admin = await adminContext.newPage();
+  await signIn(admin, ADMIN_TOKEN);
+
+  const firstContext = await browser.newContext(walkthroughOptions());
+  const first = await firstContext.newPage();
+  const firstErrors = observe(first);
+  await signIn(first, APPLICANT_TOKEN);
+  const firstEvidence =
+    "Synthetic fixture: install.js requests credentials before starting.";
+  await first.goto(`/projects/${project.id}`, { waitUntil: "networkidle" });
+  await first
+    .getByText("Report malicious code in this project", { exact: true })
+    .click();
+  await first.getByRole("textbox", { name: /^Evidence/u }).fill(firstEvidence);
+  await first.getByRole("button", { name: "Flag this project" }).click();
+  await expect(
+    first.getByRole("status").filter({ hasText: "Flag recorded" }),
+  ).toContainText("Your flag counts");
+  const ownPath = `/api/v1/project-flags/${project.id}`;
+  expect(await readPrivate(first, ownPath)).toMatchObject({
+    restriction: "clear",
+    pausedByFlags: false,
+  });
+  await expectAccessible(first);
+  await first.screenshot({
+    path: test.info().outputPath("first-flag.png"),
+    fullPage: true,
+  });
+
+  const secondContext = await browser.newContext(walkthroughOptions());
+  const second = await secondContext.newPage();
+  const secondErrors = observe(second);
+  await signIn(second, SECURITY_ACCOUNT.token);
+  expect(await readPrivate(second, ownPath)).toMatchObject({
+    flag: null,
+  });
+  await second.goto(`/projects/${project.id}`, { waitUntil: "networkidle" });
+  await second
+    .getByText("Report malicious code in this project", { exact: true })
+    .click();
+  await second
+    .getByRole("combobox", { name: /^Risk/u })
+    .selectOption("unsafe-execution");
+  await second
+    .getByRole("textbox", { name: /^Evidence/u })
+    .fill("Synthetic fixture: setup.sh runs an unverified downloaded script.");
+  await second.getByRole("button", { name: "Flag this project" }).click();
+  await expect(
+    second.getByRole("status").filter({ hasText: "Flag recorded" }),
+  ).toContainText("now paused");
+  await expect(second.locator("main")).not.toContainText(firstEvidence);
+  await expect(second.locator("#start")).toContainText(
+    "Do not install this project's skill or start work while the project is paused.",
+  );
+  expect(await readPrivate(second, ownPath)).toMatchObject({
+    restriction: "quarantined",
+    pausedByFlags: true,
+  });
+  expect(
+    (await second.request.get(`/projects/${project.id}/skill.md`)).status(),
+  ).toBe(410);
+  await expectAccessible(second);
+  await second.screenshot({
+    path: test.info().outputPath("second-flag-paused.png"),
+    fullPage: true,
+  });
+
+  await second.reload({ waitUntil: "networkidle" });
+  await second
+    .getByText("Report malicious code in this project", { exact: true })
+    .click({ timeout: 10000 });
+  await expect(
+    second.getByRole("button", { name: "Withdraw my flag" }),
+  ).toBeVisible();
+  await second.getByRole("button", { name: "Withdraw my flag" }).click();
+  await expect(
+    second.getByRole("status").filter({ hasText: "Flag withdrawn" }),
+  ).toBeVisible();
+  expect(await readPrivate(second, ownPath)).toMatchObject({
+    flag: null,
+    restriction: "quarantined",
+  });
+  const inbox = await readPrivate(admin, "/api/v1/notifications");
+  expect(
+    inbox.notifications.filter(
+      (notice: { subject: string; kind: string }) =>
+        notice.subject === project.id && notice.kind === "project_quarantined",
+    ),
+  ).toHaveLength(1);
+  expect(ownerErrors).toEqual([]);
+  expect(firstErrors).toEqual([]);
+  expect(secondErrors).toEqual([]);
+  await ownerContext.close();
+  await firstContext.close();
+  await secondContext.close();
+  await adminContext.close();
 });
