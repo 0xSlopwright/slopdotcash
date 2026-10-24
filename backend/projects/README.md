@@ -310,7 +310,9 @@ rate limit, and caches each answer for five minutes. The browser never calls
   contribution runs and progress events. Bounty approval refuses new
   reservations for a banned researcher, including concurrent bans. Private
   intake refuses new submissions and sends, but keeps reconciliation of a
-  report already received by GitHub. PRD
+  report already received by GitHub. Banned accounts cannot file new project
+  flags, including during a concurrent ban. They can read and withdraw
+  existing flags. PRD
   section 8 still requires account checks on all other new participation and
   an appeal path for responsible accounts after a transfer. These checks
   alone do not complete that requirement.
