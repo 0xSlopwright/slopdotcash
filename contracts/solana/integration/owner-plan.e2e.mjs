@@ -30,6 +30,7 @@ import { awardIdFor, ownerPlan } from "../scripts/owner-plan.mjs";
 import {
   configFees,
   configIdentity,
+  configRotation,
   ensureConfig,
   expectedDeployment,
 } from "./deployment.mjs";
@@ -452,6 +453,23 @@ test("unsigned owner plans initialize, fund, reserve, veto and withdraw on actua
       await program.account.project.fetch(project, "finalized")
     ).pendingIdentityAuthority.toBase58(),
     next.toBase58(),
+  );
+  await sendAndConfirmTransaction(
+    provider.connection,
+    new Transaction().add(
+      anchor.web3.SystemProgram.transfer({
+        fromPubkey: owner.publicKey,
+        toPubkey: configRotation.publicKey,
+        lamports: 1_000_000,
+      }),
+    ),
+    [owner],
+  );
+  await execute("confirm-rotation", {}, configRotation);
+  assert.equal(
+    (await program.account.project.fetch(project, "finalized"))
+      .rotationConfirmed,
+    true,
   );
   await execute("cancel-rotation");
   assert.equal(

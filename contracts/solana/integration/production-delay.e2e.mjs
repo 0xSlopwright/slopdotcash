@@ -16,6 +16,7 @@ import {
   configAddress,
   configFees,
   configIdentity,
+  configRotation,
   expectedDeployment,
   initializeConfig,
 } from "./deployment.mjs";
@@ -59,6 +60,14 @@ test("only the upgrade authority initializes the Config, exactly once", async ()
     initializeConfig(program, { fees: configIdentity.publicKey }),
     /InvalidIdentity/,
   );
+  await assert.rejects(
+    initializeConfig(program, { rotation: configFees.publicKey }),
+    /InvalidIdentity/,
+  );
+  await assert.rejects(
+    initializeConfig(program, { rotation: configIdentity.publicKey }),
+    /InvalidIdentity/,
+  );
   // The human runbook path: config-plan builds the unsigned transaction and the
   // upgrade authority signs it.
   const reviewed = {
@@ -97,6 +106,10 @@ test("only the upgrade authority initializes the Config, exactly once", async ()
     configIdentity.publicKey.toBase58(),
   );
   assert.equal(config.feeRecipient.toBase58(), configFees.publicKey.toBase58());
+  assert.equal(
+    config.rotationAuthority.toBase58(),
+    configRotation.publicKey.toBase58(),
+  );
   // No second initialization, and no update instruction exists.
   await assert.rejects(initializeConfig(program), /already in use|0x0/);
   await assert.rejects(

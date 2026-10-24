@@ -138,13 +138,34 @@ function prepare(input: string, expected: string): EvidenceBundle {
     visibilityGaps: bundle.visibilityGaps.map((gap) => text(gap)),
   };
 }
+/**
+ * The reviewed endpoints of each transport: the provider's own API, or the
+ * same transport through Surplus Intelligence with the operator's
+ * `SURPLUS_API_KEY` (owner decision D16: Surplus `claude-opus-5.5` first,
+ * Surplus `gpt-6.1-sol` only for ambiguous or high-risk results).
+ */
+const ENDPOINTS: Record<
+  ScannerProfile["transport"],
+  Record<string, "openai" | "anthropic" | "surplus">
+> = {
+  "openai-responses": {
+    "https://api.openai.com/v1/responses": "openai",
+    "https://api.surplusintelligence.ai/openai/v1/responses": "surplus",
+  },
+  "anthropic-messages": {
+    "https://api.anthropic.com/v1/messages": "anthropic",
+    "https://api.surplusintelligence.ai/anthropic/v1/messages": "surplus",
+  },
+};
+/** The provider an approved profile reaches; null for an unapproved endpoint. */
+function providerOf(profile: ScannerProfile) {
+  return Object.hasOwn(ENDPOINTS[profile.transport] ?? {}, profile.endpoint)
+    ? ENDPOINTS[profile.transport][profile.endpoint]
+    : null;
+}
 function validateProfile(profile: ScannerProfile) {
-  const endpoints = {
-    "openai-responses": "https://api.openai.com/v1/responses",
-    "anthropic-messages": "https://api.anthropic.com/v1/messages",
-  };
   if (
-    profile.endpoint !== endpoints[profile.transport] ||
+    providerOf(profile) === null ||
     !["astra", "opus"].includes(profile.reviewer)
   )
     throw new Error("Unapproved provider endpoint");
@@ -197,8 +218,7 @@ async function reviewOne(
   const result: ScannerEvidence = {
     review: {
       reviewer: profile.reviewer,
-      provider:
-        profile.transport === "openai-responses" ? "openai" : "anthropic",
+      provider: providerOf(profile) ?? "unapproved",
       model: profile.model,
       promptPolicyRevision: contract.revision,
       inputManifestSha256: inputSha,
@@ -226,9 +246,18 @@ async function reviewOne(
       signal: AbortSignal.timeout(120_000),
       headers: {
         "content-type": "application/json",
+        // Surplus takes its account key as a bearer token on both transports.
         ...(openai
           ? { authorization: `Bearer ${profile.apiKey}` }
-          : { "x-api-key": profile.apiKey, "anthropic-version": "2023-06-01" }),
+          : providerOf(profile) === "surplus"
+            ? {
+                authorization: `Bearer ${profile.apiKey}`,
+                "anthropic-version": "2023-06-01",
+              }
+            : {
+                "x-api-key": profile.apiKey,
+                "anthropic-version": "2023-06-01",
+              }),
       },
       body: JSON.stringify(
         openai
@@ -249,6 +278,9 @@ async function reviewOne(
             },
       ),
     });
+    // Surplus marks a response that its deadline cut short; the JSON and
+    // stop reason can still look complete.
+    const truncated = response.headers.get("x-si-truncated") === "1";
     const raw = await limitedResponse(response);
     result.responseSha256 = digest(raw);
     const body = record(JSON.parse(raw));
@@ -284,6 +316,7 @@ async function reviewOne(
         rateCardSha256: digest(JSON.stringify(rates)),
       };
     if (
+      truncated ||
       body.model !== profile.model ||
       (openai
         ? body.status !== "completed" ||
@@ -315,15 +348,28 @@ async function reviewOne(
         throw new Error("Missing complete review text");
       output = text(blocks[0].text, 1024 * 1024);
     } else {
+      if (!Array.isArray(body.content))
+        throw new Error("Unexpected provider output");
+      const blocks = body.content.map(record);
+      const answers = blocks.filter((block) => block.type === "text");
+      // Messages may include reasoning blocks before the final answer. Only
+      // the answer is a review; tool calls and unknown blocks still fail.
       if (
-        !Array.isArray(body.content) ||
-        body.content.length !== 1 ||
-        record(body.content[0]).type !== "text"
+        answers.length !== 1 ||
+        blocks.some(
+          (block) =>
+            !["text", "thinking", "redacted_thinking"].includes(
+              String(block.type),
+            ),
+        )
       )
         throw new Error("Unexpected provider output");
-      output = text(record(body.content[0]).text, 1024 * 1024);
+      output = text(answers[0].text, 1024 * 1024);
     }
-    const review = record(JSON.parse(output));
+    // Some completed model replies wrap the single JSON answer in a code
+    // fence. Accept only that whole-answer wrapper, never surrounding prose.
+    const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```$/u.exec(output.trim());
+    const review = record(JSON.parse(fenced?.[1] ?? output));
     const coverage = record(review.coverage);
     if (
       Object.keys(coverage).length !== contract.areas.length ||

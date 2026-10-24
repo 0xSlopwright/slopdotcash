@@ -35,6 +35,7 @@ import {
   configAddress,
   configFees,
   configIdentity,
+  configRotation,
   ensureConfig,
   expectedDeployment,
 } from "./deployment.mjs";
@@ -168,13 +169,21 @@ const rotation = {
   propose: (next, signer = payer) =>
     program.methods
       .proposeAuthorityRotation(next)
-      .accountsStrict({ owner: signer.publicKey, project })
+      .accountsStrict({
+        owner: signer.publicKey,
+        project,
+        config: configAddress(program.programId),
+      })
       .signers(signer === payer ? [] : [signer])
       .rpc(),
-  confirm: (signer = feeOwner) =>
+  confirm: (signer = configRotation) =>
     program.methods
       .confirmAuthorityRotation()
-      .accountsStrict({ feeRecipient: signer.publicKey, project })
+      .accountsStrict({
+        rotationAuthority: signer.publicKey,
+        project,
+        config: configAddress(program.programId),
+      })
       .signers(signer === payer ? [] : [signer])
       .rpc(),
   cancel: (signer = payer) =>
@@ -664,6 +673,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
   );
   await assert.rejects(rotation.execute(), /RotationUnconfirmed/);
   await assert.rejects(rotation.confirm(authority), /ConstraintHasOne/);
+  await assert.rejects(rotation.confirm(feeOwner), /ConstraintHasOne/);
   await rotation.cancel();
   await assert.rejects(rotation.execute(), /NoRotationPending/);
   await rotation.propose(nextAuthority.publicKey);
@@ -962,7 +972,7 @@ test("veto cap is waived during a confirmed authority rotation and resumes after
     (await program.account.walletBinding.fetch(binding(206))).vetoCount;
   assert.equal(await vetoCount(), 1);
   // The key is stolen and binds the attacker's wallet; the owner proposes a rotation.
-  // Until the fee recipient confirms, the cap still applies: two vetoes left.
+  // Until the rotation authority confirms, the cap still applies: two vetoes left.
   await rotation.propose(thirdAuthority.publicKey);
   await bind(206, attacker, 1);
   await vetoBinding(206, 2);

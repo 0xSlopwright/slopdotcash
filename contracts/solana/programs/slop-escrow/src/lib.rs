@@ -41,27 +41,33 @@ const FEE_DIVISOR: u64 = 50;
 #[program]
 pub mod slop_escrow {
     use super::*;
-    // Writes the deployment-wide identity authority and fee recipient once. Only the
+    // Writes the separate identity, fee and rotation authorities once. Only the
     // program's upgrade authority can sign it, so it must run before the upgrade authority
     // is revoked. No instruction changes or closes the Config afterwards.
     pub fn initialize_config(
         ctx: Context<InitializeConfig>,
         identity_authority: Pubkey,
         fee_recipient: Pubkey,
+        rotation_authority: Pubkey,
     ) -> Result<()> {
         require!(
             identity_authority != Pubkey::default()
                 && fee_recipient != Pubkey::default()
-                && identity_authority != fee_recipient,
+                && rotation_authority != Pubkey::default()
+                && identity_authority != fee_recipient
+                && rotation_authority != identity_authority
+                && rotation_authority != fee_recipient,
             EscrowError::InvalidIdentity
         );
         let c = &mut ctx.accounts.config;
         c.identity_authority = identity_authority;
         c.fee_recipient = fee_recipient;
+        c.rotation_authority = rotation_authority;
         c.bump = ctx.bumps.config;
         emit!(ConfigInitialized {
             identity_authority,
-            fee_recipient
+            fee_recipient,
+            rotation_authority
         });
         Ok(())
     }
@@ -81,7 +87,8 @@ pub mod slop_escrow {
                 && identity_authority != ctx.accounts.owner.key()
                 && identity_authority != fee_recipient
                 && fee_recipient != ctx.accounts.owner.key()
-                && fee_recipient != ctx.accounts.project.key(),
+                && fee_recipient != ctx.accounts.project.key()
+                && ctx.accounts.owner.key() != ctx.accounts.config.rotation_authority,
             EscrowError::InvalidIdentity
         );
         // L-3: a new project uses only the identity authority and fee recipient that the
@@ -119,7 +126,8 @@ pub mod slop_escrow {
             next != Pubkey::default()
                 && next != p.identity_authority
                 && next != p.owner
-                && next != p.fee_recipient,
+                && next != p.fee_recipient
+                && next != ctx.accounts.config.rotation_authority,
             EscrowError::InvalidIdentity
         );
         require!(
@@ -138,7 +146,7 @@ pub mod slop_escrow {
         });
         Ok(())
     }
-    // The fee recipient is the second fixed party; its confirmation is required before execution.
+    // The independent rotation authority confirms; fee-conversion keys have no such power.
     pub fn confirm_authority_rotation(ctx: Context<ConfirmAuthorityRotation>) -> Result<()> {
         let p = &mut ctx.accounts.project;
         require!(
@@ -1035,11 +1043,15 @@ pub struct ProposeAuthorityRotation<'info> {
     pub owner: Signer<'info>,
     #[account(mut,has_one=owner)]
     pub project: Box<Account<'info, Project>>,
+    #[account(seeds=[b"config"],bump=config.bump)]
+    pub config: Account<'info, Config>,
 }
 #[derive(Accounts)]
 pub struct ConfirmAuthorityRotation<'info> {
-    pub fee_recipient: Signer<'info>,
-    #[account(mut,has_one=fee_recipient)]
+    pub rotation_authority: Signer<'info>,
+    #[account(seeds=[b"config"],bump=config.bump,has_one=rotation_authority)]
+    pub config: Account<'info, Config>,
+    #[account(mut)]
     pub project: Box<Account<'info, Project>>,
 }
 #[derive(Accounts)]
@@ -1112,13 +1124,14 @@ pub struct MonthlyAllocation {
     /// The owner returned the uncommitted remainder after the window closed.
     pub released: bool,
 }
-/// The deployment-wide identity authority and fee recipient, written once by
+/// The separate identity, fee and rotation authorities, written once by
 /// `initialize_config` and never changed.
 #[account]
 #[derive(InitSpace)]
 pub struct Config {
     pub identity_authority: Pubkey,
     pub fee_recipient: Pubkey,
+    pub rotation_authority: Pubkey,
     pub bump: u8,
 }
 #[account]
@@ -1247,6 +1260,7 @@ pub struct Deposited {
 pub struct ConfigInitialized {
     pub identity_authority: Pubkey,
     pub fee_recipient: Pubkey,
+    pub rotation_authority: Pubkey,
 }
 #[error_code]
 pub enum EscrowError {
@@ -1288,9 +1302,9 @@ pub enum EscrowError {
     RotationPending,
     #[msg("No identity authority rotation is proposed")]
     NoRotationPending,
-    #[msg("The fee recipient already confirmed this rotation")]
+    #[msg("The rotation authority already confirmed this rotation")]
     RotationConfirmed,
-    #[msg("The fee recipient has not confirmed this rotation")]
+    #[msg("The rotation authority has not confirmed this rotation")]
     RotationUnconfirmed,
     #[msg("The rotation delay has not passed")]
     RotationNotReady,

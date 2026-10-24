@@ -24,8 +24,13 @@ import type {
 import {
   assignLeaderboardRanks,
   paymentReviewSnapshot,
+  penaltyProjectOf,
   SCORE_CAPS,
 } from "./leaderboard";
+import {
+  type PayoutExclusionRelationship,
+  payoutExclusionFor,
+} from "./payout-exclusions.mjs";
 import {
   findProject,
   type ProjectDefinition,
@@ -33,6 +38,7 @@ import {
 } from "./projects.mjs";
 import { resolveRewardCapMinor } from "./reward-cap.mjs";
 import type { ProjectRunReceipt } from "./run-receipts";
+import { penaltyDeductions } from "./score-penalties";
 
 export const MAX_CREDITED_TOKENS_PER_OUTCOME = 1_000_000;
 const SHARE_PARTS_PER_MILLION = 1_000_000;
@@ -66,6 +72,10 @@ export interface ProjectContributor {
   projectedMinor: string | null;
   projectedDisplayMinor: string | null;
   projectedSharePartsPerMillion: number | null;
+  /** Applied Slopbot debit thirds in this project and cycle. */
+  penaltyThirds: number;
+  /** An explicit payout exclusion for this cycle; the score is kept. */
+  payoutExclusion: PayoutExclusionRelationship | null;
 }
 
 export interface ReceiptConflict {
@@ -548,25 +558,42 @@ export function createProjectView(
       : null;
   for (const leader of paymentView?.leaders ?? [])
     actors.set(leader.actor.id, leader.actor);
+  // The same debits as the snapshot, limited to this project and cycle.
+  const deductions = penaltyDeductions(
+    ledger,
+    (snapshot.penalties ?? []).filter(
+      (penalty) =>
+        repositoryIds.has(penalty.repository) &&
+        Date.parse(penalty.occurredAt) >= from &&
+        Date.parse(penalty.occurredAt) < to,
+    ),
+    penaltyProjectOf,
+  ).byActor;
 
   const leaders = [...actors.values()].map<ProjectContributor>((actor) => {
     const events = ledger.filter((event) => event.actor.id === actor.id);
     const usage = usageForActor(actor.id, events, runs);
-    const rawThirds = events.reduce(
+    const earnedThirds = events.reduce(
       (total, event) => total + (event.scoreThirds ?? event.points * 3),
       0,
     );
-    const weightedThirdBasisPoints = events.reduce(
+    const penaltyThirds = deductions.get(actor.id) ?? 0;
+    const rawThirds = earnedThirds - penaltyThirds;
+    const earnedWeight = events.reduce(
       (total, event) =>
         total +
         (event.scoreThirds ?? event.points * 3) *
           (10_000 + (event.evidenceBonusBasisPoints ?? 0)),
       0,
     );
+    // A debit lowers the payment weight in the same proportion as the score.
+    const weightedThirdBasisPoints =
+      penaltyThirds === 0
+        ? earnedWeight
+        : Math.floor((earnedWeight * rawThirds) / earnedThirds);
+    const payoutExclusion = payoutExclusionFor(project, cycleId, actor.id);
     const computeBonus =
-      rawThirds === 0
-        ? 0
-        : Math.floor(weightedThirdBasisPoints / rawThirds) - 10_000;
+      earnedThirds === 0 ? 0 : Math.floor(earnedWeight / earnedThirds) - 10_000;
     const score = Math.floor(rawThirds / 3);
     const points = {
       "merged-pull-request": 0,
@@ -584,7 +611,8 @@ export function createProjectView(
       scoreThirds: rawThirds,
       simulatedMinor: null,
       simulatedDisplayMinor: null,
-      adjustedWeight: weightedThirdBasisPoints,
+      // An excluded weight leaves the pool instead of diluting other shares.
+      adjustedWeight: payoutExclusion ? 0 : weightedThirdBasisPoints,
       computeBonusBasisPoints: computeBonus,
       points,
       acceptedOutcomeCount: events.length,
@@ -601,6 +629,8 @@ export function createProjectView(
       projectedMinor: null,
       projectedDisplayMinor: null,
       projectedSharePartsPerMillion: null,
+      penaltyThirds,
+      payoutExclusion,
     };
   });
   leaders.sort(

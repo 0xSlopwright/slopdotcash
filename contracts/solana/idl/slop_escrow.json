@@ -517,9 +517,20 @@
       "discriminator": [3, 247, 66, 156, 194, 171, 127, 86],
       "accounts": [
         {
-          "name": "fee_recipient",
+          "name": "rotation_authority",
           "signer": true,
-          "relations": ["project"]
+          "relations": ["config"]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
         },
         {
           "name": "project",
@@ -727,6 +738,10 @@
         {
           "name": "fee_recipient",
           "type": "pubkey"
+        },
+        {
+          "name": "rotation_authority",
+          "type": "pubkey"
         }
       ]
     },
@@ -844,6 +859,17 @@
         {
           "name": "project",
           "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -1242,12 +1268,12 @@
     {
       "code": 6019,
       "name": "RotationConfirmed",
-      "msg": "The fee recipient already confirmed this rotation"
+      "msg": "The rotation authority already confirmed this rotation"
     },
     {
       "code": 6020,
       "name": "RotationUnconfirmed",
-      "msg": "The fee recipient has not confirmed this rotation"
+      "msg": "The rotation authority has not confirmed this rotation"
     },
     {
       "code": 6021,
@@ -1516,7 +1542,7 @@
     {
       "name": "Config",
       "docs": [
-        "The deployment-wide identity authority and fee recipient, written once by",
+        "The separate identity, fee and rotation authorities, written once by",
         "`initialize_config` and never changed."
       ],
       "type": {
@@ -1528,6 +1554,10 @@
           },
           {
             "name": "fee_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "rotation_authority",
             "type": "pubkey"
           },
           {
@@ -1548,6 +1578,10 @@
           },
           {
             "name": "fee_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "rotation_authority",
             "type": "pubkey"
           }
         ]

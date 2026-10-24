@@ -73,10 +73,10 @@ the adapter checks the project's delay against the reviewed manifest.
 ### Deployment Config (review finding L-3)
 
 The program has one `Config` PDA (seeds `["config"]`) with the deployment-wide
-`identity_authority` and `fee_recipient`. `initialize_config(identity_authority,
-fee_recipient)` creates it once. Only the program's upgrade authority can sign
+`identity_authority`, `fee_recipient` and `rotation_authority`.
+`initialize_config(identity_authority, fee_recipient, rotation_authority)` creates it once. Only the program's upgrade authority can sign
 it: the instruction requires the program's ProgramData account and checks that
-its `upgrade_authority_address` is the signer. The two keys must be distinct
+its `upgrade_authority_address` is the signer. The three keys must be distinct
 and non-default. No instruction changes or closes the Config. After the upgrade
 authority is revoked, nobody can create it, so the human runbook creates it
 before `solana program set-upgrade-authority --final`.
@@ -84,9 +84,9 @@ before `solana program set-upgrade-authority --final`.
 `initialize` takes the Config as its last account. It rejects an identity
 authority or fee recipient that differs from the Config (`ConfigMismatch`), and
 keeps the earlier separation checks. Each project still rotates its own
-identity authority (below). The owner proposes, the pinned fee recipient
+identity authority (below). The owner proposes, the pinned rotation authority
 confirms, and the timelock applies. Thus every identity authority a new project
-ever has is either the pinned one or one that the pinned Slop fee recipient
+ever has is either the pinned one or one that the pinned rotation authority
 confirmed. A new project always starts with the Config identity authority, even
 after other projects rotate away from it. If that key is ever compromised, each
 new project must rotate at once after `initialize`.
@@ -109,7 +109,7 @@ timelock. The owner calls `propose_authority_rotation(next)`, which records the
 candidate and an effective time `rotation_delay` seconds later (set at
 `initialize`; production uses at least 7 days, and the adapter checks the
 project's delay against the reviewed manifest) and emits
-`AuthorityRotationProposed`. The fee recipient, the second fixed party, calls
+`AuthorityRotationProposed`. The rotation authority, the second fixed party, calls
 `confirm_authority_rotation`. The owner can cancel its own pending proposal
 with `cancel_authority_rotation`. Once confirmed and past the effective time,
 anyone can call `execute_authority_rotation`, which emits `AuthorityRotated`;
@@ -118,25 +118,25 @@ execution the current authority keeps binding; afterwards only the new one
 can. Binding PDAs derive from the project and actor, not the current
 authority, so every existing binding stays valid and `pay` keeps finding it.
 Each project rotates independently: no other project's authority can write this
-project's bindings. The next authority must differ from the owner, the fee
-recipient and the current authority.
+project's bindings. The next authority must differ from the owner, the fee recipient, the
+rotation authority and the current identity authority.
 
 ### Key recovery runbook
 
-Who acts: the project owner key and the fee recipient key, together. The
-identity key is a hot service key and is never used for recovery. Slop holds
-the identity key and, as fee recipient, the confirming key; the owner alone
-starts every rotation.
+Who acts: the project owner key and the independent rotation-authority key,
+together. The identity key and fee-conversion key cannot confirm recovery.
+The program Config pins all three keys separately. Keep the rotation key out
+of both hot Workers; the owner alone starts every rotation.
 
 Identity key lost: the authority can no longer co-sign, so awards to actors
 without an active binding wait; nothing is lost and no reserve moves. The
-owner proposes the replacement, the fee recipient confirms, and anyone
+owner proposes the replacement, the rotation authority confirms, and anyone
 executes after the delay. Existing bindings keep paying throughout.
 Contributors whose bindings were pending or missing co-sign their next binding
 with the new authority.
 
 Identity key compromised: the owner proposes a replacement immediately and
-the fee recipient confirms it. Execute after the existing rotation period.
+the rotation authority confirms it. Execute after the existing rotation period.
 The owner may veto unexpected unpaid bindings within their review windows,
 but the veto must execute before payment. The confirmed proposal waives the
 veto count; it neither pauses payments nor disables the current key early.
@@ -147,9 +147,9 @@ rotation cannot reverse payments or replace bindings by itself.
 Owner key lost: awards, withdrawals and rotation proposals for that project
 stop (other parties can still deposit, but nobody can commit or withdraw the
 deposits); reserved awards still pay to active bindings. Fee recipient key
-lost: fee transfers to its token accounts still work, but no rotation can be
-confirmed, so the identity key of that project becomes fixed. There is no
-owner or fee recipient change in this version.
+lost: fee transfers still work, but the received tokens cannot be swept.
+Rotation-authority key lost: no new identity rotation can be confirmed.
+There is no owner, fee-recipient or rotation-authority change in this version.
 
 The owner can commit an award to any GitHub actor, including an account the
 owner controls. Because the withdrawal fee equals the award fee (repository
@@ -329,11 +329,13 @@ uses the same instruction list, skips other projects' instructions, processes
 at most 100 transactions per run, and atomically checkpoints each verified chunk.
 Backward discovery pages persist across runs, so a large backlog does not reset
 discovery to the newest signature. Each reviewed configuration includes owner,
-identity authority at activation, rotation delay, fee recipient, token mint,
+identity authority at activation, independent rotation authority, rotation
+delay, fee recipient, token mint,
 network domain, program loader and code digest. The adapter also reads the Config PDA. It refuses the deployment when the
 Config is missing, or unless the project fee recipient, the Config fee
 recipient and the reviewed `feeRecipient` are equal and the reviewed
-`identityAuthority` is the Config identity authority. For `pay` it reads the
+`identityAuthority` is the Config identity authority. It also requires the
+reviewed `rotationAuthority` to equal the separate Config rotation authority. For `pay` it reads the
 mint at finalized commitment (classic SPL layout, decimals at byte 44, owned by
 the Token program) and requires each transfer's decimals to equal the mint's.
 The result fields `grossMicro`, `netMicro` and `feeMicro` keep their names; they
@@ -391,10 +393,11 @@ one combined `reserved`, so `reservedPrincipal`, `reservedFees` and
 `accruedFees` are null.
 
 `owner-plan.mjs` creates unsigned initialize/deposit/commit/veto/withdraw,
-propose-rotation and cancel-rotation transactions; a veto may name an
+propose-rotation, confirm-rotation and cancel-rotation transactions; a veto may name an
 unpaid award (`obligationId`) to use its commit-delay window. `initialize`
 refuses reviewed authorities that differ from the Config, and passes the Config
-account. `deposit` takes an optional `depositor`; the depositor then pays the
+account. `confirm-rotation` requires the independent rotation-authority signer,
+not the owner or fee wallet. `deposit` takes an optional `depositor`; the depositor then pays the
 fee, signs, and funds the deposit from its associated token account.
 
 `config-plan.mjs plan` creates the unsigned `initialize_config` transaction for
@@ -424,3 +427,9 @@ for local integration and unsigned operator tools. Its upstream dependency audit
 has unresolved advisories; lifecycle scripts are disabled and the bigint code
 uses its JavaScript implementation. The hosted verifier and signer use the root
 Noble dependencies and do not import the Anchor/web3/SPL Node SDK packages.
+
+The separated-role Config is 105 bytes. This layout requires a new program
+deployment; an earlier 73-byte Config is not migrated or accepted by the
+adapter. Prepare `rotationAuthority` in the reviewed configuration and keep
+its seed only in the owner-controlled signing environment. It must differ
+from the fee wallet, identity authority, project owner and vault.

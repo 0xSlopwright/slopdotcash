@@ -411,6 +411,7 @@ export async function handlePaymentsApi(
               "owner",
               "identityAuthority",
               "feeRecipient",
+              "rotationAuthority",
               "codeSha256",
               "upgradeAuthority",
               "networkDomain",
