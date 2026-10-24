@@ -4642,6 +4642,20 @@ small {
   font-weight: 600;
 }
 
+.admin-actions label.admin-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+
+.admin-actions .admin-checkbox input {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  padding: 0;
+}
+
 .admin-actions textarea,
 .admin-editor textarea,
 .admin-editor input {

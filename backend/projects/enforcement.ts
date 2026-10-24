@@ -58,6 +58,11 @@ export type ProjectRestriction = {
   openedAtRevision: number | null;
   repositoryGithubId: string | null;
   repositoryKeys: string[];
+  /**
+   * Maintainers banned with the project while it stays banned (PRD section
+   * 8). An independent reinstatement of the project ends their ban.
+   */
+  bannedMaintainers: GithubActor[];
   /** The next record's sequence number. */
   nextSequence: number;
   records: ProjectEnforcement[];
@@ -81,6 +86,7 @@ export function projectRestriction(
     openedAtRevision: null,
     repositoryGithubId: null,
     repositoryKeys: [],
+    bannedMaintainers: [],
     nextSequence: records.length + 1,
     records,
   };
@@ -106,10 +112,18 @@ export function projectRestriction(
     restriction.appeal = record.appealAfter;
     restriction.repositoryGithubId = record.repositoryGithubId;
     restriction.repositoryKeys = record.repositoryKeys;
+    for (const maintainer of record.maintainerBan ?? [])
+      if (
+        !restriction.bannedMaintainers.some(
+          (banned) => banned.githubId === maintainer.githubId,
+        )
+      )
+        restriction.bannedMaintainers.push(maintainer);
     if (record.stateAfter === "clear") {
       restriction.since = null;
       restriction.restrictedBy = [];
       restriction.openedAtRevision = null;
+      restriction.bannedMaintainers = [];
     }
   }
   return restriction;
@@ -122,6 +136,26 @@ export function activeRestrictions(
   return [...new Set(records.map((record) => record.projectId))]
     .map((projectId) => projectRestriction(projectId, records))
     .filter((restriction) => restriction.state !== "clear");
+}
+
+/**
+ * The banned project whose ban names this GitHub account as its maintainer,
+ * or null (PRD section 8). A banned maintainer cannot create, publish or
+ * change a project, or be named as the steward of a new one.
+ */
+export function maintainerBanOf(
+  githubId: string,
+  records: ProjectEnforcement[],
+): ProjectRestriction | null {
+  return (
+    activeRestrictions(records).find(
+      (restriction) =>
+        restriction.state === "banned" &&
+        restriction.bannedMaintainers.some(
+          (maintainer) => maintainer.githubId === githubId,
+        ),
+    ) ?? null
+  );
 }
 
 /** Repository identities a manifest claims: the GitHub id and every path. */

@@ -60,6 +60,11 @@ export function ProjectEnforcementPanel({
   const [action, setAction] = useState<EnforcementAction>(actions[0]);
   const [reason, setReason] = useState("");
   const [evidence, setEvidence] = useState("");
+  const [banMaintainer, setBanMaintainer] = useState(false);
+  // PRD section 8: a moderator may ban the maintainer with the project.
+  const maintainerBanAvailable =
+    action === "ban" ||
+    (action === "deny_reinstatement" && enforcement.state === "banned");
   const [preview, setPreview] = useState<EnforcementPreview | null>(null);
   const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +75,7 @@ export function ProjectEnforcementPanel({
     evidenceReference: evidence.trim(),
     expectedRevision: project.revision,
     expectedSequence: enforcement.nextSequence,
+    ...(maintainerBanAvailable && banMaintainer ? { banMaintainer: true } : {}),
   });
   const path = (mode: "enforcement" | "enforcement-preview") =>
     `admin/projects/${encodeURIComponent(project.id)}/${mode}`;
@@ -134,6 +140,17 @@ export function ProjectEnforcementPanel({
             <dd>{formatTime(enforcement.since)} UTC</dd>
           </div>
         ) : null}
+        {enforcement.bannedMaintainers.length > 0 ? (
+          <div>
+            <dt>Banned maintainers</dt>
+            <dd>
+              {enforcement.bannedMaintainers
+                .map((actor) => `@${actor.githubLogin}`)
+                .join(", ")}{" "}
+              (cannot create, publish or change a project)
+            </dd>
+          </div>
+        ) : null}
         {enforcement.restrictedBy.length > 0 ? (
           <div>
             <dt>Restricted by</dt>
@@ -177,6 +194,15 @@ export function ProjectEnforcementPanel({
                 Reason: {record.reason}
                 <br />
                 Evidence: {record.evidenceReference}
+                {record.maintainerBan ? (
+                  <>
+                    <br />
+                    Maintainers banned:{" "}
+                    {record.maintainerBan
+                      .map((actor) => `@${actor.githubLogin}`)
+                      .join(", ")}
+                  </>
+                ) : null}
               </li>
             ))}
           </ol>
@@ -229,6 +255,18 @@ export function ProjectEnforcementPanel({
               value={evidence}
             />
           </label>
+          {maintainerBanAvailable ? (
+            <label className="admin-checkbox">
+              <input
+                checked={banMaintainer}
+                disabled={preview !== null}
+                onChange={(event) => setBanMaintainer(event.target.checked)}
+                type="checkbox"
+              />
+              Also ban the maintainer (@{project.manifest.steward.github.login}{" "}
+              and the account that listed the project)
+            </label>
+          ) : null}
           {error ? (
             <p className="form-error" role="alert">
               <CircleAlert aria-hidden="true" /> {error}
@@ -291,6 +329,16 @@ export function ProjectEnforcementPanel({
                 <div>
                   <dt>Result</dt>
                   <dd>{RESULT_LABELS[preview.result]}</dd>
+                </div>
+                <div>
+                  <dt>Maintainer ban</dt>
+                  <dd>
+                    {preview.maintainerBan.length === 0
+                      ? "None"
+                      : preview.maintainerBan
+                          .map((actor) => `@${actor.githubLogin}`)
+                          .join(", ")}
+                  </dd>
                 </div>
               </dl>
               {preview.pendingReason ? (

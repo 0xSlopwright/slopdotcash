@@ -130,6 +130,12 @@ export type ProjectEnforcement = {
   result: EnforcementResult;
   /** Exact scan and malicious findings covered by this independent decision. */
   vettingReview?: { assessmentId: string; maliciousAssessmentIds: string[] };
+  /**
+   * PRD section 8: the maintainers a moderator banned with the project (its
+   * steward and the account that listed it). Present only on a moderator's
+   * ban or denied appeal that leaves the project banned.
+   */
+  maintainerBan?: GithubActor[];
   createdAt: string;
 };
 
@@ -148,6 +154,8 @@ export interface ProjectEnforcementState {
   appeal: AppealState;
   since: string | null;
   restrictedBy: GithubActor[];
+  /** Maintainers banned with the project while it stays banned. */
+  bannedMaintainers: GithubActor[];
   nextSequence: number;
   /** The restriction holds but its paused, retired revision has not landed. */
   revisionPending: boolean;
@@ -167,6 +175,8 @@ export interface EnforcementPreview {
   appealAfter: ProjectEnforcementState["appeal"];
   result: EnforcementResult;
   pendingReason: string | null;
+  /** Maintainers this record bans with the project; empty when none. */
+  maintainerBan: GithubActor[];
   revision: {
     before: number;
     after: number | null;

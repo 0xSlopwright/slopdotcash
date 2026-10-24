@@ -56,6 +56,50 @@ The flow for one queued assessment:
    ([EVIDENCE.md](../../backend/vetting/EVIDENCE.md)), then publish once with
    `publishResult` ([PUBLICATION.md](PUBLICATION.md)).
 
+### Scan service
+
+`run.ts` runs this flow automatically. One pass:
+
+1. calls the signed `POST /api/v1/vetting/refresh`, so Slop queues every
+   changed project;
+2. reads the signed queue;
+3. for each pending assessment, in queue order, acquires the exact inputs
+   (`acquireQueuedAssessment`), inspects the repository source and the queued
+   skill template, runs the primary review and, only when
+   `composeScanResult` reports `needsSpecialist`, the specialist review;
+4. registers and uploads the private report, the reviewed inventory, every
+   dependency lock and every named artifact under the scan run through the
+   signed evidence routes;
+5. publishes the result once with `publishResult`.
+
+A service failure publishes nothing: an unavailable source, a failed primary
+or specialist review, or a refused evidence upload leaves the assessment
+pending, and the next pass retries it. A published attempt is journaled, so a
+later pass never sends it again; an uncertain or rejected attempt waits for
+an operator. The pass removes the acquired bytes after each assessment. It
+never executes repository content, never confirms malice and never releases
+a quarantined artifact.
+
+The source-inventory gaps of the historical secure-VM contract that this scan
+covers itself are not carried into the result: the skill template is read from
+the queue, dependency manifests and lockfiles are checked, and the scan runs
+its own model review. Submodule, link and LFS gaps still keep `source`
+partial.
+
+The operator runs it on a private host:
+
+```sh
+SURPLUS_API_KEY=... SLOP_VETTING_SIGNING_JWK='{"kty":"OKP","crv":"Ed25519","x":"...","d":"..."}' \
+  bun workers/vetting/run.ts /private/scan-service.json --every 300
+```
+
+The configuration file names `origin`, `policyVersion`, `workDirectory`,
+`journalDirectory`, and the `primary` and `specialist` profiles without
+keys. Owner decision D16 pins the primary to the Surplus Anthropic Messages
+endpoint with `claude-opus-5.5` and the specialist to the Surplus OpenAI
+Responses endpoint with `gpt-6.1-sol`. Both use `SURPLUS_API_KEY`. The output
+lists safe assessment identities and states only.
+
 ### Cache and rescans
 
 The inventory digest covers executable content only. Documentation that is
@@ -88,7 +132,17 @@ specialist or the isolated analysis releases it.
 
 ```sh
 bun test scripts/vetting-bounded-scan.test.ts scripts/vetting-scan-flags.test.ts
+bun test scripts/vetting-scan-service.test.ts
 ```
+
+`vetting-scan-service.test.ts` runs complete scan passes against the real
+vetting, evidence and project handlers on the real migrations, with local
+workerd R2, a real local Git repository served through the GitHub Git API
+format, and a local server that answers in the Surplus Anthropic Messages and
+OpenAI Responses formats. It proves that a provider outage leaves the scan
+pending and publishes nothing, that the next pass clears the project with one
+primary review and lets activation proceed, that an ambiguous primary review
+runs the specialist once, and that a failed specialist publishes nothing.
 
 The worker tests use harmless fixtures and a real local HTTP server that
 answers in the Anthropic Messages format. They check surface coverage, threat
@@ -142,8 +196,8 @@ VM.
 
 | Item | Status |
 | --- | --- |
-| Scanner service deployment | Not deployed by this source. It needs its Ed25519 key, the public key in `VETTING_RESULT_PUBLIC_KEYS`, a provider profile and the evidence store policy. |
-| Provider and model | Owner decision D16: Surplus `claude-opus-5.5` is the primary model and Surplus `gpt-6.1-sol` is the specialist, only for ambiguous or high-risk artifacts. The operator pins both in the provider profile; the source has no default. |
+| Scanner service deployment | `run.ts` is the service source; it is not deployed by this source. It needs a private host, its Ed25519 key, the public key in `VETTING_RESULT_PUBLIC_KEYS`, `SURPLUS_API_KEY` and the evidence store policy. |
+| Provider and model | Owner decision D16: Surplus `claude-opus-5.5` is the primary model and Surplus `gpt-6.1-sol` is the specialist, only for ambiguous or high-risk results. Scanner profiles accept the Surplus endpoints. The operator pins both in the configuration file; the source has no default. |
 | Isolated runner | Owner decision D16: Cloudflare Sandboxes/Containers, one disposable sandbox per risky artifact, with `enableInternet: false` set explicitly and no secrets. Adapting this worker from the Bubblewrap host to that runner is follow-up work. |
 | Specialist authority | Owner decision D3: moderators confirm malice and release quarantined artifacts. A model label alone cannot; a signed malicious result restricts the project until a moderator decides. |
 | Live acceptance | Clean, incomplete, malicious, flag and reinstatement paths on staging with the real services. |
