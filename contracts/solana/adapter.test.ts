@@ -8,7 +8,7 @@ import {
   solanaVaultAddress,
 } from "./adapter";
 
-const PROGRAM = "4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj";
+const PROGRAM = "7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ";
 const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const PROJECT = solanaBase58(new Uint8Array(32).fill(7));
 const MINT_BYTES = new Uint8Array(32).fill(9);

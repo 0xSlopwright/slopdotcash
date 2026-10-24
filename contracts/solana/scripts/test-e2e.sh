@@ -15,7 +15,7 @@ trap 'if [[ -n "$validator_pid" ]]; then kill "$validator_pid" 2>/dev/null || tr
 # the upgrade authority is revoked.
 upgrade_authority=$(solana-keygen pubkey "$ANCHOR_WALLET")
 start_validator() {
-  solana-test-validator --reset --quiet --ledger .local/ledger --rpc-port 18899 --faucet-port 18940 --dynamic-port-range 18901-18930 --upgradeable-program 4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj target/deploy/slop_escrow.so "$upgrade_authority" "$@" >.local/validator.log 2>&1 &
+  solana-test-validator --reset --quiet --ledger .local/ledger --rpc-port 18899 --faucet-port 18940 --dynamic-port-range 18901-18930 --upgradeable-program 7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ target/deploy/slop_escrow.so "$upgrade_authority" "$@" >.local/validator.log 2>&1 &
   validator_pid=$!
   for attempt in $(seq 1 40); do
     if solana --url "$ANCHOR_PROVIDER_URL" cluster-version >/dev/null 2>&1; then break; fi

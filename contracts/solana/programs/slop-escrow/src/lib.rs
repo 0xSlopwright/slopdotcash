@@ -5,7 +5,7 @@ use anchor_lang::solana_program::sysvar::instructions::{
 use anchor_spl::associated_token::get_associated_token_address;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, TransferChecked};
 use solana_sha256_hasher::hashv;
-declare_id!("4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj");
+declare_id!("7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ");
 /// Bounds on the binding delay. Below one hour the owner cannot react; above 30 days a
 /// binding or a committed award waits too long to be useful. The local end-to-end suite
 /// builds with the `short-delay-for-tests` feature so it can wait the delay out in
