@@ -16,6 +16,7 @@ import { parseNotificationsResponse } from "../../src/lib/notifications";
 import { createProjectView } from "../../src/lib/project-view";
 import { findProject } from "../../src/lib/projects.mjs";
 import {
+  AFTER_NOVEMBER,
   GENERATED_AT,
   PENALIZED_AUTHOR,
   penaltyScoreInput,
@@ -43,6 +44,8 @@ const MAINTAINER = 43;
 const OUTSIDER = 44;
 const MODERATOR = 50;
 const BODY = "Buy cheap followers today at our shop.";
+/** When Slopbot closes the fixture pull request; GitHub's closedAt agrees. */
+const CLOSED_AT = "2026-11-10T00:00:00.000Z";
 
 type Run = {
   inbox(actor: number, moderators?: string, path?: string): Promise<Response>;
@@ -752,7 +755,9 @@ test("a recorded debit reaches the published score once and an upheld appeal res
       novemberPenalty: 0,
     });
 
+    setSystemTime(new Date(CLOSED_AT));
     expect(await run.review()).toBe("closed (spam)");
+    setSystemTime(new Date(GENERATED_AT));
     const debited = await publish();
     expect(
       debited.penalties?.map(({ id, category, debitThirds, occurredAt }) => ({
@@ -766,7 +771,7 @@ test("a recorded debit reaches the published score once and an upheld appeal res
         id: "PR_local:penalty",
         category: "spam",
         debitThirds: 3,
-        occurredAt: "2026-11-10T00:00:00.000Z",
+        occurredAt: CLOSED_AT,
       },
     ]);
     // The 3-third debit stops at November's 1 third; October is untouched.
@@ -801,6 +806,48 @@ test("a recorded debit reaches the published score once and an upheld appeal res
       november: 1,
       novemberPenalty: 0,
     });
+  });
+});
+
+// PRD section 7: a debit is recorded once and reduces only that UTC month.
+// The author reopens the closed pull request and it closes again in December;
+// GitHub's closedAt moves, but the published debit keeps Slopbot's recorded
+// November month.
+test("a reopen and later close keeps the debit in its recorded month", async () => {
+  setSystemTime(new Date(CLOSED_AT));
+  await closedItem(async (run) => {
+    expect(await run.review()).toBe("closed (spam)");
+    expect(
+      run.sql("SELECT period, recorded_at FROM slopbot_penalties"),
+    ).toEqual([{ period: "2026-11", recorded_at: CLOSED_AT }]);
+
+    const publishedAt = AFTER_NOVEMBER;
+    setSystemTime(new Date(publishedAt));
+    const input = penaltyScoreInput(
+      await fetchProjectPenalties("asi", run.feed),
+      publishedAt,
+    );
+    const [closed] = input.closedUnmergedPullRequests ?? [];
+    if (!closed) throw new Error("fixture closed pull request missing");
+    const reclosedAt = "2026-12-01T00:00:00.000Z";
+    input.closedUnmergedPullRequests = [
+      { ...closed, updatedAt: reclosedAt, closedAt: reclosedAt },
+    ];
+    const snapshot = createLeaderboardSnapshot(input);
+
+    expect(snapshot.penalties?.map((penalty) => penalty.occurredAt)).toEqual([
+      CLOSED_AT,
+    ]);
+    const month = (cycleId: string) =>
+      createProjectView(snapshot, "asi", cycleId).leaders.find(
+        (entry) => entry.actor.id === PENALIZED_AUTHOR.id,
+      );
+    // November's 1-third merge minimum absorbs the debit; December has none.
+    expect(month("2026-11")).toMatchObject({
+      scoreThirds: 0,
+      penaltyThirds: 1,
+    });
+    expect(month("2026-12")).toBeUndefined();
   });
 });
 
