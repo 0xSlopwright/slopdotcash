@@ -41,27 +41,33 @@ const FEE_DIVISOR: u64 = 50;
 #[program]
 pub mod slop_escrow {
     use super::*;
-    // Writes the deployment-wide identity authority and fee recipient once. Only the
+    // Writes the separate identity, fee and rotation authorities once. Only the
     // program's upgrade authority can sign it, so it must run before the upgrade authority
     // is revoked. No instruction changes or closes the Config afterwards.
     pub fn initialize_config(
         ctx: Context<InitializeConfig>,
         identity_authority: Pubkey,
         fee_recipient: Pubkey,
+        rotation_authority: Pubkey,
     ) -> Result<()> {
         require!(
             identity_authority != Pubkey::default()
                 && fee_recipient != Pubkey::default()
-                && identity_authority != fee_recipient,
+                && rotation_authority != Pubkey::default()
+                && identity_authority != fee_recipient
+                && rotation_authority != identity_authority
+                && rotation_authority != fee_recipient,
             EscrowError::InvalidIdentity
         );
         let c = &mut ctx.accounts.config;
         c.identity_authority = identity_authority;
         c.fee_recipient = fee_recipient;
+        c.rotation_authority = rotation_authority;
         c.bump = ctx.bumps.config;
         emit!(ConfigInitialized {
             identity_authority,
-            fee_recipient
+            fee_recipient,
+            rotation_authority
         });
         Ok(())
     }
@@ -81,7 +87,8 @@ pub mod slop_escrow {
                 && identity_authority != ctx.accounts.owner.key()
                 && identity_authority != fee_recipient
                 && fee_recipient != ctx.accounts.owner.key()
-                && fee_recipient != ctx.accounts.project.key(),
+                && fee_recipient != ctx.accounts.project.key()
+                && ctx.accounts.owner.key() != ctx.accounts.config.rotation_authority,
             EscrowError::InvalidIdentity
         );
         // L-3: a new project uses only the identity authority and fee recipient that the
@@ -119,7 +126,8 @@ pub mod slop_escrow {
             next != Pubkey::default()
                 && next != p.identity_authority
                 && next != p.owner
-                && next != p.fee_recipient,
+                && next != p.fee_recipient
+                && next != ctx.accounts.config.rotation_authority,
             EscrowError::InvalidIdentity
         );
         require!(
@@ -138,7 +146,7 @@ pub mod slop_escrow {
         });
         Ok(())
     }
-    // The fee recipient is the second fixed party; its confirmation is required before execution.
+    // The independent rotation authority confirms; fee-conversion keys have no such power.
     pub fn confirm_authority_rotation(ctx: Context<ConfirmAuthorityRotation>) -> Result<()> {
         let p = &mut ctx.accounts.project;
         require!(
@@ -443,14 +451,9 @@ pub mod slop_escrow {
         });
         Ok(())
     }
-    // The owner stops the latest binding for this project before it pays: while it waits
-    // out its own delay, or while an unpaid award to the actor (passed as `obligation`) is
-    // still inside its commit delay. A binding that has paid cannot be vetoed, and the
-    // owner can veto at most MAX_VETOES_BETWEEN_PAYMENTS times between two payments to the
-    // actor, except while a pending authority rotation has the fee recipient's confirmation:
-    // then every veto is allowed and none is counted, because the owner cannot open that
-    // window alone and needs an unbounded number of vetoes to outlast a stolen key's notice
-    // period. A new authority binding (next version) is required afterwards.
+    // The owner may veto the latest unpaid binding during its review period or the named award's
+    // commit period. Payment is immediately eligible after a verified bind if the award has matured:
+    // a veto must execute before payment. The cap is waived during a confirmed authority rotation.
     pub fn veto_binding(ctx: Context<VetoBinding>, actor_id: u64, version: u64) -> Result<()> {
         let p = &ctx.accounts.project;
         let b = &ctx.accounts.binding;
@@ -465,7 +468,7 @@ pub mod slop_escrow {
             None => false,
         };
         require!(
-            now < activates_at(b, p)? || commit_window,
+            now < binding_review_ends_at(b, p)? || commit_window,
             EscrowError::BindingActive
         );
         let rotation_pending =
@@ -484,9 +487,7 @@ pub mod slop_escrow {
         });
         Ok(())
     }
-    // Pays an award once its commit delay has passed, only to this project's latest
-    // binding, once that binding's delay has passed and the owner has not vetoed it. While
-    // a newer binding waits or after its veto, no earlier binding pays.
+    // Pays a matured award to the latest verified, unvetoed binding without another wallet wait.
     pub fn pay(ctx: Context<Pay>, expected_version: u64) -> Result<()> {
         let p = &ctx.accounts.project;
         let a = &ctx.accounts.obligation;
@@ -498,7 +499,6 @@ pub mod slop_escrow {
             EscrowError::AwardPending
         );
         require!(b.version > 0, EscrowError::StaleBinding);
-        require!(now >= activates_at(b, p)?, EscrowError::BindingPending);
         // A veto address can only be created by veto_binding; an empty system account
         // proves the owner did not veto that binding version.
         require!(unvetoed(&ctx.accounts.veto), EscrowError::BindingVetoed);
@@ -796,7 +796,7 @@ fn valid_delay(binding_delay: i64) -> bool {
 fn valid_rotation_delay(rotation_delay: i64) -> bool {
     (MIN_BINDING_DELAY..=MAX_ROTATION_DELAY).contains(&rotation_delay)
 }
-fn activates_at(b: &WalletBinding, p: &Project) -> Result<i64> {
+fn binding_review_ends_at(b: &WalletBinding, p: &Project) -> Result<i64> {
     add_i64(b.bound_at, p.binding_delay)
 }
 fn add_i64(a: i64, b: i64) -> Result<i64> {
@@ -1003,11 +1003,15 @@ pub struct ProposeAuthorityRotation<'info> {
     pub owner: Signer<'info>,
     #[account(mut,has_one=owner)]
     pub project: Box<Account<'info, Project>>,
+    #[account(seeds=[b"config"],bump=config.bump)]
+    pub config: Account<'info, Config>,
 }
 #[derive(Accounts)]
 pub struct ConfirmAuthorityRotation<'info> {
-    pub fee_recipient: Signer<'info>,
-    #[account(mut,has_one=fee_recipient)]
+    pub rotation_authority: Signer<'info>,
+    #[account(seeds=[b"config"],bump=config.bump,has_one=rotation_authority)]
+    pub config: Account<'info, Config>,
+    #[account(mut)]
     pub project: Box<Account<'info, Project>>,
 }
 #[derive(Accounts)]
@@ -1078,13 +1082,14 @@ pub struct MonthlyAllocation {
     pub committed: u64,
     pub total: u64,
 }
-/// The deployment-wide identity authority and fee recipient, written once by
+/// The separate identity, fee and rotation authorities, written once by
 /// `initialize_config` and never changed.
 #[account]
 #[derive(InitSpace)]
 pub struct Config {
     pub identity_authority: Pubkey,
     pub fee_recipient: Pubkey,
+    pub rotation_authority: Pubkey,
     pub bump: u8,
 }
 #[account]
@@ -1207,6 +1212,7 @@ pub struct Deposited {
 pub struct ConfigInitialized {
     pub identity_authority: Pubkey,
     pub fee_recipient: Pubkey,
+    pub rotation_authority: Pubkey,
 }
 #[error_code]
 pub enum EscrowError {
@@ -1248,9 +1254,9 @@ pub enum EscrowError {
     RotationPending,
     #[msg("No identity authority rotation is proposed")]
     NoRotationPending,
-    #[msg("The fee recipient already confirmed this rotation")]
+    #[msg("The rotation authority already confirmed this rotation")]
     RotationConfirmed,
-    #[msg("The fee recipient has not confirmed this rotation")]
+    #[msg("The rotation authority has not confirmed this rotation")]
     RotationUnconfirmed,
     #[msg("The rotation delay has not passed")]
     RotationNotReady,

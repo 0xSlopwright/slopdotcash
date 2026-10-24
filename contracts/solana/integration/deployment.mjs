@@ -24,7 +24,12 @@ const localUpgradeAuthority = () =>
  * deployed ProgramData code digest and upgrade authority printed by
  * scripts/deploy-testnet.sh.
  */
+export const configRotation = Keypair.fromSeed(
+  sha256("slop-e2e-config-rotation-authority"),
+);
+
 export const expectedDeployment = {
+  rotationAuthority: configRotation.publicKey.toBase58(),
   codeSha256:
     process.env.SLOP_E2E_CODE_SHA256 ??
     createHash("sha256")
@@ -60,16 +65,19 @@ export function initializeConfig(
     authority,
     identity = configIdentity.publicKey,
     fees = configFees.publicKey,
+    rotation = configRotation.publicKey,
   } = {},
 ) {
   const signer = authority?.publicKey ?? program.provider.wallet.publicKey;
-  const call = program.methods.initializeConfig(identity, fees).accountsStrict({
-    authority: signer,
-    config: configAddress(program.programId),
-    program: program.programId,
-    programData: programDataAddress(program.programId),
-    systemProgram: SystemProgram.programId,
-  });
+  const call = program.methods
+    .initializeConfig(identity, fees, rotation)
+    .accountsStrict({
+      authority: signer,
+      config: configAddress(program.programId),
+      program: program.programId,
+      programData: programDataAddress(program.programId),
+      systemProgram: SystemProgram.programId,
+    });
   return (authority ? call.signers([authority]) : call).rpc();
 }
 
@@ -86,7 +94,8 @@ export async function ensureConfig(program) {
   const config = await program.account.config.fetch(address);
   if (
     !config.identityAuthority.equals(configIdentity.publicKey) ||
-    !config.feeRecipient.equals(configFees.publicKey)
+    !config.feeRecipient.equals(configFees.publicKey) ||
+    !config.rotationAuthority.equals(configRotation.publicKey)
   )
     throw new Error("Deployment Config does not use the fixture keys");
   return address;

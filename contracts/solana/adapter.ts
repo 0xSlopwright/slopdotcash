@@ -18,12 +18,14 @@ export interface SolanaEscrowConfig {
   mint: string;
   owner: string;
   /** The identity authority at activation. Later authorities come only from the program's
-   * owner-proposed, fee-recipient-confirmed, timelocked rotation, so it is not compared with
+   * owner-proposed, rotation-authority-confirmed, timelocked rotation, so it is not compared with
    * live state. */
   identityAuthority: string;
   /** Must equal both the fee recipient pinned in the program's Config PDA and the project's
    * stored fee recipient. */
   feeRecipient: string;
+  /** Independent confirmation key, never held by the fee converter. */
+  rotationAuthority: string;
   codeSha256: string;
   upgradeAuthority: string | null;
   /** Reviewed delay, in seconds, before a wallet binding can pay in this project. */
@@ -43,8 +45,8 @@ export const BINDING_SIZE = 169;
 export const OBLIGATION_SIZE = 145;
 export const OBLIGATION_DISCRIMINATOR = "a8ce8d6a584caca7";
 export const PROJECT_DISCRIMINATOR = "cda8bdcab5f78e13";
-/** Config size: discriminator, identity authority, fee recipient and bump. */
-export const CONFIG_SIZE = 73;
+/** Config size: discriminator, identity authority, fee recipient, rotation authority and bump. */
+export const CONFIG_SIZE = 105;
 /** Classic SPL Token mint size. */
 const MINT_SIZE = 82;
 type Obj = Record<string, unknown>;
@@ -316,7 +318,8 @@ export async function verifySolanaDeployment(
   if (
     pubkey(pinned, 40) !== config.feeRecipient ||
     pubkey(project, 136) !== pubkey(pinned, 40) ||
-    pubkey(pinned, 8) !== config.identityAuthority
+    pubkey(pinned, 8) !== config.identityAuthority ||
+    pubkey(pinned, 72) !== config.rotationAuthority
   )
     throw new Error("Project authorities differ from the pinned escrow Config");
   const view = new DataView(project.buffer, project.byteOffset);

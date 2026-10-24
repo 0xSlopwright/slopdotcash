@@ -35,6 +35,7 @@ import {
   configAddress,
   configFees,
   configIdentity,
+  configRotation,
   ensureConfig,
   expectedDeployment,
 } from "./deployment.mjs";
@@ -168,13 +169,21 @@ const rotation = {
   propose: (next, signer = payer) =>
     program.methods
       .proposeAuthorityRotation(next)
-      .accountsStrict({ owner: signer.publicKey, project })
+      .accountsStrict({
+        owner: signer.publicKey,
+        project,
+        config: configAddress(program.programId),
+      })
       .signers(signer === payer ? [] : [signer])
       .rpc(),
-  confirm: (signer = feeOwner) =>
+  confirm: (signer = configRotation) =>
     program.methods
       .confirmAuthorityRotation()
-      .accountsStrict({ feeRecipient: signer.publicKey, project })
+      .accountsStrict({
+        rotationAuthority: signer.publicKey,
+        project,
+        config: configAddress(program.programId),
+      })
       .signers(signer === payer ? [] : [signer])
       .rpc(),
   cancel: (signer = payer) =>
@@ -346,7 +355,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     pay("late", 102, lateDestination),
     /AccountNotInitialized/,
   );
-  // Let both awards pass their commit delay so the binding delay is what rejects.
+  // Let both awards pass their commitment period before binding.
   await activate();
   // The authority alone cannot bind a wallet it does not hold: without the
   // destination's signature the transaction never verifies.
@@ -356,7 +365,6 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
     bind(101, recipient, 0, network, { signer: recipient, cosigners: [] }),
   );
   await bind(101, recipient);
-  await assert.rejects(pay("first", 101, destination), /BindingPending/);
   await activate();
   await assert.rejects(vetoBinding(101, 1), /BindingActive/);
   await assert.rejects(bind(101, late), /StaleBinding/);
@@ -433,7 +441,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
   await assert.rejects(withdraw(1), /InsufficientFreeBalance/);
   // A stolen authority key rebinds actor 102 to a thief, who must expose a
   // wallet by co-signing. Only the owner can veto it, and only while it is
-  // pending; the vetoed version never pays.
+  // within its review period and unpaid; the vetoed version never pays.
   const thief = Keypair.generate();
   const thiefDestination = await createAccount(
     provider.connection,
@@ -460,9 +468,8 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
   await assert.rejects(pay("late", 102, thiefDestination, 2), /BindingVetoed/);
   assert.equal(await balance(thiefDestination), 0n);
   await bind(102, recipient, 2);
-  // Actor 102 has never been paid, so nothing pays while version 3 is pending.
-  await assert.rejects(pay("late", 102, destination, 2), /BindingPending/);
-  await activate();
+  // The verified successor is immediately active; version 2 cannot pay.
+  await assert.rejects(pay("late", 102, destination, 2), /StaleBinding/);
   await assert.rejects(pay("late", 102, destination, 2), /StaleBinding/);
   // A third party pays with unrelated token movements in the same transaction.
   // The adapter must still verify this payment from its own instruction.
@@ -666,6 +673,7 @@ test("actual SPL escrow lifecycle, late wallet claim, reserve and authority atta
   );
   await assert.rejects(rotation.execute(), /RotationUnconfirmed/);
   await assert.rejects(rotation.confirm(authority), /ConstraintHasOne/);
+  await assert.rejects(rotation.confirm(feeOwner), /ConstraintHasOne/);
   await rotation.cancel();
   await assert.rejects(rotation.execute(), /NoRotationPending/);
   await rotation.propose(nextAuthority.publicKey);
@@ -752,27 +760,25 @@ test("commit delay, rotation freezes the earlier wallet, veto cap, bounded delay
   let state201 = await program.account.walletBinding.fetch(binding(201));
   assert.equal(state201.paidVersion.toString(), "2");
   assert.equal(state201.vetoCount, 0);
-  // M-2: while a rotation waits out its delay, and after the owner vetoes it, no
-  // payment goes to the earlier wallet. A rotation away from a compromised wallet
+  // M-2: a verified successor immediately invalidates the earlier wallet.
+  // If the owner vetoes it before payment, neither version can pay. A rotation away from a compromised wallet
   // therefore freezes payment to it at once.
   await commit("m2", 201, 10_000_000);
   await activate();
   await bind(201, walletB, 2);
-  await assert.rejects(pay("m2", 201, ataB, 3), /BindingPending/);
-  await assert.rejects(pay("m2", 201, ataA, 2), /BindingPending/);
+  await assert.rejects(pay("m2", 201, ataA, 2), /StaleBinding/);
   await vetoBinding(201, 3);
   await activate();
   await assert.rejects(pay("m2", 201, ataB, 3), /BindingVetoed/);
   await assert.rejects(pay("m2", 201, ataA, 2), /BindingVetoed/);
   // The veto cap applies between payments too: after the paid version, the owner
-  // can veto three rotations, and the fourth pays once its delay passes.
+  // can veto three rotations, and the fourth is immediately payable.
   await bind(201, walletB, 3);
   await vetoBinding(201, 4);
   await bind(201, walletB, 4);
   await vetoBinding(201, 5);
   await bind(201, walletB, 5);
   await assert.rejects(vetoBinding(201, 6), /VetoLimit/);
-  await activate();
   await assert.rejects(pay("m2", 201, ataA, 2), /StaleBinding/);
   await pay("m2", 201, ataB, 6);
   await pay("m1b", 201, ataB, 6);
@@ -966,7 +972,7 @@ test("veto cap is waived during a confirmed authority rotation and resumes after
     (await program.account.walletBinding.fetch(binding(206))).vetoCount;
   assert.equal(await vetoCount(), 1);
   // The key is stolen and binds the attacker's wallet; the owner proposes a rotation.
-  // Until the fee recipient confirms, the cap still applies: two vetoes left.
+  // Until the rotation authority confirms, the cap still applies: two vetoes left.
   await rotation.propose(thirdAuthority.publicKey);
   await bind(206, attacker, 1);
   await vetoBinding(206, 2);
