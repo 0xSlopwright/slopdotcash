@@ -34,6 +34,7 @@ type Run = {
   model: (category: Category, confidence: number) => void;
   pauseNextReopen: () => { entered: Promise<void>; release: () => void };
   loseNextReopenResponse: () => void;
+  closeByMaintainer: () => void;
   writes: string[];
   comments: string[];
   labels: string[];
@@ -304,6 +305,9 @@ async function closedItem(cb: (run: Run) => Promise<void>) {
   };
   try {
     await cb({
+      closeByMaintainer: () => {
+        state = "closed";
+      },
       loseNextReopenResponse: () => {
         loseReopenResponse = true;
       },
@@ -444,6 +448,14 @@ test("a spam close debits 3 thirds once; an accepted uphold draft reopens the it
     expect(
       await run.deliver(run.job("human_reopen", { senderId: MAINTAINER })),
     ).toBe("human_reopen");
+    // A maintainer closes the item again. A later command from anyone does
+    // not resume the completed decision or reopen the item.
+    run.closeByMaintainer();
+    expect(
+      await run.deliver(
+        run.job("appeal_command", { command: "accept", senderId: OUTSIDER }),
+      ),
+    ).toBe("appeal already resolved");
     expect(run.writes).toHaveLength(writes);
     expect(run.sql(PENALTY)).toEqual([
       {

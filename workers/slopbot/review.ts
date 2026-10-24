@@ -1865,14 +1865,26 @@ export async function applyAppealCommand(
   if (appeal.resolved_at !== null) {
     // Resume the recorded decision, including external writes interrupted
     // before their response arrived. Never apply this retry's new command.
-    await finishAppeal(
-      env,
-      job,
-      session,
-      appeal,
-      appeal.resolution!,
-      appeal.resolved_by!,
-    );
+    // The resolution comment is the last write: once it is recorded, the
+    // decision is complete, and a later command must not reopen an item
+    // that a maintainer closed again.
+    if (
+      appeal.resolution !== null &&
+      appeal.resolved_by !== null &&
+      !(await store.hasRecordedAction(
+        db,
+        `${appeal.appeal_key}:resolution`,
+        "comment",
+      ))
+    )
+      await finishAppeal(
+        env,
+        job,
+        session,
+        appeal,
+        appeal.resolution,
+        appeal.resolved_by,
+      );
     return "appeal already resolved";
   }
   if (job.command === "accept" || job.command === "reject") {
