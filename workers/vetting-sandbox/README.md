@@ -1,0 +1,61 @@
+# Private artifact execution
+
+This service implements the disposable Cloudflare runner required by PRD
+sections 8 and 11. It runs one exact artifact in a new sandbox. It has no
+public Worker URL or route. The authenticated vetting service must reach it
+through a private service binding.
+
+The service checks the artifact digest before sending its bytes to the
+sandbox. It supplies no provider key, signing key, storage binding or user
+session to the sandbox. Internet access is disabled on the sandbox class.
+The artifact runs as UID/GID 65534, with no supplementary groups, no new
+privileges and an explicit environment. An inherited seccomp filter blocks
+socket creation and io_uring even when the local Docker network is available.
+If that filter cannot load, the artifact does not start. CPU, process, file and output limits
+bound the execution. The sandbox is destroyed after each request, including
+failed requests. A cleanup failure must not be counted as a completed run.
+
+The response is private execution evidence. Standard output and error are
+base64-encoded exact bytes, bounded to 64 KiB each. An output limit or timeout
+is explicit and does not establish complete coverage. No response declares
+an artifact safe, releases quarantine, grants project clearance or makes a
+moderator decision. Preserve the response in the existing private evidence
+store before relying on it.
+
+Supported commands are fixed: shell, Python, Node.js or a native executable.
+The service does not accept shell fragments, extra arguments, URLs, arbitrary
+paths or environment variables. Missing dependencies and blocked network
+requests are execution failures or coverage gaps, not clean results.
+
+SDK 0.12.14 is pinned to work with the repository's Wrangler 4.129.1.
+The new native Container execution API needs a newer Wrangler; adopting it
+would require a separate release-toolchain change. The 0.x API remains
+published in the vendor's SDK documentation.
+
+The Pages route `/api/v1/vetting/sandbox` uses the existing Ed25519 request
+signature. GET reads the private Worker's health; POST forwards only the
+verified body. Credentials and cookies are not forwarded. `workers/vetting/sandbox.ts` signs
+controller requests, verifies the returned artifact identity and output limits,
+and returns the exact response bytes for private evidence retention. Production and
+staging bind different Worker names. Preview deployments have no binding.
+The checked-in release workflow deploys the selected Worker before Pages.
+
+To run the local integration workflow, start the Worker with
+`bunx wrangler dev --config workers/vetting-sandbox/wrangler.toml --port 8896`.
+Then run `SLOP_SANDBOX_TEST_URL=http://127.0.0.1:8896 bun run test:vetting:sandbox`.
+Docker must be running. The workflow sends signed requests through the real
+Pages handler and executes harmless probes in disposable containers. It checks
+authorization, digests, identity, filesystem isolation, network blocking,
+output limits and timeout cleanup. Local Docker results are not proof of the
+Cloudflare production boundary. The full workflow requires native Linux
+seccomp support; x86 emulation on an ARM host can reject the filter, in which
+case the runner must refuse execution. The native Linux CI job must pass.
+The existing release quality gate requires this job before staging or production
+can deploy.
+
+This implementation is not deployed. Scanner-controller integration and real
+Cloudflare execution qualification remain required before it is operational.
+No new credential is needed: the bridge reuses `VETTING_RESULT_PUBLIC_KEYS`.
+Keep scanned output private. Never use the local developer server to execute
+untrusted artifacts; its Docker privileges differ from Cloudflare's isolated
+VM boundary.

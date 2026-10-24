@@ -180,6 +180,7 @@ type Env = {
   ASSETS?: { fetch(request: Request): Promise<Response> };
   /** Secure-VM vetting service Ed25519 public keys (base64, comma separated). */
   VETTING_RESULT_PUBLIC_KEYS?: string;
+  VETTING_SANDBOX?: { fetch(request: Request): Promise<Response> };
   VETTING_EVIDENCE?: R2Bucket;
   VETTING_EVIDENCE_POLICY?: string;
   /** Optional RPC overrides for reward token decimals verification. */
@@ -714,6 +715,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   });
   if (flagsResponse !== null) return flagsResponse;
   const vettingResponse = await handleVettingApi(context.request, {
+    sandbox: context.env.VETTING_SANDBOX,
     refreshSetup: (projectId) =>
       refreshProjectSetup(context.request, projectDependencies, projectId),
     evidence,
