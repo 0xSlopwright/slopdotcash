@@ -594,8 +594,7 @@ contains it is on `development`:
 
 4. Fund `0x31B87d13f9091bC3b8A5cb6F45C8b3cB99Ed6d70` with a small Base ETH
    balance. The attester signs and pays gas for each destination binding
-   transaction. It never pays out an award. See the limit below: nothing
-   uses this balance until a binding trigger exists.
+   transaction. It never pays out an award.
 
 5. Optional: run the readiness report of section 3.3. Enter the RPC map at a
    silent prompt so that it is not in the command or the shell history:
@@ -622,11 +621,158 @@ monthly authorization failure, which shows in the Cloudflare Workers logs of
 (`./node_modules/.bin/wrangler tail --config "$CONFIG"`). No alerting service
 watches it.
 
-Limit: on Base no Slop service sends a destination binding request to the
-attester. The test stack's relayer sends it (section "Restricted test payout
-execution" in `workers/payment-executor/README.md`), and a mainnet has no
-Slop relayer. Until a reviewed change adds the trigger, a Base payout needs
-an operator decision on how bindings are submitted.
+Destination bindings: the attester's five-minute cron run binds them. After
+it indexes the finalized vault events, it finds each reserved award on a
+pinned vault whose contributor has a current signed wallet authorization and
+a stored destination binding signature that is valid for at least 10 more
+minutes. For each one it checks the award, the GitHub actor, the claim
+digest and the wallet signature again, then submits `bindDestination` with
+the identity key. It journals the signed transaction before the first
+broadcast. When a broadcast result is unknown, the next run broadcasts the
+same bytes again and never signs a second binding for that version. A
+failed binding makes the cron run fail in the Worker logs. Slop does not
+submit the payout: `pay` is permissionless (step 8 below).
+
+#### Base test payout, owner sequence
+
+This is the full sequence for one 10 USDC test award. Agents must not run
+these steps. `$RPC` is your Base RPC URL, `--account owner` is your Foundry
+keystore for the owner wallet, and `$ACTOR` is the contributor's numeric
+GitHub ID. Run the commands from a clean checkout of `development`.
+
+```sh
+FACTORY=0xe51AbF8c6Dbb3Ca6E9AD09F2dc6EF141d7364aAb
+USDC=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+OWNER=<your owner wallet address>
+PROJECT=<the Slop project ID>
+PROJECT_ID=$(cast format-bytes32-string "$PROJECT")
+```
+
+1. Create the vault from the owner wallet. Purpose `0` is the ordinary
+   vault. `PROJECT_ID` is a nonzero label only; the admin revision of step 2
+   links the vault to the project.
+
+   ```sh
+   cast send "$FACTORY" 'create(bytes32,address,uint8)' "$PROJECT_ID" "$USDC" 0 \
+     --rpc-url "$RPC" --account owner
+   KEY=$(cast call "$FACTORY" 'vaultKey(address,bytes32,address,uint8)(bytes32)' \
+     "$OWNER" "$PROJECT_ID" "$USDC" 0 --rpc-url "$RPC")
+   VAULT=$(cast call "$FACTORY" 'vaults(bytes32)(address)' "$KEY" --rpc-url "$RPC")
+   ```
+
+   Record the creation transaction and the vault's runtime code SHA-256
+   (section 1.6).
+
+2. On `/admin`, append a manifest revision for the project with a reason.
+   It adds the `escrow` policy with one `base-mainnet` deployment: the vault,
+   USDC as `asset`, your wallet as `owner`, the identity authority, fee
+   recipient, factory, registrar, factory and vault code digests,
+   `evmUpgrade`, `bindingDelaySeconds` `"0"` and the creation transaction
+   (section 1.7). `escrow` is the payment switch: the schema requires
+   `reward.paymentMode` `"disabled"` beside it, because that field controls
+   only the old direct-payment path. Then sync the snapshot in a reviewed
+   pull request to `development`: `bun run projects:sync`.
+
+3. Install the attester secrets (steps 1 to 3 above). Do this before the
+   promotion that carries the new snapshot reaches `main`, or the release
+   stops at the secret check. Then merge the promotion pull request to
+   `main` (step 6 above). The release deploys the attester and its cron.
+
+4. Fund the attester for gas (step 4 above). About 0.001 ETH on Base pays
+   for many bindings.
+
+5. Deposit USDC into the vault. Use the "Fund or withdraw" panel on the
+   project funding page, or approve and deposit (20 USDC here):
+
+   ```sh
+   cast send "$USDC" 'approve(address,uint256)' "$VAULT" 20000000 --rpc-url "$RPC" --account owner
+   cast send "$VAULT" 'deposit(uint128)' 20000000 --rpc-url "$RPC" --account owner
+   ```
+
+6. Approve a 10 USDC award for the contributor. The monthly flow starts with
+   the period `2026-11`, so for this test the owner commits the award
+   directly. `SOURCE` must be a new nonzero 32-byte value for each award:
+
+   ```sh
+   SOURCE=$(cast keccak "slop-base-test-1")
+   AWARD=$(cast call "$VAULT" 'awardId(bytes32)(bytes32)' "$SOURCE" --rpc-url "$RPC")
+   cast send "$VAULT" 'commitAward(bytes32,uint64,uint128,bytes32)' \
+     "$AWARD" "$ACTOR" 10000000 "$SOURCE" --rpc-url "$RPC" --account owner
+   ```
+
+   After the block is finalized (about 15 minutes on Base), the next
+   attester run records the award as reserved.
+
+7. The contributor signs the binding. The site has no button for this step
+   yet. Signed in on `https://slop.cash`:
+   1. On `/earnings`, connect and confirm the Base wallet (a
+      `personal_sign` message).
+   2. Switch the wallet to Base. In the browser console of the same page,
+      run:
+
+      ```js
+      const call = async (path, body) => {
+        const response = await fetch(`/api/v1/payments/wallets/${path}`, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) throw new Error(`${path}: ${response.status} ${await response.text()}`);
+        return response.json();
+      };
+      const me = await (await fetch("/api/v1/payments/me", { credentials: "same-origin" })).json();
+      const claimId = me.wallets.find((w) => w.chain === "base").claimId;
+      const consent = { claimId, network: "base-mainnet", vault: "<VAULT>", expectedVersion: "0" };
+      const { typedData } = await call("bind-challenge", consent);
+      const [address] = await ethereum.request({ method: "eth_requestAccounts" });
+      const signature = await ethereum.request({
+        method: "eth_signTypedData_v4",
+        params: [address, JSON.stringify(typedData)],
+      });
+      await call("bind-authorize", { ...consent, expiresAt: typedData.message.expiresAt, signature });
+      ```
+
+      `expectedVersion` is `"0"` for the first binding. For a later one, use
+      the version from `cast call "$VAULT" 'bindings(uint64)(address,uint64,bytes32,uint64,bool)' "$ACTOR" --rpc-url "$RPC"`.
+      The signature is valid for 90 days.
+
+   Within five minutes the attester submits `bindDestination`. Check it:
+
+   ```sh
+   cast call "$VAULT" 'payableBinding(uint64)(address,uint64)' "$ACTOR" --rpc-url "$RPC"
+   ```
+
+   The result is the contributor's wallet and version `1`. If it stays
+   `0x0…0 0`, read the attester log with `wrangler tail` (step 6 above).
+
+8. Pay. Any wallet may send this transaction; Slop holds no relayer key:
+
+   ```sh
+   cast send "$VAULT" 'pay(bytes32,uint64)' "$AWARD" 1 --rpc-url "$RPC" --account owner
+   ```
+
+   The contributor receives 9.8 USDC. After finality the attester run marks
+   the award paid, and `/earnings` shows it.
+
+9. Move the 2% fee (0.2 USDC) to the fee recipient
+   `0x8f77C37D8650776bFe73c9b12B15209eE15D9b86`. Anyone may call it:
+
+   ```sh
+   cast send "$VAULT" 'claimFees()' --rpc-url "$RPC" --account owner
+   cast call "$USDC" 'balanceOf(address)(uint256)' 0x8f77C37D8650776bFe73c9b12B15209eE15D9b86 --rpc-url "$RPC"
+   ```
+
+10. Withdraw the unused balance (10 USDC here). The vault keeps the 2%
+    withdrawal fee. Use "Fund or withdraw" on the funding page, or:
+
+    ```sh
+    cast send "$VAULT" 'withdrawUnused(uint128)' 10000000 --rpc-url "$RPC" --account owner
+    ```
+
+    You receive 9.8 USDC. Run step 9 again to move the withdrawal fee.
+
+Record the transactions on the release issue (section 3.5).
 
 To stop new Slop attestations on a network, change its
 `mainnet-execution.mjs` value back to `false` through a reviewed pull request

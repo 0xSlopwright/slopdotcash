@@ -60,6 +60,13 @@ export interface ExecutorEnvironment {
   ALLOW_LOCAL_TEST_CHAIN?: boolean;
 }
 type Input = DispatchPayment & { idempotencyKey: string };
+/**
+ * A binding request. The hosted `/v1/pay` names the dispatcher's payout
+ * attempt. The production attester's scheduled binding names none
+ * (`idempotencyKey: null`): Slop prepares no payout attempt on a mainnet
+ * (PRD PAY-04).
+ */
+type BindingRequest = DispatchPayment & { idempotencyKey: string | null };
 interface Deployment {
   payoutPolicy?: PayoutPolicy;
   projectId: string;
@@ -160,14 +167,22 @@ function same(a: string, b: string) {
 /** Shared signed wallet consent and current-claim authorization; chain code must verify deployment and obligation. */
 export async function authorizeRegistry(
   env: { PAYMENTS_DB: D1Database },
-  input: Input,
+  input: BindingRequest,
   chain: EscrowChain,
 ): Promise<Authorization> {
-  const authorization = await env.PAYMENTS_DB.prepare(
-    "SELECT o.id obligationId,o.project_id projectId,o.network,o.vault,o.github_user_id githubUserId,o.gross_base grossBase,o.fee_base feeBase,o.source_digest sourceDigest,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,c.message,a.signature,c.id challengeId,c.expires_at expiresAt FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id AND a.github_user_id=o.github_user_id JOIN payment_wallet_challenges c ON c.id=a.challenge_id AND c.claim_id=w.id AND c.github_user_id=o.github_user_id JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND t.id=? AND o.chain=? AND c.consumed_at IS NOT NULL AND c.consumed_at<=c.expires_at AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)",
-  )
-    .bind(input.obligationId, input.idempotencyKey, chain)
-    .first<Authorization>();
+  const select =
+    "SELECT o.id obligationId,o.project_id projectId,o.network,o.vault,o.github_user_id githubUserId,o.gross_base grossBase,o.fee_base feeBase,o.source_digest sourceDigest,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination,c.message,a.signature,c.id challengeId,c.expires_at expiresAt FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id AND a.github_user_id=o.github_user_id JOIN payment_wallet_challenges c ON c.id=a.challenge_id AND c.claim_id=w.id AND c.github_user_id=o.github_user_id";
+  const current =
+    "o.chain=? AND c.consumed_at IS NOT NULL AND c.consumed_at<=c.expires_at AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id)";
+  // Without a payout attempt, only an unpaid reserved award qualifies.
+  const authorization = await (input.idempotencyKey === null
+    ? env.PAYMENTS_DB.prepare(
+        `${select} WHERE o.id=? AND o.state='reserved' AND ${current}`,
+      ).bind(input.obligationId, chain)
+    : env.PAYMENTS_DB.prepare(
+        `${select} JOIN payment_attempts t ON t.obligation_id=o.id AND t.claim_id=w.id WHERE o.id=? AND t.id=? AND ${current}`,
+      ).bind(input.obligationId, input.idempotencyKey, chain)
+  ).first<Authorization>();
   if (!authorization)
     throw new Error("Current approved wallet/attempt unavailable");
   for (const key of [
@@ -290,16 +305,25 @@ export async function preflightEvmDeployment(
 
 async function authorize(
   env: ExecutorEnvironment,
-  input: Input,
+  input: BindingRequest,
+  /** Request handlers name a payout attempt; only the scheduled binding names none. */
+  attempt: "required" | "none" = "required",
 ): Promise<{ authorization: Authorization; deployment: Deployment }> {
   if (
     !input ||
-    Object.values(input).some((v) => typeof v !== "string") ||
+    Object.entries(input).some(
+      ([key, v]) =>
+        typeof v !== "string" &&
+        !(key === "idempotencyKey" && v === null && attempt === "none"),
+    ) ||
     !BYTES32.test(input.obligationId) ||
     !ADDRESS.test(input.destination) ||
     !ADDRESS.test(input.vault) ||
     !/^[0-9a-f]{64}$/.test(input.claimDigest) ||
-    !/^[A-Za-z0-9_-]{1,128}$/.test(input.idempotencyKey)
+    (attempt === "none"
+      ? input.idempotencyKey !== null
+      : typeof input.idempotencyKey !== "string" ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(input.idempotencyKey))
   )
     throw new Error("Invalid payout request");
   const { chain } = selectReviewedEvmDeployment(env, input);
@@ -593,13 +617,78 @@ export async function submitEvmMonthly(
   return { ...result, alreadyCommitted: false };
 }
 
+/** The vault's identity authority, read at the finalized block, must be this signer. */
+async function assertIdentitySigner(
+  env: ExecutorEnvironment,
+  config: Deployment,
+) {
+  const authority = await call(config, "0x13fa3c08", 1);
+  if (!same(`0x${authority[0].slice(24)}`, env.SIGNER.address))
+    throw new Error("Wrong identity signer");
+}
+
+/** A first binding needs the wallet authorization; a later one is a rotation of the bound claim. */
+async function authorizeBindingVersion(
+  env: ExecutorEnvironment,
+  input: BindingRequest,
+  current: { version: string; claimDigest: string },
+) {
+  if (current.version !== "0")
+    await authorizeWalletRotation(env, input, current.claimDigest);
+  else await requireWalletAuthorization(env, input);
+}
+
+/**
+ * The bindDestination calldata with the destination wallet's own EIP-712
+ * signature over this exact binding, collected by the account API and
+ * verified again here. The attester submits the signature unchanged and
+ * cannot bind without it. Null when no stored signature for this on-chain
+ * version is valid for the submission window.
+ */
+async function storedBindingCalldata(
+  env: ExecutorEnvironment,
+  config: Deployment,
+  input: DispatchPayment,
+  expectedVersion: string,
+) {
+  const accepted = await env.PAYMENTS_DB.prepare(
+    "SELECT expires_at expiresAt,signature FROM payment_binding_authorizations WHERE claim_id=? AND github_user_id=? AND network=? AND vault=? AND chain_id=? AND expected_version=? AND CAST(expires_at AS INTEGER)>? ORDER BY CAST(expires_at AS INTEGER) DESC LIMIT 1",
+  )
+    .bind(
+      input.claimId,
+      input.githubUserId,
+      input.network,
+      input.vault.toLowerCase(),
+      config.chainId,
+      expectedVersion,
+      Math.floor(Date.now() / 1000) + 600,
+    )
+    .first<{ expiresAt: string; signature: string }>();
+  if (!accepted) return null;
+  const request = {
+    githubUserId: input.githubUserId,
+    destination: input.destination,
+    expectedVersion,
+    claimDigest: `0x${input.claimDigest}`,
+    expiresAt: accepted.expiresAt,
+  };
+  if (
+    !verifyEvmBindingSignature(
+      BigInt(config.chainId),
+      config.vault,
+      request,
+      accepted.signature,
+    )
+  )
+    throw new Error("Destination wallet signature rejected");
+  return buildBindCalldata({ ...request, walletSignature: accepted.signature });
+}
+
 export function createEvmAttester(env: ExecutorEnvironment): PaymentExecutor {
   return {
     async submit(input) {
       const { authorization, deployment } = await authorize(env, input);
-      const authority = await call(deployment, "0x13fa3c08", 1);
-      if (!same(`0x${authority[0].slice(24)}`, env.SIGNER.address))
-        throw new Error("Wrong identity signer");
+      await assertIdentitySigner(env, deployment);
       const key = `bind:${input.idempotencyKey}`;
       const fingerprint = digest(
         JSON.stringify([
@@ -622,54 +711,130 @@ export function createEvmAttester(env: ExecutorEnvironment): PaymentExecutor {
       if ((await obligation(deployment, authorization)).paid)
         throw new Error("Award already paid");
       const current = await binding(deployment, input.githubUserId);
-      if (current.version !== "0")
-        await authorizeWalletRotation(env, input, current.claimDigest);
-      else await requireWalletAuthorization(env, input);
-      // The destination wallet's own EIP-712 signature over this exact binding,
-      // collected by the account API. The attester submits it unchanged and
-      // cannot bind without it.
-      const accepted = await env.PAYMENTS_DB.prepare(
-        "SELECT expires_at expiresAt,signature FROM payment_binding_authorizations WHERE claim_id=? AND github_user_id=? AND network=? AND vault=? AND chain_id=? AND expected_version=? AND CAST(expires_at AS INTEGER)>? ORDER BY CAST(expires_at AS INTEGER) DESC LIMIT 1",
-      )
-        .bind(
-          input.claimId,
-          input.githubUserId,
-          input.network,
-          input.vault.toLowerCase(),
-          deployment.chainId,
-          current.version,
-          Math.floor(Date.now() / 1000) + 600,
-        )
-        .first<{ expiresAt: string; signature: string }>();
-      if (!accepted)
+      await authorizeBindingVersion(env, input, current);
+      const data = await storedBindingCalldata(
+        env,
+        deployment,
+        input,
+        current.version,
+      );
+      if (!data)
         throw new Error(
           `Destination wallet signature required for binding version ${current.version}`,
         );
-      const request = {
-        githubUserId: input.githubUserId,
-        destination: input.destination,
-        expectedVersion: current.version,
-        claimDigest: `0x${input.claimDigest}`,
-        expiresAt: accepted.expiresAt,
-      };
-      if (
-        !verifyEvmBindingSignature(
-          BigInt(deployment.chainId),
-          deployment.vault,
-          request,
-          accepted.signature,
-        )
-      )
-        throw new Error("Destination wallet signature rejected");
-      return signAndSubmit(
-        env,
-        deployment,
-        key,
-        fingerprint,
-        buildBindCalldata({ ...request, walletSignature: accepted.signature }),
-        input,
-      );
+      return signAndSubmit(env, deployment, key, fingerprint, data, input);
     },
+  };
+}
+
+/** One contributor's stored binding consent on one pinned vault, read from D1. */
+export type BindingCandidate = DispatchPayment;
+export type BindingOutcome =
+  | { state: "current" }
+  | { state: "waiting" }
+  | { state: "submitted"; transactionId: string };
+
+/**
+ * The reserved awards on the pinned vaults whose contributor has a current
+ * signed wallet authorization and a stored destination binding consent
+ * that the attester can still submit. One row per contributor and vault,
+ * because a binding belongs to the actor, not to one award. D1 reads only:
+ * no RPC and no secret.
+ */
+export async function bindingCandidates(
+  env: Pick<ExecutorEnvironment, "PAYMENTS_DB" | "PAYMENT_DEPLOYMENTS">,
+  now = new Date(),
+  limit = 10,
+): Promise<BindingCandidate[]> {
+  const pinned = JSON.parse(env.PAYMENT_DEPLOYMENTS) as {
+    network: string;
+    vault: string;
+  }[];
+  const candidates: BindingCandidate[] = [];
+  for (const deployment of pinned) {
+    const row = await env.PAYMENTS_DB.prepare(
+      "SELECT json_group_array(json_object('obligationId',obligationId,'network',network,'vault',vault,'githubUserId',githubUserId,'claimId',claimId,'claimDigest',claimDigest,'destination',destination)) items FROM (SELECT MIN(o.id) obligationId,o.network network,o.vault vault,o.github_user_id githubUserId,w.id claimId,w.record_sha256 claimDigest,w.wallet_address destination FROM payment_obligations o JOIN wallet_claims w ON w.github_user_id=o.github_user_id AND w.chain=o.chain JOIN payment_wallet_authorizations a ON a.claim_id=w.id AND a.github_user_id=o.github_user_id WHERE o.state='reserved' AND o.network=? AND lower(o.vault)=? AND w.source='d1_registry' AND NOT EXISTS(SELECT 1 FROM wallet_claims n WHERE n.supersedes_claim_id=w.id) AND EXISTS(SELECT 1 FROM payment_binding_authorizations b WHERE b.claim_id=w.id AND b.github_user_id=o.github_user_id AND b.network=o.network AND b.vault=lower(o.vault) AND CAST(b.expires_at AS INTEGER)>?) GROUP BY o.github_user_id,w.id ORDER BY MIN(o.created_at) LIMIT ?)",
+    )
+      .bind(
+        deployment.network,
+        deployment.vault.toLowerCase(),
+        Math.floor(now.getTime() / 1000) + 600,
+        limit,
+      )
+      .first<{ items: string }>();
+    candidates.push(...(JSON.parse(row?.items ?? "[]") as BindingCandidate[]));
+  }
+  return candidates;
+}
+
+/**
+ * The production trigger for an EVM destination binding (PRD PAY-05). The
+ * production attester's scheduled run calls it for each binding candidate,
+ * because a mainnet has no Slop relayer to request a binding (PAY-04). It
+ * keeps every check of the hosted attester: the pinned deployment, the
+ * GitHub actor and claim digest of the current signed wallet authorization,
+ * the finalized unpaid award, the identity signer, the successor lineage of
+ * a rotation, and the destination wallet's exact stored consent with its
+ * expiry and expected version. A binding that is already current needs
+ * nothing. Without consent for the current on-chain version, the award
+ * waits for the contributor.
+ *
+ * There is one journal entry for each vault, actor, claim and finalized
+ * binding version. A binding signed for that version is reconciled first:
+ * its receipt is read and the same signed bytes are broadcast again. It is
+ * never replaced until a finalized revert proof exists. The vault's
+ * expectedVersion check refuses a replayed or reordered binding.
+ */
+export async function bindStoredDestination(
+  env: ExecutorEnvironment,
+  candidate: BindingCandidate,
+): Promise<BindingOutcome> {
+  const input: BindingRequest = { ...candidate, idempotencyKey: null };
+  const { authorization, deployment } = await authorize(env, input, "none");
+  await assertIdentitySigner(env, deployment);
+  const current = await binding(deployment, input.githubUserId);
+  if (
+    !current.cancelled &&
+    current.version !== "0" &&
+    same(current.destination, input.destination) &&
+    current.claimDigest === input.claimDigest
+  )
+    return { state: "current" };
+  const operation = digest(
+    JSON.stringify([
+      deployment.chainId,
+      input.vault.toLowerCase(),
+      input.githubUserId,
+      input.claimId,
+      input.claimDigest,
+      input.destination.toLowerCase(),
+      current.version,
+    ]),
+  );
+  const key = `bind:stored:${operation.slice(2)}`;
+  const journaled = { ...input, idempotencyKey: operation.slice(2) };
+  const existing = await env.JOURNAL.get<Attempt | null>(key);
+  if (
+    existing &&
+    !(await retireRevertedAttempt(env, deployment, key, existing))
+  )
+    return {
+      state: "submitted",
+      ...(await signAndSubmit(env, deployment, key, operation, "", journaled)),
+    };
+  if ((await obligation(deployment, authorization)).paid)
+    throw new Error("Award already paid");
+  await authorizeBindingVersion(env, input, current);
+  const data = await storedBindingCalldata(
+    env,
+    deployment,
+    input,
+    current.version,
+  );
+  if (!data) return { state: "waiting" };
+  return {
+    state: "submitted",
+    ...(await signAndSubmit(env, deployment, key, operation, data, journaled)),
   };
 }
 
@@ -763,7 +928,7 @@ export async function lookupAttempt(
 /** Verify wallet authorization before its first on-chain binding. */
 export async function requireWalletAuthorization(
   env: { PAYMENTS_DB: D1Database },
-  input: Input,
+  input: Pick<DispatchPayment, "claimId" | "githubUserId">,
 ): Promise<void> {
   const claim = await env.PAYMENTS_DB.prepare(
     "SELECT w.id FROM wallet_claims w JOIN payment_wallet_authorizations a ON a.claim_id=w.id AND a.github_user_id=w.github_user_id WHERE w.id=? AND w.github_user_id=?",
@@ -776,7 +941,7 @@ export async function requireWalletAuthorization(
 /** Immediate user-authorized successor activation after prior attempts are reconciled. */
 export async function authorizeWalletRotation(
   env: { PAYMENTS_DB: D1Database },
-  input: Input,
+  input: BindingRequest,
   oldClaimDigest: string,
 ): Promise<void> {
   const current = await env.PAYMENTS_DB.prepare(
