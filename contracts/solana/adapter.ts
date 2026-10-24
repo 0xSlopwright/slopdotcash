@@ -36,8 +36,9 @@ export interface SolanaEscrowConfig {
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 /** Project account size: 257 bytes of core state, the pending identity authority, its
  * effective time and confirmation, the i64 rotation delay, then the u8 purpose, the u64
- * monthly cap and the monthly on/off switch. */
-export const PROJECT_SIZE = 316;
+ * monthly cap, the monthly on/off switch, the u64 accrued fees and the u64 outstanding
+ * monthly gross. */
+export const PROJECT_SIZE = 332;
 /** Wallet binding size: 160 bytes of latest-binding state plus the u64 paid version and u8 veto count. */
 export const BINDING_SIZE = 169;
 /** Obligation size: 137 bytes of v2 state plus the i64 commit time. */
@@ -421,6 +422,12 @@ const node = (left: AllocationNode, right: AllocationNode): AllocationNode => {
 function levels(entries: readonly SolanaMonthlyEntry[]) {
   if (entries.length === 0 || entries.length > 0xffffffff)
     throw new Error("Invalid monthly allocation size");
+  // A repeated source can never commit twice, so its reserve could only be released.
+  if (
+    new Set(entries.map((entry) => hex(digest(entry.sourceDigest)))).size !==
+    entries.length
+  )
+    throw new Error("Monthly allocation repeats a source");
   const tree: AllocationNode[][] = [
     entries.map((entry) => ({
       hash: monthlyLeaf(entry),
@@ -695,7 +702,7 @@ export function solanaPaymentAdapter(
         )
           throw new Error("Reservation differs from award");
       } else {
-        // pay(expected_version); accounts: project, obligation, binding, mint, vault, destination, fee_account.
+        // pay(expected_version); accounts: project, obligation, binding, mint, vault, destination.
         if (
           data.length !== 16 ||
           obligation[136] !== 1 ||
@@ -705,11 +712,8 @@ export function solanaPaymentAdapter(
           accounts[4] !== config.vault
         )
           throw new Error("Payment differs from award");
-        // The program skips the fee transfer when the fee is zero.
-        const expected = [
-          { to: accounts[5], amount: net },
-          ...(fee > 0n ? [{ to: accounts[6], amount: fee }] : []),
-        ];
+        // The fee accrues in the vault; only the net moves to the destination.
+        const expected = [{ to: accounts[5], amount: net }];
         if (children.length !== expected.length)
           throw new Error("Unexpected payout instructions");
         // Any classic SPL mint is accepted, so the transfer decimals must equal the mint's.
@@ -743,8 +747,6 @@ export function solanaPaymentAdapter(
           return string(balance.owner);
         };
         destination = ownerOf(accounts[5]);
-        if (ownerOf(accounts[6]) !== pubkey(project, 136))
-          throw new Error("Fee account is not owned by the fee recipient");
       }
       const block = object(
         await rpc(config, "getBlock", [
@@ -829,7 +831,8 @@ export async function readVaultTotals(config: {
     paid = uint(project, 216),
     payoutFees = uint(project, 224),
     withdrawnGross = uint(project, 232),
-    withdrawalFees = uint(project, 240);
+    withdrawalFees = uint(project, 240),
+    accruedFees = uint(project, 316);
   const free = deposited - paid - payoutFees - withdrawnGross - reserved;
   if (free < 0n) throw new Error("Project counters exceed deposits");
   return {
@@ -847,7 +850,7 @@ export async function readVaultTotals(config: {
     freeBalance: free.toString(),
     reservedPrincipal: null,
     reservedFees: null,
-    accruedFees: null,
+    accruedFees: accruedFees.toString(),
     reserved: reserved.toString(),
   };
 }

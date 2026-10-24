@@ -229,6 +229,12 @@ pub mod slop_escrow {
             ctx.accounts.project.purpose == Purpose::Ordinary,
             EscrowError::WrongPurpose
         );
+        // While an admitted month has uncommitted awards, the owner cannot consume one of
+        // their sources by hand and strand that award. Anyone can commit the rest first.
+        require!(
+            ctx.accounts.project.monthly_outstanding == 0,
+            EscrowError::MonthlyOutstanding
+        );
         let a = &mut ctx.accounts;
         commit_with_fee(
             &mut a.project,
@@ -310,7 +316,7 @@ pub mod slop_escrow {
         require!(total > 0, EscrowError::InvalidAmount);
         require!(total <= p.monthly_cap, EscrowError::MonthlyCapExceeded);
         require!(
-            free(p)? >= total && ctx.accounts.vault.amount >= add(p.reserved, total)?,
+            free(p)? >= total && ctx.accounts.vault.amount >= add(held(p)?, total)?,
             EscrowError::InsufficientFreeBalance
         );
         let message = monthly_message(
@@ -329,6 +335,7 @@ pub mod slop_escrow {
         m.committed = 0;
         m.total = total;
         p.reserved = add(p.reserved, total)?;
+        p.monthly_outstanding = add(p.monthly_outstanding, total)?;
         emit!(MonthlyCommitted {
             project: p.key(),
             period,
@@ -355,30 +362,19 @@ pub mod slop_escrow {
         let _ = period;
         // An admitted month is already funded. Later opt-out or cap changes
         // affect new admissions, never these reserved obligations.
-        let leaf = AllocationNode {
-            hash: monthly_leaf(actor_id, gross, &source_digest),
-            total: gross,
-        };
-        let root = merkle_sum_root(leaf, index, count, &proof)?;
-        require!(
-            root.hash == ctx.accounts.month.allocation_root
-                && root.total == ctx.accounts.month.total,
-            EscrowError::InvalidAllocationProof
-        );
-        let committed = add(ctx.accounts.month.committed, gross)?;
-        require!(
-            committed <= ctx.accounts.month.total,
-            EscrowError::MonthlyCapExceeded
-        );
-        ctx.accounts.month.committed = committed;
         let a = &mut ctx.accounts;
         // Move an existing reservation into an obligation. The common commit
         // path adds it back; any failure rolls back the complete instruction.
-        a.project.reserved = a
-            .project
-            .reserved
-            .checked_sub(gross)
-            .ok_or(error!(EscrowError::Arithmetic))?;
+        settle_leaf(
+            &mut a.project,
+            &mut a.month,
+            actor_id,
+            gross,
+            &source_digest,
+            index,
+            count,
+            &proof,
+        )?;
         commit_with_fee(
             &mut a.project,
             &a.vault,
@@ -390,6 +386,47 @@ pub mod slop_escrow {
             gross,
             fee_for(gross),
         )
+    }
+    // Anyone returns one award of a recorded allocation to free balance when it can never
+    // commit: its source was consumed before the month was admitted (direct commits are
+    // refused while a month is outstanding), it repeats an earlier source, or its actor is
+    // zero. Without this its reserve would stay locked forever. Each source releases once.
+    #[allow(clippy::too_many_arguments)]
+    pub fn release_monthly_award(
+        mut ctx: Context<ReleaseMonthlyAward>,
+        period: u32,
+        source_digest: [u8; 32],
+        actor_id: u64,
+        gross: u64,
+        index: u32,
+        count: u32,
+        proof: Vec<AllocationNode>,
+    ) -> Result<()> {
+        let origin = &ctx.accounts.origin;
+        require!(
+            gross > 0
+                && (actor_id == 0 || (origin.owner == ctx.program_id && !origin.data_is_empty())),
+            EscrowError::AwardCommittable
+        );
+        let a = &mut ctx.accounts;
+        settle_leaf(
+            &mut a.project,
+            &mut a.month,
+            actor_id,
+            gross,
+            &source_digest,
+            index,
+            count,
+            &proof,
+        )?;
+        emit!(MonthlyAwardReleased {
+            project: a.project.key(),
+            period,
+            source_digest,
+            actor_id,
+            gross
+        });
+        Ok(())
     }
 
     // The attester and the destination keypair both sign this exact transaction, including
@@ -513,15 +550,6 @@ pub mod slop_escrow {
             seeds,
             a.principal,
         )?;
-        send(
-            &ctx.accounts.token_program,
-            &ctx.accounts.vault,
-            &ctx.accounts.fee_account,
-            &ctx.accounts.mint,
-            p,
-            seeds,
-            a.fee,
-        )?;
         let principal = a.principal;
         let fee = a.fee;
         let p = &mut ctx.accounts.project;
@@ -531,6 +559,9 @@ pub mod slop_escrow {
             .ok_or(EscrowError::Arithmetic)?;
         p.paid = add(p.paid, principal)?;
         p.payout_fees = add(p.payout_fees, fee)?;
+        // The fee stays in the vault until claim_fees, so the fee recipient's token account
+        // can never stop a payout (L-2).
+        p.accrued_fees = add(p.accrued_fees, fee)?;
         ctx.accounts.obligation.paid = true;
         let b = &mut ctx.accounts.binding;
         b.paid_version = version;
@@ -549,7 +580,7 @@ pub mod slop_escrow {
     pub fn withdraw(ctx: Context<Withdraw>, gross: u64) -> Result<()> {
         let p = &ctx.accounts.project;
         require!(
-            gross > 0 && ctx.accounts.vault.amount >= add(p.reserved, gross)? && free(p)? >= gross,
+            gross > 0 && ctx.accounts.vault.amount >= add(held(p)?, gross)? && free(p)? >= gross,
             EscrowError::InsufficientFreeBalance
         );
         let fee = fee_for(gross);
@@ -565,6 +596,26 @@ pub mod slop_escrow {
             seeds,
             returned,
         )?;
+        let p = &mut ctx.accounts.project;
+        p.withdrawn_gross = add(p.withdrawn_gross, gross)?;
+        p.withdrawal_fees = add(p.withdrawal_fees, fee)?;
+        p.accrued_fees = add(p.accrued_fees, fee)?;
+        emit!(UnusedWithdrawn {
+            project: p.key(),
+            gross,
+            fee,
+            returned
+        });
+        Ok(())
+    }
+    // Anyone moves the accrued payout and withdrawal fees to a token account the fee recipient
+    // owns. Only this instruction depends on the fee recipient, as on EVM.
+    pub fn claim_fees(ctx: Context<ClaimFees>) -> Result<()> {
+        let p = &ctx.accounts.project;
+        let amount = p.accrued_fees;
+        require!(amount > 0, EscrowError::InvalidAmount);
+        let (purpose, bump) = ([p.purpose as u8], [p.bump]);
+        let seeds: &[&[u8]] = &[b"project", p.owner.as_ref(), &p.project_id, &purpose, &bump];
         send(
             &ctx.accounts.token_program,
             &ctx.accounts.vault,
@@ -572,16 +623,14 @@ pub mod slop_escrow {
             &ctx.accounts.mint,
             p,
             seeds,
-            fee,
+            amount,
         )?;
         let p = &mut ctx.accounts.project;
-        p.withdrawn_gross = add(p.withdrawn_gross, gross)?;
-        p.withdrawal_fees = add(p.withdrawal_fees, fee)?;
-        emit!(UnusedWithdrawn {
+        p.accrued_fees = 0;
+        emit!(FeesClaimed {
             project: p.key(),
-            gross,
-            fee,
-            returned
+            fee_account: ctx.accounts.fee_account.key(),
+            amount
         });
         Ok(())
     }
@@ -611,7 +660,7 @@ fn commit_with_fee(
     let principal = gross - fee;
     let reserve = gross;
     require!(
-        vault.amount >= add(p.reserved, reserve)? && free(p)? >= reserve,
+        vault.amount >= add(held(p)?, reserve)? && free(p)? >= reserve,
         EscrowError::InsufficientFreeBalance
     );
     p.reserved = add(p.reserved, reserve)?;
@@ -636,6 +685,36 @@ fn commit_with_fee(
     Ok(())
 }
 
+/// Proves one leaf against the recorded month and moves its gross out of the month's
+/// reservation and outstanding total. The caller commits it or leaves it free.
+#[allow(clippy::too_many_arguments)]
+fn settle_leaf(
+    p: &mut Account<Project>,
+    month: &mut Account<MonthlyAllocation>,
+    actor_id: u64,
+    gross: u64,
+    source_digest: &[u8; 32],
+    index: u32,
+    count: u32,
+    proof: &[AllocationNode],
+) -> Result<()> {
+    let leaf = AllocationNode {
+        hash: monthly_leaf(actor_id, gross, source_digest),
+        total: gross,
+    };
+    let root = merkle_sum_root(leaf, index, count, proof)?;
+    require!(
+        root.hash == month.allocation_root && root.total == month.total,
+        EscrowError::InvalidAllocationProof
+    );
+    let committed = add(month.committed, gross)?;
+    require!(committed <= month.total, EscrowError::MonthlyCapExceeded);
+    month.committed = committed;
+    let less = |n: u64| n.checked_sub(gross).ok_or(error!(EscrowError::Arithmetic));
+    p.reserved = less(p.reserved)?;
+    p.monthly_outstanding = less(p.monthly_outstanding)?;
+    Ok(())
+}
 /// The bytes the identity authority signs for one period's allocation of one project.
 pub fn monthly_message(
     program_id: &Pubkey,
@@ -806,6 +885,10 @@ fn free(p: &Project) -> Result<u64> {
         .and_then(|n| n.checked_sub(p.reserved))
         .ok_or(error!(EscrowError::Arithmetic))
 }
+/// Tokens the vault must keep for others: reserved awards and accrued, unclaimed fees.
+fn held(p: &Project) -> Result<u64> {
+    add(p.reserved, p.accrued_fees)
+}
 fn add(a: u64, b: u64) -> Result<u64> {
     a.checked_add(b).ok_or(error!(EscrowError::Arithmetic))
 }
@@ -818,8 +901,7 @@ fn send<'info>(
     seeds: &[&[u8]],
     amount: u64,
 ) -> Result<()> {
-    // A zero fee or refund leg is skipped, so a frozen fee account cannot stall a
-    // zero-fee payout and a zero-return withdrawal needs no transfer.
+    // A zero-return withdrawal needs no transfer.
     if amount == 0 {
         return Ok(());
     }
@@ -939,6 +1021,24 @@ pub struct CommitMonthlyAward<'info> {
     pub system_program: Program<'info, System>,
 }
 #[derive(Accounts)]
+#[instruction(period:u32, source_digest:[u8;32])]
+pub struct ReleaseMonthlyAward<'info> {
+    /// Anyone; pays the release marker's rent.
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    #[account(mut)]
+    pub project: Box<Account<'info, Project>>,
+    #[account(mut,has_one=project,seeds=[b"month",project.key().as_ref(),&period.to_le_bytes()],bump)]
+    pub month: Box<Account<'info, MonthlyAllocation>>,
+    /// CHECK: the source's origin address; the handler requires an initialized origin unless the actor is zero.
+    #[account(seeds=[b"origin",project.key().as_ref(),&source_digest],bump)]
+    pub origin: UncheckedAccount<'info>,
+    /// Exists once per released source, so a source cannot release twice.
+    #[account(init,payer=payer,space=8+BindingVeto::INIT_SPACE,seeds=[b"release",month.key().as_ref(),&source_digest],bump)]
+    pub release: Account<'info, BindingVeto>,
+    pub system_program: Program<'info, System>,
+}
+#[derive(Accounts)]
 #[instruction(actor_id:u64,network:[u8;32])]
 pub struct BindWallet<'info> {
     #[account(mut)]
@@ -983,8 +1083,6 @@ pub struct Pay<'info> {
     /// The handler requires this to be the associated token account of whichever binding pays.
     #[account(mut,token::mint=mint,constraint=destination.key()!=vault.key())]
     pub destination: Account<'info, TokenAccount>,
-    #[account(mut,token::mint=mint,constraint=fee_account.owner==project.fee_recipient,constraint=fee_account.key()!=vault.key())]
-    pub fee_account: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     /// CHECK: must be the empty veto address for this project, actor and latest binding version.
     #[account(seeds=[b"veto",project.key().as_ref(),&obligation.actor_id.to_le_bytes(),&binding.version.to_le_bytes()],bump)]
@@ -1027,6 +1125,16 @@ pub struct Withdraw<'info> {
     pub vault: Account<'info, TokenAccount>,
     #[account(mut,token::mint=mint,token::authority=owner,constraint=destination.key()!=vault.key())]
     pub destination: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+#[derive(Accounts)]
+pub struct ClaimFees<'info> {
+    #[account(mut,has_one=mint)]
+    pub project: Box<Account<'info, Project>>,
+    pub mint: Account<'info, Mint>,
+    #[account(mut,seeds=[b"vault",project.key().as_ref()],bump,token::mint=mint,token::authority=project)]
+    pub vault: Account<'info, TokenAccount>,
+    /// Any token account of the mint that the fee recipient owns.
     #[account(mut,token::mint=mint,constraint=fee_account.owner==project.fee_recipient,constraint=fee_account.key()!=vault.key())]
     pub fee_account: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
@@ -1057,6 +1165,11 @@ pub struct Project {
     /// and commit them. Only the owner sets them.
     pub monthly_cap: u64,
     pub monthly_enabled: bool,
+    /// Payout and withdrawal fees held in the vault until claim_fees moves them.
+    pub accrued_fees: u64,
+    /// Gross of admitted monthly allocations not yet committed or released. While it is
+    /// positive the owner cannot commit by hand.
+    pub monthly_outstanding: u64,
 }
 /// What a project holds funds for. It is part of the project PDA seeds.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
@@ -1188,6 +1301,20 @@ pub struct AwardPaid {
     pub wallet_version: u64,
 }
 #[event]
+pub struct MonthlyAwardReleased {
+    pub project: Pubkey,
+    pub period: u32,
+    pub source_digest: [u8; 32],
+    pub actor_id: u64,
+    pub gross: u64,
+}
+#[event]
+pub struct FeesClaimed {
+    pub project: Pubkey,
+    pub fee_account: Pubkey,
+    pub amount: u64,
+}
+#[event]
 pub struct UnusedWithdrawn {
     pub project: Pubkey,
     pub gross: u64,
@@ -1270,6 +1397,10 @@ pub enum EscrowError {
     InvalidAllocationProof,
     #[msg("Monthly awards would exceed the owner's monthly cap")]
     MonthlyCapExceeded,
+    #[msg("An admitted monthly allocation still has uncommitted awards")]
+    MonthlyOutstanding,
+    #[msg("This monthly award can still be committed")]
+    AwardCommittable,
 }
 
 #[account]

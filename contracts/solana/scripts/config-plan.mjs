@@ -152,7 +152,7 @@ export async function listProjects(input, runtime) {
           mint: base58(data.subarray(168, 200)),
           pinned:
             pinned !== null &&
-            data.length === 316 &&
+            data.length === 332 &&
             feeRecipient === pinned.feeRecipient.toBase58(),
         };
       })
