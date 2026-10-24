@@ -195,6 +195,55 @@ async function rejects(promise: Promise<unknown>, code: string) {
 }
 
 describe("monthly coordinator", () => {
+  for (const action of ["allocation", "setting", "finalize"] as const) {
+    for (const racing of [false, true]) {
+      test(`a ${racing ? "concurrent" : "current"} owner ban refuses monthly ${action}`, async () => {
+        clock = beforeCutoff;
+        const ban = () =>
+          seedParticipationBan(
+            sqlite,
+            actor,
+            { githubId: "404", githubLogin: "moderator" },
+            beforeCutoff.toISOString(),
+          );
+        const table =
+          action === "allocation"
+            ? "monthly_allocation_changes"
+            : action === "setting"
+              ? "monthly_payment_settings"
+              : "monthly_payment_runs";
+        const original = db.prepare.bind(db);
+        if (racing) {
+          db.prepare = (sql) => {
+            if (sql.startsWith(`INSERT INTO ${table}(`)) {
+              ban();
+              db.prepare = original;
+            }
+            return original(sql);
+          };
+        } else ban();
+        const service = owner();
+        await rejects(
+          action === "allocation"
+            ? service.changeAllocation(project.id, "2026-11", actor, {
+                githubUserId: B,
+                grossBase: "300",
+                expectedSequence: 0,
+              })
+            : action === "setting"
+              ? service.setAutomatic(project.id, actor, false)
+              : service.finalize(project.id, "2026-11", actor, 0),
+          "account_banned",
+        );
+        db.prepare = original;
+        expect(count(table)).toBe(0);
+        expect(count("monthly_payment_obligations")).toBe(0);
+        expect(
+          (await service.view(project.id, "2026-11", actor)).projectId,
+        ).toBe(project.id);
+      });
+    }
+  }
   test("a ban after freeze excludes only the unfunded award and preserves the snapshot", async () => {
     await coordinate(afterCutoff);
     const before = sqlite
@@ -295,6 +344,23 @@ describe("monthly coordinator", () => {
     );
     await coordinate(afterCutoff);
     expect(count("monthly_payment_obligations")).toBe(2);
+    seedParticipationBan(
+      sqlite,
+      actor,
+      { githubId: "404", githubLogin: "moderator" },
+      afterCutoff.toISOString(),
+    );
+    const view = await owner().view(project.id, "2026-11", actor);
+    const plan = await owner().commitment(project.id, "2026-11", actor, {
+      network: deployment.network,
+      manifestSha256: project.manifestSha256,
+      snapshotSha256: view.run?.snapshotSha256 ?? "",
+      githubUserId: A,
+    });
+    expect(plan.award.gross).toBe("600");
+    expect(plan.award.sourceDigest).toBe(
+      escrowAwardOrigin(project.id, "2026-11", A),
+    );
   });
 
   test("freezes the current private allocations once at the cutoff and creates each obligation once when funded", async () => {

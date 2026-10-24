@@ -42,7 +42,10 @@ import { assertProjectDefinition } from "../../src/lib/project-schema.mjs";
 import type { ProjectDefinition } from "../../src/lib/projects.mjs";
 import type { D1TransactionalDatabase as D1Database } from "../d1";
 import { notifyMonthlyUnderfunded } from "../notifications/events";
-import { PARTICIPATION_BAN_QUERY } from "../projects/account-bans";
+import {
+  hasParticipationBan,
+  PARTICIPATION_BAN_QUERY,
+} from "../projects/account-bans";
 
 export class MonthlyPaymentError extends Error {
   constructor(
@@ -324,6 +327,7 @@ export async function freezeMonthlyPeriod(
     now: Date;
   },
 ): Promise<"frozen" | "already-frozen"> {
+  if (input.actorId) await assertMonthlyParticipation(db, input.actorId);
   const { project, deployment } = input;
   const period = assertPeriod(input.period);
   if (input.now.getTime() < periodEnd(period).getTime())
@@ -394,7 +398,7 @@ export async function freezeMonthlyPeriod(
   });
   const inserted = await db
     .prepare(
-      "INSERT INTO monthly_payment_runs(project_id,period,trigger,actor_id,allocation_sequence,snapshot,snapshot_sha256,network,vault,total_gross_base,frozen_at,obligations_created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,NULL WHERE (SELECT COALESCE(MAX(sequence),0) FROM monthly_allocation_changes WHERE project_id=? AND period=?)=? ON CONFLICT(project_id,period) DO NOTHING",
+      `INSERT INTO monthly_payment_runs(project_id,period,trigger,actor_id,allocation_sequence,snapshot,snapshot_sha256,network,vault,total_gross_base,frozen_at,obligations_created_at) SELECT ?,?,?,?,?,?,?,?,?,?,?,NULL WHERE (SELECT COALESCE(MAX(sequence),0) FROM monthly_allocation_changes WHERE project_id=? AND period=?)=? AND NOT EXISTS (${PARTICIPATION_BAN_QUERY}) ON CONFLICT(project_id,period) DO NOTHING`,
     )
     .bind(
       project.id,
@@ -411,9 +415,11 @@ export async function freezeMonthlyPeriod(
       project.id,
       period,
       sequence,
+      input.actorId,
     )
     .run();
   if (inserted.meta?.changes === 1) return "frozen";
+  if (input.actorId) await assertMonthlyParticipation(db, input.actorId);
   if (await loadRun(db, project.id, period)) return "already-frozen";
   throw new MonthlyPaymentError(
     409,
@@ -746,6 +752,15 @@ export interface MonthlyCommitmentPlan {
 }
 
 /** The owner's private monthly controls behind the Pages session. */
+async function assertMonthlyParticipation(db: D1Database, githubId: string) {
+  if (await hasParticipationBan(db, githubId))
+    throw new MonthlyPaymentError(
+      403,
+      "account_banned",
+      "This account cannot change or finalize new monthly awards while banned.",
+    );
+}
+
 export function monthlyOwnerService(deps: {
   db: D1Database;
   getProject(id: string): Promise<ProjectRecord | null>;
@@ -887,6 +902,7 @@ export function monthlyOwnerService(deps: {
       },
     ) {
       const project = await authorized(projectId, actor);
+      await assertMonthlyParticipation(deps.db, actor.githubId);
       assertPeriod(period);
       if (await loadRun(deps.db, project.id, period))
         throw new MonthlyPaymentError(
@@ -941,10 +957,11 @@ export function monthlyOwnerService(deps: {
           );
         throw error;
       }
+      let changed: number | undefined;
       try {
-        await deps.db
+        const inserted = await deps.db
           .prepare(
-            "INSERT INTO monthly_allocation_changes(project_id,period,sequence,github_user_id,gross_base,actor_id,created_at) VALUES(?,?,?,?,?,?,?)",
+            `INSERT INTO monthly_allocation_changes(project_id,period,sequence,github_user_id,gross_base,actor_id,created_at) SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (${PARTICIPATION_BAN_QUERY})`,
           )
           .bind(
             project.id,
@@ -954,10 +971,20 @@ export function monthlyOwnerService(deps: {
             change.grossBase,
             actor.githubId,
             deps.now().toISOString(),
+            actor.githubId,
           )
           .run();
+        changed = inserted.meta?.changes;
       } catch {
         // A concurrent change took this sequence, or the month was frozen.
+        throw new MonthlyPaymentError(
+          409,
+          "allocations_changed",
+          "The allocations changed. Reload them before saving.",
+        );
+      }
+      if (changed !== 1) {
+        await assertMonthlyParticipation(deps.db, actor.githubId);
         throw new MonthlyPaymentError(
           409,
           "allocations_changed",
@@ -968,10 +995,12 @@ export function monthlyOwnerService(deps: {
     },
     async setAutomatic(projectId: string, actor: GithubActor, on: boolean) {
       const project = await authorized(projectId, actor);
+      await assertMonthlyParticipation(deps.db, actor.githubId);
+      let changed: number | undefined;
       try {
-        await deps.db
+        const inserted = await deps.db
           .prepare(
-            "INSERT INTO monthly_payment_settings(project_id,sequence,automatic,actor_id,created_at) SELECT ?,COALESCE(MAX(sequence),0)+1,?,?,? FROM monthly_payment_settings WHERE project_id=?",
+            `INSERT INTO monthly_payment_settings(project_id,sequence,automatic,actor_id,created_at) SELECT ?,COALESCE(MAX(sequence),0)+1,?,?,? FROM monthly_payment_settings WHERE project_id=? HAVING NOT EXISTS (${PARTICIPATION_BAN_QUERY})`,
           )
           .bind(
             project.id,
@@ -979,9 +1008,19 @@ export function monthlyOwnerService(deps: {
             actor.githubId,
             deps.now().toISOString(),
             project.id,
+            actor.githubId,
           )
           .run();
+        changed = inserted.meta?.changes;
       } catch {
+        throw new MonthlyPaymentError(
+          409,
+          "setting_changed",
+          "The setting changed at the same time. Retry.",
+        );
+      }
+      if (changed !== 1) {
+        await assertMonthlyParticipation(deps.db, actor.githubId);
         throw new MonthlyPaymentError(
           409,
           "setting_changed",

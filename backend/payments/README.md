@@ -269,6 +269,10 @@ sections 6 and 7). Migration `0062` adds its private records.
    allocations cannot change after the cutoff. Either path writes the single
    `monthly_payment_runs` row of that month; a frozen month accepts no
    further change.
+   A banned account cannot change allocations or automatic-payment settings,
+   or finalize a month. Each write checks the account ban again to refuse a
+   concurrent ban. Reading awards and preparing an existing funded obligation
+   remain available, subject to the existing authority and project checks.
 4. **Obligations.** The coordinator creates one `monthly_payment_obligations`
    row per positive award once, only when the vault's finalized free balance
    (a `vault_snapshots` row newer than 30 minutes) covers the month together
