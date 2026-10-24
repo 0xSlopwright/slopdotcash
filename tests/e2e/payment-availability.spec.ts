@@ -48,6 +48,18 @@ test("disabled payouts are visible from discovery through the project page", asy
     path: info.outputPath("project-payment-unavailable.png"),
     fullPage: true,
   });
+  await page.goto("/projects/eliza/funding", { waitUntil: "networkidle" });
+  const status = page.locator(".funding-status-grid");
+  await expect(
+    status.locator("div", { hasText: "Payments" }).locator("dd"),
+  ).toHaveText("Disabled");
+  await expect(
+    status.locator("div", { hasText: "Project vault" }).locator("dd"),
+  ).not.toHaveText("Live");
+  await page.screenshot({
+    path: info.outputPath("funding-payment-unavailable.png"),
+    fullPage: true,
+  });
   expect(
     (
       await new AxeBuilder({ page })
