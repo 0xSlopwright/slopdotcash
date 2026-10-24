@@ -337,10 +337,7 @@ function PointsRevisionHistory({
   return (
     <details className="points-revisions">
       <summary>Points decision history ({revisions.length})</summary>
-      <p>
-        Each entry replaces the prior amount for that contribution. Changes are
-        not additional full awards. Points have no monetary value.
-      </p>
+      <p>Each entry replaces the prior amount for that contribution.</p>
       <ol className="points-history">
         {(expanded ? ordered : ordered.slice(0, 10)).map((revision) => {
           const previous = revision.previous

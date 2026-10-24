@@ -20,8 +20,7 @@ type InboxState =
   | { status: "error"; message: string }
   | { status: "ready"; value: NotificationsResponse };
 
-const UNAVAILABLE =
-  "The inbox is unavailable. Your account and payouts are unchanged. Please retry.";
+const UNAVAILABLE = "The inbox could not load. Retry.";
 
 async function loadInbox(
   signal: AbortSignal,

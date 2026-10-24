@@ -92,7 +92,7 @@ function RegistryBoot() {
       ) : (
         <div role="alert">
           <h1>Projects are unavailable</h1>
-          <p>{state.message} No project list is shown until it loads.</p>
+          <p>{state.message}</p>
           <button
             className="button primary-button"
             onClick={() => window.location.reload()}

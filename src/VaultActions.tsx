@@ -498,10 +498,9 @@ export function VaultActions({
               {operation === "deposit" ? (
                 <p>
                   This deposit joins the project's free funds. Only its owner
-                  can approve awards or withdraw free funds, less a 2%
-                  withdrawal fee. Depositors have no refund right. Funding does
-                  not guarantee that the project will deliver work. Your wallet
-                  also charges network gas.
+                  can award or withdraw them, less a 2% withdrawal fee.
+                  Depositors have no refund right. Your wallet also charges
+                  network gas.
                 </p>
               ) : (
                 <p>

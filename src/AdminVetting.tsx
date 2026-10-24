@@ -307,8 +307,8 @@ export function VettingSection({ projectId }: { projectId: string }) {
         <h2 id="admin-vetting">Security vetting</h2>
       </div>
       <p className="admin-status">
-        Review the exact revision before activation. Incomplete scans quarantine
-        it; confirmed malicious results ban it.
+        Incomplete scans quarantine a revision; confirmed malicious results ban
+        it.
       </p>
       {note ? (
         <p className="admin-status" role="status">
@@ -490,7 +490,7 @@ export function ActivationClearance({
         const project = body.projects.find((entry) => entry.id === projectId);
         setClearance(
           !project || project.revision !== revision
-            ? "Project revision changed. Reload before activation."
+            ? "Project revision changed. Reload to see the current revision."
             : `Revision ${revision}: ${LABELS[project.clearance.state]}.`,
         );
       },

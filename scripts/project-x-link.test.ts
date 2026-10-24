@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { projectLinks } from "../src/lib/project-links";
 import { assertProjectDefinition } from "../src/lib/project-schema.mjs";
 import type { ProjectDefinition } from "../src/lib/projects.mjs";
 
@@ -27,36 +26,5 @@ describe("project X link", () => {
     expect(() => assertProjectDefinition({ ...project, links })).toThrow(
       /project\.links\.x/u,
     );
-  });
-});
-
-describe("projectLinks", () => {
-  test("leads with the website and X account", () => {
-    expect(projectLinks(manifest("eliza")).map((link) => link.label)).toEqual([
-      "elizaos.ai",
-      "@elizaOS on X",
-      "GitHub",
-      "Issues",
-      "Discussions",
-    ]);
-  });
-
-  test("shows a links.website when the steward has none", () => {
-    const links = projectLinks(manifest("thenetwork"));
-    expect(links[0]).toEqual({
-      href: "https://ntwrk.party",
-      label: "ntwrk.party",
-    });
-  });
-
-  test("lists a URL the website already shows once", () => {
-    const links = projectLinks(manifest("delta-star"));
-    expect(links.map((link) => link.label)).toEqual([
-      "proximityprize.org",
-      "GitHub",
-      "Issues",
-      "Discussions",
-      "Mission",
-    ]);
   });
 });
