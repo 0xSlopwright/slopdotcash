@@ -1291,6 +1291,11 @@ test("shows an explicit error for invalid data and retries", async ({
   await page.getByRole("button", { name: /Retry/u }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
   expect(attempts).toBe(failedAttempts + 1);
+  // The frozen fixture is older than eight hours: a retained snapshot shows
+  // its stale label instead of passing as current (owner decision D2).
+  await expect(
+    page.getByRole("status").filter({ hasText: "Scores may be outdated" }),
+  ).toBeVisible();
 });
 
 // 320 CSS px covers reflow; 200% text enlargement is a deterministic
