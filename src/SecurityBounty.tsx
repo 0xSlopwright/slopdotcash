@@ -539,18 +539,13 @@ export function SecurityProgramPage({
               : `Verified available on ${formatUtc(terms.funding.verifiedAt)}: ${terms.funding.evidence}`}
           </Fact>
           <Fact term="Capacity">
-            {formatSecurityAmount(
-              (
-                BigInt(terms.amount.grossMinor) * BigInt(terms.capacity.awards)
-              ).toString(),
-              terms.amount,
-            )}{" "}
-            gross can be reserved for approved awards ({terms.capacity.awards}{" "}
-            at the published amount)
+            {terms.capacity.awards} award
+            {terms.capacity.awards === 1 ? "" : "s"} at the published amount
             {terms.capacity.closesAt
               ? `; closes ${formatUtc(terms.capacity.closesAt)}`
               : ""}
-            . {terms.capacity.exhaustionRule}
+            . {terms.capacity.exhaustionRule} An approved award reserves money
+            only from the bounty vault's finalized free balance.
           </Fact>
           <Fact term="Other work">
             {terms.rewardMode === "bounty-only"

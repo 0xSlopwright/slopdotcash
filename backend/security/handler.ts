@@ -27,7 +27,9 @@ import { cachedPublicResponse, type EdgeCache } from "../projects/edge-cache";
 import { readJsonObject } from "../trace/validation";
 import type { AdvisoryReader, GithubPrivateReport } from "./advisories";
 import {
+  ANALYSIS_TIMEOUT_MS,
   analysisMayStart,
+  BACKGROUND_ANALYSIS_TIMEOUT_MS,
   latestCaseAnalysis,
   runCaseAnalysis,
   type SecurityAnalysisReport,
@@ -622,7 +624,7 @@ function nextStep(
 /**
  * Approved award reservations whose money is still inside the vault's free
  * balance: no finalized on-chain commitment exists for them yet, or that
- * commitment is newer than the snapshot (`?` = the oldest snapshot time).
+ * commitment is newer than the snapshot (`?` = the snapshot time).
  * Bind order: project id, currency, snapshot time.
  */
 const OUTSTANDING_RESERVATIONS = `SELECT COALESCE(SUM(CAST(r.gross_minor AS INTEGER)), 0) FROM security_award_reservations r WHERE r.project_id = ? AND r.currency = ? AND NOT EXISTS (SELECT 1 FROM security_settlements s JOIN security_payment_obligations o ON o.id = s.obligation_id WHERE s.case_id = r.case_id AND o.created_at <= ?)`;
@@ -630,8 +632,8 @@ const OUTSTANDING_RESERVATIONS = `SELECT COALESCE(SUM(CAST(r.gross_minor AS INTE
 /**
  * The program's money that an owner can still reserve (owner decision D10,
  * PRD section 10 "verified funds versus pledges"): the finalized free
- * balance of the program's reviewed bounty vaults, from a current snapshot
- * in the program's asset, minus every approved reservation that has not yet
+ * balance of one reviewed bounty vault, from a current snapshot in the
+ * program's asset, minus every approved reservation that has not yet
  * left that free balance. Published amounts and award counts are terms, not
  * funds. Null when no reviewed vault has a current finalized snapshot.
  */
@@ -652,8 +654,18 @@ async function programFunds(
   if (program === undefined || program.funding.state !== "verified-available")
     return null;
   const now = deps.now().getTime();
-  let free = 0n;
-  let snapshotAt: string | null = null;
+  // One payment draws on one vault, so the funds are those of the single
+  // reviewed vault with the largest current finalized free balance. Adding
+  // vaults together would reserve money that no single payment can use.
+  let best: {
+    deployment: { network: string; vault: string };
+    snapshot: {
+      asset_address: string;
+      asset_decimals: number;
+      observed_at: string;
+      free_balance: string;
+    };
+  } | null = null;
   for (const deployment of program.settlement?.deployments ?? []) {
     const snapshot = await deps.db
       .prepare(
@@ -674,25 +686,33 @@ async function programFunds(
       !(now - Date.parse(snapshot.observed_at) <= VAULT_SNAPSHOT_MAX_AGE_MS)
     )
       continue;
-    // An award write must still see the exact balances used by this read.
-    // Keep these internal SQL guards out of the private case response.
-    snapshotGuards.push({
-      sql: "EXISTS (SELECT 1 FROM security_vault_snapshots WHERE project_id = ? AND network = ? AND vault = ? AND asset_address = ? AND asset_decimals = ? AND free_balance = ? AND observed_at = ?)",
-      values: [
-        projectId,
-        deployment.network,
-        deployment.vault,
-        snapshot.asset_address,
-        snapshot.asset_decimals,
-        snapshot.free_balance,
-        snapshot.observed_at,
-      ],
-    });
-    free += BigInt(snapshot.free_balance);
-    if (snapshotAt === null || snapshot.observed_at < snapshotAt)
-      snapshotAt = snapshot.observed_at;
+    if (
+      best === null ||
+      BigInt(snapshot.free_balance) > BigInt(best.snapshot.free_balance)
+    )
+      best = {
+        deployment,
+        snapshot: { ...snapshot, free_balance: snapshot.free_balance },
+      };
   }
-  if (snapshotAt === null) return null;
+  if (best === null) return null;
+  const { snapshot } = best;
+  // An award write must still see the exact balance used by this read.
+  // Keep this internal SQL guard out of the private case response.
+  snapshotGuards.push({
+    sql: "EXISTS (SELECT 1 FROM security_vault_snapshots WHERE project_id = ? AND network = ? AND vault = ? AND asset_address = ? AND asset_decimals = ? AND free_balance = ? AND observed_at = ?)",
+    values: [
+      projectId,
+      best.deployment.network,
+      best.deployment.vault,
+      snapshot.asset_address,
+      snapshot.asset_decimals,
+      snapshot.free_balance,
+      snapshot.observed_at,
+    ],
+  });
+  const free = BigInt(snapshot.free_balance);
+  const snapshotAt = snapshot.observed_at;
   const outstanding = await deps.db
     .prepare(`SELECT CAST((${OUTSTANDING_RESERVATIONS}) AS TEXT) AS total`)
     .bind(projectId, program.amount.currency, snapshotAt)
@@ -1233,27 +1253,29 @@ export function caseInsertStatement(
 
 /**
  * Starts the private analysis of a newly verified case. It runs after the
- * response where the platform allows it, and inline otherwise. `report` is
- * the advisory content that receipt verification already read from GitHub;
- * it stays in memory. Without it, the analysis reads the advisory again.
+ * response where the platform allows it, within the background time limit,
+ * and inline otherwise. `report` is the advisory content that receipt
+ * verification already read from GitHub; it stays in memory. Without it, the
+ * analysis reads the advisory again.
  */
 export async function scheduleAnalysis(
   deps: SecurityApiDependencies,
   caseId: string,
   report: SecurityAnalysisReport | null,
 ): Promise<void> {
-  const job = runCaseAnalysis(
-    {
-      db: deps.db,
-      now: deps.now,
-      advisories: deps.advisories ?? null,
-      analyzer: deps.analyzer ?? null,
-    },
-    caseId,
-    report,
-  );
-  if (deps.waitUntil) deps.waitUntil(job);
-  else await job;
+  const run = (timeoutMs: number) =>
+    runCaseAnalysis(analysisDependencies(deps), caseId, report, timeoutMs);
+  if (deps.waitUntil) deps.waitUntil(run(BACKGROUND_ANALYSIS_TIMEOUT_MS));
+  else await run(ANALYSIS_TIMEOUT_MS);
+}
+
+function analysisDependencies(deps: SecurityApiDependencies) {
+  return {
+    db: deps.db,
+    now: deps.now,
+    advisories: deps.advisories ?? null,
+    analyzer: deps.analyzer ?? null,
+  };
 }
 
 /**
@@ -2738,7 +2760,14 @@ async function automaticAction(
       );
     if (!(await analysisMayStart(deps, row.id)))
       fail(409, "analysis_running", "The analysis is already running");
-    await scheduleAnalysis(deps, row.id, null);
+    // The owner asked for it and waits, so the request keeps the analysis
+    // alive for the full provider time limit.
+    await runCaseAnalysis(
+      analysisDependencies(deps),
+      row.id,
+      null,
+      ANALYSIS_TIMEOUT_MS,
+    );
   }
   const updated = (await loadCase(deps, row.id)) as CaseRow;
   const nextRoles = await caseRoles(deps, updated, actor, terms);

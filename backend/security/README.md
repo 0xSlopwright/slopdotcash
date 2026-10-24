@@ -26,7 +26,8 @@ removed, because its approvers govern restricted case access after closure.
   minutes, minus every approved reservation that has not yet left that free
   balance through a finalized on-chain commitment. Published amounts and
   award counts are terms, not funds. A program without a reviewed vault
-  reserves nothing.
+  reserves nothing. One payment draws on one vault, so with several vaults
+  only the one with the largest current free balance counts.
 - `approvers.dispute` names the program's dispute contact. A Slop moderator
   decides escalated disputes (see "Roles").
 - `intake.repository` must be one of the project repositories.
@@ -119,6 +120,10 @@ and the manual flow below applies.
   zero-data-retention agreement. It never goes through the Surplus
   marketplace or another provider, and there is no fallback: without the key
   every analysis is `unavailable`. A refusal or a cut-off answer is `failed`.
+  The automatic attempt runs after the response and has 25 seconds, because
+  Cloudflare stops that work about 30 seconds after the response; a slower
+  answer is `failed`. The owner's retry runs inside the request and waits up
+  to 120 seconds.
   Only maintainers and assigned triagers see the proposal. The endpoint is
   fixed; only local browser tests may point it at a loopback fixture with
   `SLOP_ANALYSIS_API_ORIGIN` (`http://127.0.0.1:<port>`).
