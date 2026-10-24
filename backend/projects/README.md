@@ -135,6 +135,17 @@ and listing tier, then classifies the change (`src/lib/project-revision-changes.
   between assets), a funded project keeps them, and no separate review
   budget can be added.
 
+`reward.payoutExclusions` lists owners, funded employees and related parties
+who receive no payout (PRD section 7). Each entry names the immutable GitHub
+`actorId` and `nodeId`, the login, the `relationship` and the UTC months it
+covers, from `fromCycle` until `untilCycle` (exclusive, or null). The person
+keeps the public score; the weight leaves the pool, so it does not reduce
+other contributors' shares, and an owner cannot allocate them a private
+amount in an excluded month. Every revision path (owner, admin and stored
+application) refuses a change to who is excluded in the open UTC month or
+earlier (`assertPayoutExclusionTransition`), so a change starts with the next
+month.
+
 Monthly amounts are stored in the reward asset's integer base units (owner
 decision D11). Every reviewed stablecoin has 6 decimals, so its base units
 are the cent-precise micro-units and its display stays in dollars. A token
@@ -317,6 +328,15 @@ which active repositories to collect; an origin that does not serve the
 registry API yet keeps the committed snapshot. `bun run projects:check` proves
 the committed snapshot is canonical and that every active project carries its
 contribution fields.
+
+The sync also records its read time. The build publishes that synced snapshot
+at `/data/project-registry.json` as the last good registry (PRD section 9).
+When the live read fails, list, project, profile, and score pages show that
+registry with a stale label, its sync time, and the failure. Funding,
+management, owner-award, and security-program pages and escrow actions need
+the current manifest, so they show the outage instead. A committed snapshot
+that no sync wrote is not published; those builds show the outage on every
+project route.
 
 A clean scan result reruns setup for the recorded project creator. It reloads
 current GitHub permission and checks the permanent actor ID, installation,

@@ -89,7 +89,15 @@ export function buildEscrowCycle(
     throw new Error("Gross cap exceeds supported range");
   const reviewAllocations = allocateReviewBudgetMinor(
     reviewCap,
-    additiveReviewBudgetWeights(view.ledger),
+    additiveReviewBudgetWeights(
+      view.ledger.filter((event) =>
+        view.leaders.some(
+          (leader) =>
+            leader.actor.id === event.actor.id &&
+            leader.payoutExclusion === null,
+        ),
+      ),
+    ),
   );
   const allocations = allocateIntegerTotal(cap, view.leaders);
   const identities = JSON.parse(text(identityBytes)) as EscrowIdentity[];

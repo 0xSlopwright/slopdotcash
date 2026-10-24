@@ -74,6 +74,18 @@ disabled by `SLOPBOT_CLOSURE_ENABLED = "false"`.
    once, on an upheld appeal or a maintainer reopen. A `scam` close also adds
    the `slopbot: moderator` label for a moderator review of the account.
    Maintainers and authors without the closure evidence are never penalized.
+   The read-only `GET /v1/penalties?project=ID&after=NODE_ID` returns the
+   project's unreversed debits (item node ID, author ID, category, table
+   version, thirds, period) in pages of 100; no review key, verdict or source
+   text. `scripts/generate-leaderboard.ts` reads it for each project with a
+   closed, unmerged pull request in its census and binds each debit to that
+   pull request: GitHub supplies the author and the closure month. The
+   published score subtracts the debit once from that author's score for the
+   same project and UTC month, never below zero (`src/lib/score-penalties.ts`).
+   A reversed debit is absent from the feed, so the next snapshot restores the
+   score. Closed reward cycles bind their own snapshot bytes, so a debit never
+   changes an approved, scheduled or paid award. A feed outage keeps the last
+   published snapshot, as for the value feed.
 9. `/slopbot appeal` from the author, or any reopen, blocks re-closing that
    revision. An author's appeal opens Slopbot triage (`appeals.ts`, owner
    decision D8): an independent higher-effort review of the same revision,
@@ -242,10 +254,6 @@ and publication separately. An unregistered repository must create no record.
 
 ## Not yet implemented
 
-- Score publication of recorded debits. `slopbot_penalties` is the record;
-  the score producer must read it, subtract each unreversed debit from its UTC
-  month without going below zero, and never change an approved, scheduled or
-  paid award.
 - Inbox notices for escalated appeals. Escalation is visible through the
   `slopbot: moderator` label and the appeal comment until the Inbox adds an
   appeal notice kind.
@@ -701,7 +709,9 @@ state, including `COMMENTED`, on every page. Eligibility and assessed value
 determine credit; collection does not discard a finding because the reviewer
 did not select approve or request changes. Review awards use their submission
 time within the scoring window. A later merge or closure does not move an old
-review into the current month. Assessment history still retains that review.
+review into the current month, and that old review does not take a reviewer
+slot or a share from a review inside the window. Assessment history still
+retains that review.
 
 The source collector does not call a model. A failed feed prevents snapshot
 publication; legacy scoring is not a failure fallback.

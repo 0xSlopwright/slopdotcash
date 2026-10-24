@@ -11,6 +11,7 @@ import {
   fundingAssetForNetwork,
 } from "./funding-address.mjs";
 import LEGACY_PROJECTS from "./legacy-projects.json" with { type: "json" };
+import { validatePayoutExclusions } from "./payout-exclusions.mjs";
 import {
   assertRewardAsset,
   REWARD_ASSET_NETWORK_IDS,
@@ -963,6 +964,7 @@ function validateReward(
   const hasReviewBudget = Object.hasOwn(reward, "reviewBudget");
   const hasCycleCaps = Object.hasOwn(reward, "cycleCaps");
   const hasExternalEvaluations = Object.hasOwn(reward, "externalEvaluations");
+  const hasPayoutExclusions = Object.hasOwn(reward, "payoutExclusions");
   exactKeys(
     reward,
     [
@@ -978,6 +980,7 @@ function validateReward(
       "kind",
       "monthlyCapDisplay",
       "monthlyCapMinor",
+      ...(hasPayoutExclusions ? ["payoutExclusions"] : []),
       "paymentMode",
       ...(hasReviewBudget ? ["reviewBudget"] : []),
       "rewardStartAt",
@@ -985,6 +988,11 @@ function validateReward(
     ],
     field,
   );
+  if (hasPayoutExclusions)
+    validatePayoutExclusions(
+      reward.payoutExclusions,
+      `${field}.payoutExclusions`,
+    );
   if (hasExternalEvaluations) {
     validateExternalEvaluations(
       reward.externalEvaluations,

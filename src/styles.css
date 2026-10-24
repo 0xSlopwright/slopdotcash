@@ -633,6 +633,12 @@ textarea:focus-visible {
   letter-spacing: 0.02em;
 }
 
+.registry-stale .data-notice {
+  display: flex;
+  flex-wrap: wrap;
+  margin-block: 12px 0;
+}
+
 .data-notice button {
   display: inline-flex;
   flex: none;
@@ -1740,6 +1746,27 @@ small {
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
+}
+
+.profile-penalties {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.profile-penalties > li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding-block: 10px;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.profile-penalties > li > span {
+  color: var(--muted);
 }
 
 .profile-page .event-list,

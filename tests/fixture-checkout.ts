@@ -9,6 +9,7 @@ import {
   cpSync,
   mkdirSync,
   mkdtempSync,
+  rmSync,
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,28 +19,40 @@ const repositoryRoot = resolve(import.meta.dir, "..");
 
 export function fixtureCheckout(prefix: string): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
-  const archive = spawnSync("git", ["archive", "HEAD"], {
-    cwd: repositoryRoot,
-    encoding: "buffer",
-    maxBuffer: 256 * 1024 * 1024,
-  });
-  if (archive.status !== 0) throw new Error("git archive failed");
-  const extract = spawnSync("tar", ["-x", "-f", "-", "-C", root], {
-    input: archive.stdout,
-  });
-  if (extract.status !== 0) throw new Error("tar extract failed");
-  copyFileSync(
-    join(repositoryRoot, "tests/fixtures/project-registry.mjs"),
-    join(root, "src/lib/project-registry.generated.mjs"),
-  );
-  cpSync(join(repositoryRoot, "tests/fixtures/history"), root, {
-    recursive: true,
-  });
-  symlinkSync(
-    join(repositoryRoot, "node_modules"),
-    join(root, "node_modules"),
-    process.platform === "win32" ? "junction" : "dir",
-  );
-  mkdirSync(join(root, ".bun-tmp"), { recursive: true });
-  return root;
+  try {
+    const archive = spawnSync("git", ["archive", "HEAD"], {
+      cwd: repositoryRoot,
+      encoding: "buffer",
+      maxBuffer: 256 * 1024 * 1024,
+    });
+    if (archive.status !== 0)
+      throw new Error(
+        `git archive failed: ${archive.stderr?.toString() || archive.error || "unknown error"}`,
+      );
+    const extract = spawnSync("tar", ["-x", "-f", "-", "-C", root], {
+      input: archive.stdout,
+    });
+    if (extract.status !== 0)
+      throw new Error(
+        `tar extract failed: ${extract.stderr?.toString() || extract.error || "unknown error"}`,
+      );
+    copyFileSync(
+      join(repositoryRoot, "tests/fixtures/project-registry.mjs"),
+      join(root, "src/lib/project-registry.generated.mjs"),
+    );
+    cpSync(join(repositoryRoot, "tests/fixtures/history"), root, {
+      recursive: true,
+    });
+    symlinkSync(
+      join(repositoryRoot, "node_modules"),
+      join(root, "node_modules"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    mkdirSync(join(root, ".bun-tmp"), { recursive: true });
+    return root;
+  } catch (error) {
+    // A failed setup never returns its path to the caller for cleanup.
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  }
 }

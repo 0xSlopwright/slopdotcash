@@ -307,8 +307,14 @@ export function createRewardCycleProposal(
         ? BigInt(reviewPolicy.committedMinor)
         : BigInt(reviewPolicy.monthlyCapMinor)
       : 0n;
+  const excluded = new Set(
+    view.leaders
+      .filter((leader) => leader.payoutExclusion !== null)
+      .map((leader) => leader.actor.id),
+  );
   const reviewEvents = view.ledger.filter(
-    (event) => event.category === "substantive-review",
+    (event) =>
+      event.category === "substantive-review" && !excluded.has(event.actor.id),
   );
   const reviewAllocations = allocateReviewBudgetMinor(
     reviewBudgetTotal,
@@ -367,11 +373,14 @@ export function createRewardCycleProposal(
           suggestedMinor: accruedMinor,
           accruedMinor,
           approvedMinor: "0",
-          state: wallet
-            ? BigInt(accruedMinor) < BigInt(MINIMUM_TRANSFER_MINOR)
-              ? "held-below-minimum"
-              : "proposed"
-            : "unclaimed",
+          state:
+            excluded.has(leader.actor.id) && BigInt(accruedMinor) === 0n
+              ? "excluded"
+              : wallet
+                ? BigInt(accruedMinor) < BigInt(MINIMUM_TRANSFER_MINOR)
+                  ? "held-below-minimum"
+                  : "proposed"
+                : "unclaimed",
           wallet,
           ...(input.priorUnsafeDestinationReports?.has(leader.actor.id)
             ? {
