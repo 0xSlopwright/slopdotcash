@@ -7,7 +7,7 @@ const { site } = deploymentOrigins(
   deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
 );
 
-test("social membership shows connection points, respects privacy and survives disconnect", async ({
+test("social membership preserves past points and connection privacy without new awards", async ({
   page,
 }, info) => {
   const errors: string[] = [];
@@ -64,6 +64,7 @@ test("social membership shows connection points, respects privacy and survives d
         githubUserId: "123",
         wallets: [],
         payments: [],
+        monthlyAwards: [],
         balances: [],
         directTransfers: [],
         walletObservations: [],
@@ -199,6 +200,14 @@ test("social membership shows connection points, respects privacy and survives d
   ).toHaveCount(0);
   const social = page.getByRole("region", { name: "Connections" });
   await expect(social.getByRole("checkbox")).toHaveCount(2);
+  await expect(social).toContainText(
+    "Connections grant no points or authority.",
+  );
+  await expect(social).not.toContainText("+10 points");
+  await page.screenshot({
+    path: info.outputPath("account-connections.png"),
+    fullPage: true,
+  });
   const community = page.getByRole("region", { name: "People", exact: true });
   const visibilitySaved = page.waitForResponse(
     (response) =>

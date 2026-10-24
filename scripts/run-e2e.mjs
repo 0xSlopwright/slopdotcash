@@ -28,10 +28,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  E2E_MAINTAINER_ACCOUNTS,
   E2E_OWNER,
   E2E_SECURITY_ACCOUNTS,
   startGitHubApiFixture,
 } from "../tests/github-api-fixture.mjs";
+import { startSlopbotWorkerFixture } from "../tests/slopbot-worker-fixture.mjs";
 import { childEnvironment } from "./child-environment.mjs";
 import { prepareE2eFixture } from "./prepare-e2e-fixture.mjs";
 import { runE2ePhase } from "./run-e2e-phase.mjs";
@@ -139,6 +141,13 @@ function prepareRegistryDatabase() {
         { token: sessionToken(), githubId },
       ]),
     ),
+    // Maintainers a moderator bans in tests/e2e/registry.spec.ts.
+    ...Object.fromEntries(
+      Object.entries(E2E_MAINTAINER_ACCOUNTS).map(([role, githubId]) => [
+        role,
+        { token: sessionToken(), githubId },
+      ]),
+    ),
     // Private security bounty roles (tests/e2e/security-bounty.spec.ts).
     ...Object.fromEntries(
       Object.entries(E2E_SECURITY_ACCOUNTS).map(([role, githubId]) => [
@@ -178,12 +187,22 @@ function prepareRegistryDatabase() {
         .toString("base64"),
       SLOP_E2E_PERSIST_TO: persistTo,
       SLOP_E2E_ADMIN_GITHUB_IDS: `${E2E_ADMIN_GITHUB_ID},${E2E_MODERATOR_GITHUB_ID}`,
-      SLOP_E2E_MODERATOR_GITHUB_IDS: `${E2E_ADMIN_GITHUB_ID},${E2E_MODERATOR_GITHUB_ID}`,
+      // The security "dispute" account is a Slop moderator: moderators decide
+      // escalated private-case appeals and related-party award reviews.
+      SLOP_E2E_MODERATOR_GITHUB_IDS: `${E2E_ADMIN_GITHUB_ID},${E2E_MODERATOR_GITHUB_ID},${E2E_SECURITY_ACCOUNTS.dispute}`,
       SLOP_E2E_ADMIN_TOKEN: sessions.admin.token,
       SLOP_E2E_APPLICANT_TOKEN: sessions.applicant.token,
       SLOP_E2E_EMAIL_TOKENS: JSON.stringify(
         Object.fromEntries(
           Object.keys(E2E_EMAIL_ACCOUNTS).map((role) => [
+            role,
+            sessions[role].token,
+          ]),
+        ),
+      ),
+      SLOP_E2E_MAINTAINER_TOKENS: JSON.stringify(
+        Object.fromEntries(
+          Object.keys(E2E_MAINTAINER_ACCOUNTS).map((role) => [
             role,
             sessions[role].token,
           ]),
@@ -212,6 +231,11 @@ async function runRegistryPhase() {
     database.persistTo,
     basePort + 4,
   );
+  const slopbot = await startSlopbotWorkerFixture(
+    packageRoot,
+    `http://127.0.0.1:${githubPort}`,
+    basePort + 5,
+  );
   try {
     return await runPhase(
       "registry",
@@ -221,8 +245,24 @@ async function runRegistryPhase() {
       {
         ...database.env,
         SLOP_E2E_GITHUB_API_ORIGIN: `http://127.0.0.1:${githubPort}`,
+        // A throwaway key for the slopdotcash App stand-in. It mints the
+        // fixture's advisory-read installation tokens in every registry run.
+        SLOP_E2E_INTAKE_APP_KEY: generateKeyPairSync("rsa", {
+          modulusLength: 2048,
+        })
+          .privateKey.export({ format: "der", type: "pkcs8" })
+          .toString("base64"),
+        // Automatic private intake against the loopback fixture, opt-in so
+        // the default lane keeps intake off.
+        ...(process.env.SLOP_E2E_PRIVATE_INTAKE === "1"
+          ? {
+              SLOP_E2E_PRIVATE_INTAKE: "1",
+              SLOP_E2E_INTAKE_GRANT_KEY: randomBytes(32).toString("base64url"),
+            }
+          : {}),
         SLOP_E2E_OUTPUT: "registry",
         SLOP_E2E_NOTIFY_SERVICE: notify.name,
+        SLOP_E2E_SLOPBOT_SERVICE: slopbot.name,
         ...(process.env.SLOP_VETTING_OVERLAY_PATH
           ? { SLOP_VETTING_OVERLAY_PATH: process.env.SLOP_VETTING_OVERLAY_PATH }
           : {}),
@@ -231,6 +271,7 @@ async function runRegistryPhase() {
   } finally {
     github.close();
     notify.close();
+    slopbot.close();
     rmSync(database.persistTo, { force: true, recursive: true });
   }
 }

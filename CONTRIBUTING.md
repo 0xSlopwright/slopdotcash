@@ -7,12 +7,16 @@ safe under hostile input.
 ## MVP scope and phase gate
 
 The [canonical Slop PRD](docs/slop-product-requirements.md) defines
-product scope, MVP delivery packages, acceptance, and completion.
+product scope, acceptance, and completion.
 The Google Docs version mirrors the repository PRD. The repository governs.
 Read the PRD before selecting work, proposing a change, reviewing a PR, or
-implementing a feature. Link the exact PRD requirement and MVP work-package ID
-in every implementation PR. Existing code, an open issue, a model suggestion,
-or a PRD entry marked Future does not approve implementation.
+implementing a feature. In every implementation PR, cite the PRD section that
+the change serves (for example "PRD section 5, Slopbot") and the acceptance
+result that it proves. The PRD defines no work-package IDs; cite an older
+requirement or package ID only where existing records already use it, and do
+not ask maintainers for IDs that the PRD does not define. Existing code, an
+open issue, a model suggestion, or a PRD entry marked Future does not approve
+implementation.
 
 Work must correct a demonstrated defect in the MVP, fulfill a missing approved
 MVP requirement, or prove a relevant improvement to that required behavior.
@@ -72,9 +76,10 @@ policy.
    counsel). You can use the GitHub website, computer use, or the GitHub CLI:
    `gh api -X PUT user/starred/SlopDotCash/slopdotcash` and
    `gh repo fork SlopDotCash/slopdotcash --clone`. Work from your fork.
-2. Read `README.md`, `AGENTS.md`, the canonical PRD, including its delivery requirements.
+2. Read `README.md`, `AGENTS.md`, and the canonical PRD sections that your
+   change affects.
 3. Check existing issues and pull requests for overlapping work. Link the relevant
-   issue and exact PRD references. Do not open an issue to begin work.
+   issue and PRD section. Do not open an issue to begin work.
    Only project owners and maintainers open issues.
 4. Fetch the latest `origin/development` and create a scoped branch from it.
 5. Re-read live GitHub before acting; issue assignment, review, and project
@@ -87,9 +92,10 @@ feature-branch code.
 
 ## Slop bounty: what is accepted
 
-This repository has a $1,000 monthly Slop contributor pool. Maintainers score
-accepted merges; payment follows the public monthly review. The pool is pledged,
-not escrowed or guaranteed.
+This repository has a $1,000 monthly Slop contributor pool. Slopbot scores
+accepted merges, and maintainers may correct a score. Payment follows the
+project's monthly payment process. The pool is pledged, not escrowed or
+guaranteed.
 
 The PRD is binding. Accepted work, inside approved MVP scope:
 
@@ -156,24 +162,27 @@ failed. Do not claim a client was tested when it was not.
 ## Add a project
 
 Add a project on the website, not by pull request. Sign in with GitHub and
-submit the form at [`slop.cash/projects/new`](https://slop.cash/projects/new).
-A Slop admin reviews the application at `/admin`. Approval lists the project
-as paused. Every later change is an append-only D1 revision that an admin
-approves. Do not open a pull request to add or update a project, and do not
-add project JSON or a per-project skill folder to this repository.
+complete setup at [`slop.cash/projects/new`](https://slop.cash/projects/new).
+PRD section 4 defines the target flow: a project becomes ready without routine
+admin approval after complete setup, verified GitHub authority, Slopbot
+installation, and a passed malicious-code scan. Funding is optional and has a
+separate status. Owners publish later changes as append-only D1 revisions;
+changed executable content needs a fresh scan. Where the deployed site still
+shows an admin approval step, that step is implementation to migrate. Do not
+open a pull request to add or update a project, and do not add project JSON or
+a per-project skill folder to this repository.
 
 Slop generates the project's contributor and reviewer skills from its D1
 revision and the one canonical generic template in this repository (PRD
-SKL-03). In the form, write the approved scope, contribution guide, supported
-tasks, required tests, review expectations, security contact, closure policy,
-and any maintainer notes. An admin makes the project active only after the
-generated skills pass review.
+SKL-03). In the form, write the scope, contribution guide, supported tasks,
+required tests, review expectations, security contact, closure policy, and any
+maintainer notes. The generated skills are previewed during setup.
 
 The manifest must use immutable GitHub repository and actor IDs, a reviewed
 license URL/commit/digest, a concrete integration branch, a verified steward,
-and explicit reward and funding states. New proposals stay paused with payment
-and contribution receipts disabled until the corresponding authority and
-production paths are independently verified. GitHub stewardship is not a claim
+and explicit reward and funding states. Payment and contribution receipts
+stay disabled until the corresponding authority and production paths are
+independently verified. GitHub stewardship is not a claim
 of copyright ownership, legal capacity, assignment, or wallet control.
 
 The contributor skill must:
@@ -182,16 +191,22 @@ The contributor skill must:
 - respect the target repository’s instructions and contribution policy;
 - allow any provider, model, and client with exact disclosure;
 - test the result and disclose the exact provider, model, and client;
+- put the visible `Made via @slopdotcash` line once in every PR it opens;
 - offer signed receipts and private traces as optional evidence, never as a
   submission prerequisite; upload only contributor-reviewed traces through the
   authenticated write-only path;
+- after the PR exists, record a `pull_request_opened` event that names the PR
+  node ID through the contributor's own authenticated Slop session;
 - never claim an issue, publish a placeholder PR, handle keys, or move money.
 
 The current reviewer skill is separate and advisory. The PRD requires free Slopbot on registered
 repositories. Bot closure and security enforcement still need reviewed
 protocol/permission changes before activation. It checks correctness, tests,
-scope, security, duplication, evidence, and usefulness. Automation may propose
-a score or hold; a human decides acceptance, exclusions, and money.
+scope, security, duplication, evidence, and usefulness. Slopbot may score,
+apply the published penalty table, label uncertain findings after the 7-day
+maintainer window, and triage appeals. A human decides merges, escalated
+disputes, exclusions, bounty awards, and any money outside the automatic
+monthly distribution.
 
 Run at minimum:
 
@@ -252,8 +267,8 @@ the canonical boundary and prove the real path.
 
 ## Pull request scope and writing
 
-Every PR must identify its PRD requirement and MVP package, explain the actual
-problem and useful result, and state the evidence that proves the result.
+Every PR must cite its PRD section, explain the actual problem and useful
+result, and state the acceptance result and the evidence that proves it.
 Compare reasonable alternatives and explain reuse or simplification. New types,
 dependencies, or systems need a concrete requirement existing code cannot meet.
 Keep descriptions specific to the actual diff; tests and line counts alone do
@@ -266,12 +281,38 @@ expected results, actual results, the exact tested revision, and limitations.
 Include `Made via @slopdotcash` on PRs without replacing required model
 attribution. Owners and maintainers write issues; contributors write PRs.
 
-## Quality gate
+The attribution rule (the recorded decision in PRD section 11; sections 4 and 5) has two
+levels:
+
+| Purpose | Required evidence |
+| --- | --- |
+| Ordinary submission | The visible `Made via @slopdotcash` line and the exact provider, model, and client. A signed run receipt is optional and never blocks submission. |
+| Automatic closure or penalty | The author is a slop.cash member, matched by immutable GitHub ID, and has a `trace_runs` row from their own authenticated Slop session for this project with a `pull_request_opened` event that names this PR node ID. |
+
+A copied marker or footer alone never proves membership or skill use. Usage
+totals and traces are diagnostic only; they never set a reward and never gate a
+submission.
+
+## Definition of done
+
+A PR is done when it cites its PRD section, the affected flow produces the
+stated acceptance result at the exact head (including its failed, unavailable,
+and uncertain paths where they apply), new behavior has focused success and
+failure-path tests, the checks below pass, and the evidence for the affected
+surface is attached. A merge does not prove deployment, and a deployment does
+not prove provider, chain, or payment availability.
+
+Release checks are engineering checks. Deployment identity, deployed-byte
+comparison, DNS, TLS, redirects, and security headers belong to the release
+PR from `development` to `main` and to the deployment workflow. Other PRs mark
+those rows `N/A - not a release`.
 
 For documentation-only changes, verify instructions, links, PRD
 consistency, and the identical AGENTS/CLAUDE files. Application end-to-end
 evidence is not proof of prose correctness; explain its applicability and
 retain required checks. Do not add artificial application tests for prose.
+
+## Quality gate
 
 Install the pinned toolchain and run the complete repository check:
 
@@ -294,9 +335,10 @@ UI work includes before/after desktop and mobile screenshots, accessibility
 results, console/network logs, uploaded walkthrough and evidence videos, and
 detailed test steps and expected results. Installer or skill work
 includes the generated archive/checksum and a fresh real-repository forward
-test. Deployment work includes the tested SHA, workflow and deploy IDs,
-immutable Pages URL, deployed-byte comparison, DNS, TLS, redirects, and security
-headers. Use `N/A - <reason>` only when an item genuinely cannot apply.
+test. Release and deployment work includes the tested SHA, workflow and deploy
+IDs, immutable Pages URL, deployed-byte comparison, DNS, TLS, redirects, and
+security headers. Use `N/A - <reason>` only when an item genuinely cannot
+apply.
 
 Do not commit captured evidence unless a protocol explicitly requires the
 artifact. A green local test is not proof of merge, deployment, provider

@@ -2,7 +2,7 @@
  * EVM fee-wallet client for Base, Ethereum and Robinhood Chain. Routes come
  * from the KyberSwap Aggregator API. Every built swap is decoded and checked
  * before signing: the pinned router, the exact input token and amount, the
- * network stablecoin as output, the fee wallet as receiver, no extra fee
+ * network's Circle USDC as output, the fee wallet as receiver, no extra fee
  * receivers, and a signed minimum no lower than the recorded quote minimum.
  */
 
@@ -36,6 +36,43 @@ import type {
 } from "./core";
 
 const KYBER_API = "https://aggregator-api.kyberswap.com";
+/** KyberSwap's address for the chain's native currency, used to price gas. */
+const NATIVE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+/** The permissionless ProjectEscrow fee claim (contracts/evm/adapter.ts). */
+const VAULT_FEE_ABI = [
+  {
+    type: "function",
+    name: "accruedFees",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint128" }],
+  },
+  {
+    type: "function",
+    name: "feeRecipient",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "token",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "address" }],
+  },
+  {
+    type: "function",
+    name: "claimFees",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [],
+  },
+] as const;
+const CLAIM_FEES = encodeFunctionData({
+  abi: VAULT_FEE_ABI,
+  functionName: "claimFees",
+});
 const DEADLINE_SECONDS = 20 * 60;
 const RECEIPT_WAIT_MS = 60_000;
 
@@ -143,6 +180,12 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
   const sleep =
     options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const router = definition.router as Address;
+  /** The USDC target; a network without a verified one never quotes or signs. */
+  const usdc = (): string => {
+    if (definition.usdc === null)
+      throw new Error(`no verified USDC target on ${config.network}`);
+    return definition.usdc;
+  };
   const wallet = config.feeWallet as Address;
   const chain: Chain = defineChain({
     id: options.chainIdOverride ?? (definition.chainId as number),
@@ -254,7 +297,7 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
     return { raw, hash: keccak256(raw) };
   }
 
-  return {
+  const self: ChainClient & { address(): string | null } = {
     address: () => account?.address.toLowerCase() ?? null,
 
     async balance(token) {
@@ -272,7 +315,7 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
         route = await kyber<KyberRoute>(
           `routes?${new URLSearchParams({
             tokenIn: token,
-            tokenOut: definition.stablecoin,
+            tokenOut: usdc(),
             amountIn: amount.toString(),
             gasInclude: "true",
           })}`,
@@ -288,7 +331,7 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
       if (
         route.routerAddress.toLowerCase() !== router ||
         summary.tokenIn.toLowerCase() !== token ||
-        summary.tokenOut.toLowerCase() !== definition.stablecoin ||
+        summary.tokenOut.toLowerCase() !== usdc() ||
         summary.amountIn !== amount.toString() ||
         !/^\d+$/u.test(summary.amountOut)
       )
@@ -376,7 +419,7 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
       const fresh = await kyber<KyberRoute>(
         `routes?${new URLSearchParams({
           tokenIn: token,
-          tokenOut: definition.stablecoin,
+          tokenOut: usdc(),
           amountIn: quote.amountIn.toString(),
           gasInclude: "true",
         })}`,
@@ -413,7 +456,7 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
           : decoded.args[1];
       if (
         desc.srcToken.toLowerCase() !== token ||
-        desc.dstToken.toLowerCase() !== definition.stablecoin ||
+        desc.dstToken.toLowerCase() !== usdc() ||
         desc.dstReceiver.toLowerCase() !== wallet ||
         desc.amount !== quote.amountIn ||
         desc.feeReceivers.length !== 0 ||
@@ -472,7 +515,9 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
           abi: erc20Abi,
           eventName: "Transfer",
           logs: receipt.logs.filter(
-            (log) => log.address.toLowerCase() === definition.stablecoin,
+            // The row's own target, so a send reconciles against the asset
+            // it was signed for.
+            (log) => log.address.toLowerCase() === row.targetToken,
           ),
         });
         const amountOut = logs
@@ -506,5 +551,70 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
         };
       return { kind: "rebroadcast" };
     },
+
+    vaultFees: {
+      async accrued(vault) {
+        const read = <F extends "accruedFees" | "feeRecipient" | "token">(
+          functionName: F,
+        ) =>
+          client.readContract({
+            address: vault as Address,
+            abi: VAULT_FEE_ABI,
+            functionName,
+          });
+        const [amount, recipient, token] = await Promise.all([
+          read("accruedFees"),
+          read("feeRecipient"),
+          read("token"),
+        ]);
+        // A claim pays only the vault's own fee recipient; another wallet's
+        // fees are not this run's to claim.
+        if (
+          (amount as bigint) === 0n ||
+          (recipient as string).toLowerCase() !== wallet
+        )
+          return null;
+        return {
+          asset: (token as string).toLowerCase(),
+          amount: amount as bigint,
+        };
+      },
+
+      async claimCostMicro(vault) {
+        const [gas, fees] = await Promise.all([
+          client.estimateGas({
+            account: wallet,
+            to: vault as Address,
+            data: CLAIM_FEES,
+            value: 0n,
+          }),
+          client.estimateFeesPerGas(),
+        ]);
+        const priced = await self.quote(
+          NATIVE,
+          ((gas * 13n) / 10n) * fees.maxFeePerGas,
+        );
+        return "noRoute" in priced ? null : priced.amountOut;
+      },
+
+      async claim(vault) {
+        // One send at a time: a claim waits until no earlier fee-wallet
+        // transaction is pending, so a resend can never race the first.
+        const [latest, pending] = await Promise.all([
+          client.getTransactionCount({ address: wallet, blockTag: "latest" }),
+          client.getTransactionCount({ address: wallet, blockTag: "pending" }),
+        ]);
+        if (pending !== latest)
+          throw new Error("an earlier fee-wallet transaction is still pending");
+        const sent = await signAndSend(vault as Address, CLAIM_FEES, latest);
+        await sendRaw(sent.raw);
+        const receipt = await waitForReceipt(sent.hash);
+        if (!receipt) throw new Error(`claim ${sent.hash} not mined in time`);
+        if (receipt.status !== "success")
+          throw new Error(`claim ${sent.hash} reverted`);
+        return { txId: sent.hash };
+      },
+    },
   };
+  return self;
 }

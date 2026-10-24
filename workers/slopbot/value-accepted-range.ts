@@ -1,6 +1,10 @@
 import { valueBlobReader } from "./value-blob";
 import type { EvidenceClient, FileChange } from "./value-evidence";
-import { hasCompleteValuePatch } from "./value-patch";
+import {
+  hasCompleteValuePatch,
+  valueDeletionCount,
+  valuePatch,
+} from "./value-patch";
 import { readValueTree } from "./value-tree";
 
 export interface AcceptedValueRange {
@@ -59,8 +63,8 @@ export async function collectAcceptedValueRange(
       return null;
     overlappingDependency ||=
       accepted.additions !== submitted.additions ||
-      accepted.deletions !== submitted.deletions ||
-      accepted.patch !== submitted.patch;
+      valueDeletionCount(accepted) !== valueDeletionCount(submitted) ||
+      valuePatch(accepted) !== valuePatch(submitted);
   }
   const blob = valueBlobReader(client, repository);
   const proof: AcceptedValueRange = {

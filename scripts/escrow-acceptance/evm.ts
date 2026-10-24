@@ -24,8 +24,10 @@ import {
   EVM_ESCROW_EVENT_TOPICS,
   evmAwardId,
   type evmBindingTypedData,
+  evmVaultKey,
   readVaultTotals,
 } from "../../contracts/evm/adapter";
+import { captureUpgrade } from "../../contracts/evm/integration/upgrade";
 import {
   ESCROW_NETWORKS,
   type EscrowDeployment,
@@ -77,8 +79,8 @@ const FACTORY = parseAbi([
   "function identityAuthority() view returns (address)",
   "function feeRecipient() view returns (address)",
   "function bindingDelay() view returns (uint64)",
-  "function vaults(bytes32,address) view returns (address)",
-  "function create(bytes32,address,address,address) returns (address)",
+  "function vaults(bytes32) view returns (address)",
+  "function create(bytes32,address,uint8) returns (address)",
 ]);
 const VAULT = parseAbi([
   "function awards(bytes32) view returns (uint64 actorId,uint128 gross,uint128 fee,bytes32 sourceDigest,uint64 committedAt,bool paid)",
@@ -563,36 +565,30 @@ export async function runEvm(
       options?: { gas?: bigint; expect?: "success" | "reverted" },
     ) => ready(() => chain.send(steps, key, account, to, data, options));
 
-    // 1. The registrar creates a fresh vault for this run and asset.
+    // 1. The owner creates its own ordinary vault for this run and asset.
+    const vaultKey = evmVaultKey({
+      owner: keys.owner.address,
+      projectId: entry.onchainProjectId,
+      asset,
+    });
     let vault = (
-      await chain.read<string>(factory, FACTORY, "vaults", [
-        entry.onchainProjectId,
-        asset,
-      ])
+      await chain.read<string>(factory, FACTORY, "vaults", [vaultKey])
     ).toLowerCase();
     if (vault === ZERO) {
       if (steps["create-vault"]?.status === "success")
         throw new Error("Recorded vault creation is missing from the factory");
       await send(
         "create-vault",
-        keys.registrar,
+        keys.owner,
         factory,
         encodeFunctionData({
           abi: FACTORY,
           functionName: "create",
-          args: [
-            entry.onchainProjectId as Hex,
-            asset as Hex,
-            keys.owner.address,
-            keys.owner.address,
-          ],
+          args: [entry.onchainProjectId as Hex, asset as Hex, 0],
         }),
       );
       vault = (
-        await chain.read<string>(factory, FACTORY, "vaults", [
-          entry.onchainProjectId,
-          asset,
-        ])
+        await chain.read<string>(factory, FACTORY, "vaults", [vaultKey])
       ).toLowerCase();
     }
     if (!steps["create-vault"])
@@ -618,6 +614,11 @@ export async function runEvm(
         rotationDelaySeconds: null,
         factory,
         factoryCodeSha256,
+        evmUpgrade: await captureUpgrade(
+          (method, params) => jsonRpc(rpcUrl, method, params),
+          factory,
+          vault,
+        ),
         registrar: keys.registrar.address.toLowerCase(),
       };
       entry.deployment = { ...deployment };
@@ -867,7 +868,6 @@ export async function runEvm(
       totalPayoutFees: (amounts.feeA + amounts.feeB).toString(),
       totalGrossWithdrawn: amounts.withdrawGross.toString(),
       totalWithdrawalFees: amounts.withdrawFee.toString(),
-      totalServiceFees: "0",
       freeBalance: "0",
       reservedPrincipal: "0",
       reservedFees: "0",

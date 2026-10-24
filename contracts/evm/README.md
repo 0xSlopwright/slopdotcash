@@ -1,13 +1,33 @@
-# EVM escrow v4
+> Replacement deployment policy, approved 24 October 2026: factory and vault
+> logic use OpenZeppelin v5.5.0 UUPS proxies. The deployment authority controls
+> upgrades without a timelock. Fee and identity keys cannot upgrade. New release
+> deployments use zero award delay and immediate identity-authority rotation.
+> Legacy delay examples below describe previous deployments; they do not set
+> the replacement deployment policy.
+>
+> `ESCROW_UPGRADE_AUTHORITY` is required. Implementations disable initialization;
+> proxies initialize atomically. `setVaultImplementation` selects logic for new
+> vaults only. Existing vaults upgrade individually with `upgradeToAndCall`.
+> Factory upgrade-authority transfer requires recipient acceptance and changes
+> who can upgrade every vault from that factory. It has no waiting period.
+> Verify the proxy code, ERC-1967 implementation address, implementation code
+> digest and upgrade authority, not only the proxy bytecode. Keep storage layout
+> compatible and prove funded lifecycle continuity before each upgrade.
 
-This is an immutable escrow implementation for one project and one token. The
-token can be any standard ERC-20 with any decimals: Circle USDC, Paxos USDG or
-a project token. One factory on each chain creates one vault for each
-(project ID, token) pair. It
+# EVM escrow v5
+
+This is an owner-upgradeable escrow implementation for one project, one token and one
+purpose. The token can be any standard ERC-20 with any decimals: Circle USDC,
+Paxos USDG or a project token. Anyone can call the factory to create a vault
+for itself. The caller is the owner, and the factory keeps one vault for each
+(owner, project ID, token, purpose). The purpose is `Ordinary` (0) for ordinary
+awards or `Bounty` (1) for private bounties, so one project can hold separate
+ordinary and bounty vaults for the same token (owner decision D13, 24 October
+2026). It
 has no proxy, owner change, token approval, arbitrary call, rescue, claim
 expiry, or award cancellation entry point. An approved award remains reserved until it is paid. The owner can cancel only a wallet binding that has
 not paid yet, and only inside a bounded window. The only mutable authority is
-the factory's identity authority, replaced by a public 7-day timelock. This
+the factory's identity authority, replaced by a public registrar-authorized rotation. This
 code has local EVM execution evidence only. It has not received an independent
 security review or a public testnet deployment.
 
@@ -33,17 +53,21 @@ The contract reads only `block.timestamp` and `block.chainid`, never `block.numb
 
 ## Authority and identity
 
-The factory registrar creates one vault for each nonzero project ID and token
-in that factory and holds no money power. The registrar, the fee recipient and
-the identity authority are explicit constructor parameters; the deploying
-account holds no role. Anyone can deposit. The project owner approves awards
-and withdraws free funds to an immutable refund address. The identity authority
+`create(projectId, token, purpose)` is permissionless and makes `msg.sender`
+the owner. A vault proves only which account created it. The project registry
+decides which owner's vault a project uses, so a vault that another account
+creates for the same project ID never replaces or reaches the owner's vault.
+The registrar creates no vaults and holds no money power. The registrar, the
+fee recipient, identity authority and upgrade authority are explicit initializer parameters.
+The deploying account holds an upgrade role only if selected as upgrade authority. Anyone can deposit. The project owner
+approves awards and withdraws free funds to itself. An ordinary vault also
+takes the bounded monthly commitment below. The identity authority
 is a factory-level address that every vault reads; it is Slop's attester key. A
 binding needs two signatures. The identity authority submits the
 `bindDestination` transaction, and the destination wallet signs an EIP-712
 message over the chain ID, vault, actor ID, destination, expected predecessor
 version, wallet-claim digest and expiry (`DestinationBinding` under the
-`SlopProjectEscrow` version `4` domain). The vault recovers the signer with
+`SlopProjectEscrow` version `5` domain). The vault recovers the signer with
 `ecrecover` and rejects a binding whose signer is not the destination, so the
 authority alone cannot point funds at a wallet it does not hold. Only an
 externally owned account can produce that signature; a contract wallet cannot
@@ -59,59 +83,52 @@ no reusable attestation blob. Each binding includes a reviewed wallet-claim
 digest, an expected predecessor version, and an expiry that bounds submission
 of both signatures. Once accepted, the binding persists. The authority must
 independently verify GitHub login and the current registered claim before
-submission. A compromised authority cannot redirect unpaid funds on its own;
-with a colluding wallet it can propose a new destination, which the delays
-below exist to catch. It cannot change awards or withdraw funds. Two delays
-limit that risk, both of length
-`bindingDelay`. A new or rotated binding activates `bindingDelay` seconds after
-it is made. An award can be paid only `bindingDelay` seconds after it is
-committed (`committedAt`), so a binding placed before the actor had any award
-still gives the owner a full delay measured from the moment money is attached
-to it. The owner's exact power is `cancelBinding(actorId, version)` on the
-latest binding, allowed while that binding waits out its own delay or while an
-award to the actor is inside its commit delay, and never on a binding that has
-already paid. A cancelled binding never pays; only a new binding (the next
-version, with a new delay and a new wallet signature) can follow. Between two
-payments to an actor, the owner can cancel at most `MAX_CANCELS_BETWEEN_PAYMENTS`
-(3) times; the next binding cannot be cancelled and pays after its delay. A
-payment resets the count. The cap does not apply while the factory has a
-pending identity authority rotation (`pendingIdentityAuthority` set): then
-every cancel is allowed and none is counted, because only the registrar can
-open that public 7-day window and the owner needs an unbounded number of
-cancels to outlast a stolen key's notice period. Once the rotation executes or
-the registrar withdraws it, the cap applies again with the count unchanged.
-The owner can therefore delay a
-contributor's payout by a bounded number of delays, but can never take an
-approved award back or redirect it. The constructor rejects a delay below one
-hour or above 30 days; production deployments use at least 48 hours
-(`MIN_PRODUCTION_BINDING_DELAY`), and the adapter checks the deployed
-`bindingDelay` against the reviewed manifest. Use separate test identities for
-the owner, attester, registrar, and gas sponsor.
+submission. A verified binding activates immediately. The `activatesAt` event field records
+that transaction's block time. Only the latest version may receive payment.
+An award still waits `bindingDelay` seconds from its commitment. This parameter
+also retains the owner's review period for cancelling an unpaid binding; it
+no longer delays wallet activation. The owner may cancel the latest unpaid
+binding during that review period or an award's commitment period. A cancelled
+version never pays; a new co-signed version is required.
+
+The cancellation cap remains three between payments, waived during a pending
+factory authority rotation. Cancellation must execute before payment. For an
+already eligible award, there is no guaranteed reaction period after a wallet
+change. Protect the identity authority and verify account and wallet proof
+before signing. A compromised authority with a colluding destination wallet
+can redirect an eligible payment. Authority rotation does not reverse payments.
+
+The initializer bounds the award/review period to zero through
+30 days. New production deployments use zero. The adapter
+checks this parameter against the reviewed manifest. Use separate identities
+for the owner, attester, registrar, and gas sponsor.
 
 ### Identity authority rotation
 
 The factory holds `identityAuthority` and one pending replacement. The
 registrar calls `proposeIdentityAuthority(next)`; the proposal is public in
-`IdentityAuthorityRotationProposed` with its effective time, 7 days after the
-proposal (`AUTHORITY_ROTATION_DELAY`). The registrar can cancel its own pending
-proposal with `cancelIdentityAuthorityRotation`. After the effective time
+`IdentityAuthorityRotationProposed` with its effective time, the proposal block time
+(`AUTHORITY_ROTATION_DELAY = 0`). The registrar can cancel its own pending
+proposal with `cancelIdentityAuthorityRotation`. Immediately after the proposal
 anyone can call `executeIdentityAuthorityRotation`, which emits
 `IdentityAuthorityRotated`; the current authority has no call that blocks or
 delays it. Until execution the current authority keeps binding; afterwards only
 the new one can. Bindings are stored per vault and actor and do not reference
-the authority, so every existing binding, pending or active, stays valid across
+the authority, so every existing binding, cancelled or active, stays valid across
 a rotation, and `pay` never reads the authority. The next authority must be
 nonzero and differ from the current authority and the registrar. Vaults are
 created only by the factory and read `factory.identityAuthority()`. The reviewed
 manifest pins the factory address, its runtime code digest
 (`factoryCodeSha256`) and its registrar, and the adapter checks that the factory
-created the vault for its project ID and has the reviewed asset, fee recipient,
-binding delay and 7-day `AUTHORITY_ROTATION_DELAY`. A vault from a factory with
+created the vault under `vaultKey(owner, projectId, token, purpose)`, that the
+vault purpose matches the payout policy, and that the factory has the reviewed
+asset, fee recipient,
+binding delay and zero `AUTHORITY_ROTATION_DELAY`. A vault from a factory with
 other rotation rules therefore fails verification. The manifest's
 `identityAuthority` is the authority at activation; the adapter does not compare
 it with the authority in force, because after activation the authority changes
-only through this timelock. A rotation therefore never interrupts verification
-or payment, and the manifest stays immutable.
+through this rotation. An identity rotation preserves bindings and payment evidence.
+A code upgrade requires new implementation evidence in an appended manifest revision.
 
 ### Key recovery runbook
 
@@ -122,36 +139,26 @@ key and is never used for recovery.
 Attester key lost: the authority can no longer bind, so awards to actors
 without an active binding wait; nothing is lost and no reserve moves. The
 registrar proposes the replacement key, publishes the proposal transaction,
-and executes the rotation after 7 days. Existing bindings keep paying
+and executes the rotation immediately. Existing bindings keep paying
 throughout. A contributor whose binding was pending or missing signs nothing
 new unless the wallet signature already collected has expired.
 
-Attester key compromised: the registrar proposes the replacement at once; the
-exposure window is 7 days. During it the attacker can submit only bindings
-that a wallet co-signs, each activating after `bindingDelay`. Every project
-owner watches `DestinationBound` and cancels any binding it did not expect
-with `cancelBinding`, which costs the contributor a delay and nothing else.
-While the proposal is pending, `MAX_CANCELS_BETWEEN_PAYMENTS` does not apply
-and cancels are not counted, so the owner's cover does not depend on how many
-cancels it had spent on that actor before the compromise. The owner cancels
-late in each binding's delay; each cancel forces the attacker to bind again
-with a fresh delay, so the attacker's last binding, made before execution,
-activates at least `bindingDelay` after it was made, and the new authority
-binds the contributor's wallet as the next version at execution, before that
-binding activates. The old key cannot bind after execution, and only the
-latest binding pays. `test_H1_stolenAuthorityCannotTakeAnAward` and
-`test_H1_stolenAuthorityCannotTakeAnAwardAfterPriorCancel` in
-`test/BoundedAttester.t.sol` run this sequence, the second starting with one
-earlier cancel on the actor, and assert that the attacker receives nothing.
-Rotation never cancels or re-points a binding by itself, so review every
-binding made during the window.
+Attester key compromised: the registrar proposes a replacement immediately
+and executes it immediately. The owner may
+cancel unexpected unpaid bindings within their review windows. Such a cancel
+must execute before payment; it is not a guaranteed recovery mechanism.
+Pending rotation waives the cancellation count, but it does not pause payment
+or remove the current authority before execution. After execution, the old key
+cannot bind; the new authority and contributor can replace the latest binding.
+Review bindings made during the incident. Rotation neither reverses a payment
+nor replaces an existing binding by itself.
 
 Registrar key lost or compromised: there is no second rotation path; the
 registrar is the recovery authority, so choose it at factory deployment and
 record its custody in the deployment evidence. A compromised registrar can
 propose a rotation to a key it controls, but still needs a wallet co-signature
-per binding and still faces the delay and the owner cancel; the public 7-day
-proposal is the notice to deploy a new factory for new projects.
+per binding. The separate upgrade authority can authorize a reviewed code change
+for recovery; that power can also change fund-handling logic.
 
 Project owner key lost: deposits, awards and withdrawals from that vault stop;
 reserved awards still pay to active bindings. There is no owner change in this
@@ -176,6 +183,55 @@ equal `awardId(sourceDigest)`, which is
 `keccak256(abi.encode(chainId, vault, sourceDigest))`. Another vault cannot
 claim the same ID first, so ledger IDs stay unique across projects.
 
+## Bounded monthly commitment
+
+`commitAward` stays owner-only. To let the monthly coordinator commit a month
+without the owner's wallet, an ordinary vault has one more path:
+
+- The owner calls `setMonthlyCommitment(cap, enabled)`. It is off with a zero
+  cap when the vault is created. "On" needs a positive cap. The owner can turn
+  it off at any time (the opt-out); while it is off, no monthly allocation can
+  commit. Awards that are already committed stay committed.
+- A period is a calendar UTC month written as `YYYYMM` (owner decision D1). Its
+  window opens `MONTHLY_CUTOFF_DELAY` (72 hours) after the month ends, at 00:00
+  UTC on the 4th, and closes when the next month's window opens.
+  `monthlyWindow(period)` returns both times. Only one period is open at a
+  time.
+- The identity authority signs the EIP-712 message
+  `MonthlyAllocation(uint32 period, bytes32 allocationRoot)` under the vault's
+  `SlopProjectEscrow` version `5` domain, which binds the chain and the vault.
+  `monthlyDigest(period, root)` returns the digest.
+- Anyone calls `commitMonthly(period, awards, signature)` inside the window.
+  `awards` is the list of `(actorId, gross, sourceDigest)` in allocation order.
+  The vault rebuilds `allocationRoot(awards)` and requires the authority's
+  signature over it. The full gross total must be within `monthlyCap`; the free
+  balance must cover all awards that are not already reserved or paid.
+  `monthlyRoots(period)` must be empty, so each period commits once.
+  Each new award takes the 2% payout fee, consumes its source digest, gets the
+  ID `awardId(sourceDigest)`, and pays through the ordinary binding rules.
+  An award already committed by the owner is counted once when its actor,
+  gross amount, source digest and fee match. Its payment state and commitment
+  time stay unchanged. A conflicting award makes the whole call revert.
+- The allocation root is a Merkle tree over the awards in order. A leaf is
+  `keccak256(0x00, actorId, gross, sourceDigest)` and a node is
+  `keccak256(0x01, left, right)`, both packed. An odd last node moves up
+  unchanged. Solana commits awards one at a time, so it uses a sha256 Merkle
+  sum tree that also binds each subtree's gross total (see
+  `contracts/solana/README.md`).
+
+The authority's role therefore grows from wallet binding to monthly
+attestation. It still cannot withdraw, redirect or pay funds, and it cannot
+commit more than one owner cap in each calendar month. A monthly award, like
+any award, pays only to a binding that the destination wallet signed, after the
+commit delay, and the owner can still cancel a binding in
+those windows. A stolen authority key can reserve at most one cap for each
+month until the registrar's rotation executes; the owner limits that exposure
+with the cap and the opt-out. `test/MonthlyCommitment.t.sol` tests the cap, one
+commitment per period, the opt-out, the window, the signature binding over vault,
+period and root, replay, the wrong attester, the rotation, purpose isolation and
+permissionless creation. The invariant handler in `test/OpusInvariant.t.sol`
+commits signed monthly allocations from random callers.
+
 The first version uses individual commit and pay calls. Dispatchers isolate
 failed recipients by submitting separate transactions. No account can sweep
 unclaimed awards. Missing destinations cause a revert and leave reserves intact.
@@ -190,22 +246,21 @@ and the recipient receives `gross - fee`. A 100-USDC award costs the project
 paid in the vault token. Each unused-fund withdrawal pays the same 2%:
 `withdrawalFee(gross) = payoutFee(gross) = floor(gross / 50)`, rounded down once
 per withdrawal (PRD section 18). Withdrawing 850 USDC of free funds pays 17 USDC
-and sends 833 USDC to the refund destination. A withdrawal under 50 base units
+and sends 833 USDC to the owner. A withdrawal under 50 base units
 pays no fee, so a split saves under one base unit per transaction, far less than its
 gas. A one-unit award requires one unit of funding and has a zero fee; tiny
 award rounding is intentional.
 
 Payout and withdrawal fees accrue in the vault as `accruedFees`. Anyone can
-call `claimFees()` to move them to the immutable fee recipient. A blocked fee
+call `claimFees()` to move them to the configured fee recipient. A blocked fee
 recipient (for example, a USDC blacklist) stops only `claimFees`; payouts and
-refunds continue. Refunds go only to the owner: the constructor requires
-`refundDestination == owner`.
+refunds continue. Refunds go only to the owner.
 
 `deposit(amount)` is permissionless. Any account approves the vault and calls
 it; the vault pulls the exact amount from the caller, credits `freeBalance`,
 and emits `Deposited(depositor, amount)`. All deposits join one free balance.
 A depositor gets no refund right: only the owner commits free funds to awards
-or withdraws them to its refund destination. Direct transfers to the vault are
+or withdraws them to itself. Direct transfers to the vault are
 not credited and cannot be rescued.
 
 Deposits and transfers must move exact amounts. The vault compares balances
@@ -226,11 +281,9 @@ The conservation identities are unchanged by the binding lifecycle:
 ```
 totalDeposited = freeBalance + reservedPrincipal + reservedFees
                + totalPaid + totalPayoutFees + totalGrossWithdrawn
-               + totalServiceFees
 vault balance  = freeBalance + reservedPrincipal + reservedFees + accruedFees
                + unsolicited direct transfers
 accruedFees + claimed fees = totalPayoutFees + totalWithdrawalFees
-                           + totalServiceFees
 ```
 
 `totals()` returns every counter and the vault token balance in one call, so a
@@ -238,10 +291,9 @@ reader gets one consistent block. Each counter also has its own public getter.
 The adapter's `readVaultTotals` reads `totals()`, `token()` and `decimals()` at
 one pinned finalized block and checks the first identity.
 
-`chargeService(amount, invoiceDigest)` (PAY-10) lets only the owner pay one
-Slopbot invoice from `freeBalance`. The amount accrues for the fee recipient
-like other fees. Each nonzero invoice digest can be charged once. It cannot
-spend reserved principal or reserved fees.
+The vault has no service charge. Slopbot is free (PRD section 5), so no call
+moves free funds to the fee recipient except the payout and withdrawal fees
+(owner decision D13 removed `chargeService`).
 
 The owner can commit an award to any GitHub actor, including an account the
 owner controls. Because the withdrawal fee equals the payout fee (repository
@@ -256,13 +308,13 @@ counters are not finality proof; backend receipts must use finalized chain
 state. Before indexing an event or signing, the adapter verifies the finalized
 runtime code SHA-256 and the token, owner, fee recipient, binding delay and
 factory (address, runtime code digest, registrar and rotation delay) against
-the reviewed manifest, and that the factory indexed this vault under its
-project ID and token. `codeSha256` hashes decoded `eth_getCode` bytes,
-including constructor immutables. The current manifest has one sponsor
-address, so activation also requires the refund destination to equal that
-owner.
+the reviewed manifest, that the vault purpose matches the payout policy, and
+that the factory indexed this vault under its owner, project ID, token and
+purpose. `codeSha256` hashes decoded `eth_getCode` bytes, including
+the proxy runtime. `evmUpgrade` separately pins both implementation addresses,
+their code digests and the controlling authority.
 
-## Events and ABI (v4)
+## Events and ABI (v5)
 
 ```
 ProjectEscrow
@@ -272,16 +324,20 @@ ProjectEscrow
   BindingCancelled(uint64 indexed actorId, uint64 version)
   Paid(bytes32 indexed id, uint64 indexed actorId, address indexed destination, uint64 version, uint128 gross, uint128 net, uint128 fee)
   UnusedWithdrawn(address indexed destination, uint128 gross, uint128 net, uint128 fee)
-  ServiceCharged(bytes32 indexed invoiceDigest, uint128 amount)
   FeesClaimed(address indexed feeRecipient, uint128 amount)
-  deposit(uint128) commitAward(bytes32,uint64,uint128,bytes32) withdrawUnused(uint128)
-  chargeService(uint128,bytes32) pay(bytes32,uint64) claimFees() totals() decimals()
+  MonthlyCommitmentSet(uint128 cap, bool enabled)
+  MonthlyCommitted(uint32 indexed period, bytes32 allocationRoot, uint128 gross, uint256 awards)
+  deposit(uint128) commitAward(bytes32,uint64,uint128,bytes32) commitBountyAward(bytes32,uint64,uint128,bytes32)
+  withdrawUnused(uint128) pay(bytes32,uint64) claimFees() totals() decimals() purpose()
+  setMonthlyCommitment(uint128,bool) commitMonthly(uint32,(uint64,uint128,bytes32)[],bytes)
+  monthlyCap() monthlyEnabled() monthlyRoots(uint32) monthlyWindow(uint32)
+  monthlyDigest(uint32,bytes32) allocationRoot((uint64,uint128,bytes32)[])
   payoutFee(uint128) = gross / 50   withdrawalFee(uint128) = payoutFee(gross)
 EscrowFactory
   constructor(address registrar, address feeRecipient, address identityAuthority, uint64 bindingDelay)
-  create(bytes32 projectId, address token, address owner, address refundDestination)
-  vaults(bytes32 projectId, address token) vaultSalt(bytes32,address)
-  VaultCreated(bytes32 indexed projectId, address indexed token, address indexed vault, address owner, address refundDestination, uint8 decimals)
+  create(bytes32 projectId, address token, uint8 purpose)   (owner = msg.sender)
+  vaults(bytes32 key) vaultKey(address owner, bytes32 projectId, address token, uint8 purpose)
+  VaultCreated(bytes32 indexed projectId, address indexed token, address indexed vault, address owner, uint8 purpose, uint8 decimals)
 ```
 
 The adapter exports the topics as `EVM_ESCROW_EVENT_TOPICS`, computed from
@@ -302,8 +358,9 @@ bun contracts/evm/adapter.integration.ts
 `forge test` runs the Foundry suites under `test/`. `test/AnyToken.t.sol`
 covers 0-, 2-, 9- and 18-decimal tokens, amounts beyond `uint64`, `uint128`
 overflow, permissionless deposit, the 2% withdrawal fee, fee-on-transfer
-rejection, tokens without valid decimals, one vault per project and token, and
-`totals()`. The invariant suite runs at 6 and 18 decimals with random
+rejection, tokens without valid decimals, one vault per owner, project, token
+and purpose, and `totals()`. `test/MonthlyCommitment.t.sol` covers the monthly
+commitment and purpose isolation. The invariant suite runs at 6 and 18 decimals with random
 depositors. The suites also include regression tests for the
 binding lifecycle (commit delay, payment frozen during a rotation and after its
 cancel, cancel cap between payments and its waiver during a pending rotation,
@@ -316,8 +373,9 @@ and `forge test` on every escrow change.
 The integration deploys `integration/TestDollar.sol`, a six-decimal test
 ERC-20, and `test/WideToken.sol` at 18 decimals with amounts beyond `uint64`. The test token is not Circle USDC; Circle integration, wallet signatures, OAuth, indexer finality,
 and live broadcast require separate public-chain acceptance. The adapter integration
-script starts an isolated Anvil on port 18546, executes actual deployment, award,
-and payment transactions, and checks canonical finalized receipts plus rejection
+script starts an isolated Anvil on port 18546, executes actual deployment,
+permissionless vault creation, award, monthly commitment and payment
+transactions, and checks canonical finalized receipts plus rejection
 of wrong chains, vaults, obligations, event indices, and nonfinalized receipts.
 
 ## Testnet deployment
@@ -352,10 +410,10 @@ publish only reviewed safe deployment evidence.
 
 Record the source SHA, compiler settings, factory address, deployment
 transaction, chain ID, registrar and its custody, fee address, and identity
-authority. Verify runtime bytecode and constructor configuration. Create each
-vault from its reviewed project manifest with
-`create(projectId, token, owner, owner)`, then verify its owner, refund
-address, token, decimals, project ID, and authority. Export the ABI from
+authority. Verify runtime bytecode and constructor configuration. The project
+owner creates each vault from its own account with
+`create(projectId, token, purpose)`; then verify its owner, purpose, token,
+decimals, project ID, and authority. Export the ABI from
 `forge inspect ProjectEscrow abi` as build output for the adapter; do not
 maintain a handwritten second ABI. Run the full acceptance scenario with
 actual test tokens and finalized receipts. Independent review, a rehearsed run

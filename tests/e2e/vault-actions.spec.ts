@@ -5,8 +5,16 @@ import { fileURLToPath } from "node:url";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { encodeFunctionData, parseAbi } from "viem";
-import { EVM_ESCROW_EVENT_TOPICS } from "../../contracts/evm/adapter";
+import {
+  EVM_ESCROW_EVENT_TOPICS,
+  evmVaultKey,
+} from "../../contracts/evm/adapter";
+import {
+  captureUpgrade,
+  deployUpgradeableFactory,
+} from "../../contracts/evm/integration/upgrade";
 import type { EscrowDeployment } from "../../src/lib/escrow-policy.mjs";
+import { formatAssetAmount } from "../../src/lib/project-schema.mjs";
 import { PROJECTS } from "../../src/lib/projects.mjs";
 
 test.skip(
@@ -40,8 +48,8 @@ async function rpc(method: string, params: unknown[]) {
 }
 const abi = parseAbi([
   "function mint(address,uint256)",
-  "function create(bytes32,address,address,address)",
-  "function vaults(bytes32,address) view returns (address)",
+  "function create(bytes32,address,uint8)",
+  "function vaults(bytes32) view returns (address)",
   "function balanceOf(address) view returns (uint256)",
 ]);
 
@@ -98,22 +106,20 @@ test.beforeAll(async () => {
   const token = deploy(
     "integration/TestDollar.sol:TestDollar",
   ).deployedTo.toLowerCase() as `0x${string}`;
-  const factory = deploy("src/ProjectEscrow.sol:EscrowFactory", [
-    registrar,
-    fee,
-    attester,
-    "3600",
-  ]).deployedTo.toLowerCase() as `0x${string}`;
+  const factory = deployUpgradeableFactory(
+    (contract, args) => deploy(contract, args).deployedTo,
+    [registrar, fee, attester, "3600"],
+  ).toLowerCase() as `0x${string}`;
   const projectDigest = `0x${"a".repeat(64)}` as `0x${string}`;
   const createHashId = await rpc("eth_sendTransaction", [
     {
-      from: registrar,
+      from: owner,
       to: factory,
       gas: "0x7a1200",
       data: encodeFunctionData({
         abi,
         functionName: "create",
-        args: [projectDigest, token, owner, owner],
+        args: [projectDigest, token, 0],
       }),
     },
   ]);
@@ -129,7 +135,13 @@ test.beforeAll(async () => {
       data: encodeFunctionData({
         abi,
         functionName: "vaults",
-        args: [projectDigest, token],
+        args: [
+          evmVaultKey({
+            owner,
+            projectId: projectDigest,
+            asset: token,
+          }) as `0x${string}`,
+        ],
       }),
     },
     "latest",
@@ -158,6 +170,7 @@ test.beforeAll(async () => {
       )
       .digest("hex");
   deployment = {
+    evmUpgrade: await captureUpgrade(rpc, factory, vault),
     network: "base-sepolia",
     vault,
     asset: token,
@@ -178,13 +191,15 @@ test.beforeAll(async () => {
     factoryCodeSha256: await digest(factory),
   };
   const original = PROJECTS.find((entry) => entry.id === "eliza");
-  if (!original) throw new Error("Missing project fixture");
+  if (original?.reward.kind !== "monthly-pool")
+    throw new Error("Missing monthly project fixture");
   project = {
     ...original,
     reward: {
       ...original.reward,
       chain: "base",
       currency: "TEST",
+      monthlyCapDisplay: `${formatAssetAmount(original.reward.monthlyCapMinor, 6)} TEST`,
       feeBasisPoints: 200,
       paymentMode: "disabled",
       committedMinor: "0",
@@ -517,17 +532,16 @@ test("depositor funds a real vault, recovers a submitted transaction and owner w
         .analyze()
     ).violations,
   ).toEqual([]);
-  // Public approval is a controlled fixture here; wallet execution and reserve
+  // The finalized monthly awards are a controlled fixture here; wallet execution and reserve
   // verification use the actual local contract and canonical finalized blocks.
   forceFailedTransaction = false;
   ambiguous = false;
   const commitment = {
-    schemaVersion: "1",
+    schemaVersion: "2",
     projectId: "eliza",
     cycleId: "2026-09",
     manifestSha256: "a".repeat(64),
-    proposalSha256: "b".repeat(64),
-    decisionsSha256: "c".repeat(64),
+    snapshotSha256: "b".repeat(64),
     deployment,
     award: {
       githubUserId: "1234",
@@ -541,7 +555,7 @@ test("depositor funds a real vault, recovers a submitted transaction and owner w
   let reviewAvailable = true;
   let reviewReads = 0;
   await page.route(
-    "**/api/v1/payments/projects/eliza/awards/2026-09",
+    "**/api/v1/payments/projects/eliza/monthly/2026-09",
     (route) => {
       reviewReads++;
       return route.fulfill({
@@ -549,51 +563,57 @@ test("depositor funds a real vault, recovers a submitted transaction and owner w
         json: reviewAvailable
           ? {
               projectId: "eliza",
-              cycleId: "2026-09",
-              projectRevision: 1,
+              period: "2026-09",
               manifestSha256: commitment.manifestSha256,
-              proposalSha256: commitment.proposalSha256,
-              sourceUrl: "https://github.com/SlopDotCash/slopdotcash",
-              deployments: [deployment],
-              asset: project.rewardAsset,
+              automatic: true,
+              cutoffAt: null,
+              deployment,
+              asset: null,
               proposal: {
+                capBase: "2000000",
+                allocationSequence: 0,
+                allocations: [
+                  {
+                    githubUserId: "1234",
+                    login: "local-contributor",
+                    grossBase: "2000000",
+                    proposedGrossBase: "2000000",
+                    sourceDigest: commitment.award.sourceDigest,
+                  },
+                ],
+              },
+              run: {
+                trigger: "automatic",
+                frozenAt: "2026-10-03T00:00:00.000Z",
+                snapshotSha256: commitment.snapshotSha256,
+                totalGrossBase: "2000000",
+                network: deployment.network,
+                vault: deployment.vault,
+                funded: true,
                 awards: [
                   {
                     githubUserId: "1234",
                     login: "local-contributor",
-                    grossMicro: "2000000",
+                    grossBase: "2000000",
+                    feeBase: "40000",
+                    netBase: "1960000",
+                    state: "awaiting-reservation",
                   },
                 ],
               },
-              decisions: {
-                rows: [
-                  {
-                    githubUserId: "1234",
-                    state: "approved",
-                    approvedGrossMicro: "2000000",
-                    adjustmentReason: null,
-                    relatedParty: false,
-                  },
-                ],
-              },
-              review: { decisionsSha256: commitment.decisionsSha256 },
-              reviewVerified: true,
-              reviewEndsAt: "2026-10-15T00:00:00.000Z",
-              blockedReason: null,
             }
           : { message: "Review temporarily unavailable" },
       });
     },
   );
   await page.route(
-    "**/api/v1/payments/projects/eliza/awards/2026-09/commitment",
+    "**/api/v1/payments/projects/eliza/monthly/2026-09/commitment",
     (route) => {
       expect(route.request().postDataJSON()).toEqual({
         network: deployment.network,
         githubUserId: "1234",
         manifestSha256: commitment.manifestSha256,
-        proposalSha256: commitment.proposalSha256,
-        decisionsSha256: commitment.decisionsSha256,
+        snapshotSha256: commitment.snapshotSha256,
       });
       return route.fulfill({ json: commitment });
     },
@@ -602,7 +622,7 @@ test("depositor funds a real vault, recovers a submitted transaction and owner w
   await page.getByLabel("Contribution month").fill("2026-09");
   await page.getByRole("button", { name: "Load awards", exact: true }).click();
   await page
-    .getByRole("button", { name: "Review commitment for local-contributor" })
+    .getByRole("button", { name: "Reserve award for local-contributor" })
     .click();
   const ownerActions = page.getByRole("region", {
     name: "Authorize award commitment",

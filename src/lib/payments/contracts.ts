@@ -1,4 +1,8 @@
-import { ESCROW_NETWORKS, type EscrowChain } from "../escrow-policy.mjs";
+import {
+  ESCROW_NETWORKS,
+  type EscrowChain,
+  MAX_BASE_UNITS,
+} from "../escrow-policy.mjs";
 
 export type PaymentChain = EscrowChain;
 /**
@@ -18,14 +22,35 @@ export interface AccountPayment extends PaymentAsset {
   netBase: string;
   feeBase: string;
   state: "reserved" | "paid";
-  deliveryState:
-    | "needs_wallet"
-    | "awaiting_binding"
-    | "submitted"
-    | "held"
-    | "paid";
+  /** PRD section 6 payment states of a reserved award. */
+  deliveryState: "needs_wallet" | "ready" | "submitted" | "held" | "paid";
   submittedTransactionId: string | null;
   transactionId: string | null;
+}
+/**
+ * A monthly award's state before and after its vault reservation. Owners and
+ * contributors read the same value; a reserved or paid state comes only from
+ * the finalized chain projection, and excluded only from a recorded ban
+ * decision.
+ */
+export type MonthlyAwardState =
+  | "underfunded"
+  | "excluded"
+  | "awaiting-reservation"
+  | "reserved"
+  | "paid";
+/**
+ * An approved monthly award that is frozen but not yet reserved in the vault
+ * (PRD sections 3 and 6). Once reserved it is an AccountPayment instead.
+ */
+export interface AccountMonthlyAward extends PaymentAsset {
+  projectId: string;
+  period: string;
+  chain: PaymentChain;
+  grossBase: string;
+  feeBase: string;
+  netBase: string;
+  state: Extract<MonthlyAwardState, "underfunded" | "awaiting-reservation">;
 }
 export interface PaymentsAccount {
   githubUserId: string;
@@ -37,6 +62,8 @@ export interface PaymentsAccount {
     activationEligibleAt: string | null;
   }[];
   payments: AccountPayment[];
+  /** Approved monthly awards not yet reserved; never counted in `balances`. */
+  monthlyAwards: AccountMonthlyAward[];
   /** Unpaid net per network and asset; never summed across networks or assets. */
   balances: (PaymentAsset & { chain: PaymentChain; netBase: string })[];
   /** Imported from reviewed disclosures; never an escrow `paid` state. */
@@ -64,8 +91,7 @@ export interface DirectTransfer {
   transactionId: string;
   blockTime: string;
 }
-/** The largest vault amount: EVM and Solana counters are uint128. */
-export const MAX_BASE_UNITS = (1n << 128n) - 1n;
+export { isBaseUnits, MAX_BASE_UNITS } from "../escrow-policy.mjs";
 export type PayoutPolicy = "ordinary" | "security-bounty";
 /** The 2% payout fee is deducted from the gross award, in base units of the award asset. */
 export function payoutFee(
@@ -80,13 +106,6 @@ export function payoutFee(
   }
   if (policy !== "ordinary") throw new Error("Unknown payout policy");
   return gross / 50n;
-}
-export function isBaseUnits(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    /^(0|[1-9][0-9]{0,38})$/.test(value) &&
-    BigInt(value) <= MAX_BASE_UNITS
-  );
 }
 export function isAssetDecimals(value: unknown): value is number {
   return (
@@ -148,7 +167,6 @@ export interface VaultSnapshot extends PaymentAsset {
   totalPayoutFees: string;
   totalGrossWithdrawn: string;
   totalWithdrawalFees: string;
-  totalServiceFees: string;
   /** Null when this vault type has no such counter; never shown as zero. */
   freeBalance: string | null;
   reservedPrincipal: string | null;

@@ -22,6 +22,7 @@ import {
   handleProjectApi,
   type ProjectApiDependencies,
 } from "../backend/projects/handler";
+import { vettingScanRequester } from "../backend/projects/setup";
 import type { SkillTemplateIndex } from "../backend/projects/skill-publication";
 import { handleProjectArtifactRequest } from "../backend/projects/skill-publication";
 import { TokenMetadataError } from "../backend/projects/token-metadata";
@@ -31,20 +32,26 @@ import {
   vettedContentSha256,
 } from "../backend/vetting/persistence";
 import { parseVettingResult } from "../backend/vetting/result";
-import { slugify } from "../src/lib/project-proposal";
+import { isScanResult } from "../backend/vetting/scan-result";
+import {
+  allocationFundingMinor,
+  deriveAllocationFundingBasis,
+} from "../src/lib/allocation-funding";
+import type { RepositoryAccess } from "../src/lib/project-contracts";
+import { rewardFields, slugify } from "../src/lib/project-proposal";
 import { PROJECT_SKILL_TEMPLATES } from "../src/lib/project-schema.mjs";
 import {
   buildProjectPublication,
   sha256Hex,
 } from "../src/lib/project-skill-publication.mjs";
 import type { ProjectDefinition } from "../src/lib/projects.mjs";
+import { resolveRewardCapMinor } from "../src/lib/reward-cap.mjs";
 import {
   applicationManifest,
   CONTRIBUTION,
 } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 import { vettingResult } from "../tests/vetting-fixtures";
-import { handleNotifyRequest } from "../workers/notify/handler";
 import { fetchProjectRegistry } from "./sync-project-registry.mjs";
 
 const ORIGIN = "https://slop.cash";
@@ -85,6 +92,10 @@ let githubReads: string[];
 let deps: ProjectApiDependencies;
 /** GitHub's answer for the ownership check, by repository. */
 let control: (repository: string) => RepositoryControl;
+/** What the Slopbot installation reads for the repository and account. */
+let access: RepositoryAccess | "unavailable";
+/** Whether the scan service accepts queued scans. */
+let scanService: boolean;
 
 beforeEach(async () => {
   const database = sqliteD1(
@@ -100,23 +111,24 @@ beforeEach(async () => {
   );
   vetting = new CloudflareVettingPersistence(
     database.db,
-    async (a) => a.result !== null && retained.evidence.complete(a.result),
+    async (a) => a.result !== null && retained.evidence.retained(a.result),
   );
   livePin = { commitSha: "a".repeat(40), templateSha256: "d".repeat(64) };
   cache = new MemoryCache();
   tokenReads = [];
   githubReads = [];
-  control = () => ({
-    state: "unproven",
-    reason: "@e2e-applicant is not a public member of example",
-  });
+  control = () => ({ state: "matched" });
+  access = { installation: "missing" };
+  scanService = false;
   let id = 0;
+  const randomId = () =>
+    `00000000-0000-4000-8000-${String(++id).padStart(12, "0")}`;
   deps = {
     persistence,
     adminGithubIds: new Set([ADMIN.githubId, MODERATOR.githubId]),
     moderatorGithubIds: new Set([ADMIN.githubId, MODERATOR.githubId]),
     now: () => new Date("2026-10-18T12:00:00.000Z"),
-    randomId: () => `00000000-0000-4000-8000-${String(++id).padStart(12, "0")}`,
+    randomId,
     sessionActor: async (request) =>
       request.headers.get("x-test-actor") === "admin"
         ? ADMIN
@@ -125,8 +137,18 @@ beforeEach(async () => {
           : request.headers.get("x-test-actor") === "moderator"
             ? MODERATOR
             : null,
-    notifyAdmins: async () => true,
     repositoryControl: async (manifest) => control(manifest.repositories[0].id),
+    repositoryAccess: async () => {
+      if (access === "unavailable") throw new Error("Slopbot unavailable");
+      return access;
+    },
+    requestScan: vettingScanRequester({
+      vetting,
+      serviceAvailable: async () => scanService,
+      livePin: async () => livePin,
+      now: () => new Date("2026-10-18T12:00:00.000Z"),
+      randomId,
+    }),
     vettingClearance: (
       projectId,
       manifest,
@@ -241,22 +263,30 @@ async function seedHistoricalResult(
   return id;
 }
 
+const ADMIN_ACCESS: RepositoryAccess = {
+  installation: "installed",
+  installationId: 7,
+  permission: "admin",
+  roleName: "admin",
+};
+
+/** Creates a project as an owner whose admin access Slopbot reads. */
+async function create(manifest: unknown, extra: Record<string, unknown> = {}) {
+  const previous = access;
+  access = ADMIN_ACCESS;
+  try {
+    return await call("POST", "projects", "applicant", { manifest, ...extra });
+  } finally {
+    access = previous;
+  }
+}
+
 async function listProject(
   manifest = applicationManifest("open-registry", "example/open-registry"),
 ) {
-  const submitted = await call("POST", "project-applications", "applicant", {
-    manifest,
-  });
-  expect(submitted.status).toBe(201);
-  const { application } = await submitted.json();
-  const approved = await call(
-    "POST",
-    `admin/project-applications/${application.id}/approve`,
-    "admin",
-    {},
-  );
-  expect(approved.status).toBe(200);
-  return application;
+  const created = await create(manifest);
+  expect(created.status).toBe(201);
+  return (await created.json()).project;
 }
 
 describe("project registry API", () => {
@@ -294,11 +324,8 @@ describe("project registry API", () => {
     expect((await call("GET", "projects/missing")).status).toBe(404);
   });
 
-  test("a maintainer update reaches the review queue and appends only its expected revision", async () => {
-    control = () => ({
-      state: "proven",
-      reason: "Verified repository maintainer",
-    });
+  test("an owner revision publishes at once and appends only its expected revision", async () => {
+    access = ADMIN_ACCESS;
     await listProject();
     const current = await persistence.getProject("open-registry");
     if (!current) throw new Error("Missing listed project");
@@ -306,110 +333,75 @@ describe("project registry API", () => {
       ...current.manifest,
       headline: "Updated scope for the open registry",
     };
-    const body = {
-      manifest,
-      expectedRevision: 1,
-      reason: "Clarify the accepted project scope",
-    };
-    const submitted = await call(
-      "POST",
-      "project-applications",
+    const body = { manifest, expectedRevision: 1 };
+    const published = await call(
+      "PUT",
+      "projects/open-registry",
       "applicant",
       body,
     );
-    const submissionBody = await submitted.json();
-    expect({
-      status: submitted.status,
-      body: submissionBody.error ?? null,
-    }).toEqual({ status: 201, body: null });
-    const { application } = submissionBody;
-    const mine = await call("GET", "project-applications/mine", "applicant");
-    expect((await mine.json()).applications).toContainEqual(
-      expect.objectContaining({
-        id: application.id,
-        expectedRevision: 1,
-        status: "pending",
-      }),
-    );
-    expect((await persistence.getProject("open-registry"))?.revision).toBe(1);
-    const approved = await call(
-      "POST",
-      `admin/project-applications/${application.id}/approve`,
-      "admin",
-      {},
-    );
-    expect(approved.status).toBe(200);
+    expect(published.status).toBe(200);
+    const result = await published.json();
+    expect(result.changes).toEqual({
+      presentation: ["headline"],
+      executable: [],
+      financial: [],
+    });
     expect(await persistence.getProject("open-registry")).toMatchObject({
       revision: 2,
       manifest: { headline: manifest.headline, status: "paused" },
     });
-    expect(await persistence.getApplication(application.id)).toMatchObject({
-      status: "approved",
-    });
-    expect(
-      (
-        await call(
-          "POST",
-          `admin/project-applications/${application.id}/approve`,
-          "admin",
-          {},
-        )
-      ).status,
-    ).toBe(409);
-    expect(
-      (await call("POST", "project-applications", "applicant", body)).status,
-    ).toBe(409);
-    const newer = {
-      ...body,
-      expectedRevision: 2,
-      manifest: { ...manifest, headline: "Second scope update for review" },
-    };
-    const waitingResponse = await call(
-      "POST",
-      "project-applications",
+    // The stale base revision is refused instead of overwriting.
+    const stale = await call(
+      "PUT",
+      "projects/open-registry",
       "applicant",
-      newer,
+      body,
     );
-    expect(waitingResponse.status).toBe(201);
-    const waiting = (await waitingResponse.json()).application;
-    expect(
-      (
-        await call("PUT", "admin/projects/open-registry/manifest", "admin", {
-          ...newer,
-          manifest: { ...manifest, headline: "Intervening admin revision" },
-        })
-      ).status,
-    ).toBe(200);
-    expect(
-      (
-        await call(
-          "POST",
-          `admin/project-applications/${waiting.id}/approve`,
-          "admin",
-          {},
-        )
-      ).status,
-    ).toBe(409);
-    expect(await persistence.getApplication(waiting.id)).toMatchObject({
-      status: "pending",
+    expect(stale.status).toBe(409);
+    expect((await stale.json()).error).toBe("stale_revision");
+    // Status, listing and identity stay with the exception paths.
+    const listing = await call("PUT", "projects/open-registry", "applicant", {
+      manifest: {
+        ...manifest,
+        steward: { ...manifest.steward, displayName: "Someone else" },
+      },
+      expectedRevision: 2,
     });
-    expect((await persistence.getProject("open-registry"))?.revision).toBe(3);
-    control = () => ({
-      state: "unproven",
-      reason: "No verified repository authority",
+    expect(listing.status).toBe(422);
+    expect(await listing.json()).toMatchObject({
+      error: "owner_field_restricted",
+      message: expect.stringContaining("steward"),
     });
-    expect(
-      (
-        await call("POST", "project-applications", "applicant", {
-          ...body,
-          expectedRevision: 3,
-        })
-      ).status,
-    ).toBe(422);
+    const unchanged = await call("PUT", "projects/open-registry", "applicant", {
+      manifest,
+      expectedRevision: 2,
+    });
+    expect((await unchanged.json()).error).toBe("no_change");
+    // Without current authority nothing is published.
+    access = { ...ADMIN_ACCESS, permission: "read", roleName: "read" };
+    const denied = await call("PUT", "projects/open-registry", "applicant", {
+      manifest: { ...manifest, headline: "A change without authority" },
+      expectedRevision: 2,
+    });
+    expect(denied.status).toBe(403);
+    expect((await denied.json()).error).toBe("authority_required");
+    // An unavailable GitHub answer is a retry, never a queued admin task.
+    deps.repositoryControl = async () => {
+      throw new Error("GitHub is down");
+    };
+    access = "unavailable";
+    const retry = await call("PUT", "projects/open-registry", "applicant", {
+      manifest: { ...manifest, headline: "A change while GitHub is down" },
+      expectedRevision: 2,
+    });
+    expect(retry.status).toBe(503);
+    expect((await retry.json()).error).toBe("github_unavailable");
+    expect((await persistence.getProject("open-registry"))?.revision).toBe(2);
   });
 
-  test("reads token decimals from chain once and keeps them on later revisions", async () => {
-    await listProject(
+  test("reads token decimals from chain once, stores the amount in base units and keeps them on later revisions", async () => {
+    const created = await create(
       applicationManifest("open-registry", "example/open-registry", {
         rewardAsset: {
           network: "base",
@@ -424,8 +416,27 @@ describe("project registry API", () => {
           currency: "OPN",
         },
       }),
+      // Whole token units; the server converts with the decimals it reads.
+      { monthlyAmount: "1000.5" },
     );
+    expect(created.status).toBe(201);
     expect(tokenReads).toEqual([`base:${TOKEN}`]);
+    // The stored pool must also load through the public funding projection.
+    const tokenProject = await persistence.getProject("open-registry");
+    if (!tokenProject) throw new Error("token project was not created");
+    const basis = deriveAllocationFundingBasis(
+      tokenProject.manifest,
+      "2026-10",
+    );
+    expect(basis.monthlyCapMinor).toBe("1000500000000000000000");
+    expect(allocationFundingMinor(basis)).toBe(0n);
+    // Owner decision D11: 1,000.5 tokens of 18 decimals, never dollars.
+    expect(
+      (await persistence.getProject("open-registry"))?.manifest.reward,
+    ).toMatchObject({
+      monthlyCapMinor: "1000500000000000000000",
+      monthlyCapDisplay: "1,000.5 OPEN",
+    });
     const project = await persistence.getProject("open-registry");
     expect(project?.manifest.rewardAsset).toEqual({
       network: "base",
@@ -458,6 +469,74 @@ describe("project registry API", () => {
       (await persistence.getProject("open-registry"))?.manifest.rewardAsset
         ?.decimals,
     ).toBe(18);
+    access = ADMIN_ACCESS;
+    for (const [time, amount] of [
+      ["2026-10-18T12:00:00.000Z", "500"],
+      ["2026-11-18T12:00:00.000Z", "250"],
+    ]) {
+      deps.now = () => new Date(time);
+      const current = await persistence.getProject("open-registry");
+      if (!current) throw new Error("token project disappeared");
+      const changed = await call("PUT", "projects/open-registry", "applicant", {
+        manifest: current.manifest,
+        expectedRevision: current.revision,
+        monthlyAmount: amount,
+      });
+      expect(changed.status, JSON.stringify(await changed.json())).toBe(200);
+    }
+    const current = await persistence.getProject("open-registry");
+    if (!current) throw new Error("token project disappeared");
+    const oldRevision = await persistence.getRevisionText(
+      "open-registry",
+      current.revision,
+    );
+    const fields = rewardFields(
+      {
+        mode: "monthly",
+        network: "base",
+        assetKind: "stablecoin",
+        tokenAddress: "",
+        tokenSymbol: "",
+        monthlyAmount: "1000",
+      },
+      deps.now(),
+    );
+    const changedAsset = await call(
+      "PUT",
+      "projects/open-registry",
+      "applicant",
+      {
+        manifest: {
+          ...current.manifest,
+          ...fields,
+          reward: {
+            ...current.manifest.reward,
+            ...(fields.reward as Record<string, unknown>),
+            rewardStartAt: current.manifest.reward.rewardStartAt,
+          },
+        },
+        expectedRevision: current.revision,
+        monthlyAmount: "1000",
+      },
+    );
+    expect(changedAsset.status, JSON.stringify(await changedAsset.json())).toBe(
+      200,
+    );
+    const changed = await persistence.getProject("open-registry");
+    if (!changed) throw new Error("changed project disappeared");
+    expect(changed.manifest.reward).toMatchObject({
+      currency: "USDC",
+      monthlyCapMinor: "1000000000",
+      rewardStartAt: current.manifest.reward.rewardStartAt,
+    });
+    expect(resolveRewardCapMinor(changed.manifest, "2026-10")).toBe("0");
+    expect(resolveRewardCapMinor(changed.manifest, "2026-11")).toBe("0");
+    expect(resolveRewardCapMinor(changed.manifest, "2026-12")).toBe(
+      "1000000000",
+    );
+    expect(
+      await persistence.getRevisionText("open-registry", current.revision),
+    ).toEqual(oldRevision);
   });
 
   test("refuses an unverifiable or malformed token and stores nothing", async () => {
@@ -466,35 +545,33 @@ describe("project registry API", () => {
       ["0x2222222222222222222222222222222222222222", "reward_asset_unverified"],
       ["0x1234", "invalid_manifest"],
     ]) {
-      const response = await call("POST", "project-applications", "applicant", {
-        manifest: {
-          ...base,
-          rewardAsset: {
-            network: "ethereum",
-            kind: "token",
-            address,
-            symbol: "BAD",
-          },
+      const response = await create({
+        ...base,
+        rewardAsset: {
+          network: "ethereum",
+          kind: "token",
+          address,
+          symbol: "BAD",
         },
       });
       expect(response.status).toBe(422);
       expect((await response.json()).error).toBe(error);
     }
-    expect(await persistence.listApplications("pending")).toEqual([]);
+    expect(await persistence.listProjects()).toEqual([]);
   });
 
   test("refuses a project id too long for its reviewer skill name", async () => {
     const id = "reproducible-research-toolkit-for-everyone-x";
     expect(`review-${id}-contributions`).toHaveLength(65);
-    const response = await call("POST", "project-applications", "applicant", {
-      manifest: applicationManifest(id, "example/open-registry"),
-    });
+    const response = await create(
+      applicationManifest(id, "example/open-registry"),
+    );
     expect(response.status).toBe(422);
     expect(await response.json()).toEqual({
       error: "invalid_manifest",
       message: "project.id is invalid",
     });
-    expect(await persistence.listApplications("pending")).toEqual([]);
+    expect(await persistence.listProjects()).toEqual([]);
   });
 
   test("refuses activation when historical clean metadata lacks canonical closure", async () => {
@@ -532,33 +609,90 @@ describe("project registry API", () => {
     );
   });
 
-  test("records the GitHub ownership check and refuses contradicted facts", async () => {
+  test("creates a project only for current GitHub authority and refuses contradicted facts", async () => {
+    const manifest = applicationManifest(
+      "open-registry",
+      "example/open-registry",
+    );
     control = () => ({
       state: "mismatch",
       reason: "Repository or steward facts do not match GitHub",
     });
-    const refused = await call("POST", "project-applications", "applicant", {
-      manifest: applicationManifest("open-registry", "example/open-registry"),
-    });
+    const refused = await call("POST", "projects", "applicant", { manifest });
     expect(refused.status).toBe(422);
     expect(await refused.json()).toMatchObject({
       error: "invalid_manifest",
       message: "Repository or steward facts do not match GitHub",
     });
-    expect(await persistence.listApplications("pending")).toEqual([]);
-
-    control = () => ({
-      state: "proven",
-      reason: "@e2e-applicant owns example/open-registry",
+    // Matching public facts without the installation create nothing:
+    // install Slopbot first (owner decision D11).
+    control = () => ({ state: "matched" });
+    const uninstalled = await call("POST", "projects", "applicant", {
+      manifest,
     });
-    const accepted = await call("POST", "project-applications", "applicant", {
-      manifest: applicationManifest("open-registry", "example/open-registry"),
+    expect(uninstalled.status).toBe(409);
+    expect(await uninstalled.json()).toMatchObject({
+      error: "slopbot_required",
+      message: expect.stringContaining("Install Slopbot"),
     });
+    // The installation is authoritative: read access is not enough.
+    access = {
+      installation: "installed",
+      installationId: 7,
+      permission: "read",
+      roleName: "triage",
+    };
+    const reader = await call("POST", "projects", "applicant", { manifest });
+    expect(reader.status).toBe(403);
+    expect((await reader.json()).message).toContain("Write, maintain or admin");
+    // A failed lookup is a retry, not an application waiting for an admin.
+    deps.repositoryControl = async () => {
+      throw new Error("GitHub is down");
+    };
+    access = "unavailable";
+    const retry = await call("POST", "projects", "applicant", { manifest });
+    expect(retry.status).toBe(503);
+    expect((await retry.json()).error).toBe("github_unavailable");
+    expect(await persistence.listProjects()).toEqual([]);
+    // Once GitHub answers again, maintain access read through the
+    // installation creates the project.
+    deps.repositoryControl = async () => ({ state: "matched" });
+    access = {
+      installation: "installed",
+      installationId: 7,
+      permission: "write",
+      roleName: "maintain",
+    };
+    const accepted = await call("POST", "projects", "applicant", { manifest });
     expect(accepted.status).toBe(201);
-    expect((await accepted.json()).application).toMatchObject({
-      githubCheck: "Proven: @e2e-applicant owns example/open-registry",
-      status: "pending",
+    const body = await accepted.json();
+    expect(body.project).toMatchObject({ id: "open-registry", revision: 1 });
+    expect(body.setup.checks.authority).toEqual({
+      state: "verified",
+      message: "@e2e-applicant has maintain access to example/open-registry.",
     });
+    const revisions = sqlite
+      .query("SELECT actor_github_login, reason FROM project_revisions")
+      .all() as { actor_github_login: string; reason: string }[];
+    expect(revisions).toEqual([
+      {
+        actor_github_login: "e2e-applicant",
+        reason:
+          "Created through self-service setup by @e2e-applicant. @e2e-applicant has maintain access to example/open-registry.",
+      },
+    ]);
+    // No application, admin email or approval notice is created.
+    expect(
+      sqlite.query("SELECT COUNT(*) AS n FROM project_applications").get(),
+    ).toEqual({ n: 0 });
+    expect(
+      sqlite.query("SELECT COUNT(*) AS n FROM notifications").get(),
+    ).toEqual({ n: 0 });
+    // The same repository cannot be listed twice.
+    const again = await call("POST", "projects", "applicant", {
+      manifest: applicationManifest("second-registry", "example/open-registry"),
+    });
+    expect(again.status).toBe(409);
   });
 
   test("serves the exact approved bytes of a revision", async () => {
@@ -753,6 +887,24 @@ describe("generated skill publication", () => {
       },
     );
     expect(revised.status).toBe(200);
+    // A presentation change keeps the scanned content, so the gate is unchanged.
+    expect((await get("/projects/open-registry/skill.md")).status).toBe(503);
+    const executable = await call(
+      "PUT",
+      "admin/projects/open-registry/manifest",
+      "admin",
+      {
+        manifest: {
+          ...current?.manifest,
+          headline: "Reproducible tooling, second revision.",
+          contribution: { ...CONTRIBUTION, maintainerNotes: "New note." },
+        },
+        expectedRevision: 2,
+        reason: "Third revision",
+      },
+    );
+    expect(executable.status).toBe(200);
+    // Changed skill inputs have no scan yet.
     expect((await get("/projects/open-registry/skill.md")).status).toBe(404);
     await seedHistoricalResult("open-registry");
     expect((await get("/projects/open-registry/skill.md")).status).toBe(503);
@@ -870,13 +1022,10 @@ describe("project enforcement (ADM-06)", () => {
     );
     expect(lifted.status).toBe(409);
     expect((await lifted.json()).error).toBe("project_restricted");
-    // Neither can a new application for the renamed repository.
-    const renamed = await call("POST", "project-applications", "applicant", {
-      manifest: applicationManifest(
-        "renamed-registry",
-        "example/renamed-registry",
-      ),
-    });
+    // Neither can a new project for the renamed repository.
+    const renamed = await create(
+      applicationManifest("renamed-registry", "example/renamed-registry"),
+    );
     expect(renamed.status).toBe(403);
     expect((await renamed.json()).error).toBe("repository_restricted");
 
@@ -1375,7 +1524,9 @@ test("cached skill and public clearance cannot survive loss of retained evidence
   await listProject();
   const id = await seedHistoricalResult("open-registry");
   const assessment = await vetting.getAssessment(id);
-  if (!assessment?.result) throw new Error("Missing fixture assessment");
+  if (!assessment?.result || isScanResult(assessment.result))
+    throw new Error("Missing historical fixture assessment");
+  const historical = assessment.result;
   const skillPath = "/projects/open-registry/skill.md";
   const oldSkill = await get(skillPath);
   const oldDetail = await call("GET", "projects/open-registry");
@@ -1415,7 +1566,7 @@ test("cached skill and public clearance cannot survive loss of retained evidence
       response,
     );
   await retained.bucket.delete(
-    `vetting/${id}/${assessment.result.environment.runId}/${assessment.result.traceSha256}`,
+    `vetting/${id}/${historical.environment.runId}/${historical.traceSha256}`,
   );
   const refused = await get(skillPath);
   expect(refused.status).toBe(503);
@@ -1432,67 +1583,6 @@ test("cached skill and public clearance cannot survive loss of retained evidence
   ).toEqual([]);
 });
 
-test.each(["production", "staging"] as const)(
-  "%s applications email admins a review link in their own environment",
-  async (tier) => {
-    const origin = tier === "staging" ? "https://staging.slop.cash" : ORIGIN;
-    const delivered: string[] = [];
-    const notificationDependencies = {
-      tier,
-      adminEmails: "admin@example.test",
-      fromAddress: "notifications@slop.cash",
-      now: deps.now,
-      randomId: deps.randomId,
-      sendEmail: async (_from: string, _to: string, raw: string) => {
-        delivered.push(raw);
-      },
-    };
-    const projectDependencies = {
-      ...deps,
-      tier,
-      notifyAdmins: async (notice: Parameters<typeof deps.notifyAdmins>[0]) => {
-        const response = await handleNotifyRequest(
-          new Request("https://notify.internal/v1/project-applications", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(notice),
-          }),
-          notificationDependencies,
-        );
-        return response.status === 202;
-      },
-    };
-    const response = await handleProjectApi(
-      new Request(`${origin}/api/v1/project-applications`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          origin,
-          "x-test-actor": "applicant",
-        },
-        body: JSON.stringify({
-          manifest: applicationManifest(
-            "open-registry",
-            "example/open-registry",
-          ),
-        }),
-      }),
-      projectDependencies,
-    );
-    if (!response) throw new Error("Application route did not respond");
-    expect(response.status).toBe(201);
-    const { application } = await response.json();
-    expect(application.adminNotification).toBe("sent");
-    expect(delivered).toHaveLength(1);
-    // Unfold quoted-printable MIME before checking the actual review link.
-    expect(delivered[0].replace(/=\r\n/gu, "")).toContain(
-      `${origin}/admin/applications/${application.id}`,
-    );
-    expect(
-      (await persistence.getApplication(application.id))?.adminNotification,
-    ).toBe("sent");
-  },
-);
 describe("referral attribution (PRJ-05)", () => {
   const REFERRER = { githubId: "900000010", githubLogin: "e2e-referrer" };
   const liveActors = new Map<
@@ -1530,27 +1620,14 @@ describe("referral attribution (PRJ-05)", () => {
       );
   }
 
-  test("records the referrer once and copies it to the approved project", async () => {
+  test("records the referrer once on the created project", async () => {
     joinMember(REFERRER);
     const manifest = applicationManifest("referred", "example/referred");
-    const submitted = await call("POST", "project-applications", "applicant", {
-      manifest,
-      referrer: "E2E-Referrer",
-    });
+    const submitted = await create(manifest, { referrer: "E2E-Referrer" });
     expect(submitted.status).toBe(201);
-    const { application } = await submitted.json();
+    const { project } = await submitted.json();
     // Store the current canonical GitHub login, not the input casing.
-    expect(application.referrer).toEqual(REFERRER);
-    expect(
-      (
-        await call(
-          "POST",
-          `admin/project-applications/${application.id}/approve`,
-          "admin",
-          {},
-        )
-      ).status,
-    ).toBe(200);
+    expect(project.referrer).toEqual(REFERRER);
     expect((await persistence.getProject("referred"))?.referrer).toEqual(
       REFERRER,
     );
@@ -1568,11 +1645,6 @@ describe("referral attribution (PRJ-05)", () => {
     ).toThrow(/project referrer is immutable/u);
     expect(() =>
       sqlite.exec(
-        "UPDATE project_applications SET referrer_github_id = NULL, referrer_github_login = NULL",
-      ),
-    ).toThrow(/application referrer is immutable/u);
-    expect(() =>
-      sqlite.exec(
         "UPDATE projects SET referrer_github_id = NULL WHERE id = 'referred'",
       ),
     ).toThrow(/project referrer is immutable/u);
@@ -1582,31 +1654,29 @@ describe("referral attribution (PRJ-05)", () => {
     joinMember({ githubId: "900000020", githubLogin: APPLICANT.githubLogin });
     joinMember(APPLICANT);
     const manifest = applicationManifest("recycled", "example/recycled");
-    const response = await call("POST", "project-applications", "applicant", {
-      manifest,
+    const response = await create(manifest, {
       referrer: APPLICANT.githubLogin,
     });
     expect(response.status).toBe(422);
     expect((await response.json()).message).toMatch(
       /cannot refer your own project/u,
     );
-    expect(await persistence.listApplications("pending")).toEqual([]);
+    expect(await persistence.listProjects()).toEqual([]);
     // Even one stale cached row is insufficient if the current holder has never joined.
     liveActors.set(APPLICANT.githubLogin.toLowerCase(), {
       githubId: "900000030",
       githubLogin: APPLICANT.githubLogin,
     });
-    const unknown = await call("POST", "project-applications", "applicant", {
-      manifest,
+    const unknown = await create(manifest, {
       referrer: APPLICANT.githubLogin,
     });
     expect(unknown.status).toBe(422);
     expect((await unknown.json()).message).toMatch(/has not signed in/u);
   });
 
-  test("an application that names nobody records no referrer", async () => {
-    const application = await listProject();
-    expect(application.referrer).toBeNull();
+  test("a project that names nobody records no referrer", async () => {
+    const project = await listProject();
+    expect(project.referrer).toBeNull();
     expect(
       (await persistence.getProject("open-registry"))?.referrer,
     ).toBeNull();
@@ -1626,22 +1696,16 @@ describe("referral attribution (PRJ-05)", () => {
       [42, /must be a GitHub login/u],
     ];
     for (const [referrer, message] of cases) {
-      const response = await call("POST", "project-applications", "applicant", {
-        manifest,
-        referrer,
-      });
+      const response = await create(manifest, { referrer });
       expect(response.status).toBe(422);
       const body = await response.json();
       expect(body.error).toBe("invalid_referrer");
       expect(body.message).toMatch(message);
     }
-    // A refused referral stores nothing, so the applicant can resubmit.
-    expect(await persistence.listApplications("pending")).toEqual([]);
-    const accepted = await call("POST", "project-applications", "applicant", {
-      manifest,
-      referrer: null,
-    });
+    // A refused referral stores nothing, so the owner can submit again.
+    expect(await persistence.listProjects()).toEqual([]);
+    const accepted = await create(manifest, { referrer: null });
     expect(accepted.status).toBe(201);
-    expect((await accepted.json()).application.referrer).toBeNull();
+    expect((await accepted.json()).project.referrer).toBeNull();
   });
 });

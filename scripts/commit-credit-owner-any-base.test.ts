@@ -13,6 +13,10 @@ import type {
 } from "../src/lib/leaderboard";
 import { createLeaderboardSnapshot } from "../src/lib/leaderboard";
 import { TARGET_REPOSITORIES } from "../src/lib/repositories.mjs";
+import {
+  collectSearchReferences,
+  type GraphqlExecutor,
+} from "./generate-leaderboard";
 
 const REPO_URL = "https://github.com/SlopDotCash/slopdotcash";
 const AT = "2026-10-19T12:00:00.000Z";
@@ -122,24 +126,106 @@ function merges(snapshot: ReturnType<typeof createLeaderboardSnapshot>) {
     .sort();
 }
 
-test("a commit first merged into main is not credited again by the main-to-development sync", () => {
-  const hotfix = { oid: "c1".repeat(20), author: drew };
+test("a collected commit first merged into main is not credited again by the main-to-development sync", async () => {
+  // This SHA is listed by both real Slop PRs #809 and #878.
+  const hotfix = {
+    oid: "6356a8d0e9d9b8c4454584b519a114c7fc231c2a",
+    author: drew,
+  };
   const sync = { oid: "c2".repeat(20), author: lala };
+  const outcomes = [
+    outcome(809, drew, "2026-10-16T12:05:09.000Z", "main", [hotfix]),
+    outcome(878, lala, "2026-10-19T03:47:50.000Z", "development", [
+      hotfix,
+      sync,
+    ]),
+  ];
+  const collected = await collectOutcomes(outcomes);
   const snapshot = createLeaderboardSnapshot(
     input({
-      mergedPullRequestOutcomes: [
-        outcome(809, drew, "2026-10-16T12:05:09.000Z", "main", [hotfix]),
-        outcome(878, lala, "2026-10-19T03:47:50.000Z", "development", [
-          hotfix,
-          sync,
-        ]),
-      ],
+      mergedPullRequestOutcomes: collected,
     }),
   );
   expect(merges(snapshot)).toEqual([
     "PR_809:merged drew-dot-com 3",
     "PR_878:merged lalalune 3",
   ]);
+});
+
+async function collectOutcomes(
+  outcomes: MergedPullRequestOutcome[],
+  missingCommit = false,
+) {
+  const repository = TARGET_REPOSITORIES.find(
+    (target) => target.id === "SlopDotCash/slopdotcash",
+  );
+  if (!repository) throw new Error("Slop fixture repository is missing");
+  const nodes = outcomes.map((value) => ({
+    ...value,
+    __typename: "PullRequest",
+    state: "MERGED",
+    baseRefOid: "b".repeat(40),
+    headRefOid: HEAD,
+    author: value.author && { ...value.author, __typename: value.author.kind },
+    commits: {
+      totalCount: value.commits?.length ?? 0,
+      pageInfo: { hasNextPage: false, endCursor: null },
+      nodes: (missingCommit ? [] : (value.commits ?? [])).map((commit) => ({
+        commit: {
+          oid: commit.oid,
+          author: {
+            user: commit.author && {
+              ...commit.author,
+              __typename: commit.author.kind,
+            },
+          },
+        },
+      })),
+    },
+  }));
+  const client: GraphqlExecutor = {
+    execute: async () => ({
+      search: {
+        issueCount: nodes.length,
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes,
+      },
+    }),
+    getRequestCount: () => 1,
+    getRateLimit: () => ({
+      cost: 1,
+      limit: 5000,
+      remaining: 4999,
+      consumedDuringRun: 1,
+      resetAt: AT,
+    }),
+  };
+  const references = await collectSearchReferences(
+    client,
+    repository,
+    new Date(FROM),
+    new Date(AT),
+    "merged",
+    "is:pr is:merged",
+    "PullRequest",
+    { searchSliceCount: 0 },
+  );
+  return references.flatMap((reference) =>
+    reference.outcome ? [reference.outcome] : [],
+  );
+}
+
+test("incomplete non-integration commit evidence cannot publish repeat credit", async () => {
+  await expect(
+    collectOutcomes(
+      [
+        outcome(809, drew, "2026-10-16T12:05:09.000Z", "main", [
+          { oid: "c1".repeat(20), author: drew },
+        ]),
+      ],
+      true,
+    ),
+  ).rejects.toThrow("commit totals do not match complete unique evidence");
 });
 
 test("an integration-branch pull request still shares credit with the committers it owns", () => {

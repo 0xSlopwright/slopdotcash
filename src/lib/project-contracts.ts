@@ -1,4 +1,5 @@
 import type { ProjectDefinition } from "./projects.mjs";
+import type { VettingClearance } from "./vetting-contracts";
 
 export type GithubActor = { githubId: string; githubLogin: string };
 
@@ -76,12 +77,15 @@ export type EnforcementAction =
   | "ban"
   | "request_reinstatement"
   | "reinstate"
+  | "reinstate_accounts"
   | "deny_reinstatement";
 export type EnforcementActorRole =
   | "project-moderator"
   | "project-steward"
   | "project-applicant"
-  | "vetting-service";
+  | "banned-account"
+  | "vetting-service"
+  | "contributor-flags";
 export type RestrictionState = "clear" | "quarantined" | "banned";
 export type AppealState = "none" | "requested" | "granted" | "denied";
 export type EnforcementResult =
@@ -104,16 +108,27 @@ export type ProjectEnforcement = {
   /** Lowercase repository paths, including transfer aliases. */
   repositoryKeys: string[];
   actor: GithubActor | null;
-  systemIssuer?: {
-    kind: "vetting-service";
-    keySha256: string;
-    assessmentId: string;
-    policyVersion: string;
-    rule: string;
-  };
-  /** A steward or applicant may only file a reinstatement request (ELG-02). */
+  systemIssuer?:
+    | {
+        kind: "vetting-service";
+        keySha256: string;
+        assessmentId: string;
+        policyVersion: string;
+        rule: string;
+      }
+    | {
+        /** Two distinct active contributor flags paused the project. */
+        kind: "contributor-flags";
+        threshold: number;
+        flagIds: string[];
+      };
+  /** Owners and banned accounts may only file a reinstatement request. */
   actorRole: EnforcementActorRole;
-  decisionSource: "admin-panel" | "owner-request" | "standing-rule";
+  decisionSource:
+    | "admin-panel"
+    | "owner-request"
+    | "account-request"
+    | "standing-rule";
   beforeRevision: number;
   beforeManifestSha256: string;
   afterRevision: number | null;
@@ -121,6 +136,12 @@ export type ProjectEnforcement = {
   result: EnforcementResult;
   /** Exact scan and malicious findings covered by this independent decision. */
   vettingReview?: { assessmentId: string; maliciousAssessmentIds: string[] };
+  /**
+   * Maintainer accounts a moderator banned with the project when deciding a
+   * confirmed malicious result (PRD section 8). Only that decision has them.
+   */
+  maintainerBans?: GithubActor[];
+  accountReinstatements?: (GithubActor & { banEnforcementId: string })[];
   createdAt: string;
 };
 
@@ -143,6 +164,13 @@ export interface ProjectEnforcementState {
   /** The restriction holds but its paused, retired revision has not landed. */
   revisionPending: boolean;
   moderation: "unconfigured" | "moderator" | "not-moderator";
+  /**
+   * A confirmed malicious scan result banned the project and no moderator
+   * has decided it yet: ban the project and its maintainer, or reinstate.
+   */
+  decisionRequired: boolean;
+  /** Maintainer accounts banned with the restriction in force. */
+  bannedMaintainers: GithubActor[];
   records: ProjectEnforcement[];
 }
 
@@ -158,6 +186,9 @@ export interface EnforcementPreview {
   appealAfter: ProjectEnforcementState["appeal"];
   result: EnforcementResult;
   pendingReason: string | null;
+  /** Maintainer accounts the action bans with the project. */
+  maintainerBans: GithubActor[];
+  accountReinstatements?: (GithubActor & { banEnforcementId: string })[];
   revision: {
     before: number;
     after: number | null;
@@ -167,6 +198,84 @@ export interface EnforcementPreview {
     listingTierAfter: ProjectDefinition["listingTier"];
   };
 }
+
+/** The registered Slopbot GitHub App (`workers/slopbot/README.md`). */
+export const SLOPBOT_INSTALL_URL =
+  "https://github.com/apps/slopdotcash/installations/new";
+
+/**
+ * What the Slopbot installation reports for one repository and one GitHub
+ * account. `permission` is GitHub's base access level, which maps maintain to
+ * write; `roleName` is the role GitHub names, for display only.
+ */
+export type RepositoryAccess =
+  | { installation: "missing" }
+  | { installation: "suspended"; installationId: number }
+  | {
+      installation: "installed";
+      installationId: number;
+      permission: "admin" | "write" | "read" | "none";
+      roleName: string | null;
+    };
+
+/** Current GitHub authority of the signed-in account over a repository. */
+export type SetupAuthority =
+  /** The Slopbot installation read write, maintain or admin access. */
+  | { state: "verified"; message: string }
+  | { state: "denied"; message: string }
+  | { state: "retry"; message: string };
+
+export type SetupNextAction =
+  | "retry_authority"
+  | "ask_maintainer"
+  | "install_slopbot"
+  | "retry_installation"
+  | "wait_for_scan"
+  | "retry_scan"
+  | "request_scan"
+  | "restricted"
+  | "none";
+
+/**
+ * One setup status for a project (PRD section 4): the result, the single
+ * next action and every check, with funding reported separately because a
+ * project works without it.
+ */
+export type ProjectSetupStatus = {
+  projectId: string;
+  name: string;
+  slug: string;
+  revision: number;
+  status: ProjectDefinition["status"];
+  state: "ready" | "action_required" | "waiting" | "retry" | "restricted";
+  nextAction: { kind: SetupNextAction; message: string; href: string | null };
+  checks: {
+    authority: SetupAuthority;
+    installation: {
+      state: "installed" | "missing" | "suspended" | "retry";
+      message: string;
+    };
+    scan: {
+      state: VettingClearance["state"] | "unavailable";
+      message: string;
+    };
+  };
+  funding:
+    | { mode: "none" }
+    | {
+        mode: "monthly";
+        network: string;
+        symbol: string;
+        /** Integer base units of the asset, which has `decimals`. */
+        monthlyAmountMinor: string;
+        decimals: number;
+        state: "pledged" | "committed";
+        payments: "enabled" | "disabled";
+      };
+  /** Set when this check appended the activation revision. */
+  activatedRevision: number | null;
+  checkedAt: string;
+};
 
 export type ProjectApplicationNotice = {
   applicationId: string;

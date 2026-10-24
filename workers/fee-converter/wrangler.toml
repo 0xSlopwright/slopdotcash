@@ -7,9 +7,11 @@ compatibility_date = "2026-07-30"
 workers_dev = false
 preview_urls = false
 
-# No routes: the Worker runs only on its cron trigger.
+# No routes: the Worker runs only on its cron trigger. Every minute it converts
+# fees whose fee-wallet balance changed (receipts); each 15th minute it runs a
+# full recovery scan instead (index.ts RECOVERY_SCAN_MINUTES).
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["* * * * *"]
 
 [[d1_databases]]
 binding = "FEE_DB"
@@ -25,7 +27,11 @@ FEE_CONVERTER_NETWORKS = ""
 # Optional operator allowlist, e.g. {"base":["0x..."]}. Project reward assets
 # from D1 are always candidates; arbitrary airdropped tokens never are.
 FEE_CONVERTER_ALLOWLIST = ""
-# Stablecoin micro-units (1 USDC = 1000000).
+# USDC micro-units (1 USDC = 1000000). Every limit below is required once the
+# mode is not off; the code has no fallback.
+# Dust threshold: owner decision of 24 October 2026 (PRD section 11). Balances
+# under 5 USDC, or worth less than 10 times the gas cost, accumulate until they
+# are worth converting.
 FEE_CONVERTER_MIN_VALUE_MICRO = "5000000"
 FEE_CONVERTER_GAS_MULTIPLE = "10"
 FEE_CONVERTER_MAX_SLIPPAGE_BPS = "100"
@@ -33,6 +39,8 @@ FEE_CONVERTER_MAX_PRICE_IMPACT_BPS = "200"
 FEE_CONVERTER_RUN_CAP_MICRO = "1000000000"
 FEE_CONVERTER_DAILY_CAP_MICRO = "5000000000"
 FEE_CONVERTER_SOLANA_FEE_MICRO = "2000"
+# Networks without a verified Circle USDC target (Robinhood Chain today) stay
+# route_pending: nothing is quoted or signed and their fees stay in the wallet.
 # Published network fee wallets (docs/slop-product-requirements.md TOK-06). Robinhood
 # Chain and Ethereum fee-wallet decisions are recorded in the PRD. Network
 # configuration and conversion activation still require their reviewed gates.

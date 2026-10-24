@@ -11,14 +11,25 @@ import {
   runNetwork,
   type SendStatus,
 } from "./core";
-import worker, { runOnce } from "./index";
+import worker, { runOnce, triggerAt } from "./index";
 import { sqliteD1 } from "./sqlite-d1";
-import { D1ConversionStore, projectRewardTokens } from "./store";
+import { D1ConversionStore, projectRewardTokens, projectVaults } from "./store";
 
 const TOKEN = "0x1111111111111111111111111111111111111111";
 const OTHER = "0x2222222222222222222222222222222222222222";
 const USDC = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
 const WALLET = "0x8f77c37d8650776bfe73c9b12b15209ee15d9b86";
+const USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
+
+/** Test limits only; production limits come from the reviewed wrangler.toml. */
+const LIMITS = {
+  FEE_CONVERTER_MIN_VALUE_MICRO: "5000000",
+  FEE_CONVERTER_GAS_MULTIPLE: "10",
+  FEE_CONVERTER_MAX_SLIPPAGE_BPS: "100",
+  FEE_CONVERTER_MAX_PRICE_IMPACT_BPS: "200",
+  FEE_CONVERTER_RUN_CAP_MICRO: "1000000000",
+  FEE_CONVERTER_DAILY_CAP_MICRO: "5000000000",
+};
 
 function config(extra: Record<string, string> = {}) {
   return parseConfig({
@@ -26,6 +37,7 @@ function config(extra: Record<string, string> = {}) {
     FEE_CONVERTER_NETWORKS: "base",
     FEE_WALLET_BASE: WALLET,
     FEE_CONVERTER_ALLOWLIST: JSON.stringify({ base: [TOKEN] }),
+    ...LIMITS,
     ...extra,
   });
 }
@@ -172,6 +184,7 @@ describe("release gates", () => {
           FEE_CONVERTER_NETWORKS: "base,ethereum",
           FEE_WALLET_BASE: WALLET,
           FEE_WALLET_ETHEREUM: WALLET,
+          ...LIMITS,
         },
         {
           waitUntil(promise) {
@@ -209,6 +222,175 @@ describe("release gates", () => {
         privateKey: generatePrivateKey(),
       }),
     ).toThrow(/does not control the configured fee wallet/);
+  });
+
+  test("a running converter refuses to start without an owner-set dust threshold", () => {
+    for (const mode of ["dry_run", "live"])
+      for (const name of [
+        "FEE_CONVERTER_MIN_VALUE_MICRO",
+        "FEE_CONVERTER_GAS_MULTIPLE",
+      ])
+        expect(() => config({ FEE_CONVERTER_MODE: mode, [name]: "" })).toThrow(
+          `${name} awaits the owner's decision`,
+        );
+    expect(() => config({ FEE_CONVERTER_MAX_SLIPPAGE_BPS: "" })).toThrow(
+      "FEE_CONVERTER_MAX_SLIPPAGE_BPS is required",
+    );
+    // An owner may choose to convert every received fee.
+    expect(
+      config({
+        FEE_CONVERTER_MIN_VALUE_MICRO: "0",
+        FEE_CONVERTER_GAS_MULTIPLE: "0",
+      }).limits,
+    ).toMatchObject({ minValueMicro: 0n, gasMultiple: 0n });
+    expect(
+      parseConfig({ FEE_CONVERTER_MODE: "off", FEE_CONVERTER_NETWORKS: "" })
+        .mode,
+    ).toBe("off");
+  });
+
+  test("the checked-in configuration carries the owner's recorded dust threshold and stays off", async () => {
+    const toml = await Bun.file(
+      new URL("./wrangler.toml", import.meta.url),
+    ).text();
+    expect(toml).toMatch(/^FEE_CONVERTER_MODE = "off"$/mu);
+    expect(toml).toMatch(/^FEE_CONVERTER_MIN_VALUE_MICRO = "5000000"$/mu);
+    expect(toml).toMatch(/^FEE_CONVERTER_GAS_MULTIPLE = "10"$/mu);
+  });
+});
+
+describe("USDC routes", () => {
+  test("a network without a verified USDC target stays pending and never quotes, signs or loads a key", async () => {
+    const { db, sqlite } = sqliteD1();
+    const events: string[] = [];
+    const original = console.log;
+    console.log = (line: string) => events.push(line);
+    try {
+      const results = await runOnce({
+        FEE_DB: db,
+        FEE_CONVERTER_MODE: "live",
+        FEE_CONVERTER_NETWORKS: "robinhood",
+        FEE_WALLET_ROBINHOOD: WALLET,
+        FEE_CONVERTER_ALLOWLIST: JSON.stringify({ robinhood: [TOKEN, USDG] }),
+        ...LIMITS,
+      });
+      expect(results).toEqual([
+        expect.objectContaining({
+          network: "robinhood",
+          status: "route_pending",
+        }),
+      ]);
+      expect(
+        events.some((line) =>
+          line.includes('"event":"fee_conversion_route_pending"'),
+        ),
+      ).toBe(true);
+      // No record means no quote, and nothing names USDG or any other token
+      // as a USDC substitute.
+      expect(
+        sqlite.query("SELECT COUNT(*) AS n FROM fee_conversions").get(),
+      ).toEqual({ n: 0 });
+      expect(
+        sqlite.query("SELECT COUNT(*) AS n FROM fee_converter_locks").get(),
+      ).toEqual({ n: 0 });
+    } finally {
+      console.log = original;
+      sqlite.close();
+    }
+  });
+
+  test("EVM clients refuse to quote a network without a verified USDC target", async () => {
+    const { createEvmClient } = await import("./evm");
+    const parsed = parseConfig({
+      FEE_CONVERTER_MODE: "dry_run",
+      FEE_CONVERTER_NETWORKS: "robinhood",
+      FEE_WALLET_ROBINHOOD: WALLET,
+      ...LIMITS,
+    });
+    let fetched = false;
+    const client = createEvmClient({
+      config: parsed.networks[0],
+      limits: parsed.limits,
+      kyberClientId: "test",
+      fetch: (async () => {
+        fetched = true;
+        throw new Error("no network in unit tests");
+      }) as unknown as typeof fetch,
+    });
+    await expect(client.quote(TOKEN, 1_000n)).rejects.toThrow(
+      "no verified USDC target on robinhood",
+    );
+    expect(fetched).toBe(false);
+  });
+
+  test("records name the network USDC as the target", async () => {
+    const h = harness({ mode: "dry_run" });
+    await runNetwork(h.network, h.deps);
+    expect(h.rows()[0]).toMatchObject({ target_token: USDC, state: "quoted" });
+  });
+});
+
+describe("receipt-triggered conversion", () => {
+  test("cron minutes alternate receipt checks with a recovery scan", () => {
+    expect(triggerAt(Date.parse("2026-10-18T12:00:00Z"))).toBe("recovery");
+    expect(triggerAt(Date.parse("2026-10-18T12:01:00Z"))).toBe("receipts");
+    expect(triggerAt(Date.parse("2026-10-18T12:14:00Z"))).toBe("receipts");
+    expect(triggerAt(Date.parse("2026-10-18T12:45:00Z"))).toBe("recovery");
+  });
+
+  test("a receipt run converts a newly received fee and leaves an unchanged balance alone", async () => {
+    const h = harness({ mode: "dry_run" });
+    h.deps.trigger = "receipts";
+    let quotes = 0;
+    h.chain.quoteFor = (_t, amount) => {
+      quotes += 1;
+      return linearQuote(amount);
+    };
+    // First sighting of a fee is a receipt.
+    await runNetwork(h.network, h.deps);
+    expect(quotes).toBe(1);
+    expect(h.rows()).toHaveLength(1);
+    // Same balance: no new receipt, so no quote and no record.
+    await runNetwork(h.network, h.deps);
+    expect(quotes).toBe(1);
+    expect(h.rows()).toHaveLength(1);
+    // A new fee arrives.
+    h.chain.balances.set(TOKEN, 26_000_000n);
+    await runNetwork(h.network, h.deps);
+    expect(quotes).toBe(2);
+    expect(h.rows().map((row) => row.amount_in)).toEqual([
+      "20000000",
+      "26000000",
+    ]);
+  });
+
+  test("a repeated fee amount after finalization is a new receipt", async () => {
+    const h = harness();
+    h.deps.trigger = "receipts";
+    await runNetwork(h.network, h.deps);
+    expect(h.chain.sent).toHaveLength(1);
+    // The first balance was spent, then an equal fee arrived before the next tick.
+    h.chain.statusFor = () => ({ kind: "finalized", amountOut: 20_000_000n });
+    await runNetwork(h.network, h.deps);
+    expect(h.rows().map((row) => row.state)).toEqual([
+      "finalized",
+      "submitted",
+    ]);
+    expect(h.chain.sent).toHaveLength(2);
+  });
+
+  test("the recovery scan retries a token that a receipt run leaves alone", async () => {
+    const h = harness();
+    h.deps.trigger = "receipts";
+    h.chain.prepare = async () => {
+      throw new Error("price moved below the recorded minimum");
+    };
+    await runNetwork(h.network, h.deps);
+    await runNetwork(h.network, h.deps);
+    expect(h.rows().map((row) => row.state)).toEqual(["failed"]);
+    h.deps.trigger = "recovery";
+    await runNetwork(h.network, h.deps);
+    expect(h.rows().map((row) => row.state)).toEqual(["failed", "failed"]);
   });
 });
 
@@ -720,9 +902,19 @@ describe("D1 contract", () => {
     add("escrowed", {
       escrow: {
         deployments: [
-          { network: "base-mainnet", asset: TOKEN },
+          { network: "base-mainnet", asset: TOKEN, vault: WALLET },
           { network: "base-sepolia", asset: OTHER },
         ],
+      },
+    });
+    add("bounty-only", {
+      securityBounty: {
+        settlement: {
+          deployments: [
+            { network: "base-mainnet", asset: OTHER, vault: THIRD },
+            { network: "base-sepolia", asset: USDC, vault: TOKEN },
+          ],
+        },
       },
     });
     add("token-reward", {
@@ -736,7 +928,11 @@ describe("D1 contract", () => {
     });
     expect(
       (await projectRewardTokens(db, "base", ["base-mainnet"])).sort(),
-    ).toEqual([TOKEN, THIRD]);
+    ).toEqual([TOKEN, OTHER, THIRD].sort());
+    expect((await projectVaults(db, ["base-mainnet"])).sort()).toEqual(
+      [WALLET, THIRD].sort(),
+    );
+    expect(await projectVaults(db, ["ethereum"])).toEqual([]);
     expect(await projectRewardTokens(db, "ethereum", ["ethereum"])).toEqual([
       OTHER,
     ]);
@@ -752,6 +948,7 @@ describe("D1 contract", () => {
       FEE_CONVERTER_NETWORKS: "solana",
       FEE_WALLET_SOLANA: "9EyxVhhnCJH4QL5bDsRyukrkHFyitFMuf45UDdLxm4BY",
       FEE_WALLET_KEY_SOLANA: JSON.stringify(new Array(64).fill(1)),
+      ...LIMITS,
     };
     const parsed = parseConfig(env);
     expect(() => chainClient(env, parsed, parsed.networks[0])).toThrow(

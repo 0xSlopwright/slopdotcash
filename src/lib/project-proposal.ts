@@ -1,14 +1,17 @@
 import { fetchWithDeadline, readBoundedJson } from "./browser-json";
+import { isEscrowChain } from "./escrow-policy.mjs";
 import {
   type OwnedRepository,
   type RepositoryLookup,
   validRepositoryPath,
 } from "./project-contracts";
 import {
+  formatAssetAmount,
   formatMonthlyCapDisplay,
   MAX_MONTHLY_CAP_MINOR,
   MAX_PROJECT_ID_LENGTH,
 } from "./project-schema.mjs";
+import { REWARD_ASSET_NETWORKS } from "./reward-asset.mjs";
 
 export function safeProposalHttpsUrl(value: string): boolean {
   if (value.length === 0 || value.length > 500) return false;
@@ -99,6 +102,114 @@ export function monthlyPoolValue(value: string): {
     display: formatMonthlyCapDisplay(minor),
     minor,
     valid: true,
+  };
+}
+
+/**
+ * A monthly amount in the reward asset, from its integer base units, without
+ * floating point and without a dollar sign: the asset is the unit (PRD
+ * section 6, "never present tokens as dollars").
+ */
+export function formatMonthlyAmount(
+  minor: string,
+  decimals: number,
+  symbol: string,
+): string {
+  return `${formatAssetAmount(minor, decimals)} ${symbol}`;
+}
+
+/** The one optional funding choice of project setup. */
+export type FundingChoice = {
+  mode: "none" | "monthly";
+  network: string;
+  assetKind: "stablecoin" | "token";
+  tokenAddress: string;
+  tokenSymbol: string;
+  monthlyAmount: string;
+};
+
+/**
+ * The reward, asset and vault fields of a manifest for a funding choice. No
+ * monthly funding keeps the unfunded pool with no reward asset and no vault,
+ * so the network and asset are chosen only when the owner adds funding; a
+ * vault's network cannot change once set. A monthly amount names one network
+ * and one asset, with the vault policy of that network when it has one. The
+ * server verifies the asset, reads its decimals and stores the amount, sent
+ * separately as `monthlyAmount`, in the asset's base units.
+ */
+export function rewardFields(
+  choice: FundingChoice,
+  now: Date,
+): Record<string, unknown> {
+  if (choice.mode === "none")
+    return {
+      reward: {
+        kind: "monthly-pool",
+        currency: "USDC",
+        chain: "base",
+        rewardStartAt: now.toISOString(),
+        cycle: "calendar-month-utc",
+        monthlyCapMinor: "0",
+        monthlyCapDisplay: formatMonthlyCapDisplay("0"),
+        committedMinor: "0",
+        paymentMode: "disabled",
+        feeBasisPoints: 100,
+        unusedFunds: "rollover-without-cap-increase",
+        fundingState: "pledged",
+      },
+    };
+  const network =
+    REWARD_ASSET_NETWORKS[choice.network as keyof typeof REWARD_ASSET_NETWORKS];
+  const asset =
+    choice.assetKind === "token"
+      ? {
+          network: choice.network,
+          kind: "token",
+          address: choice.tokenAddress.trim(),
+          symbol: choice.tokenSymbol.trim(),
+        }
+      : {
+          network: choice.network,
+          kind: "stablecoin",
+          address: network.stablecoin.address,
+          symbol: network.stablecoin.symbol,
+        };
+  const escrow = isEscrowChain(choice.network);
+  // A stablecoin has 6 decimals, so its base units are known here. A token's
+  // decimals are read from chain on save; until then its amount is zero.
+  const amount =
+    choice.assetKind === "token"
+      ? { minor: "0", display: `0 ${asset.symbol}` }
+      : monthlyPoolValue(choice.monthlyAmount);
+  return {
+    ...(escrow
+      ? {
+          escrow: {
+            schemaVersion: "1",
+            effectiveCycle: now.toISOString().slice(0, 7),
+            chain: choice.network,
+            feeBasisPoints: 200,
+            withdrawalFeeBasisPoints: 200,
+            feeMode: "deduct-from-gross",
+            deployments: [],
+          },
+        }
+      : {}),
+    rewardAsset: asset,
+    reward: {
+      kind: "monthly-pool",
+      currency: asset.symbol,
+      chain: choice.network,
+      rewardStartAt: now.toISOString(),
+      cycle: "calendar-month-utc",
+      monthlyCapMinor: amount.minor,
+      monthlyCapDisplay: amount.display,
+      committedMinor: "0",
+      paymentMode: "disabled",
+      feeBasisPoints: escrow ? 200 : 100,
+      unusedFunds: "rollover-without-cap-increase",
+      fundingState: "pledged",
+    },
   };
 }
 

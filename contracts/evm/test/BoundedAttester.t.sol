@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
+import {DeployFactory} from "./DeployFactory.sol";
 
-import {EscrowFactory, IERC20, ProjectEscrow} from "../src/ProjectEscrow.sol";
+import {EscrowFactory, IERC20, ProjectEscrow, Purpose} from "../src/ProjectEscrow.sol";
 import {TestDollar} from "../integration/TestDollar.sol";
 
 interface Vm {
@@ -45,9 +46,9 @@ contract BoundedAttesterTest {
         contributor = vm.addr(CONTRIBUTOR_KEY);
         usdc = new TestDollar();
         vm.prank(REGISTRAR);
-        factory = new EscrowFactory(REGISTRAR, FEE, AUTHORITY, DELAY);
-        vm.prank(REGISTRAR);
-        vault = ProjectEscrow(factory.create(PROJECT, IERC20(address(usdc)), OWNER, OWNER));
+        factory = DeployFactory.create(REGISTRAR, FEE, AUTHORITY, DELAY);
+        vm.prank(OWNER);
+        vault = ProjectEscrow(factory.create(PROJECT, IERC20(address(usdc)), Purpose.Ordinary));
         usdc.mint(OWNER, 1_000_000e6);
         vm.prank(OWNER);
         usdc.approve(address(vault), type(uint256).max);
@@ -110,8 +111,8 @@ contract BoundedAttesterTest {
     }
 
     function test_signatureCannotReplayOnAnotherVault() public {
-        vm.prank(REGISTRAR);
-        ProjectEscrow other = ProjectEscrow(factory.create(keccak256("other"), IERC20(address(usdc)), OWNER, OWNER));
+        vm.prank(OWNER);
+        ProjectEscrow other = ProjectEscrow(factory.create(keccak256("other"), IERC20(address(usdc)), Purpose.Ordinary));
         uint64 expiresAt = uint64(block.timestamp + 1 hours);
         bytes memory signature = walletSignature(CONTRIBUTOR_KEY, 0, expiresAt, contributor);
         vm.prank(AUTHORITY);
@@ -132,7 +133,7 @@ contract BoundedAttesterTest {
         uint64 expiresAt = uint64(block.timestamp + 1 hours);
         bindAs(AUTHORITY, 0, walletSignature(CONTRIBUTOR_KEY, 0, expiresAt, contributor));
         assertEq(activeVersion(), 1);
-        // The award's commit delay and the binding delay end at the same instant here.
+        // The award commitment and binding review periods end together here.
         vm.expectRevert(ProjectEscrow.AwardPending.selector);
         vault.pay(id, 1);
         vm.warp(block.timestamp + DELAY);
@@ -180,12 +181,6 @@ contract BoundedAttesterTest {
         vm.prank(REGISTRAR);
         vm.expectRevert(EscrowFactory.RotationPending.selector);
         factory.proposeIdentityAuthority(address(0xA09));
-        // Not before the notice period, by anyone.
-        vm.expectRevert(EscrowFactory.RotationNotReady.selector);
-        factory.executeIdentityAuthorityRotation();
-        vm.warp(effectiveAt - 1);
-        vm.expectRevert(EscrowFactory.RotationNotReady.selector);
-        factory.executeIdentityAuthorityRotation();
         // The registrar can withdraw its own proposal.
         vm.expectEmit(true, false, false, true);
         emit IdentityAuthorityRotationCancelled(NEXT_AUTHORITY);
@@ -198,7 +193,7 @@ contract BoundedAttesterTest {
         vm.prank(REGISTRAR);
         vm.expectRevert(EscrowFactory.NoRotationPending.selector);
         factory.cancelIdentityAuthorityRotation();
-        // Propose again and execute after 7 days from a stranger's account.
+        // Propose again and execute immediately from a stranger's account.
         vm.prank(REGISTRAR);
         factory.proposeIdentityAuthority(NEXT_AUTHORITY);
         vm.warp(block.timestamp + 7 days);
@@ -241,12 +236,11 @@ contract BoundedAttesterTest {
         vault.pay(first, 1);
         vm.prank(REGISTRAR);
         factory.proposeIdentityAuthority(NEXT_AUTHORITY);
-        vm.warp(block.timestamp + 7 days);
         factory.executeIdentityAuthorityRotation();
         // Pays through the same binding after the rotation.
         vault.pay(second, 1);
         assertEq(usdc.balanceOf(contributor), 147e6);
-        // A binding still pending at execution activates on its own schedule.
+        // A recent binding remains immediately payable across execution.
         bytes32 third = commit(keccak256("third"), 10e6);
         uint64 later = uint64(block.timestamp + 1 hours);
         vm.prank(REGISTRAR);
@@ -256,9 +250,6 @@ contract BoundedAttesterTest {
         bindAs(NEXT_AUTHORITY, 1, walletSignature(CONTRIBUTOR_KEY, 1, later, contributor));
         vm.warp(block.timestamp + 1 hours);
         factory.executeIdentityAuthorityRotation();
-        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        vault.pay(third, 2);
-        vm.warp(block.timestamp + DELAY);
         vault.pay(third, 2);
         assertEq(usdc.balanceOf(contributor), 156_800_000);
     }
@@ -285,13 +276,9 @@ contract BoundedAttesterTest {
         vault.bindDestination(ACTOR, destination, expectedVersion, CLAIM, expiresAt, signature);
     }
 
-    /// Review H-1 regression: a stolen identity authority key, paired with a wallet the attacker controls,
-    /// cannot take an award at the production minimums (48-hour binding delay, 7-day rotation). The registrar
-    /// proposes a new authority at once, the owner cancels each attacker binding late in its delay, and the
-    /// new authority replaces the last attacker binding before it activates. Only the contributor is paid.
-    /// While the rotation is pending the cancels are not counted, so the owner could cancel the fourth
-    /// binding too; it need not, because the rotation executes before that binding activates.
-    function test_H1_stolenAuthorityCannotTakeAnAward() public {
+    /// Owner cancellations mined before payment remain effective during authority rotation.
+    /// This does not assert a guaranteed intervention window: verified bindings activate immediately.
+    function test_cancelBeforePaymentDuringRotation() public {
         bytes32 id = commit(keccak256("h1"), 100e6);
         vm.prank(REGISTRAR);
         factory.proposeIdentityAuthority(NEXT_AUTHORITY);
@@ -302,7 +289,7 @@ contract BoundedAttesterTest {
             version++;
             vm.warp(block.timestamp + DELAY - 1);
             (, uint64 payable_) = vault.payableBinding(ACTOR);
-            assertEq(payable_, 0);
+            assertEq(payable_, version);
             vm.prank(OWNER);
             vault.cancelBinding(ACTOR, version);
             vm.warp(block.timestamp + 1);
@@ -311,9 +298,7 @@ contract BoundedAttesterTest {
         assertEq(vault.cancelCount(ACTOR), 0);
         bindWallet(AUTHORITY, ATTACKER_KEY, version);
         version++;
-        (,,, uint64 attackerActivatesAt,) = vault.bindings(ACTOR);
-        require(rotationAt < attackerActivatesAt, "rotation executes before the attacker binding activates");
-        vm.warp(rotationAt);
+        if (block.timestamp < rotationAt) vm.warp(rotationAt);
         factory.executeIdentityAuthorityRotation();
         // The stolen key can no longer bind.
         uint64 expiresAt = uint64(block.timestamp + 1 hours);
@@ -323,23 +308,18 @@ contract BoundedAttesterTest {
         vm.expectRevert(ProjectEscrow.Unauthorized.selector);
         vault.bindDestination(ACTOR, attacker, version, CLAIM, expiresAt, stolen);
         // The new authority binds the contributor's wallet with the contributor's signature. It replaces the
-        // attacker binding, which therefore never pays.
+        // attacker binding before any payment is submitted.
         bindWallet(NEXT_AUTHORITY, CONTRIBUTOR_KEY, version);
-        vm.warp(attackerActivatesAt);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.pay(id, version);
-        vm.warp(rotationAt + DELAY);
+        if (block.timestamp < rotationAt + DELAY) vm.warp(rotationAt + DELAY);
         vault.pay(id, version + 1);
         assertEq(usdc.balanceOf(attacker), 0);
         assertEq(usdc.balanceOf(contributor), 98e6);
     }
 
-    /// Outside report (20 October 2026): the H-1 sequence above assumes cancelCount is 0 when the key is
-    /// stolen. With one earlier cancel on the actor and no payment since, the owner has two cancels left, so
-    /// two cancels and the third binding's delay cover 6 days, under the 7-day rotation, and the attacker's
-    /// third binding pays. The cap must not apply while the factory has a pending rotation, and a waived
-    /// cancel must not spend the count.
-    function test_H1_stolenAuthorityCannotTakeAnAwardAfterPriorCancel() public {
+    /// A prior cancellation does not consume the cap waived during pending authority rotation.
+    function test_cancelBeforePaymentDuringRotationAfterPriorCancel() public {
         bytes32 id = commit(keccak256("h1-prior"), 100e6);
         // One ordinary cancel before the compromise: the contributor's own binding, retracted by the owner.
         bindWallet(AUTHORITY, CONTRIBUTOR_KEY, 0);
@@ -351,33 +331,30 @@ contract BoundedAttesterTest {
         vm.prank(REGISTRAR);
         factory.proposeIdentityAuthority(NEXT_AUTHORITY);
         uint64 rotationAt = factory.identityAuthorityEffectiveAt();
-        // Three attacker bindings, each cancelled late in its delay: cancels 2, 3 and 4 since the last
+        // Three attacker bindings, each cancelled late in its review period: cancels 2, 3 and 4 since the last
         // payment, more than the cap allows outside a rotation.
         for (uint256 i = 0; i < vault.MAX_CANCELS_BETWEEN_PAYMENTS(); i++) {
             bindWallet(AUTHORITY, ATTACKER_KEY, version);
             version++;
             vm.warp(block.timestamp + DELAY - 1);
             (, uint64 payable_) = vault.payableBinding(ACTOR);
-            assertEq(payable_, 0);
+            assertEq(payable_, version);
             vm.prank(OWNER);
             vault.cancelBinding(ACTOR, version);
             vm.warp(block.timestamp + 1);
         }
         // Waived cancels are not counted.
         assertEq(vault.cancelCount(ACTOR), 1);
-        // The fourth attacker binding activates after the rotation executes.
+        // The fourth binding is active; the test does not submit a payment before replacement.
         bindWallet(AUTHORITY, ATTACKER_KEY, version);
         version++;
-        (,,, uint64 attackerActivatesAt,) = vault.bindings(ACTOR);
-        require(rotationAt < attackerActivatesAt, "rotation executes before the attacker binding activates");
-        vm.warp(rotationAt);
+        if (block.timestamp < rotationAt) vm.warp(rotationAt);
         factory.executeIdentityAuthorityRotation();
-        // The new authority replaces the attacker binding with the contributor's before it activates.
+        // The new authority replaces the attacker binding before any payment is submitted.
         bindWallet(NEXT_AUTHORITY, CONTRIBUTOR_KEY, version);
-        vm.warp(attackerActivatesAt);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.pay(id, version);
-        vm.warp(rotationAt + DELAY);
+        if (block.timestamp < rotationAt + DELAY) vm.warp(rotationAt + DELAY);
         vault.pay(id, version + 1);
         assertEq(usdc.balanceOf(vm.addr(ATTACKER_KEY)), 0);
         assertEq(usdc.balanceOf(contributor), 98e6);
@@ -434,7 +411,7 @@ contract BoundedAttesterTest {
         vm.prank(OWNER);
         vm.expectRevert(ProjectEscrow.CancelLimit.selector);
         vault.cancelBinding(ACTOR, version);
-        // The binding then pays after its delay, as the cap intends.
+        // The eligible award pays through the uncancelled binding.
         vm.warp(block.timestamp + DELAY);
         (, uint64 payable_) = vault.payableBinding(ACTOR);
         assertEq(payable_, version);
@@ -442,13 +419,13 @@ contract BoundedAttesterTest {
 
     function test_vaultsAreCreatedOnlyByTheFactory() public {
         vm.expectRevert();
-        new ProjectEscrow(PROJECT, IERC20(address(usdc)), OWNER, OWNER, FEE, DELAY);
+        vault.initialize(PROJECT, IERC20(address(usdc)), OWNER, Purpose.Ordinary, FEE, DELAY);
     }
 
     function test_factoryRejectsRegistrarAsAuthority() public {
         vm.prank(REGISTRAR);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(REGISTRAR, FEE, REGISTRAR, DELAY);
+        DeployFactory.create(REGISTRAR, FEE, REGISTRAR, DELAY);
     }
 
     function assertEq(uint256 a, uint256 b) internal pure {

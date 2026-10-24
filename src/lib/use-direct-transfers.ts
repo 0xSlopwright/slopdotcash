@@ -95,9 +95,6 @@ export function useAllDirectTransfers(projectIds: readonly string[]) {
     }),
     [key],
   );
-  return usePublicResource(
-    Boolean(key),
-    load,
-    "Direct payment records unavailable",
-  );
+  // No registered projects is a complete empty result, not a pending request.
+  return usePublicResource(true, load, "Direct payment records unavailable");
 }

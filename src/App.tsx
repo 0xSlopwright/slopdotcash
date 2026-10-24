@@ -15,6 +15,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { PENALTY_TABLE } from "../workers/slopbot/penalties";
 import { CycleArchivePage, CyclePage } from "./CyclePages";
 import { EarningsPage } from "./Earnings";
 import { EscrowFunding } from "./EscrowFunding";
@@ -40,6 +41,10 @@ import {
   type ProjectDefinition,
 } from "./lib/projects.mjs";
 import { REWARD_ASSET_NETWORKS } from "./lib/reward-asset.mjs";
+import {
+  MAX_CREDITED_REVIEWERS,
+  VALUE_SCORING_POLICY_EFFECTIVE_AT,
+} from "./lib/scoring-policy";
 import { pageTitle, SITE_ORIGIN, STATIC_PAGE_TITLES } from "./lib/site-routes";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
 import { useCycleIndex } from "./lib/use-cycle-index";
@@ -67,6 +72,7 @@ import {
   ExternalLinkAnchor,
   formatCycleMonth,
   formatDate,
+  formatDateTime,
   formatMicroUsdc,
   monthlyPoolLabel,
   monthlyPoolPointsOnly,
@@ -78,6 +84,7 @@ import {
 } from "./Presentation";
 import { ProfilePage } from "./ProfilePage";
 import { ProjectLeaderboard } from "./ProjectLeaderboard";
+import { ProjectRiskFlag } from "./ProjectRiskFlag";
 
 export { safeProposalHttpsUrl } from "./lib/project-proposal";
 export {
@@ -187,7 +194,7 @@ function internalRoute(pathname: string): Route {
     segments[2] === "awards"
   )
     return { kind: "owner-awards", projectId: segments[1] };
-  // The admin email deep-links one application at /admin/applications/<id>.
+  // Admin emails sent before self-service setup link /admin/applications/<id>.
   if (
     segments[0] === "admin" &&
     (segments.length === 1 ||
@@ -287,7 +294,7 @@ function useRoute(): Route {
 
 const PRIVATE_PAGE_TITLES = new Map<Route["kind"], string>([
   ["admin", "Admin"],
-  ["owner-awards", "Review awards"],
+  ["owner-awards", "Monthly awards"],
   ["account", "Account"],
   ["login", "Log in"],
   ["earnings", "Your payouts"],
@@ -502,9 +509,12 @@ function TypewriterHeroHeading() {
   );
 }
 
-function monthlyPoolCapLabel(reward: ProjectDefinition["reward"]): string {
+/** A token pool names its asset; only a stablecoin pool reads as dollars. */
+function monthlyPoolCapLabel(project: ProjectDefinition): string {
+  const reward = project.reward;
   const minor = BigInt(reward.monthlyCapMinor);
-  if (minor % 1_000_000n !== 0n) return reward.monthlyCapDisplay;
+  if (project.rewardAsset?.kind === "token" || minor % 1_000_000n !== 0n)
+    return reward.monthlyCapDisplay;
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
@@ -547,7 +557,7 @@ function ProjectOwnerAvatar({ project }: { project: ProjectDefinition }) {
 function ProjectCard({ project }: { project: ProjectDefinition }) {
   const amount =
     project.reward.kind === "monthly-pool"
-      ? monthlyPoolCapLabel(project.reward)
+      ? monthlyPoolCapLabel(project)
       : (project.reward.externalOpportunity?.advertisedAmountDisplay ??
         "External");
   return (
@@ -591,7 +601,7 @@ function ProjectRow({ project }: { project: ProjectDefinition }) {
   const amount = monthlyPoolPointsOnly(project.reward)
     ? "$0 + points (Points only)"
     : project.reward.kind === "monthly-pool"
-      ? `${monthlyPoolCapLabel(project.reward)}/mo target`
+      ? `${monthlyPoolCapLabel(project)}/mo target`
       : `${project.reward.externalOpportunity?.advertisedAmountDisplay ?? "External prize"} + points`;
   return (
     <li>
@@ -635,8 +645,8 @@ function CommunityProjects({ projects }: { projects: ProjectDefinition[] }) {
     >
       <h3 id="community-projects">Community</h3>
       <p className="project-tier-note">
-        Community-listed after admin review, not featured by Slop. Paused
-        projects are listed but not collected yet.
+        Listed by their owners, not featured by Slop. Paused projects are listed
+        but not collected yet.
       </p>
       <ul className="project-rows">
         {visible.map((project) => (
@@ -707,8 +717,8 @@ function HomePage() {
         </div>
         {featuredProjects.length + listedCommunityProjects.length === 0 ? (
           <p className="project-tier-note">
-            No projects are listed yet. Maintainers add one with GitHub sign-in,
-            and a Slop admin reviews each application.
+            No projects are listed yet. Maintainers add one with GitHub sign-in;
+            it goes live when its setup checks pass.
           </p>
         ) : (
           <>
@@ -951,7 +961,10 @@ export function ProjectParticipation({
     return (
       <section className="section" id="start">
         <h2>Project paused</h2>
-        <p>A Slop admin opens the project after review.</p>
+        <p>
+          Do not install this project's skill or start work while the project is
+          paused.
+        </p>
       </section>
     );
   }
@@ -1117,7 +1130,7 @@ function ProjectPaymentHistory({
           Draft a project update
         </Link>
         {project.escrow && (
-          <Link href={`/projects/${project.slug}/awards`}>Review awards</Link>
+          <Link href={`/projects/${project.slug}/awards`}>Monthly awards</Link>
         )}
       </div>
       {directState.status === "error" && !externalPrize ? (
@@ -1188,7 +1201,19 @@ function ProjectPaymentHistory({
 }
 
 export function ProjectFunding({ project }: { project: ProjectDefinition }) {
-  return project.escrow ? <EscrowFunding project={project} /> : null;
+  if (!project.escrow) return null;
+  // A stale registry may name an old vault, so deposits need the live one.
+  if (globalThis.__SLOP_PROJECT_REGISTRY_STALE__)
+    return (
+      <section className="section project-funding" aria-label="Project escrow">
+        <h2>Escrow</h2>
+        <p role="status">
+          Funding actions are unavailable until the current project registry
+          loads.
+        </p>
+      </section>
+    );
+  return <EscrowFunding project={project} />;
 }
 
 function fundingStateLabel(project: ProjectDefinition): string {
@@ -1411,7 +1436,7 @@ function ProjectPage({
                     monthlyPoolUnfunded(project.reward) ? (
                       UNFUNDED_POOL_HEADLINE
                     ) : (
-                      `${monthlyPoolCapLabel(project.reward)} / mo`
+                      `${monthlyPoolCapLabel(project)} / mo`
                     )
                   ) : (
                     <>
@@ -1503,9 +1528,15 @@ function ProjectPage({
             view={view}
           />
         ) : null}
+        <ProjectRiskFlag key={`flag:${project.id}`} projectId={project.id} />
       </div>
     </main>
   );
+}
+
+/** A Slop Score in integer thirds, as the tier table writes it: 1/3, 1, 8. */
+function thirdsLabel(thirds: number): string {
+  return thirds % 3 === 0 ? String(thirds / 3) : `${thirds}/3`;
 }
 
 function HowItWorksPage() {
@@ -1558,13 +1589,13 @@ function HowItWorksPage() {
           <h2 id="maintainer-path">For maintainers</h2>
           <ol className="mechanism-flow">
             <li>
-              <strong>1. Propose a project</strong>
+              <strong>1. Add a project</strong>
               <p>
                 <Link href="/projects/new">
-                  Submit your repository and reward terms
+                  Add your repository and contribution rules
                 </Link>
-                . An admin reviews the application. Approved projects start
-                paused.
+                . Install Slopbot; the project goes live when the security scan
+                passes. No admin approval is needed.
               </p>
             </li>
             <li>
@@ -1575,17 +1606,17 @@ function HowItWorksPage() {
               </p>
             </li>
             <li>
-              <strong>3. Review awards</strong>
+              <strong>3. Adjust awards</strong>
               <p>
-                Check each monthly proposal within the funded cap. Record
-                changes and holds with public reasons.
+                Change any proposed amount privately within the cap before the
+                monthly cutoff, or leave it to the automatic default.
               </p>
             </li>
             <li>
               <strong>4. Send payment</strong>
               <p>
-                Commit approved awards to the project escrow. Approval alone
-                does not prove payment.
+                Reserve the final awards in the project escrow. A reservation
+                alone does not prove payment.
               </p>
             </li>
           </ol>
@@ -1595,38 +1626,46 @@ function HowItWorksPage() {
         <div>
           <h2>Slop Score</h2>
           <p>
-            Maintainers ratify effort tiers for accepted work. Related or split
-            PRs share one work unit. Score is separate from{" "}
+            Slopbot sizes each accepted pull request with the tiers in this
+            table and gives it a standard score. Every accepted merge earns at
+            least 1/3. Score is separate from{" "}
             <Link href="/points">participation Points</Link> and money received.
           </p>
           <details>
             <summary>Scoring rules and evidence</summary>
             <p>
-              Signed receipts and reviewed private trace uploads are optional.
-              Declining them does not block submission. Public receipts do not
-              expose prompts, responses, source files or keys.
+              A useful review can find a correction or validate the change. A
+              request for changes is not required. Review bands are triage 1/3,
+              standard 1, deep 3 and specialist 8. The first{" "}
+              {MAX_CREDITED_REVIEWERS} distinct qualifying reviewers share one
+              review pool per pull request: the sum of their highest bands,
+              capped at the pull request's own size and never less than 1/3.
+              Self-review, review after merge, repeated or empty review, and bot
+              activity do not score.
             </p>
             <p>
-              Since August 2026, accepted work is tiered by effort, complexity,
-              impact, and review load instead of counted per merge. Related or
-              split pull requests share one work unit. XL, exceptional,
-              security-sensitive, and related-party cases need a second
-              maintainer.
+              Slopbot debits a closed pull request once, from its published
+              penalty table: spam {thirdsLabel(PENALTY_TABLE.spam.debitThirds)},
+              scam or malicious {thirdsLabel(PENALTY_TABLE.scam.debitThirds)}, a
+              clear violation of a quoted project rule{" "}
+              {thirdsLabel(PENALTY_TABLE.gaming.debitThirds)}. A debit lowers
+              only that project and UTC month, never below zero, and never
+              changes an approved, scheduled or paid award. An upheld appeal or
+              a maintainer reopen removes it.
             </p>
             <p>
-              Review is scored work: triage 1/3, standard review 1, deep
-              reproduction 3, specialist review 8. Since October 2026, an
-              ordinary review scores only when the merged code answered its
-              request for changes, once per pull request. Self-review,
-              post-merge review, duplicate review, and bot activity do not
-              score. A valid signed receipt with a finalized private trace adds
-              a fixed 15% weight.
+              Owners, funded employees and related parties can have an explicit
+              payout exclusion. They keep their score, but their weight leaves
+              the pool, so it does not reduce other contributors' shares.
+              Exclusions apply from the next UTC month.
             </p>
             <p>
-              Token volume, cost, lines, commits, confidence, and account count
-              stay diagnostic. They never change score, rank, share, or payment.
-              No KYC: abuse resistance comes from immutable GitHub IDs,
-              exact-head decisions, and append-only public corrections.
+              These rules apply to work accepted from{" "}
+              {formatDate(VALUE_SCORING_POLICY_EFFECTIVE_AT)} UTC. Earlier work
+              keeps its recorded terms. Signed receipts and reviewed private
+              trace uploads are optional; declining them does not block
+              submission. Token volume, cost, lines, commits and account count
+              stay diagnostic and never change score, rank, share or payment.
             </p>
           </details>
         </div>
@@ -1722,10 +1761,11 @@ function HowItWorksPage() {
             funding is committed.
           </p>
           <p>
-            Monthly proposals have a 14-day public review. A funded award can
-            wait for a wallet; confirming one later does not require another
-            monthly cycle. Historical records keep their recorded fee and
-            authority rules.
+            The owner may change proposed amounts privately before the monthly
+            cutoff; current allocations are then distributed automatically
+            unless the owner turned that off. A funded award can wait for a
+            wallet; confirming one later does not require another monthly cycle.
+            Historical records keep their recorded fee and authority rules.
           </p>
         </details>
       </section>
@@ -1754,29 +1794,12 @@ function HowItWorksPage() {
         <details>
           <summary>Do reviews score?</summary>
           <p>
-            Only when it changes what merges. Since October 2026, a review
-            scores 1/3 of a point when:
-          </p>
-          <ul>
-            <li>
-              It is submitted as Request changes. Approve and Comment reviews do
-              not score.
-            </li>
-            <li>It is on someone else&apos;s pull request.</li>
-            <li>
-              It has at least 20 characters of written reasoning or an inline
-              comment.
-            </li>
-            <li>
-              The author pushes new code after it, and the pull request then
-              merges.
-            </li>
-          </ul>
-          <p>
-            Each pull request gives one review award, to the latest request for
-            changes that the merged code answered. Reviews by or of bot accounts
-            do not score. A maintainer can award a higher review tier for an
-            unusually valuable review.
+            Yes, when the review is useful. It can find a correction or validate
+            the change; a request for changes is not required. The first{" "}
+            {MAX_CREDITED_REVIEWERS} distinct qualifying reviewers share the
+            pull request&apos;s review pool, as the Slop Score rules above
+            explain. Reviews of earlier work keep the rules recorded when they
+            were made.
           </p>
         </details>
         <details>
@@ -1806,15 +1829,13 @@ function HowItWorksPage() {
           </p>
         </details>
         <details>
-          <summary>
-            What is my merge worth before a maintainer scores it?
-          </summary>
+          <summary>What is my merge worth before Slopbot sizes it?</summary>
           <p>
-            Since October 2026, every merge starts as a provisional small unit,
-            1 point; earlier merges started at 1/3. A review agent may propose
-            another tier from the table above, and the score changes only when a
-            maintainer ratifies that tier on the exact merged commit. Related or
-            split pull requests share one work unit.
+            Every accepted merge earns at least 1/3. When Slopbot sizes it, the
+            score follows the tier table above. A valid maintainer ratification
+            takes precedence. Related or split pull requests share one work
+            unit. Merges before {formatDate(VALUE_SCORING_POLICY_EFFECTIVE_AT)}{" "}
+            keep their recorded score.
           </p>
         </details>
         <details>
@@ -1857,12 +1878,12 @@ function HowItWorksPage() {
           </p>
         </details>
         <details>
-          <summary>What is the 14-day review?</summary>
+          <summary>Who decides the monthly amounts?</summary>
           <p>
-            It reviews the monthly allocation, not your code. After the freeze
-            the proposal is public for 14 days, and the maintainer may approve,
-            hold, exclude, reduce, or increase rows, each with a public reason.
-            It is separate from pull request reviews on GitHub.
+            The project owner. After a month closes, the owner may change
+            proposed amounts privately until the monthly cutoff. Slop publishes
+            the final awards and their payment evidence, not the changes. This
+            is separate from pull request reviews on GitHub.
           </p>
         </details>
       </section>
@@ -2235,9 +2256,9 @@ function SponsorsPage({
         <div>
           <h2>Add your own project.</h2>
           <p>
-            Sign in with GitHub and add a project. A Slop admin reviews it, and
-            new projects start paused. Escrow deployments change only through a
-            reviewed admin revision.
+            Sign in with GitHub and add a project. It goes live when you have
+            installed Slopbot and the security scan passes. Escrow deployments
+            change only through a reviewed admin revision.
           </p>
         </div>
         <ul>
@@ -2290,11 +2311,11 @@ function SponsorsPage({
           <li>
             <strong>03 · You decide and sign</strong>
             <p>
-              Maintainers review proposed awards within the cap and record
-              changes with a public reason. The project owner commits approved
-              awards to the project escrow, which pays them from reserved funds.
-              Slop marks an award paid only when finalized on-chain evidence
-              reconciles the award and the fee.
+              The project owner may change proposed awards privately within the
+              cap until the monthly cutoff, when the current allocations are
+              finalized. The owner reserves them in the project escrow, which
+              pays them from reserved funds. Slop marks an award paid only when
+              finalized on-chain evidence reconciles the award and the fee.
             </p>
           </li>
         </ol>
@@ -2304,8 +2325,9 @@ function SponsorsPage({
             <ul>
               <li>The monthly cap, with exact-cycle overrides.</li>
               <li>
-                Maintainers may adjust proposed awards within the cap, with a
-                public reason. Amount changes restart the 14-day review.
+                Proposed awards may change privately within the cap before the
+                monthly cutoff. Automatic monthly payment is on by default and
+                can be turned off.
               </li>
               <li>
                 Whether to add a named review budget as a second cash line.
@@ -2910,6 +2932,18 @@ const REGISTRY_INDEPENDENT_ROUTES: Route["kind"][] = [
   "how-it-works",
 ];
 
+/**
+ * Routes that act on a project's current manifest. They never use the last
+ * good registry, because sensitive actions recheck current authority (PRD
+ * section 9).
+ */
+const CURRENT_REGISTRY_ROUTES: Route["kind"][] = [
+  "funding-project",
+  "manage-project",
+  "owner-awards",
+  "security-program",
+];
+
 export function App() {
   const route = useRoute();
   return (
@@ -2945,9 +2979,14 @@ function AppContent({ route }: { route: Route }) {
     "unknown",
     "cycle-archive",
   ];
-  const registryError = globalThis.__SLOP_PROJECT_REGISTRY_ERROR__;
-  const blocked =
-    Boolean(registryError) && !REGISTRY_INDEPENDENT_ROUTES.includes(route.kind);
+  const staleRegistry = globalThis.__SLOP_PROJECT_REGISTRY_STALE__;
+  const registryIndependent = REGISTRY_INDEPENDENT_ROUTES.includes(route.kind);
+  const registryError =
+    globalThis.__SLOP_PROJECT_REGISTRY_ERROR__ ??
+    (staleRegistry && CURRENT_REGISTRY_ROUTES.includes(route.kind)
+      ? `${staleRegistry.reason} This page needs the current project registry.`
+      : undefined);
+  const blocked = Boolean(registryError) && !registryIndependent;
   const needsSnapshot = !blocked && !snapshotFree.includes(route.kind);
   const [state, retry] = useSnapshot(needsSnapshot);
   const [archive, retryArchive] = useCycleIndex(route.kind === "cycle-archive");
@@ -3017,7 +3056,20 @@ function AppContent({ route }: { route: Route }) {
     content = project ? (
       <ProjectPage project={project} retry={retry} state={state} />
     ) : (
-      <NotFound title="Project not found" />
+      <main className="shell route-main">
+        <h1>Project not found</h1>
+        <p>
+          This project is not available in the public registry. If you flagged
+          it, sign in to view or withdraw your own flag.
+        </p>
+        <ProjectRiskFlag
+          key={`flag:${route.projectId}`}
+          projectId={route.projectId ?? ""}
+        />
+        <p>
+          <Link href="/">See open projects</Link>
+        </p>
+      </main>
     );
   } else if (route.kind === "funding-project") {
     const project = findProject(route.projectId ?? "");
@@ -3048,6 +3100,20 @@ function AppContent({ route }: { route: Route }) {
       <Header />
       {/* Routes render their own main; the skip link lands on this container. */}
       <div className="skip-target" id="main" tabIndex={-1}>
+        {staleRegistry && !blocked && !registryIndependent ? (
+          <aside
+            aria-label="Project registry status"
+            className="shell registry-stale"
+          >
+            <p className="data-notice data-stale" role="status">
+              Projects may be outdated · updated{" "}
+              {formatDateTime(staleRegistry.syncedAt)}. {staleRegistry.reason}
+              <button onClick={() => window.location.reload()} type="button">
+                Try again
+              </button>
+            </p>
+          </aside>
+        ) : null}
         <Suspense
           fallback={
             <main className="shell route-main" role="status">

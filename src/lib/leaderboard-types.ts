@@ -1,5 +1,6 @@
 import type { readValueDecision } from "../../workers/slopbot/value-consumption";
 import type { consumeWorkUnitHistory } from "../../workers/slopbot/value-work-unit-consumption";
+import type { ValueScoringPolicy } from "./scoring-policy";
 /** Public snapshot contracts. Historical records retain their original semantics. */
 
 import type {
@@ -327,6 +328,40 @@ export interface ScoreEvent {
   };
 }
 
+/** One unreversed Slopbot debit from the published penalty table, as the
+ * hosted feed returns it (PRD section 7). Units are Slop Score thirds. */
+export interface PenaltyFeedRecord {
+  itemNodeId: string;
+  authorGithubId: string;
+  category: string;
+  tableVersion: string;
+  debitThirds: number;
+  recordedAt: string;
+}
+
+/**
+ * A debit bound to a closed, unmerged pull request in the snapshot census.
+ * GitHub supplies the author and the closure time; the debit reduces only
+ * that actor's score for the same project and UTC month, never below zero.
+ */
+export interface PublishedPenalty {
+  id: string;
+  actor: GitHubActor;
+  repository: RepositoryId;
+  /** GitHub's closure time; its UTC month is the debited month. */
+  occurredAt: string;
+  category: string;
+  tableVersion: string;
+  debitThirds: number;
+  source: {
+    id: string;
+    kind: "pull-request";
+    number: number;
+    title: string;
+    url: string;
+  };
+}
+
 export type ScoreOpportunityKind =
   | "near-material-test"
   | "expand-review"
@@ -400,6 +435,8 @@ export interface LeaderboardEntry {
     additions: number;
     deletions: number;
   };
+  /** Applied penalty thirds; present only when positive. */
+  penaltyThirds?: number;
   reportedModels: string[];
 }
 
@@ -556,6 +593,8 @@ export interface LeaderboardSnapshot {
     recordDigest: string | null;
   }[];
   reviewExclusions?: ReviewExclusion[];
+  /** Unreversed debits; absent from snapshots published before penalties. */
+  penalties?: PublishedPenalty[];
   /** Separate allocation weights; never consumed by Score or Points. */
   paymentReviewBasis?: {
     policy: "scr-05-payments-production-v1";
@@ -583,6 +622,8 @@ export interface LeaderboardSnapshot {
 }
 
 export interface LeaderboardInput {
+  /** The versioned policy that value decisions apply under; required with them. */
+  valuePolicy?: ValueScoringPolicy;
   /** GitHub-resolved identities for assessment coauthors absent from ordinary hydration. */
   valueActors?: ReadonlyMap<string, GitHubActor>;
   /** Trusted journal decisions verified against fresh complete source evidence. */
@@ -606,6 +647,8 @@ export interface LeaderboardInput {
   mergedPullRequests: PullRequestRecord[];
   reviewedMergedPullRequests?: MergedPullRequestReviewRecord[];
   closedUnmergedPullRequests?: PullRequestRecord[];
+  /** Unreversed debits from the hosted feed; bound to the closed census. */
+  penalties?: PenaltyFeedRecord[];
   detailEligibleMergedPullRequestIds: string[];
   closedIssueCount: number;
   resolvedIssues: IssueRecord[];
@@ -623,4 +666,6 @@ export interface LeaderboardInput {
   /** Signed attributions recovered from the same accepted snapshot. */
   retainedReviewAttributions?: ModelAttribution[];
   verifyRunReceipt?: (value: unknown) => ProjectRunReceipt;
+  /** Active account bans: GitHub actor node ID to the earliest ban start. */
+  participationBans?: ReadonlyMap<string, string>;
 }

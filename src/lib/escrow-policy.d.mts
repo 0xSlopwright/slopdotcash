@@ -1,6 +1,7 @@
 export const ESCROW_PAYOUT_FEE_BASIS_POINTS: 200;
 export const ESCROW_WITHDRAWAL_FEE_BASIS_POINTS: 200;
 export interface EscrowDeployment {
+  evmUpgrade?: import("../../contracts/evm/adapter").EvmUpgrade;
   network:
     | "base-sepolia"
     | "base-mainnet"
@@ -20,6 +21,7 @@ export interface EscrowDeployment {
   owner: string;
   identityAuthority: string;
   feeRecipient: string;
+  rotationAuthority?: string;
   deploymentTransaction: string;
   sourceCommit: string;
   codeSha256: string;
@@ -83,6 +85,7 @@ export declare function assertEscrowPolicy(value: unknown): EscrowPolicy;
 export declare function assertEscrowTransition(
   previous: EscrowPolicy | undefined,
   next: EscrowPolicy | undefined,
+  allowUnfundedChange?: boolean,
 ): void;
 /** One reviewed deployment with the network registry's values, as the payment workers read it. */
 export type PaymentDeploymentRecord = EscrowDeployment & {
@@ -103,3 +106,6 @@ export type SecurityEscrowPolicy = Omit<EscrowPolicy, "feeBasisPoints"> & {
 export declare function assertSecurityEscrowPolicy(
   value: unknown,
 ): SecurityEscrowPolicy;
+
+export const MAX_BASE_UNITS: bigint;
+export function isBaseUnits(value: unknown): value is string;

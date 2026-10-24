@@ -1,8 +1,14 @@
 /**
- * slop-fee-converter: a cron Worker that converts non-stablecoin tokens in
- * each network fee wallet to that network's stablecoin (PRD MVP-07c). It has
- * no HTTP route. It never touches vaults, obligations or payments, and no
- * payout waits on it.
+ * slop-fee-converter: a cron Worker that converts project-token fees received
+ * in each network fee wallet to that network's Circle USDC, inside the same
+ * wallet (PRD section 6, TOK-07, MVP-07c). It has no HTTP route. On EVM it
+ * calls only the permissionless claimFees() of reviewed vaults, which moves
+ * accrued fees to their fixed fee recipient (issue #905). It never touches
+ * obligations or payments, and no payout waits on it.
+ *
+ * The cron fires every minute. Most runs are `receipts` runs that convert
+ * only tokens whose fee-wallet balance changed; every RECOVERY_SCAN_MINUTES
+ * the run is a full `recovery` scan.
  */
 
 import {
@@ -18,6 +24,7 @@ import {
   type ChainClient,
   message,
   type NetworkRunResult,
+  type RunTrigger,
   runNetwork,
 } from "./core";
 import { createEvmClient } from "./evm";
@@ -26,10 +33,21 @@ import {
   D1ConversionStore,
   type FeeD1Database,
   projectRewardTokens,
+  projectVaults,
 } from "./store";
 
 export interface Env extends FeeConverterEnv {
   FEE_DB: FeeD1Database;
+}
+
+/** Minutes between full recovery scans; the other cron minutes check receipts. */
+export const RECOVERY_SCAN_MINUTES = 15;
+
+/** The run kind for a cron tick: a full scan on each recovery minute. */
+export function triggerAt(scheduledTime: number): RunTrigger {
+  return new Date(scheduledTime).getUTCMinutes() % RECOVERY_SCAN_MINUTES === 0
+    ? "recovery"
+    : "receipts";
 }
 
 export function chainClient(
@@ -44,21 +62,23 @@ export function chainClient(
     allowSolanaLive?: boolean;
   } = {},
 ): ChainClient {
-  // PRD TOK-07: the Solana fee recipient also confirms identity-attester
-  // rotation (PAY-05), so a hot key for it may not sign until the owner
-  // records how that role stays separate. Solana runs in dry_run only.
+  // Older Solana deployments give the fee recipient rotation authority.
+  // Keep live conversion blocked until the separate-role deployment and
+  // converter verification are qualified. Solana runs in dry_run only.
   if (
     config.mode === "live" &&
     network.network === "solana" &&
     !overrides.allowSolanaLive
   )
     throw new Error(
-      "live Solana conversion is blocked until the owner separates the PAY-05 fee-recipient role from the hot key",
+      "live Solana conversion is blocked until the separate rotation authority is deployed and verified",
     );
   // dry_run never loads a key, so it cannot sign even when one is present.
-  const secret =
-    config.mode === "live" ? networkKey(env, network.network) : undefined;
-  if (config.mode === "live" && secret === undefined)
+  // A network without a verified USDC target never signs either: it only
+  // reconciles recorded sends, which needs no key.
+  const signs = config.mode === "live" && network.definition.usdc !== null;
+  const secret = signs ? networkKey(env, network.network) : undefined;
+  if (signs && secret === undefined)
     throw new Error(
       `live mode needs FEE_WALLET_KEY_${network.network.toUpperCase()}`,
     );
@@ -87,6 +107,7 @@ export async function runOnce(
   now: () => Date = () => new Date(),
   /** Local harnesses only; the scheduled handler never passes overrides. */
   overrides: Parameters<typeof chainClient>[3] = {},
+  trigger: RunTrigger = "recovery",
 ): Promise<NetworkRunResult[]> {
   // Off is inert even when the rest of the configuration is incomplete.
   if ((env.FEE_CONVERTER_MODE ?? "off").trim() === "off") return [];
@@ -100,6 +121,7 @@ export async function runOnce(
       results.push(
         await runNetwork(network, {
           mode: config.mode,
+          trigger,
           limits: config.limits,
           store,
           now,
@@ -114,6 +136,12 @@ export async function runOnce(
             )
               .filter((token) => isTokenAddress(n.network, token))
               .map((token) => normalizeToken(n.network, token)),
+          projectVaults: async (n) =>
+            n.definition.family === "evm"
+              ? (await projectVaults(env.FEE_DB, n.definition.escrowNetworks))
+                  .filter((vault) => isTokenAddress(n.network, vault))
+                  .map((vault) => normalizeToken(n.network, vault))
+              : [],
           client: (n) => chainClient(env, config, n, overrides),
           log: (event) => console.log(JSON.stringify(event)),
         }),
@@ -141,13 +169,16 @@ export async function runOnce(
 
 export default {
   async scheduled(
-    _controller: unknown,
+    controller: { scheduledTime: number } | undefined,
     env: Env,
     ctx: { waitUntil(promise: Promise<unknown>): void },
   ) {
+    const trigger = triggerAt(controller?.scheduledTime ?? Date.now());
     ctx.waitUntil(
-      runOnce(env).then((results) =>
-        console.log(JSON.stringify({ event: "fee_converter_run", results })),
+      runOnce(env, undefined, undefined, trigger).then((results) =>
+        console.log(
+          JSON.stringify({ event: "fee_converter_run", trigger, results }),
+        ),
       ),
     );
   },

@@ -7,6 +7,11 @@ PUBLIC_SITE_URL = "https://slop.cash"
 # GitHub numeric actor IDs allowed to review project applications: lalalune
 # and drew-dot-com. Admin email recipients live in workers/notify.
 ADMIN_GITHUB_IDS = "18633264,202660855"
+# Production moderators (PRD section 11, owner decision of 24 October 2026).
+PROJECT_MODERATOR_GITHUB_IDS = "18633264,202660855"
+# Monthly payment period (owner decision D1, 24 October 2026): calendar UTC
+# month from 2026-11; the cutoff is 72 hours after the month ends.
+MONTHLY_PAYMENT_SCHEDULE = '{"firstPeriod":"2026-11","cutoffSecondsAfterPeriodEnd":259200}'
 
 [[d1_databases]]
 binding = "SLOP_DB"
@@ -17,6 +22,21 @@ migrations_dir = "migrations"
 [[r2_buckets]]
 binding = "PRIVATE_TRACES"
 bucket_name = "slop-private-traces"
+
+# Scanner evidence is separate from permanent contributor traces.
+# Access also requires the approved evidence policy and scanner public keys.
+[[r2_buckets]]
+binding = "VETTING_EVIDENCE"
+bucket_name = "slop-vetting-evidence"
+
+# Project setup verifies installation authority through the deployed bot.
+[[services]]
+binding = "SLOPBOT"
+service = "slop-slopbot"
+
+[[services]]
+binding = "VETTING_SANDBOX"
+service = "slop-vetting-sandbox"
 
 [[services]]
 binding = "SLOP_IDENTITY"

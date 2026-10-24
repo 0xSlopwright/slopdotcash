@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import { identityPublicOrigin } from "../workers/identity/contracts";
+import { AccountAppeals } from "./AccountAppeals";
 import { EarningsPage } from "./Earnings";
 import { Link } from "./Link";
 import { browserDeployment } from "./lib/browser-deployment";
@@ -28,6 +29,7 @@ import type { CycleIndex } from "./lib/cycle-index";
 import { deploymentTier } from "./lib/deployment";
 import { GithubIcon } from "./lib/github-icon";
 import { requestIdentityAssertion } from "./lib/identity-flow";
+import { clearAllDrafts } from "./lib/intake-drafts";
 import type { ScoreEvent } from "./lib/leaderboard";
 import {
   assemblePoints,
@@ -94,13 +96,31 @@ const Context = createContext<{
   requestPoints: () => {},
   setMe: () => {},
 });
+/** A refused points request with the server's stable error code, if any. */
+class PointsRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string | null,
+  ) {
+    super(`Points request returned ${status}`);
+  }
+}
 async function requestJson(url: string, init: RequestInit = {}) {
   const response = await fetchWithDeadline(url, {
     ...init,
     cache: "no-store",
   });
-  if (!response.ok)
-    throw new Error(`Points request returned ${response.status}`);
+  if (!response.ok) {
+    let code: string | null = null;
+    try {
+      const body = await readBoundedJson(response, 4096, "points error");
+      const error = (body as { error?: unknown } | null)?.error;
+      if (typeof error === "string") code = error;
+    } catch {
+      // The status alone still describes the refusal.
+    }
+    throw new PointsRequestError(response.status, code);
+  }
   return readBoundedJson(response, 24 * 1024 * 1024, "points");
 }
 async function loadPoints(signal: AbortSignal) {
@@ -308,6 +328,7 @@ export function PointsNav({ onNavigate }: { onNavigate?: () => void }) {
         headers: { "content-type": "application/json" },
         body: "{}",
       });
+      clearAllDrafts();
       setMe(null);
       setOpen(false);
     } catch {
@@ -634,9 +655,10 @@ function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [authorization, setAuthorization] = useState<string | null>(null);
+  const [closedAccount, setClosedAccount] = useState(false);
   const active = useRef<AbortController | null>(null);
   useEffect(() => () => active.current?.abort(), []);
-  async function start() {
+  async function start(reopen = false) {
     active.current?.abort();
     const c = new AbortController();
     active.current = c;
@@ -688,16 +710,28 @@ function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
       const joined = await requestJson("/api/v1/points/join", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          assertion,
-          public: false,
-        }),
+        body: JSON.stringify(
+          reopen
+            ? { assertion, public: false, reopen: true }
+            : { assertion, public: false },
+        ),
         signal: c.signal,
       });
+      setClosedAccount(false);
       setMe(member(joined));
-      setMessage("You’re signed in. Your welcome points are recorded.");
+      setMessage(
+        reopen
+          ? "Your account is open again. Connections and activity email stay off until you turn them on."
+          : "You’re signed in. Your welcome points are recorded.",
+      );
     } catch (e) {
-      if (!c.signal.aborted)
+      if (c.signal.aborted) return;
+      if (e instanceof PointsRequestError && e.code === "account_closed") {
+        setClosedAccount(true);
+        setMessage(
+          "You closed this account. Reopen it to sign in; your records and unpaid awards are unchanged.",
+        );
+      } else
         setMessage(
           e instanceof TypeError
             ? "Could not reach Slop. Check your connection and try again."
@@ -719,6 +753,7 @@ function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
         headers: { "content-type": "application/json" },
         body: "{}",
       });
+      clearAllDrafts();
       setMe(null);
     } catch {
       setMessage("Could not sign out. Please retry.");
@@ -798,10 +833,14 @@ function JoinPoints({ showHeading = true }: { showHeading?: boolean }) {
             className="button primary-button"
             type="button"
             disabled={busy || session === "loading"}
-            onClick={() => void start()}
+            onClick={() => void start(closedAccount)}
           >
             <GithubIcon aria-hidden="true" />
-            {busy ? "Waiting for GitHub…" : "Continue with GitHub"}
+            {busy
+              ? "Waiting for GitHub…"
+              : closedAccount
+                ? "Reopen account with GitHub"
+                : "Continue with GitHub"}
           </button>
           {busy ? (
             <button
@@ -846,7 +885,12 @@ export function LoginPage() {
   );
 }
 export function AccountPage() {
+  const accountSession = useProjectSession();
   const { me, session } = useContext(Context);
+  const [closedNotice, setClosedNotice] = useState("");
+  useEffect(() => {
+    if (me) setClosedNotice("");
+  }, [me]);
   return (
     <main className="shell route-main points-page">
       <h1>Account</h1>
@@ -857,7 +901,10 @@ export function AccountPage() {
         <a href="/earnings">Payouts</a>
         <a href="/inbox">Inbox</a>
         {me ? <a href="#sessions">Sessions</a> : null}
-        <a href="#recovery">Recovery and closure</a>
+        {accountSession.status === "signed-in" ? (
+          <a href="#appeals">Appeals</a>
+        ) : null}
+        <a href="#recovery">{me ? "Recovery and closure" : "Recovery"}</a>
       </nav>
       <div id="profile">
         <JoinPoints />
@@ -874,27 +921,112 @@ export function AccountPage() {
         <EarningsPage walletsOnly key={me?.actor.id ?? "signed-out"} />
       )}
       {me ? <AccountSessions /> : null}
+      {accountSession.status === "signed-in" ? <AccountAppeals /> : null}
       <section id="recovery">
-        <h2>Recovery and closure</h2>
+        <h2>{me ? "Recovery and closure" : "Recovery"}</h2>
+        {closedNotice ? <p role="status">{closedNotice}</p> : null}
         <p>
-          Lost access to GitHub?{" "}
+          Lost access to GitHub, or someone else controls your account?{" "}
           <a href={`${CONTACT_MAILTO}?subject=Account%20recovery`}>
             Request private account recovery
           </a>
           .
         </p>
-        <p>
-          <a href={`${CONTACT_MAILTO}?subject=Account%20closure`}>
-            Request account closure
-          </a>
-          . Support reviews unpaid awards before closure. Public GitHub
-          contributions and finalized payment records remain.
-        </p>
+        {me ? (
+          <AccountClosure login={me.actor.login} onClosed={setClosedNotice} />
+        ) : null}
       </section>
       <p>
         <a href="/points#rules">Points and earning rules</a>
       </p>
     </main>
+  );
+}
+/**
+ * Self-service closure (PRD section 3). Closing ends every session and
+ * removes optional connections; obligations and records stay, and signing in
+ * again with the same GitHub account can reopen it.
+ */
+function AccountClosure({
+  login,
+  onClosed,
+}: {
+  login: string;
+  onClosed: (notice: string) => void;
+}) {
+  const { setMe } = useContext(Context);
+  const [confirmation, setConfirmation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const inputId = useId();
+  const matches = confirmation.trim().toLowerCase() === login.toLowerCase();
+  return (
+    <form
+      className="account-closure"
+      aria-labelledby={`${inputId}-heading`}
+      onSubmit={async (event) => {
+        event.preventDefault();
+        if (!matches || busy) return;
+        setBusy(true);
+        setError("");
+        try {
+          await requestJson("/api/v1/points/account/close", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ login: confirmation.trim() }),
+          });
+          onClosed(
+            "Your account is closed and every session is signed out. Sign in with GitHub to reopen it and claim any unpaid award.",
+          );
+          setMe(null);
+        } catch (caught) {
+          setError(
+            caught instanceof PointsRequestError &&
+              caught.code === "confirmation_mismatch"
+              ? "The username does not match this account."
+              : caught instanceof PointsRequestError && caught.status === 401
+                ? "Your session ended. Sign in again to close your account."
+                : "Could not confirm whether your account closed. Reload this page to check your sign-in state before trying again.",
+          );
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <h3 id={`${inputId}-heading`}>Close your account</h3>
+      <p>Closing your account:</p>
+      <ul>
+        <li>signs out every session;</li>
+        <li>
+          removes your X and Telegram connections and turns off activity email;
+        </li>
+        <li>hides your membership from Slop people lists and profiles.</li>
+      </ul>
+      <p>
+        Unpaid awards stay reserved for you, and your wallets, payment and
+        settlement records, private cases and points history are kept. Public
+        GitHub work stays public. Sign in again with this GitHub account to
+        reopen it and claim a payout.
+      </p>
+      <label htmlFor={inputId}>
+        Type your GitHub username, {login}, to confirm
+      </label>
+      <input
+        id={inputId}
+        autoComplete="off"
+        spellCheck={false}
+        value={confirmation}
+        onChange={(event) => setConfirmation(event.target.value)}
+      />
+      <button
+        className="button danger-button"
+        type="submit"
+        disabled={!matches || busy}
+      >
+        {busy ? "Closing account…" : "Close account"}
+      </button>
+      {error ? <p role="alert">{error}</p> : null}
+    </form>
   );
 }
 function AccountSessions() {
@@ -947,8 +1079,10 @@ function AccountSessions() {
                       headers: { "content-type": "application/json" },
                       body: JSON.stringify({ id: session.id }),
                     });
-                    if (session.current) window.location.assign("/login");
-                    else setAttempt((value) => value + 1);
+                    if (session.current) {
+                      clearAllDrafts();
+                      window.location.assign("/login");
+                    } else setAttempt((value) => value + 1);
                   } catch (caught) {
                     setError(
                       caught instanceof Error
@@ -1097,17 +1231,23 @@ export function ContributorStandings({
   const metric = (
     m: ReturnType<typeof contributorStandings>["rows"][number],
   ) => (sort === "score" ? m.score : sort === "points" ? m.points : m.money);
-  const [direct] = useAllDirectTransfers(PROJECTS.map((p) => p.id));
+  const [direct, retryDirect] = useAllDirectTransfers(
+    PROJECTS.map((p) => p.id),
+  );
   const projection = contributorStandings(
     scores,
     state.status === "ready" ? members : null,
     period === "month" ? new Date().toISOString().slice(0, 7) : null,
     project,
-    direct.status === "ready" ? direct.transfers : [],
+    direct.status === "ready" ? direct.transfers : null,
   );
   // Loading and failed sources stay distinct in each column.
   const scoreMissing = scores.status === "loading" ? "Loading…" : "Unavailable";
   const pointsMissing = state.status === "loading" ? "Loading…" : "Unavailable";
+  const moneyMissing =
+    scores.status === "loading" || direct.status === "loading"
+      ? "Loading…"
+      : "Unavailable";
   const ranked = projection.rows
     .filter((m) => metric(m) !== null)
     .sort((a, b) => {
@@ -1156,6 +1296,16 @@ export function ContributorStandings({
         <DataNotice state={scores} retry={retryScore ?? retryLoadedScore} />
       ) : null}
       <Notice />
+      {direct.status === "error" ? (
+        <p role="status">
+          <span>Payment records unavailable.</span>{" "}
+          <button type="button" onClick={retryDirect}>
+            Retry payment records
+          </button>
+        </p>
+      ) : direct.status === "loading" && sort === "money" ? (
+        <p role="status">Loading payment records…</p>
+      ) : null}
       {scores.status === "ready" && !projection.scoreAvailable ? (
         <p className="points-meta">
           {compact
@@ -1297,7 +1447,7 @@ export function ContributorStandings({
                       </td>
                       <td className="points-value">
                         {m.money === null
-                          ? scoreMissing
+                          ? moneyMissing
                           : formatMicroUsdc(m.money.toString())}
                       </td>
                     </tr>
@@ -1305,7 +1455,8 @@ export function ContributorStandings({
               </tbody>
             </table>
           </section>
-          {rows.length === 0 ? (
+          {rows.length === 0 &&
+          (sort !== "money" || projection.moneyAvailable) ? (
             <p>No recorded contributions match this view.</p>
           ) : null}
           {rows.length > pageSize ? (
@@ -1622,7 +1773,6 @@ function SocialConnections() {
   const [data, setData] = useState<{
     configured: boolean;
     account: (XAccount & { public: number }) | null;
-    award: { points: number; awardedAt: string } | null;
   } | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1639,10 +1789,7 @@ function SocialConnections() {
         const v = value as NonNullable<typeof data>;
         if (
           typeof v.configured !== "boolean" ||
-          (v.account && ![0, 1].includes(v.account.public)) ||
-          (v.award &&
-            (v.award.points !== 10 ||
-              !Number.isFinite(Date.parse(v.award.awardedAt))))
+          (v.account && ![0, 1].includes(v.account.public))
         )
           throw new Error("Invalid connection state");
         if (v.account) xAccount(v.account);
@@ -1694,9 +1841,9 @@ function SocialConnections() {
     <section className="points-panel" aria-label="Connections">
       <h2>Connections</h2>
       {outcome === "connected" ? (
-        <p role="status">X connected. Your connection points are recorded.</p>
+        <p role="status">X connected.</p>
       ) : outcome === "cancelled" ? (
-        <p role="status">X connection cancelled. No new points were awarded.</p>
+        <p role="status">X connection cancelled.</p>
       ) : outcome === "failed" ? (
         <p role="status">
           X could not be connected. Try again; an X account already claimed by
@@ -1722,11 +1869,6 @@ function SocialConnections() {
               ) : (
                 "Not connected"
               )}
-            </span>
-            <span>
-              {data.award
-                ? `+10 points · earned ${data.award.awardedAt.slice(0, 10)}`
-                : "+10 points once"}
             </span>
             {data.account ? (
               <button
@@ -1767,8 +1909,8 @@ function SocialConnections() {
             <p>Your membership is private, so your X link stays hidden.</p>
           ) : null}
           <p className="points-meta">
-            Slop does not request posting or messaging permissions. A new handle
-            or connection does not create another award.
+            Connections grant no points or authority. Slop does not request
+            posting or messaging permissions.
           </p>
           <p role="status">{message}</p>
         </>

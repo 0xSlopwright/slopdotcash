@@ -1,5 +1,7 @@
+import { join } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
+import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
 import { archivedPaidCycleIndex, snapshotFixture } from "../fixtures";
 
 test(
@@ -150,6 +152,33 @@ test("ranks archived work separately from the month its payment settled", async 
   page,
 }) => {
   // Local public-record fixtures exercise the browser projection, not chain verification.
+  // Serve the checked bundle on its allowed origin so the payment reader runs.
+  const site = deploymentOrigins(
+    deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
+  ).site;
+  await page.route(`${site}/**`, (route) =>
+    route.fulfill({
+      path: join(
+        process.cwd(),
+        "dist",
+        route.request().resourceType() === "document"
+          ? "index.html"
+          : new URL(route.request().url()).pathname,
+      ),
+    }),
+  );
+  await page.route("**/api/v1/payments/projects/*/direct-transfers", (route) =>
+    route.fulfill({ json: { transfers: [], totalMicro: "0" } }),
+  );
+  await page.route("**/api/v1/points/**", (route) =>
+    route.fulfill({ json: null }),
+  );
+  await page.route("**/api/v1/slopbot/summary", (route) =>
+    route.fulfill({ json: { repositories: [] } }),
+  );
+  await page.route("**/.well-known/slop/projects.json", (route) =>
+    route.fulfill({ json: { schemaVersion: "1", projects: [] } }),
+  );
   await page.clock.setFixedTime(new Date("2026-08-17T12:00:00.000Z"));
   await page.route("**/data/leaderboard.json?**", (route) =>
     route.fulfill({ json: snapshotFixture() }),
@@ -159,7 +188,7 @@ test("ranks archived work separately from the month its payment settled", async 
     route.fulfill({ json: history }),
   );
   // Search keeps this zero-payment actor visible after all points rows load.
-  await page.goto("/?sort=money&q=archive-only#leaderboard");
+  await page.goto(`${site}/?sort=money&q=archive-only#leaderboard`);
   const standings = page.getByRole("region", {
     name: "Top sloperators",
     exact: true,
@@ -169,13 +198,15 @@ test("ranks archived work separately from the month its payment settled", async 
   });
   await expect(recipient.locator("td").nth(4)).toHaveText("$1");
   await expect(recipient.locator("td").nth(2)).toHaveText("Unavailable");
-  await page.goto("/?sort=money&period=lifetime&q=archive-only#leaderboard");
+  await page.goto(
+    `${site}/?sort=money&period=lifetime&q=archive-only#leaderboard`,
+  );
   await standings.getByRole("button", { name: "Score", exact: true }).click();
   await expect(recipient.locator("td").nth(2)).toHaveText("7");
   await expect(recipient.locator("td").nth(4)).toHaveText("$1");
   await page.clock.setFixedTime(new Date("2026-07-31T12:00:00.000Z"));
   // Search keeps this zero-payment actor visible after all points rows load.
-  await page.goto("/?sort=money&q=archive-only#leaderboard");
+  await page.goto(`${site}/?sort=money&q=archive-only#leaderboard`);
   await expect(recipient.locator("td").nth(2)).toHaveText("7");
   await expect(recipient.locator("td").nth(4)).toHaveText("$0");
 
@@ -183,7 +214,7 @@ test("ranks archived work separately from the month its payment settled", async 
   history.cycles[0].contributors[0].actor.id =
     snapshotFixture().leaders[0].actor.id;
   await page.clock.setFixedTime(new Date("2026-08-17T12:00:00.000Z"));
-  await page.goto("/?sort=money&identity=renamed#leaderboard");
+  await page.goto(`${site}/?sort=money&identity=renamed#leaderboard`);
   const currentLink = standings.getByRole("link", {
     name: "finish-line",
     exact: true,

@@ -1,6 +1,8 @@
 # Private security bounty cases
 
-PRD SEC-01 to SEC-18 and MVP-13. Program terms are public; cases are not.
+PRD section 8 ("Report and decide privately", "Pay a private award"), section
+10, SEC-01 to SEC-18 and MVP-13 (issue #910). Program terms are public; cases
+are not.
 
 ## Program terms
 
@@ -10,13 +12,24 @@ as `pending-approval` with `pledged` funding. Admins open, pause or close the
 program by appending a manifest revision on `/admin`. A program cannot be
 removed, because its approvers govern restricted case access after closure.
 
-- `amount.grossMinor` is integer minor units. It must be divisible by four, so
-  the 75/25 researcher/Slop split is exact. Shares are derived, never stored.
+- `amount.grossMinor` is the published gross award per finding, in integer
+  minor units divisible by four, so the 75/25 researcher/Slop split is exact.
+  Shares are derived, never stored. Awards are discretionary: the owner may
+  award a different amount or none (see "Awards").
 - `rewardMode: "bounty-only"` requires a `$0` monthly pool with payments
   disabled. `separate` keeps the project's ordinary rewards.
 - `status: "open"` requires `funding.state: "verified-available"` with an
-  evidence reference. A pledge never opens paid capacity.
-- `approvers.dispute` must not include a technical or financial approver.
+  evidence reference. A pledge never opens paid capacity. Owner decision
+  D10: the funds an owner can reserve are the finalized free balance of the
+  program's reviewed bounty vaults (`settlement.deployments`), from a
+  `security_vault_snapshots` row in the program asset no older than 30
+  minutes, minus every approved reservation that has not yet left that free
+  balance through a finalized on-chain commitment. Published amounts and
+  award counts are terms, not funds. A program without a reviewed vault
+  reserves nothing. One payment draws on one vault, so with several vaults
+  only the one with the largest current free balance counts.
+- `approvers.dispute` names the program's dispute contact. A Slop moderator
+  decides escalated disputes (see "Roles").
 - `intake.repository` must be one of the project repositories.
 
 `/projects/:id/terms.json` and `/projects/:id/security` publish these terms.
@@ -25,15 +38,112 @@ removed, because its approvers govern restricted case access after closure.
 
 | Route | Access | Purpose |
 |---|---|---|
-| `GET /api/v1/security-programs/:id/intake` | public, edge cached 30 s | GitHub private vulnerability reporting readiness: `ready`, `disabled`, `forbidden` or `unavailable`. Only `ready` returns the GitHub handoff URL |
+| `GET /api/v1/security-programs/:id/intake` | public, edge cached 30 s | GitHub private vulnerability reporting readiness: `ready`, `disabled`, `forbidden` or `unavailable`. Only `ready` returns the GitHub handoff URL. `automatic` is `ready`, `app-not-installed`, `unavailable` or `off` |
 | `GET /api/v1/security-cases` | session | Cases the caller can see now, shaped per role |
-| `POST /api/v1/security-cases` | session | `claim`: a reporter links a GitHub advisory ID. `record`: a technical approver records a verified advisory with GitHub's receipt time |
+| `POST /api/v1/security-cases` | session | `claim`: a reporter links a GitHub advisory ID. `record`: a technical approver records a verified advisory with GitHub's receipt time. `import`: a maintainer imports direct GitHub reports |
 | `GET /api/v1/security-cases/:id` | session and role | One case; logs the read |
 | `POST /api/v1/security-cases/:id/actions` | session and role | One human decision with `expectedRevision` and `idempotencyKey` |
+| `GET /api/v1/security-submissions` | session | The caller's own automatic submissions: state, attempt, GHSA, GitHub time, failure code, case id |
+| `POST /api/v1/security-submissions` | session | Creates (or replays) a `slop` draft or a `direct` verification and returns the intake App authorization URL |
+| `GET /api/v1/security-submissions/authorize/callback` | GitHub redirect | PKCE exchange, `/user` identity binding, grant cookie |
+| `POST /api/v1/security-submissions/:id/{authorize,send,reconcile,verify}` | reporter only | Reauthorize, send privately, reconcile an uncertain send, verify a direct report |
 
 A caller without a role gets the same 404 as for a missing case. Writes need
 this site's `Origin` and a JSON content type. Responses are `private,
 no-store` and `noindex`. Errors never log case data.
+
+## Automatic private intake
+
+PRD section 8 ("Private reporting is automatic"), SEC-07, SEC-10, SEC-17.
+Every `security-submissions` route returns 404 unless
+`SLOP_PRIVATE_INTAKE_MODE=on` and all intake App secrets are set
+(`GITHUB_INTAKE_APP_CLIENT_ID`, `GITHUB_INTAKE_APP_CLIENT_SECRET`,
+`GITHUB_INTAKE_APP_ID`, `GITHUB_INTAKE_APP_PRIVATE_KEY`,
+`SLOP_INTAKE_GRANT_KEY`). Owner decision D10: these hold the existing
+slopdotcash GitHub App (5257625) with "Repository security advisories:
+read"; there is no separate intake App and no long-lived token. Each
+installation owner must accept that permission. Until then intake stays off
+and the manual flow below applies.
+
+Provision the five intake secrets and `SURPLUS_API_KEY` on the production
+Pages project `eliza-computer`. The release secret inventory permits staged
+provisioning. Store the App private key as PEM, not base64-encoded PEM.
+Generate `SLOP_INTAKE_GRANT_KEY` from 32 random bytes encoded as base64url.
+Keep `SLOP_PRIVATE_INTAKE_MODE` off until the App callback URL and live
+reporter authorization have been checked. Provisioning secrets does not
+activate intake or prove that GitHub or Surplus is available.
+
+- Authorization: a per-submission PKCE consent for the intake App. The
+  callback checks that `/user` is the account that began the consent and
+  stores the user token only in an AES-GCM encrypted HttpOnly
+  `__Secure-slop_intake_grant` cookie (path `/api/v1/security-submissions`,
+  2 hours) bound to the submission and the site session. No access or
+  refresh token is stored in D1. GitHub records the reporter as the author.
+- `security_submissions` (migration 0059) holds no report content. States:
+  `draft`, `submitting`, `uncertain`, `submitted`, `receipt-verified`,
+  `failed`, `abandoned`. Every transition is a revision compare-and-set
+  with an insert-only event in the same batch. `submitting` commits before
+  GitHub is called; a lost answer, a 5xx, a malformed 201 or a 201 naming
+  another author is `uncertain`.
+- Marker: the description gets one line, `Report reference: <32 hex>`, a
+  random value per submission. It names neither the submission nor Slop,
+  because it stays in the text if the advisory is published
+  (OPEN_QUESTION 9); the consent notice says so.
+- Reconcile before retry: an uncertain send lists the reporter's advisories
+  since the first attempt with their own token and matches the marker line
+  and author. Only a complete listing without a match, taken at least
+  5 minutes after the attempt began, reopens the draft for another send;
+  an earlier empty listing or a listing error stays `uncertain`. Several
+  matches adopt the earliest and show the rest to the technical approvers
+  only. A resend that GitHub accepts lists again and adopts an earlier copy
+  that landed late, recording the accepted one as a duplicate. A
+  `submitting` row older than 60 seconds becomes `uncertain` and is never
+  resent. A `submitted` row Slop cannot verify within 24 hours fails as
+  `unverifiable`; it is never resent and no longer blocks a new report.
+- Receipt: GitHub's advisory must name the program repository and the
+  reporter as author (a reporter credit never counts), carry the marker
+  (Slop origin) and have a past `created_at`. A direct report must also be
+  a private vulnerability report (GitHub's `submission` object) in
+  `triage`, `draft` or `published`; anything else fails as
+  `not-private-report` and uses the manual claim path. The verified case,
+  its `submit` or `submit-direct` event (the reporter's own action; the
+  detail records `verifiedBy: "github"`), routing fields, the access log and the inbox rows commit with the
+  submission transition. The inbox rows are the technical approvers' case
+  notice and the reporter's generic `security_report_received` receipt, which
+  asks for no acknowledgment. The receipt time is GitHub's `created_at`
+  (`receivedAtSource: "github-verified"`), the verifier is the sentinel
+  `github`, and `receipt_evidence_digest` stores the SHA-256 of the
+  advisory fields GitHub returned.
+- Direct reports: "Already reported on GitHub? Verify it" runs the same
+  receipt check on a GHSA the reporter filed themselves; GitHub's original
+  `created_at` is kept. Without the App installed, the manual claim and
+  verify-link path below remains the fallback.
+- Analysis: `report-analysis.ts` recommends only, from GitHub's structured
+  severity and CVSS fields. Its result is in the restricted event detail
+  only; the case's owner, neutral next action and due time (the published
+  acknowledgement target) do not depend on it, because the reporter sees
+  them. It never sets severity, receipt, award or disclosure.
+- After verified receipt, `analysis.ts` schedules a private proposal. The
+  owner selected Surplus Intelligence only, with `SURPLUS_API_KEY`. It requests
+  `claude-opus-5.5` through the Surplus Messages API. The requested model is
+  not proof of the model served by the marketplace. A zero-data-retention
+  agreement is not required. Retention follows the applicable account terms.
+  There is no fallback: without the key every analysis is `unavailable`.
+  A refusal or a cut-off answer is `failed`.
+  The automatic attempt runs after the response and has 25 seconds, because
+  Cloudflare stops that work about 30 seconds after the response; a slower
+  answer is `failed`. The owner's retry runs inside the request and waits up
+  to 120 seconds.
+  Only maintainers and assigned triagers see the proposal. The endpoint is
+  fixed; only local browser tests may point it at a loopback fixture with
+  `SLOP_ANALYSIS_API_ORIGIN` (`http://127.0.0.1:<port>`).
+- Maintainers can import reports filed directly on GitHub through `mode: import`.
+  This uses the same case and analysis records, not a second submission system.
+  Receipt checks, imports and analysis retries read advisories with a
+  repository-scoped installation token of the slopdotcash App that asks only
+  for `repository_advisories: read` (`GITHUB_INTAKE_APP_ID` and
+  `GITHUB_INTAKE_APP_PRIVATE_KEY`). Without them receipt checks are
+  unavailable. The token cannot submit a report as the researcher.
 
 ## Roles
 
@@ -42,76 +152,97 @@ revision, so a revision or a revoked session removes access at once.
 
 - Reporter: their own cases, never another report, root cause or triager.
 - Any registered user may report; project membership is not required.
-- Technical approver (security maintainer): every case of the project.
-- Triager: only assigned cases; triage, next action and remediation.
-- Financial approver: only cases with a reserved, exhausted or approved
-  award, and only award and payment fields.
-- Dispute reviewer: only cases with an appeal or a related-party award
-  review.
+- Technical approver (security maintainer, the project owner or maintainer
+  authority of PRD section 10): every case of the project; decides findings,
+  awards, remediation and disclosure; prepares the unsigned payment.
+- Triager: only assigned cases; request information and remediation.
+- Financial approver: only cases with an approved (or older reserved) award,
+  and only award and payment fields; prepares the unsigned payment.
+- Moderator (`PROJECT_MODERATOR_GITHUB_IDS`): only cases with an appeal or a
+  related-party award review; decides them. The notify Worker suppresses
+  moderator mail unless it has the same list.
 - Platform admins, sponsors and the public: nothing.
 
-A reporter never acts on their own case. The financial approver cannot be the
-technical decider. The technical decider cannot decide the appeal or the
+A reporter never acts on their own case. PRD section 10 names two
+authorities: the project owner or maintainer decides technical, award and
+disclosure questions, so the decider may also approve the award and prepare
+its payment. The technical decider cannot decide the appeal or the
 related-party review, and the related-party reviewer cannot decide an appeal
 of that review, or review the same case again once an appeal has returned it
-for a new decision.
+for a new decision. Owner decision D10 dropped the older rule that separate
+people hold the technical, financial and dispute roles.
 
 ## States
 
 Migration `0026_private_security_cases.sql` keeps independent receipt,
-remediation, award, payment and disclosure states. A claim is not a receipt
-until a technical approver verifies it; verification freezes the receipt
-time, the project revision in force then, and its gross amount and split.
-Slop does not fetch the advisory, so the receipt time is the time the
-approver reads on GitHub and enters by hand: a human-attested time. Every
-case response says so with `receivedAtSource: "maintainer-attested"`, and the
-`record` and `verify-link` events store the same value beside the time.
+remediation, award, payment and disclosure states. `0059` adds automatic
+submissions and receipt evidence; `0061` adds chosen award amounts and analyses. Triggers keep the
+frozen receipt, events, reservations, membership history, submissions and
+finished analyses append-only.
 
-A rejected link stays as history. The reporter can link the advisory again,
-or a technical approver can record it, and that new case is verified
-normally. A `record` that finds an open claim from the same reporter returns
-`409 claim_pending`: verify or reject that claim instead. A `record` replays
-only the exact request that created the verified case.
+Each case shows one derived next step for the viewer (`nextStep`, with
+`nextStepDueAt` from the program's acknowledgement target while the report
+waits for a first response, or the payment deadline). Nobody maintains a
+separate task field. Owner actions: `request-information`, `decide`, `award`,
+`remediation`; access and disclosure tools (`assign-triager`,
+`revoke-triager`, `disclosure`) stay available but the page shows disclosure
+first only once a fix exists or a disclosure decision was recorded.
 
 Triager assignment and revocation commit only together with their audit
 event at the next case revision. A stale request changes no membership.
-Triggers keep the frozen receipt, events, reservations, membership history
-and the access log append-only.
 
-A confirmed critical finding with verified potential or actual loss on an
-in-scope asset reserves its gross amount once per root cause within the
-current capacity. Without capacity the award is `capacity-exhausted`; the
-finding stays confirmed. A reserved or approved award cannot be redecided.
+## Awards
 
-Capacity is read from the current project revision. When an admin raises
-`capacity.awards` by revision, a financial approver uses `reserve-award` on
-an exhausted case. The earliest received exhausted case is funded first
-(`409 earlier_receipt_waiting` otherwise). If no capacity is free, the request
-returns `409 capacity_exhausted` and writes nothing. Every reserving path
-(`decide`, related-party `approve`, and `reserve-award`) uses one guard in the
-reservation insert: while an earlier confirmed case waits for capacity or
-for its related-party review, a later decision or approval reserves nothing
-and its award is `capacity-exhausted`, so it waits its turn.
+PRD section 8: critical bugs and potential loss of funds are priorities, not
+an automatic payout promise. `decide` records outcome, severity, loss and
+scope as guidance. A confirmed finding with paid terms then waits for the
+owner's award decision (`award`, or an `award` object inside `decide`):
 
-A reporter may appeal an exhausted award: the shortage is a financial
-exception, not a reason to relabel the finding (SEC-12). The appeal carries the
-receipt into `disputed`, and that case still holds its place in the funding
-order, so no later report can reserve its root cause or its capacity while an
-independent reviewer resolves it. `uphold` restores the confirmed receipt
-unchanged; `return` sends the finding back to a new decision, which reserves as
-soon as capacity exists. Neither outcome erases or duplicates an award, and a
-reserved or approved award is still never redecided.
+- `decision: "none"` makes the award `ineligible` (shown as "No award"). The
+  reporter can appeal it.
+- `decision: "amount"` with `grossMinor`, `paymentDeadline` and confirmation
+  approves that exact gross amount and reserves it in the same batch. The
+  reservation insert itself checks that the bounty vault's unreserved
+  finalized free balance covers it; otherwise nothing is written
+  (`409 insufficient_funds`). A pledge, a program without a reviewed vault,
+  or a missing or stale snapshot reserves nothing (`409 funds_unavailable`). Only a security
+  maintainer of the program decides; a reporter never decides their own case.
 
-The technical decision records `relatedParty`. The decider declares it, and a
-reporter who is a program approver or the sponsor account is always related.
-An eligible related-party award stays `pending` with no reservation until a
-dispute reviewer records `decide-related-party`. `approve` reserves within
-capacity like any other award; `refuse` makes the award `ineligible`, which
-the reporter can appeal to a different reviewer. A pending review holds its
-root cause: a later report of the same root cause gets `409
-root_cause_reserved` and is recorded as a duplicate. Once a case is related,
-it stays related. A redecision after a returned appeal needs a new review,
-and the earlier reviewer stays recorded.
+One root cause reserves once per project (`root_cause_reserved`). A reserved
+or approved award is never redecided or withdrawn. A related-party reporter
+(declared, a program approver, or the sponsor account) gets a proposed amount
+that reserves nothing until a moderator approves it
+(`decide-related-party`); the approval then reserves the proposed amount if
+funds exist. Once related, a case stays related, and earlier reviewers stay
+recorded.
+
+Older cases keep their records: a `reserved` award from before discretionary
+awards is approved at its reserved amount, and a `capacity-exhausted` award
+waits for the owner's award decision like any `pending` one. The removed
+`approve-award`, `reserve-award`, `verify-link`, `reject-link`, `triage` and
+`next-action` events stay readable in history.
+
+A reporter may appeal a duplicate, out-of-scope or rejected finding, or a
+confirmed finding without an award. `uphold` restores the receipt unchanged;
+`return` sends it back to a new decision and reopens the award decision.
+
+Slopbot triages every appeal first (PRD section 8). When the reporter files
+the appeal, the same analyzer as the report analysis (Surplus
+`claude-opus-5.5`, prompt `slop-security-appeal-triage-1`) reads the appealed
+decision, its reason, the appeal reason, Slopbot's earlier report summary and
+the program scope from the case's recorded policy revision. Both report
+analysis and appeal triage use that revision, not later project edits. If no
+policy revision was recorded at receipt, the scope is unknown. The appeal
+triage reads no advisory text again. It drafts `uphold` or
+`return`, a rationale and a confidence (`security_appeal_triages`, migration
+0069). The draft is advice only: it never decides the appeal, changes the case
+or moves funds. Under the recorded escalation criteria a private security
+case always goes to a moderator, so every draft records the escalation reason
+`private-security-case`, and `confidence-below-floor` when its confidence is
+below 0.9. The owner, triagers and dispute reviewers see the draft; the
+reporter's view does not. A failed, unavailable or lost attempt lets a dispute
+reviewer run `triage-appeal` again. A moderator decides the appeal with or
+without a draft.
 
 ## Disclosure approval records
 
@@ -132,12 +263,14 @@ The 22 October 2026 product decision uses the existing escrow rails with a
 records, attempts and finalized vault snapshots from ordinary payments.
 Canonical wallet possession and binding authorizations remain shared.
 
-An admin must record a reviewed `securityBounty.settlement` policy with a
+Payment uses the reserved gross amount of the approved award. An admin must
+record a reviewed `securityBounty.settlement` policy with a
 separate vault and `feeBasisPoints: 2500`. The vault must not appear in
 any other payment program. USDC awards require a matching reviewed USDC rail;
 USD awards cannot be converted implicitly. The reporter accepts the selected
-rail's public chain visibility before a financial approver prepares an
-immutable unsigned commitment. Onchain records expose actor numbers, addresses,
+rail's public chain visibility before the maintainer or delegated payer prepares an
+immutable unsigned commitment. Report state stays independent of payment
+state, and no payment authorizes disclosure. Onchain records expose actor numbers, addresses,
 times and amounts. They contain a random source commitment, never report data.
 
 The owner submits the unsigned commitment outside Slop. The private worker
@@ -173,5 +306,18 @@ the ordinary attester. Missing service configuration fails closed.
   never contains a case identifier, amount, project or advisory. The inbox
   action **Acknowledge** records the recipient's authenticated response;
   **Mark read** is a separate state and never acknowledges a notice.
-- GitHub advisory content is never fetched. Maintainers verify claims by
-  hand on GitHub.
+- Automatic intake reads only the reporter's own advisory with the
+  reporter's token; imports and retries read with the slopdotcash App
+  installation token. Slop keeps only digests. This GitHub behaviour (user
+  tokens on `/reports`, installation tokens on advisory lists, error shapes)
+  is not yet qualified on a real repository, and the App permission must be
+  accepted on each installation.
+- Private analysis needs `SURPLUS_API_KEY`; a zero-data-retention
+  agreement is not required. The live provider is not yet exercised.
+
+A moderator account ban prevents an account from proposing or approving a new
+bounty award, or receiving a new bounty reservation. The database checks both
+the decision maker and researcher again when it writes, including related-party
+proposals. A ban recorded during approval cannot create the award.
+Existing reservations are unchanged. The researcher can still read the case
+and appeal. This check does not replace account checks on other new Slop work.

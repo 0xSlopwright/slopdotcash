@@ -1,7 +1,13 @@
 /**
  * One conversion run: reconcile unresolved sends, then quote, check and (in
- * live mode) sign one swap per candidate token. The chain and aggregator
- * details live behind ChainClient so the policy here is chain-neutral.
+ * live mode) sign one swap per candidate token into the network's USDC. The
+ * chain and aggregator details live behind ChainClient so the policy here is
+ * chain-neutral.
+ *
+ * A `receipts` run converts only tokens whose fee-wallet balance changed since
+ * the token's last record, so fees convert soon after they arrive (PRD
+ * section 6). A `recovery` run re-evaluates every candidate and retries what
+ * a failed quote, route or price left behind.
  */
 
 import type { Limits, Mode, Network, NetworkConfig } from "./config";
@@ -55,7 +61,7 @@ export interface Quote {
   minAmountOut: bigint;
   /** Null when the aggregator cannot price the input; the run fails closed. */
   priceImpactBps: number | null;
-  /** Estimated network fee in stablecoin micro-units. */
+  /** Estimated network fee in USDC micro-units. */
   gasCostMicro: bigint;
   /** Bounded, public quote facts for the record. */
   summary: Record<string, unknown>;
@@ -101,6 +107,27 @@ export interface ChainClient {
   ): Promise<PreparedSend>;
   broadcast(rawTx: string): Promise<void>;
   status(row: ConversionRow): Promise<SendStatus>;
+  /**
+   * EVM only (issue #905): a vault keeps its 2% fees until someone calls the
+   * permissionless claimFees(). Its methods let a recovery run claim them for
+   * this fee wallet before it reads the wallet's balances.
+   */
+  vaultFees?: VaultFeeClient;
+}
+
+/** Fees accrued in one vault whose fee recipient is this fee wallet. */
+export interface AccruedFees {
+  asset: string;
+  amount: bigint;
+}
+
+export interface VaultFeeClient {
+  /** Null when nothing accrued or the vault pays another fee recipient. */
+  accrued(vault: string): Promise<AccruedFees | null>;
+  /** Estimated network fee of the claim in USDC micro-units; null if unpriced. */
+  claimCostMicro(vault: string): Promise<bigint | null>;
+  /** Signs and sends claimFees(), and waits until it is included successfully. */
+  claim(vault: string): Promise<{ txId: string }>;
 }
 
 export interface ConversionStore {
@@ -127,23 +154,35 @@ export interface ConversionStore {
   latest(network: Network, token: string): Promise<ConversionRow | null>;
 }
 
+export type RunTrigger = "receipts" | "recovery";
+
 export interface RunDependencies {
   mode: Exclude<Mode, "off">;
+  /** Defaults to `recovery`: every candidate is evaluated. */
+  trigger?: RunTrigger;
   limits: Limits;
   store: ConversionStore;
   now: () => Date;
   randomId: () => string;
   /** Candidate tokens named by D1 project manifests for this network. */
   projectTokens: (config: NetworkConfig) => Promise<string[]>;
+  /** Escrow vaults named by D1 project manifests for this network. */
+  projectVaults?: (config: NetworkConfig) => Promise<string[]>;
   client: (config: NetworkConfig) => ChainClient;
   log: (event: Record<string, unknown>) => void;
 }
 
 export interface NetworkRunResult {
   network: Network;
-  status: "ran" | "locked";
+  /**
+   * `route_pending`: the network has no verified USDC target, so nothing is
+   * quoted or signed and received fees stay in the fee wallet.
+   */
+  status: "ran" | "locked" | "route_pending";
   reconciled: number;
   records: Record<ConversionState, number>;
+  /** Vaults whose accrued fees this run moved into the fee wallet. */
+  claimed: number;
 }
 
 const QUOTE_ABANDON_MS = 60 * 60 * 1000;
@@ -288,6 +327,7 @@ export async function runNetwork(
     status: "ran",
     reconciled: 0,
     records: emptyRecords(),
+    claimed: 0,
   };
   const acquiredAt = deps.now();
   let renewedAt = acquiredAt.getTime();
@@ -316,22 +356,25 @@ export async function runNetwork(
       }
     }
 
-    const stablecoin = config.definition.stablecoin;
+    const usdc = config.definition.usdc;
+    if (usdc === null) {
+      // Never relabel another asset as USDC: the fees wait in the wallet.
+      deps.log({
+        event: "fee_conversion_route_pending",
+        network: config.network,
+        reason: "no verified USDC target",
+      });
+      result.status = "route_pending";
+      return result;
+    }
     const candidates = [
       ...new Set([...(await deps.projectTokens(config)), ...config.allowlist]),
-    ].filter((token) => token !== stablecoin);
+    ].filter((token) => token !== usdc);
 
-    const since = new Date(
-      deps.now().getTime() - 24 * 60 * 60 * 1000,
-    ).toISOString();
-    let dayValue = await deps.store.liveValueSince(config.network, since);
-    let runValue = 0n;
-
-    for (const token of candidates) {
-      if (blocked.has(token)) continue;
-      // The lease must cover every send this run starts. Renew before a chunk
-      // once the interval has passed; a renewal that fails means the lease
-      // lapsed or another run took it over, so no send may be signed here.
+    // The lease must cover every send this run starts. Renew before a chunk
+    // once the interval has passed; a renewal that fails means the lease
+    // lapsed or another run took it over, so no send may be signed here.
+    const leased = async () => {
       const at = deps.now();
       if (ownsLock && at.getTime() - renewedAt >= RUN_BUDGET_MS) {
         ownsLock = await deps.store.renewLock(config.network, runId, at);
@@ -342,15 +385,57 @@ export async function runNetwork(
           });
         else renewedAt = at.getTime();
       }
-      if (!ownsLock) break;
+      return ownsLock;
+    };
+
+    // A recovery scan first moves fees accrued in the network's vaults into
+    // the fee wallet, so the balance reads below see them as a receipt.
+    if (client.vaultFees && deps.projectVaults && deps.trigger !== "receipts")
+      result.claimed = await claimVaultFees(
+        await deps.projectVaults(config),
+        usdc,
+        config,
+        client,
+        client.vaultFees,
+        deps,
+        leased,
+      );
+
+    const since = new Date(
+      deps.now().getTime() - 24 * 60 * 60 * 1000,
+    ).toISOString();
+    let dayValue = await deps.store.liveValueSince(config.network, since);
+    let runValue = 0n;
+
+    for (const token of candidates) {
+      if (blocked.has(token)) continue;
+      if (!(await leased())) break;
       try {
         const balance = await client.balance(token);
         if (balance === 0n) continue;
-        const outcome = await convert(token, balance, config, client, deps, {
-          runId,
-          runValue,
-          dayValue,
-        });
+        if (deps.trigger === "receipts") {
+          const latest = await deps.store.latest(config.network, token);
+          // A finalized swap spent the earlier balance. An equal balance can
+          // therefore be a new receipt, and must be evaluated again.
+          if (
+            latest?.state !== "finalized" &&
+            latest?.tokenBalanceBefore === balance.toString()
+          )
+            continue;
+        }
+        const outcome = await convert(
+          token,
+          balance,
+          usdc,
+          config,
+          client,
+          deps,
+          {
+            runId,
+            runValue,
+            dayValue,
+          },
+        );
         result.records[outcome.state] += 1;
         if (outcome.committedMicro > 0n) {
           runValue += outcome.committedMicro;
@@ -371,6 +456,69 @@ export async function runNetwork(
   return result;
 }
 
+/**
+ * Claims each vault's accrued fees when the claim is worth its gas: the fee
+ * value, quoted in USDC like a conversion, must reach the minimum conversion
+ * value and the gas-cost multiple of the claim's own network fee. A smaller
+ * amount stays in the vault and accrues until it does. Dry run only reports.
+ * A claim moves fees only to the vault's immutable fee recipient, so it never
+ * counts against the conversion caps. Returns the number of vaults claimed.
+ */
+async function claimVaultFees(
+  vaults: readonly string[],
+  usdc: string,
+  config: NetworkConfig,
+  client: ChainClient,
+  fees: VaultFeeClient,
+  deps: RunDependencies,
+  leased: () => Promise<boolean>,
+): Promise<number> {
+  const { limits } = deps;
+  let claimed = 0;
+  for (const vault of vaults) {
+    if (!(await leased())) break;
+    const report = (event: string, fields: Record<string, unknown>) =>
+      deps.log({ event, network: config.network, vault, ...fields });
+    try {
+      const accrued = await fees.accrued(vault);
+      if (!accrued) continue;
+      const amount = accrued.amount.toString();
+      let value = accrued.amount;
+      if (accrued.asset !== usdc) {
+        const quote = await client.quote(accrued.asset, accrued.amount);
+        if ("noRoute" in quote) {
+          report("fee_claim_skipped", { amount, reason: quote.noRoute });
+          continue;
+        }
+        value = quote.amountOut;
+      }
+      const cost = await fees.claimCostMicro(vault);
+      const reason =
+        cost === null
+          ? "claim network fee could not be priced"
+          : value < limits.minValueMicro
+            ? "below the minimum conversion value"
+            : value < cost * limits.gasMultiple
+              ? "below the gas-cost multiple"
+              : null;
+      if (reason) {
+        report("fee_claim_skipped", { amount, reason });
+        continue;
+      }
+      if (deps.mode === "dry_run") {
+        report("fee_claim_quoted", { amount, valueMicro: value.toString() });
+        continue;
+      }
+      const { txId } = await fees.claim(vault);
+      claimed += 1;
+      report("fee_claim_included", { amount, txId });
+    } catch (error) {
+      report("fee_claim_error", { error: message(error) });
+    }
+  }
+  return claimed;
+}
+
 interface Budget {
   runId: string;
   runValue: bigint;
@@ -380,6 +528,7 @@ interface Budget {
 async function convert(
   token: string,
   balance: bigint,
+  usdc: string,
   config: NetworkConfig,
   client: ChainClient,
   deps: RunDependencies,
@@ -394,7 +543,7 @@ async function convert(
     mode: deps.mode,
     feeWallet: config.feeWallet,
     token,
-    targetToken: config.definition.stablecoin,
+    targetToken: usdc,
     amountIn: balance.toString(),
     route: null,
     quoteAmountOut: null,
@@ -439,9 +588,7 @@ async function convert(
     return { state: row.state, committedMicro: 0n };
   };
 
-  const targetBefore = (
-    await client.balance(config.definition.stablecoin)
-  ).toString();
+  const targetBefore = (await client.balance(usdc)).toString();
   const base = (): ConversionRow => ({
     ...unbalanced(),
     targetBalanceBefore: targetBefore,

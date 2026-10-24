@@ -8,6 +8,11 @@ import {
   collectAcceptedValueRange,
 } from "./value-accepted-range";
 import {
+  collectBranchPolicy,
+  matchesHistoricalIntegrationBranch,
+  type ValueBranchPolicy,
+} from "./value-branch-policy";
+import {
   needsFullValueComparison,
   recoverFullValueComparisons,
 } from "./value-full-file";
@@ -16,7 +21,16 @@ import {
   type IndirectValueAcceptance,
 } from "./value-indirect";
 import type { ValueMergeResolution } from "./value-merge-resolution";
-import { addedValuePatchRecovery, hasCompleteValuePatch } from "./value-patch";
+import {
+  addedValuePatchRecovery,
+  hasCompleteValuePatch,
+  valueDeletionCount,
+  valuePatch,
+} from "./value-patch";
+import {
+  needsRemovedValueComparison,
+  recoverRemovedValueComparisons,
+} from "./value-removed-file";
 import { recoverUnchangedValueRenames } from "./value-rename";
 
 // Shared by the installation worker and the historical reviewer. Missing or
@@ -83,6 +97,11 @@ export interface FileChange {
     before: { blobSha: string; text: string };
     after: { blobSha: string; text: string };
   };
+  removedComparison?: {
+    baseSha: string;
+    headSha: string;
+    before: { blobSha: string; text: string };
+  };
   unchangedRename?: { baseSha: string; headSha: string; blobSha: string };
 }
 interface Commit {
@@ -132,8 +151,8 @@ function changeBytes(files: FileChange[]): string {
         file.previous_filename ?? null,
         file.status,
         file.additions,
-        file.deletions,
-        file.patch ?? null,
+        valueDeletionCount(file),
+        valuePatch(file) ?? null,
         file.fullComparison
           ? [
               file.fullComparison.before.blobSha,
@@ -204,12 +223,40 @@ async function collectCommitChanges(
       commit.files.length
     )
       limitations.push(`${label} contains repeated file paths`);
+    if (commit.parents.length > 0 && limitations.length === 0) {
+      await recoverRemovedValueComparisons(
+        client,
+        root.slice("/repos/".length),
+        commit.files,
+        commit.parents[0].sha,
+        commit.sha,
+      );
+    }
     for (const kind of ["additions", "deletions"] as const)
       if (
-        commit.files.reduce((sum, file) => sum + file[kind], 0) !==
-        commit.stats[kind]
+        commit.files.reduce(
+          (sum, file) =>
+            sum +
+            (kind === "deletions" ? valueDeletionCount(file) : file.additions),
+          0,
+        ) !== commit.stats[kind]
       )
         limitations.push(`Incomplete ${label.toLowerCase()} ${kind}`);
+  }
+  if (
+    commit !== null &&
+    commit.parents.length === 1 &&
+    limitations.length === 0
+  ) {
+    await recoverFullValueComparisons(
+      client,
+      root.slice("/repos/".length),
+      commit.files.filter((file) =>
+        /(^|\/)package\.json$/u.test(file.filename),
+      ),
+      commit.parents[0].sha,
+      commit.sha,
+    );
   }
   return { commit, limitations };
 }
@@ -217,6 +264,9 @@ export interface CommitAttribution {
   sha: string;
   actorNodeIds: string[];
   changedPaths: string[] | null;
+  // Private source evidence for retained-copy reconciliation. Paths alone
+  // cannot establish which original changes survived a cherry-pick.
+  files?: FileChange[];
   limitations: string[];
 }
 interface RelatedPullRequest {
@@ -305,8 +355,19 @@ async function relatedPullRequests(
   // duplication; GitHub supplies the immutable identity and visibility.
   const candidates = new Map<string, { repository: string; number: number }>();
   for (const text of sourceTexts) {
-    for (const match of text.matchAll(
-      /https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:pull|issues)\/(\d+)\b|(?<![\w/])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)[ \t]*)?#(\d+)\b/gu,
+    // Link destinations own the reference scope. In release notes, a label
+    // such as #412 may point to an upstream repository rather than this one.
+    const referencesText = text
+      .replace(
+        /<a\b[^>]*\bhref=(["'])(https:\/\/(?:redirect\.)?github\.com\/[^"']+)\1[^>]*>[\s\S]*?<\/a>/giu,
+        "$2",
+      )
+      .replace(
+        /\[[^\]\n]*\]\((https:\/\/(?:redirect\.)?github\.com\/[^\s)]+)\)/gu,
+        "$1",
+      );
+    for (const match of referencesText.matchAll(
+      /https:\/\/(?:redirect\.)?github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/(?:pull|issues)\/(\d+)\b|(?<![\w/])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)[ \t]*)?#(\d+)\b/gu,
     )) {
       const targetRepository = match[1] ?? match[3] ?? repository;
       const targetNumber = Number(match[2] ?? match[4]);
@@ -428,6 +489,7 @@ export interface ValueEvidence {
   evidenceUrls: string[];
   eligibleReviewIds: string[];
   implementationActorNodeIds: string[];
+  historicalBranchPolicy?: ValueBranchPolicy;
   commitAttribution: CommitAttribution[];
   mergeResolutions?: ValueMergeResolution[];
   relatedPullRequests: RelatedPullRequest[];
@@ -619,6 +681,7 @@ export async function collectValueEvidence(
     files.some(
       (file) =>
         needsFullValueComparison(file) ||
+        needsRemovedValueComparison(file) ||
         (file.status === "renamed" &&
           file.patch === undefined &&
           file.additions === 0 &&
@@ -629,6 +692,13 @@ export async function collectValueEvidence(
       merge_base_commit?: { sha: string };
     }>(`${root}/compare/${pull.base.sha}...${pull.head.sha}`);
     if (comparison?.merge_base_commit?.sha) {
+      await recoverRemovedValueComparisons(
+        client,
+        repository,
+        files,
+        comparison.merge_base_commit.sha,
+        pull.head.sha,
+      );
       await recoverFullValueComparisons(
         client,
         repository,
@@ -682,9 +752,13 @@ export async function collectValueEvidence(
             mergeCommitEvidence.sha,
           );
         }
+        // GitHub can report an integration merge with the PR head first.
+        // Shared commits still retain one claim in the joint work-unit ledger.
         const directMerge =
           mergeCommitEvidence.parents.length === 2 &&
-          mergeCommitEvidence.parents[1]?.sha === pull.head.sha;
+          mergeCommitEvidence.parents.some(
+            (parent) => parent.sha === pull.head.sha,
+          );
         // A squash is usable when its entire diff matches the submitted diff.
         // Never assume that the final commit of a rebase contains the whole PR.
         const matchingSingleParent =
@@ -780,6 +854,9 @@ export async function collectValueEvidence(
               ),
             ].sort()
           : null,
+      ...(changes.commit !== null && changes.limitations.length === 0
+        ? { files: changes.commit.files }
+        : {}),
       limitations: changes.limitations,
     };
     commitAttribution.push(attribution);
@@ -813,7 +890,38 @@ export async function collectValueEvidence(
   // Trailer identities are source text, not credit authority under SCR-04.
   const implementationActors = new Set<string>();
   if (pull.user.type !== "Bot") implementationActors.add(pull.user.node_id);
-  if (pull.base.ref === repositoryPolicy?.integrationBranch) {
+  let historicalBranchPolicy: ValueBranchPolicy | undefined;
+  if (
+    pull.merged_at !== null &&
+    repositoryPolicy !== null &&
+    pull.base.ref !== repositoryPolicy.integrationBranch &&
+    commits.some(
+      (commit) =>
+        commit.parents.length <= 1 &&
+        commit.author &&
+        commit.author.node_id !== pull.user.node_id &&
+        isCreditEligibleCommitAuthor({
+          id: commit.author.node_id,
+          kind: commit.author.type,
+        }),
+    )
+  ) {
+    try {
+      historicalBranchPolicy = await collectBranchPolicy(
+        client,
+        repository,
+        pull.base.sha,
+      );
+    } catch {
+      limitations.push(
+        "Historical integration branch authority is unavailable or ambiguous",
+      );
+    }
+  }
+  if (
+    pull.base.ref === repositoryPolicy?.integrationBranch ||
+    matchesHistoricalIntegrationBranch(historicalBranchPolicy, pull.base)
+  ) {
     for (const commit of commits) {
       if (
         commit.parents.length <= 1 &&
@@ -885,6 +993,7 @@ export async function collectValueEvidence(
     evidenceUrls,
     eligibleReviewIds,
     implementationActorNodeIds: [...implementationActors].sort(),
+    ...(historicalBranchPolicy === undefined ? {} : { historicalBranchPolicy }),
     commitAttribution,
     relatedPullRequests: related.references,
   };

@@ -8,10 +8,16 @@ import {
   indexPaymentEvent,
   type PaymentChainAdapter,
 } from "../../backend/payments/ledger";
+import { coordinateMonthlyPayments } from "../../backend/payments/monthly";
 import {
   refreshVaultSnapshots,
   type VaultTotals,
 } from "../../backend/payments/vault-snapshots";
+import {
+  CloudflareProjectPersistence,
+  type ProjectD1Database,
+} from "../../backend/projects/cloudflare-persistence";
+import { publicRestrictionOf } from "../../backend/projects/enforcement";
 import {
   securityLedgerPolicy,
   securityPaymentNotices,
@@ -26,6 +32,7 @@ import {
 } from "../../contracts/solana/adapter";
 import { chainFamily, type EscrowChain } from "../../src/lib/escrow-policy.mjs";
 import type { PayoutPolicy } from "../../src/lib/payments/contracts";
+import { parseMonthlySchedule } from "../../src/lib/payments/monthly-allocation";
 import {
   loadRegistryPaymentDeployments,
   parsePaymentNetworks,
@@ -34,6 +41,7 @@ import { reconcileFailedAttempts } from "./reconcile";
 import { scanEvmPayments, scanSolanaPayments } from "./scanner";
 
 export interface PaymentDeployment {
+  evmUpgrade?: import("../../contracts/evm/adapter").EvmUpgrade;
   payoutPolicy?: PayoutPolicy;
   projectId: string;
   network: string;
@@ -45,6 +53,7 @@ export interface PaymentDeployment {
   owner: string;
   identityAuthority: string;
   feeRecipient: string;
+  rotationAuthority?: string;
   codeSha256: string;
   bindingDelaySeconds: string;
   rotationDelaySeconds?: string;
@@ -81,6 +90,11 @@ export interface PaymentsWorkerEnvironment {
   /** A separate restricted execution service; no signer secrets in this worker. */
   EVM_PAYMENT_EXECUTOR?: { fetch(request: Request): Promise<Response> };
   SOLANA_PAYMENT_EXECUTOR?: { fetch(request: Request): Promise<Response> };
+  /**
+   * The owner-decided automatic monthly cutoff (backend/payments/monthly.ts).
+   * Unset, the coordinator freezes no month automatically.
+   */
+  MONTHLY_PAYMENT_SCHEDULE?: string;
 }
 /** The served networks' reviewed vaults, read from the D1 project registry. */
 export function registryDeployments(env: PaymentsWorkerEnvironment) {
@@ -248,6 +262,37 @@ export async function runPaymentDispatch(
   if (failures.length)
     throw new AggregateError(failures, "Payment dispatch failures");
 }
+/**
+ * The monthly coordinator for ordinary project vaults: freeze months due at
+ * the configured cutoff, then create funded obligations once. Never runs for
+ * private bounty programs. It reads the registry and enforcement records
+ * from REGISTRY_DB and keeps its records in PAYMENTS_DB with the vault
+ * snapshots and the chain projection it checks.
+ */
+export async function runMonthlyCoordinator(
+  env: PaymentsWorkerEnvironment,
+  now = new Date(),
+) {
+  if (env.PAYMENT_SCOPE === "security-bounty") return null;
+  const registry = new CloudflareProjectPersistence(
+    env.REGISTRY_DB as ProjectD1Database,
+  );
+  const report = await coordinateMonthlyPayments({
+    db: env.PAYMENTS_DB,
+    projects: {
+      getProject: (id) => registry.getProject(id),
+      restricted: async (project) =>
+        publicRestrictionOf(project, await registry.listEnforcements())
+          .state !== "clear",
+    },
+    networks: parsePaymentNetworks(env.PAYMENT_NETWORKS),
+    schedule: parseMonthlySchedule(env.MONTHLY_PAYMENT_SCHEDULE),
+    now,
+  });
+  if (report.failures.length)
+    throw new AggregateError(report.failures, "Monthly coordinator failures");
+  return report;
+}
 export interface PaymentEventMessage {
   projectId: string;
   network?: string;
@@ -313,7 +358,8 @@ export async function ingestPaymentEvent(
     deployment.projectPda &&
     deployment.asset &&
     deployment.networkDomain &&
-    deployment.rotationDelaySeconds
+    deployment.rotationDelaySeconds &&
+    deployment.rotationAuthority
   ) {
     const genesis = (
       JSON.parse(env.PAYMENT_SOLANA_GENESIS ?? "{}") as Record<string, string>
@@ -328,6 +374,7 @@ export async function ingestPaymentEvent(
       mint: deployment.asset,
       networkDomain: deployment.networkDomain,
       rotationDelaySeconds: deployment.rotationDelaySeconds,
+      rotationAuthority: deployment.rotationAuthority,
     });
   } else throw new Error("Reviewed chain deployment incomplete");
   await indexPaymentEvent(
@@ -446,6 +493,7 @@ export default {
             string
           >,
         ),
+      () => runMonthlyCoordinator(env),
       () => runPaymentDispatch(env),
     ]) {
       try {

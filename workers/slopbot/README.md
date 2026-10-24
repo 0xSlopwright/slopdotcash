@@ -8,24 +8,42 @@ disabled by `SLOPBOT_CLOSURE_ENABLED = "false"`.
 
 1. `POST /github/webhook` verifies `X-Hub-Signature-256`, records the delivery
    ID once, updates installation state, and enqueues identifiers only.
-2. Intake and the queue consumer check the live D1 project registry. Only active,
-   listed, unrestricted repositories proceed. `registry.ts` uses the existing
-   project repository index, validates the current manifest, and checks current
-   enforcement records. Missing registry rows skip; database errors retry.
-   Registry checks repeat before inference and GitHub writes. The queue consumer
+2. Intake and the queue consumer check the live D1 project registry.
+   `registry.ts` uses the existing project repository index, validates the
+   current manifest and immutable repository ID, and checks current enforcement
+   records. It derives capabilities with the shared evaluator in
+   `src/lib/project-capabilities.mjs`. An active, listed, unrestricted project
+   gets the full contributor review. A registered project that is paused,
+   flagged, quarantined or banned gets a security-only review: only a
+   `scam` finding is labeled and commented, nothing is closed, and no value
+   assessment runs (PRD section 5, owner decision D12). A retired project gets
+   no review. Unregistered repositories and replaced
+   repository IDs skip; database errors retry. Registry checks repeat for the
+   same scope before inference and GitHub writes. The queue consumer
    then gets an installation token and re-reads the
    repository, the item, `.github/slopbot.json`, and `AGENTS.md`,
    `CONTRIBUTING.md` and `README.md` from the default branch at its current
    SHA.
 3. `routing.ts` applies the published precedence: installation, private
    repository, type switch, open/draft, bot author, human reopen, exemption,
-   audience, author cap, budget.
+   audience, author cap, budget. Advisory review stays broad; closure needs the
+   separate eligibility check below.
 4. Deterministic pre-filters (empty, same-author duplicate) run without a model.
 5. `models.ts` runs triage: Surplus `claude-opus-5.5`, then Surplus
    `gpt-6.1-sol` as fallback (owner decision, 9 October 2026). Every call is written to
-   `slopbot_costs` with cost and billed amount (cost + 10%).
+   `slopbot_costs` with its internal provider cost and a zero billed amount.
 6. A close needs all of the following:
-   - the category set to `close`;
+   - closure eligibility (`closure-eligibility.ts`, owner decision D6): a pull
+     request whose author is not a maintainer, is a slop.cash member matched by
+     immutable GitHub ID, and has a `trace_runs` row created by their own
+     authenticated Slop session for this project and repository, with a
+     `pull_request_opened` event that names this exact pull request node ID.
+     A URL alone, a copied marker or a receipt does not match. Advisory review
+     stays available for everyone else. Issues are never closed.
+     The check runs at routing and again, from fresh state, immediately before
+     the close;
+   - the category set to `close`, and a category that the penalty table does
+     not make label-only (`out_of_scope` never closes);
    - verified evidence;
    - for guidance categories, a rule quoted verbatim from the named file;
    - confidence ≥ 0.9;
@@ -36,8 +54,52 @@ disabled by `SLOPBOT_CLOSURE_ENABLED = "false"`.
    - an unchanged item just before acting.
 
    Otherwise the bot only comments and labels.
-7. `/slopbot appeal` from the author, or any reopen, blocks re-closing that
-   revision.
+7. An uncertain finding goes to the maintainer first (PRD section 5). A
+   finding is uncertain when its confidence is below 0.9, its cited rules or
+   evidence fail the verbatim check, or the second review does not confirm.
+   The bot comments, adds no label, and records a hold in
+   `slopbot_maintainer_holds` (`maintainer-holds.ts`). The 5-minute schedule
+   queues each hold after 7 days. If no maintainer commented, reviewed,
+   labeled, assigned or changed the item in that time, the bot adds the
+   `slopbot:uncertain` label only (owner decision D8); the verdict stays in the
+   review comment. An uncertain finding never closes an item. A closed,
+   merged or changed item, or a paused, flagged or quarantined project, ends
+   the hold without a label. On such a restricted project Slopbot comments and
+   adds the scam label only (owner decision D12), so an uncertain finding
+   there stays a comment and records no hold. Unknown maintainer status
+   retries the hold.
+8. A confirmed close of a closure-eligible author records one debit from the
+   published penalty table (`penalties.ts`, owner decision D7) in
+   `slopbot_penalties`. The row is written once per pull request and reverses
+   once, on an upheld appeal or a maintainer reopen. A `scam` close also adds
+   the `slopbot: moderator` label for a moderator review of the account.
+   Maintainers and authors without the closure evidence are never penalized.
+   The read-only `GET /v1/penalties?project=ID&after=NODE_ID` returns the
+   project's unreversed debits (item node ID, author ID, category, table
+   version, thirds, period) in pages of 100; no review key, verdict or source
+   text. `scripts/generate-leaderboard.ts` reads it for each project with a
+   closed, unmerged pull request in its census and binds each debit to that
+   pull request: GitHub supplies the author and the closure month. The
+   published score subtracts the debit once from that author's score for the
+   same project and UTC month, never below zero (`src/lib/score-penalties.ts`).
+   A reversed debit is absent from the feed, so the next snapshot restores the
+   score. Closed reward cycles bind their own snapshot bytes, so a debit never
+   changes an approved, scheduled or paid award. A feed outage keeps the last
+   published snapshot, as for the value feed.
+9. `/slopbot appeal` from the author, or any reopen, blocks re-closing that
+   revision. An author's appeal opens Slopbot triage (`appeals.ts`, owner
+   decision D8): an independent higher-effort review of the same revision,
+   with the appeal text as untrusted data, drafts `uphold` or `deny` with a
+   confidence. The draft is posted on the item. The appellant or a maintainer
+   answers with `/slopbot accept` or `/slopbot reject`. An accepted `uphold`
+   reopens an item that Slopbot closed, removes the finding label and
+   reverses the penalty. The appeal escalates to a moderator, with the
+   `slopbot: moderator` label, when the draft is rejected, the finding is
+   `scam`, the debit at stake is 24 thirds or more, the draft confidence is
+   below 0.9, or the appeal is unresolved 7 days after it opened. A moderator
+   in `PROJECT_MODERATOR_GITHUB_IDS` decides an escalated appeal with
+   `/slopbot uphold` or `/slopbot deny`, never their own. Unset, no moderator
+   decision is possible. A maintainer reopen always wins.
 
 ## Repository policy file
 
@@ -90,9 +152,12 @@ fallback. The queue retains its retry time. Internal budgets, queue limits,
 and the $500 operational alerts remain separate from customer billing.
 No project vault service charge is required or authorized for free Slopbot.
 
-`GET /api/v1/payments/slopbot/installations/<id>/invoices/<YYYY-MM>` retains
-historical cost statements. New calls increase the call count but never the
-billed total. A statement does not authorize or request payment.
+Slopbot has no customer statement, invoice, credit balance, fee offset or
+markup. The former installation invoice route and the public summary's billed
+total are removed. The `slopbot_credits` table and historical `billed_micro_usdc`
+values stay in D1, unchanged, as historical records only. When provider
+budget runs out, an item waits in the queue and resumes; nothing asks a
+project to fund Slopbot.
 
 ## Setup checklist (owner)
 
@@ -150,6 +215,10 @@ Do these in order. Each step names who does it and how to verify it.
       `bunx wrangler queues consumer add slopbot-jobs slop-slopbot --batch-size 5 --message-retries 5 --dead-letter-queue slopbot-jobs-dlq`.
    5. In GitHub → repository Settings → Variables, set `SLOPBOT_RELEASE` to
       `enabled`.
+   6. `wrangler.toml` sets `PROJECT_MODERATOR_GITHUB_IDS` to the approved
+      moderators' immutable GitHub IDs: lalalune (18633264) and drew-dot-com
+      (202660855), PRD section 11. A change to this list needs an owner
+      decision and a reviewed pull request.
 
    The next protected release runs these steps:
    - checks the secret inventory;
@@ -185,7 +254,9 @@ and publication separately. An unregistered repository must create no record.
 
 ## Not yet implemented
 
-- SCR-01 penalty journal events. Closures record `penaltyEligible` for them.
+- Inbox notices for escalated appeals. Escalation is visible through the
+  `slopbot: moderator` label and the appeal comment until the Inbox adds an
+  appeal notice kind.
 - Maintainer dashboard and Automation row (LDR-04).
 
 ## Value assessment work in progress
@@ -217,7 +288,12 @@ Missing objects or a failed reconstruction stop collection. Octopus merges are
 not reconstructed. Reconstruction depends on the Git merge algorithm: review
 the resulting diff before valuation; it does not itself prove useful work.
 
-The hosted collector does not run Git. Historical resolution evidence must
+The hosted collector does not run Git. For a source with no two-parent merges,
+publication can reproduce the local collector's empty resolution array so that
+an unchanged source keeps its original digest. Nonempty resolution evidence is
+never copied from the submitted assessment into the fresh source.
+
+Historical resolution evidence must
 remain source-bound and pass the joint record's freshness and publication gates.
 Do not strip limitations or substitute a full first-parent merge diff to make
 an assessment pass.
@@ -406,7 +482,7 @@ blob reader permits at most 48 reads, 512 KiB per file and 2 MiB per recovery
 range. Missing, changed or invalid bytes retain the limitation; zero line
 counts alone are insufficient. A rename proves no new content or extra award.
 
-When a modified text file has no complete patch, the collector can retain a
+When a modified or renamed text file has no complete patch, the collector can retain a
 `fullComparison` with the complete old and new text, verified Git blob hashes,
 and immutable refs. The old version comes from the submitted merge base or
 accepted first parent. It does not manufacture a patch. Invalid UTF-8, binary,
@@ -414,6 +490,12 @@ missing and oversized files remain unresolved. The bounded shared reader limits
 this recovery to 48 reads, 512 KiB per file and 2 MiB per range. Squash matching
 also compares the recovered blob pairs. Both texts remain private and are
 included in the source digest that publication revalidates.
+
+For a changed rename, read the old path at the base and the new path at the
+head. GitHub can report zero changed lines while those blobs differ. Preserve
+the reported counts and missing patch; the complete texts provide the evidence.
+An identical rename still uses the unchanged-rename proof above. A missing old
+path or unverified file leaves the evidence gap open.
 
 An unchanged file can prove or disprove a review claim. Pass its repository path
 after the output directory in `scripts/collect-value-evidence.ts`. The collector
@@ -542,17 +624,21 @@ hosted membership permissions.
 ## Value score projection
 
 The leaderboard generator accepts verified `valueDecisions` and GitHub-resolved
-`valueActors`. When supplied, valid human ratifications take precedence across
-the hydrated source set. Missing, incomplete, stale and unresolved decisions
-receive no default implementation or review award. The snapshot retains a
-coverage row for every accepted source. Assessed zeroes retain their ledger
-source and actor, while integer-third shares preserve the assessed total.
+`valueActors` for outcomes accepted under the `slop-value-v1` policy. Valid
+human ratifications take precedence for the implementation score. Missing,
+incomplete, stale and unresolved decisions receive no review award; their
+accepted merge keeps only the repository's one-third minimum until assessed.
+An accepted merge assessed at zero keeps the same one-third minimum. The
+snapshot retains a coverage row for every accepted source, and integer-third
+shares preserve the scored total.
 
 Positive assessments require exact-head source agreement, hydrated human and
 review decisions, complete implementation identities, and no overlapping
 accepted commits that need joint assessment. Distinct positive review outcomes
-use their assessed tier; duplicate and zero-valued reviews do not multiply
-credit. Existing reviewed evaluator awards keep their precedence.
+share one per-pull-request review pool among the first five distinct reviewers.
+The pool is their summed bands, capped at the pull request's assessed size,
+minimum one third. Duplicate and zero-valued reviews do not multiply credit.
+Existing reviewed evaluator awards keep their precedence.
 
 A local integration passed collected Eliza #34772 through the journal reader
 and real snapshot generator and validator: nine implementation thirds, one
@@ -565,10 +651,14 @@ inputs and frozen cycle files retain their existing behavior.
 
 ## Ingest published assessments
 
-`bun scripts/generate-leaderboard.ts --value-assessments` enables the fixed
-`https://slopbot.slop.cash/v1/value-assessments` feed. It can be combined with
-`--cutoff`. The flag is not enabled in release workflows until the hosted
-publisher and its production records are verified.
+`bun run leaderboard:generate` reads the fixed
+`https://slopbot.slop.cash/v1/value-assessments` feed for every outcome accepted
+under the `slop-value-v1` scoring policy; there is no opt-in flag. Policy
+selection, the recorded owner decision, feed-outage handling and the
+review-credit allocation are in
+[`protocol/scoring-v2.md`](../../protocol/scoring-v2.md#current-producer-slop-value-v1).
+Release workflows run the same command. Hosted publisher operation and its
+production records remain unverified.
 
 The generator rejects redirects, unavailable or invalid pages and changed
 source. An unlinked commit author remains null in the source and adds no credit
@@ -583,6 +673,16 @@ Incomplete path evidence is null and blocks assessment; it is never an empty
 change set. The final PR stability read follows these commit and identity reads.
 The whole-PR contributor set follows SCR-04: the non-bot PR author plus
 GitHub-linked primary commit authors when the PR targets the integration branch.
+Historical PRs can target a former integration branch. When a merged PR has
+other eligible primary authors and its base differs from today's registry,
+the collector reads `CONTRIBUTING.md` at the immutable PR base SHA. It recognizes
+the explicit sentence `Pull requests target \`branch\`.` outside fenced examples
+and comments. Missing, conflicting, or unreadable declarations leave a source
+limitation; a declaration of another branch keeps author-only credit. A matching
+declaration retains commit-author credit without changing the current registry.
+The captured document and base SHA enter the source digest and are re-read for
+publication. Existing assessments require a verified successor, not an in-place
+recipient change. This historical evidence never activates a project or payment.
 Vendor agent accounts and co-author trailers do not add score recipients or
 turn trailer authors into self-reviewers. The original commit messages remain
 in the evidence; the collector does not resolve trailers into credit authority.
@@ -609,7 +709,9 @@ state, including `COMMENTED`, on every page. Eligibility and assessed value
 determine credit; collection does not discard a finding because the reviewer
 did not select approve or request changes. Review awards use their submission
 time within the scoring window. A later merge or closure does not move an old
-review into the current month. Assessment history still retains that review.
+review into the current month, and that old review does not take a reviewer
+slot or a share from a review inside the window. Assessment history still
+retains that review.
 
 The source collector does not call a model. A failed feed prevents snapshot
 publication; legacy scoring is not a failure fallback.
@@ -695,7 +797,11 @@ does not configure or activate a production binding.
 The envelope has `mode` (`single` or `work-unit`), `installationId`, `result`,
 `sources`, `supersedes`, and `revisionReason`. Grouped imports also require
 `legacyPredecessors`. Each source contains `repository`, `pullRequestNumber`, and
-`contextPaths`. The Worker collects the evidence from GitHub; callers do not
+`contextPaths`. A source may also set `emptyMergeResolutions: true` to match
+a local collector result with no two-parent merges. The Worker verifies that
+condition from fresh GitHub commits before adding the empty array. False values,
+nonempty resolution records and unknown source fields are refused.
+The Worker collects the evidence from GitHub; callers do not
 upload diff bodies. Results use the existing subscription result format.
 Single predecessors are a
 digest or null; grouped predecessors are digest arrays. A successor requires a
@@ -753,6 +859,21 @@ restricting a project stops later work even if selection cleanup is delayed.
 If the App was installed while its webhook was inactive, recover its installation
 delivery after protected deployment; a missing installation row must not be
 invented as proof of a qualified shadow period.
+
+### Repository access for project setup
+
+Self-service project setup (`backend/projects/README.md`) needs Slopbot
+installed on the repository before a project is ready, and reads the owner's
+current permission through the App. The site calls
+`GET https://slopbot.internal/v1/repository-access?repository=OWNER/REPO&repositoryId=ID&login=LOGIN`
+over its `SLOPBOT` service binding only; a public host never matches that
+origin. The Worker asks GitHub for the repository's installation with the App
+JWT, rejects a repository whose id changed, and returns
+`{ installation: "missing" }`, `{ installation: "suspended", installationId }`
+or `{ installation: "installed", installationId, permission, roleName }`
+with GitHub's base permission (maintain reads as write). It returns no token.
+Any GitHub failure is HTTP 503; setup shows it as a retry. Installation
+records in D1 alone never answer this check.
 
 ## Objective quality verification
 
@@ -1016,3 +1137,29 @@ The bounded recovery handles at most 16 added or modified text-diff paths and
 2 MiB of verified file reads, with 512 KiB per file. Unsupported changes, missing
 bytes, altered patches, or larger sources retain the original limitation and
 need dedicated Git evidence. No original capture is rewritten.
+
+### Omitted deleted-file evidence
+
+GitHub can omit a deleted-file patch and report zero file deletions while its
+commit total includes those lines. The collector records `removedComparison`
+with the original text, blob hash, base commit, and accepted commit. It requires
+complete hash-verified trees, a regular parent file, verified blob bytes, and
+absence at the accepted commit. Missing or truncated trees, changed hashes,
+binary content, and files still present cannot establish a deletion.
+
+GitHub's reported `patch` and `deletions` remain unchanged. Matching and commit
+reconciliation use the separately verified text to derive deletion lines and
+a deletion-only comparison. Commit totals must still reconcile. Existing blob
+and tree limits apply; exceeding them leaves an explicit evidence gap. This
+proof supplies review material, not a value tier or payment approval.
+
+### Escalated appeal notices
+
+Escalation writes one moderator Inbox notice in the same D1 transaction as
+its source decision. Repeated webhooks and scheduler runs keep the same event
+key. The appellant never receives a moderator notice for their own appeal.
+Inbox reads and the same-site GitHub redirect recheck the configured moderator
+identity. A resolved appeal remains in history with no decision requested.
+Optional activity email uses the existing consent-bound queue; dispatch
+suppresses a resolved appeal or a recipient who is no longer a moderator.
+Private security appeals keep their separate notice and acknowledgment path.

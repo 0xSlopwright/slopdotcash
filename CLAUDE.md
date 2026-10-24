@@ -14,7 +14,8 @@ alias only.
 
 - Score accepted outcomes, not activity.
 - GitHub is the work, review, and policy authority.
-- Automation proposes; maintainers decide.
+- Slopbot decides routine cases under published rules; humans decide
+  exceptions, escalated disputes, bounty awards, and confirmed-malicious bans.
 - Projected, under-review, approved, scheduled, paid, unclaimed, held, and
   excluded are different states.
 - Any provider, model, and agent client may participate when its exact identity
@@ -27,17 +28,24 @@ alias only.
   - The escrow identity attester key (PAY-05, approved by the repository owner
     on 14 October 2026). It only attests the authenticated GitHub actor for a
     destination binding that the destination wallet also signs, and it submits
-    only that binding transaction. It cannot choose an amount, move, pay or
-    route funds alone, or reach free or reserved funds. Each binding waits the
-    reviewed binding delay, and the project owner can cancel it in that time.
-    A public timelocked rotation replaces the key, and the attester cannot
-    block it.
+    only that binding transaction. It cannot choose an amount or reach free
+    funds. A binding activates immediately and the award delay is zero (#1086,
+    #1100), so a stolen attester key with a wallet it controls can redirect and
+    pay any matured unpaid award before the owner can cancel. Protection rests
+    on custody of this key (`docs/security/red-team-2026-10-24.md`). A rotation
+    by the registrar replaces the key, and the attester cannot block it. Owner decision of 24 October 2026: after the reviewed contract
+    change and independent audit, it also signs each funded project's monthly
+    allocation root. The contract limits that commitment to the owner's
+    monthly cap, one commitment per period, and the owner's opt-out; the
+    attester still cannot withdraw, redirect, or pay funds.
   - One fee-wallet hot key per network (PRD TOK-07, MVP-07c, owner decision
     of 18 October 2026). It controls only the network fee wallet. It signs
     only the conversion of fees received in that wallet to USDC, through allowlisted routes, within the slippage limit,
     with output to the same wallet. It holds no vault role and cannot touch
-    vaults, contributor principal, reserved awards or payments. The job runs
-    in dry run until a reviewed activation record enables signing.
+    vaults, contributor principal, reserved awards or payments. Per-run and
+    daily caps bound it, and owners sweep USDC proceeds to cold storage
+    (PRD section 11, 24 October 2026). The job runs in dry run until a
+    reviewed activation record enables signing.
 - Humans create, store and rotate these keys and deploy mainnet contracts.
   Agents never handle key material or deploy to mainnet. The vote-only Squads
   project vault key is removed with Squads.
@@ -47,12 +55,16 @@ alias only.
 ## MVP scope and phase gate
 
 The [canonical Slop PRD](docs/slop-product-requirements.md) defines
-product scope, MVP delivery packages, acceptance, and completion.
+product scope, acceptance, and completion.
 The Google Docs version mirrors the repository PRD. The repository governs.
 Read the PRD before selecting work, proposing a change, reviewing a PR, or
-implementing a feature. Link the exact PRD requirement and MVP work-package ID
-in every implementation PR. Existing code, an open issue, a model suggestion,
-or a PRD entry marked Future does not approve implementation.
+implementing a feature. In every implementation PR, cite the PRD section that
+the change serves (for example "PRD section 5, Slopbot") and the acceptance
+result that it proves. The PRD defines no work-package IDs; cite an older
+requirement or package ID only where existing records already use it, and do
+not ask maintainers for IDs that the PRD does not define. Existing code, an
+open issue, a model suggestion, or a PRD entry marked Future does not approve
+implementation.
 
 Work must correct a demonstrated defect in the MVP, fulfill a missing approved
 MVP requirement, or prove a relevant improvement to that required behavior.
@@ -182,12 +194,15 @@ self-service setup: verify current GitHub authority, complete project terms,
 install Slopbot, and pass the malicious-code scan before automatic activation.
 Funding is optional and has a separate readiness state. Owners publish immutable
 revisions; admins handle restrictions and disputes, not routine approval.
-Two distinct contributor flags pause the project. Contributor skills must not
-install or work on flagged projects.
+Two distinct contributor flags pause the project. A clean fresh scan reinstates
+a project that flags alone paused; a moderator decides only after a confirmed
+malicious result. Contributor skills must not install or work on flagged
+projects.
 
-The current application still uses admin approval in `backend/projects/`.
-That is implementation to migrate, not the target product rule. Do not bypass
-its deployed checks before the reviewed replacement is implemented.
+The owner creates and updates projects through `backend/projects/`. Preserve
+permanent repository and actor IDs when checking current GitHub write/maintain
+authority. A stored application can be published by its applicant through the
+same checks; it does not need an admin decision.
 
 A paused project is registered and listed, but none of its repositories is
 collected, so nothing on them reaches the ledger or the leaderboard. It
@@ -206,18 +221,23 @@ follow the target repository’s rules, test the result, prepare evidence, and
 emit the required attribution. It must not claim platform authority over an
 issue or create placeholder submissions.
 
-The current reviewer skill is separate and advisory. Slopbot is required and
-always free, and runs only on registered repositories. It scores PRs by perceived
-size and value and credits useful reviews. Automatic closure is limited to
-verified Slop-skill participants, excluding maintainers, with manual appeals.
-Do not charge project vaults for bot reviews. The current global closure switch
-stays off until reviewed production activation. Document changes alone do not
-activate closure, payments, or security enforcement.
+The current reviewer skill is separate and advisory. It measures its own run,
+checks correctness, tests, security, evidence, duplication, abuse signals,
+scope, and usefulness, and places the machine review before the signed
+attribution footer.
 
-
-It measures its own run, checks
-correctness, tests, security, evidence, duplication, abuse signals, scope, and
-usefulness, and places the machine review before the signed attribution footer.
+Slopbot is required and always free, and runs only on registered repositories.
+It scores PRs by perceived size and value, credits useful reviews, and applies
+the published penalty table. Automatic closure is limited to verified
+Slop-skill participants, excluding maintainers: a slop.cash member whose own
+authenticated Slop run records a `pull_request_opened` event for that exact PR
+(PRD section 11). A copied marker is never proof. An uncertain finding goes to
+the maintainer first; after 7 days without maintainer action, Slopbot applies
+its verdict as a label only and never closes. Slopbot triages each appeal first,
+and a moderator decides escalated appeals. Do not charge project vaults for bot
+reviews. The current global closure switch stays off until reviewed production
+activation. Document changes alone do not activate closure, payments, or
+security enforcement.
 
 ## Installer and attribution
 
@@ -231,8 +251,8 @@ that those fields come from Slop's registry. The generated installer may
 authorize this template revision:
 
 1. current `main`;
-2. a `main` ancestor whose canonical template tree is unchanged, or a successful
-   approved published revision not listed in `protocol/skill-revocations.json`; or
+2. a `main` ancestor whose complete canonical template tree is byte-identical
+   to current `main`; or
 3. an open, non-draft, same-repository PR head into `main` with the
    maintainer-controlled `slop-release-candidate` label applied after the exact
    current-head commit event.
@@ -284,8 +304,11 @@ unit; do not apply account-level caps or diminishing credit.
 
 Unusual useful work may score only through a strict reviewed `evaluations/`
 manifest. Never double-score a source already rewarded by the ordinary ledger.
-An LLM may recommend a hold or award but cannot autonomously ban, approve,
-exclude, or move money.
+Slopbot may assign scores, apply the published penalty table, label uncertain
+findings after the maintainer window, close under PRD section 5, and triage
+appeals and disputes. No LLM or automation may ban a person, decide an
+escalated dispute, approve a bounty award, or move money outside the contract's
+automatic monthly distribution.
 
 ## Participation points
 
@@ -309,22 +332,25 @@ Monthly allocations use integer base units of the project asset and largest
 remainder. Never use floats for money, assume six decimals, or let rollover
 increase a later monthly cap.
 
-A review budget is an optional additive cash line. Review events remain in the
-shared pool unchanged; a committed review line may pay them only on top of that
-treatment, with separate public arithmetic and evidence.
+New project setup uses one monthly pool. Preserve historical committed review
+budgets and their terms; do not offer a second review budget for new projects.
+Review credit follows the canonical scoring policy.
 
-The PRD's monthly fallback applies only to configured monthly projects with
-funds already committed in escrow. Owners can adjust amounts before execution;
-do not show adjustment history or require public reasons. Distribute the current
+Automatic monthly payment is the PRD default for every project with funds
+committed in its vault. The owner sets the monthly amount during setup, can
+adjust allocations before execution, and can turn the default off; do not show
+adjustment history or require public reasons. Distribute the current
 allocations at the defined monthly cutoff if the owner has not done so. Define
 the UTC cutoff before activation. Keep internal reconciliation and prevent
 manual/automatic duplicate payments. Walletless funded awards remain reserved.
-Private reports are automatic; bounty awards and payouts remain discretionary,
-with disputes handled by humans. Preserve already funded obligations.
+Private reports are automatic; bounty awards and payouts remain discretionary.
+Slopbot triages disputes first, and a moderator decides escalated disputes.
+Preserve already funded obligations.
 
-The current payment implementation retains its older review rules until the
-reviewed migration. Do not infer that this policy change has altered contracts
-or authorized live transactions.
+Where payment code still applies older review rules, such as a 14-day review
+window or a public reason for a changed amount, that is implementation to
+migrate. Do not infer that this policy change has altered contracts or
+authorized live transactions.
 
 One funding mode exists: the project vault contract (PRD FND-01, owner
 decision of 18 October 2026). Squads v4, Sablier, legacy direct and committed
@@ -490,8 +516,9 @@ slop.cash. Do not add the ordinary 2% fee to a private security bounty.
 For a project-token reward (PRD TOK-06, owner decision of 14 October 2026),
 the 2% is deducted in that token and paid in that token to the network fee
 wallet at payout. No contract converts it. A scheduled backend job converts
-fees already in the fee wallet to the network stablecoin inside that wallet
-(TOK-07, MVP-07c); it never blocks or touches a contributor payment.
+fees already in the fee wallet to USDC (PRD section 6) inside that wallet
+(TOK-07, MVP-07c); a network without a verified USDC route keeps the fee token
+pending. It never blocks or touches a contributor payment.
 Unused-fund withdrawals deduct the same 2%, `floor(gross / 50)`, enforced in the
 contracts, and reach only the owner's refund destination; funded
 obligations cannot be withdrawn.

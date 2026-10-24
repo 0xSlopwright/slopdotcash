@@ -4,7 +4,6 @@ import type {
   D1TransactionalDatabase,
 } from "../d1";
 import {
-  notifyApplicationDecision,
   notifyProjectEnforcement,
   notifyProjectRevision,
   notifyReinstatementReviewers,
@@ -14,6 +13,7 @@ import type {
   ApplicationStatus,
   DecisionInput,
   GithubActor,
+  NewProjectInput,
   ProjectApplication,
   ProjectEnforcement,
   ProjectPersistence,
@@ -21,7 +21,6 @@ import type {
   ProjectRevision,
   ProjectRevisionInput,
 } from "./contracts";
-import { MAX_PENDING_APPLICATIONS_PER_APPLICANT } from "./contracts";
 export type ProjectD1Database = D1TransactionalDatabase<D1Statement>;
 
 type ProjectRow = {
@@ -308,19 +307,6 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
     return row === null ? null : applicationFromRow(row);
   }
 
-  async listApplications(
-    status: ApplicationStatus,
-  ): Promise<ProjectApplication[]> {
-    const result = await this.db
-      .prepare(
-        `SELECT ${APPLICATION_COLUMNS} FROM project_applications
-          WHERE status = ? ORDER BY submitted_at DESC, id LIMIT 200`,
-      )
-      .bind(status)
-      .all<ApplicationRow>();
-    return (result.results ?? []).map(applicationFromRow);
-  }
-
   async listApplicantApplications(
     githubId: string,
   ): Promise<ProjectApplication[]> {
@@ -334,17 +320,6 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
     return (result.results ?? []).map(applicationFromRow);
   }
 
-  async countPendingApplications(githubId: string): Promise<number> {
-    const row = await this.db
-      .prepare(
-        `SELECT COUNT(*) AS count FROM project_applications
-          WHERE applicant_github_id = ? AND status = 'pending'`,
-      )
-      .bind(githubId)
-      .first<{ count: number }>();
-    return row?.count ?? 0;
-  }
-
   async hasSignedInActor(githubId: string): Promise<boolean> {
     return (
       (await this.db
@@ -354,72 +329,102 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
     );
   }
 
-  async createApplication(
-    application: ProjectApplication & { manifestText: string },
-  ): Promise<"created" | "conflict" | "too_many_pending"> {
-    try {
-      const result = await this.db
+  async listOwnedProjects(githubId: string): Promise<ProjectRecord[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT ${PROJECT_COLUMNS.split(", ")
+          .map((column) => `p.${column}`)
+          .join(", ")}
+           FROM projects p
+           LEFT JOIN project_applications a ON a.id = p.source_application_id
+           LEFT JOIN project_revisions r ON r.project_id = p.id AND r.revision = 1
+          WHERE a.applicant_github_id = ?1
+             OR (p.source_application_id IS NULL AND r.actor_github_id = ?1)
+             OR json_extract(p.manifest, '$.steward.github.actorId') = ?1
+          ORDER BY p.id LIMIT 100`,
+      )
+      .bind(githubId)
+      .all<ProjectRow>();
+    return (result.results ?? []).map(projectFromRow);
+  }
+
+  async projectCreator(projectId: string): Promise<GithubActor | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT COALESCE(a.applicant_github_id, r.actor_github_id) AS github_id,
+                COALESCE(a.applicant_github_login, r.actor_github_login) AS github_login
+           FROM projects p
+           LEFT JOIN project_applications a ON a.id = p.source_application_id
+           LEFT JOIN project_revisions r ON r.project_id = p.id AND r.revision = 1
+            AND p.source_application_id IS NULL
+          WHERE p.id = ?`,
+      )
+      .bind(projectId)
+      .first<{ github_id: string | null; github_login: string | null }>();
+    return row?.github_id && row.github_login
+      ? { githubId: row.github_id, githubLogin: row.github_login }
+      : null;
+  }
+
+  async createProject(input: NewProjectInput): Promise<"created" | "conflict"> {
+    const statements = [
+      this.db
         .prepare(
-          `INSERT INTO project_applications (
-             id, project_id, repository_key, manifest, manifest_sha256,
-             acceptance_criteria, applicant_github_id, applicant_github_login,
-             submitted_at, status, admin_notification, github_check, expected_revision, change_reason,
-             referrer_github_id, referrer_github_login
-           ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?, ?, ?, ?
-             WHERE (SELECT COUNT(*) FROM project_applications
-               WHERE applicant_github_id = ? AND status = 'pending') < ?`,
+          `INSERT INTO project_revisions (
+             project_id, revision, manifest, manifest_sha256, reason,
+             actor_github_id, actor_github_login, created_at
+           ) VALUES (?, 1, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
-          application.id,
-          application.projectId,
-          application.repositoryKey,
-          application.manifestText,
-          application.manifestSha256,
-          application.acceptanceCriteria,
-          application.applicant.githubId,
-          application.applicant.githubLogin,
-          application.submittedAt,
-          application.githubCheck,
-          application.expectedRevision ?? null,
-          application.changeReason ?? null,
-          application.referrer?.githubId ?? null,
-          application.referrer?.githubLogin ?? null,
-          application.applicant.githubId,
-          MAX_PENDING_APPLICATIONS_PER_APPLICANT,
+          input.manifest.id,
+          input.manifestText,
+          input.manifestSha256,
+          input.reason.slice(0, 1000),
+          input.actor.githubId,
+          input.actor.githubLogin,
+          input.at,
+        ),
+      this.db
+        .prepare(
+          `INSERT INTO projects (${PROJECT_COLUMNS})
+           VALUES (?, 'paused', 1, ?, ?, ?, ?, NULL, ?, ?)`,
         )
-        .run();
-      return (result.meta?.changes ?? 0) === 1 ? "created" : "too_many_pending";
+        .bind(
+          input.manifest.id,
+          input.manifestText,
+          input.manifestSha256,
+          input.at,
+          input.at,
+          input.referrer?.githubId ?? null,
+          input.referrer?.githubLogin ?? null,
+        ),
+      ...input.manifest.repositories.map((repository) =>
+        this.db
+          .prepare(
+            "INSERT INTO project_repositories (repository_key, project_id) VALUES (?, ?)",
+          )
+          .bind(repository.id.toLowerCase(), input.manifest.id),
+      ),
+    ];
+    try {
+      await this.db.batch(statements);
+      return "created";
     } catch (error) {
       if (isConstraintConflict(error)) return "conflict";
       throw error;
     }
   }
 
-  async recordAdminNotification(
-    applicationId: string,
-    outcome: Exclude<AdminNotification, "pending">,
-    at: string,
-  ): Promise<void> {
-    await this.db
-      .prepare(
-        `UPDATE project_applications
-            SET admin_notification = ?, admin_notification_at = ?
-          WHERE id = ?`,
-      )
-      .bind(outcome, at, applicationId)
-      .run();
-  }
-
-  async approveApplication(
+  async publishApplication(
     input: DecisionInput,
-  ): Promise<"approved" | "conflict"> {
+  ): Promise<"published" | "conflict"> {
     const application = await this.getApplication(input.applicationId);
     if (application === null || application.status !== "pending") {
       return "conflict";
     }
     const pending = `EXISTS (SELECT 1 FROM project_applications WHERE id = ? AND status = 'pending')`;
     const manifestText = JSON.stringify(application.manifest);
-    const reason = `Approved application ${application.id}${input.reason ? `: ${input.reason}` : ""}`;
+    const reason = `Published application ${application.id}${input.reason ? `: ${input.reason}` : ""}`;
     const statements = [
       this.db
         .prepare(
@@ -481,40 +486,13 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           application.id,
         ),
     ];
-    const decision = statements.length - 1;
-    statements.push(
-      notifyApplicationDecision(this.db, application.id, input.at),
-    );
     try {
       const results = await this.db.batch(statements);
-      return results[decision]?.meta?.changes === 1 ? "approved" : "conflict";
+      return results.at(-1)?.meta?.changes === 1 ? "published" : "conflict";
     } catch (error) {
       if (isConstraintConflict(error)) return "conflict";
       throw error;
     }
-  }
-
-  async rejectApplication(
-    input: DecisionInput & { reason: string },
-  ): Promise<"rejected" | "conflict"> {
-    const [result] = await this.db.batch([
-      this.db
-        .prepare(
-          `UPDATE project_applications
-              SET status = 'rejected', decided_at = ?, decided_by_github_id = ?,
-                  decided_by_github_login = ?, decision_reason = ?
-            WHERE id = ? AND status = 'pending'`,
-        )
-        .bind(
-          input.at,
-          input.actor.githubId,
-          input.actor.githubLogin,
-          input.reason,
-          input.applicationId,
-        ),
-      notifyApplicationDecision(this.db, input.applicationId, input.at),
-    ]);
-    return result?.meta?.changes === 1 ? "rejected" : "conflict";
   }
 
   async appendProjectRevision(
@@ -591,7 +569,6 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
                   input.manifestSha256,
                   input.at,
                 ),
-              notifyApplicationDecision(this.db, input.applicationId, input.at),
             ]
           : []),
         notifyProjectRevision(
@@ -636,11 +613,46 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
         },
       ]),
     );
+    const bans = await this.db
+      .prepare(
+        "SELECT enforcement_id, github_id, github_login FROM project_maintainer_bans ORDER BY enforcement_id, github_id",
+      )
+      .all<{
+        enforcement_id: string;
+        github_id: string;
+        github_login: string;
+      }>();
+    const bansByEnforcement = new Map<string, GithubActor[]>();
+    for (const ban of bans.results ?? [])
+      bansByEnforcement.set(ban.enforcement_id, [
+        ...(bansByEnforcement.get(ban.enforcement_id) ?? []),
+        { githubId: ban.github_id, githubLogin: ban.github_login },
+      ]);
+    const releases = await this.db
+      .prepare(
+        "SELECT r.enforcement_id, r.ban_enforcement_id, r.github_id, b.github_login FROM project_account_reinstatements r JOIN project_maintainer_bans b ON b.enforcement_id=r.ban_enforcement_id AND b.github_id=r.github_id",
+      )
+      .all<{
+        enforcement_id: string;
+        ban_enforcement_id: string;
+        github_id: string;
+        github_login: string;
+      }>();
     return (result.results ?? []).map((row) => ({
       ...enforcementFromRow(row),
       ...(byEnforcement.has(row.id)
         ? { vettingReview: byEnforcement.get(row.id) }
         : {}),
+      ...(bansByEnforcement.has(row.id)
+        ? { maintainerBans: bansByEnforcement.get(row.id) }
+        : {}),
+      accountReinstatements: (releases.results ?? [])
+        .filter((release) => release.enforcement_id === row.id)
+        .map((release) => ({
+          githubId: release.github_id,
+          githubLogin: release.github_login,
+          banEnforcementId: release.ban_enforcement_id,
+        })),
     }));
   }
 
@@ -678,6 +690,24 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           ),
       );
     }
+    for (const maintainer of record.maintainerBans ?? [])
+      statements.push(
+        this.db
+          .prepare(
+            `INSERT INTO project_maintainer_bans
+             (enforcement_id, github_id, github_login)
+           VALUES (?, ?, ?)`,
+          )
+          .bind(record.id, maintainer.githubId, maintainer.githubLogin),
+      );
+    for (const account of record.accountReinstatements ?? [])
+      statements.push(
+        this.db
+          .prepare(
+            "INSERT INTO project_account_reinstatements (enforcement_id,ban_enforcement_id,github_id) VALUES (?,?,?)",
+          )
+          .bind(record.id, account.banEnforcementId, account.githubId),
+      );
     if (revision !== null) {
       statements.push(
         this.db

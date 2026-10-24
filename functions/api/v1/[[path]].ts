@@ -16,10 +16,9 @@ import {
   type PaymentsDependencies,
 } from "../../../backend/payments/handler";
 import {
-  OwnerAwardReviewError,
-  prepareOwnerCommitment,
-  reviewOwnerAwards,
-} from "../../../backend/payments/owner-review";
+  monthlyOwnerService,
+  verifyProjectAuthority,
+} from "../../../backend/payments/monthly";
 import {
   handlePointsApi,
   sessionGithubActor,
@@ -34,13 +33,32 @@ import { edgeCache } from "../../../backend/projects/edge-cache";
 import { publicRestrictionOf } from "../../../backend/projects/enforcement";
 import { githubApiOrigin } from "../../../backend/projects/github-lookup";
 import {
-  type AdminApplicationNotice,
   handleProjectApi,
+  type ProjectApiDependencies,
+  refreshProjectSetup,
 } from "../../../backend/projects/handler";
+import {
+  flaggerAuthority,
+  parseRepositoryAccess,
+  readRepositoryAccess,
+  vettingScanRequester,
+} from "../../../backend/projects/setup";
 import { assetTemplateSource } from "../../../backend/projects/skill-publication";
 import { rpcTokenMetadataReader } from "../../../backend/projects/token-metadata";
+import { githubAdvisoryReader } from "../../../backend/security/advisories";
+import { surplusSecurityAnalyzer } from "../../../backend/security/analysis";
+import {
+  githubAdvisoryClient,
+  githubAppAdvisoryToken,
+  githubInstallationCheck,
+} from "../../../backend/security/github-advisories";
 import { handleSecurityApi } from "../../../backend/security/handler";
+import {
+  githubIntakeOAuth,
+  type IntakeConfig,
+} from "../../../backend/security/intake-grant";
 import { securityPaymentDatabase } from "../../../backend/security/payment-database";
+import { deterministicAnalyzer } from "../../../backend/security/report-analysis";
 import { handleSlopbotApi } from "../../../backend/slopbot/summary";
 import {
   type HistoricalValueBinding,
@@ -52,9 +70,16 @@ import {
 } from "../../../backend/trace/cloudflare-persistence";
 import { handleTraceApi } from "../../../backend/trace/handler";
 import { VettingEvidence } from "../../../backend/vetting/evidence";
+import { githubFlaggerStanding } from "../../../backend/vetting/flagger-standing";
+import {
+  handleProjectFlagsApi,
+  ProjectFlagStore,
+} from "../../../backend/vetting/flags";
 import {
   handleVettingApi,
+  queueAutomaticScan,
   signedVettingRequest,
+  vettingServiceAvailable,
 } from "../../../backend/vetting/handler";
 import {
   readVettingPin,
@@ -64,6 +89,7 @@ import { CloudflareVettingPersistence } from "../../../backend/vetting/persisten
 import type { SolanaEscrowConfig } from "../../../contracts/solana/adapter";
 import { deploymentTier } from "../../../src/lib/deployment";
 import { ESCROW_NETWORKS } from "../../../src/lib/escrow-policy.mjs";
+import { parseMonthlySchedule } from "../../../src/lib/payments/monthly-allocation";
 import type { ProjectDefinition } from "../../../src/lib/projects.mjs";
 import {
   loadRegistryPaymentDeployments,
@@ -83,6 +109,8 @@ type Env = {
    * every binding closed.
    */
   PAYMENT_NETWORKS?: string;
+  /** Owner-decided automatic monthly cutoff; unset keeps the automatic process off. */
+  MONTHLY_PAYMENT_SCHEDULE?: string;
   SOLANA_IDENTITY_ATTESTER?: { fetch(request: Request): Promise<Response> };
   SECURITY_SOLANA_IDENTITY_ATTESTER?: {
     fetch(request: Request): Promise<Response>;
@@ -110,12 +138,49 @@ type Env = {
   SLOP_GITHUB_API_ORIGIN?: string;
   /** Optional read-only GitHub token for repository ownership checks. */
   SLOP_GITHUB_READ_TOKEN?: string;
-  /** Admin email Worker; absent where no notifier is deployed. */
+  /**
+   * Automatic private security intake (PRD section 8, SEC-07). Off unless
+   * exactly "on" and every App secret below is set; any missing value keeps
+   * the existing manual flow. Owner decision D10: these hold the existing
+   * slopdotcash GitHub App (5257625) with "Repository security advisories:
+   * read"; there is no separate intake App.
+   */
+  SLOP_PRIVATE_INTAKE_MODE?: string;
+  GITHUB_INTAKE_APP_CLIENT_ID?: string;
+  GITHUB_INTAKE_APP_CLIENT_SECRET?: string;
+  GITHUB_INTAKE_APP_ID?: string;
+  /**
+   * The App's private key. It signs the installation check and mints
+   * repository-scoped advisory-read installation tokens that verify private
+   * report receipts; it never files an advisory. Without the App ID and key,
+   * receipt checks stay unavailable; nothing is verified by hand.
+   */
+  GITHUB_INTAKE_APP_PRIVATE_KEY?: string;
+  /** 32-byte base64url AES-GCM key for the reporter grant cookie. */
+  SLOP_INTAKE_GRANT_KEY?: string;
+  /** Local browser tests only: a loopback GitHub OAuth fixture origin. */
+  SLOP_GITHUB_OAUTH_ORIGIN?: string;
+  /**
+   * Owner decision: use the Surplus account key for private security
+   * case analysis. No zero-data-retention agreement is required. Unset records
+   * every analysis as unavailable; there is no other provider.
+   */
+  SURPLUS_API_KEY?: string;
+  /** Local browser tests only: a loopback analysis provider fixture origin. */
+  SLOP_ANALYSIS_API_ORIGIN?: string;
+  /** Notification Worker; absent where no notifier is deployed. */
   SLOP_NOTIFY?: { fetch(request: Request): Promise<Response> };
+  /**
+   * Slopbot Worker service binding. Self-service setup reads the Slopbot
+   * installation and the owner's exact repository permission through it;
+   * absent, setup reports the installation check as a retry.
+   */
+  SLOPBOT?: { fetch(request: Request): Promise<Response> };
   SLOPBOT_VALUE_IMPORT?: HistoricalValueBinding;
   ASSETS?: { fetch(request: Request): Promise<Response> };
   /** Secure-VM vetting service Ed25519 public keys (base64, comma separated). */
   VETTING_RESULT_PUBLIC_KEYS?: string;
+  VETTING_SANDBOX?: { fetch(request: Request): Promise<Response> };
   VETTING_EVIDENCE?: R2Bucket;
   VETTING_EVIDENCE_POLICY?: string;
   /** Optional RPC overrides for reward token decimals verification. */
@@ -124,6 +189,56 @@ type Env = {
   REWARD_RPC_ROBINHOOD?: string;
   REWARD_RPC_SOLANA?: string;
 };
+
+/** The intake configuration, or undefined (off) unless fully configured. */
+function privateIntake(env: Env): IntakeConfig | undefined {
+  const clientId = env.GITHUB_INTAKE_APP_CLIENT_ID;
+  const clientSecret = env.GITHUB_INTAKE_APP_CLIENT_SECRET;
+  const appId = env.GITHUB_INTAKE_APP_ID;
+  const privateKey = env.GITHUB_INTAKE_APP_PRIVATE_KEY;
+  const grantKey = env.SLOP_INTAKE_GRANT_KEY;
+  if (
+    env.SLOP_PRIVATE_INTAKE_MODE !== "on" ||
+    !clientId ||
+    !clientSecret ||
+    !appId ||
+    !privateKey ||
+    !grantKey ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(grantKey)
+  )
+    return undefined;
+  const apiOrigin = githubApiOrigin(env.SLOP_GITHUB_API_ORIGIN);
+  const oauthOrigin =
+    env.SLOP_GITHUB_OAUTH_ORIGIN &&
+    /^http:\/\/127\.0\.0\.1:[1-9][0-9]{3,4}$/u.test(
+      env.SLOP_GITHUB_OAUTH_ORIGIN,
+    )
+      ? env.SLOP_GITHUB_OAUTH_ORIGIN
+      : "https://github.com";
+  const send = (url: string, init: RequestInit) => fetch(url, init);
+  const installation = githubInstallationCheck({
+    fetch: send,
+    apiOrigin,
+    appId,
+    privateKey,
+    now: () => new Date(),
+  });
+  return {
+    mode: "on",
+    grantKey,
+    clientId,
+    authorizeOrigin: oauthOrigin,
+    oauth: githubIntakeOAuth({
+      fetch: send,
+      oauthOrigin,
+      clientId,
+      clientSecret,
+    }),
+    advisories: githubAdvisoryClient({ fetch: send, apiOrigin, installation }),
+    installation,
+    analyzer: deterministicAnalyzer,
+  };
+}
 
 type PagesContext = {
   request: Request;
@@ -243,19 +358,23 @@ function githubIdSet(value: string | undefined): Set<string> {
   );
 }
 
-async function notifyAdmins(
-  notify: Env["SLOP_NOTIFY"],
-  notice: AdminApplicationNotice,
-): Promise<boolean> {
-  if (notify === undefined) return false;
-  const response = await notify.fetch(
-    new Request("https://notify.internal/v1/project-applications", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(notice),
-    }),
+/** Reads one repository's Slopbot installation and account permission. */
+async function slopbotRepositoryAccess(
+  slopbot: Env["SLOPBOT"],
+  repository: { path: string; githubId: string },
+  actor: { githubId: string; githubLogin: string },
+) {
+  if (slopbot === undefined) throw new Error("Slopbot is not connected");
+  const url = new URL("https://slopbot.internal/v1/repository-access");
+  url.searchParams.set("repository", repository.path);
+  url.searchParams.set("repositoryId", repository.githubId);
+  url.searchParams.set("login", actor.githubLogin);
+  url.searchParams.set("githubId", actor.githubId);
+  const response = await slopbot.fetch(
+    new Request(url, { headers: { accept: "application/json" } }),
   );
-  return response.status === 202;
+  if (!response.ok) throw new Error(`Slopbot returned ${response.status}`);
+  return parseRepositoryAccess(await readBoundedJson(response, 4 * 1024));
 }
 
 function githubHeaders(token: string | undefined): Record<string, string> {
@@ -298,15 +417,14 @@ async function githubRepository(
 const MAX_APPLICATION_GITHUB_NAMES = 5;
 
 /**
- * Proves control from public GitHub facts only: the applicant owns a user
- * repository, or is a public member of the owning organization. The manifest's
- * repository and steward identities must match GitHub exactly. Every other
- * repository and every alias must be a public GitHub repository, an alias the
- * repository it names, and control is proven only for every owner.
+ * Checks the manifest against public GitHub facts: the repository and steward
+ * identities must match GitHub exactly, and every other repository and alias
+ * must be a public GitHub repository, each alias a name of the repository it
+ * follows. These facts never grant authority; the Slopbot installation read
+ * does (owner decision D11).
  */
-async function repositoryControl(
+export async function repositoryControl(
   manifest: ProjectDefinition,
-  actor: { githubId: string; githubLogin: string },
   env: Env,
 ): Promise<RepositoryControl> {
   const api = githubApiOrigin(env.SLOP_GITHUB_API_ORIGIN);
@@ -352,12 +470,11 @@ async function repositoryControl(
     ),
   );
   read.set(repository.id, facts);
-  let control = await ownerControl(api, token, facts, repository.id, actor);
   const missing = (path: string): RepositoryControl => ({
     state: "mismatch",
     reason: `GitHub has no public repository named ${path}`,
   });
-  for (const [index, entry] of manifest.repositories.entries()) {
+  for (const entry of manifest.repositories) {
     const named = read.get(entry.id);
     if (named?.private !== false) return missing(entry.id);
     if (String(named.full_name).toLowerCase() !== entry.id.toLowerCase())
@@ -374,46 +491,8 @@ async function repositoryControl(
           reason: `Alias ${alias} is not a name of ${entry.id} on GitHub`,
         };
     }
-    if (index > 0 && control.state === "proven") {
-      const owned = await ownerControl(api, token, named, entry.id, actor);
-      if (owned.state !== "proven") control = owned;
-    }
   }
-  return control;
-}
-
-async function ownerControl(
-  api: string,
-  token: string | undefined,
-  facts: GithubRepositoryFacts,
-  repository: string,
-  actor: { githubId: string; githubLogin: string },
-): Promise<RepositoryControl> {
-  if (facts.owner?.type === "User")
-    return String(facts.owner.id) === actor.githubId
-      ? {
-          state: "proven",
-          reason: `@${actor.githubLogin} owns ${repository}`,
-        }
-      : {
-          state: "unproven",
-          reason: `@${actor.githubLogin} does not own ${repository}`,
-        };
-  const membership = await fetch(
-    `${api}/orgs/${encodeURIComponent(String(facts.owner?.login))}/public_members/${encodeURIComponent(actor.githubLogin)}`,
-    { headers: githubHeaders(token), signal: AbortSignal.timeout(10_000) },
-  );
-  if (membership.status === 204)
-    return {
-      state: "proven",
-      reason: `@${actor.githubLogin} is a public member of ${String(facts.owner?.login)}`,
-    };
-  if (membership.status === 404)
-    return {
-      state: "unproven",
-      reason: `@${actor.githubLogin} is not a public member of ${String(facts.owner?.login)}`,
-    };
-  throw new Error(`GitHub returned ${membership.status}`);
+  return { state: "matched" };
 }
 
 /**
@@ -466,7 +545,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   const vetting = new CloudflareVettingPersistence(
     context.env.SLOP_DB,
     async (assessment) =>
-      assessment.result !== null && evidence.complete(assessment.result),
+      assessment.result !== null && evidence.retained(assessment.result),
   );
   const github = {
     fetch: (url: string, init: RequestInit) => fetch(url, init),
@@ -485,7 +564,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       manifest,
       (await loadTemplate()).index.templateSha256,
     );
-  const projectResponse = await handleProjectApi(context.request, {
+  const projectDependencies: ProjectApiDependencies = {
     persistence: projectPersistence,
     vettingClearance: (
       projectId,
@@ -510,10 +589,17 @@ export async function onRequest(context: PagesContext): Promise<Response> {
         context.env.SLOP_DB,
         new Date().toISOString(),
       ),
-    tier: deploymentTier(context.env.SLOP_ENVIRONMENT),
-    notifyAdmins: (notice) => notifyAdmins(context.env.SLOP_NOTIFY, notice),
-    repositoryControl: (manifest, actor) =>
-      repositoryControl(manifest, actor, context.env),
+    repositoryControl: (manifest) => repositoryControl(manifest, context.env),
+    repositoryAccess: (repository, actor) =>
+      slopbotRepositoryAccess(context.env.SLOPBOT, repository, actor),
+    requestScan: vettingScanRequester({
+      vetting,
+      serviceAvailable: () =>
+        vettingServiceAvailable(context.env.VETTING_RESULT_PUBLIC_KEYS),
+      livePin,
+      now: () => new Date(),
+      randomId: () => crypto.randomUUID(),
+    }),
     readTokenMetadata: rpcTokenMetadataReader(fetch, {
       base: context.env.REWARD_RPC_BASE,
       ethereum: context.env.REWARD_RPC_ETHEREUM,
@@ -523,7 +609,11 @@ export async function onRequest(context: PagesContext): Promise<Response> {
     github,
     cache: edgeCache(),
     waitUntil: context.waitUntil?.bind(context),
-  });
+  };
+  const projectResponse = await handleProjectApi(
+    context.request,
+    projectDependencies,
+  );
   if (projectResponse !== null) return projectResponse;
   const securityResponse = await handleSecurityApi(context.request, {
     db: context.env.SLOP_DB,
@@ -540,23 +630,100 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       token: context.env.SLOP_GITHUB_READ_TOKEN,
       apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
     },
+    advisories:
+      context.env.GITHUB_INTAKE_APP_ID &&
+      context.env.GITHUB_INTAKE_APP_PRIVATE_KEY
+        ? githubAdvisoryReader({
+            fetch: (url, init) => fetch(url, init),
+            apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
+            token: githubAppAdvisoryToken({
+              fetch: (url, init) => fetch(url, init),
+              apiOrigin: githubApiOrigin(context.env.SLOP_GITHUB_API_ORIGIN),
+              appId: context.env.GITHUB_INTAKE_APP_ID,
+              privateKey: context.env.GITHUB_INTAKE_APP_PRIVATE_KEY,
+              now: () => new Date(),
+            }),
+          })
+        : null,
+    analyzer: surplusSecurityAnalyzer({
+      apiKey: context.env.SURPLUS_API_KEY,
+      fetch: (url, init) => fetch(url, init),
+      loopbackOrigin: context.env.SLOP_ANALYSIS_API_ORIGIN,
+    }),
+    moderatorGithubIds: githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),
     cache: edgeCache(),
     waitUntil: context.waitUntil?.bind(context),
+    intake: privateIntake(context.env),
   });
   if (securityResponse !== null) return securityResponse;
   const evidenceResponse = await evidence.handle(context.request);
   if (evidenceResponse !== null) return evidenceResponse;
+  const flags = new ProjectFlagStore(context.env.SLOP_DB);
+  const operatorGithubIds = [
+    ...new Set([
+      ...githubIdSet(context.env.ADMIN_GITHUB_IDS),
+      ...githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),
+    ]),
+  ];
+  const flagsResponse = await handleProjectFlagsApi(context.request, {
+    flags,
+    projects: projectPersistence,
+    flaggerStanding: githubFlaggerStanding({
+      fetch: github.fetch,
+      token: github.token,
+      apiOrigin: github.apiOrigin,
+      registryRepositories: async () =>
+        (await projectPersistence.listProjects()).flatMap((project) =>
+          project.manifest.repositories.map((entry) => entry.id),
+        ),
+    }),
+    repositoryAuthority: async (manifest, actor) => {
+      // Only current repository permission determines maintainer exclusion.
+      return flaggerAuthority(
+        await readRepositoryAccess(
+          (repository, member) =>
+            slopbotRepositoryAccess(context.env.SLOPBOT, repository, member),
+          manifest,
+          actor,
+        ),
+        actor,
+        manifest.repositories[0].id,
+      );
+    },
+    sessionActor: (request) =>
+      sessionGithubActor(
+        request,
+        context.env.SLOP_DB,
+        new Date().toISOString(),
+      ),
+    moderatorGithubIds: operatorGithubIds,
+    queueFreshScan: (project) =>
+      queueAutomaticScan(
+        {
+          vetting,
+          livePin,
+          resultPublicKeys: context.env.VETTING_RESULT_PUBLIC_KEYS,
+          now: () => new Date(),
+          randomId: () => crypto.randomUUID(),
+        },
+        project,
+        "Automatic fresh scan after two contributor flags paused the project",
+      ),
+    now: () => new Date(),
+    randomId: () => crypto.randomUUID(),
+    cache: edgeCache(),
+  });
+  if (flagsResponse !== null) return flagsResponse;
   const vettingResponse = await handleVettingApi(context.request, {
+    sandbox: context.env.VETTING_SANDBOX,
+    refreshSetup: (projectId) =>
+      refreshProjectSetup(context.request, projectDependencies, projectId),
     evidence,
     vetting,
+    flags,
     projects: projectPersistence,
     resultPublicKeys: context.env.VETTING_RESULT_PUBLIC_KEYS,
-    operatorGithubIds: [
-      ...new Set([
-        ...githubIdSet(context.env.ADMIN_GITHUB_IDS),
-        ...githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),
-      ]),
-    ],
+    operatorGithubIds,
     livePin,
     session: async (request) => {
       const actor = await sessionGithubActor(
@@ -609,6 +776,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   );
   if (emailPreferencesResponse !== null) return emailPreferencesResponse;
   const notificationsResponse = await handleNotificationsApi(context.request, {
+    moderatorGithubIds: githubIdSet(context.env.PROJECT_MODERATOR_GITHUB_IDS),
     db: context.env.SLOP_DB,
     sessionActor: (request) =>
       sessionGithubActor(
@@ -627,76 +795,41 @@ export async function onRequest(context: PagesContext): Promise<Response> {
         db: securityPaymentDatabase(context.env.SLOP_DB),
         solanaAttester: context.env.SECURITY_SOLANA_IDENTITY_ATTESTER,
       },
-      ownerCommitment: async (projectId, cycleId, actor, expected) => {
-        const generation = await projectPersistence.enforcementGeneration();
-        const project = await projectPersistence.getProject(projectId);
-        if (!project)
-          throw new OwnerAwardReviewError(404, "Project not found.");
-        if (
+      monthly: monthlyOwnerService({
+        db: context.env.SLOP_DB,
+        getProject: (id) => projectPersistence.getProject(id),
+        restricted: async (project) =>
           publicRestrictionOf(
             project,
             await projectPersistence.listEnforcements(),
-          ).state !== "clear"
-        )
-          throw new OwnerAwardReviewError(
-            409,
-            "This project is restricted. New award commitments are unavailable.",
-          );
-        if (
-          !parsePaymentNetworks(context.env.PAYMENT_NETWORKS).some(
-            (network) => network === expected.network,
-          )
-        )
-          throw new OwnerAwardReviewError(
-            409,
-            "Award processing is not configured for this network.",
-          );
-        const result = await prepareOwnerCommitment(
-          {
-            project,
-            cycleId,
+          ).state !== "clear",
+        // Unset or invalid networks serve no vault, so nothing is finalized
+        // or reserved here.
+        networks: () => {
+          try {
+            return parsePaymentNetworks(context.env.PAYMENT_NETWORKS);
+          } catch {
+            return [];
+          }
+        },
+        verifyAuthority: (project, actor) =>
+          verifyProjectAuthority(
+            project.manifest,
             actor,
-            token: context.env.SLOP_GITHUB_READ_TOKEN,
-            now: new Date(),
-          },
-          expected,
-        );
-        const current = await projectPersistence.getProject(projectId);
-        if (
-          !current ||
-          current.revision !== project.revision ||
-          current.manifestSha256 !== project.manifestSha256 ||
-          (await projectPersistence.enforcementGeneration()) !== generation
-        )
-          throw new OwnerAwardReviewError(
-            409,
-            "The project changed during review. Reload its current awards.",
-          );
-        return result;
-      },
-      ownerAwardReview: async (projectId, cycleId, actor) => {
-        const project = await projectPersistence.getProject(projectId);
-        if (!project)
-          throw new OwnerAwardReviewError(404, "Project not found.");
-        const result = await reviewOwnerAwards({
-          project,
-          cycleId,
-          actor,
-          token: context.env.SLOP_GITHUB_READ_TOKEN,
-          now: new Date(),
-        });
-        const current = await projectPersistence.getProject(projectId);
-        if (
-          !current ||
-          current.revision !== project.revision ||
-          current.manifestSha256 !== project.manifestSha256
-        )
-          throw new OwnerAwardReviewError(
-            409,
-            "The project changed during review. Reload its current awards.",
-          );
-        return result;
-      },
+            context.env.SLOP_GITHUB_READ_TOKEN,
+          ),
+        // The cutoff display and the owner's cutoff lock. A malformed value
+        // turns both off; the payments Worker then fails loudly and freezes
+        // nothing automatically, so the allocations stay owner-controlled.
+        schedule: () => {
+          try {
+            return parseMonthlySchedule(context.env.MONTHLY_PAYMENT_SCHEDULE);
+          } catch {
+            return null;
+          }
+        },
+        now: () => new Date(),
+      }),
       solanaFundingConfig: async (projectId, network, vault) => {
         const networks = parsePaymentNetworks(context.env.PAYMENT_NETWORKS);
         const selected = networks.find((name) => name === network);

@@ -158,7 +158,34 @@ jobs:
               --connect-timeout 10 --max-time 60 --max-filesize 8388608 \
               "$profile_origin/data/profiles.json" --output "$previous_profiles"
           fi
-          bun run leaderboard:generate
+          # Selects the versioned value scoring policy for new work. Exit 75
+          # means the hosted value feed is unavailable (owner decision D2):
+          # retry once, then keep the last published snapshot, which shows its
+          # stale label, and let the next scheduled release retry. There is no
+          # legacy fallback. Every other failure stops the release.
+          feed_status=0
+          for attempt in 1 2; do
+            feed_status=0
+            bun run leaderboard:generate || feed_status=$?
+            if [ "$feed_status" -ne 75 ]; then
+              break
+            fi
+            if [ "$attempt" -eq 1 ]; then
+              echo "::warning::Hosted value feed unavailable; retrying in 60 seconds."
+              sleep 60
+            fi
+          done
+          if [ "$feed_status" -eq 75 ]; then
+            echo "::warning::Hosted value feed still unavailable; keeping the last published leaderboard snapshot."
+            mkdir -p public/data
+            curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+              --connect-timeout 10 --max-time 60 --max-filesize 26214400 \
+              "$profile_origin/data/leaderboard.json" \
+              --output public/data/leaderboard.json
+            test -s public/data/leaderboard.json
+          elif [ "$feed_status" -ne 0 ]; then
+            exit "$feed_status"
+          fi
           # Preserve previously observed issue history, including records
           # no longer accessible. Both source inventories must reconcile.
           for attempt in 1 2; do
@@ -326,19 +353,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  isolated-artifact:
+    uses: ./.github/workflows/vetting-sandbox.yml
+    permissions:
+      contents: read
+
   quality:
     name: Skill, data, build, and browser checks
     if: always()
-    needs: [prepare, browsers]
+    needs: [prepare, browsers, isolated-artifact]
     runs-on: ubuntu-24.04
     steps:
       - name: Require the checked bundle and every browser lane
         env:
           PREPARE_RESULT: ${{ needs.prepare.result }}
           BROWSER_RESULT: ${{ needs.browsers.result }}
+          SANDBOX_RESULT: ${{ needs.isolated-artifact.result }}
         run: |
           test "$PREPARE_RESULT" = success
           test "$BROWSER_RESULT" = success
+          test "$SANDBOX_RESULT" = success
 
   staging:
     name: Deploy verified development to staging
@@ -380,12 +414,16 @@ jobs:
           HAS_CLOUDFLARE: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
           HAS_CLIENT: ${{ secrets.SLOP_GITHUB_CLIENT_ID != '' && secrets.SLOP_GITHUB_CLIENT_SECRET != '' }}
           HAS_KEYS: ${{ secrets.IDENTITY_STATE_KEY != '' && secrets.IDENTITY_ASSERTION_KEY != '' && secrets.TRACE_AUTH_SECRET != '' }}
+          HAS_APP: ${{ secrets.SLOPBOT_APP_ID != '' && secrets.SLOPBOT_APP_PRIVATE_KEY != '' }}
         run: |
           test "$HAS_CLOUDFLARE" = true
           test "$HAS_CLIENT" = true
           test "$HAS_KEYS" = true
+          test "$HAS_APP" = true
       - name: Publish and verify isolated staging
         env:
+          SLOP_VETTING_BACKUP_RELEASE: ${{ vars.SLOP_VETTING_BACKUP_STAGING_RELEASE }}
+          SLOP_VETTING_RETENTION_RELEASE: ${{ vars.SLOP_VETTING_RETENTION_STAGING_RELEASE }}
           SLOP_NOTIFY_RELEASE: ${{ vars.SLOP_NOTIFY_STAGING_RELEASE }}
           SLOP_NOTIFY_MAIL_PILOTS: ${{ vars.SLOP_NOTIFY_STAGING_MAIL_PILOTS }}
           GH_TOKEN: ${{ github.token }}
@@ -396,6 +434,8 @@ jobs:
           IDENTITY_STATE_KEY: ${{ secrets.IDENTITY_STATE_KEY }}
           IDENTITY_ASSERTION_KEY: ${{ secrets.IDENTITY_ASSERTION_KEY }}
           TRACE_AUTH_SECRET: ${{ secrets.TRACE_AUTH_SECRET }}
+          SLOPBOT_APP_ID: ${{ secrets.SLOPBOT_APP_ID }}
+          SLOPBOT_APP_PRIVATE_KEY: ${{ secrets.SLOPBOT_APP_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/development
@@ -412,11 +452,16 @@ jobs:
             echo "No repository payment records to import."
           fi
           ./node_modules/.bin/wrangler deploy --config workers/identity/wrangler.staging.toml
+          ./node_modules/.bin/wrangler deploy --config workers/slopbot/wrangler.repository-access-staging.toml
+          bun scripts/release-vetting-sandbox.mjs staging
           node scripts/configure-staging-secrets.mjs
           if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
             bun scripts/release-notify.mjs deploy staging "$RUNNER_TEMP/slop-notify-staging-release"
           else
             test -z "$SLOP_NOTIFY_MAIL_PILOTS"
+          fi
+          if [ "$SLOP_VETTING_BACKUP_RELEASE" = "enabled" ]; then
+            node scripts/release-vetting-backup.mjs staging
           fi
           # Pages requires the standard config filename in its working directory.
           # Keep the production config untouched and publish the verified bundle
@@ -644,6 +689,8 @@ jobs:
           SLOP_NOTIFY_RELEASE: ${{ vars.SLOP_NOTIFY_RELEASE }}
           SLOP_NOTIFY_MAIL_PILOTS: ${{ vars.SLOP_NOTIFY_MAIL_PILOTS }}
           SLOP_FEE_CONVERTER_RELEASE: ${{ vars.SLOP_FEE_CONVERTER_RELEASE }}
+          SLOP_VETTING_BACKUP_RELEASE: ${{ vars.SLOP_VETTING_BACKUP_RELEASE }}
+          SLOP_VETTING_RETENTION_RELEASE: ${{ vars.SLOP_VETTING_RETENTION_RELEASE }}
         # wrangler.toml owns pages_build_output_dir. A positional directory
         # bypasses that deployment contract and must not be added here.
         run: |
@@ -749,6 +796,8 @@ jobs:
             throw new TypeError("Pages secret inventory is incomplete or contains unexpected entries");
           }
           NODE
+
+          bun scripts/release-vetting-sandbox.mjs production
 
           ./node_modules/.bin/wrangler d1 migrations apply slop-private \
             --remote \
@@ -1079,6 +1128,10 @@ jobs:
           else
             test -z "$SLOP_NOTIFY_MAIL_PILOTS"
             echo "::notice::Notification release is disabled."
+          fi
+
+          if [ "$SLOP_VETTING_BACKUP_RELEASE" = "enabled" ]; then
+            node scripts/release-vetting-backup.mjs production
           fi
 
           # Slopbot (workers/slopbot, protocol/slopbot-v2.md). The owner creates

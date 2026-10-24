@@ -1,5 +1,15 @@
 import { isFundingAddress, isSolanaTransactionId } from "./funding-address.mjs";
 
+/** The largest base-unit amount supported by the vault accounting. */
+export const MAX_BASE_UNITS = (1n << 128n) - 1n;
+export function isBaseUnits(value) {
+  return (
+    typeof value === "string" &&
+    /^(0|[1-9][0-9]{0,38})$/.test(value) &&
+    BigInt(value) <= MAX_BASE_UNITS
+  );
+}
+
 /**
  * Technical network definitions only. Projects and their deployments live in
  * the D1 project registry, one revision per manifest change. `family` selects
@@ -155,7 +165,9 @@ export const ESCROW_NETWORKS = Object.freeze({
       family: "evm",
       testnet: true,
       chainId: "11155111",
-      gasCeiling: "500000",
+      // The deployed test USDC payout estimates 681836 gas; the executor
+      // adds a 20% margin. Keep a bounded allowance above that live estimate.
+      gasCeiling: "1000000",
       scanPageBlocks: "2000",
     },
     [
@@ -232,10 +244,10 @@ export function chainFamily(chain) {
 export const EVM_CHAINS = Object.freeze(
   ESCROW_CHAINS.filter((chain) => chainFamily(chain) === "evm"),
 );
-/** Production destination bindings activate no sooner than 48 hours. */
-export const MIN_PRODUCTION_BINDING_DELAY = 48 * 60 * 60;
-/** A proposed Solana identity authority takes effect no sooner than 7 days later; Base fixes 7 days in the factory. */
-export const MIN_PRODUCTION_ROTATION_DELAY = 7 * 24 * 60 * 60;
+/** New production deployments may pay committed awards immediately. */
+export const MIN_PRODUCTION_BINDING_DELAY = 0;
+/** New production deployments may rotate an authorized identity key immediately. */
+export const MIN_PRODUCTION_ROTATION_DELAY = 0;
 function keys(value, expected) {
   if (
     !value ||
@@ -280,6 +292,7 @@ function validateEscrowPolicy(value, feeBasisPoints) {
   const networks = new Set();
   for (const deployment of value.deployments) {
     keys(deployment, [
+      ...(deployment.evmUpgrade === undefined ? [] : ["evmUpgrade"]),
       "network",
       "vault",
       "programId",
@@ -290,6 +303,7 @@ function validateEscrowPolicy(value, feeBasisPoints) {
       "owner",
       "identityAuthority",
       "feeRecipient",
+      ...(chainFamily(value.chain) === "solana" ? ["rotationAuthority"] : []),
       "deploymentTransaction",
       "sourceCommit",
       "codeSha256",
@@ -299,6 +313,33 @@ function validateEscrowPolicy(value, feeBasisPoints) {
       "factoryCodeSha256",
       "registrar",
     ]);
+    if (deployment.evmUpgrade !== undefined) {
+      const upgrade = deployment.evmUpgrade;
+      keys(upgrade, [
+        "authority",
+        "vaultImplementation",
+        "vaultImplementationCodeSha256",
+        "factoryImplementation",
+        "factoryImplementationCodeSha256",
+      ]);
+      if (
+        chainFamily(value.chain) !== "evm" ||
+        ![
+          upgrade.authority,
+          upgrade.vaultImplementation,
+          upgrade.factoryImplementation,
+        ].every((address) => isFundingAddress(value.chain, address)) ||
+        ![
+          upgrade.vaultImplementationCodeSha256,
+          upgrade.factoryImplementationCodeSha256,
+        ].every((hash) => /^[0-9a-f]{64}$/.test(hash)) ||
+        [deployment.identityAuthority, deployment.feeRecipient].some(
+          (address) =>
+            address.toLowerCase() === upgrade.authority.toLowerCase(),
+        )
+      )
+        throw new TypeError("Invalid reviewed EVM upgrade");
+    }
     const network = ESCROW_NETWORKS[deployment.network];
     if (
       !network ||
@@ -317,6 +358,17 @@ function validateEscrowPolicy(value, feeBasisPoints) {
       ].every((address) => isFundingAddress(value.chain, address))
     )
       throw new TypeError("Invalid escrow address");
+    if (
+      chainFamily(value.chain) === "solana" &&
+      (!isFundingAddress(value.chain, deployment.rotationAuthority) ||
+        [
+          deployment.owner,
+          deployment.identityAuthority,
+          deployment.feeRecipient,
+          deployment.vault,
+        ].includes(deployment.rotationAuthority))
+    )
+      throw new TypeError("Solana requires an independent rotation authority");
     // Any standard token is allowed (TOK-01); the adapter reads its decimals
     // from chain and rejects a vault whose token differs from the manifest.
     if (
@@ -339,7 +391,7 @@ function validateEscrowPolicy(value, feeBasisPoints) {
           !/^[0-9a-f]{64}$/.test(deployment.networkDomain)
     )
       throw new TypeError("Escrow program does not match the network");
-    // The owner proposes and the fee recipient confirms a new identity
+    // The owner proposes and the rotation authority confirms a new identity
     // authority; the notice period gives every binding made with a stolen
     // key time to be vetoed. Base fixes 7 days in the factory contract.
     if (
@@ -353,13 +405,6 @@ function validateEscrowPolicy(value, feeBasisPoints) {
       throw new TypeError(
         "Escrow rotation delay is missing or below the production minimum",
       );
-    if (
-      deployment.network === "solana-mainnet" &&
-      deployment.upgradeAuthority !== null
-    )
-      throw new TypeError(
-        "Production Solana escrow requires revoked upgrade authority before activation",
-      );
     // A new or rotated destination binding waits this long before it can pay,
     // so the owner can cancel a binding made with a stolen identity key.
     if (
@@ -371,15 +416,11 @@ function validateEscrowPolicy(value, feeBasisPoints) {
       throw new TypeError(
         "Escrow binding delay is missing or below the production minimum",
       );
-    // The veto cap is waived while a confirmed rotation is pending (outside
-    // report, 20 October 2026), so the owner's cover during a key compromise
-    // no longer depends on vetoes already spent. This bound stays as defence in
-    // depth: with no earlier veto, three vetoes and the last binding's own delay
-    // still outlast the rotation notice before the fee recipient confirms, so
-    // the new authority replaces a stolen key's last binding before it can pay.
-    // Base fixes 7 days, under four 48-hour delays.
+    // Retain the reviewed deployment delay relationship. Wallet activation is immediate;
+    // this bound does not guarantee time to cancel an eligible payment.
     if (
       chainFamily(value.chain) === "solana" &&
+      Number(deployment.bindingDelaySeconds) > 0 &&
       Number(deployment.rotationDelaySeconds) >=
         4 * Number(deployment.bindingDelaySeconds)
     )
@@ -413,12 +454,17 @@ function validateEscrowPolicy(value, feeBasisPoints) {
   }
   return value;
 }
-export function assertEscrowTransition(previous, next) {
+export function assertEscrowTransition(
+  previous,
+  next,
+  allowUnfundedChange = false,
+) {
   if (!previous) return;
   if (
     !next ||
-    previous.chain !== next.chain ||
-    previous.effectiveCycle !== next.effectiveCycle ||
+    ((!allowUnfundedChange || previous.deployments.length > 0) &&
+      (previous.chain !== next.chain ||
+        previous.effectiveCycle !== next.effectiveCycle)) ||
     previous.feeMode !== next.feeMode ||
     previous.feeBasisPoints !== next.feeBasisPoints ||
     previous.withdrawalFeeBasisPoints !== next.withdrawalFeeBasisPoints
@@ -432,7 +478,32 @@ export function assertEscrowTransition(previous, next) {
     );
     if (
       !successor ||
-      Object.keys(deployment).some((key) => deployment[key] !== successor[key])
+      Boolean(deployment.evmUpgrade) !== Boolean(successor.evmUpgrade) ||
+      Object.keys(deployment).some((key) => {
+        // Owner revisions retain prior deployment evidence. Only an already
+        // upgradeable deployment may update its reviewed implementation.
+        const evmUpgrade = deployment.evmUpgrade && successor.evmUpgrade;
+        const solanaUpgrade =
+          deployment.programId && deployment.upgradeAuthority !== null;
+        if (
+          evmUpgrade &&
+          ["evmUpgrade", "sourceCommit", "deploymentTransaction"].includes(key)
+        )
+          return false;
+        if (
+          solanaUpgrade &&
+          [
+            "codeSha256",
+            "upgradeAuthority",
+            "sourceCommit",
+            "deploymentTransaction",
+          ].includes(key)
+        )
+          return false;
+        return key === "evmUpgrade"
+          ? JSON.stringify(deployment[key]) !== JSON.stringify(successor[key])
+          : deployment[key] !== successor[key];
+      })
     )
       throw new TypeError("Historical escrow deployments are immutable");
   }

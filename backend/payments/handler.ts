@@ -20,6 +20,7 @@ import {
   EVM_CHAINS,
 } from "../../src/lib/escrow-policy.mjs";
 import {
+  type AccountMonthlyAward,
   type AccountPayment,
   type DirectTransfer,
   type PaymentAsset,
@@ -32,46 +33,37 @@ import { isWalletAddress, isWalletChain } from "../../src/lib/wallets";
 import { sha256Hex } from "../../workers/identity/crypto";
 import type { D1TransactionalDatabase as D1Database } from "../d1";
 import {
-  OwnerAwardReviewError,
-  type OwnerCommitmentInput,
-  type prepareOwnerCommitment,
-  type reviewOwnerAwards,
-} from "./owner-review";
+  type MonthlyCommitmentInput,
+  type MonthlyOwnerService,
+  MonthlyPaymentError,
+} from "./monthly";
 import {
   buildPaymentWalletMessage,
   canonicalEvmSignature,
   verifyEvmBindingSignature,
   verifyPaymentWalletSignature,
 } from "./possession";
-import { slopbotInvoice } from "./slopbot-billing";
 import { projectVaultSnapshots } from "./vault-snapshots";
 import { registerPaymentWallet } from "./wallet-registration";
 
-function isOwnerCommitmentInput(body: unknown): body is OwnerCommitmentInput {
+function isMonthlyCommitmentInput(
+  body: unknown,
+): body is MonthlyCommitmentInput {
   if (!body || typeof body !== "object") return false;
-  const input = body as OwnerCommitmentInput;
+  const input = body as MonthlyCommitmentInput;
   return (
     typeof input.network === "string" &&
     typeof input.githubUserId === "string" &&
     /^[1-9][0-9]{0,19}$/.test(input.githubUserId) &&
-    [input.proposalSha256, input.decisionsSha256, input.manifestSha256].every(
+    [input.snapshotSha256, input.manifestSha256].every(
       (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value),
     )
   );
 }
 
 export interface PaymentsDependencies {
-  ownerCommitment?: (
-    projectId: string,
-    cycleId: string,
-    actor: { githubId: string; githubLogin: string },
-    expected: OwnerCommitmentInput,
-  ) => Promise<Awaited<ReturnType<typeof prepareOwnerCommitment>>>;
-  ownerAwardReview?: (
-    projectId: string,
-    cycleId: string,
-    actor: { githubId: string; githubLogin: string },
-  ) => Promise<Awaited<ReturnType<typeof reviewOwnerAwards>>>;
+  /** The owner's private monthly allocations; absent where they are not served. */
+  monthly?: MonthlyOwnerService;
   db: D1Database;
   now?: () => Date;
   /** Additional trusted deployment origins; never sourced from request input. */
@@ -352,21 +344,6 @@ export async function handlePaymentsApi(
           .toString(),
       });
     }
-    const invoiceRoute =
-      /^\/slopbot\/installations\/([1-9]\d{0,14})\/invoices\/(\d{4}-(?:0[1-9]|1[0-2]))$/.exec(
-        path,
-      );
-    if (invoiceRoute && request.method === "GET") {
-      const invoice = await slopbotInvoice(
-        deps.db,
-        Number(invoiceRoute[1]),
-        invoiceRoute[2],
-        now,
-      );
-      return invoice
-        ? json(200, invoice)
-        : json(404, { error: "installation_not_found" });
-    }
     const token = (request.headers.get("cookie") ?? "")
       .split(";")
       .map((v) => v.trim())
@@ -382,7 +359,7 @@ export async function handlePaymentsApi(
       .first<{ github_id: string; login: string }>();
     if (!member) return json(401, { error: "session_expired" });
     const solanaCommitmentRoute =
-      /^\/projects\/([a-z0-9][a-z0-9-]*)\/awards\/(\d{4}-(?:0[1-9]|1[0-2]))\/solana-commitment$/.exec(
+      /^\/projects\/([a-z0-9][a-z0-9-]*)\/monthly\/(\d{4}-(?:0[1-9]|1[0-2]))\/solana-commitment$/.exec(
         path,
       );
     if (solanaCommitmentRoute && request.method === "POST") {
@@ -404,11 +381,11 @@ export async function handlePaymentsApi(
         return json(400, { error: "invalid_commitment_action" });
       try {
         if (body.step === "review") {
-          if (!isOwnerCommitmentInput(body))
+          if (!isMonthlyCommitmentInput(body))
             return json(400, { error: "invalid_commitment_review" });
-          if (!deps.ownerCommitment)
+          if (!deps.monthly)
             return json(503, { error: "owner_commitment_unavailable" });
-          const award = await deps.ownerCommitment(
+          const award = await deps.monthly.commitment(
             solanaCommitmentRoute[1],
             solanaCommitmentRoute[2],
             { githubId: member.github_id, githubLogin: member.login },
@@ -435,6 +412,7 @@ export async function handlePaymentsApi(
               "owner",
               "identityAuthority",
               "feeRecipient",
+              "rotationAuthority",
               "codeSha256",
               "upgradeAuthority",
               "networkDomain",
@@ -493,9 +471,9 @@ export async function handlePaymentsApi(
           ),
         });
       } catch (error) {
-        if (error instanceof OwnerAwardReviewError)
+        if (error instanceof MonthlyPaymentError)
           return json(error.status, {
-            error: "owner_commitment_unavailable",
+            error: error.code,
             message: error.message,
           });
         if (error instanceof SolanaFundingError)
@@ -506,59 +484,88 @@ export async function handlePaymentsApi(
         throw error;
       }
     }
-    const ownerCommitmentRoute =
-      /^\/projects\/([a-z0-9][a-z0-9-]*)\/awards\/(\d{4}-(?:0[1-9]|1[0-2]))\/commitment$/.exec(
+    const monthlyRoute =
+      /^\/projects\/([a-z0-9][a-z0-9-]*)\/monthly\/(\d{4}-(?:0[1-9]|1[0-2]))(?:\/(allocations|finalize|commitment))?$/.exec(
         path,
       );
-    if (ownerCommitmentRoute && request.method === "POST") {
-      if (!deps.ownerCommitment)
-        return json(503, { error: "owner_commitment_unavailable" });
-      const body = (await readBoundedJson(
-        request,
-        4096,
-        "Owner commitment review",
-      )) as OwnerCommitmentInput;
-      if (!isOwnerCommitmentInput(body))
-        return json(400, { error: "invalid_commitment_review" });
+    const monthlySettingsRoute =
+      /^\/projects\/([a-z0-9][a-z0-9-]*)\/monthly-settings$/.exec(path);
+    if (monthlyRoute || monthlySettingsRoute) {
+      if (!deps.monthly)
+        return json(503, { error: "monthly_awards_unavailable" });
+      const actor = { githubId: member.github_id, githubLogin: member.login };
+      const sequence = (value: unknown): value is number =>
+        Number.isSafeInteger(value) && (value as number) >= 0;
       try {
-        return json(
-          200,
-          await deps.ownerCommitment(
-            ownerCommitmentRoute[1],
-            ownerCommitmentRoute[2],
-            { githubId: member.github_id, githubLogin: member.login },
-            body,
-          ),
-        );
+        if (monthlySettingsRoute && request.method === "POST") {
+          const body = (await readBoundedJson(
+            request,
+            1024,
+            "Monthly payment setting",
+          )) as Record<string, unknown>;
+          if (typeof body?.automatic !== "boolean")
+            return json(400, { error: "invalid_monthly_setting" });
+          return json(
+            200,
+            await deps.monthly.setAutomatic(
+              monthlySettingsRoute[1],
+              actor,
+              body.automatic,
+            ),
+          );
+        }
+        if (monthlyRoute && !monthlyRoute[3] && request.method === "GET")
+          return json(
+            200,
+            await deps.monthly.view(monthlyRoute[1], monthlyRoute[2], actor),
+          );
+        if (monthlyRoute?.[3] && request.method === "POST") {
+          const body = (await readBoundedJson(
+            request,
+            4096,
+            "Monthly award action",
+          )) as Record<string, unknown>;
+          const [, projectId, period, action] = monthlyRoute;
+          if (action === "allocations") {
+            if (
+              typeof body?.githubUserId !== "string" ||
+              typeof body.grossBase !== "string" ||
+              !sequence(body.expectedSequence)
+            )
+              return json(400, { error: "invalid_allocation" });
+            return json(
+              200,
+              await deps.monthly.changeAllocation(projectId, period, actor, {
+                githubUserId: body.githubUserId,
+                grossBase: body.grossBase,
+                expectedSequence: body.expectedSequence,
+              }),
+            );
+          }
+          if (action === "finalize") {
+            if (!sequence(body?.expectedSequence))
+              return json(400, { error: "invalid_finalization" });
+            return json(
+              200,
+              await deps.monthly.finalize(
+                projectId,
+                period,
+                actor,
+                body.expectedSequence,
+              ),
+            );
+          }
+          if (!isMonthlyCommitmentInput(body))
+            return json(400, { error: "invalid_commitment_review" });
+          return json(
+            200,
+            await deps.monthly.commitment(projectId, period, actor, body),
+          );
+        }
       } catch (error) {
-        if (error instanceof OwnerAwardReviewError)
+        if (error instanceof MonthlyPaymentError)
           return json(error.status, {
-            error: "owner_commitment_unavailable",
-            message: error.message,
-          });
-        throw error;
-      }
-    }
-    const ownerAwardsRoute =
-      /^\/projects\/([a-z0-9][a-z0-9-]*)\/awards\/(\d{4}-(?:0[1-9]|1[0-2]))$/.exec(
-        path,
-      );
-    if (ownerAwardsRoute && request.method === "GET") {
-      if (!deps.ownerAwardReview)
-        return json(503, { error: "owner_review_unavailable" });
-      try {
-        return json(
-          200,
-          await deps.ownerAwardReview(
-            ownerAwardsRoute[1],
-            ownerAwardsRoute[2],
-            { githubId: member.github_id, githubLogin: member.login },
-          ),
-        );
-      } catch (error) {
-        if (error instanceof OwnerAwardReviewError)
-          return json(error.status, {
-            error: "owner_review_unavailable",
+            error: error.code,
             message: error.message,
           });
         throw error;
@@ -978,13 +985,42 @@ export async function handlePaymentsApi(
         .first<{ items: string }>();
       const paymentRows = await deps.db
         .prepare(
-          "SELECT json_group_array(json_object('id',o.id,'projectId',project_id,'network',network,'chain',chain,'assetAddress',asset_address,'assetDecimals',asset_decimals,'grossBase',gross_base,'feeBase',fee_base,'state',o.state,'transactionId',paid_transaction,'submittedTransactionId',(SELECT transaction_id FROM payment_attempts a WHERE a.obligation_id=o.id AND a.transaction_id IS NOT NULL ORDER BY created_at DESC LIMIT 1),'deliveryState',CASE WHEN o.state='paid' THEN 'paid' WHEN q.state='submitted' THEN 'submitted' WHEN q.state='held' THEN 'held' WHEN q.state IS NULL THEN 'needs_wallet' ELSE 'awaiting_binding' END)) items FROM payment_obligations o LEFT JOIN payment_outbox q ON q.obligation_id=o.id WHERE github_user_id=?",
+          "SELECT json_group_array(json_object('id',o.id,'projectId',project_id,'network',network,'chain',chain,'assetAddress',asset_address,'assetDecimals',asset_decimals,'grossBase',gross_base,'feeBase',fee_base,'state',o.state,'transactionId',paid_transaction,'submittedTransactionId',(SELECT transaction_id FROM payment_attempts a WHERE a.obligation_id=o.id AND a.transaction_id IS NOT NULL ORDER BY created_at DESC LIMIT 1),'deliveryState',CASE WHEN o.state='paid' THEN 'paid' WHEN q.state='submitted' THEN 'submitted' WHEN q.state='held' THEN 'held' WHEN q.state IS NULL THEN 'needs_wallet' ELSE 'ready' END)) items FROM payment_obligations o LEFT JOIN payment_outbox q ON q.obligation_id=o.id WHERE github_user_id=?",
         )
         .bind(member.github_id)
         .first<{ items: string }>();
       const payments = JSON.parse(
         paymentRows?.items ?? "[]",
       ) as AccountPayment[];
+      // Frozen monthly awards that the vault has not reserved yet. A reserved
+      // award is in `payments` under the same source digest, so it is left
+      // out here; the state matches the owner's view (monthly.ts).
+      const monthlyRows = await deps.db
+        .prepare(
+          "SELECT json_group_array(json_object('projectId',project_id,'period',period,'network',network,'assetAddress',asset,'assetDecimals',decimals,'grossBase',gross,'feeBase',fee,'netBase',net,'state',state)) items FROM (SELECT r.project_id,r.period,r.network,json_extract(r.snapshot,'$.asset') asset,COALESCE((SELECT v.asset_decimals FROM vault_snapshots v WHERE v.project_id=r.project_id AND v.network=r.network AND v.vault=r.vault AND lower(v.asset_address)=lower(json_extract(r.snapshot,'$.asset'))),CASE WHEN lower(json_extract(b.manifest,'$.rewardAsset.address'))=lower(json_extract(r.snapshot,'$.asset')) THEN json_extract(b.manifest,'$.rewardAsset.decimals') END) decimals,json_extract(a.value,'$.grossBase') gross,json_extract(a.value,'$.feeBase') fee,json_extract(a.value,'$.netBase') net,CASE WHEN r.obligations_created_at IS NULL THEN 'underfunded' ELSE 'awaiting-reservation' END state FROM monthly_payment_runs r JOIN monthly_reward_bases b ON b.project_id=r.project_id AND b.period=r.period, json_each(r.snapshot,'$.awards') a WHERE json_extract(a.value,'$.githubUserId')=? AND NOT EXISTS(SELECT 1 FROM payment_obligations o WHERE o.network=r.network AND o.vault=r.vault AND o.source_digest=json_extract(a.value,'$.sourceDigest')) ORDER BY r.period DESC,r.project_id)",
+        )
+        .bind(member.github_id)
+        .first<{ items: string }>();
+      const monthlyAwards = (
+        JSON.parse(monthlyRows?.items ?? "[]") as Omit<
+          AccountMonthlyAward,
+          "chain"
+        >[]
+      ).map((award) => {
+        // Decimals come from the vault reading, else the proposal's verified
+        // reward asset, else the network's reference asset list.
+        const network =
+          ESCROW_NETWORKS[award.network as keyof typeof ESCROW_NETWORKS];
+        const assetDecimals =
+          award.assetDecimals ??
+          network?.assets.find(
+            (entry) =>
+              entry.address.toLowerCase() === award.assetAddress.toLowerCase(),
+          )?.decimals;
+        if (!network || !Number.isInteger(assetDecimals))
+          throw new Error(`Unreviewed monthly award asset on ${award.network}`);
+        return { ...award, assetDecimals, chain: network.chain };
+      });
       for (const p of payments)
         p.netBase = (BigInt(p.grossBase) - BigInt(p.feeBase)).toString();
       // One balance per network and asset: assets differ in value and in
@@ -1017,6 +1053,7 @@ export async function handlePaymentsApi(
         githubUserId: member.github_id,
         wallets: JSON.parse(walletRows?.items ?? "[]"),
         payments,
+        monthlyAwards,
         balances,
         directTransfers: await directTransfers(
           deps.db,

@@ -1,73 +1,89 @@
-// Writes a 265-byte Project account in the layout that existed before the
-// identity authority rotation fields, for the validator to preload with
-// `--account`. The migration test then grows it with `migrate_project`.
-// Fixture keys only; nothing here has value outside the local validator.
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Keypair, PublicKey } from "@solana/web3.js";
+import { configFees, configIdentity } from "./deployment.mjs";
 
-const PROGRAM_ID = new PublicKey(
-  JSON.parse(readFileSync("idl/slop_escrow.json")).address,
+/**
+ * A Project of the earlier 316-byte layout, which the current build can no longer
+ * create. test-e2e.sh preloads it and its mint into the validator so the e2e suite
+ * can run migrate_project against real legacy bytes. Public seeds: test use only.
+ */
+const sha256 = (value) => createHash("sha256").update(value).digest();
+const TOKEN_PROGRAM = new PublicKey(
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
 );
-const LEGACY_PROJECT_SIZE = 265;
-const digest = (value) => createHash("sha256").update(value).digest();
-const owner = Keypair.generate(),
-  identity = Keypair.generate(),
-  fees = Keypair.generate(),
-  mint = Keypair.generate().publicKey;
-const projectDigest = digest("legacy-project"),
-  networkDomain = digest("legacy-domain");
-const [project, bump] = PublicKey.findProgramAddressSync(
-  [Buffer.from("project"), owner.publicKey.toBuffer(), projectDigest],
-  PROGRAM_ID,
+const programId = new PublicKey(
+  JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("../idl/slop_escrow.json", import.meta.url)),
+    ),
+  ).address,
 );
-const data = Buffer.alloc(LEGACY_PROJECT_SIZE);
-let offset = 0;
-const put = (bytes) => {
-  Buffer.from(bytes).copy(data, offset);
-  offset += bytes.length;
-};
-put(Buffer.from("cda8bdcab5f78e13", "hex"));
-put(owner.publicKey.toBuffer());
-put(projectDigest);
-put(networkDomain);
-put(identity.publicKey.toBuffer());
-put(fees.publicKey.toBuffer());
-put(mint.toBuffer());
-// reserved, deposited, paid, payout_fees, withdrawn_gross, withdrawal_fees
-offset += 6 * 8;
-put(Buffer.of(bump));
-data.writeBigInt64LE(3600n, offset);
-offset += 8;
-// service_fees
-offset += 8;
-if (offset !== LEGACY_PROJECT_SIZE) throw new Error("Legacy layout size");
-// Rent exemption for exactly the legacy size: (128 + size) * 3480 * 2.
-const lamports = (128 + LEGACY_PROJECT_SIZE) * 3480 * 2;
-writeFileSync(
-  ".local/legacy-project-account.json",
-  JSON.stringify({
-    pubkey: project.toBase58(),
-    account: {
-      lamports,
-      data: [data.toString("base64"), "base64"],
-      owner: PROGRAM_ID.toBase58(),
-      executable: false,
-      rentEpoch: 0,
-      space: LEGACY_PROJECT_SIZE,
-    },
-  }),
+export const legacyOwner = Keypair.fromSeed(sha256("slop-e2e-legacy-owner"));
+export const legacyMint = Keypair.fromSeed(sha256("slop-e2e-legacy-mint"));
+const projectId = sha256("slop-e2e-legacy-project");
+export const [legacyProject, bump] = PublicKey.findProgramAddressSync(
+  [
+    Buffer.from("project"),
+    legacyOwner.publicKey.toBuffer(),
+    projectId,
+    Buffer.from([0]),
+  ],
+  programId,
 );
-writeFileSync(
-  ".local/legacy-project.json",
-  JSON.stringify({
-    owner: [...owner.secretKey],
-    identityAuthority: identity.publicKey.toBase58(),
-    feeRecipient: fees.publicKey.toBase58(),
-    mint: mint.toBase58(),
-    projectDigest: projectDigest.toString("hex"),
-    networkDomain: networkDomain.toString("hex"),
-    project: project.toBase58(),
-  }),
-);
-process.stdout.write(`${project.toBase58()}\n`);
+/** Rent-exempt minimum on the local validator: (size + 128) * 3480 * 2 lamports. */
+const rentFor = (size) => (size + 128) * 6960;
+
+function mintData() {
+  const data = Buffer.alloc(82);
+  data.writeUInt32LE(1, 0);
+  legacyOwner.publicKey.toBuffer().copy(data, 4);
+  data[44] = 6;
+  data[45] = 1;
+  return data;
+}
+function projectData() {
+  const data = Buffer.alloc(316);
+  Buffer.from("cda8bdcab5f78e13", "hex").copy(data, 0);
+  legacyOwner.publicKey.toBuffer().copy(data, 8);
+  projectId.copy(data, 40);
+  sha256("solana:localnet:legacy").copy(data, 72);
+  configIdentity.publicKey.toBuffer().copy(data, 104);
+  configFees.publicKey.toBuffer().copy(data, 136);
+  legacyMint.publicKey.toBuffer().copy(data, 168);
+  // Counters 200..248 stay zero.
+  data[248] = bump;
+  data.writeBigInt64LE(3600n, 249);
+  // Pending identity authority 257..289 is the default key; no rotation pending.
+  data.writeBigInt64LE(604800n, 298);
+  // Purpose 306 ordinary, monthly cap 307 zero, monthly switch 315 off.
+  return data;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  mkdirSync(".local", { recursive: true });
+  const args = [];
+  for (const [name, address, owner, data] of [
+    ["legacy-mint", legacyMint.publicKey, TOKEN_PROGRAM, mintData()],
+    ["legacy-project", legacyProject, programId, projectData()],
+  ]) {
+    const file = `.local/${name}.json`;
+    writeFileSync(
+      file,
+      JSON.stringify({
+        pubkey: address.toBase58(),
+        account: {
+          lamports: rentFor(data.length),
+          data: [data.toString("base64"), "base64"],
+          owner: owner.toBase58(),
+          executable: false,
+          rentEpoch: 0,
+          space: data.length,
+        },
+      }),
+    );
+    args.push("--account", address.toBase58(), file);
+  }
+  console.log(args.join(" "));
+}

@@ -1,10 +1,12 @@
-// The GitHub check of a project application through the production Pages
-// Function: every repository and alias in the manifest is read from GitHub,
-// not only the first repository.
+// The GitHub check of project setup through the production Pages Function:
+// every repository and alias in the manifest is read from GitHub, not only
+// the first repository. These facts never grant authority; the Slopbot
+// installation read does (owner decision D11).
 import { afterEach, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
-import { onRequest } from "../functions/api/v1/[[path]]";
+import { onRequest, repositoryControl } from "../functions/api/v1/[[path]]";
+import type { ProjectDefinition } from "../src/lib/projects.mjs";
 import { applicationManifest } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 import { sha256Hex } from "../workers/identity/crypto";
@@ -71,7 +73,40 @@ afterEach(() => {
   lookups.length = 0;
 });
 
-async function submit(manifest: unknown) {
+let stubGithub = () => {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input instanceof Request ? input.url : input);
+    lookups.push(url);
+    const path = url.startsWith(`${API}/repos/`)
+      ? url.slice(`${API}/repos/`.length)
+      : "";
+    return repositories[path]
+      ? Response.json(repositories[path])
+      : Response.json({ message: "Not Found" }, { status: 404 });
+  }) as typeof fetch;
+};
+
+/** The public-facts check of a manifest. */
+async function control(manifest: unknown) {
+  stubGithub();
+  return await repositoryControl(manifest as ProjectDefinition, {} as never);
+}
+
+/** What the Slopbot binding reads; `null` leaves Slopbot unbound. */
+type SlopbotAnswer = Record<string, unknown> | null;
+const ADMIN_ACCESS: SlopbotAnswer = {
+  installation: "installed",
+  installationId: 5151,
+  permission: "admin",
+  roleName: "admin",
+};
+
+async function submit(
+  manifest: unknown,
+  path = "projects",
+  seed?: (sqlite: ReturnType<typeof sqliteD1>["sqlite"]) => void,
+  slopbot: SlopbotAnswer = ADMIN_ACCESS,
+) {
   const { db, sqlite } = sqliteD1(
     readdirSync(resolve(import.meta.dir, "..", "migrations"))
       .filter((name) => name.endsWith(".sql"))
@@ -86,32 +121,33 @@ async function submit(manifest: unknown) {
       "INSERT INTO points_sessions (token_hash, actor_id, expires_at) VALUES (?, 'act_1', '2099-01-01T00:00:00.000Z')",
     )
     .run(await sha256Hex(SESSION));
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const url = String(input instanceof Request ? input.url : input);
-    lookups.push(url);
-    if (url === `${API}/orgs/partner-lab/public_members/example`)
-      return new Response(null, { status: 204 });
-    const path = url.startsWith(`${API}/repos/`)
-      ? url.slice(`${API}/repos/`.length)
-      : "";
-    return repositories[path]
-      ? Response.json(repositories[path])
-      : Response.json({ message: "Not Found" }, { status: 404 });
-  }) as typeof fetch;
+  seed?.(sqlite);
+  stubGithub();
   const response = await onRequest({
-    request: new Request(`${ORIGIN}/api/v1/project-applications`, {
+    request: new Request(`${ORIGIN}/api/v1/${path}`, {
       method: "POST",
       headers: {
         origin: ORIGIN,
         "content-type": "application/json",
         cookie: `__Host-slop_points=${SESSION}`,
       },
-      body: JSON.stringify({ manifest }),
+      body: JSON.stringify(path === "projects" ? { manifest } : {}),
     }),
-    env: { SLOP_DB: db, ADMIN_GITHUB_IDS: "900000001" } as never,
+    env: {
+      SLOP_DB: db,
+      ADMIN_GITHUB_IDS: "900000001",
+      ...(slopbot === null
+        ? {}
+        : { SLOPBOT: { fetch: async () => Response.json(slopbot) } }),
+    } as never,
   });
   const body = (await response.json()) as {
-    application?: { id: string; githubCheck: string };
+    setup?: {
+      checks: {
+        authority: { state: string; message: string };
+        installation: { state: string };
+      };
+    };
     error?: string;
     message?: string;
   };
@@ -148,39 +184,82 @@ function repository(id: string) {
   };
 }
 
-test("an application the applicant controls in every repository is proven", async () => {
-  const { status, body } = await submit(
-    manifestWith(
-      {},
-      repository("example/registry-docs"),
-      repository("partner-lab/shared-models"),
-    ),
-  );
+test("an owner whose write access Slopbot reads creates the project at once", async () => {
+  const { status, body, sqlite } = await submit(manifestWith({}));
   expect(status).toBe(201);
-  expect(body.application?.githubCheck).toBe(
-    "Proven: @example owns example/open-registry",
-  );
-  expect(lookups).toContain(`${API}/repos/partner-lab/shared-models`);
+  expect(body.setup?.checks.authority).toEqual({
+    state: "verified",
+    message: "@example has admin access to example/open-registry.",
+  });
+  expect(body.setup?.checks.installation.state).toBe("installed");
+  expect(
+    sqlite
+      .prepare("SELECT status FROM projects WHERE id = ?")
+      .get("open-registry"),
+  ).toEqual({ status: "paused" });
 });
 
-test("a second repository the applicant does not control is not proven", async () => {
-  const { status, body } = await submit(
-    manifestWith({}, repository("someone-else/their-repo")),
-  );
-  expect(status).toBe(201);
-  expect(body.application?.githubCheck).toBe(
-    "Not proven: @example does not own someone-else/their-repo",
-  );
-});
+// Owner decision D11: creation requires the Slopbot installation read.
+// Public GitHub ownership alone creates nothing.
+test.each([
+  ["missing", { installation: "missing" }, 409, "slopbot_required"],
+  [
+    "suspended",
+    { installation: "suspended", installationId: 5151 },
+    409,
+    "slopbot_required",
+  ],
+  [
+    "read access",
+    { ...ADMIN_ACCESS, permission: "read", roleName: "read" },
+    403,
+    "authority_required",
+  ],
+  ["unbound Slopbot", null, 503, "github_unavailable"],
+] as const)(
+  "no project is created when Slopbot reads %s",
+  async (_name, slopbot, status, error) => {
+    const result = await submit(
+      manifestWith({}),
+      "projects",
+      undefined,
+      slopbot,
+    );
+    expect(result.status).toBe(status);
+    expect(result.body.error).toBe(error);
+    expect(
+      result.sqlite.prepare("SELECT COUNT(*) AS count FROM projects").get(),
+    ).toEqual({ count: 0 });
+  },
+);
 
-test("a second repository GitHub does not have is refused", async () => {
+test("a new project lists exactly one repository", async () => {
   const { status, body } = await submit(
-    manifestWith({}, repository("someone-else/missing-repo")),
+    manifestWith({}, repository("example/registry-docs")),
   );
   expect(status).toBe(422);
   expect(body).toMatchObject({
     error: "invalid_manifest",
-    message: "GitHub has no public repository named someone-else/missing-repo",
+    message: "A new project lists exactly one repository",
+  });
+});
+
+test("every listed repository must be a public GitHub repository", async () => {
+  expect(
+    await control(
+      manifestWith(
+        {},
+        repository("example/registry-docs"),
+        repository("partner-lab/shared-models"),
+      ),
+    ),
+  ).toEqual({ state: "matched" });
+  expect(lookups).toContain(`${API}/repos/partner-lab/shared-models`);
+  expect(
+    await control(manifestWith({}, repository("someone-else/missing-repo"))),
+  ).toEqual({
+    state: "mismatch",
+    reason: "GitHub has no public repository named someone-else/missing-repo",
   });
 });
 
@@ -189,8 +268,8 @@ test("an alias must lead to the repository it names", async () => {
     manifestWith({ aliases: ["example/old-registry-name"] }),
   );
   expect(former.status).toBe(201);
-  expect(former.body.application?.githubCheck).toBe(
-    "Proven: @example owns example/open-registry",
+  expect(former.body.setup?.checks.authority.message).toBe(
+    "@example has admin access to example/open-registry.",
   );
 
   const other = await submit(
@@ -203,22 +282,23 @@ test("an alias must lead to the repository it names", async () => {
       "Alias someone-else/their-repo is not a name of example/open-registry on GitHub",
   });
 
-  const missing = await submit(
-    manifestWith(
-      {},
-      {
-        ...repository("example/registry-docs"),
-        aliases: ["someone-else/missing-repo"],
-      },
+  expect(
+    await control(
+      manifestWith(
+        {},
+        {
+          ...repository("example/registry-docs"),
+          aliases: ["someone-else/missing-repo"],
+        },
+      ),
     ),
-  );
-  expect(missing.status).toBe(422);
-  expect(missing.body.message).toBe(
-    "GitHub has no public repository named someone-else/missing-repo",
-  );
+  ).toEqual({
+    state: "mismatch",
+    reason: "GitHub has no public repository named someone-else/missing-repo",
+  });
 });
 
-test("an application names at most 5 repositories and aliases", async () => {
+test("a check names at most 5 repositories and aliases", async () => {
   const docs = repositories["example/registry-docs"];
   for (const name of ["docs-old-1", "docs-old-2", "docs-old-3"])
     repositories[`example/${name}`] = docs;
@@ -229,8 +309,7 @@ test("an application names at most 5 repositories and aliases", async () => {
       aliases: ["example/docs-old-1", "example/docs-old-2"],
     },
   );
-  const accepted = await submit(five);
-  expect(accepted.status).toBe(201);
+  expect((await control(five)).state).toBe("matched");
   expect(lookups.filter((url) => url.startsWith(`${API}/repos/`))).toHaveLength(
     5,
   );
@@ -247,78 +326,67 @@ test("an application names at most 5 repositories and aliases", async () => {
       },
     ],
   };
-  const refused = await submit(six);
-  expect(refused.status).toBe(422);
-  expect(refused.body).toMatchObject({
-    error: "invalid_manifest",
-    message: "An application may name at most 5 repositories and aliases",
+  expect(await control(six)).toEqual({
+    state: "mismatch",
+    reason: "An application may name at most 5 repositories and aliases",
   });
   expect(lookups).toEqual([]);
 });
 
 test.each(["unchanged", "changed", "unavailable"])(
-  "approval rechecks pending alias facts: %s",
+  "publishing a stored application rechecks its alias facts: %s",
   async (state) => {
-    const submitted = await submit(
+    const manifest = JSON.stringify(
       manifestWith({ aliases: ["example/old-registry-name"] }),
+    ).replace(
+      '"symbol":"USDC"}',
+      '"symbol":"USDC","decimals":6,"chainId":"1","cluster":null,"verifiedAt":"2026-10-10T00:00:00.000Z"}',
     );
-    expect(submitted.status).toBe(201);
-    const applicationId = submitted.body.application?.id;
-    if (!applicationId) throw new Error("Application was not stored");
-    const adminToken = "a".repeat(48);
-    submitted.sqlite.exec(`INSERT INTO points_members (actor_id, github_id, login, joined_at, public)
-    VALUES ('act_admin', '900000001', 'admin', '2026-10-01T00:00:00.000Z', 0)`);
-    submitted.sqlite
-      .prepare(
-        "INSERT INTO points_sessions (token_hash, actor_id, expires_at) VALUES (?, 'act_admin', '2099-01-01T00:00:00.000Z')",
-      )
-      .run(await sha256Hex(adminToken));
     const original = repositories["example/old-registry-name"];
     if (state === "changed")
       repositories["example/old-registry-name"] =
         repositories["someone-else/their-repo"];
-    if (state === "unavailable")
-      globalThis.fetch = (async () => {
-        throw new Error("GitHub unavailable");
-      }) as unknown as typeof fetch;
+    const realStub = stubGithub;
     try {
-      const response = await onRequest({
-        request: new Request(
-          `${ORIGIN}/api/v1/admin/project-applications/${applicationId}/approve`,
-          {
-            method: "POST",
-            headers: {
-              origin: ORIGIN,
-              "content-type": "application/json",
-              cookie: `__Host-slop_points=${adminToken}`,
-            },
-            body: "{}",
-          },
-        ),
-        env: { SLOP_DB: submitted.db, ADMIN_GITHUB_IDS: "900000001" } as never,
-      });
-      expect(response.status).toBe(
-        state === "unchanged" ? 200 : state === "changed" ? 422 : 503,
+      const published = await submit(
+        null,
+        "project-applications/app_storedapplication1/publish",
+        (sqlite) => {
+          sqlite.exec(
+            `INSERT INTO project_applications (id,project_id,repository_key,manifest,manifest_sha256,acceptance_criteria,applicant_github_id,applicant_github_login,submitted_at,status,admin_notification,admin_notification_at)
+               VALUES ('app_storedapplication1','open-registry','example/open-registry','${manifest}','${"a".repeat(64)}','Merged pull requests','987654321','example','2026-10-10T00:00:00.000Z','pending','sent','2026-10-10T00:00:01.000Z')`,
+          );
+          if (state === "unavailable")
+            stubGithub = () => {
+              globalThis.fetch = (async () => {
+                throw new Error("GitHub unavailable");
+              }) as unknown as typeof fetch;
+            };
+        },
+      );
+      expect(published.status).toBe(
+        state === "unchanged" ? 201 : state === "changed" ? 422 : 503,
       );
       if (state === "changed")
-        expect(await response.json()).toMatchObject({
+        expect(published.body).toMatchObject({
           error: "invalid_manifest",
           message:
             "Alias example/old-registry-name is not a name of example/open-registry on GitHub",
         });
       expect(
-        submitted.sqlite
+        published.sqlite
           .prepare("SELECT status FROM project_applications WHERE id = ?")
-          .get(applicationId),
+          .get("app_storedapplication1"),
       ).toMatchObject({
         status: state === "unchanged" ? "approved" : "pending",
       });
     } finally {
       repositories["example/old-registry-name"] = original;
+      stubGithub = realStub;
     }
   },
 );
-test("an application cannot claim a different GitHub owner account type", async () => {
+test("a project cannot claim a different GitHub owner account type", async () => {
   const manifest = manifestWith({});
   manifest.steward.github.type = "Organization";
   const { status, body } = await submit(manifest);

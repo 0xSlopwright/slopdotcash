@@ -8,7 +8,7 @@ Date: 12 October 2026, proposed by Drew Pierson. Status: scope approved by the r
 - A project is added and activated only through admin-approved revisions in the D1 registry (PRJ-02). No pull request activates a project, and deployment bindings live in the D1 revision.
 - The withdrawal fee is 2%, `floor(gross / 50)`, equal to the payout fee and enforced in the contract (PRD section 18; repository owner decision of 19 October 2026, #907). The 10% figure below and the 5% figure of 18 October 2026 are superseded.
 - Any standard ERC-20 with any decimals may be a Robinhood Chain reward asset (TOK-01, TOK-03); USDG stays the network stablecoin. Generalization of `ProjectEscrow.sol` and the adapter beyond six decimals is MVP-06/MVP-07b work.
-- Fee-wallet conversion to USDG on Robinhood Chain is MVP-07c work under TOK-07.
+- Fee-wallet conversion to USDG on Robinhood Chain is superseded: the PRD (section 6) converts fees to USDC only. Robinhood Chain conversion stays pending until a Circle USDC address verified from Circle's primary source and a route to it exist ([fee-converter guide](../workers/fee-converter/README.md)).
 
 This document is the decision record for adding Robinhood Chain as a third escrow settlement network beside Base and Solana. It extends [the payouts addendum](payouts-mvp.md) and [the Base and Solana architecture plan](base-solana-payout-plan.md), which states the rule this work follows: "Add a network definition and a chain adapter, then pass the same accounting and workflow conformance suite." PRD requirements: FND-01, FND-02, PAY-06, PAY-07, PAY-08. MVP packages: MVP-02, MVP-06, MVP-07.
 

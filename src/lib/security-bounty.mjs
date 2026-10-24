@@ -151,14 +151,9 @@ function validateApprovers(value) {
     if (new Set(people[role]).size !== people[role].length)
       fail(`approvers.${role}`, "contains duplicates");
   }
-  // The dispute reviewer must be independent of the technical decision and
-  // of the payer (SEC-04, SEC-18).
-  const decided = new Set([...people.technical, ...people.financial]);
-  if (people.dispute.some((id) => decided.has(id)))
-    fail(
-      "approvers.dispute",
-      "must not include a technical or financial approver",
-    );
+  // `approvers.dispute` names the program's dispute contact. A Slop
+  // moderator decides escalated disputes (owner decision D10 dropped the
+  // separate-role rule); the case handler still refuses self-review.
 }
 
 /**

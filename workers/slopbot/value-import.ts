@@ -75,8 +75,12 @@ export async function importSubscriptionAssessment(
   const selections = input.sources.map((value: unknown) => {
     if (
       !object(value) ||
-      Object.keys(value).sort().join() !==
-        "contextPaths,pullRequestNumber,repository" ||
+      ![
+        "contextPaths,pullRequestNumber,repository",
+        "contextPaths,emptyMergeResolutions,pullRequestNumber,repository",
+      ].includes(Object.keys(value).sort().join()) ||
+      ("emptyMergeResolutions" in value &&
+        value.emptyMergeResolutions !== true) ||
       typeof value.repository !== "string" ||
       !Number.isSafeInteger(value.pullRequestNumber) ||
       Number(value.pullRequestNumber) <= 0 ||
@@ -89,6 +93,7 @@ export async function importSubscriptionAssessment(
       repository,
       number: Number(value.pullRequestNumber),
       contextPaths: value.contextPaths,
+      emptyMergeResolutions: value.emptyMergeResolutions === true,
     };
   });
   if (
@@ -131,6 +136,11 @@ export async function importSubscriptionAssessment(
       collected,
       selection.contextPaths,
     );
+    if (selection.emptyMergeResolutions) {
+      if (evidence.commits.some((commit) => commit.parents.length === 2))
+        throw new Error("Empty merge evidence requires no two-parent merges");
+      evidence.mergeResolutions = [];
+    }
     const [owner, repo] = selection.repository.id.split("/");
     sources.push({
       evidence,

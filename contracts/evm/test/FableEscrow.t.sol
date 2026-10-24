@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
+import {DeployFactory} from "./DeployFactory.sol";
 
-import {ProjectEscrow, EscrowFactory, IERC20} from "../src/ProjectEscrow.sol";
+import {ProjectEscrow, EscrowFactory, IERC20, Purpose} from "../src/ProjectEscrow.sol";
 import {TestDollar} from "../integration/TestDollar.sol";
 
 interface Vm {
@@ -42,9 +43,9 @@ contract FableBase {
         vm.warp(1_800_000_000);
         usdc = new TestDollar();
         vm.prank(REGISTRAR);
-        factory = new EscrowFactory(REGISTRAR, FEE, AUTHORITY, DELAY);
-        vm.prank(REGISTRAR);
-        vault = ProjectEscrow(factory.create(PROJECT, IERC20(address(usdc)), OWNER, OWNER));
+        factory = DeployFactory.create(REGISTRAR, FEE, AUTHORITY, DELAY);
+        vm.prank(OWNER);
+        vault = ProjectEscrow(factory.create(PROJECT, IERC20(address(usdc)), Purpose.Ordinary));
         usdc.mint(OWNER, 1_000_000_000e6);
         vm.prank(OWNER);
         usdc.approve(address(vault), type(uint256).max);
@@ -82,7 +83,7 @@ contract FableBase {
     function conservationHolds() internal view returns (bool) {
         uint256 lhs = vault.totalDeposited();
         uint256 rhs = uint256(vault.freeBalance()) + vault.reservedPrincipal() + vault.reservedFees()
-            + vault.totalPaid() + vault.totalPayoutFees() + vault.totalGrossWithdrawn() + vault.totalServiceFees();
+            + vault.totalPaid() + vault.totalPayoutFees() + vault.totalGrossWithdrawn();
         uint256 bal = usdc.balanceOf(address(vault));
         uint256 held =
             uint256(vault.freeBalance()) + vault.reservedPrincipal() + vault.reservedFees() + vault.accruedFees();
@@ -106,9 +107,6 @@ contract FableEscrowTest is FableBase {
         vm.prank(OWNER);
         vm.expectRevert(ProjectEscrow.InsufficientFreeBalance.selector);
         vault.withdrawUnused(900e6 + 1);
-        vm.prank(OWNER);
-        vm.expectRevert(ProjectEscrow.InsufficientFreeBalance.selector);
-        vault.chargeService(900e6 + 1, keccak256("inv"));
         require(vault.reservedPrincipal() == 98e6 && vault.reservedFees() == 2e6, "reserve still locked");
         require(conservationHolds(), "conservation");
     }
@@ -163,13 +161,13 @@ contract FableEscrowTest is FableBase {
     function test_F3_delayIsBoundedAndCancelIsAFlag() public {
         vm.prank(REGISTRAR);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, type(uint64).max);
+        DeployFactory.create(REGISTRAR, FEE, AUTHORITY, type(uint64).max);
         vm.prank(REGISTRAR);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        new EscrowFactory(REGISTRAR, FEE, AUTHORITY, type(uint64).max - uint64(block.timestamp));
+        DeployFactory.create(REGISTRAR, FEE, AUTHORITY, type(uint64).max - uint64(block.timestamp));
         bind(1, CONTRIBUTOR, 0);
         (,,, uint64 activatesAt, bool cancelled) = vault.bindings(1);
-        require(activatesAt == uint64(block.timestamp) + DELAY && !cancelled, "pending, not cancelled");
+        require(activatesAt == uint64(block.timestamp) && !cancelled, "active, not cancelled");
         vm.prank(OWNER);
         vault.cancelBinding(1, 1);
         (,,, uint64 later, bool cancelledAfter) = vault.bindings(1);
@@ -205,13 +203,12 @@ contract FableEscrowTest is FableBase {
         bytes32 id = commit(keccak256("src-s1"), 3, 100e6);
         bind(3, CONTRIBUTOR, 0);
         (,,, uint64 activatesAt,) = vault.bindings(3);
-        // One second before activation: pay fails (the award's commit delay ends at the same instant
-        // as the binding delay), cancel allowed.
-        vm.warp(activatesAt - 1);
+        // One second before the award commitment period ends: pay fails, cancel remains allowed.
+        vm.warp(activatesAt + DELAY - 1);
         vm.expectRevert(ProjectEscrow.AwardPending.selector);
         vault.pay(id, 1);
-        // At activation: cancel fails, pay succeeds. No instant allows both.
-        vm.warp(activatesAt);
+        // At the shared review boundary: cancel fails, pay succeeds.
+        vm.warp(activatesAt + DELAY);
         vm.prank(OWNER);
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.cancelBinding(3, 1);
@@ -233,11 +230,9 @@ contract FableEscrowTest is FableBase {
         bytes32 id = commit(keccak256("src-s2"), 5, 100e6);
         bind(5, CONTRIBUTOR, 0);
         vm.warp(block.timestamp + DELAY);
-        bind(5, ATTACKER, 1); // rotation by authority, pending again; v1 never paid, so it is replaced
+        bind(5, ATTACKER, 1); // rotation by authority, immediately active; v1 never paid, so it is replaced
         vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
         vault.pay(id, 1);
-        vm.expectRevert(ProjectEscrow.InvalidBinding.selector);
-        vault.pay(id, 2);
         vm.prank(OWNER);
         vault.cancelBinding(5, 2);
         vm.warp(block.timestamp + DELAY);
@@ -307,51 +302,34 @@ contract FableEscrowTest is FableBase {
         require(conservationHolds(), "conservation");
     }
 
-    function test_sound_chargeServiceOnlyFreeFunds_andConservation() public {
-        depositAs(1_000e6);
-        commit(keccak256("src-c"), 21, 400e6);
-        vm.prank(OWNER);
-        vm.expectRevert(ProjectEscrow.InsufficientFreeBalance.selector);
-        vault.chargeService(600e6 + 1, keccak256("inv-1"));
-        vm.prank(OWNER);
-        vault.chargeService(600e6, keccak256("inv-1"));
-        vm.prank(OWNER);
-        vm.expectRevert(ProjectEscrow.DuplicateInvoice.selector);
-        vault.chargeService(1, keccak256("inv-1"));
-        // Owner can "drain" its own free funds to the fee recipient under any digest; nothing else moves.
-        require(
-            vault.freeBalance() == 0 && vault.accruedFees() == 600e6 && vault.totalServiceFees() == 600e6, "charged"
-        );
-        require(vault.reservedPrincipal() == 392e6 && vault.reservedFees() == 8e6, "reserve untouched");
-        require(conservationHolds(), "conservation");
-    }
-
     function test_sound_factoryDuplicateAndCreate2() public {
-        vm.prank(REGISTRAR);
+        vm.prank(OWNER);
         vm.expectRevert(EscrowFactory.DuplicateVault.selector);
-        factory.create(PROJECT, IERC20(address(usdc)), ATTACKER, ATTACKER);
+        factory.create(PROJECT, IERC20(address(usdc)), Purpose.Ordinary);
+        // Another account's vault for the same project is its own vault, never the owner's.
         vm.prank(ATTACKER);
-        vm.expectRevert(ProjectEscrow.Unauthorized.selector);
-        factory.create(keccak256("other"), IERC20(address(usdc)), ATTACKER, ATTACKER);
+        ProjectEscrow squat = ProjectEscrow(factory.create(PROJECT, IERC20(address(usdc)), Purpose.Ordinary));
+        require(squat.owner() == ATTACKER && address(squat) != address(vault), "caller owns its own vault");
+        require(
+            factory.vaults(factory.vaultKey(OWNER, PROJECT, IERC20(address(usdc)), Purpose.Ordinary)) == address(vault),
+            "owner's vault unchanged"
+        );
         // Second factory, same project id, different vault address, different award ids.
         vm.prank(REGISTRAR);
-        EscrowFactory f2 = new EscrowFactory(REGISTRAR, FEE, AUTHORITY, DELAY);
-        vm.prank(REGISTRAR);
-        ProjectEscrow v2 = ProjectEscrow(f2.create(PROJECT, IERC20(address(usdc)), OWNER, OWNER));
+        EscrowFactory f2 = DeployFactory.create(REGISTRAR, FEE, AUTHORITY, DELAY);
+        vm.prank(OWNER);
+        ProjectEscrow v2 = ProjectEscrow(f2.create(PROJECT, IERC20(address(usdc)), Purpose.Ordinary));
         require(address(v2) != address(vault), "distinct");
         require(v2.awardId(keccak256("x")) != vault.awardId(keccak256("x")), "ids differ");
     }
 
     function test_sound_constructorGuards() public {
-        vm.prank(REGISTRAR);
+        vm.prank(AUTHORITY);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        factory.create(keccak256("g1"), IERC20(address(usdc)), OWNER, ATTACKER); // refund != owner
-        vm.prank(REGISTRAR);
+        factory.create(keccak256("g2"), IERC20(address(usdc)), Purpose.Ordinary); // owner == authority
+        vm.prank(OWNER);
         vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        factory.create(keccak256("g2"), IERC20(address(usdc)), AUTHORITY, AUTHORITY); // owner == authority
-        vm.prank(REGISTRAR);
-        vm.expectRevert(ProjectEscrow.InvalidInput.selector);
-        factory.create(bytes32(0), IERC20(address(usdc)), OWNER, OWNER);
+        factory.create(bytes32(0), IERC20(address(usdc)), Purpose.Ordinary);
     }
 
     function test_sound_bindRejectsVaultAndExpired() public {
@@ -439,9 +417,9 @@ contract FableOddTokenTest is FableBase {
         vm.warp(1_800_000_000);
         odd = new OddToken();
         vm.prank(REGISTRAR);
-        EscrowFactory f = new EscrowFactory(REGISTRAR, FEE, AUTHORITY, DELAY);
-        vm.prank(REGISTRAR);
-        oddVault = ProjectEscrow(f.create(PROJECT, IERC20(address(odd)), OWNER, OWNER));
+        EscrowFactory f = DeployFactory.create(REGISTRAR, FEE, AUTHORITY, DELAY);
+        vm.prank(OWNER);
+        oddVault = ProjectEscrow(f.create(PROJECT, IERC20(address(odd)), Purpose.Ordinary));
         odd.mint(OWNER, 1_000e6);
     }
 
