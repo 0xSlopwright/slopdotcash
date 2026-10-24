@@ -391,7 +391,8 @@ export function PaymentLifecycle() {
         </dl>
         <p>
           Awaiting wallet is a payment state, not a separate award: the award
-          stays approved until you add or confirm a payout wallet.
+          stays approved while it waits for you to add or confirm a payout
+          wallet.
         </p>
       </div>
     </>
