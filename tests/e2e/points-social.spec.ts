@@ -178,6 +178,19 @@ test("social membership preserves past points and connection privacy without new
   await expect(
     accountPanel.getByRole("link", { name: "View profile" }),
   ).toHaveAttribute("href", "/contributors/social-member");
+  const panelBounds = await accountPanel.boundingBox();
+  const viewportWidth = await page.evaluate(() => window.innerWidth);
+  await info.attach("account-menu-bounds", {
+    body: JSON.stringify({ panelBounds, viewportWidth }),
+    contentType: "application/json",
+  });
+  if (!panelBounds) throw new Error("Account menu has no layout box");
+  expect(panelBounds.x).toBeGreaterThanOrEqual(0);
+  expect(panelBounds.x + panelBounds.width).toBeLessThanOrEqual(viewportWidth);
+  await page.keyboard.press("Tab");
+  await expect(
+    accountPanel.getByRole("link", { name: "View profile" }),
+  ).toBeFocused();
   expect(
     (
       await new AxeBuilder({ page })

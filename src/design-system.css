@@ -1041,6 +1041,10 @@ label {
     font-size: 14px;
   }
 
+  .header-nav-link + .account-control {
+    margin-left: auto;
+  }
+
   .wordmark {
     font-size: 19px;
   }
