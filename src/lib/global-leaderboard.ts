@@ -12,6 +12,7 @@ import type { CycleIndex } from "./cycle-index";
 import type { GitHubActor, LeaderboardSnapshot } from "./leaderboard";
 import type { ProjectView } from "./project-view";
 import { findIngestedProjectByRepositoryId } from "./projects.mjs";
+import { type PenaltyDeductions, penaltyDeductions } from "./score-penalties";
 
 export interface GlobalLeader {
   actor: GitHubActor;
@@ -53,6 +54,52 @@ function cycleKey(projectId: string, cycleId: string): string {
   return `${projectId}\0${cycleId}`;
 }
 
+function projectOf(repository: string) {
+  const project = findIngestedProjectByRepositoryId(repository);
+  if (!project)
+    throw new TypeError(
+      `Score record ${repository} references an unregistered project`,
+    );
+  return project;
+}
+
+/**
+ * Rolling-window events and debits of months without a closed cycle record.
+ * A closed record already carries its month's score, so a later debit never
+ * changes it.
+ */
+export function openMonthScores(
+  snapshot: LeaderboardSnapshot,
+  cycleIndex: CycleIndex,
+): {
+  openEvents: LeaderboardSnapshot["ledger"];
+  deductions: PenaltyDeductions;
+} {
+  const archived = new Set(
+    cycleIndex.cycles.map((cycle) => cycleKey(cycle.projectId, cycle.cycleId)),
+  );
+  const open = (repository: string, occurredAt: string) => {
+    const project = projectOf(repository);
+    return (
+      Date.parse(occurredAt) >= Date.parse(project.reward.rewardStartAt) &&
+      !archived.has(cycleKey(project.id, occurredAt.slice(0, 7)))
+    );
+  };
+  const openEvents = snapshot.ledger.filter((event) =>
+    open(event.repository, event.occurredAt),
+  );
+  return {
+    openEvents,
+    deductions: penaltyDeductions(
+      openEvents,
+      (snapshot.penalties ?? []).filter((penalty) =>
+        open(penalty.repository, penalty.occurredAt),
+      ),
+      (repository) => projectOf(repository).id,
+    ),
+  };
+}
+
 export function createGlobalLeaders(
   snapshot: LeaderboardSnapshot,
   views: readonly ProjectView[],
@@ -62,9 +109,6 @@ export function createGlobalLeaders(
     snapshot.leaders.map((leader) => [leader.actor.id, leader.actor]),
   );
   const byActor = new Map<string, MutableGlobalLeader>();
-  const archivedCycleKeys = new Set(
-    cycleIndex.cycles.map((cycle) => cycleKey(cycle.projectId, cycle.cycleId)),
-  );
 
   for (const cycle of cycleIndex.cycles) {
     const key = cycleKey(cycle.projectId, cycle.cycleId);
@@ -86,26 +130,20 @@ export function createGlobalLeaders(
     }
   }
 
-  for (const event of snapshot.ledger) {
-    const project = findIngestedProjectByRepositoryId(event.repository);
-    if (!project) {
-      throw new TypeError(
-        `Accepted event ${event.id} references an unregistered project`,
-      );
-    }
-    if (
-      Date.parse(event.occurredAt) < Date.parse(project.reward.rewardStartAt)
-    ) {
-      continue;
-    }
+  const { openEvents, deductions } = openMonthScores(snapshot, cycleIndex);
+  for (const event of openEvents) {
+    const project = projectOf(event.repository);
     const key = cycleKey(project.id, event.occurredAt.slice(0, 7));
-    if (archivedCycleKeys.has(key)) continue;
     const current = byActor.get(event.actor.id) ?? emptyLeader(event.actor);
     current.actor = event.actor;
     current.score += event.scoreThirds ?? Math.round(event.points * 3);
     current.cycleKeys.add(key);
     current.projectIds.add(project.id);
     byActor.set(event.actor.id, current);
+  }
+  for (const [actorId, thirds] of deductions.byActor) {
+    const current = byActor.get(actorId);
+    if (current) current.score -= thirds;
   }
 
   for (const view of views) {

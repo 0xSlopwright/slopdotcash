@@ -35,6 +35,10 @@ binding = "SLOPBOT"
 service = "slop-slopbot"
 
 [[services]]
+binding = "VETTING_SANDBOX"
+service = "slop-vetting-sandbox"
+
+[[services]]
 binding = "SLOP_IDENTITY"
 service = "slop-identity"
 
