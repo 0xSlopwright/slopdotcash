@@ -155,7 +155,7 @@ token, decimals, creation transaction and `codeSha256`.
 
 ## 2. Solana program upgrade and finalization
 
-Program: `slop-escrow`, ID `4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj`
+Program: `slop-escrow`, ID `7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ`
 (upgradeable, already on mainnet).
 
 A human operator does every step below. An agent never runs these commands,
@@ -165,7 +165,7 @@ unsigned transactions.
 
 Placeholders:
 
-- `$PROGRAM` = `4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj`
+- `$PROGRAM` = `7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ`
 - `$RPC` = a private mainnet RPC URL (`-u $RPC` below; never commit it)
 - `$UPGRADE_AUTHORITY` = the current upgrade authority signer (keypair path or
   `usb://ledger?key=N`)
@@ -274,11 +274,12 @@ Write `config-input.json`:
 
 ```json
 {
-  "programId": "4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj",
+  "programId": "7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ",
   "upgradeAuthority": "<UPGRADE_AUTHORITY_PUBKEY>",
   "codeSha256": "<DEPLOYED_CODE_SHA256>",
   "identityAuthority": "<IDENTITY>",
-  "feeRecipient": "<FEES>"
+  "feeRecipient": "<FEES>",
+  "rotationAuthority": "<ROTATION_AUTHORITY>"
 }
 ```
 
