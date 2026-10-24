@@ -458,7 +458,7 @@ function ProfileTimeline({
         href: event.evaluation?.decisionUrl ?? event.source.url,
         title: event.source.title,
         detail: `${project.name} · ${event.category.replaceAll("-", " ")}${event.evaluation ? ` · reviewed by ${event.evaluation.reviewer}` : ""}`,
-        amount: `+${formatScore(event.points)} Slop Score${award ? ` · +${award.amount.toLocaleString()} Points${award.provisional ? " · Provisional tier" : ""}` : ""}`,
+        amount: `${event.points < 0 ? "−" : "+"}${formatScore(Math.abs(event.points))} Slop Score${award ? ` · +${award.amount.toLocaleString()} Points${award.provisional ? " · Provisional tier" : ""}` : ""}`,
       };
     }),
     ...[...unmatchedAwards.values()].map((award) => ({

@@ -161,7 +161,7 @@ function capUsageForEvents(
       usage.evidencePoints.used += event.points;
     } else if (event.category === "substantive-review") {
       usage.substantiveReviews.used += 1;
-    } else {
+    } else if (event.category === "evaluated-contribution") {
       usage.evaluatedContributions.used += 1;
     }
   }
@@ -575,6 +575,7 @@ export function createProjectView(
       evidence: 0,
       "substantive-review": 0,
       "evaluated-contribution": 0,
+      "penalty-debit": 0,
     } satisfies Record<ScoreCategory, number>;
     for (const event of events) points[event.category] += event.points;
     return {
@@ -587,7 +588,9 @@ export function createProjectView(
       adjustedWeight: weightedThirdBasisPoints,
       computeBonusBasisPoints: computeBonus,
       points,
-      acceptedOutcomeCount: events.length,
+      acceptedOutcomeCount: events.filter(
+        (event) => event.category !== "penalty-debit",
+      ).length,
       evidenceEventIds: events.map((event) => event.id).sort(),
       reportedModels: [
         ...new Set(

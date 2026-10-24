@@ -7,6 +7,7 @@ import { resumeBudgetBlocks } from "./budget-blocks";
 import { APPEAL_COMMANDS, type Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import { dispatchMaintainerHolds } from "./maintainer-holds";
+import { PENALTY_TABLE_VERSION, penaltyHistory } from "./penalties";
 import * as store from "./persistence";
 import { QUALITY_MARKER } from "./quality";
 import { registeredRepository, reviewRegistration } from "./registry";
@@ -215,6 +216,35 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
       return Response.json({ service: "slopbot", ok: true });
+    }
+    if (request.method === "GET" && url.pathname === "/v1/penalties") {
+      const after = url.searchParams.get("after") ?? "";
+      if (!/^(|[A-Za-z0-9_=-]{1,128})$/u.test(after))
+        return Response.json(
+          { error: "Invalid penalty-history query" },
+          { status: 400 },
+        );
+      try {
+        return Response.json(
+          {
+            schemaVersion: "slop-penalty-history:v1",
+            tableVersion: PENALTY_TABLE_VERSION,
+            after,
+            ...(await penaltyHistory(env.SLOPBOT_DB, after)),
+          },
+          {
+            headers: {
+              "cache-control": "no-store",
+              "x-content-type-options": "nosniff",
+            },
+          },
+        );
+      } catch {
+        return Response.json(
+          { error: "Penalty history is unavailable" },
+          { status: 503, headers: { "cache-control": "no-store" } },
+        );
+      }
     }
     const jointHistory = url.pathname === "/v1/work-unit-assessments";
     if (

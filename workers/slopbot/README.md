@@ -240,12 +240,25 @@ pending record in `slopbot_value_requests`. Redelivery must not create another
 record. A pending record proves intake only; verify the resulting assessment
 and publication separately. An unregistered repository must create no record.
 
+## Penalty debits in the published score
+
+`slopbot_penalties` is the record. `GET /v1/penalties?after=<node ID>` serves
+every row in node ID order, 100 per page: identifiers, integers and outcomes
+only, with no verdict, review or model text. The leaderboard producer
+(`scripts/penalty-ingestion.ts`) reads every page on each run, binds each
+unreversed row to its live GitHub item and checks the recorded repository
+and author IDs. `createLeaderboardSnapshot` then adds one `penalty-debit`
+ledger event per row. The event takes at most the author's credit in the
+same project and UTC month, so that month never goes below zero. A reversed
+row is not applied, so the next publication restores the month. A closed
+cycle keeps its frozen source snapshot, so a debit never changes an
+approved, scheduled or paid award. Points keep earned awards only. An outage
+of this route is a value-feed outage (owner decision D2); any other failure
+stops the publication. Evidence: `bun test
+workers/slopbot/penalty-appeal.test.ts`.
+
 ## Not yet implemented
 
-- Score publication of recorded debits. `slopbot_penalties` is the record;
-  the score producer must read it, subtract each unreversed debit from its UTC
-  month without going below zero, and never change an approved, scheduled or
-  paid award.
 - Inbox notices for escalated appeals. Escalation is visible through the
   `slopbot: moderator` label and the appeal comment until the Inbox adds an
   appeal notice kind.

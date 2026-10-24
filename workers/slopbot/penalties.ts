@@ -128,3 +128,56 @@ export async function reversePenalty(
     .run();
   return (result.meta?.changes ?? 0) === 1;
 }
+
+/** One public penalty record: identifiers, integers and outcomes only. */
+export type PenaltyRecord = {
+  itemNodeId: string;
+  repositoryId: number;
+  projectId: string;
+  authorGithubId: string;
+  category: Category;
+  tableVersion: string;
+  debitThirds: number;
+  period: string;
+  recordedAt: string;
+  reversedAt: string | null;
+  reversal: "appeal_upheld" | "maintainer_reopen" | null;
+};
+
+export const PENALTY_HISTORY_PAGE = 100;
+
+/**
+ * Every recorded debit, reversed or not, in node ID order. The score
+ * producer reads every page on each run, so a reversal recorded later
+ * removes the debit from the next published score. No verdict, review or
+ * model text leaves the table.
+ */
+export async function penaltyHistory(
+  db: D1Database,
+  afterItemNodeId: string,
+): Promise<{ records: PenaltyRecord[]; nextAfter: string | null }> {
+  const row = await db
+    .prepare(
+      `SELECT json_group_array(json_object(
+        'itemNodeId', item_node_id, 'repositoryId', repository_id,
+        'projectId', project_id, 'authorGithubId', author_github_id,
+        'category', category, 'tableVersion', table_version,
+        'debitThirds', debit_thirds, 'period', period,
+        'recordedAt', recorded_at, 'reversedAt', reversed_at,
+        'reversal', reversal)) AS records_json
+       FROM (SELECT * FROM slopbot_penalties WHERE item_node_id > ?
+         ORDER BY item_node_id LIMIT ${PENALTY_HISTORY_PAGE + 1})`,
+    )
+    .bind(afterItemNodeId)
+    .first<{ records_json: string }>();
+  if (!row) throw new Error("Penalty history read failed");
+  const records = JSON.parse(row.records_json) as PenaltyRecord[];
+  const page = records.slice(0, PENALTY_HISTORY_PAGE);
+  return {
+    records: page,
+    nextAfter:
+      records.length > PENALTY_HISTORY_PAGE
+        ? page[page.length - 1].itemNodeId
+        : null,
+  };
+}
