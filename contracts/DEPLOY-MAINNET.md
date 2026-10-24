@@ -115,17 +115,21 @@ git. Record the factory address and the deployment transaction hash.
 ```sh
 FACTORY=0x...
 RPC="$ETHEREUM_RPC_URL"
-cast call "$FACTORY" 'registrar()(address)' --rpc-url "$RPC" --block finalized
-cast call "$FACTORY" 'identityAuthority()(address)' --rpc-url "$RPC" --block finalized
-cast call "$FACTORY" 'feeRecipient()(address)' --rpc-url "$RPC" --block finalized
-cast call "$FACTORY" 'bindingDelay()(uint64)' --rpc-url "$RPC" --block finalized
-cast call "$FACTORY" 'AUTHORITY_ROTATION_DELAY()(uint64)' --rpc-url "$RPC" --block finalized
-cast code "$FACTORY" --rpc-url "$RPC" --block finalized | xxd -r -p | shasum -a 256
+BLOCK=$(cast block finalized --rpc-url "$RPC" --field number)
+cast call "$FACTORY" 'registrar()(address)' --rpc-url "$RPC" --block "$BLOCK"
+cast call "$FACTORY" 'identityAuthority()(address)' --rpc-url "$RPC" --block "$BLOCK"
+cast call "$FACTORY" 'feeRecipient()(address)' --rpc-url "$RPC" --block "$BLOCK"
+cast call "$FACTORY" 'upgradeAuthority()(address)' --rpc-url "$RPC" --block "$BLOCK"
+cast call "$FACTORY" 'bindingDelay()(uint64)' --rpc-url "$RPC" --block "$BLOCK"
+cast call "$FACTORY" 'AUTHORITY_ROTATION_DELAY()(uint64)' --rpc-url "$RPC" --block "$BLOCK"
+cast code "$FACTORY" --rpc-url "$RPC" --block "$BLOCK" | xxd -r -p | shasum -a 256
 ```
 
 Deploy the same build with the same constructor arguments on a local Anvil and
 compare the runtime code SHA-256. The digest is the manifest's
-`factoryCodeSha256`.
+`factoryCodeSha256`. Retain `BLOCK` with the evidence and use it for the
+implementation-slot and implementation-code reads required above. Do not
+resolve the moving `finalized` tag again between verification reads.
 
 ### 1.5 Source verification
 
