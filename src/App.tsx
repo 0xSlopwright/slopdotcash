@@ -410,12 +410,6 @@ function Footer() {
           <SlopMark inverse size={104} />
           <div className="wordmark footer-wordmark">{domain}</div>
         </div>
-        <nav className="footer-links" aria-label="Records">
-          <Link href="/points">Leaderboard</Link>
-          <Link href="/cycles">Cycles</Link>
-          <Link href="/models">Models</Link>
-          <Link href="/receipts">Run receipts</Link>
-        </nav>
         <nav className="footer-links" aria-label="Community">
           <ExternalLinkAnchor href={SOURCE_REPOSITORY}>
             GitHub
@@ -910,13 +904,23 @@ export function ProjectParticipation({
           ? "Funding history must load before skill promotion is available."
           : displayCycleId === null
             ? "Contribution data for this project is not available yet."
-            : "Skill promotion is paused after two unfunded cycles. Accepted work and scores continue to be recorded; committed funding is required to resume promotion."}
+            : "Skill promotion is paused after two unfunded cycles. Accepted work and points continue to be recorded; committed funding is required to resume promotion."}
       </p>
     </section>
   );
 }
 
 function InstallPanel({ project }: { project?: ProjectDefinition }) {
+  if (project) return <ProjectInstallPanel project={project} />;
+  return (
+    <div className="home-agent-setup">
+      <p className="hero-copy">Paste this into your coding agent.</p>
+      <AgentPromptBox openIn prompt={bootstrapAgentPrompt()} />
+    </div>
+  );
+}
+
+function ProjectInstallPanel({ project }: { project: ProjectDefinition }) {
   const projectId = project?.id;
   const [eligibility, setEligibility] = useState<
     "loading" | "ready" | "blocked" | "error"
@@ -956,8 +960,6 @@ function InstallPanel({ project }: { project?: ProjectDefinition }) {
       active = false;
     };
   }, [projectId, attempt]);
-  // The home page lists projects below; it needs no panel until one is cleared.
-  if (!project && eligibility === "blocked") return null;
   return (
     <div
       className={project ? "install-panel" : "home-agent-setup"}
@@ -1420,7 +1422,7 @@ function ProjectPage({
             ) : (
               <aside className="reward-card">
                 <strong>Not funded this month</strong>
-                <p>Accepted work still earns Slop Score.</p>
+                <p>Accepted work still earns Points.</p>
               </aside>
             )}
           </div>
@@ -1465,9 +1467,9 @@ function ProjectPage({
   );
 }
 
-/** A Slop Score in integer thirds, as the tier table writes it: 1/3, 1, 8. */
+/** Display historical third-based credits in the canonical integer point unit. */
 function thirdsLabel(thirds: number): string {
-  return thirds % 3 === 0 ? String(thirds / 3) : `${thirds}/3`;
+  return (thirds * 10).toLocaleString();
 }
 
 function HowItWorksPage() {
@@ -1478,7 +1480,7 @@ function HowItWorksPage() {
         <h1>How Slop works</h1>
         <p>
           Ship useful work on GitHub. Maintainers accept it; Slop publishes the
-          score and payment record.
+          points and payment record.
         </p>
       </section>
       <div className="how-paths">
@@ -1507,10 +1509,10 @@ function HowItWorksPage() {
               </p>
             </li>
             <li>
-              <strong>4. Score and reward review</strong>
+              <strong>4. Points and reward review</strong>
               <p>
-                Accepted outcomes receive Slop Score. Funded projects with
-                payments enabled pay out monthly by share of score.
+                Accepted outcomes receive Points. Funded projects with payments
+                enabled pay out monthly by share of accepted-work points.
               </p>
             </li>
           </ol>
@@ -1555,24 +1557,25 @@ function HowItWorksPage() {
       </div>
       <section className="worked-example score-contract">
         <div>
-          <h2>Slop Score</h2>
+          <h2>Points</h2>
           <p>
             Slopbot sizes each accepted pull request with the tiers in this
-            table and gives it a standard score. Every accepted merge earns at
-            least 1/3. Score is separate from{" "}
-            <Link href="/points">participation Points</Link> and money received.
+            table and awards points. Every accepted merge earns at least 10
+            points. Points this month and total points are views of the same
+            history. Only accepted-work points count toward project payouts;
+            welcome, social, and payment-recognition bonuses do not.
           </p>
           <details>
-            <summary>Scoring rules and evidence</summary>
+            <summary>Points rules and evidence</summary>
             <p>
               A useful review can find a correction or validate the change. A
-              request for changes is not required. Review bands are triage 1/3,
-              standard 1, deep 3 and specialist 8. The first{" "}
+              request for changes is not required. Review bands are triage 10,
+              standard 30, deep 90 and specialist 240 points. The first{" "}
               {MAX_CREDITED_REVIEWERS} distinct qualifying reviewers share one
               review pool per pull request: the sum of their highest bands,
-              capped at the pull request's own size and never less than 1/3.
-              Self-review, review after merge, repeated or empty review, and bot
-              activity do not score.
+              capped at the pull request's own size and never less than 10
+              points. Self-review, review after merge, repeated or empty review,
+              and bot activity do not earn points.
             </p>
             <p>
               Slopbot debits a closed pull request once, from its published
@@ -1586,7 +1589,7 @@ function HowItWorksPage() {
             </p>
             <p>
               Owners, funded employees and related parties can have an explicit
-              payout exclusion. They keep their score, but their weight leaves
+              payout exclusion. They keep their points, but their weight leaves
               the pool, so it does not reduce other contributors' shares.
               Exclusions apply from the next UTC month.
             </p>
@@ -1596,13 +1599,13 @@ function HowItWorksPage() {
               keeps its recorded terms. Signed receipts and reviewed private
               trace uploads are optional; declining them does not block
               submission. Token volume, cost, lines, commits and account count
-              stay diagnostic and never change score, rank, share or payment.
+              stay diagnostic and never change points, rank, share or payment.
             </p>
           </details>
         </div>
         <section
           className="plain-table-wrap score-tier-wrap"
-          aria-label="Contribution score tiers"
+          aria-label="Contribution point tiers"
           // biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard access is required to scroll this overflow region.
           tabIndex={0}
         >
@@ -1611,33 +1614,33 @@ function HowItWorksPage() {
             <thead>
               <tr>
                 <th scope="col">Tier</th>
-                <th scope="col">Slop Score</th>
+                <th scope="col">Points</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <th scope="row">Micro</th>
-                <td>1/3</td>
+                <td>10</td>
               </tr>
               <tr>
                 <th scope="row">Small</th>
-                <td>1</td>
+                <td>30</td>
               </tr>
               <tr>
                 <th scope="row">Medium</th>
-                <td>3</td>
+                <td>90</td>
               </tr>
               <tr>
                 <th scope="row">Large</th>
-                <td>8</td>
+                <td>240</td>
               </tr>
               <tr>
                 <th scope="row">XL</th>
-                <td>15</td>
+                <td>450</td>
               </tr>
               <tr>
                 <th scope="row">Exceptional</th>
-                <td>25</td>
+                <td>750</td>
               </tr>
             </tbody>
           </table>
@@ -1647,22 +1650,24 @@ function HowItWorksPage() {
         <div>
           <h2>Example allocation</h2>
           <p>
-            Accepted weight ÷ total weight × funded pool = projected allocation.
+            Your accepted-work points ÷ project accepted-work points × funded
+            pool = projected allocation.
           </p>
           <details>
             <summary>Exact calculation</summary>
             <p>
-              A Large contribution and a standard review have a combined weight
-              of 9: 27 integer thirds. Against 30 total weight (90 thirds), the
-              share is 30%. Allocations use integer USDC micro-units; original
-              weights and event IDs remain in the cycle records.
+              A Large contribution earns 240 points and a standard review earns
+              30, for 270 accepted-work points. Against 900 project
+              accepted-work points, the share is 30%. Allocations use integer
+              USDC micro-units; original weights and event IDs remain in the
+              cycle records.
             </p>
           </details>
         </div>
         <dl className="equation-card" aria-label="Example projected allocation">
           <div>
             <dt>Accepted share</dt>
-            <dd>9 ÷ 30 = 30%</dd>
+            <dd>270 ÷ 900 = 30%</dd>
           </div>
           <div>
             <dt>Funded pool</dt>
@@ -1715,22 +1720,21 @@ function HowItWorksPage() {
           <p>
             No. There is no assignment, claiming, or reservation. Pick unblocked
             work, open a pull request, and the maintainers decide what merges.
-            Only merged work scores.
+            Only merged work earns points.
           </p>
         </details>
         <details>
-          <summary>Do reviews score?</summary>
+          <summary>Do reviews earn points?</summary>
           <p>
             Yes, when the review is useful. It can find a correction or validate
             the change; a request for changes is not required. The first{" "}
             {MAX_CREDITED_REVIEWERS} distinct qualifying reviewers share the
-            pull request&apos;s review pool, as the Slop Score rules above
-            explain. Reviews of earlier work keep the rules recorded when they
-            were made.
+            pull request&apos;s review pool, as the Points rules above explain.
+            Reviews of earlier work keep the rules recorded when they were made.
           </p>
         </details>
         <details>
-          <summary>Does work outside code score?</summary>
+          <summary>Does work outside code earn points?</summary>
           <p>
             On projects that opt in. The{" "}
             <Link href="/projects/slopdotcash">Slop project</Link> does: a
@@ -1748,27 +1752,28 @@ function HowItWorksPage() {
         <details>
           <summary>When will my work show up?</summary>
           <p>
-            Open pull requests do not score. Once a pull request merges, it and
-            its qualifying reviews appear at the next data refresh, which runs
-            every 6 hours. Each one is dated when it happened, so points can
-            appear spread through the day. There is no waiting period and no
+            Open pull requests do not earn points. Once a pull request merges,
+            it and its qualifying reviews appear at the next data refresh, which
+            runs every 6 hours. Each one is dated when it happened, so points
+            can appear spread through the day. There is no waiting period and no
             minimum account age.
           </p>
         </details>
         <details>
           <summary>What is my merge worth before Slopbot sizes it?</summary>
           <p>
-            Every accepted merge earns at least 1/3. When Slopbot sizes it, the
-            score follows the tier table above. A valid maintainer ratification
-            takes precedence. Related or split pull requests share one work
-            unit. Merges before {formatDate(VALUE_SCORING_POLICY_EFFECTIVE_AT)}{" "}
-            keep their recorded score.
+            Every accepted merge earns at least 10 points. When Slopbot sizes
+            it, the points follow the tier table above. A valid maintainer
+            ratification takes precedence. Related or split pull requests share
+            one work unit. Merges before{" "}
+            {formatDate(VALUE_SCORING_POLICY_EFFECTIVE_AT)} keep their recorded
+            points.
           </p>
         </details>
         <details>
           <summary>Does the model I use matter?</summary>
           <p>
-            Not to your score. Disclose the provider, exact model, and client;
+            Not to your points. Disclose the provider, exact model, and client;
             the declaration adds no points and shows on{" "}
             <Link href="/models">Models</Link>. A valid signed receipt with a
             finalized private trace adds a fixed 15% to that outcome.
@@ -1799,7 +1804,7 @@ function HowItWorksPage() {
         <details>
           <summary>What does projected mean? Is the pool funded?</summary>
           <p>
-            Projected is a live estimate from accepted score at the
+            Projected is a live estimate from accepted-work points at the
             project&apos;s cap. It is not a balance or a guarantee. A cap is a
             target, and a pool can allocate only funds committed on-chain. Funds
             committed after a month freezes apply to later months, not to that
@@ -2274,12 +2279,12 @@ function SponsorsPage({
         <section className="custody-proof sponsor-note">
           <h2>Optional: pay for review as its own line.</h2>
           <p>
-            Accepted review already scores from the shared pool. A named review
-            budget is a second monthly cash line that pays accepted review work
-            on top of that unchanged treatment, with its own cap, its own
-            commitment, and separate public arithmetic. It becomes operative
-            only after its own funding is committed, and it cannot be added in
-            the same change that lowers the contributor cap.
+            Accepted review already earns points from the shared pool. A named
+            review budget is a second monthly cash line that pays accepted
+            review work on top of that unchanged treatment, with its own cap,
+            its own commitment, and separate public arithmetic. It becomes
+            operative only after its own funding is committed, and it cannot be
+            added in the same change that lowers the contributor cap.
           </p>
           <p>
             <ExternalLinkAnchor href={`${protocolRoot}/review-budget-v1.md`}>
@@ -2510,7 +2515,7 @@ function ModelsPage({ state, retry }: { state: DataState; retry: () => void }) {
         <h1>Models</h1>
         <p>
           Accepted work, grouped by self-reported model. Declarations and device
-          signatures do not verify the provider or change the score.
+          signatures do not verify the provider or change the points.
         </p>
         <DataNotice retry={retry} state={state} />
       </section>
@@ -2785,7 +2790,8 @@ function ModelOutcomes({ summary }: { summary: ModelOutcomeSummary }) {
           </li>
           <li>
             The leaderboard is a rolling window and regenerates on a schedule,
-            so every figure moves. Slop Score measures accepted work, not money.
+            so every figure moves. Points record contributions; they are not
+            money.
           </li>
         </ul>
       </details>

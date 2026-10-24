@@ -276,7 +276,7 @@ test("equal contributors share cycle and profile ranks", async ({
   }
 });
 
-test("discovers projects and one score-ranked homepage leaderboard", async ({
+test("discovers projects and one points-ranked homepage leaderboard", async ({
   page,
 }) => {
   await page.route("**/.well-known/slop/projects.json", (route) =>
@@ -334,7 +334,7 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
     exact: true,
   });
   await expect(
-    leaderboard.getByRole("columnheader", { name: "Score", exact: true }),
+    leaderboard.getByRole("columnheader", { name: "Points", exact: true }),
   ).toHaveAttribute("aria-sort", "descending");
   // The home leaderboard has no filter controls; a shared link still selects history.
   await expect(leaderboard.getByRole("group", { name: "Period" })).toHaveCount(
@@ -346,7 +346,9 @@ test("discovers projects and one score-ranked homepage leaderboard", async ({
   const pointValues = await leaderboard
     .locator("tbody tr td:nth-child(3)")
     .allTextContents();
-  const totals = pointValues.map((value) => Number(value.replaceAll(",", "")));
+  const totals = pointValues.map((value) =>
+    Number.parseInt(value.replaceAll(",", ""), 10),
+  );
   expect(totals.length).toBeGreaterThan(0);
   expect(totals).toEqual([...totals].sort((a, b) => b - a));
   const firstLogin = await leaderboard

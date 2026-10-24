@@ -5,7 +5,7 @@ import { githubUserIdFromNodeId } from "./lib/github-actor";
 import type { ScoreEvent } from "./lib/leaderboard";
 import { transactionUrl } from "./lib/payments/contracts";
 import { type PointRevision, type PointsMember, pointKey } from "./lib/points";
-import { dailySlopScore } from "./lib/profile-activity";
+import { dailyPoints } from "./lib/profile-activity";
 import {
   assertProfiles,
   type ProfileIndex,
@@ -26,7 +26,6 @@ import {
   formatDate,
   formatDateTime,
   formatMicroUsdc,
-  formatScore,
 } from "./Presentation";
 
 async function loadProfiles(signal: AbortSignal) {
@@ -243,24 +242,24 @@ function PullRequestBar({
 
 const ACTIVITY_DAYS = 35;
 
-/** Daily Slop Score across the rolling window, so the rhythm reads at a glance. */
-function ActivityChart({ work }: { work: readonly ScoreEvent[] }) {
-  const days = dailySlopScore(work, new Date(), ACTIVITY_DAYS);
-  const max = Math.max(...days.map((entry) => entry.score));
+/** The same point awards shown in the activity timeline, grouped by UTC day. */
+function ActivityChart({ awards }: { awards: PointsMember["awards"] }) {
+  const days = dailyPoints(awards, new Date(), ACTIVITY_DAYS);
+  const max = Math.max(...days.map((entry) => entry.points));
   if (max <= 0) return null;
-  const total = days.reduce((sum, entry) => sum + entry.score, 0);
+  const total = days.reduce((sum, entry) => sum + entry.points, 0);
   return (
     <figure className="activity-chart">
       <figcaption>
-        {formatScore(total)} Slop Score in the last {ACTIVITY_DAYS} days
+        {total.toLocaleString()} points in the last {ACTIVITY_DAYS} days
       </figcaption>
       <div className="activity-bars" aria-hidden="true">
         {days.map((entry) => (
           <span
             key={entry.day}
-            style={{ height: `${Math.max(4, (entry.score / max) * 100)}%` }}
-            className={entry.score > 0 ? "" : "activity-bar-empty"}
-            title={`${formatDate(entry.day)} · ${formatScore(entry.score)}`}
+            style={{ height: `${Math.max(4, (entry.points / max) * 100)}%` }}
+            className={entry.points > 0 ? "" : "activity-bar-empty"}
+            title={`${formatDate(entry.day)} · ${entry.points.toLocaleString()} points`}
           />
         ))}
       </div>
@@ -458,7 +457,9 @@ function ProfileTimeline({
         href: event.evaluation?.decisionUrl ?? event.source.url,
         title: event.source.title,
         detail: `${project.name} · ${event.category.replaceAll("-", " ")}${event.evaluation ? ` · reviewed by ${event.evaluation.reviewer}` : ""}`,
-        amount: `+${formatScore(event.points)} Slop Score${award ? ` · +${award.amount.toLocaleString()} Points${award.provisional ? " · Provisional tier" : ""}` : ""}`,
+        amount: award
+          ? `+${award.amount.toLocaleString()} Points${award.provisional ? " · Provisional tier" : ""}`
+          : "Points pending",
       };
     }),
     ...[...unmatchedAwards.values()].map((award) => ({
@@ -484,7 +485,7 @@ function ProfileTimeline({
   return (
     <section className="profile-timeline" aria-label="Contribution activity">
       <h2>Activity</h2>
-      <ActivityChart work={work} />
+      {awards ? <ActivityChart awards={awards} /> : null}
       {records.length > 10 ? (
         <button
           type="button"

@@ -105,7 +105,7 @@ test("a renamed contributor keeps archived cycles", async ({ page }, info) => {
   });
   const pastCycle = history.getByRole("link");
   await expect(pastCycle).toHaveAttribute("href", "/cycles/eliza/2026-07");
-  await expect(pastCycle).toContainText("7 score");
+  await expect(pastCycle).toContainText("210 points");
   await expect(pastCycle).toContainText("$1");
   // July Eliza events are replaced by the archived 7, plus 10 from Delta
   // Star. Resolving identity must not recalculate or double-count the score.
