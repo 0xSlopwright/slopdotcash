@@ -11,6 +11,37 @@
 
 # Owner-controlled escrow mainnet deployment
 
+## Current mainnet deployments
+
+The owner approved activation on every network on 24 October 2026. These are
+deployments, not project activations. The source is `main` at `bce5b0df`.
+The independent reviews were waived (#903), not completed.
+
+EVM (Base 8453, Ethereum 1, Robinhood Chain 4663) uses the same addresses and
+runtime code on each chain:
+
+| Role                   | Address                                      | Runtime SHA-256                                                    |
+| ---------------------- | -------------------------------------------- | ------------------------------------------------------------------ |
+| Factory proxy          | `0xe51AbF8c6Dbb3Ca6E9AD09F2dc6EF141d7364aAb` | `afb62459ccdd87d344b8bfa367c8dc49586323316bb8a51f1dfbe753336c0509` |
+| Factory implementation | `0xc831Fc745a63161Df6Fae612bDFE77B969b329fE` | `62a3bf4a741b8084a63152835047bb71e8396b153a112225910d1dffecd64275` |
+| Vault implementation   | `0xe137dE4fbAc6438007703065C905a58b03322Fc8` | `1c21fa901dc924a7a2dd84b770b7d1cf69ef14ba97957ae5c8986232b8f9d551` |
+
+Registrar `0xd64F35aC87D9a1FB8eBD44e745c24436B606cF60`, identity authority
+`0x31B87d13f9091bC3b8A5cb6F45C8b3cB99Ed6d70`, fee recipient
+`0x8f77C37D8650776bFe73c9b12B15209eE15D9b86`, upgrade authority and deployer
+`0x2Ad20Afa352Ec70E43A6d0E7794cf305c9Cbe35D`, binding delay 0. Sourcify has a
+full match for all three contracts on each chain.
+
+Solana program `7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ`: upgrade
+authority `EmMRRFhjZmr2SN5RdhV98WPnUhgJxKMoE1itSwUsU8tr`, 681,392 bytes,
+`codeSha256` `86a24ca13ba7ace124cf81fcb0d182f54ad480081e8bb0b847d12ee32c0c0726`.
+Config `9hjoFnUrgF65K4DnWSDbS1WJjoGu4LChuz8XFq73UtaS`: identity authority
+`Eq6tYrPnkhj3hLmSZUL9xUWjkZ3Y5j3naBAJyQyKMYzS`, fee recipient
+`9EyxVhhnCJH4QL5bDsRyukrkHFyitFMuf45UDdLxm4BY`, rotation authority
+`2tAA47aavW2mqtCAxbn21ZqLb8xZTeq8XvkRR9emduiy`. The release issues (#898,
+#899, #900, #901) hold the transaction identities. The verifiable Docker
+build and second-operator hash are still open for Solana.
+
 These steps deploy replacement UUPS EVM factories and vault implementations,
 and deploy or upgrade the Solana program with owner-controlled upgrades.
 The approved launch order is Base, Solana, Ethereum, then Robinhood.
@@ -179,9 +210,9 @@ token, decimals, creation transaction and `codeSha256`.
 ## 2. Solana program deployment, upgrade and verification
 
 Program: `slop-escrow`, ID `7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ`
-(upgradeable). This selected program exists on devnet. The mainnet account
-was absent at the 24 October 2026 preflight. Read the target cluster again
-before deciding between initial deployment and upgrade.
+(upgradeable). It exists on devnet and on mainnet; see "Current mainnet
+deployments" below. Read the target cluster again before deciding between
+initial deployment and upgrade.
 
 Use the owner-controlled operator process described above. The application
 services do not receive the payer or upgrade key. The plan builders in
