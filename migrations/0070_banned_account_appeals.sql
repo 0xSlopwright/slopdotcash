@@ -164,3 +164,58 @@ END;
 
 PRAGMA foreign_keys = ON;
 
+
+CREATE TRIGGER project_enforcements_flag_pause_valid
+BEFORE INSERT ON project_enforcements
+WHEN NEW.actor_role = 'contributor-flags' AND (
+  SELECT COUNT(DISTINCT f.reporter_github_id)
+    FROM json_each(NEW.system_issuer, '$.flagIds') listed
+    JOIN project_flags f ON f.id = listed.value
+   WHERE f.project_id = NEW.project_id AND f.state = 'active'
+     AND f.created_at > strftime('%Y-%m-%dT%H:%M:%fZ', NEW.created_at, '-90 days')
+) < 2
+BEGIN
+  SELECT RAISE(ABORT, 'a flag pause needs two distinct active contributor flags');
+END;
+
+CREATE TRIGGER project_enforcements_scan_reinstatement_valid
+BEFORE INSERT ON project_enforcements
+WHEN NEW.actor_role = 'vetting-service' AND NEW.action = 'reinstate' AND NOT EXISTS (
+  SELECT 1 FROM vetting_assessments a
+   WHERE a.id = json_extract(NEW.system_issuer, '$.assessmentId')
+     AND a.project_id = NEW.project_id AND a.state = 'clean'
+     AND NOT EXISTS (
+       SELECT 1 FROM project_flags f WHERE f.project_id = NEW.project_id
+         AND f.state = 'active' AND f.id NOT IN (SELECT value FROM json_each(a.flag_ids))
+     )
+     AND a.requested_at >= (
+       SELECT created_at FROM project_enforcements latest
+        WHERE latest.project_id = NEW.project_id
+          AND latest.action IN ('quarantine', 'ban')
+        ORDER BY latest.sequence DESC LIMIT 1
+     )
+     AND (
+       SELECT actor_role FROM project_enforcements latest
+        WHERE latest.project_id = NEW.project_id
+          AND latest.action IN ('quarantine', 'ban')
+        ORDER BY latest.sequence DESC LIMIT 1
+     ) = 'contributor-flags'
+)
+BEGIN
+  SELECT RAISE(ABORT, 'a scan reinstatement needs a clean fresh scan after a flag-only pause');
+END;
+
+CREATE TRIGGER project_flags_resolve_on_reinstatement
+AFTER INSERT ON project_enforcements
+WHEN NEW.action = 'reinstate'
+BEGIN
+  UPDATE project_flags
+     SET state = 'resolved', closed_at = NEW.created_at,
+         closed_by = 'reinstatement', closed_reference = NEW.id
+   WHERE project_id = NEW.project_id AND state = 'active'
+     AND created_at <= NEW.created_at
+     AND (NEW.actor_role <> 'vetting-service' OR id IN (
+       SELECT listed.value FROM vetting_assessments a, json_each(a.flag_ids) listed
+        WHERE a.id = json_extract(NEW.system_issuer, '$.assessmentId')
+     ));
+END;

@@ -723,6 +723,11 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
     (await t.create("banned-actor", "example/banned-actor", OTHER)).status,
   ).toBe(403);
   // Upgrade a populated registry: keep the ban and its original journal bytes.
+  const triggers = t.sqlite
+    .query(
+      "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+    )
+    .all();
   const before = t.sqlite
     .query("SELECT rowid, * FROM project_enforcements ORDER BY rowid")
     .all();
@@ -738,6 +743,13 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
       .all(),
   ).toEqual(before);
   expect(t.sqlite.query("PRAGMA foreign_key_check").all()).toEqual([]);
+  expect(
+    t.sqlite
+      .query(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+      )
+      .all(),
+  ).toEqual(triggers);
   // A ban on one project grants no appeal authority on an unrelated project.
   expect(
     (
