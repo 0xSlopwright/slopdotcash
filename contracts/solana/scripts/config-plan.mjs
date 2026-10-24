@@ -31,6 +31,10 @@ import { verifyProgram } from "./owner-plan.mjs";
 const PROJECT_DISCRIMINATOR = "cda8bdcab5f78e13";
 /** Project sizes before and after accrued fees and the monthly gate were appended. */
 const LEGACY_PROJECT_SIZE = 316;
+/** MonthlyAllocation discriminator and its current size. A month of an earlier size cannot be
+ * read by this build, and its outstanding gross would block owner commits for good. */
+const MONTH_DISCRIMINATOR = "1170c1902bd6fc6b";
+const MONTH_SIZE = 109;
 const PROJECT_SIZE = 332;
 const UPGRADEABLE_LOADER = new PublicKey(
   "BPFLoaderUpgradeab1e11111111111111111111111",
@@ -175,6 +179,26 @@ export async function migratePlan(input, runtime) {
   await verifyProgram(connection, program.programId, input);
   const payer = new PublicKey(input.payer);
   const blockhash = new PublicKey(runtime.recentBlockhash).toBase58();
+  const months = await connection.getProgramAccounts(program.programId, {
+    commitment: "finalized",
+    filters: [
+      {
+        memcmp: {
+          offset: 0,
+          bytes: anchor.utils.bytes.bs58.encode(
+            Buffer.from(MONTH_DISCRIMINATOR, "hex"),
+          ),
+        },
+      },
+    ],
+  });
+  const stale = months.filter(
+    ({ account }) => account.data.length !== MONTH_SIZE,
+  );
+  if (stale.length > 0)
+    throw new Error(
+      `${stale.length} month account(s) of an earlier layout exist; this build cannot read them, so do not upgrade in place`,
+    );
   const { projects } = await listProjects(input, runtime);
   const transactions = [];
   for (const project of projects.filter((row) => row.migrationRequired)) {
