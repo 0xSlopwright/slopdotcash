@@ -3,8 +3,6 @@
  * Never import this module into a guest or give a model its signing capability.
  */
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import {
   dispositionProblems,
   MAX_VETTING_RESULT_BYTES,
@@ -15,6 +13,10 @@ import {
   parseRecordedVettingResult,
   recordedResultProblems,
 } from "../../backend/vetting/scan-result";
+import {
+  filePublicationJournal,
+  type PublicationJournal,
+} from "./publication-journal";
 import { REVIEW_AREAS, type ScannerEvidence } from "./scanners";
 import { signedServiceHeaders, type VettingServiceSigner } from "./service";
 
@@ -127,6 +129,7 @@ export async function publishResult(input: {
   signer: VettingServiceSigner;
   /** Existing operator-private directory outside all guest/shared mounts. */
   journalDirectory: string;
+  journal?: PublicationJournal;
   at?: Date;
   fetch?: typeof fetch;
 }) {
@@ -155,19 +158,16 @@ export async function publishResult(input: {
     body: new TextEncoder().encode(input.body),
     at: input.at,
   });
-  const directory = join(input.journalDirectory, result.assessmentId);
-  // Atomic exclusive reservation across processes. Never remove it on failure.
-  await mkdir(directory, { mode: 0o700 });
+  const journal =
+    input.journal ?? filePublicationJournal(input.journalDirectory);
   const intent = {
     assessmentId: result.assessmentId,
     resultSha256: input.approvedSha256,
     origin: input.origin,
     disposition: result.disposition,
   };
-  await writeFile(join(directory, "intent.json"), JSON.stringify(intent), {
-    mode: 0o600,
-    flag: "wx",
-  });
+  // Atomic durable reservation across processes. Never remove it on failure.
+  await journal.reserve(intent);
   let outcome: "accepted" | "rejected" | "unknown" = "unknown";
   let httpStatus: number | null = null;
   try {
@@ -219,9 +219,6 @@ export async function publishResult(input: {
     // Do not leak transport errors, credentials or private result content.
   }
   const receipt = { ...intent, outcome, httpStatus };
-  await writeFile(join(directory, "receipt.json"), JSON.stringify(receipt), {
-    mode: 0o600,
-    flag: "wx",
-  });
+  await journal.complete(receipt);
   return receipt;
 }
