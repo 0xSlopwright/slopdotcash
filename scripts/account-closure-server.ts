@@ -1,16 +1,21 @@
 /** Local acceptance server. Only the external GitHub identity response is synthetic. */
 import { resolve } from "node:path";
 import { onRequest } from "../functions/api/v1/[[path]]";
+import { deploymentOrigins, deploymentTier } from "../src/lib/deployment";
 import { ME, seedAccountClosure } from "../tests/account-closure-fixture";
 import { randomToken } from "../workers/identity/crypto";
 import { handleIdentityRequest } from "../workers/identity/handler";
 import { D1IdentityPersistence } from "../workers/identity/persistence";
+
+const tier = deploymentTier(process.env.VITE_SLOP_ENVIRONMENT);
+const origins = deploymentOrigins(tier);
 
 const { db, sqlite, tokens } = await seedAccountClosure(
   new Date().toISOString(),
   !process.argv.includes("--no-obligations"),
 );
 const identity = {
+  tier,
   persistence: new D1IdentityPersistence(db),
   stateEncryptionSecret: Buffer.alloc(32, 1).toString("base64url"),
   assertionSecret: Buffer.alloc(32, 2).toString("base64url"),
@@ -27,6 +32,8 @@ const identity = {
       : null,
 };
 const env = {
+  SLOP_ENVIRONMENT: tier,
+  PAYMENTS_ALLOWED_ORIGIN: origins.site,
   SLOP_DB: db,
   TRACE_AUTH_SECRET: "local-fixture-rate-secret-".repeat(3),
   SLOP_IDENTITY: {
@@ -73,7 +80,7 @@ const server = Bun.serve({
     const isIdentity = url.pathname.startsWith("/identity/");
     const path = url.pathname.replace(/^\/(identity|site)/u, "") + url.search;
     const canonical = new Request(
-      (isIdentity ? "https://identity.slop.cash" : "https://slop.cash") + path,
+      (isIdentity ? origins.identity : origins.site) + path,
       request,
     );
     if (isIdentity) return handleIdentityRequest(canonical, identity);

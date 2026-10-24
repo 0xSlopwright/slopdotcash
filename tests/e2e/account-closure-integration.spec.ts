@@ -4,8 +4,11 @@ import { createInterface } from "node:readline";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
-const SITE = "https://slop.cash";
-const IDENTITY = "https://identity.slop.cash";
+import { deploymentOrigins, deploymentTier } from "../../src/lib/deployment";
+
+const { site: SITE, identity: IDENTITY } = deploymentOrigins(
+  deploymentTier(process.env.VITE_SLOP_ENVIRONMENT),
+);
 
 for (const withObligations of [false, true])
   test(`account closure ${withObligations ? "with unpaid awards and a private case" : "without awards"} requires an explicit authenticated reopen @registry`, async ({
