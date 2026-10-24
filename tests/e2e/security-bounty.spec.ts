@@ -611,8 +611,8 @@ test("private security bounty programs keep cases restricted from intake to awar
     const page = await context.newPage();
     const errors = observe(page);
     await page.clock.install();
+    // The page checks readiness on open; no click is needed.
     await page.goto(`/projects/${a.id}/security`, { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "Check private reporting" }).click();
     const handoff = page.getByRole("link", {
       name: "Report privately on GitHub",
     });
@@ -626,8 +626,9 @@ test("private security bounty programs keep cases restricted from intake to awar
     await page.clock.fastForward(31_000);
     await expect(page.getByRole("alert")).toContainText("is out of date");
     await expect(handoff).toHaveCount(0);
+    await page.getByRole("button", { name: "Check again" }).click();
+    await expect(handoff).toBeVisible();
     await page.goto(`/projects/${b.id}/security`, { waitUntil: "networkidle" });
-    await page.getByRole("button", { name: "Check private reporting" }).click();
     await expect(page.getByRole("alert")).toContainText(
       "private vulnerability reporting is turned off",
     );
@@ -2200,11 +2201,10 @@ test("automatic private intake files as the reporter and verifies receipt @regis
     const page = await context.newPage();
     const errors = observe(page);
     await signIn(page, TOKENS["reporter-a"]);
+    await page.clock.install();
     await page.goto(`/projects/${program.id}/security`, {
       waitUntil: "networkidle",
     });
-    await page.getByRole("button", { name: "Check private reporting" }).click();
-    await expect(page.getByText("Maintainers decide awards")).toBeVisible();
     await expect(
       page.getByText(
         "The Slop private intake app will file this on GitHub as @e2e-reporter-a",
@@ -2213,7 +2213,28 @@ test("automatic private intake files as the reporter and verifies receipt @regis
     await expect(
       page.getByRole("button", { name: "Authorize GitHub to submit as you" }),
     ).toBeVisible();
+    await expect(page.getByText("Slop stores no report text.")).toBeVisible();
     await expectAccessible(page);
+    // An expired readiness answer keeps the form and the typed draft.
+    const summary = page.getByRole("textbox", { name: "Summary" });
+    const description = page.getByRole("textbox", { name: "Description" });
+    await summary.fill("Draft survives readiness expiry");
+    await description.fill("Typed before the readiness answer expired.");
+    await page.clock.fastForward(31_000);
+    await expect(page.getByRole("alert")).toContainText("is out of date");
+    await expect(page.getByRole("alert")).toContainText("Your draft is kept");
+    await expect(
+      page.getByRole("link", { name: /Or report directly on GitHub/u }),
+    ).toHaveCount(0);
+    await expect(summary).toHaveValue("Draft survives readiness expiry");
+    await expect(description).toHaveValue(
+      "Typed before the readiness answer expired.",
+    );
+    await page.getByRole("button", { name: "Check again" }).click();
+    await expect(
+      page.getByRole("link", { name: /Or report directly on GitHub/u }),
+    ).toBeVisible();
+    await expect(summary).toHaveValue("Draft survives readiness expiry");
     expect(errors).toEqual([]);
     await context.close();
   });
