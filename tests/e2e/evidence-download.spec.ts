@@ -160,7 +160,7 @@ test("large private evidence downloads with a single-use browser grant @registry
   await page.goto("/how-it-works", { waitUntil: "networkidle" });
   await page.evaluate((token) => {
     document.cookie = `__Host-slop_points=${token}; Path=/; Secure; SameSite=Strict`;
-  }, process.env.SLOP_E2E_OWNER_TOKEN!);
+  }, process.env.SLOP_E2E_EVIDENCE_OWNER_TOKEN!);
   await page.goto(
     `/vetting-evidence?assessmentId=${assessment}&runId=${runId}`,
     { waitUntil: "networkidle" },

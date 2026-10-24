@@ -66,14 +66,18 @@ export async function consumeValueRequest(
     if (!(await registeredRepository(db, job)))
       return await finish("authority");
     await assertValueInstallation(db, job.installationId);
-    const monthly = amount(env.SLOPBOT_VALUE_MONTHLY_BUDGET_MICRO_USD);
+    const alertsOnly =
+      env.SLOPBOT_VALUE_MONTHLY_BUDGET_MICRO_USD === "alerts-only";
+    const monthly = alertsOnly
+      ? null
+      : amount(env.SLOPBOT_VALUE_MONTHLY_BUDGET_MICRO_USD);
     const maximum = amount(env.SLOPBOT_VALUE_ATTEMPT_RESERVE_MICRO_USD);
     const revision = env.SLOPBOT_PRODUCER_REVISION;
     const start = Date.parse(env.SLOPBOT_VALUE_START_AT ?? "");
     if (
-      !monthly ||
+      (!alertsOnly && monthly === null) ||
       !maximum ||
-      maximum > monthly ||
+      (monthly !== null && maximum > monthly) ||
       !revision ||
       !/^[a-f0-9]{40}$/.test(revision) ||
       !Number.isFinite(start) ||

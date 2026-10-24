@@ -77,7 +77,11 @@ export default defineConfig({
   // Cloudflare Pages serves /data/* with Access-Control-Allow-Origin: *
   // (public/_headers) so other program surfaces (e.g. the Eliza Hub landing
   // page) can read the published snapshot. Mirror that in local preview.
+  // Preview serves only the built bytes. Vite otherwise inherits the
+  // development proxy, which replaces the published last good registry
+  // (PRD section 9) with a live staging read.
   preview: {
     cors: true,
+    proxy: {},
   },
 });

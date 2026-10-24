@@ -14,6 +14,7 @@ import AxeBuilder from "@axe-core/playwright";
 import {
   type APIRequestContext,
   expect,
+  type Locator,
   type Page,
   test,
 } from "@playwright/test";
@@ -27,6 +28,7 @@ import {
 const APPLICANT_TOKEN = process.env.SLOP_E2E_APPLICANT_TOKEN ?? "";
 const ADMIN_TOKEN = process.env.SLOP_E2E_ADMIN_TOKEN ?? "";
 const OWNER_TOKEN = process.env.SLOP_E2E_OWNER_TOKEN ?? "";
+const EVIDENCE_OWNER_TOKEN = process.env.SLOP_E2E_EVIDENCE_OWNER_TOKEN ?? "";
 const MODERATOR_TOKEN = process.env.SLOP_E2E_MODERATOR_TOKEN ?? "";
 const VETTING_PUBLIC_KEY = process.env.SLOP_E2E_VETTING_PUBLIC_KEY ?? "";
 const VETTING_PRIVATE_KEY = process.env.SLOP_E2E_VETTING_PRIVATE_KEY ?? "";
@@ -257,6 +259,25 @@ function observe(page: Page) {
       errors.push(message.text());
   });
   return errors;
+}
+
+/** One setup check shows its state badge and, under Check details, its message. */
+async function expectSetupCheck(
+  setup: Locator,
+  check: "GitHub access" | "Slopbot" | "Security scan",
+  state: string,
+  message: string,
+) {
+  const badge = setup
+    .locator(".setup-checks dt", { hasText: check })
+    .locator("xpath=following-sibling::dd[1]");
+  await expect(badge).toBeVisible();
+  await expect(badge).toHaveText(state);
+  await expect(
+    setup
+      .locator(".setup-details dt", { hasText: check })
+      .locator("xpath=following-sibling::dd[1]"),
+  ).toHaveText(message);
 }
 
 async function expectAccessible(page: Page) {
@@ -1359,10 +1380,18 @@ test("an owner installs Slopbot before creation and resumes setup; a failed scan
   await expect(created.locator("h2")).toHaveText(
     "Setup status: Waiting for the security scan",
   );
-  await expect(created).toContainText(
-    `Confirmed. @e2e-owner has admin access to ${project.repository}.`,
+  await expectSetupCheck(
+    created,
+    "GitHub access",
+    "Confirmed",
+    `@e2e-owner has admin access to ${project.repository}.`,
   );
-  await expect(created).toContainText("Queued. The security scan is queued.");
+  await expectSetupCheck(
+    created,
+    "Security scan",
+    "Queued",
+    "The security scan is queued. Nothing is needed from you.",
+  );
   await expectAccessible(page);
 
   // Resumed setup: the owner checks again from "Your projects" on a new
@@ -1375,11 +1404,17 @@ test("an owner installs Slopbot before creation and resumes setup; a failed scan
   await expect(resumed.locator("h2")).toHaveText(
     "Setup status: Waiting for the security scan",
   );
-  await expect(resumed).toContainText(
-    `Confirmed. @e2e-owner has admin access to ${project.repository}.`,
+  await expectSetupCheck(
+    resumed,
+    "GitHub access",
+    "Confirmed",
+    `@e2e-owner has admin access to ${project.repository}.`,
   );
-  await expect(resumed).toContainText(
-    `Installed. Slopbot is installed on ${project.repository}.`,
+  await expectSetupCheck(
+    resumed,
+    "Slopbot",
+    "Installed",
+    `Slopbot is installed on ${project.repository}.`,
   );
 
   // Scan failure: an incomplete scan does not clear the project. The owner
@@ -1464,8 +1499,11 @@ test("an owner installs Slopbot before creation and resumes setup; a failed scan
   await page.reload({ waitUntil: "networkidle" });
   const managed = page.locator(".project-setup-status");
   await expect(managed.locator("h2")).toHaveText("Setup status: Action needed");
-  await expect(managed).toContainText(
-    `Not confirmed. @e2e-owner has read access to ${project.repository}. Write, maintain or admin access is required.`,
+  await expectSetupCheck(
+    managed,
+    "GitHub access",
+    "Not confirmed",
+    `@e2e-owner has read access to ${project.repository}. Write, maintain or admin access is required. Ask a maintainer with that access to finish setup.`,
   );
   await page
     .getByRole("textbox", { name: "Short description", exact: true })
@@ -1577,8 +1615,11 @@ test("an applicant publishes an application stored before self-service setup wit
   await expect(entry.locator(".project-setup-status h2")).toHaveText(
     "Setup status: Waiting for the security scan",
   );
-  await expect(entry.locator(".project-setup-status")).toContainText(
-    `Confirmed. @e2e-owner has admin access to ${project.repository}.`,
+  await expectSetupCheck(
+    entry.locator(".project-setup-status"),
+    "GitHub access",
+    "Confirmed",
+    `@e2e-owner has admin access to ${project.repository}.`,
   );
   expect(await listedProject(page, project.id)).toMatchObject({
     name: project.name,
@@ -1691,7 +1732,7 @@ test.describe("private evidence console", () => {
       .locator("summary")
       .click();
     await expect(consoleLink).toHaveText("Open restricted evidence console");
-    await signIn(page, OWNER_TOKEN);
+    await signIn(page, EVIDENCE_OWNER_TOKEN);
     await page.goto(path, { waitUntil: "networkidle" });
     await expect(
       page.getByRole("heading", {

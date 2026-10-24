@@ -342,7 +342,10 @@ test("discovers projects and one points-ranked homepage leaderboard", async ({
   await expect(
     leaderboard.getByRole("link", { name: firstLogin, exact: true }),
   ).toBeVisible();
-  await expect(page.locator(".hero-typewriter-caret")).toBeHidden();
+  // Sizer phrases reserve caret space invisibly; reduced motion hides the live caret.
+  await expect(
+    page.locator(".hero-typewriter > .hero-typewriter-caret"),
+  ).toBeHidden();
   await expect(
     page.locator("#projects").getByRole("link", { name: "Add a project" }),
   ).toHaveAttribute("href", "/projects/new");
