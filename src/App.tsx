@@ -1141,6 +1141,19 @@ export function ProjectFunding({ project }: { project: ProjectDefinition }) {
   return <EscrowFunding project={project} />;
 }
 
+function paymentStateLabel(project: ProjectDefinition): string {
+  return project.reward.paymentMode === "enabled" ? "Enabled" : "Disabled";
+}
+
+/** "Live" only when a recorded vault can pay: payments must be enabled too. */
+function vaultStateLabel(project: ProjectDefinition): string {
+  if (project.reward.kind === "external-prize-share") return "Not applicable";
+  if (!project.escrow?.deployments.length) return "Not set up";
+  return project.reward.paymentMode === "enabled"
+    ? "Live"
+    : "Recorded · payments disabled";
+}
+
 function fundingStateLabel(project: ProjectDefinition): string {
   if (project.reward.kind === "external-prize-share") return "External prize";
   return project.reward.fundingState === "committed"
@@ -1182,23 +1195,30 @@ function ProjectFundingPage({ project }: { project: ProjectDefinition }) {
             <dd>{formatMicroUsdc(project.reward.committedMinor)}</dd>
           </div>
           <div>
+            <dt>Payments</dt>
+            <dd>{paymentStateLabel(project)}</dd>
+          </div>
+          <div>
             <dt>Project vault</dt>
-            <dd>
-              {project.escrow?.deployments.length ? "Live" : "Not created"}
-            </dd>
+            <dd>{vaultStateLabel(project)}</dd>
           </div>
         </dl>
-        {project.escrow ? (
+        {project.reward.kind === "external-prize-share" ? (
+          <p>
+            The organizer pays this external prize. Slop has no vault for this
+            project.
+          </p>
+        ) : project.escrow ? (
           <EscrowFunding project={project} />
         ) : (
           <div>
             <EmptyState text="This project has no vault yet." />
             <p>
-              The project owner creates one from{" "}
-              <Link href={`/projects/${project.slug}/manage`}>
-                Manage project
-              </Link>
-              .
+              Deposits and payments are not possible until a vault is recorded
+              for this project. The site has no control that creates a vault:
+              the project owner creates it on chain from its own wallet, and a
+              project revision then records it. Project owner:{" "}
+              <a href={CONTACT_MAILTO}>contact Slop</a> for vault setup.
             </p>
           </div>
         )}
@@ -1489,8 +1509,8 @@ function HowItWorksPage() {
             <li>
               <strong>4. Score and reward review</strong>
               <p>
-                Accepted outcomes receive Slop Score. Funded projects pay out
-                monthly by share of score.
+                Accepted outcomes receive Slop Score. Funded projects with
+                payments enabled pay out monthly by share of score.
               </p>
             </li>
           </ol>
@@ -1525,8 +1545,9 @@ function HowItWorksPage() {
             <li>
               <strong>4. Automatic payment</strong>
               <p>
-                Funded awards pay out from the project vault after the 72-hour
-                monthly cutoff, unless you turn automatic payment off.
+                When payments are enabled, funded awards pay out from the
+                project vault after the 72-hour monthly cutoff, unless you turn
+                automatic payment off.
               </p>
             </li>
           </ol>
@@ -1668,9 +1689,10 @@ function HowItWorksPage() {
           </p>
           <p>
             The owner may change proposed amounts privately before the monthly
-            cutoff; current allocations are then distributed automatically
-            unless the owner turned that off. A funded award can wait for a
-            wallet; confirming one later does not require another monthly cycle.
+            cutoff; if payments are enabled, current allocations are then
+            distributed automatically unless the owner turned that off. A funded
+            award can wait for a wallet; confirming one later does not require
+            another monthly cycle.
           </p>
         </details>
       </section>
@@ -1767,10 +1789,11 @@ function HowItWorksPage() {
           <summary>When are payments sent?</summary>
           <p>
             Monthly. When a calendar month ends (UTC), the owner has 72 hours to
-            adjust or finalize its awards. A funded vault then pays the current
-            allocations automatically unless the owner turned that off.
-            Submitted means verification is pending; paid means finalized
-            evidence reconciles the award and fee.
+            adjust or finalize its awards. If the project has payments enabled,
+            a funded vault then pays the current allocations automatically
+            unless the owner turned that off. With payments disabled, no payment
+            is sent. Submitted means verification is pending; paid means
+            finalized evidence reconciles the award and fee.
           </p>
         </details>
         <details>
@@ -2066,7 +2089,9 @@ function SponsorsPage({
         <h1>Fund a project.</h1>
         <p>
           Deposit into a project&apos;s vault. Maintainers accept the work on
-          GitHub, and funded awards pay contributors automatically each month.
+          GitHub. When a project has payments enabled, funded awards pay
+          contributors automatically each month. Each project below shows its
+          payment state.
         </p>
       </section>
       <section className="custody-proof sponsor-pools">
@@ -2082,6 +2107,7 @@ function SponsorsPage({
               <tr>
                 <th scope="col">Project</th>
                 <th scope="col">Pool</th>
+                <th scope="col">Payments</th>
                 {hasReviewBudget ? <th scope="col">Review line</th> : null}
                 <th scope="col">Vault</th>
               </tr>
@@ -2096,6 +2122,7 @@ function SponsorsPage({
                       </Link>
                     </th>
                     <td>{sponsorPoolLabel(project.reward)}</td>
+                    <td>{paymentStateLabel(project)}</td>
                     {hasReviewBudget ? (
                       <td>
                         {project.reward.reviewBudget
@@ -2103,11 +2130,7 @@ function SponsorsPage({
                           : "none"}
                       </td>
                     ) : null}
-                    <td>
-                      {project.escrow?.deployments.length
-                        ? "Live"
-                        : "Not created"}
-                    </td>
+                    <td>{vaultStateLabel(project)}</td>
                   </tr>
                 );
               })}
@@ -2203,10 +2226,10 @@ function SponsorsPage({
             <strong>03 · Automatic payment</strong>
             <p>
               The project owner may change proposed awards privately within the
-              cap until 72 hours after the month ends. The vault then pays the
-              current allocations automatically, unless the owner turned that
-              off. An award is marked paid when finalized on-chain evidence
-              reconciles the award and the fee.
+              cap until 72 hours after the month ends. If payments are enabled,
+              the vault then pays the current allocations automatically, unless
+              the owner turned that off. An award is marked paid when finalized
+              on-chain evidence reconciles the award and the fee.
             </p>
           </li>
         </ol>
@@ -2217,8 +2240,8 @@ function SponsorsPage({
               <li>The monthly cap, with exact-cycle overrides.</li>
               <li>
                 Proposed awards may change privately within the cap before the
-                monthly cutoff. Automatic monthly payment is on by default and
-                can be turned off.
+                monthly cutoff. When payments are enabled, automatic monthly
+                payment is on by default and can be turned off.
               </li>
               <li>
                 Whether to add a named review budget as a second cash line.
