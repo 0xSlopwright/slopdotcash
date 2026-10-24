@@ -5,7 +5,14 @@ pinned `slop-scan-review-1` prompt, whose coverage areas are the scan's five
 threat checks, and a second model or specialist review only for an ambiguous
 or high-risk result ([worker](README.md)). It shares the transports, limits,
 identity checks and private records described below, and never retries, picks
-a fallback provider, clears or bans.
+a fallback provider, clears or bans. The scan service
+([`scan-service.ts`](scan-service.ts)) uses the `surplus-messages` transport:
+the Anthropic Messages wire of the owner's Surplus account at
+`https://api.surplusintelligence.ai/anthropic/v1/messages`, with a bearer
+key. Owner decision D16 pins `claude-opus-5.5` as the primary model and
+`gpt-6.1-sol` as the specialist. A response that Surplus marks with
+`x-si-truncated: 1` fails the review. The historical two-review contract
+does not accept this transport.
 
 The historical secure-VM contract (`slop-vetting-result-v1`) required two
 independent reviews of the exact evidence.

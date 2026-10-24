@@ -49,8 +49,13 @@ const SCAN_REVIEW: ReviewContract = {
 };
 
 export type ScannerProfile = {
-  reviewer: "astra" | "opus";
-  transport: "openai-responses" | "anthropic-messages";
+  reviewer: "astra" | "opus" | "sol";
+  /**
+   * "surplus-messages" is the Anthropic Messages wire of the owner's Surplus
+   * account (owner decision D16). The marketplace serves both scan models;
+   * its returned model name is not independent proof of the served model.
+   */
+  transport: "openai-responses" | "anthropic-messages" | "surplus-messages";
   /** Explicit operator-reviewed endpoint and version. No implicit provider/model selection. */
   endpoint: string;
   model: string;
@@ -142,10 +147,12 @@ function validateProfile(profile: ScannerProfile) {
   const endpoints = {
     "openai-responses": "https://api.openai.com/v1/responses",
     "anthropic-messages": "https://api.anthropic.com/v1/messages",
+    "surplus-messages":
+      "https://api.surplusintelligence.ai/anthropic/v1/messages",
   };
   if (
     profile.endpoint !== endpoints[profile.transport] ||
-    !["astra", "opus"].includes(profile.reviewer)
+    !["astra", "opus", "sol"].includes(profile.reviewer)
   )
     throw new Error("Unapproved provider endpoint");
   text(profile.model, 128);
@@ -198,7 +205,11 @@ async function reviewOne(
     review: {
       reviewer: profile.reviewer,
       provider:
-        profile.transport === "openai-responses" ? "openai" : "anthropic",
+        profile.transport === "openai-responses"
+          ? "openai"
+          : profile.transport === "surplus-messages"
+            ? "surplus"
+            : "anthropic",
       model: profile.model,
       promptPolicyRevision: contract.revision,
       inputManifestSha256: inputSha,
@@ -228,7 +239,15 @@ async function reviewOne(
         "content-type": "application/json",
         ...(openai
           ? { authorization: `Bearer ${profile.apiKey}` }
-          : { "x-api-key": profile.apiKey, "anthropic-version": "2023-06-01" }),
+          : profile.transport === "surplus-messages"
+            ? {
+                authorization: `Bearer ${profile.apiKey}`,
+                "anthropic-version": "2023-06-01",
+              }
+            : {
+                "x-api-key": profile.apiKey,
+                "anthropic-version": "2023-06-01",
+              }),
       },
       body: JSON.stringify(
         openai
@@ -249,6 +268,8 @@ async function reviewOne(
             },
       ),
     });
+    // Surplus marks a response that its deadline cut short.
+    const truncated = response.headers.get("x-si-truncated") === "1";
     const raw = await limitedResponse(response);
     result.responseSha256 = digest(raw);
     const body = record(JSON.parse(raw));
@@ -284,6 +305,7 @@ async function reviewOne(
         rateCardSha256: digest(JSON.stringify(rates)),
       };
     if (
+      truncated ||
       body.model !== profile.model ||
       (openai
         ? body.status !== "completed" ||
@@ -392,7 +414,8 @@ export async function reviewIndependently(input: {
   const bundle = prepare(input.evidence, input.inputSha256);
   if (
     new Set(input.profiles.map((profile) => profile.reviewer)).size !== 2 ||
-    new Set(input.profiles.map((profile) => profile.transport)).size !== 2
+    new Set(input.profiles.map((profile) => profile.transport)).size !== 2 ||
+    input.profiles.some((profile) => profile.transport === "surplus-messages")
   )
     throw new Error("Two independent reviewer profiles required");
   // Validate both profiles before either provider is contacted. No fallback or automatic retry.

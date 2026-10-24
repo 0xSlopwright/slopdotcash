@@ -73,6 +73,50 @@ live pin for a project that contributor flags alone paused. Banned and
 moderator-restricted projects wait for a moderator. An admin can still queue a
 scan by hand.
 
+### Scan service
+
+`scan-service.ts` chains steps 1 to 6 for each queued assessment. One cycle
+calls the signed refresh, reads the signed queue and, in queue order:
+
+1. acquires the exact commit and skill template (`acquireQueuedAssessment`);
+2. reads the repository files and the template inputs by digest
+   (`readQueuedScanInput`). The template files are scanned under
+   `slop-skill-template/`. The three generic acquisition gaps that the bounded
+   scan answers by its own definition are removed: the template is acquired,
+   the scan performs the model review, and dependencies are the lockfiles and
+   install-time downloads of their surfaces. Submodule, link and LFS gaps stay;
+3. inspects the files and runs the primary review with Surplus
+   `claude-opus-5.5`;
+4. runs the specialist review with Surplus `gpt-6.1-sol` only when
+   `composeScanResult` reports `needsSpecialist`;
+5. registers and uploads the report (`trace`), the inventory (`manifest`),
+   every dependency lock and every repository artifact under the scan run;
+6. publishes the canonical result bytes once with `publishResult`.
+
+An assessment whose publication the journal already reserved is skipped, so
+an uncertain earlier attempt is never sent again; an operator reconciles it.
+Each step that fails stops only that assessment, and the next cycle scans it
+again. The service never executes repository content, so it never needs the
+isolated runner for ordinary source. It never sets a confirmation, so it never
+publishes `malicious`; a moderator confirms malice.
+
+Run one cycle from an operator host:
+
+```sh
+VETTING_SERVICE_ORIGIN=https://slop.cash \
+VETTING_SERVICE_PRIVATE_KEY=<Ed25519 PKCS #8, base64> \
+SURPLUS_API_KEY=<owner Surplus key> \
+VETTING_SCAN_PROFILE='{"policyVersion":"…","maxOutputTokens":4096,"rateCards":{"primary":{…},"specialist":{…}}}' \
+VETTING_WORK_DIRECTORY=/private/scan-work \
+VETTING_JOURNAL_DIRECTORY=/private/scan-journal \
+bun workers/vetting/scan-service.ts
+```
+
+Each rate card has the four `…NanoUsdPerToken` integer fields of
+[SCANNERS.md](SCANNERS.md). The command prints one JSON outcome per
+assessment with identifiers and outcomes only, and exits 1 when any
+assessment did not publish.
+
 ### Isolated execution
 
 Ordinary source needs no execution. When an install hook or download cannot
@@ -87,7 +131,8 @@ specialist or the isolated analysis releases it.
 ## Evidence
 
 ```sh
-bun test scripts/vetting-bounded-scan.test.ts scripts/vetting-scan-flags.test.ts
+bun test scripts/vetting-bounded-scan.test.ts scripts/vetting-scan-flags.test.ts \
+  scripts/vetting-scan-service.test.ts
 ```
 
 The worker tests use harmless fixtures and a real local HTTP server that
@@ -98,6 +143,15 @@ API workflow runs on the real migrations and handlers with an ephemeral
 Ed25519 key and local workerd R2. It proves that a clean supported scan lets
 activation proceed, reuse and automatic rescans, refusal without retained
 evidence, and that incomplete results stay quarantined.
+
+`vetting-scan-service.test.ts` runs the scan service itself: the signed
+refresh, queue, exact Git acquisition from a local Git repository, the
+Surplus Messages transport, evidence retention in local workerd R2 and
+journaled publication. It proves that one cycle scans a listed project
+clean so that the owner can activate it; that risky new content is
+flagged, sent to the specialist and kept quarantined, with no model-made
+ban; that a clean fresh scan reinstates a two-flag pause; and that a
+reserved publication is never sent again.
 
 These tests do not prove a real provider review, the deployed scanner
 service, an approved isolated runner or live acceptance. No real provider
@@ -142,8 +196,8 @@ VM.
 
 | Item | Status |
 | --- | --- |
-| Scanner service deployment | Not deployed by this source. It needs its Ed25519 key, the public key in `VETTING_RESULT_PUBLIC_KEYS`, a provider profile and the evidence store policy. |
-| Provider and model | Owner decision D16: Surplus `claude-opus-5.5` is the primary model and Surplus `gpt-6.1-sol` is the specialist, only for ambiguous or high-risk artifacts. The operator pins both in the provider profile; the source has no default. |
-| Isolated runner | Owner decision D16: Cloudflare Sandboxes/Containers, one disposable sandbox per risky artifact, with `enableInternet: false` set explicitly and no secrets. Adapting this worker from the Bubblewrap host to that runner is follow-up work. |
+| Scanner service deployment | `scan-service.ts` runs the complete cycle. It is not deployed by this source: a scheduled operator host (or the D16 fallback VM) runs it with its Ed25519 key, the public key in `VETTING_RESULT_PUBLIC_KEYS`, `SURPLUS_API_KEY`, the rate cards and the evidence store policy. |
+| Provider and model | Owner decision D16: Surplus `claude-opus-5.5` is the primary model and Surplus `gpt-6.1-sol` is the specialist, only for ambiguous or high-risk results. `surplusScanProfiles` pins both; the operator supplies the key and rate cards. Surplus's returned model name is not independent proof of the served model. |
+| Isolated runner | Owner decision D16: Cloudflare Sandboxes/Containers, one disposable sandbox per risky artifact, with `enableInternet: false` set explicitly and no secrets. Not in this source. Until it exists, a committed binary, archive or install-time download stays quarantined and its result stays incomplete for a moderator. |
 | Specialist authority | Owner decision D3: moderators confirm malice and release quarantined artifacts. A model label alone cannot; a signed malicious result restricts the project until a moderator decides. |
 | Live acceptance | Clean, incomplete, malicious, flag and reinstatement paths on staging with the real services. |
