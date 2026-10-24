@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
+import {DeployFactory} from "./DeployFactory.sol";
 
 import {EscrowFactory, IERC20, ProjectEscrow, Purpose} from "../src/ProjectEscrow.sol";
 import {TestDollar} from "../integration/TestDollar.sol";
@@ -54,7 +55,7 @@ contract MonthlyCommitmentTest {
         vm.warp(NOVEMBER_OPENS - 30 days);
         authority = vm.addr(AUTHORITY_KEY);
         usdc = new TestDollar();
-        factory = new EscrowFactory(REGISTRAR, FEE, authority, DELAY);
+        factory = DeployFactory.create(REGISTRAR, FEE, authority, DELAY);
         vm.prank(OWNER);
         vault = ProjectEscrow(factory.create(PROJECT, IERC20(address(usdc)), Purpose.Ordinary));
         vm.prank(OWNER);

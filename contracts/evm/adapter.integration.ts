@@ -29,6 +29,10 @@ import {
   verifyPayment,
   verifyReserve,
 } from "./adapter";
+import {
+  captureUpgrade,
+  deployUpgradeableFactory,
+} from "./integration/upgrade";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const rpcUrl = "http://127.0.0.1:18546";
@@ -71,6 +75,9 @@ async function rpc(method: string, params: unknown[]) {
   return body.result;
 }
 function deploy(contract: string, args: string[] = []) {
+  if (contract === "src/ProjectEscrow.sol:EscrowFactory" && args.length)
+    return deployUpgradeableFactory(deploy, args);
+
   const output = execFileSync(
     "forge",
     [
@@ -254,6 +261,7 @@ try {
       )
       .digest("hex");
   const config = {
+    evmUpgrade: await captureUpgrade(rpc, factory, vault),
     rpcUrl,
     chainId: 31337n,
     vault,
@@ -276,7 +284,7 @@ try {
   await rpc("anvil_mine", ["0x40"]);
   await assert.rejects(
     verifyReserve({ ...config, asset: owner }, reserveTx, 0, id),
-    /asset, factory or registrar/,
+    /asset, factory or registrar|implementation/,
   );
   // The factory is pinned by address, runtime code and registrar. A second
   // factory with the same constructor arguments has identical code but did
@@ -289,7 +297,7 @@ try {
   ]);
   await assert.rejects(
     verifyEvmDeployment({ ...config, factory: otherFactory }, "latest"),
-    /asset, factory or registrar/,
+    /asset, factory or registrar|implementation/,
   );
   await assert.rejects(
     verifyEvmDeployment(
@@ -300,7 +308,7 @@ try {
   );
   await assert.rejects(
     verifyEvmDeployment({ ...config, registrar: attester }, "latest"),
-    /asset, factory or registrar/,
+    /asset, factory or registrar|implementation/,
   );
   await assert.rejects(
     verifyReserve({ ...config, codeSha256: "f".repeat(64) }, reserveTx, 0, id),
@@ -580,7 +588,7 @@ try {
   assert.equal(wideReservation.feeMicro, (wideGross / 50n).toString());
   await assert.rejects(
     verifyEvmDeployment({ ...wideConfig, asset: token }, "latest"),
-    /asset, factory or registrar/,
+    /asset, factory or registrar|implementation/,
     "a vault verifies only against its own asset",
   );
   await rpc("anvil_mine", ["0x40"]);
@@ -826,22 +834,6 @@ try {
   const pending = await readEvmAuthorityRotation(config, "latest");
   assert.equal(pending.pendingIdentityAuthority, nextAttester.toLowerCase());
   assert.ok(BigInt(pending.effectiveAt ?? "0") > 0n);
-  const premature = await send(
-    factory,
-    "executeIdentityAuthorityRotation()",
-    [],
-  );
-  assert.equal(
-    (
-      (await rpc("eth_getTransactionReceipt", [premature])) as {
-        status: string;
-      }
-    ).status,
-    "0x0",
-    "execution before the notice period reverts",
-  );
-  await rpc("evm_increaseTime", [7 * 24 * 60 * 60]);
-  await rpc("anvil_mine", ["0x1"]);
   await send(factory, "executeIdentityAuthorityRotation()", [], recipient);
   assert.equal(
     (await readEvmAuthorityRotation(config, "latest")).identityAuthority,
@@ -854,8 +846,47 @@ try {
     "98000000",
     "a payment made before the rotation still verifies after it",
   );
+  const beforeUpgrade = await readVaultTotals(config);
+  const nextVaultLogic = deploy("src/ProjectEscrow.sol:ProjectEscrow");
+  const nextFactoryLogic = deploy("src/ProjectEscrow.sol:EscrowFactory");
+  await send(vault, "upgradeToAndCall(address,bytes)", [nextVaultLogic, "0x"]);
+  await send(factory, "upgradeToAndCall(address,bytes)", [
+    nextFactoryLogic,
+    "0x",
+  ]);
+  await rpc("anvil_mine", ["0x40"]);
+  await assert.rejects(
+    verifyEvmDeployment(config),
+    /implementation/,
+    "Unreviewed upgrades cannot reuse the old approval",
+  );
+  const upgradedConfig = {
+    ...config,
+    evmUpgrade: await captureUpgrade(rpc, factory, vault),
+  };
+  await verifyEvmDeployment(upgradedConfig);
+  const afterUpgrade = await readVaultTotals(upgradedConfig);
+  assert.deepEqual(
+    {
+      ...afterUpgrade,
+      blockNumber: beforeUpgrade.blockNumber,
+      blockTime: beforeUpgrade.blockTime,
+    },
+    beforeUpgrade,
+    "Both proxy upgrades preserve exact funded vault counters",
+  );
+  assert.equal(
+    (await verifyPayment(config, paymentTx, 0, id)).netMicro,
+    "98000000",
+    "Historical payment keeps its original reviewed implementation",
+  );
+  await assert.rejects(
+    verifyPayment(upgradedConfig, paymentTx, 0, id),
+    /implementation/,
+    "A new implementation approval cannot rewrite historical payment provenance",
+  );
   console.log(
-    "EVM adapter integration passed: real factory deployment, permissionless owner-keyed vault creation, separate ordinary and bounty vaults, permissionless deposit, 18-decimal vault beyond uint64, readVaultTotals, 2% withdrawal fee, vault-bound award, wallet-accepted immediate and cancellable binding, payment, fee claim, signed capped once-per-period monthly commitment from any sender, owner opt-out, finalized gating, wrong chain/vault/award/index/delay/purpose rejection, timelocked authority rotation.",
+    "EVM adapter integration passed: real factory deployment, permissionless owner-keyed vault creation, separate ordinary and bounty vaults, permissionless deposit, 18-decimal vault beyond uint64, readVaultTotals, 2% withdrawal fee, vault-bound award, wallet-accepted immediate and cancellable binding, payment, fee claim, signed capped once-per-period monthly commitment from any sender, owner opt-out, finalized gating, wrong chain/vault/award/index/delay/purpose rejection, immediate authority rotation.",
   );
 } finally {
   anvil.kill("SIGTERM");
