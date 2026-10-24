@@ -1993,7 +1993,10 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
   // The owner consumes leaf B's source before the month is admitted.
   const consumedTransaction = await commit("leaf-b", 999, 1);
   // The executor reads only finalized accounts, including this newly created project.
-  await provider.connection.confirmTransaction(consumedTransaction, "finalized");
+  await provider.connection.confirmTransaction(
+    consumedTransaction,
+    "finalized",
+  );
   const consumedAt = (
     await program.account.obligation.fetch(obligation("leaf-b"))
   ).committedAt.toNumber();
