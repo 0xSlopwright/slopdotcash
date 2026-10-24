@@ -867,7 +867,7 @@ async function runSetupCheck(
     project = await appendRevision(request, deps, {
       current: project,
       manifest: { ...project.manifest, status: "active" },
-      reason: `Activated automatically after setup checks for @${actor.githubLogin}: ${authority.message} Slopbot installation ${access.access.installationId}. Clean scan ${clearance.assessment.id}.`,
+      reason: `Activated automatically after setup checks for @${actor.githubLogin}: ${authority.message} Slopbot installation ${access.access.installationId}. ${clearance.assessment === null ? "Grandfathered before security scans" : `Clean scan ${clearance.assessment.id}`}.`,
       actor,
     });
     activatedRevision = project.revision;
@@ -1813,6 +1813,7 @@ async function recordEnforcement(
     );
     if (
       vetting.state !== "cleared" ||
+      vetting.assessment === null ||
       vetting.assessment.revision !== project.revision ||
       (latestRestriction !== undefined &&
         vetting.assessment.requestedAt < latestRestriction.createdAt)
