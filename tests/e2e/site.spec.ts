@@ -944,6 +944,123 @@ test("reaches and reads older inbox notifications without losing the page", asyn
   await expect(page.locator(".inbox-item")).toHaveCount(100);
 });
 
+test("the inbox keeps read, acknowledged and email outcomes distinct and puts email settings after the notices", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  const notice = (
+    i: number,
+    emailDelivery: string | undefined,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    eventKey: `project-revision:delivery:${i}`,
+    kind: "project_revision",
+    subject: `delivery-${i}`,
+    detail: null,
+    actionPath: "/projects/eliza",
+    sourceAt: `2026-10-22T0${i}:00:00.000Z`,
+    createdAt: `2026-10-22T0${i}:00:00.000Z`,
+    readAt: i % 2 === 0 ? null : "2026-10-22T09:00:00.000Z",
+    ...(emailDelivery ? { emailDelivery } : {}),
+    ...extra,
+  });
+  const notifications = [
+    notice(1, "sent"),
+    notice(2, "delivered"),
+    notice(3, "failed"),
+    notice(4, "uncertain"),
+    notice(5, "queued"),
+    notice(6, undefined),
+    {
+      ...notice(7, "sent"),
+      eventKey: "security-case:case-0001:triage",
+      kind: "security_case",
+      subject: "case-0001",
+      actionPath: "/security",
+      acknowledgedAt: null,
+    },
+  ];
+  await page.route(/\/api\/v1\/notifications(?:\?.*)?$/u, (route) =>
+    route.fulfill({
+      json: { notifications, unread: 3, nextCursor: null },
+    }),
+  );
+  await page.route("**/api/v1/notifications/email", (route) =>
+    route.fulfill({ json: { enabled: false, availability: "unverified" } }),
+  );
+  await page.goto("/inbox", { waitUntil: "networkidle" });
+  const item = (subject: string) =>
+    page.locator(".inbox-item", { hasText: subject });
+  await expect(item("delivery-1").locator(".inbox-delivery")).toHaveText(
+    "Email: sent",
+  );
+  await expect(item("delivery-1").locator(".inbox-state")).toHaveText("Read");
+  await expect(item("delivery-2").locator(".inbox-delivery")).toHaveText(
+    "Email: delivered",
+  );
+  await expect(item("delivery-2").locator(".inbox-state")).toHaveText("Unread");
+  await expect(item("delivery-3").locator(".inbox-delivery")).toHaveText(
+    "Email: failed",
+  );
+  await expect(item("delivery-4").locator(".inbox-delivery")).toHaveText(
+    "Email: uncertain",
+  );
+  await expect(item("delivery-5").locator(".inbox-delivery")).toHaveText(
+    "Email: queued",
+  );
+  await expect(item("delivery-6").locator(".inbox-delivery")).toHaveCount(0);
+  // A private notice stays generic: the provider-accepted email does not
+  // stand in for the explicit acknowledgment.
+  const security = item("case-0001");
+  await expect(security.locator(".inbox-delivery")).toHaveText("Email: sent");
+  await expect(
+    security.getByRole("button", { name: /^Acknowledge:/u }),
+  ).toBeVisible();
+  const preferences = page.getByRole("region", { name: "Email preferences" });
+  await expect(preferences).toContainText(
+    "does not use your GitHub profile email, so retrying will not add one",
+  );
+  await expect(
+    preferences.getByRole("button", { name: "Retry email preferences" }),
+  ).toHaveCount(0);
+  // Optional settings come after the notices and their actions.
+  const order = await page.evaluate(() => {
+    const list = document.querySelector(".inbox-list");
+    const settings = document.querySelector(
+      "[aria-labelledby='inbox-email-heading']",
+    );
+    return list && settings
+      ? list.compareDocumentPosition(settings) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+      : 0;
+  });
+  expect(order).toBeGreaterThan(0);
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+        .analyze()
+    ).violations,
+  ).toEqual([]);
+  await page.screenshot({
+    path: test.info().outputPath("inbox-delivery-states.png"),
+    fullPage: true,
+  });
+  await page.unroute("**/api/v1/notifications/email");
+  await page.route("**/api/v1/notifications/email", (route) =>
+    route.fulfill({ json: { enabled: false, availability: "unavailable" } }),
+  );
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(
+    preferences.getByRole("button", { name: "Retry email preferences" }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("an admin leaves an unset reward asset unchanged until choosing it", async ({
   page,
 }) => {
