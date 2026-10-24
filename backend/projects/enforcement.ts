@@ -133,6 +133,26 @@ export function projectRestriction(
   return restriction;
 }
 
+/** A shared project appeal must not claim that another account filed evidence. */
+export function accountAppealState(
+  restriction: ProjectRestriction,
+  githubId: string,
+): AppealState {
+  const boundary =
+    restriction.records.findLast((record) =>
+      ["ban", "quarantine", "reinstate", "deny_reinstatement"].includes(
+        record.action,
+      ),
+    )?.sequence ?? 0;
+  const request = restriction.records.findLast(
+    (record) =>
+      record.action === "request_reinstatement" &&
+      record.actor?.githubId === githubId &&
+      record.sequence > boundary,
+  );
+  return request ? "requested" : "none";
+}
+
 /**
  * True when the latest restrictive record is a signed confirmed malicious
  * Ban that no moderator has decided yet (PRD sections 2 and 8). The
@@ -362,7 +382,13 @@ export function planEnforcement(input: {
         restriction.bannedMaintainers.length === 0
       )
         refuse("not_restricted", "The project has no restriction to appeal");
-      if (restriction.appeal === "requested")
+      if (
+        restriction.appeal === "requested" &&
+        (!restriction.bannedMaintainers.some(
+          (account) => account.githubId === actor.githubId,
+        ) ||
+          accountAppealState(restriction, actor.githubId) === "requested")
+      )
         refuse("appeal_open", "A reinstatement request is already open");
       return {
         stateAfter: restriction.state,

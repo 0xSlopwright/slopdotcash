@@ -764,6 +764,30 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
     stateAfter: "banned",
     afterRevision: null,
   });
+  // Each banned account retains its own appeal and evidence.
+  expect((await t.call("GET", "project-appeals", "900000004")).body).toEqual({
+    appeals: [{ projectId: "responsibility", state: "banned", appeal: "none" }],
+  });
+  const secondAppeal = await t.call("POST", "project-appeals", "900000004", {
+    projectId: "responsibility",
+    reason: "Review the evidence for my account separately",
+    evidenceReference: "private-second-account-appeal-fixture",
+  });
+  expect(secondAppeal.status).toBe(200);
+  expect((await t.call("GET", "project-appeals", "900000004")).body).toEqual({
+    appeals: [
+      { projectId: "responsibility", state: "banned", appeal: "requested" },
+    ],
+  });
+  expect(
+    (
+      await t.call("POST", "project-appeals", OTHER, {
+        projectId: "responsibility",
+        reason: "Duplicate appeal",
+        evidenceReference: "private-account-appeal-fixture",
+      })
+    ).status,
+  ).toBe(409);
   // Filing an appeal grants no new participation or project authority.
   expect((await newRun()).status).toBe(403);
   const restore = {
@@ -771,7 +795,7 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
     reason: "Evidence clears this account only",
     evidenceReference: "private-account-review-fixture",
     expectedRevision: (await t.persistence.getProject(project.id))?.revision,
-    expectedSequence: 4,
+    expectedSequence: 5,
     responsibleAccounts: [{ githubId: OTHER, githubLogin: "other" }],
   };
   expect(

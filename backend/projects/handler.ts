@@ -46,6 +46,7 @@ import {
   purgeProjectCache,
 } from "./edge-cache";
 import {
+  accountAppealState,
   activeAccountBans,
   activeRestrictions,
   awaitsMaliciousDecision,
@@ -1668,7 +1669,7 @@ async function listAccountAppeals(
       return {
         projectId,
         state: restriction.state,
-        appeal: restriction.appeal,
+        appeal: accountAppealState(restriction, session.githubId),
       };
     }),
   });
