@@ -39,18 +39,6 @@ export const E2E_SECURITY_ACCOUNTS = Object.freeze({
 });
 
 /**
- * One maintainer session per browser viewport, whose own user repositories
- * the maintainer-ban workflow lists. A ban is account-wide, so viewports
- * never share the banned account.
- */
-export const E2E_MAINTAINER_ACCOUNTS = Object.freeze({
-  "maintainer-wide-desktop": "900000021",
-  "maintainer-desktop": "900000022",
-  "maintainer-tablet": "900000023",
-  "maintainer-narrow-mobile": "900000024",
-});
-
-/**
  * The installation token the fixture mints for the slopdotcash App stand-in,
  * only for a repository-scoped "Repository security advisories: read"
  * request. The fixture refuses advisory reads without it.
@@ -63,8 +51,7 @@ export function fixtureRepository(fullName) {
   const memberId =
     ownerLogin === "e2e-applicant"
       ? "900000002"
-      : (E2E_SECURITY_ACCOUNTS[ownerLogin.replace(/^e2e-/, "")] ??
-        E2E_MAINTAINER_ACCOUNTS[ownerLogin.replace(/^e2e-/, "")]);
+      : E2E_SECURITY_ACCOUNTS[ownerLogin.replace(/^e2e-/, "")];
   const owner = memberId
     ? { login: ownerLogin, id: Number(memberId), type: "User" }
     : ownerLogin === E2E_OWNER.login
@@ -625,8 +612,7 @@ export function startGitHubApiFixture(port) {
         owner === E2E_OWNER.login ||
         owner === E2E_ORGANIZATION.login ||
         owner === "e2e-applicant" ||
-        Object.hasOwn(E2E_SECURITY_ACCOUNTS, owner.replace(/^e2e-/, "")) ||
-        Object.hasOwn(E2E_MAINTAINER_ACCOUNTS, owner.replace(/^e2e-/, ""))
+        Object.hasOwn(E2E_SECURITY_ACCOUNTS, owner.replace(/^e2e-/, ""))
       ) {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify(fixtureRepository(repository[1])));

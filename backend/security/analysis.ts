@@ -270,9 +270,16 @@ export function surplusSecurityAnalyzer(options: {
       }),
     });
     if (!response.ok) throw new Error("Provider unavailable");
+    // Surplus marks an answer its deadline cut short, even when the JSON
+    // and stop reason look complete.
+    const truncated = response.headers.get("x-si-truncated") === "1";
     const body = record(await response.json());
     // A refusal, a cut-off answer or any other stop is not a proposal.
-    if (body.stop_reason !== "end_turn" || !Array.isArray(body.content))
+    if (
+      truncated ||
+      body.stop_reason !== "end_turn" ||
+      !Array.isArray(body.content)
+    )
       throw new Error("Incomplete analysis");
     return body.content
       .map((block) => record(block))

