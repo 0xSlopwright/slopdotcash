@@ -77,95 +77,97 @@ export function OwnerBountyVault({
   return (
     <section className="owner-section" aria-label="Bounty funds">
       <h2>Bounty funds</h2>
-      <p>
-        These funds are separate from contribution rewards. Slop shows this
-        balance only to project owners.
-      </p>
-      {state.status === "loading" ? (
-        <p role="status">Loading private bounty funds…</p>
-      ) : null}
-      {state.status === "error" ? <p role="alert">{state.message}</p> : null}
-      {state.status === "ready" ? (
-        <>
-          {state.refreshError ? (
-            <p role="alert">
-              {state.refreshError}{" "}
-              {state.funds
-                ? "Last verified balance is stale."
-                : "Last verified vault information is shown."}{" "}
-              New setup and deposits are disabled until a successful refresh.
-              Existing transaction checks and owner withdrawals remain
-              available.
-            </p>
-          ) : null}
-          {!state.canSetup && !state.refreshError ? (
-            <p>
-              This project is restricted. New setup and deposits are disabled.
-              {deployments.length > 0
-                ? " The owner can still check existing deposit or withdrawal transactions and withdraw free funds."
-                : " Vault registration can resume after reinstatement."}
-            </p>
-          ) : null}
-          {state.funds ? (
-            <>
-              <p>
-                Available for new awards:{" "}
-                {formatAssetAmount(
-                  state.funds.availableMinor,
-                  state.funds.decimals,
-                )}{" "}
-                {state.funds.currency}.
+      <div className="owner-form">
+        <p>
+          These funds are separate from contribution rewards. Slop shows this
+          balance only to project owners.
+        </p>
+        {state.status === "loading" ? (
+          <p role="status">Loading private bounty funds…</p>
+        ) : null}
+        {state.status === "error" ? <p role="alert">{state.message}</p> : null}
+        {state.status === "ready" ? (
+          <>
+            {state.refreshError ? (
+              <p role="alert">
+                {state.refreshError}{" "}
+                {state.funds
+                  ? "Last verified balance is stale."
+                  : "Last verified vault information is shown."}{" "}
+                New setup and deposits are disabled until a successful refresh.
+                Existing transaction checks and owner withdrawals remain
+                available.
               </p>
+            ) : null}
+            {!state.canSetup && !state.refreshError ? (
               <p>
-                Finalized balance checked at{" "}
-                {new Date(state.funds.snapshotAt).toLocaleString()}.
+                This project is restricted. New setup and deposits are disabled.
+                {deployments.length > 0
+                  ? " The owner can still check existing deposit or withdrawal transactions and withdraw free funds."
+                  : " Vault registration can resume after reinstatement."}
               </p>
-            </>
-          ) : (
-            <p>
-              No current finalized balance is available. After a deposit, wait
-              for the private scanner, then refresh.
-            </p>
-          )}
-          {deployments.length === 0 && state.canSetup ? (
-            <OwnerVaultSetup
-              project={project}
-              payoutPolicy="security-bounty"
-              onRegistered={(registered, connected, _notice, revision) => {
-                setWallet(connected);
-                onRegistered({ project: registered, revision });
-                setReload((value) => value + 1);
-              }}
-            />
-          ) : null}
-          {deployments.map((deployment) =>
-            ESCROW_NETWORKS[deployment.network].family === "evm" ? (
-              <VaultActions
-                key={`${deployment.network}:${deployment.vault}`}
-                projectId={project.id}
-                deployment={deployment}
-                payoutPolicy="security-bounty"
-                canDeposit={state.canSetup}
-                connectedWallet={wallet ?? undefined}
-                onFinalized={() => setReload((value) => value + 1)}
-              />
+            ) : null}
+            {state.funds ? (
+              <>
+                <p>
+                  Available for new awards:{" "}
+                  {formatAssetAmount(
+                    state.funds.availableMinor,
+                    state.funds.decimals,
+                  )}{" "}
+                  {state.funds.currency}.
+                </p>
+                <p>
+                  Finalized balance checked at{" "}
+                  {new Date(state.funds.snapshotAt).toLocaleString()}.
+                </p>
+              </>
             ) : (
-              <p key={deployment.vault}>
-                This bounty vault uses Solana. The owner wallet can manage its
-                funds.
+              <p>
+                No current finalized balance is available. After a deposit, wait
+                for the private scanner, then refresh.
               </p>
-            ),
-          )}
-        </>
-      ) : null}
-      <button
-        type="button"
-        className="button secondary-button"
-        disabled={state.status === "loading"}
-        onClick={() => setReload((value) => value + 1)}
-      >
-        Refresh bounty funds
-      </button>
+            )}
+            {deployments.length === 0 && state.canSetup ? (
+              <OwnerVaultSetup
+                project={project}
+                payoutPolicy="security-bounty"
+                onRegistered={(registered, connected, _notice, revision) => {
+                  setWallet(connected);
+                  onRegistered({ project: registered, revision });
+                  setReload((value) => value + 1);
+                }}
+              />
+            ) : null}
+            {deployments.map((deployment) =>
+              ESCROW_NETWORKS[deployment.network].family === "evm" ? (
+                <VaultActions
+                  key={`${deployment.network}:${deployment.vault}`}
+                  projectId={project.id}
+                  deployment={deployment}
+                  payoutPolicy="security-bounty"
+                  canDeposit={state.canSetup}
+                  connectedWallet={wallet ?? undefined}
+                  onFinalized={() => setReload((value) => value + 1)}
+                />
+              ) : (
+                <p key={deployment.vault}>
+                  This bounty vault uses Solana. The owner wallet can manage its
+                  funds.
+                </p>
+              ),
+            )}
+          </>
+        ) : null}
+        <button
+          type="button"
+          className="button secondary-button"
+          disabled={state.status === "loading"}
+          onClick={() => setReload((value) => value + 1)}
+        >
+          Refresh bounty funds
+        </button>
+      </div>
     </section>
   );
 }
