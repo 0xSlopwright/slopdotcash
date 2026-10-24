@@ -4987,6 +4987,13 @@ small {
 }
 
 /* Compact owner setup checks; text and icons both communicate state. */
+.owner-section.project-setup-status {
+  display: block;
+}
+.project-setup-status > .handoff-actions {
+  margin: 16px 0;
+}
+
 .setup-checks {
   margin: 1.5rem 0 0;
   border: 1px solid var(--input-border);
