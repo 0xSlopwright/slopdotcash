@@ -16,6 +16,7 @@
 import { readBoundedJson } from "../../src/lib/browser-json";
 import type { EscrowDeployment } from "../../src/lib/escrow-policy.mjs";
 import {
+  type MonthlyAwardState,
   type PaymentAsset,
   VAULT_SNAPSHOT_STALE_MS,
 } from "../../src/lib/payments/contracts";
@@ -255,12 +256,8 @@ async function loadRun(
     : null;
 }
 
-export type MonthlyAwardState =
-  | "underfunded"
-  | "excluded"
-  | "awaiting-reservation"
-  | "reserved"
-  | "paid";
+export type { MonthlyAwardState };
+
 /** Chain evidence sets reserved/paid; the recorded ban decision sets excluded. */
 async function awardStates(
   db: D1Database,
