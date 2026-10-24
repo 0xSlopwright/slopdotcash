@@ -362,7 +362,10 @@ async function reviewOne(
         throw new Error("Unexpected provider output");
       output = text(answers[0].text, 1024 * 1024);
     }
-    const review = record(JSON.parse(output));
+    // Some completed model replies wrap the single JSON answer in a code
+    // fence. Accept only that whole-answer wrapper, never surrounding prose.
+    const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```$/u.exec(output.trim());
+    const review = record(JSON.parse(fenced?.[1] ?? output));
     const coverage = record(review.coverage);
     if (
       Object.keys(coverage).length !== contract.areas.length ||

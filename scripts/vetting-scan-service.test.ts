@@ -186,7 +186,10 @@ async function surplus(request: Request, path: string): Promise<Response> {
           thinking: "Synthetic reasoning block",
           signature: "fixture",
         },
-        { type: "text", text: review(items, provider.primary) },
+        {
+          type: "text",
+          text: "```json\n" + review(items, provider.primary) + "\n```",
+        },
       ],
       usage,
     });
