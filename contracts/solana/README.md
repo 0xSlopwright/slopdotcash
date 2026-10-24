@@ -201,7 +201,6 @@ the owner can turn it off at any time (the opt-out). A period is a calendar UTC
 month written as `YYYYMM`. Its window opens 72 hours after the month ends, at
 00:00 UTC on the 4th, and closes when the next month's window opens, so only one
 period is open at a time.
-
 1. Anyone calls `commit_monthly(period, allocation_root, total, frozen_at)`
    inside the window, while the switch is on. The instruction just before it in the same
    transaction must be an Ed25519 program check of one signature by the
@@ -446,13 +445,16 @@ build before it cannot be read until anyone calls the permissionless
 payer and starts the new fields at zero (that build sent fees out at once).
 The same revision appended `released`, `frozen_at` and `expired` to
 `MonthlyAllocation` (now 109 bytes).
-A month recorded by the earlier build has no settled markers and is not in
-`monthly_outstanding`, so the new build cannot read it and its awards fail
-closed. Before an in-place upgrade, `getProgramAccounts` must show no
-92-byte month account; devnet program `7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ`
-had none on 24 October 2026. A project from an earlier build cannot sign with the new
-seeds, so the D13 revision is a new deployment, and the earlier
-`migrate_project` path is removed. Later upgrades must preserve this layout or use an explicitly reviewed migration.
+A month of an earlier layout (92 bytes from the 316-byte build, or 100 bytes
+from the interim build with `released` only) cannot be read by this build:
+its awards fail closed, and any outstanding gross it added to
+`monthly_outstanding` could never settle or expire, so the owner's direct
+commits would stay refused for good. An in-place upgrade therefore requires
+that `getProgramAccounts` shows no MonthlyAllocation account of any size other
+than 109 bytes; `config-plan.mjs migrate` refuses to plan otherwise. Devnet
+program `7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ` had no month account on
+24 October 2026. A project from before D13 cannot sign with the D13 seeds, so
+D13 itself was a new deployment. Later upgrades must preserve this layout or use an explicitly reviewed migration.
 A replacement deployment must preserve the old deployment and its obligations.
 
 `owner-plan.mjs` takes the reviewed deployment input file;private RPC URL, expected genesis and a fresh
