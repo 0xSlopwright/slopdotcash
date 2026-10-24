@@ -321,12 +321,15 @@ automatic monthly distribution.
 ## Participation points
 
 Slop Points are the single contribution and participation unit governed by
-`protocol/points-v1.md`. Welcome and verified X-connection awards are not accepted-work score.
+`protocol/points-v1.md`. Welcome and X-connection points are discontinued
+from 24 October 2026 (PRD section 11, D2): grant none, and exclude recorded
+awards from every displayed total and ranking. Keep those records in the
+append-only journal; never delete or rewrite them.
 Verified payout recognition is fixed per recipient/project/cycle, never per dollar
 or transfer. X or Telegram control never confers GitHub, organization, or payment
 authority; a Telegram connection earns no points (PRD SOC-02).
 Only accepted-work points for the project and period determine reward shares;
-never feed welcome, social or payout-recognition bonuses into rewards. Preserve
+never feed historical participation or payout-recognition bonuses into rewards. Preserve
 historical settlements and compatibility fields without exposing a separate
 score metric. Preserve the append-only journal,
 source coverage, original contribution dates, and distinct recording dates.
@@ -348,9 +351,10 @@ budgets and their terms; do not offer a second review budget for new projects.
 Review credit follows the canonical scoring policy.
 
 Automatic monthly payment is the PRD default for every project with funds
-committed in its vault. The owner sets the monthly amount during setup, can
-adjust allocations before execution, and can turn the default off; do not show
-adjustment history or require public reasons. Distribute the current
+committed in its vault. Vault creation sets the monthly commitment with the
+owner's monthly cap unless the owner opts out (PRD section 11, D1); the owner
+can turn it on or off later, and can adjust allocations before execution; do
+not show adjustment history or require public reasons. Distribute the current
 allocations at the monthly cutoff if the owner has not done so. The period is
 the calendar UTC month, starting with 2026-11, and the cutoff is 72 hours after
 the month ends (PRD sections 6 and 11). Keep internal reconciliation and prevent

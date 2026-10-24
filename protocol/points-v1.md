@@ -3,15 +3,25 @@
 Slop Points record participation and accepted contributions. Points have no
 monetary value and cannot be transferred or redeemed. They confer no payment,
 ownership, governance, or access entitlement. Only accepted-work points for a project and payment period determine its reward
-shares under the published payment rules. Welcome, social and payout-recognition
-bonuses never affect payouts. Points this month and total points are views of
+shares under the published payment rules. Payout-recognition bonuses never
+affect payouts. Points this month and total points are views of
 the same history, not separate currencies. Historical score fields encode
 accepted-work points at 30 points per score (10 per third); they are not a
 second public metric. Preserve historical settlements and funded obligations.
 
+## Discontinued participation awards
+
+From 24 October 2026 (PRD section 11, owner decision D2), welcome and X
+connection awards are discontinued for everyone. Joining and connecting X earn
+no points. Awards recorded before that date stay in the append-only journal
+unchanged, but no displayed total, balance, standing, or ranking counts them.
+Never delete, rewrite, or reissue them. Descriptions of those awards below are
+historical.
+
 ## Earning and history
 
-Joining with a GitHub user account earns five welcome points once. Existing
+Joining with a GitHub user account earned five welcome points once until
+24 October 2026; it now earns none. Existing
 contributors receive contribution points without joining or registering a
 wallet. Joining is dated when it occurs; historical work retains its actual
 GitHub occurrence date, with a separate points-recording timestamp. GitHub
@@ -50,7 +60,7 @@ process; never put private security evidence in a public appeal.
 ## Display
 
 Recorded totals persist between months, subject to explicit corrections.
-Monthly earned-point standings use UTC occurrence dates, include verified payout points, and exclude welcome and X connection points,
+Recorded totals exclude historical welcome and X connection awards. Monthly earned-point standings use UTC occurrence dates, include verified payout points,
 and give equal totals equal ranks. Newcomer standings use the first recorded
 earning event within the last 30 days. Badges recognize the first
 accepted contribution, first qualifying review, and work in three projects.
@@ -100,7 +110,7 @@ Assertions are single use and exchanged for a one-hour HttpOnly, Secure,
 SameSite=Strict web session. Mutations require a same-origin JSON request.
 Membership is unique by immutable GitHub node and numeric IDs. Sessions cannot
 create arbitrary awards, choose another actor, read traces, or ingest history.
-Signout invalidates the session without resetting the welcome award.
+Signout invalidates the session and never resets or reissues a historical welcome award.
 
 A member can close the account from Account after typing their GitHub login
 (`POST /api/v1/points/account/close`, migration 0063). One atomic change marks
@@ -136,11 +146,13 @@ source duplication, corrections, and publication delay, not points minted.
 
 ## X connections and payout recognition
 
-The first verified X connection earns **10 points once per GitHub account**.
+Until 24 October 2026, the first verified X connection earned 10 points once
+per GitHub account; connections now earn no points (see Discontinued
+participation awards).
 The X numeric ID is reserved to its verified GitHub identity to prevent reuse
-across accounts. A member can reconnect or switch X accounts, but earns no extra
-points. Disconnecting removes the visible link while preserving award uniqueness.
-These are participation points, not accepted-work score or monthly earned rank.
+across accounts. A member can reconnect or switch X accounts. Disconnecting
+removes the visible link while preserving historical award uniqueness.
+Historical X awards were participation points, not accepted-work score.
 Public community cards include opted-in members even without accepted work.
 
 X uses OAuth 2.0 authorization code with S256 PKCE and a confidential client.
