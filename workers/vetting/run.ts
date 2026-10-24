@@ -6,12 +6,14 @@
  * result is ambiguous or high risk, retains the private evidence and
  * publishes the result once.
  *
- * A service failure (an unavailable queue, source, provider or evidence
- * store) publishes nothing and leaves the assessment pending, so the next
- * pass retries it. A published attempt is journaled and never sent again; an
- * uncertain or rejected attempt waits for an operator. The service executes
- * acquired native artifacts only through the private disposable sandbox. It never executes them on the controller host,
- * never confirms malice and never releases a
+ * A service failure (an unavailable queue, source or provider) publishes
+ * nothing and leaves the assessment pending, so the next pass retries it.
+ * A clean result is never published without its retained evidence. An
+ * incomplete result records quarantine even when evidence storage fails.
+ * A published attempt is journaled and never sent again; an uncertain or
+ * rejected attempt waits for an operator. The service executes acquired
+ * native artifacts only through the private disposable sandbox, never on
+ * the controller host. It never confirms malice or releases a
  * quarantined artifact: moderators decide those (owner decision D3).
  */
 import { randomUUID } from "node:crypto";
@@ -70,6 +72,7 @@ export type AssessmentOutcome =
       disposition: string;
       outcome: "accepted" | "rejected" | "unknown";
       specialist: boolean;
+      evidence: "retained" | "failed";
     }
   | {
       assessmentId: string;
@@ -165,6 +168,9 @@ async function acquiredInputs(directory: string) {
     throw new Error("Unknown queued input bundle");
   const templates: ScanInputFile[] = [];
   for (const input of queued.inputs) {
+    // The digest names the object file, so it must not name another path.
+    if (!/^[0-9a-f]{64}$/u.test(input.sha256))
+      throw new Error("Invalid template object digest");
     const bytes = new Uint8Array(
       await readFile(join(directory, "objects", input.sha256)),
     );
@@ -258,7 +264,12 @@ async function scanOne(
   }
   try {
     const startedAt = now().toISOString();
-    const inputs = await acquiredInputs(directory);
+    let inputs: Awaited<ReturnType<typeof acquiredInputs>>;
+    try {
+      inputs = await acquiredInputs(directory);
+    } catch {
+      return { assessmentId, state: "retry", step: "acquire" };
+    }
     const inspection = inspectRepository(inputs);
     let isolated: Awaited<ReturnType<typeof inspectIsolatedArtifacts>>;
     try {
@@ -346,7 +357,9 @@ async function scanOne(
         };
       }),
     ]).catch(() => false);
-    if (!retained) return { assessmentId, state: "retry", step: "evidence" };
+    // The intake refuses a clean result without its evidence; retry it.
+    if (!retained && composed.result.disposition === "clean")
+      return { assessmentId, state: "retry", step: "evidence" };
     const body = JSON.stringify(composed.result);
     const receipt = await publishResult({
       origin: connection.origin,
@@ -363,6 +376,7 @@ async function scanOne(
       disposition: composed.result.disposition,
       outcome: receipt.outcome,
       specialist,
+      evidence: retained ? "retained" : "failed",
     };
   } finally {
     await rm(directory, { recursive: true, force: true });

@@ -232,7 +232,7 @@ the appeal, the same analyzer as the report analysis (Surplus
 decision, its reason, the appeal reason, Slopbot's earlier report summary and
 the program scope. It reads no advisory text again. It drafts `uphold` or
 `return`, a rationale and a confidence (`security_appeal_triages`, migration
-0067). The draft is advice only: it never decides the appeal, changes the case
+0069). The draft is advice only: it never decides the appeal, changes the case
 or moves funds. Under the recorded escalation criteria a private security
 case always goes to a moderator, so every draft records the escalation reason
 `private-security-case`, and `confidence-below-floor` when its confidence is

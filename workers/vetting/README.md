@@ -72,9 +72,13 @@ The flow for one queued assessment:
    signed evidence routes;
 5. publishes the result once with `publishResult`.
 
-A service failure publishes nothing: an unavailable source, a failed primary
-or specialist review, or a refused evidence upload leaves the assessment
-pending, and the next pass retries it. A published attempt is journaled, so a
+A service failure publishes nothing: an unavailable source or a failed
+primary or specialist review leaves the assessment pending, and the next pass
+retries it. A clean result is never published without its retained evidence;
+a refused evidence upload leaves it pending too. An incomplete result is
+published even when the evidence upload fails, because the intake needs
+retained evidence only for a clean result: the quarantine is recorded and the
+models are not called again on every pass. A published attempt is journaled, so a
 later pass never sends it again; an uncertain or rejected attempt waits for
 an operator. The pass removes the acquired bytes after each assessment. It
 never executes repository content on its host, never confirms malice and never releases
@@ -142,7 +146,11 @@ format, and a local server that answers in the Surplus Anthropic Messages and
 OpenAI Responses formats. It proves that a provider outage leaves the scan
 pending and publishes nothing, that the next pass clears the project with one
 primary review and lets activation proceed, that an ambiguous primary review
-runs the specialist once, and that a failed specialist publishes nothing.
+runs the specialist once, that a failed specialist publishes nothing, that a
+clean result waits for its evidence while an incomplete one is published
+without it, that risky new content escalates to the specialist and stays
+quarantined, and that a two-flag pause is reinstated after the service's
+clean fresh scan.
 
 The worker tests use harmless fixtures and a real local HTTP server that
 answers in the Anthropic Messages format. They check surface coverage, threat
@@ -206,9 +214,10 @@ VM.
 
 The scan service sends acquired Linux x86-64 native artifacts to the signed
 private sandbox route before model review. It requires a released image identity,
-adds execution output to the bounded review inventory, and retains each exact
-execution response before publication. A runner failure leaves the assessment
-pending. Unsupported artifacts and incomplete output remain explicit coverage
+adds execution output to the bounded review inventory, and submits each exact
+execution response to private evidence storage. Clean publication requires retained
+evidence; an incomplete publication records a storage failure and stays quarantined.
+A runner failure leaves the assessment pending. Unsupported artifacts and incomplete output remain explicit coverage
 gaps. Execution does not release quarantine or confirm malice. The controller
 never executes repository content on its host.
 

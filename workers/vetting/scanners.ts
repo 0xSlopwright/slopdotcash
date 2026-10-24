@@ -278,6 +278,9 @@ async function reviewOne(
             },
       ),
     });
+    // Surplus marks a response that its deadline cut short; the JSON and
+    // stop reason can still look complete.
+    const truncated = response.headers.get("x-si-truncated") === "1";
     const raw = await limitedResponse(response);
     result.responseSha256 = digest(raw);
     const body = record(JSON.parse(raw));
@@ -313,6 +316,7 @@ async function reviewOne(
         rateCardSha256: digest(JSON.stringify(rates)),
       };
     if (
+      truncated ||
       body.model !== profile.model ||
       (openai
         ? body.status !== "completed" ||
