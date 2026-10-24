@@ -43,6 +43,7 @@ import {
   ensureConfig,
   expectedDeployment,
 } from "./deployment.mjs";
+import { EXPIRED_PERIOD, expiredProject } from "./expired-month.mjs";
 
 const { AnchorProvider, Program, BN } = anchor;
 const provider = AnchorProvider.env();
@@ -1514,15 +1515,22 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
   ];
   const root = solanaAllocationRoot(entries);
   const total = solanaAllocationTotal(entries);
+  // The attester freezes the allocation inside the window, before admission.
   const frozenAt = String(await chainTime());
-  const message = (p = period, r = root, at = project, domain = network) =>
+  const message = (
+    p = period,
+    r = root,
+    at = project,
+    domain = network,
+    frozen = frozenAt,
+  ) =>
     solanaMonthlyMessage(
       program.programId.toBase58(),
       at.toBase58(),
       p,
       r,
       total,
-      frozenAt,
+      frozen,
       Buffer.from(domain).toString("hex"),
     );
   const attestation = (signer = authority, bytes = message()) =>
@@ -1530,9 +1538,9 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
       privateKey: signer.secretKey,
       message: bytes,
     });
-  const recordAt = (n, r, pre) =>
+  const recordAt = (n, r, pre, frozen = frozenAt) =>
     program.methods
-      .commitMonthly(n, [...Buffer.from(r, "hex")], bn(total), bn(frozenAt))
+      .commitMonthly(n, [...Buffer.from(r, "hex")], bn(total), bn(frozen))
       .accountsStrict({
         payer: stranger.publicKey,
         project,
@@ -1577,14 +1585,14 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
           Buffer.from(entry.sourceDigest, "hex"),
         ),
         obligation: pda(seed("award"), key(project), award(entry)),
-        monthlySource: pda(
-          seed("monthly-source"),
-          key(project),
-          Buffer.from(entry.sourceDigest, "hex"),
-        ),
         settled: pda(
           seed("settled"),
           key(month(period)),
+          Buffer.from(entry.sourceDigest, "hex"),
+        ),
+        monthlySource: pda(
+          seed("monthly-source"),
+          key(project),
           Buffer.from(entry.sourceDigest, "hex"),
         ),
         systemProgram: SystemProgram.programId,
@@ -1694,6 +1702,33 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
     ]),
     /InvalidAttestation/,
   );
+  // The signature binds the freeze time, which lies between the window opening and now.
+  await assert.rejects(
+    recordAt(
+      number(period),
+      root,
+      [attestation(authority, message())],
+      String(Number(frozenAt) - 1),
+    ),
+    /InvalidAttestation/,
+  );
+  const opensAt =
+    Date.UTC(open.getUTCFullYear(), open.getUTCMonth() + 1, 1) / 1000 + 259_200;
+  for (const frozen of [opensAt - 1, (await chainTime()) + 3600].map(String))
+    await assert.rejects(
+      recordAt(
+        number(period),
+        root,
+        [
+          attestation(
+            authority,
+            message(period, root, project, network, frozen),
+          ),
+        ],
+        frozen,
+      ),
+      /InvalidFreeze/,
+    );
   // A signature that the Ed25519 program cannot verify fails the transaction.
   const forged = attestation(authority, message());
   forged.data[16 + 32 + 1] ^= 1;
@@ -1705,6 +1740,8 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
   assert.equal(Buffer.from(recorded.allocationRoot).toString("hex"), root);
   assert.equal(recorded.committed.toString(), "0");
   assert.equal(recorded.total.toString(), total);
+  assert.equal(recorded.frozenAt.toString(), frozenAt);
+  assert.equal(recorded.expired, false);
   assert.equal(
     (await program.account.project.fetch(project)).reserved.toString(),
     total,
@@ -2283,5 +2320,283 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
       await program.account.project.fetch(project, "finalized")
     ).monthlyOutstanding.toString(),
     "0",
+  );
+});
+
+// The monthly gate tests share a funded payer that is neither owner nor attester, the one
+// recordable period, and entries whose source digests equal the ones `commit` derives.
+async function monthlyPeriod() {
+  const stranger = Keypair.generate();
+  await sendAndConfirmTransaction(
+    provider.connection,
+    new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: payer.publicKey,
+        toPubkey: stranger.publicKey,
+        lamports: 1_000_000_000,
+      }),
+    ),
+    [payer],
+  );
+  const shifted = new Date(((await chainTime()) - 259_200) * 1000);
+  const open = new Date(
+    Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth() - 1, 1),
+  );
+  const period = `${open.getUTCFullYear()}-${String(open.getUTCMonth() + 1).padStart(2, "0")}`;
+  return { stranger, period, n: Number(period.replace("-", "")) };
+}
+const entriesOf = (names, actor) =>
+  names.map((name, i) => ({
+    githubUserId: String(actor + i),
+    grossMicro: String((names.length - i) * 10_000_000),
+    sourceDigest: Buffer.from(hash(`source:${name}`)).toString("hex"),
+  }));
+const awardAt = (entry) =>
+  pda(
+    seed("award"),
+    key(project),
+    Buffer.from(solanaAwardId(project.toBase58(), entry.sourceDigest), "hex"),
+  );
+const monthAt = (n) =>
+  pda(seed("month"), key(project), Buffer.from(new Uint32Array([n]).buffer));
+const expireAt = (projectKey, n) =>
+  program.methods
+    .expireMonth(n)
+    .accountsStrict({
+      project: projectKey,
+      month: pda(
+        seed("month"),
+        key(projectKey),
+        Buffer.from(new Uint32Array([n]).buffer),
+      ),
+    })
+    .rpc();
+// Waits until the validator clock is past `time` and returns the new clock.
+async function after(time) {
+  while ((await chainTime()) <= time) await sleep(500);
+  return chainTime();
+}
+
+// An admitted month blocks the owner's direct commits while any of its gross is
+// outstanding. The attester signs when it froze the allocation: a leaf whose source the
+// owner consumed by hand before the freeze can never commit, so anyone releases its reserve
+// to free balance. A source consumed after the freeze never releases, so removing an award
+// never becomes a refund. Each leaf settles once.
+test("monthly gate blocks direct commits; only a source consumed before the freeze releases, once", async () => {
+  const { stranger, period, n } = await monthlyPeriod();
+  const ownerCommit = (name, gross = 1) => commit(name, 999, gross);
+  const month = () => monthAt(n);
+  // Enables the monthly path and admits `entries` as frozen at `frozenAt`.
+  async function admit(entries, frozenAt) {
+    await program.methods
+      .setMonthlyCommitment(bn(100_000_000), true)
+      .accountsStrict({ owner: payer.publicKey, project })
+      .rpc();
+    const root = solanaAllocationRoot(entries),
+      total = solanaAllocationTotal(entries);
+    await program.methods
+      .commitMonthly(n, [...Buffer.from(root, "hex")], bn(total), bn(frozenAt))
+      .accountsStrict({
+        payer: stranger.publicKey,
+        project,
+        vault,
+        month: month(),
+        instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
+        systemProgram: SystemProgram.programId,
+      })
+      .preInstructions([
+        Ed25519Program.createInstructionWithPrivateKey({
+          privateKey: authority.secretKey,
+          message: solanaMonthlyMessage(
+            program.programId.toBase58(),
+            project.toBase58(),
+            period,
+            root,
+            total,
+            String(frozenAt),
+            Buffer.from(network).toString("hex"),
+          ),
+        }),
+      ])
+      .signers([stranger])
+      .rpc();
+    // `release` names the obligation a release passes: the leaf's own award by default.
+    const leaf = (index, method, release = awardAt(entries[index])) => {
+      const entry = entries[index],
+        digest = Buffer.from(entry.sourceDigest, "hex"),
+        award = Buffer.from(
+          solanaAwardId(project.toBase58(), entry.sourceDigest),
+          "hex",
+        ),
+        proof = solanaAllocationProof(entries, index).map((node) => ({
+          hash: [...Buffer.from(node.hash, "hex")],
+          total: bn(node.total),
+        })),
+        shared = {
+          payer: stranger.publicKey,
+          project,
+          month: month(),
+          origin: pda(seed("origin"), key(project), digest),
+          settled: pda(seed("settled"), key(month()), digest),
+          monthlySource: pda(seed("monthly-source"), key(project), digest),
+          systemProgram: SystemProgram.programId,
+        },
+        tail = [
+          bn(entry.githubUserId),
+          bn(entry.grossMicro),
+          index,
+          entries.length,
+          proof,
+        ];
+      return (
+        method === "commit"
+          ? program.methods
+              .commitMonthlyAward(n, [...award], [...digest], ...tail)
+              .accountsStrict({ ...shared, vault, obligation: awardAt(entry) })
+          : program.methods
+              .releaseMonthlyAward(n, [...digest], ...tail)
+              .accountsStrict({ ...shared, obligation: release })
+      )
+        .signers([stranger])
+        .rpc();
+    };
+    return { total, leaf };
+  }
+  const expire = () => expireAt(project, n);
+  const read = () => program.account.project.fetch(project);
+
+  await freshProject("monthly-freeze", 100_000_000n);
+  const entries = entriesOf(["leaf-a", "leaf-b", "leaf-c"], 601);
+  // The owner consumes leaf B's source by hand; the attester freezes later.
+  await ownerCommit("leaf-b");
+  const consumed = (await program.account.obligation.fetch(awardAt(entries[1])))
+    .committedAt;
+  const frozenAt = await after(consumed.toNumber());
+  const { total, leaf } = await admit(entries, frozenAt);
+  let recorded = await program.account.monthlyAllocation.fetch(month());
+  assert.equal(recorded.frozenAt.toNumber(), frozenAt);
+  assert.equal(recorded.expired, false);
+  let state = await read();
+  assert.equal(state.monthlyOutstanding.toString(), "60000000");
+  assert.equal(state.reserved.toString(), "60000001");
+  // The owner cannot consume an admitted leaf's source, or any other, by hand.
+  await assert.rejects(ownerCommit("leaf-c"), /MonthlyOutstanding/);
+  await assert.rejects(ownerCommit("unrelated"), /MonthlyOutstanding/);
+  // Expiry opens only 30 days after the window closes.
+  await assert.rejects(expire(), /MonthlyWindowClosed/);
+  // A leaf that can still commit has no origin, so it cannot be released.
+  await assert.rejects(leaf(0, "release", null), /AwardCommittable/);
+  await leaf(0, "commit");
+  // A committed leaf has settled: it cannot also be released.
+  await assert.rejects(leaf(0, "release"), /already in use/);
+  // Leaf B can never commit. A release must name the obligation its origin records.
+  await assert.rejects(leaf(1, "commit"), /already in use/);
+  await assert.rejects(leaf(1, "release", null), /AwardCommittable/);
+  await assert.rejects(
+    leaf(1, "release", awardAt(entries[0])),
+    /AwardCommittable/,
+  );
+  // Anyone returns its reserve to free balance, once.
+  const before = await read();
+  await leaf(1, "release");
+  state = await read();
+  assert.equal(
+    state.reserved.toNumber(),
+    before.reserved.toNumber() - 20_000_000,
+  );
+  assert.equal(state.monthlyOutstanding.toString(), "10000000");
+  recorded = await program.account.monthlyAllocation.fetch(month());
+  assert.equal(recorded.released.toString(), "20000000");
+  assert.equal(recorded.committed.toString(), "50000000");
+  await assert.rejects(leaf(1, "release"), /already in use/);
+  await assert.rejects(leaf(2, "release", null), /AwardCommittable/);
+  await leaf(2, "commit");
+  recorded = await program.account.monthlyAllocation.fetch(month());
+  assert.equal(recorded.committed.toString(), total);
+  assert.equal(recorded.released.toString(), "20000000");
+  state = await read();
+  assert.equal(state.monthlyOutstanding.toString(), "0");
+  // Settled: direct commits work again, and the released gross is free to withdraw.
+  await ownerCommit("after-month");
+  state = await read();
+  assert.equal(state.reserved.toString(), "40000002");
+  const free = 100_000_000n - 40_000_002n;
+  await assert.rejects(withdraw(free + 1n), /InsufficientFreeBalance/);
+  const withdrawn = await withdraw(free);
+  await provider.connection.confirmTransaction(withdrawn, "finalized");
+  const totals = await readVaultTotals({
+    rpcUrl: provider.connection.rpcEndpoint,
+    network: "solana:localnet",
+    projectPda: project.toBase58(),
+    programId: program.programId.toBase58(),
+  });
+  assert.equal(totals.freeBalance, "0");
+  assert.equal(totals.accruedFees, String(free / 50n));
+  assert.equal(
+    BigInt(totals.totalDeposited),
+    [
+      totals.freeBalance,
+      totals.reserved,
+      totals.totalPaid,
+      totals.totalPayoutFees,
+      totals.totalGrossWithdrawn,
+    ].reduce((sum, value) => sum + BigInt(value), 0n),
+  );
+  // The vault holds exactly the reserves and the unclaimed fees.
+  assert.equal(
+    await balance(vault),
+    BigInt(totals.reserved) + BigInt(totals.accruedFees),
+  );
+  assert.equal(
+    (
+      await program.account.project.fetch(project, "finalized")
+    ).monthlyOutstanding.toString(),
+    "0",
+  );
+
+  // The attester froze the allocation, then the owner consumed a source before admission.
+  // That source never releases, so it can never become a refund to the owner; its gross
+  // stays reserved and outstanding.
+  await freshProject("monthly-after-freeze", 20_000_000n);
+  const afterFreeze = entriesOf(["after-freeze"], 701);
+  const lateFrozenAt = await chainTime();
+  await after(lateFrozenAt);
+  await ownerCommit("after-freeze");
+  const lateMonth = await admit(afterFreeze, lateFrozenAt);
+  assert.ok(
+    (
+      await program.account.obligation.fetch(awardAt(afterFreeze[0]))
+    ).committedAt.toNumber() > lateFrozenAt,
+  );
+  await assert.rejects(lateMonth.leaf(0, "commit"), /already in use/);
+  await assert.rejects(lateMonth.leaf(0, "release"), /AwardCommittable/);
+  state = await read();
+  assert.equal(state.reserved.toString(), "10000001");
+  assert.equal(state.monthlyOutstanding.toString(), "10000000");
+  await assert.rejects(ownerCommit("blocked"), /MonthlyOutstanding/);
+  await assert.rejects(expire(), /MonthlyWindowClosed/);
+});
+
+// No admitted month on the validator is 30 days past its window, so test-e2e.sh preloads
+// one (see expired-month.mjs): anyone expires it once, and only its unsettled gross leaves
+// monthly_outstanding.
+test("expire_month ends an unsettled month once after its grace", async () => {
+  const fetchMonth = () =>
+    program.account.monthlyAllocation.fetch(
+      pda(
+        seed("month"),
+        key(expiredProject),
+        Buffer.from(new Uint32Array([EXPIRED_PERIOD]).buffer),
+      ),
+    );
+  assert.equal((await fetchMonth()).expired, false);
+  await expireAt(expiredProject, EXPIRED_PERIOD);
+  const state = await program.account.project.fetch(expiredProject);
+  assert.equal(state.monthlyOutstanding.toString(), "1000000");
+  assert.equal(state.reserved.toString(), "4000000");
+  assert.equal((await fetchMonth()).expired, true);
+  await assert.rejects(
+    expireAt(expiredProject, EXPIRED_PERIOD),
+    /MonthExpired/,
   );
 });
