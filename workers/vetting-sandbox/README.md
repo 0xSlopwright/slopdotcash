@@ -34,7 +34,9 @@ published in the vendor's SDK documentation.
 
 The Pages route `/api/v1/vetting/sandbox` uses the existing Ed25519 request
 signature. GET reads the private Worker's health; POST forwards only the
-verified body. Credentials and cookies are not forwarded. Production and
+verified body. Credentials and cookies are not forwarded. `workers/vetting/sandbox.ts` signs
+controller requests, verifies the returned artifact identity and output limits,
+and returns the exact response bytes for private evidence retention. Production and
 staging bind different Worker names. Preview deployments have no binding.
 The checked-in release workflow deploys the selected Worker before Pages.
 

@@ -9,6 +9,10 @@ import {
 } from "../../backend/vetting/handler";
 import { CloudflareVettingPersistence } from "../../backend/vetting/persistence";
 import { sqliteD1 } from "../../tests/sqlite-d1";
+import {
+  type ArtifactInterpreter,
+  runIsolatedArtifact,
+} from "../vetting/sandbox";
 import { signedServiceHeaders } from "../vetting/service";
 
 const target = process.env.SLOP_SANDBOX_TEST_URL;
@@ -90,30 +94,22 @@ async function send(body: ReturnType<typeof encoder.encode>, signed = true) {
     },
   });
 }
-type Evidence = {
-  status: string;
-  exitCode: number;
-  stdoutBase64: string;
-  outputComplete: boolean;
-  internetEnabled: boolean;
-};
 async function execute(
   source: string,
-  interpreter = "python",
-): Promise<Evidence> {
-  const response = await send(
-    encoder.encode(JSON.stringify(await payload(source, interpreter))),
+  interpreter: ArtifactInterpreter = "python",
+) {
+  const result = await runIsolatedArtifact({
+    connection: { origin: server.url.origin, ...keys },
+    bytes: encoder.encode(source),
+    interpreter,
+  });
+  assert.deepEqual(
+    JSON.parse(new TextDecoder().decode(result.bytes)),
+    result.evidence,
   );
-  assert.equal(
-    response.status,
-    200,
-    `Execution service returned ${response.status}`,
-  );
-  assert.equal(response.headers.get("cache-control"), "no-store");
-  const evidence = (await response.json()) as Evidence;
-  assert.equal(evidence.internetEnabled, false);
-  return evidence;
+  return result.evidence;
 }
+
 try {
   const body = encoder.encode(
     JSON.stringify(await payload("print('untrusted')")),
