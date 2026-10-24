@@ -32,7 +32,11 @@ import { isScanResult } from "../backend/vetting/scan-result";
 import { applicationManifest } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 import { localVettingEvidence } from "../tests/vetting-evidence-fixture";
-import { runScanPass, type ScanServiceConfig } from "../workers/vetting/run";
+import {
+  runScanPass,
+  type ScanServiceConfig,
+  serviceConfigFrom,
+} from "../workers/vetting/run";
 import {
   SCAN_REVIEW_AREAS,
   type ScannerProfile,
@@ -835,6 +839,84 @@ test("a two-flag pause is reinstated automatically after the service's clean fre
       .status,
   ).toBe(200);
   expect(await flags.activeFlags(clock)).toEqual([]);
+});
+
+test("an unpinned endpoint or model fails closed before the queue or any provider is contacted", async () => {
+  const contacted: string[] = [];
+  const counting = {
+    ...config.connection,
+    fetch: ((input: string | URL | Request, init?: RequestInit) => {
+      contacted.push(new URL(String(input)).host);
+      return config.connection.fetch?.(input, init) as Promise<Response>;
+    }) as typeof fetch,
+  };
+  for (const [primary, specialist] of [
+    // The Surplus key must never reach the providers' own APIs.
+    [
+      { ...config.primary, endpoint: "https://api.anthropic.com/v1/messages" },
+      config.specialist,
+    ],
+    [
+      config.primary,
+      { ...config.specialist, endpoint: "https://api.openai.com/v1/responses" },
+    ],
+    [{ ...config.primary, model: "claude-opus-5" }, config.specialist],
+    [config.primary, { ...config.specialist, model: "gpt-6.1" }],
+    // The specialist never stands in for the primary review.
+    [config.specialist, config.primary],
+  ] as [ScannerProfile, ScannerProfile][]) {
+    await expect(
+      runScanPass({ ...config, connection: counting, primary, specialist }),
+    ).rejects.toThrow(
+      /Unapproved scanner profile|must be Surplus claude-opus-5\.5/,
+    );
+  }
+  expect(contacted).toEqual([]);
+  expect(provider.calls).toEqual([]);
+  expect(await vetting.pendingAssessments()).toEqual([]);
+
+  // The operator file is checked the same way when the service starts.
+  const signing = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
+    "sign",
+    "verify",
+  ])) as CryptoKeyPair;
+  const jwk = JSON.stringify(
+    await crypto.subtle.exportKey("jwk", signing.privateKey),
+  );
+  const { apiKey: _primaryKey, ...primary } = config.primary;
+  const { apiKey: _specialistKey, ...specialist } = config.specialist;
+  const file = (overrides: object) =>
+    JSON.stringify({
+      origin: ORIGIN,
+      policyVersion: "scan-policy-1",
+      workDirectory: join(root, "work"),
+      journalDirectory: join(root, "journal"),
+      primary,
+      specialist,
+      ...overrides,
+    });
+  const env = {
+    SURPLUS_API_KEY: "fixture-surplus-key",
+    SLOP_VETTING_SIGNING_JWK: jwk,
+  };
+  const path = join(root, "service.json");
+  await writeFile(path, file({}));
+  expect((await serviceConfigFrom(path, env)).primary).toMatchObject({
+    endpoint: "https://api.surplusintelligence.ai/anthropic/v1/messages",
+    model: "claude-opus-5.5",
+  });
+  await writeFile(
+    path,
+    file({
+      primary: {
+        ...primary,
+        endpoint: "https://api.anthropic.com/v1/messages",
+      },
+    }),
+  );
+  await expect(serviceConfigFrom(path, env)).rejects.toThrow(
+    "Unapproved scanner profile",
+  );
 });
 
 test("unsupported artifacts produce an incomplete scan rather than aborting the scan pass", async () => {
