@@ -1248,18 +1248,24 @@ test("a moderator decides a confirmed malicious result and bans the project and 
   await expect(returning.locator("main")).not.toContainText("steals tokens");
   await expect(returning.locator("main")).not.toContainText(evidence);
   expect(returningErrors).toEqual([]);
-  const appeal = await returning.request.post("/api/v1/project-appeals", {
-    headers: {
-      origin: new URL(returning.url()).origin,
-      cookie: `__Host-slop_points=${token}`,
-    },
-    data: {
-      projectId: project.id,
-      reason: "The account is not responsible for this code",
-      evidenceReference: evidence,
-    },
+  await returning.goto("/account", { waitUntil: "networkidle" });
+  const appealForm = returning.getByRole("form", {
+    name: `Account appeal for ${project.id}`,
   });
-  expect(appeal.status()).toBe(200);
+  await appealForm
+    .getByLabel("Reason for appeal")
+    .fill("The account is not responsible for this code");
+  await appealForm.getByLabel("Evidence reference").fill(evidence);
+  await appealForm.getByRole("button", { name: "Send account appeal" }).click();
+  await expect(appealForm.getByRole("status")).toContainText("Appeal recorded");
+  await returning.reload({ waitUntil: "networkidle" });
+  await expect(appealForm.getByRole("status")).toContainText("Appeal recorded");
+  await expectAccessible(returning);
+  await returning.screenshot({
+    path: test.info().outputPath("account-appeal-submitted.png"),
+    fullPage: true,
+  });
+  expect(returningErrors).toEqual([]);
   await returningContext.close();
 
   const independentContext = await browser.newContext(walkthroughOptions());

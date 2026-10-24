@@ -742,6 +742,15 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
       })
     ).status,
   ).toBe(403);
+  const listedAppeals = await t.call("GET", "project-appeals", OTHER);
+  expect(listedAppeals.status).toBe(200);
+  expect(listedAppeals.body).toEqual({
+    appeals: [{ projectId: "responsibility", state: "banned", appeal: "none" }],
+  });
+  expect((await t.call("GET", "project-appeals", OWNER)).body).toEqual({
+    appeals: [],
+  });
+  expect((await t.call("GET", "project-appeals", "")).status).toBe(401);
   const appeal = await t.call("POST", "project-appeals", OTHER, {
     projectId: "responsibility",
     reason: "The evidence does not establish my responsibility",
@@ -791,6 +800,9 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
   });
   expect((await newRun()).status).toBe(201);
   expect(await hasParticipationBan(t.db, "900000004")).toBe(true);
+  expect((await t.call("GET", "project-appeals", OTHER)).body).toEqual({
+    appeals: [],
+  });
   expect(
     (
       await t.call(

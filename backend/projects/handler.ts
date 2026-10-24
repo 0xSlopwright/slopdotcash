@@ -1651,6 +1651,29 @@ async function enforceProject(
  * can request reinstatement. A moderator who did not place the restriction
  * still decides it. Filing does not grant project authority.
  */
+async function listAccountAppeals(
+  request: Request,
+  deps: ProjectApiDependencies,
+): Promise<Response> {
+  const session = await requireSession(request, deps);
+  const records = await deps.persistence.listEnforcements();
+  const projectIds = new Set(
+    activeAccountBans(records)
+      .filter(({ account }) => account.githubId === session.githubId)
+      .map(({ record }) => record.projectId),
+  );
+  return json(200, {
+    appeals: [...projectIds].map((projectId) => {
+      const restriction = projectRestriction(projectId, records);
+      return {
+        projectId,
+        state: restriction.state,
+        appeal: restriction.appeal,
+      };
+    }),
+  });
+}
+
 async function requestReinstatement(
   request: Request,
   deps: ProjectApiDependencies,
@@ -2182,6 +2205,8 @@ export async function handleProjectApi(
         return await enforceProject(request, deps, parts[2], "apply");
       case "POST project-appeals":
         return await requestReinstatement(request, deps);
+      case "GET project-appeals":
+        return await listAccountAppeals(request, deps);
     }
     if (isProjectRoute(parts)) return json(404, { error: "not_found" });
     return null;
