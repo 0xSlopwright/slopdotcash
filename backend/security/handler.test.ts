@@ -5,6 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
+import { seedParticipationBan } from "./participation-ban.fixture";
 import { sqliteD1 } from "../../tests/sqlite-d1";
 import type { AdvisoryReader, GithubPrivateReport } from "./advisories";
 import type { SecurityAnalysisInput, SecurityAnalyzer } from "./analysis";
@@ -336,51 +337,8 @@ function open(securityBounty: Record<string, unknown> = OPEN_PROGRAM) {
         "SELECT case_id, gross_minor FROM security_award_reservations ORDER BY case_id",
       )
       .all() as { case_id: string; gross_minor: string }[];
-  const ban = (account: Account) => {
-    const projectId = `malicious-${account.githubId}`;
-    const manifest = JSON.stringify({ id: projectId, status: "paused" });
-    const digest = createHash("sha256").update(manifest).digest("hex");
-    sqlite
-      .query(
-        "INSERT INTO project_revisions (project_id,revision,manifest,manifest_sha256,reason,created_at) VALUES (?,1,?,?,'fixture',?)",
-      )
-      .run(projectId, manifest, digest, REVISION_AT);
-    sqlite
-      .query(
-        "INSERT INTO projects (id,status,revision,manifest,manifest_sha256,created_at,updated_at) VALUES (?,'paused',1,?,?,?,?)",
-      )
-      .run(projectId, manifest, digest, REVISION_AT, REVISION_AT);
-    for (const sequence of [1, 2]) {
-      sqlite
-        .query(`INSERT INTO project_enforcements (id,project_id,sequence,action,state_after,appeal_after,reason,evidence_reference,repository_github_id,repository_keys,actor_github_id,actor_github_login,system_issuer,actor_role,decision_source,before_revision,before_manifest_sha256,after_revision,after_manifest_sha256,result,created_at)
-        VALUES (?,?,?,'ban','banned','none','Synthetic malicious finding','private-fixture','123','["example/malicious"]',?,?,?,?,?,1,?,NULL,NULL,'revision_pending',?)`)
-        .run(
-          `enf_${projectId}_${sequence}`,
-          projectId,
-          sequence,
-          sequence === 1 ? null : DISPUTE.githubId,
-          sequence === 1 ? null : DISPUTE.githubLogin,
-          sequence === 1
-            ? JSON.stringify({
-                kind: "vetting-service",
-                keySha256: "a".repeat(64),
-                assessmentId: "vet_fixture",
-                policyVersion: "fixture",
-                rule: "confirmed-malicious",
-              })
-            : null,
-          sequence === 1 ? "vetting-service" : "project-moderator",
-          sequence === 1 ? "standing-rule" : "admin-panel",
-          digest,
-          REVISION_AT,
-        );
-    }
-    sqlite
-      .query(
-        "INSERT INTO project_maintainer_bans (enforcement_id,github_id,github_login) VALUES (?,?,?)",
-      )
-      .run(`enf_${projectId}_2`, account.githubId, account.githubLogin);
-  };
+  const ban = (account: Account) =>
+    seedParticipationBan(sqlite, account, DISPUTE, REVISION_AT);
   return {
     ban,
     sqlite,

@@ -308,7 +308,9 @@ rate limit, and caches each answer for five minutes. The browser never calls
   project. A later reinstatement of that project lifts the maintainer ban.
   The ban does not erase an approved funded award. The trace API refuses new
   contribution runs and progress events. Bounty approval refuses new
-  reservations for a banned researcher, including concurrent bans. PRD
+  reservations for a banned researcher, including concurrent bans. Private
+  intake refuses new submissions and sends, but keeps reconciliation of a
+  report already received by GitHub. PRD
   section 8 still requires account checks on all other new participation and
   an appeal path for responsible accounts after a transfer. These checks
   alone do not complete that requirement.
