@@ -32,13 +32,19 @@ alias only.
     route funds alone, or reach free or reserved funds. Each binding waits the
     reviewed binding delay, and the project owner can cancel it in that time.
     A public timelocked rotation replaces the key, and the attester cannot
-    block it.
+    block it. Owner decision of 24 October 2026: after the reviewed contract
+    change and independent audit, it also signs each funded project's monthly
+    allocation root. The contract limits that commitment to the owner's
+    monthly cap, one commitment per period, and the owner's opt-out; the
+    attester still cannot withdraw, redirect, or pay funds.
   - One fee-wallet hot key per network (PRD TOK-07, MVP-07c, owner decision
     of 18 October 2026). It controls only the network fee wallet. It signs
     only the conversion of fees received in that wallet to USDC, through allowlisted routes, within the slippage limit,
     with output to the same wallet. It holds no vault role and cannot touch
-    vaults, contributor principal, reserved awards or payments. The job runs
-    in dry run until a reviewed activation record enables signing.
+    vaults, contributor principal, reserved awards or payments. Per-run and
+    daily caps bound it, and owners sweep USDC proceeds to cold storage
+    (PRD section 11, 24 October 2026). The job runs in dry run until a
+    reviewed activation record enables signing.
 - Humans create, store and rotate these keys and deploy mainnet contracts.
   Agents never handle key material or deploy to mainnet. The vote-only Squads
   project vault key is removed with Squads.
