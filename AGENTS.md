@@ -41,8 +41,10 @@ alias only.
   - One fee-wallet hot key per network (PRD TOK-07, MVP-07c, owner decision
     of 18 October 2026). It controls only the network fee wallet. It signs
     only the conversion of fees received in that wallet to USDC, through allowlisted routes, within the slippage limit,
-    with output to the same wallet. It holds no vault role and cannot touch
-    vaults, contributor principal, reserved awards or payments. Per-run and
+    with output to the same wallet. Owner decision of 24 October 2026: it may
+    also submit permissionless fee claims on reviewed vaults, moving only
+    accrued fees to that same fee wallet. It holds no vault role and cannot
+    withdraw free funds or touch contributor principal, reserved awards or payments. Per-run and
     daily caps bound it, and owners sweep USDC proceeds to cold storage
     (PRD section 11, 24 October 2026). The job runs in dry run until a
     reviewed activation record enables signing.
