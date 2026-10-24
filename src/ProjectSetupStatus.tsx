@@ -43,11 +43,11 @@ const SCAN: Record<ProjectSetupStatus["checks"]["scan"]["state"], string> = {
 
 function fundingText(funding: ProjectSetupStatus["funding"]): string {
   if (funding.mode === "none")
-    return "No monthly funding. Contributors still earn Slop Score for accepted work.";
+    return "None. Contributors still earn Slop Score.";
   const network =
     REWARD_ASSET_NETWORKS[funding.network as keyof typeof REWARD_ASSET_NETWORKS]
       ?.name ?? funding.network;
-  return `${formatMonthlyAmount(funding.monthlyAmountMinor, funding.decimals, funding.symbol)} per month on ${network} · ${funding.state === "committed" ? "committed in the vault" : "pledged, not yet deposited"} · payments ${funding.payments}`;
+  return `${formatMonthlyAmount(funding.monthlyAmountMinor, funding.decimals, funding.symbol)} per month on ${network} · ${funding.state === "committed" ? `in the vault · payments ${funding.payments}` : "deposit funds to start payouts"}`;
 }
 
 /**
@@ -165,7 +165,10 @@ export function ProjectSetupStatusPanel({
             <div>
               <dt>Security scan</dt>
               <dd>
-                {SCAN[setup.checks.scan.state]}. {setup.checks.scan.message}
+                {setup.checks.scan.exempt
+                  ? "Exempt"
+                  : SCAN[setup.checks.scan.state]}
+                . {setup.checks.scan.message}
               </dd>
             </div>
             <div>

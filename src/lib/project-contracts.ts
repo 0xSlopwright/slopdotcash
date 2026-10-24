@@ -258,6 +258,8 @@ export type ProjectSetupStatus = {
     scan: {
       state: VettingClearance["state"] | "unavailable";
       message: string;
+      /** Permanent existing-project exemption (PRD section 8); never a passed scan. */
+      exempt?: true;
     };
   };
   funding:

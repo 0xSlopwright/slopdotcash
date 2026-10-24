@@ -341,7 +341,7 @@ function proposalErrors(p: Proposal): FieldErrors {
     if (holder) errors.legalHolder = holder;
     if (p.stewardKind === "dao")
       errors.copyrightModel =
-        "DAO title cannot activate until review supplies a legal-capacity record and a governance resolution.";
+        "Sponsor-owned copyright is not available for a DAO steward. Choose another copyright model.";
   }
   if (p.inboundMode !== "unknown") {
     if (
@@ -763,9 +763,7 @@ function SubmitProject({
         </a>
       )}
       <p>
-        {login
-          ? `You create the project as @${login}. Slop checks your GitHub access to the repository now.`
-          : "Sign in with GitHub to create this project. Your draft stays on this device."}
+        {login ? `Creating as @${login}.` : "Your draft stays on this device."}
       </p>
     </>
   );
@@ -1332,8 +1330,8 @@ export default function ProjectProposalPage() {
   const draftNote = (
     <p className="proposal-note">
       {saveFailed
-        ? "This browser cannot save the draft. Keep this page open, or copy the brief."
-        : "Draft saved on this device only. No credentials are stored. It is not a listing."}
+        ? "This browser cannot save the draft. Keep this page open."
+        : "Draft saved on this device."}
     </p>
   );
   const navigation = (
@@ -1363,10 +1361,9 @@ export default function ProjectProposalPage() {
       <section className="proposal-intro">
         <h1>Add a project</h1>
         <p>
-          Create your project without waiting for an admin. First install
-          Slopbot on the repository, so Slop can read your GitHub access. Then
-          an automatic security scan runs. The project goes live when those
-          checks pass. Funding is optional. Questions? Email{" "}
+          Connect your repository, set contribution rules and optional rewards,
+          then install Slopbot. Your project goes live automatically once the
+          security scan passes. Questions? Email{" "}
           <a href={CONTACT_MAILTO}>{CONTACT_EMAIL}</a>.
         </p>
       </section>
@@ -1796,7 +1793,7 @@ export default function ProjectProposalPage() {
         {step === 3 ? (
           <>
             <article className="proposal-preview" aria-label="Listing preview">
-              <span className="draft-badge">Draft · not listed</span>
+              <span className="draft-badge">Preview</span>
               <h3>{p.name || "Unnamed project"}</h3>
               <p>{p.headline || "No short description yet."}</p>
               <dl>
@@ -1809,9 +1806,7 @@ export default function ProjectProposalPage() {
                 <div>
                   <dt>Before you create</dt>
                   <dd>
-                    Install Slopbot on {p.repository || "the repository"}. Slop
-                    reads your write access through it. The project stays paused
-                    until the security scan passes.
+                    Install Slopbot on {p.repository || "the repository"}.
                   </dd>
                 </div>
                 <div>
@@ -1863,10 +1858,8 @@ export default function ProjectProposalPage() {
               <div className="proposal-submitted">
                 <h2>Project created</h2>
                 <p>
-                  {p.name || submission.projectId} is listed as a paused
-                  project. Slop generated its contributor and reviewer skills
-                  from your rules. Finish the next action below; the project
-                  goes live by itself when every check passes.
+                  {p.name || submission.projectId} is created. Complete the next
+                  step below and it goes live automatically.
                   {submission.referrer
                     ? ` Referred by @${submission.referrer}.`
                     : ""}
@@ -2419,7 +2412,7 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
         />
         <TextField
           error={shown("criteria")}
-          hint="Used by the contributor and reviewer skills. A change needs a new security scan."
+          hint="Used by the contributor and reviewer skills."
           label="Acceptance criteria"
           multiline
           name="criteria"
@@ -2432,10 +2425,7 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
           open={SKILL_RULE_FIELDS.some((field) => Boolean(shown(field)))}
         >
           <summary>Contributor instructions</summary>
-          <p className="field-hint">
-            These rules generate the project skills. A change needs a new
-            security scan; an active project pauses until it passes.
-          </p>
+          <p className="field-hint">These rules generate the project skills.</p>
           {SKILL_RULE_FIELDS.map((field) => (
             <TextField
               error={shown(field)}
@@ -2632,7 +2622,7 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
           <p className="payout-status">
             {reward.paymentMode === "enabled"
               ? "Payouts are enabled. Review allocations in Manage payouts."
-              : "Payouts are not enabled yet."}{" "}
+              : "Payouts are disabled. Funding alone does not enable them."}{" "}
             <Link href={`/projects/${project.slug}/funding`}>
               Funding setup
             </Link>

@@ -578,9 +578,8 @@ export function EarningsPage({
                               <span className="wallet-address">
                                 {o.address}
                               </span>{" "}
-                              on {formatDate(o.observedAt)}. That record is
-                              history only. Connect and confirm a wallet to
-                              receive escrow payments.
+                              on {formatDate(o.observedAt)}. Connect and confirm
+                              a wallet to receive payments.
                             </p>
                           ))}
                       {wallet && (
@@ -688,8 +687,8 @@ export function EarningsPage({
                 {data.payments.length === 0 &&
                 data.monthlyAwards.length === 0 ? (
                   <p>
-                    No funded escrow awards yet. Proposed rewards appear on
-                    project pages until they are approved and funded.
+                    No approved awards yet. Projected rewards appear on project
+                    pages.
                   </p>
                 ) : (
                   <section
@@ -796,12 +795,8 @@ export function EarningsPage({
               </section>
               {data.directTransfers.length > 0 && (
                 <section aria-labelledby={`${heading}-direct`}>
-                  <h2 id={`${heading}-direct`}>Sent outside escrow</h2>
-                  <p>
-                    A project creator sent these transfers directly, before
-                    escrow payouts. Each one is in a published disclosure and on
-                    chain. No payout fee was deducted.
-                  </p>
+                  <h2 id={`${heading}-direct`}>Direct transfers</h2>
+                  <p>Sent directly by the project creator. No fee.</p>
                   <section
                     className="points-table"
                     aria-label="Direct payment details; scroll horizontally for all columns"

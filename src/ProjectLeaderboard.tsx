@@ -66,7 +66,7 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
     <>
       <section className="section project-leader-section">
         <div className="section-heading">
-          <h2>{formatCycleMonth(view.cycle.id)} leaderboard.</h2>
+          <h2>{formatCycleMonth(view.cycle.id)}</h2>
           <p className="data-freshness">Updated {formatDate(updatedAt)}</p>
           {view.project.reward.reviewBudget ? (
             <p>{reviewBudgetLabel(view.project.reward.reviewBudget)}</p>
@@ -75,13 +75,12 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
             <p>
               {monthlyPoolUnfunded(view.project.reward)
                 ? `${UNFUNDED_POOL_HEADLINE}.`
-                : `Shares simulate the ${monthlyPoolLabel(view.project.reward)} cap.`}{" "}
-              No payouts are approved.
+                : `Projected from accepted work · ${monthlyPoolLabel(view.project.reward)}.`}
             </p>
           ) : null}
         </div>
         {view.leaders.length === 0 ? (
-          <EmptyState text="No accepted outcomes in this cycle yet." />
+          <EmptyState text="No accepted work this month yet." />
         ) : (
           <div className="leader-table">
             <table className="leader-grid">
@@ -96,8 +95,8 @@ export function CycleAllocation({ updatedAt, view }: CycleAllocationProps) {
                   <th scope="col">
                     {view.reward.kind === "monthly-pool" &&
                     monthlyPoolUnfunded(view.project.reward)
-                      ? "Share of payment weight"
-                      : "Simulated share"}
+                      ? "Share"
+                      : "Projected share"}
                   </th>
                 </tr>
               </thead>
