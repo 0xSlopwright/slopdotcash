@@ -34,8 +34,9 @@ alias only.
     pay any matured unpaid award before the owner can cancel. Protection rests
     on custody of this key (`docs/security/red-team-2026-10-24.md`). A rotation
     by the registrar replaces the key, and the attester cannot block it. Owner decision of 24 October 2026: after the reviewed contract
-    change and independent audit, it also signs each funded project's monthly
-    allocation root. The contract limits that commitment to the owner's
+    change, it also signs each funded project's monthly
+    allocation root (the owner waived the independent audit, PRD section 11
+    "External reviews"). The contract limits that commitment to the owner's
     monthly cap, one commitment per period, and the owner's opt-out; the
     attester still cannot withdraw, redirect, or pay funds.
   - One fee-wallet hot key per network (PRD TOK-07, MVP-07c, owner decision
@@ -347,8 +348,9 @@ Automatic monthly payment is the PRD default for every project with funds
 committed in its vault. The owner sets the monthly amount during setup, can
 adjust allocations before execution, and can turn the default off; do not show
 adjustment history or require public reasons. Distribute the current
-allocations at the defined monthly cutoff if the owner has not done so. Define
-the UTC cutoff before activation. Keep internal reconciliation and prevent
+allocations at the monthly cutoff if the owner has not done so. The period is
+the calendar UTC month, starting with 2026-11, and the cutoff is 72 hours after
+the month ends (PRD sections 6 and 11). Keep internal reconciliation and prevent
 manual/automatic duplicate payments. Walletless funded awards remain reserved.
 Private reports are automatic; bounty awards and payouts remain discretionary.
 Slopbot triages disputes first, and a moderator decides escalated disputes.
