@@ -1820,10 +1820,22 @@
           },
           {
             "name": "committed",
+            "docs": [
+              "Gross settled so far: committed awards plus released awards."
+            ],
             "type": "u64"
           },
           {
             "name": "total",
+            "type": "u64"
+          },
+          {
+            "name": "released",
+            "docs": [
+              "The part of `committed` that release_monthly_award returned to free balance. This",
+              "field also makes the account 100 bytes, so a month recorded by the 316-byte build",
+              "(92 bytes, with no settled markers or outstanding count) fails closed here."
+            ],
             "type": "u64"
           }
         ]

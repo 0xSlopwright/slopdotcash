@@ -426,7 +426,13 @@ project PDA seed. The red-team revision of 24 October 2026 appended
 `accrued_fees` and `monthly_outstanding` (u64 each). A 316-byte project from the
 build before it cannot be read until anyone calls the permissionless
 `migrate_project`, which grows it to 332 bytes, takes any added rent from the
-payer and starts both counters at zero (that build sent fees out at once). A project from an earlier build cannot sign with the new
+payer and starts both counters at zero (that build sent fees out at once).
+The same revision appended `released` to `MonthlyAllocation` (now 100 bytes).
+A month recorded by the earlier build has no settled markers and is not in
+`monthly_outstanding`, so the new build cannot read it and its awards fail
+closed. Before an in-place upgrade, `getProgramAccounts` must show no
+92-byte month account; devnet program `7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ`
+had none on 24 October 2026. A project from an earlier build cannot sign with the new
 seeds, so the D13 revision is a new deployment, and the earlier
 `migrate_project` path is removed. Later upgrades must preserve this layout or use an explicitly reviewed migration.
 A replacement deployment must preserve the old deployment and its obligations.

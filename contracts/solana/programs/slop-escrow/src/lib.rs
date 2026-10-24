@@ -335,6 +335,7 @@ pub mod slop_escrow {
         m.period = period;
         m.allocation_root = allocation_root;
         m.committed = 0;
+        m.released = 0;
         m.total = total;
         p.reserved = add(p.reserved, total)?;
         p.monthly_outstanding = add(p.monthly_outstanding, total)?;
@@ -422,6 +423,7 @@ pub mod slop_escrow {
             count,
             &proof,
         )?;
+        a.month.released = add(a.month.released, gross)?;
         emit!(MonthlyAwardReleased {
             project: a.project.key(),
             period,
@@ -611,8 +613,6 @@ pub mod slop_escrow {
         });
         Ok(())
     }
-    // Anyone moves the accrued payout and withdrawal fees to a token account the fee recipient
-    // owns. Only this instruction depends on the fee recipient, as on EVM.
     // Anyone grows a Project created by the 316-byte build to the current layout, paying
     // any extra rent. The new counters start at zero: that build sent fees out at once and
     // had no monthly gate. No other instruction can read the old layout.
@@ -646,6 +646,8 @@ pub mod slop_escrow {
         });
         Ok(())
     }
+    // Anyone moves the accrued payout and withdrawal fees to a token account the fee recipient
+    // owns. Only this instruction depends on the fee recipient, as on EVM.
     pub fn claim_fees(ctx: Context<ClaimFees>) -> Result<()> {
         let p = &ctx.accounts.project;
         let amount = p.accrued_fees;
@@ -1232,8 +1234,13 @@ pub struct MonthlyAllocation {
     pub project: Pubkey,
     pub period: u32,
     pub allocation_root: [u8; 32],
+    /// Gross settled so far: committed awards plus released awards.
     pub committed: u64,
     pub total: u64,
+    /// The part of `committed` that release_monthly_award returned to free balance. This
+    /// field also makes the account 100 bytes, so a month recorded by the 316-byte build
+    /// (92 bytes, with no settled markers or outstanding count) fails closed here.
+    pub released: u64,
 }
 /// The separate identity, fee and rotation authorities, written once by
 /// `initialize_config` and never changed.
@@ -1529,6 +1536,8 @@ mod tests {
     #[test]
     fn migration_appends_two_counters() {
         assert_eq!(8 + Project::INIT_SPACE, LEGACY_PROJECT_SIZE + 16);
+        // A legacy 92-byte month cannot deserialize as the current month.
+        assert_eq!(8 + MonthlyAllocation::INIT_SPACE, 100);
     }
     #[test]
     fn fee_is_two_percent_per_award_or_withdrawal() {
