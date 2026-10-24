@@ -1327,7 +1327,7 @@ function ProjectPage({
                 {monthlyPoolPointsOnly(project.reward)
                   ? "Points only · no cash rewards"
                   : project.reward.kind === "monthly-pool"
-                    ? `${project.reward.monthlyCapDisplay} monthly target · ${monthlyPoolUnfunded(project.reward) ? "not funded yet" : `${formatMicroUsdc(project.reward.committedMinor)} funded`}`
+                    ? `${project.reward.monthlyCapDisplay} monthly target · ${monthlyPoolUnfunded(project.reward) ? "not funded yet" : `${formatMicroUsdc(project.reward.committedMinor)} funded`} · ${project.reward.paymentMode === "enabled" ? "payments enabled" : "payments not active"}`
                     : "External prize · organizer decides awards"}
               </p>
               {project.status === "paused" ? (

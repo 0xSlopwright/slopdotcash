@@ -2622,7 +2622,7 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
           <p className="payout-status">
             {reward.paymentMode === "enabled"
               ? "Payouts are enabled. Review allocations in Manage payouts."
-              : "Payouts start once funds are deposited in the vault."}{" "}
+              : "Payouts are disabled. Funding alone does not enable them."}{" "}
             <Link href={`/projects/${project.slug}/funding`}>
               Funding setup
             </Link>
