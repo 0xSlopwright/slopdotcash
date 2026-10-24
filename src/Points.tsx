@@ -1353,7 +1353,7 @@ export function ContributorStandings({
       ) ? (
         <>
           <p className="standings-scroll-hint">
-            Scroll the table to see Points and Paid.
+            Scroll the table to see Points and Money received.
           </p>
           <section
             className="points-table"
@@ -1369,7 +1369,7 @@ export function ContributorStandings({
                   {(
                     [
                       ["points", "Points"],
-                      ["money", "Paid"],
+                      ["money", "Money received"],
                     ] as const
                   ).map(([key, label]) => (
                     <th
