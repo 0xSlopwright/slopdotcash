@@ -9,6 +9,7 @@ import {
   type EscrowChain,
   EVM_CHAINS,
 } from "./lib/escrow-policy.mjs";
+import { CHAIN_NAMES, networkLabel } from "./lib/network-names";
 import {
   formatAssetAmount,
   formatBaseUnits,
@@ -21,27 +22,6 @@ import {
 import { isDirectTransfer } from "./lib/use-direct-transfers";
 import { type PayoutWallet, usePayoutWallets } from "./lib/use-payout-wallets";
 import { formatCycleMonth, formatDate } from "./Presentation";
-
-const networkName: Record<EscrowChain, string> = {
-  base: "Base",
-  solana: "Solana",
-  robinhood: "Robinhood Chain",
-  ethereum: "Ethereum",
-};
-
-// Network names only: each amount names its own vault asset.
-const networkLabels: Record<string, string> = {
-  "base-mainnet": "Base",
-  "base-sepolia": "Base Sepolia (test)",
-  "solana-mainnet": "Solana",
-  "solana-devnet": "Solana Devnet (test)",
-  "solana-testnet": "Solana Testnet (test)",
-  "robinhood-mainnet": "Robinhood Chain",
-  "robinhood-testnet": "Robinhood Chain Testnet (test)",
-  ethereum: "Ethereum",
-  "ethereum-sepolia": "Ethereum Sepolia (test)",
-  anvil: "Local EVM test",
-};
 
 function chainDefaultNetwork(chain: EscrowChain): string {
   return (
@@ -298,7 +278,7 @@ export function EarningsPage({
     });
     if (mounted.current) {
       setMessage(
-        `${networkName[chain]} wallet confirmed. Eligible unpaid awards will be sent automatically. A changed wallet is used immediately after any earlier payment is reconciled.`,
+        `${CHAIN_NAMES[chain]} wallet confirmed. Eligible unpaid awards will be sent automatically. A changed wallet is used immediately after any earlier payment is reconciled.`,
       );
       refresh();
     }
@@ -336,7 +316,7 @@ export function EarningsPage({
     returnFocus.current = pendingChange.chain;
     setPendingChange(null);
     setMessage(
-      `Kept your saved ${networkName[pendingChange.chain]} address. Nothing was registered.`,
+      `Kept your saved ${CHAIN_NAMES[pendingChange.chain]} address. Nothing was registered.`,
     );
   }
 
@@ -385,7 +365,7 @@ export function EarningsPage({
       >
         <div className="wallet-picker-header">
           <h2 id={`${heading}-wallet-picker`}>
-            Connect a {picker ? networkName[picker] : ""} wallet
+            Connect a {picker ? CHAIN_NAMES[picker] : ""} wallet
           </h2>
           <button
             type="button"
@@ -397,7 +377,7 @@ export function EarningsPage({
           </button>
         </div>
         <p>
-          Choose a wallet for your {picker ? networkName[picker] : ""} payouts.
+          Choose a wallet for your {picker ? CHAIN_NAMES[picker] : ""} payouts.
         </p>
         {picker && EVM_CHAINS.includes(picker) ? (
           <p>Wallet confirmation does not require switching networks.</p>
@@ -507,7 +487,7 @@ export function EarningsPage({
                         disabled={busy !== null || pendingChange !== null}
                         onClick={() => setPicker(chain)}
                       >
-                        Connect {networkName[chain]} wallet
+                        Connect {CHAIN_NAMES[chain]} wallet
                       </button>
                     ))}
                   </div>
@@ -523,7 +503,7 @@ export function EarningsPage({
                   const defaultNetwork = chainDefaultNetwork(chain);
                   return (
                     <article key={chain} className="funding-workbench">
-                      <h2>{networkName[chain]}</h2>
+                      <h2>{CHAIN_NAMES[chain]}</h2>
                       {unpaid.length === 0 ? (
                         <p>No unpaid awards</p>
                       ) : (
@@ -533,7 +513,7 @@ export function EarningsPage({
                             unpaid
                             {b.network === defaultNetwork
                               ? ""
-                              : ` on ${networkLabels[b.network] ?? b.network}`}
+                              : ` on ${networkLabel(b.network)}`}
                           </p>
                         ))
                       )}
@@ -552,7 +532,7 @@ export function EarningsPage({
                         </p>
                       ) : (
                         <p>
-                          Add a {networkName[chain]} wallet to receive awards on
+                          Add a {CHAIN_NAMES[chain]} wallet to receive awards on
                           this network.
                         </p>
                       )}
@@ -598,7 +578,7 @@ export function EarningsPage({
                       >
                         {busy === chain
                           ? "Confirm in your wallet…"
-                          : `${wallet?.authorized ? "Change" : "Connect"} ${networkName[chain]} wallet`}
+                          : `${wallet?.authorized ? "Change" : "Connect"} ${CHAIN_NAMES[chain]} wallet`}
                       </button>
                       {pendingChange?.chain === chain && (
                         <section
@@ -611,11 +591,11 @@ export function EarningsPage({
                             ref={changeHeading}
                             tabIndex={-1}
                           >
-                            Register a different {networkName[chain]} address?
+                            Register a different {CHAIN_NAMES[chain]} address?
                           </h3>
                           <p>
                             Your wallet returned a different account from your
-                            saved {networkName[chain]} address. Nothing has been
+                            saved {CHAIN_NAMES[chain]} address. Nothing has been
                             registered yet.
                           </p>
                           <dl>
@@ -720,9 +700,7 @@ export function EarningsPage({
                               </a>{" "}
                               ({formatCycleMonth(award.period)})
                             </td>
-                            <td>
-                              {networkLabels[award.network] ?? award.network}
-                            </td>
+                            <td>{networkLabel(award.network)}</td>
                             <td>{formatAssetAmount(award.grossBase, award)}</td>
                             <td>{formatAssetAmount(award.feeBase, award)}</td>
                             <td>{formatAssetAmount(award.netBase, award)}</td>
@@ -742,10 +720,7 @@ export function EarningsPage({
                                 {payment.projectId}
                               </a>
                             </td>
-                            <td>
-                              {networkLabels[payment.network] ??
-                                payment.network}
-                            </td>
+                            <td>{networkLabel(payment.network)}</td>
                             <td>
                               {formatAssetAmount(payment.grossBase, payment)}
                             </td>
@@ -759,7 +734,7 @@ export function EarningsPage({
                               {
                                 {
                                   paid: "Paid, verified on chain",
-                                  needs_wallet: `Awaiting wallet: add or confirm your ${networkName[payment.chain]} wallet`,
+                                  needs_wallet: `Awaiting wallet: add or confirm your ${CHAIN_NAMES[payment.chain]} wallet`,
                                   ready: "Ready, payment queued",
                                   submitted:
                                     "Submitted, waiting for chain verification",
@@ -825,7 +800,7 @@ export function EarningsPage({
                               </a>
                             </td>
                             <td>{t.contributionMonth}</td>
-                            <td>{networkLabels[t.network] ?? t.network}</td>
+                            <td>{networkLabel(t.network)}</td>
                             <td>{usdcAmount(t.amountMicro)}</td>
                             <td>
                               {transactionUrl(t.network, t.transactionId) ? (

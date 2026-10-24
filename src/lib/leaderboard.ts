@@ -3864,6 +3864,37 @@ function createSnapshotWithReviewCutoff(
       decision,
     };
   };
+  // The assessed size of the unit that contains this review. Zero when the
+  // review is not part of an assessed decision. This does not test reviewer
+  // eligibility: an evaluated award can pay the reviewer without changing
+  // the pull request's recorded size.
+  const assessedSizeThirdsForReview = (
+    pullRequest: Pick<MergedPullRequestReviewRecord, "id" | "headRefOid">,
+    review: Pick<PullRequestReview, "id">,
+  ): number => {
+    const joint = input.jointValueDecisions?.get(pullRequest.id);
+    if (joint) {
+      if (spansValuePolicyStart(joint) || joint.status !== "assessed") return 0;
+      const member = joint.record.sources.find(
+        (source) => source.pullRequestNodeId === pullRequest.id,
+      );
+      if (member?.headSha !== pullRequest.headRefOid) return 0;
+      const unit = joint.record.units.find((candidate) =>
+        candidate.assessment.reviews.some(
+          (item) => item.sourceId === review.id,
+        ),
+      );
+      const tier = unit?.assessment.tier ?? null;
+      return tier === null ? 0 : VALUE_TIERS[tier];
+    }
+    const single = input.valueDecisions?.get(pullRequest.id);
+    if (single?.status !== "assessed") return 0;
+    if (single.record.headSha !== pullRequest.headRefOid) return 0;
+    if (!single.assessment.reviews.some((item) => item.sourceId === review.id))
+      return 0;
+    const tier = single.record.assessment.tier;
+    return tier === null ? 0 : VALUE_TIERS[tier];
+  };
   // PRD section 7: one explicit allocation per pull request. Credit goes to
   // the first five distinct qualifying reviewers and conserves the pool.
   // A reviewer already credited on this artifact (a ratified review record)
@@ -3872,6 +3903,7 @@ function createSnapshotWithReviewCutoff(
     pullRequest: MergedPullRequestReviewRecord,
     candidates: readonly ValueReviewCandidate[],
     awardedReviewers: ReadonlySet<string> = new Set(),
+    assessedSizeFloor = 0,
   ): string[] => {
     if (!valuePolicy) return [];
     const eligible: ValueReviewCandidate[] = [];
@@ -3908,11 +3940,15 @@ function createSnapshotWithReviewCutoff(
       inWindow.map((candidate) => [candidate.reviewId, candidate]),
     );
     // A joint member's reviews can sit in several units; the largest assessed
-    // unit is the pull request's size. An old review losing its share must
-    // not shrink that recorded size.
+    // unit is the pull request's size. An old review losing its share, or a
+    // review already paid as an evaluated contribution, must not shrink that
+    // recorded size.
     const allocation = allocatePullRequestReviewCredit(
       inWindow,
-      Math.max(...eligible.map((candidate) => candidate.assessedSizeThirds)),
+      Math.max(
+        assessedSizeFloor,
+        ...eligible.map((candidate) => candidate.assessedSizeThirds),
+      ),
     );
     const exclude = (reviewId: string, reason: ReviewExclusionReason) => {
       const candidate = byId.get(reviewId);
@@ -4193,17 +4229,27 @@ function createSnapshotWithReviewCutoff(
       }
     };
     const outcomeReviews: PullRequestReview[] = [];
+    let assessedSizeFloor = 0;
     for (const review of orderedReviews) {
       if (review.author && !isBotActor(review.author)) {
         actorEntry(entries, review.author).rawActivity.reviews += 1;
       }
-      if (isScoreBearingSource(repositoryId, review)) continue;
-      if (
-        review.author &&
+      const reviewerId = review.author?.id;
+      const reservedEvaluatedReview =
+        reviewerId !== undefined &&
         evaluatedReviewReservations.has(
-          `${repositoryId}\0${pullRequest.number}\0${review.author.id}`,
-        )
-      ) {
+          `${repositoryId}\0${pullRequest.number}\0${reviewerId}`,
+        );
+      // An evaluated award pays this reviewer outside the pool. The unit
+      // size still caps the other reviewers' shares.
+      if (valueReviews && reservedEvaluatedReview) {
+        assessedSizeFloor = Math.max(
+          assessedSizeFloor,
+          assessedSizeThirdsForReview(pullRequest, review),
+        );
+      }
+      if (isScoreBearingSource(repositoryId, review)) continue;
+      if (reservedEvaluatedReview) {
         excludeReview(pullRequest, review, "evaluated-contribution-award");
         continue;
       }
@@ -4260,6 +4306,7 @@ function createSnapshotWithReviewCutoff(
       pullRequest,
       valueReviewCandidates,
       awardedReviewers,
+      assessedSizeFloor,
     ))
       awardedReviewers.add(reviewerId);
     // SCR-05: the pull request's one review award goes to the latest request
@@ -4362,23 +4409,36 @@ function createSnapshotWithReviewCutoff(
     if (!underValuePolicy(pull.closedAt)) continue;
     const repositoryId = repositoryIdFromUrl(pull.url);
     const candidates: ValueReviewCandidate[] = [];
+    let assessedSizeFloor = 0;
     for (const review of pull.reviews) {
       if (review.author && !isBotActor(review.author))
         actorEntry(entries, review.author).rawActivity.reviews += 1;
-      if (isScoreBearingSource(repositoryId, review)) continue;
-      if (
-        review.author &&
+      const reviewerId = review.author?.id;
+      const reservedEvaluatedReview =
+        reviewerId !== undefined &&
         evaluatedReviewReservations.has(
-          `${repositoryId}\0${pull.number}\0${review.author.id}`,
-        )
-      ) {
+          `${repositoryId}\0${pull.number}\0${reviewerId}`,
+        );
+      if (reservedEvaluatedReview) {
+        assessedSizeFloor = Math.max(
+          assessedSizeFloor,
+          assessedSizeThirdsForReview(pull, review),
+        );
+      }
+      if (isScoreBearingSource(repositoryId, review)) continue;
+      if (reservedEvaluatedReview) {
         excludeReview(pull, review, "evaluated-contribution-award");
         continue;
       }
       const candidate = valueReviewCandidate(pull, review, pull.closedAt);
       if (candidate) candidates.push(candidate);
     }
-    allocateValueReviews(pull, candidates);
+    allocateValueReviews(
+      pull,
+      candidates,
+      new Set<string>(),
+      assessedSizeFloor,
+    );
   }
 
   for (const issue of resolvedIssues) {
