@@ -524,6 +524,7 @@ test("self-service setup: one service cycle scans a listed project clean, and th
     stage: "published",
     disposition: "clean",
     specialistReviewed: false,
+    evidence: "retained",
     publication: "accepted",
   });
   // An ordinary clean project needs only the primary Opus 5.5 review.
@@ -598,6 +599,7 @@ test("malicious-code detection: risky new content is flagged, escalated to the s
     stage: "published",
     disposition: "incomplete",
     specialistReviewed: true,
+    evidence: "retained",
     publication: "accepted",
   });
   // GPT-6.1 Sol runs only because the primary review was high risk.
@@ -698,4 +700,39 @@ test("a publication the journal already reserved is never retried blindly", asyn
   ]);
   // The reserved assessment is not scanned or sent again.
   expect(modelCalls).toEqual([]);
+});
+
+test("a clean result is never published without its retained evidence; the next cycle retries", async () => {
+  await listPausedProject();
+  const evidenceDown = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    const url = new URL(new Request(input, init).url);
+    if (url.pathname.startsWith("/api/v1/vetting/evidence/"))
+      return Response.json({ error: "evidence_unavailable" }, { status: 503 });
+    return network(input, init);
+  }) as typeof fetch;
+  const [failed] = await runScanCycle({ ...service, fetch: evidenceDown });
+  expect(failed).toMatchObject({
+    stage: "retention-failed",
+    disposition: "clean",
+    evidence: "failed",
+    publication: null,
+  });
+  expect((await vetting.getAssessment(failed.assessmentId))?.state).toBe(
+    "pending",
+  );
+  // Nothing was reserved, so the next cycle scans and publishes it.
+  expect(await readdir(join(root, "journal"))).toEqual([]);
+  clock = new Date(NOW.getTime() + 60_000);
+  expect(await runScanCycle(service)).toEqual([
+    expect.objectContaining({
+      assessmentId: failed.assessmentId,
+      stage: "published",
+      disposition: "clean",
+      evidence: "retained",
+    }),
+  ]);
+  expect((await activate()).status).toBe(200);
 });

@@ -96,7 +96,9 @@ calls the signed refresh, reads the signed queue and, in queue order:
 An assessment whose publication the journal already reserved is skipped, so
 an uncertain earlier attempt is never sent again; an operator reconciles it.
 Each step that fails stops only that assessment, and the next cycle scans it
-again. The service never executes repository content, so it never needs the
+again. A clean result is never published without its retained evidence. An
+incomplete result is published even when retention failed, so the
+quarantine is recorded and the scan is not repeated every cycle. The service never executes repository content, so it never needs the
 isolated runner for ordinary source. It never sets a confirmation, so it never
 publishes `malicious`; a moderator confirms malice.
 

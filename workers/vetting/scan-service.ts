@@ -96,6 +96,12 @@ export type ScanOutcome = {
     | "publication-failed";
   disposition: "clean" | "incomplete" | null;
   specialistReviewed: boolean;
+  /**
+   * A clean result is never published without retained evidence. An
+   * incomplete result is published even when retention failed, so a
+   * quarantine is recorded and the scan is not repeated every cycle.
+   */
+  evidence: "retained" | "failed" | null;
   publication: "accepted" | "rejected" | "unknown" | null;
 };
 
@@ -110,7 +116,7 @@ async function signedRequest(
 ): Promise<Response> {
   const headers = await signedServiceHeaders({
     signer: deps.signer,
-    method: method as "POST",
+    method,
     pathAndQuery: path,
     body,
     at: deps.now?.(),
@@ -206,6 +212,7 @@ export async function scanAssessment(
     stage: "acquisition-failed",
     disposition: null,
     specialistReviewed: false,
+    evidence: null,
     publication: null,
   };
   // An earlier attempt reserved this publication: an operator reconciles it.
@@ -305,7 +312,7 @@ export async function scanAssessment(
           bytes: await object(artifact.sha256),
         })),
     );
-    await retainEvidence(deps, assessmentId, runId, [
+    const retained = retainEvidence(deps, assessmentId, runId, [
       {
         sha256: result.scan.reportSha256,
         kind: "trace",
@@ -322,7 +329,13 @@ export async function scanAssessment(
       },
       ...lockObjects,
       ...artifactObjects,
-    ]);
+    ]).then(
+      () => "retained" as const,
+      () => "failed" as const,
+    );
+    outcome.evidence = await retained;
+    if (outcome.evidence === "failed" && result.disposition === "clean")
+      return outcome;
 
     outcome.stage = "publication-failed";
     const receipt = await publishResult({
