@@ -302,38 +302,17 @@ try {
     ).status,
     200,
   );
-  // The owner's discretionary award reserves exactly this gross amount.
-  assert.equal(
-    (
-      await act(technical, caseId, "award", {
-        decision: "amount",
-        grossMinor: "100000000",
-        paymentDeadline: new Date(Date.now() + 86400000).toISOString(),
-        confirmation: true,
-        reason: "Synthetic owner award for the local example.",
-      })
-    ).status,
-    200,
-  );
-  const missingConsent = await act(finance, caseId, "prepare-payment", {
-    network: "base-sepolia",
-    confirmation: true,
-  });
-  assert.equal(missingConsent.body.error, "payment_consent_required");
-  assert.equal(
-    (
-      await act(reporter, caseId, "consent-payment", {
-        network: "base-sepolia",
-        confirmation: true,
-      })
-    ).status,
-    200,
-  );
-  const notFunded = await act(finance, caseId, "prepare-payment", {
-    network: "base-sepolia",
-    confirmation: true,
-  });
-  assert.equal(notFunded.body.error, "payment_vault_unverified");
+  const awardDecision = () =>
+    act(technical, caseId, "award", {
+      decision: "amount",
+      grossMinor: "100000000",
+      paymentDeadline: new Date(Date.now() + 86400000).toISOString(),
+      confirmation: true,
+      reason: "Synthetic owner award for the local example.",
+    });
+  // Owner decision D10: an empty vault without a finalized snapshot has no
+  // funds to reserve, whatever the published terms say.
+  assert.equal((await awardDecision()).body.error, "funds_unavailable");
   await send(token, "mint(address,uint256)", [owner, "100000000"]);
   await send(token, "approve(address,uint256)", [vault, "100000000"]);
   await send(vault, "deposit(uint128)", ["100000000"]);
@@ -353,6 +332,24 @@ try {
       rpcUrl,
     ),
     new Date().toISOString(),
+  );
+  // The finalized free balance now covers it: the award reserves exactly
+  // this gross amount.
+  const awarded = await awardDecision();
+  assert.equal(awarded.status, 200, JSON.stringify(awarded.body));
+  const missingConsent = await act(finance, caseId, "prepare-payment", {
+    network: "base-sepolia",
+    confirmation: true,
+  });
+  assert.equal(missingConsent.body.error, "payment_consent_required");
+  assert.equal(
+    (
+      await act(reporter, caseId, "consent-payment", {
+        network: "base-sepolia",
+        confirmation: true,
+      })
+    ).status,
+    200,
   );
   const prepared = await act(technical, caseId, "prepare-payment", {
     network: "base-sepolia",
