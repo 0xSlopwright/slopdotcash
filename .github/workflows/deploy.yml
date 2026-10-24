@@ -446,7 +446,7 @@ jobs:
             echo "No repository payment records to import."
           fi
           ./node_modules/.bin/wrangler deploy --config workers/identity/wrangler.staging.toml
-          ./node_modules/.bin/wrangler deploy --config workers/vetting-sandbox/wrangler.staging.toml --var="SLOP_RELEASE_SHA:$GITHUB_SHA"
+          bun scripts/release-vetting-sandbox.mjs staging
           node scripts/configure-staging-secrets.mjs
           if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
             bun scripts/release-notify.mjs deploy staging "$RUNNER_TEMP/slop-notify-staging-release"
@@ -785,7 +785,7 @@ jobs:
           }
           NODE
 
-          ./node_modules/.bin/wrangler deploy --config workers/vetting-sandbox/wrangler.toml --var="SLOP_RELEASE_SHA:$GITHUB_SHA"
+          bun scripts/release-vetting-sandbox.mjs production
 
           ./node_modules/.bin/wrangler d1 migrations apply slop-private \
             --remote \
