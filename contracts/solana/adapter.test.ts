@@ -37,7 +37,7 @@ const base: Counters = {
   withdrawalFees: 10n,
   accruedFees: 12n,
 };
-/** A Project account in the current 340-byte layout. */
+/** A Project account in the current 332-byte layout. */
 function projectAccount(c: Counters, mint = MINT_BYTES): Uint8Array {
   const data = new Uint8Array(PROJECT_SIZE);
   const view = new DataView(data.buffer);

@@ -202,11 +202,14 @@ month written as `YYYYMM`. Its window opens 72 hours after the month ends, at
 00:00 UTC on the 4th, and closes when the next month's window opens, so only one
 period is open at a time.
 
-1. Anyone calls `commit_monthly(period, allocation_root, total)` inside the window,
-   while the switch is on. The instruction just before it in the same
+1. Anyone calls `commit_monthly(period, allocation_root, total, frozen_at)`
+   inside the window, while the switch is on. The instruction just before it in the same
    transaction must be an Ed25519 program check of one signature by the
    project's identity authority over
-   `"slop-monthly-allocation-v2" || program ID || project PDA || period (u32 LE) || allocation root || total (u64 LE) || network domain (32 bytes)`.
+   `"slop-monthly-allocation-v3" || program ID || project PDA || period (u32 LE) || allocation root || total (u64 LE) || frozen_at (i64 LE) || network domain (32 bytes)`.
+   `frozen_at` is when the attester froze the allocation, after it checked that
+   no included source had an `origin`; it must lie between the window opening
+   and the admission time.
    The program reads that instruction from the instructions sysvar and requires
    every offset to point inside it. The `month` PDA
    (`["month", project, period LE]`) records the root once, so each period
@@ -225,23 +228,26 @@ period is open at a time.
    Later owner cap changes or opt-out affect new months only. The award then
    commits as an ordinary award with the 2% fee
    through the same `origin` and `award` PDAs, so a source commits once, by
-   hand or monthly.
+   hand or monthly. It also creates the `["monthly-source", project,
+   source_digest]` marker.
 3. Recording a root adds its total to `monthly_outstanding`; each committed
    award subtracts its gross. While `monthly_outstanding` is positive the owner's
    ordinary `commit` fails with `MonthlyOutstanding`, so the owner cannot consume
    an admitted award's source by hand and strand its reserve. Anyone, including
-   the owner, can clear the gate by committing the remaining awards. The gate
-   lapses 30 days after the latest admitted month's window closes
-   (`monthly_gate_until`), so an allocation that can never settle cannot block
-   the owner's direct awards for ever; its unsettled remainder stays reserved.
+   the owner, can clear the gate by committing the remaining awards. From 30 days
+   after a month's window closes, anyone can call `expire_month(period)` once.
+   It removes that month's unsettled gross from `monthly_outstanding`, so an
+   allocation that can never settle cannot block the owner's direct awards for
+   ever. That gross stays reserved, and its awards can still commit or release.
 4. An award that can never commit is returned to free balance by anyone with
    `release_monthly_award(period, source_digest, actor_id, gross, index, count,
-   proof)`, passing the source's `origin` and the obligation it records. The leaf
-   must prove against the recorded month, and either its actor is zero or that
-   obligation was committed strictly before the month's `admitted_at` (by hand
-   before admission, or by an earlier month); otherwise the call fails with
-   `AwardCommittable`. A source consumed after admission therefore stays
-   reserved and never becomes a refund. Both `commit_monthly_award` and `release_monthly_award`
+   proof)`, passing the source's `origin`, its `monthly-source` marker and the
+   obligation the origin records. The leaf must prove against the recorded
+   month, and one of these must hold: its actor is zero; another month's award
+   consumed the source (the marker exists); or the recorded obligation was
+   committed strictly before the month's `frozen_at`. Otherwise the call fails
+   with `AwardCommittable`. A source the owner consumes by hand after the freeze
+   therefore stays reserved and never becomes a refund. Both `commit_monthly_award` and `release_monthly_award`
    create the `["settled", month, source_digest]` PDA, so each source of a month
    settles once: a committed award cannot also be released. A source repeated
    inside one allocation could settle only once and would leave the second copy
@@ -425,15 +431,15 @@ transaction.
 
 ### Project account layout
 
-The `Project` account is 340 bytes. The D13 revision removed `service_fees` and
+The `Project` account is 332 bytes. The D13 revision removed `service_fees` and
 appended `purpose`, `monthly_cap` and `monthly_enabled`, and the purpose is a
 project PDA seed. The red-team revision of 24 October 2026 appended
-`accrued_fees`, `monthly_outstanding` (u64 each) and `monthly_gate_until` (i64). A 316-byte project from the
+`accrued_fees` and `monthly_outstanding` (u64 each). A 316-byte project from the
 build before it cannot be read until anyone calls the permissionless
-`migrate_project`, which grows it to 340 bytes, takes any added rent from the
+`migrate_project`, which grows it to 332 bytes, takes any added rent from the
 payer and starts the new fields at zero (that build sent fees out at once).
-The same revision appended `released` and `admitted_at` to `MonthlyAllocation`
-(now 108 bytes).
+The same revision appended `released`, `frozen_at` and `expired` to
+`MonthlyAllocation` (now 109 bytes).
 A month recorded by the earlier build has no settled markers and is not in
 `monthly_outstanding`, so the new build cannot read it and its awards fail
 closed. Before an in-place upgrade, `getProgramAccounts` must show no

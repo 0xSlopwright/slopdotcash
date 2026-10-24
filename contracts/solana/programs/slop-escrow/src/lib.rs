@@ -14,13 +14,13 @@ const MAX_ROTATION_DELAY: i64 = 90 * 86400;
 /// A monthly allocation for calendar UTC month M can be recorded from this delay after M ends
 /// until this delay after the next month ends (owner decision D1: 00:00 UTC on the 4th).
 const MONTHLY_CUTOFF_DELAY: i64 = 72 * 3600;
-/// An admitted month blocks the owner's direct commits until this long after its window
-/// closes. Every award of a correct allocation is committed well before then; a month that
-/// can never settle (a lost or faulty allocation) cannot block the owner for ever.
+/// From this long after its window closes, anyone can expire a month: its unsettled gross
+/// stops blocking the owner's direct commits but stays reserved. Every award of a correct
+/// allocation is committed well before then.
 const MONTHLY_GATE_GRACE: i64 = 30 * 86400;
 /// The identity authority signs this prefix, the program ID, the project, the period (u32 LE,
-/// YYYYMM), the allocation root, total and stored network domain.
-pub const MONTHLY_MESSAGE_PREFIX: &[u8] = b"slop-monthly-allocation-v2";
+/// YYYYMM), the allocation root, total, freeze time (i64 LE) and stored network domain.
+pub const MONTHLY_MESSAGE_PREFIX: &[u8] = b"slop-monthly-allocation-v3";
 /// The native Ed25519 signature verification program.
 const ED25519_PROGRAM: Pubkey =
     anchor_lang::solana_program::pubkey::pubkey!("Ed25519SigVerify111111111111111111111111111");
@@ -236,12 +236,10 @@ pub mod slop_escrow {
             EscrowError::WrongPurpose
         );
         // While an admitted month has uncommitted awards, the owner cannot consume one of
-        // their sources by hand and strand that award; anyone can commit the rest first. The
-        // gate lapses MONTHLY_GATE_GRACE after the last admitted window closes, and a source
-        // consumed after admission can never be released, so the reserve stays reserved.
-        let p = &ctx.accounts.project;
+        // their sources by hand and strand that award; anyone can commit the rest first, and
+        // expire_month ends a month that can never settle.
         require!(
-            p.monthly_outstanding == 0 || Clock::get()?.unix_timestamp >= p.monthly_gate_until,
+            ctx.accounts.project.monthly_outstanding == 0,
             EscrowError::MonthlyOutstanding
         );
         let a = &mut ctx.accounts;
@@ -306,12 +304,15 @@ pub mod slop_escrow {
     // Anyone records one period's allocation root inside the period's window, once per
     // period, while the owner has monthly commitments on. The instruction just before this
     // one must be an Ed25519 program check of the project's identity authority signature
-    // over monthly_message(program, project, period, root, total, network).
+    // over monthly_message(program, project, period, root, total, frozen_at, network).
+    // `frozen_at` is when the attester froze the allocation, after it checked that no
+    // included source was consumed; only a source consumed before it can be released.
     pub fn commit_monthly(
         ctx: Context<CommitMonthly>,
         period: u32,
         allocation_root: [u8; 32],
         total: u64,
+        frozen_at: i64,
     ) -> Result<()> {
         let p = &mut ctx.accounts.project;
         require!(p.purpose == Purpose::Ordinary, EscrowError::WrongPurpose);
@@ -321,6 +322,10 @@ pub mod slop_escrow {
         require!(
             now >= opens_at && now < closes_at,
             EscrowError::MonthlyWindowClosed
+        );
+        require!(
+            frozen_at >= opens_at && frozen_at <= now,
+            EscrowError::InvalidFreeze
         );
         require!(total > 0, EscrowError::InvalidAmount);
         require!(total <= p.monthly_cap, EscrowError::MonthlyCapExceeded);
@@ -334,6 +339,7 @@ pub mod slop_escrow {
             period,
             &allocation_root,
             total,
+            frozen_at,
             &p.network,
         );
         verify_attestation(&ctx.accounts.instructions, &p.identity_authority, &message)?;
@@ -343,13 +349,11 @@ pub mod slop_escrow {
         m.allocation_root = allocation_root;
         m.committed = 0;
         m.released = 0;
-        m.admitted_at = now;
+        m.frozen_at = frozen_at;
+        m.expired = false;
         m.total = total;
         p.reserved = add(p.reserved, total)?;
         p.monthly_outstanding = add(p.monthly_outstanding, total)?;
-        p.monthly_gate_until = p
-            .monthly_gate_until
-            .max(add_i64(closes_at, MONTHLY_GATE_GRACE)?);
         emit!(MonthlyCommitted {
             project: p.key(),
             period,
@@ -402,10 +406,10 @@ pub mod slop_escrow {
         )
     }
     // Anyone returns one award of a recorded allocation to free balance when it can never
-    // commit: its source was consumed before the month was admitted (direct commits are
-    // refused while a month is outstanding) or by another month, or its actor is zero.
-    // Without this its reserve would stay locked forever. The `settled` marker, shared with
-    // commit_monthly_award, lets each source of a month commit or release only once.
+    // commit: its source was consumed by hand before the allocation froze, or by another
+    // month's award, or its actor is zero. A source the owner consumes after the freeze
+    // stays reserved, so selective removal never becomes a refund. The `settled` marker,
+    // shared with commit_monthly_award, lets each source of a month settle only once.
     #[allow(clippy::too_many_arguments)]
     pub fn release_monthly_award(
         mut ctx: Context<ReleaseMonthlyAward>,
@@ -418,9 +422,8 @@ pub mod slop_escrow {
         proof: Vec<AllocationNode>,
     ) -> Result<()> {
         require!(gross > 0, EscrowError::AwardCommittable);
-        if actor_id != 0 {
-            // Only a source consumed strictly before this month was admitted releases. A source
-            // the owner consumes after admission stays reserved, so it can never become a refund.
+        let monthly = &ctx.accounts.monthly_source;
+        if actor_id != 0 && !(monthly.owner == ctx.program_id && !monthly.data_is_empty()) {
             let origin = &ctx.accounts.origin;
             require!(
                 origin.owner == ctx.program_id && !origin.data_is_empty(),
@@ -434,7 +437,7 @@ pub mod slop_escrow {
                 .ok_or(error!(EscrowError::AwardCommittable))?;
             require!(
                 consumed.key() == recorded.obligation
-                    && consumed.committed_at < ctx.accounts.month.admitted_at,
+                    && consumed.committed_at < ctx.accounts.month.frozen_at,
                 EscrowError::AwardCommittable
             );
         }
@@ -456,6 +459,34 @@ pub mod slop_escrow {
             source_digest,
             actor_id,
             gross
+        });
+        Ok(())
+    }
+    // Anyone expires a month MONTHLY_GATE_GRACE after its window closes. Its unsettled gross
+    // leaves monthly_outstanding, so a month that can never settle stops blocking the owner's
+    // direct commits; that gross stays reserved and its awards can still commit later.
+    pub fn expire_month(ctx: Context<ExpireMonth>, period: u32) -> Result<()> {
+        let (_, closes_at) = monthly_window(period)?;
+        require!(
+            Clock::get()?.unix_timestamp >= add_i64(closes_at, MONTHLY_GATE_GRACE)?,
+            EscrowError::MonthlyWindowClosed
+        );
+        let m = &mut ctx.accounts.month;
+        require!(!m.expired, EscrowError::MonthExpired);
+        let unsettled = m
+            .total
+            .checked_sub(m.committed)
+            .ok_or(error!(EscrowError::Arithmetic))?;
+        let p = &mut ctx.accounts.project;
+        p.monthly_outstanding = p
+            .monthly_outstanding
+            .checked_sub(unsettled)
+            .ok_or(error!(EscrowError::Arithmetic))?;
+        m.expired = true;
+        emit!(MonthExpired {
+            project: p.key(),
+            period,
+            unsettled
         });
         Ok(())
     }
@@ -776,7 +807,10 @@ fn settle_leaf(
     month.committed = committed;
     let less = |n: u64| n.checked_sub(gross).ok_or(error!(EscrowError::Arithmetic));
     p.reserved = less(p.reserved)?;
-    p.monthly_outstanding = less(p.monthly_outstanding)?;
+    // An expired month's unsettled gross already left the outstanding count.
+    if !month.expired {
+        p.monthly_outstanding = less(p.monthly_outstanding)?;
+    }
     Ok(())
 }
 /// The bytes the identity authority signs for one period's allocation of one project.
@@ -786,6 +820,7 @@ pub fn monthly_message(
     period: u32,
     allocation_root: &[u8; 32],
     total: u64,
+    frozen_at: i64,
     network: &[u8; 32],
 ) -> Vec<u8> {
     [
@@ -795,6 +830,7 @@ pub fn monthly_message(
         &period.to_le_bytes(),
         allocation_root,
         &total.to_le_bytes(),
+        &frozen_at.to_le_bytes(),
         network,
     ]
     .concat()
@@ -1085,7 +1121,19 @@ pub struct CommitMonthlyAward<'info> {
     /// Exists once per source in a month, so a committed award cannot also be released.
     #[account(init,payer=payer,space=8+BindingVeto::INIT_SPACE,seeds=[b"settled",month.key().as_ref(),&source_digest],bump)]
     pub settled: Account<'info, BindingVeto>,
+    /// Records that a monthly award consumed this source, so the same source in another
+    /// month can be released.
+    #[account(init,payer=payer,space=8+BindingVeto::INIT_SPACE,seeds=[b"monthly-source",project.key().as_ref(),&source_digest],bump)]
+    pub monthly_source: Account<'info, BindingVeto>,
     pub system_program: Program<'info, System>,
+}
+#[derive(Accounts)]
+#[instruction(period:u32)]
+pub struct ExpireMonth<'info> {
+    #[account(mut)]
+    pub project: Box<Account<'info, Project>>,
+    #[account(mut,has_one=project,seeds=[b"month",project.key().as_ref(),&period.to_le_bytes()],bump)]
+    pub month: Box<Account<'info, MonthlyAllocation>>,
 }
 #[derive(Accounts)]
 #[instruction(period:u32, source_digest:[u8;32])]
@@ -1100,7 +1148,11 @@ pub struct ReleaseMonthlyAward<'info> {
     /// CHECK: the source's origin address; the handler requires an initialized origin unless the actor is zero.
     #[account(seeds=[b"origin",project.key().as_ref(),&source_digest],bump)]
     pub origin: UncheckedAccount<'info>,
-    /// The obligation the origin records; required unless the actor is zero.
+    /// CHECK: the monthly-source marker; initialized when another month's award consumed the source.
+    #[account(seeds=[b"monthly-source",project.key().as_ref(),&source_digest],bump)]
+    pub monthly_source: UncheckedAccount<'info>,
+    /// The obligation the origin records; required unless the actor is zero or another
+    /// month consumed the source.
     pub obligation: Option<Box<Account<'info, Obligation>>>,
     /// The same marker as commit_monthly_award, so a source settles once per month.
     #[account(init,payer=payer,space=8+BindingVeto::INIT_SPACE,seeds=[b"settled",month.key().as_ref(),&source_digest],bump)]
@@ -1246,10 +1298,8 @@ pub struct Project {
     /// Payout and withdrawal fees held in the vault until claim_fees moves them.
     pub accrued_fees: u64,
     /// Gross of admitted monthly allocations not yet committed or released. While it is
-    /// positive the owner cannot commit by hand, until monthly_gate_until.
+    /// positive the owner cannot commit by hand.
     pub monthly_outstanding: u64,
-    /// When the monthly gate lapses: MONTHLY_GATE_GRACE after the latest admitted window.
-    pub monthly_gate_until: i64,
 }
 /// What a project holds funds for. It is part of the project PDA seeds.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
@@ -1271,8 +1321,11 @@ pub struct MonthlyAllocation {
     /// field also makes the account larger than the 92-byte month of the 316-byte build (no
     /// settled markers or outstanding count), so such a month fails closed here.
     pub released: u64,
-    /// When the root was recorded. Only a source consumed before it can be released.
-    pub admitted_at: i64,
+    /// When the attester froze the allocation. Only a source consumed by hand before it can
+    /// be released.
+    pub frozen_at: i64,
+    /// Set by expire_month: the unsettled gross no longer counts as outstanding.
+    pub expired: bool,
 }
 /// The separate identity, fee and rotation authorities, written once by
 /// `initialize_config` and never changed.
@@ -1396,6 +1449,12 @@ pub struct MonthlyAwardReleased {
     pub gross: u64,
 }
 #[event]
+pub struct MonthExpired {
+    pub project: Pubkey,
+    pub period: u32,
+    pub unsettled: u64,
+}
+#[event]
 pub struct ProjectMigrated {
     pub project: Pubkey,
 }
@@ -1494,6 +1553,10 @@ pub enum EscrowError {
     AwardCommittable,
     #[msg("Account is not a Project of the 316-byte layout")]
     NotLegacyProject,
+    #[msg("The month has already expired")]
+    MonthExpired,
+    #[msg("The allocation freeze time must be inside the window and not in the future")]
+    InvalidFreeze,
 }
 
 #[account]
@@ -1567,9 +1630,9 @@ mod tests {
     }
     #[test]
     fn migration_appends_two_counters() {
-        assert_eq!(8 + Project::INIT_SPACE, LEGACY_PROJECT_SIZE + 24);
+        assert_eq!(8 + Project::INIT_SPACE, LEGACY_PROJECT_SIZE + 16);
         // A legacy 92-byte month cannot deserialize as the current month.
-        assert_eq!(8 + MonthlyAllocation::INIT_SPACE, 108);
+        assert_eq!(8 + MonthlyAllocation::INIT_SPACE, 109);
     }
     #[test]
     fn fee_is_two_percent_per_award_or_withdrawal() {

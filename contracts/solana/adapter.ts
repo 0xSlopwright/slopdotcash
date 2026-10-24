@@ -36,9 +36,9 @@ export interface SolanaEscrowConfig {
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 /** Project account size: 257 bytes of core state, the pending identity authority, its
  * effective time and confirmation, the i64 rotation delay, then the u8 purpose, the u64
- * monthly cap, the monthly on/off switch, the u64 accrued fees, the u64 outstanding
- * monthly gross and the i64 time the monthly gate lapses. */
-export const PROJECT_SIZE = 340;
+ * monthly cap, the monthly on/off switch, the u64 accrued fees and the u64 outstanding
+ * monthly gross. */
+export const PROJECT_SIZE = 332;
 /** Wallet binding size: 160 bytes of latest-binding state plus the u64 paid version and u8 veto count. */
 export const BINDING_SIZE = 169;
 /** Obligation size: 137 bytes of v2 state plus the i64 commit time. */
@@ -473,13 +473,16 @@ export function solanaAllocationProof(
   }
   return proof;
 }
-/** The bytes the identity authority signs for one period ("YYYY-MM") of one project. */
+/** The bytes the identity authority signs for one period ("YYYY-MM") of one project.
+ * `frozenAt` is the Unix second at which the attester froze the allocation, after it
+ * checked that no included source was consumed. */
 export function solanaMonthlyMessage(
   programId: string,
   projectPda: string,
   period: string,
   allocationRoot: string,
   total: string,
+  frozenAt: string,
   network: string,
 ) {
   const match = /^([2-9][0-9]{3})-(0[1-9]|1[0-2])$/.exec(period);
@@ -487,12 +490,13 @@ export function solanaMonthlyMessage(
   const yyyymm = new Uint8Array(4);
   new DataView(yyyymm.buffer).setUint32(0, Number(match[1] + match[2]), true);
   return concat(
-    new TextEncoder().encode("slop-monthly-allocation-v2"),
+    new TextEncoder().encode("slop-monthly-allocation-v3"),
     publicKeyBytes(programId),
     publicKeyBytes(projectPda),
     yyyymm,
     digest(allocationRoot),
     le(total, 8),
+    le(frozenAt, 8),
     digest(network),
   );
 }

@@ -411,6 +411,10 @@
         {
           "name": "total",
           "type": "u64"
+        },
+        {
+          "name": "frozen_at",
+          "type": "i64"
         }
       ]
     },
@@ -519,6 +523,33 @@
               {
                 "kind": "account",
                 "path": "month"
+              },
+              {
+                "kind": "arg",
+                "path": "source_digest"
+              }
+            ]
+          }
+        },
+        {
+          "name": "monthly_source",
+          "docs": [
+            "Records that a monthly award consumed this source, so the same source in another",
+            "month can be released."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109, 111, 110, 116, 104, 108, 121, 45, 115, 111, 117, 114, 99,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project"
               },
               {
                 "kind": "arg",
@@ -662,6 +693,43 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "expire_month",
+      "discriminator": [177, 180, 193, 72, 217, 37, 87, 65],
+      "accounts": [
+        {
+          "name": "project",
+          "writable": true,
+          "relations": ["month"]
+        },
+        {
+          "name": "month",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [109, 111, 110, 116, 104]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "period"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "period",
+          "type": "u32"
+        }
+      ]
     },
     {
       "name": "initialize",
@@ -1015,9 +1083,32 @@
           }
         },
         {
+          "name": "monthly_source",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109, 111, 110, 116, 104, 108, 121, 45, 115, 111, 117, 114, 99,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "source_digest"
+              }
+            ]
+          }
+        },
+        {
           "name": "obligation",
           "docs": [
-            "The obligation the origin records; required unless the actor is zero."
+            "The obligation the origin records; required unless the actor is zero or another",
+            "month consumed the source."
           ],
           "optional": true
         },
@@ -1316,6 +1407,10 @@
       "discriminator": [22, 104, 110, 222, 38, 157, 14, 62]
     },
     {
+      "name": "MonthExpired",
+      "discriminator": [112, 58, 152, 189, 71, 127, 38, 232]
+    },
+    {
       "name": "MonthlyAwardReleased",
       "discriminator": [88, 216, 156, 225, 0, 33, 175, 167]
     },
@@ -1510,6 +1605,16 @@
       "code": 6033,
       "name": "NotLegacyProject",
       "msg": "Account is not a Project of the 316-byte layout"
+    },
+    {
+      "code": 6034,
+      "name": "MonthExpired",
+      "msg": "The month has already expired"
+    },
+    {
+      "code": 6035,
+      "name": "InvalidFreeze",
+      "msg": "The allocation freeze time must be inside the window and not in the future"
     }
   ],
   "types": [
@@ -1804,6 +1909,26 @@
       }
     },
     {
+      "name": "MonthExpired",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "period",
+            "type": "u32"
+          },
+          {
+            "name": "unsettled",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "MonthlyAllocation",
       "docs": [
         "One period's recorded allocation root and the gross committed from it so far."
@@ -1846,11 +1971,19 @@
             "type": "u64"
           },
           {
-            "name": "admitted_at",
+            "name": "frozen_at",
             "docs": [
-              "When the root was recorded. Only a source consumed before it can be released."
+              "When the attester froze the allocation. Only a source consumed by hand before it can",
+              "be released."
             ],
             "type": "i64"
+          },
+          {
+            "name": "expired",
+            "docs": [
+              "Set by expire_month: the unsettled gross no longer counts as outstanding."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -2103,16 +2236,9 @@
             "name": "monthly_outstanding",
             "docs": [
               "Gross of admitted monthly allocations not yet committed or released. While it is",
-              "positive the owner cannot commit by hand, until monthly_gate_until."
+              "positive the owner cannot commit by hand."
             ],
             "type": "u64"
-          },
-          {
-            "name": "monthly_gate_until",
-            "docs": [
-              "When the monthly gate lapses: MONTHLY_GATE_GRACE after the latest admitted window."
-            ],
-            "type": "i64"
           }
         ]
       }

@@ -31,7 +31,7 @@ import { verifyProgram } from "./owner-plan.mjs";
 const PROJECT_DISCRIMINATOR = "cda8bdcab5f78e13";
 /** Project sizes before and after accrued fees and the monthly gate were appended. */
 const LEGACY_PROJECT_SIZE = 316;
-const PROJECT_SIZE = 340;
+const PROJECT_SIZE = 332;
 const UPGRADEABLE_LOADER = new PublicKey(
   "BPFLoaderUpgradeab1e11111111111111111111111",
 );
