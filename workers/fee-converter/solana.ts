@@ -191,7 +191,9 @@ export function createSolanaClient(
   const { config, limits } = options;
   const doFetch = options.fetch ?? fetch;
   const wallet = config.feeWallet;
-  const stablecoin = config.definition.stablecoin;
+  if (config.definition.usdc === null)
+    throw new Error(`no verified USDC target on ${config.network}`);
+  const usdc: string = config.definition.usdc;
   const seed = options.keypair
     ? (() => {
         let parsed: unknown;
@@ -274,7 +276,7 @@ export function createSolanaClient(
     const quote = await jupiter<JupiterQuote>(
       `quote?${new URLSearchParams({
         inputMint: token,
-        outputMint: stablecoin,
+        outputMint: usdc,
         amount: amount.toString(),
         slippageBps: String(slippageBps),
         swapMode: "ExactIn",
@@ -283,7 +285,7 @@ export function createSolanaClient(
     );
     if (
       quote.inputMint !== token ||
-      quote.outputMint !== stablecoin ||
+      quote.outputMint !== usdc ||
       quote.inAmount !== amount.toString() ||
       quote.swapMode !== "ExactIn" ||
       quote.platformFee !== null ||
@@ -423,7 +425,7 @@ export function createSolanaClient(
       )
         throw new Error("Jupiter returned an invalid block height");
 
-      const usdcAccount = associatedTokenAccount(wallet, stablecoin);
+      const usdcAccount = associatedTokenAccount(wallet, usdc);
       const before = await usdcBalance(usdcAccount);
       const simulation = await rpc<{
         value: {
@@ -512,7 +514,9 @@ export function createSolanaClient(
         if (!transaction) return { kind: "pending" };
         const total = (balances: TokenBalance[]) =>
           balances
-            .filter((b) => b.owner === wallet && b.mint === stablecoin)
+            // The row's own target, so a send reconciles against the asset
+            // it was signed for.
+            .filter((b) => b.owner === wallet && b.mint === row.targetToken)
             .reduce((sum, b) => sum + BigInt(b.uiTokenAmount.amount), 0n);
         const delta =
           total(transaction.meta.postTokenBalances) -

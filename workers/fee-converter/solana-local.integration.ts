@@ -204,7 +204,14 @@ try {
     FEE_WALLET_SOLANA: wallet,
     FEE_WALLET_KEY_SOLANA: keypair,
     RPC_URL_SOLANA: RPC,
+    // Harness limits for a local chain only; production limits come from
+    // the reviewed wrangler.toml.
     FEE_CONVERTER_MIN_VALUE_MICRO: "1000000",
+    FEE_CONVERTER_GAS_MULTIPLE: "10",
+    FEE_CONVERTER_MAX_SLIPPAGE_BPS: "100",
+    FEE_CONVERTER_MAX_PRICE_IMPACT_BPS: "200",
+    FEE_CONVERTER_RUN_CAP_MICRO: "1000000000",
+    FEE_CONVERTER_DAILY_CAP_MICRO: "5000000000",
     FEE_CONVERTER_ALLOWLIST: JSON.stringify({ solana: [JUP] }),
   };
   const overrides = {

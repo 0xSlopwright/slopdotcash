@@ -2,7 +2,7 @@
  * EVM fee-wallet client for Base, Ethereum and Robinhood Chain. Routes come
  * from the KyberSwap Aggregator API. Every built swap is decoded and checked
  * before signing: the pinned router, the exact input token and amount, the
- * network stablecoin as output, the fee wallet as receiver, no extra fee
+ * network's Circle USDC as output, the fee wallet as receiver, no extra fee
  * receivers, and a signed minimum no lower than the recorded quote minimum.
  */
 
@@ -143,6 +143,12 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
   const sleep =
     options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const router = definition.router as Address;
+  /** The USDC target; a network without a verified one never quotes or signs. */
+  const usdc = (): string => {
+    if (definition.usdc === null)
+      throw new Error(`no verified USDC target on ${config.network}`);
+    return definition.usdc;
+  };
   const wallet = config.feeWallet as Address;
   const chain: Chain = defineChain({
     id: options.chainIdOverride ?? (definition.chainId as number),
@@ -272,7 +278,7 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
         route = await kyber<KyberRoute>(
           `routes?${new URLSearchParams({
             tokenIn: token,
-            tokenOut: definition.stablecoin,
+            tokenOut: usdc(),
             amountIn: amount.toString(),
             gasInclude: "true",
           })}`,
@@ -288,7 +294,7 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
       if (
         route.routerAddress.toLowerCase() !== router ||
         summary.tokenIn.toLowerCase() !== token ||
-        summary.tokenOut.toLowerCase() !== definition.stablecoin ||
+        summary.tokenOut.toLowerCase() !== usdc() ||
         summary.amountIn !== amount.toString() ||
         !/^\d+$/u.test(summary.amountOut)
       )
@@ -376,7 +382,7 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
       const fresh = await kyber<KyberRoute>(
         `routes?${new URLSearchParams({
           tokenIn: token,
-          tokenOut: definition.stablecoin,
+          tokenOut: usdc(),
           amountIn: quote.amountIn.toString(),
           gasInclude: "true",
         })}`,
@@ -413,7 +419,7 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
           : decoded.args[1];
       if (
         desc.srcToken.toLowerCase() !== token ||
-        desc.dstToken.toLowerCase() !== definition.stablecoin ||
+        desc.dstToken.toLowerCase() !== usdc() ||
         desc.dstReceiver.toLowerCase() !== wallet ||
         desc.amount !== quote.amountIn ||
         desc.feeReceivers.length !== 0 ||
@@ -472,7 +478,9 @@ export function createEvmClient(options: EvmClientOptions): ChainClient & {
           abi: erc20Abi,
           eventName: "Transfer",
           logs: receipt.logs.filter(
-            (log) => log.address.toLowerCase() === definition.stablecoin,
+            // The row's own target, so a send reconciles against the asset
+            // it was signed for.
+            (log) => log.address.toLowerCase() === row.targetToken,
           ),
         });
         const amountOut = logs
