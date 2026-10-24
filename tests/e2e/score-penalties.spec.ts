@@ -39,6 +39,7 @@ function publishedSnapshot() {
           category: "spam",
           tableVersion: "slopbot-penalties-v1",
           debitThirds: PENALTY_TABLE.spam.debitThirds,
+          period: "2026-11",
           recordedAt: "2026-11-10T00:00:05.000Z",
         },
       ]),
