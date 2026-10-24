@@ -38,8 +38,8 @@ import { payoutFee } from "../../src/lib/payments/contracts";
 import {
   authorizeRegistry,
   authorizeWalletRotation,
-  requireWalletAuthorization,
   type JournalStore,
+  requireWalletAuthorization,
 } from "./core";
 import { mainnetExecutionEnabled } from "./mainnet-execution.mjs";
 
