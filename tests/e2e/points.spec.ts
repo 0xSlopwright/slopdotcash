@@ -26,7 +26,7 @@ test(
     const reloaded = await page.reload();
     expect(reloaded?.status()).toBe(200);
     await expect(
-      page.getByRole("columnheader", { name: "Score", exact: true }),
+      page.getByRole("columnheader", { name: "Points", exact: true }),
     ).toHaveAttribute("aria-sort", "descending");
     // The period states the snapshot's exact bounds and source coverage.
     const coverage = page.locator(".points-coverage");
@@ -41,7 +41,7 @@ test(
     );
     await expect(page.getByRole("table")).toBeVisible({ timeout: 30000 });
     await expect(
-      page.getByRole("columnheader", { name: "Score", exact: true }),
+      page.getByRole("columnheader", { name: "Points", exact: true }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Paid", exact: true }).click();
     await expect(page).toHaveURL(/sort=money/);
@@ -156,7 +156,7 @@ test(
   },
 );
 
-test("ranks archived work separately from the month its payment settled", async ({
+test("shows archived payments in their settlement month independently of points", async ({
   page,
 }) => {
   // Local public-record fixtures exercise the browser projection, not chain verification.
@@ -204,19 +204,15 @@ test("ranks archived work separately from the month its payment settled", async 
   const recipient = standings.getByRole("row").filter({
     has: page.getByRole("link", { name: "archive-only", exact: true }),
   });
-  await expect(recipient.locator("td").nth(4)).toHaveText("$1");
-  await expect(recipient.locator("td").nth(2)).toHaveText("Unavailable");
+  await expect(recipient.locator("td").nth(3)).toHaveText("$1");
   await page.goto(
     `${site}/?sort=money&period=lifetime&q=archive-only#leaderboard`,
   );
-  await standings.getByRole("button", { name: "Score", exact: true }).click();
-  await expect(recipient.locator("td").nth(2)).toHaveText("7");
-  await expect(recipient.locator("td").nth(4)).toHaveText("$1");
+  await expect(recipient.locator("td").nth(3)).toHaveText("$1");
   await page.clock.setFixedTime(new Date("2026-07-31T12:00:00.000Z"));
   // Search keeps this zero-payment actor visible after all points rows load.
   await page.goto(`${site}/?sort=money&q=archive-only#leaderboard`);
-  await expect(recipient.locator("td").nth(2)).toHaveText("7");
-  await expect(recipient.locator("td").nth(4)).toHaveText("$0");
+  await expect(recipient).toHaveCount(0);
 
   // A current identity must also win when only an older payment creates the row.
   history.cycles[0].contributors[0].actor.id =
@@ -231,7 +227,7 @@ test("ranks archived work separately from the month its payment settled", async 
     "href",
     "/contributors/finish-line",
   );
-  await expect(currentLink.locator("../..").locator("td").nth(4)).toHaveText(
+  await expect(currentLink.locator("../..").locator("td").nth(3)).toHaveText(
     "$1",
   );
   await expect(
