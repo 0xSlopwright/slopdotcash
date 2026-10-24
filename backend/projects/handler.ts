@@ -1499,7 +1499,7 @@ function assertMaintainerNotBanned(
     fail(
       403,
       "maintainer_banned",
-      "A moderator banned this maintainer after a confirmed malicious scan result. The account cannot list or change projects. The steward or applicant of the banned project may request its reinstatement.",
+      "A moderator banned this maintainer after a confirmed malicious scan result. The account cannot start new Slop participation. The banned account, project steward or original applicant may appeal the project decision.",
     );
 }
 
@@ -1646,9 +1646,9 @@ async function enforceProject(
 }
 
 /**
- * ELG-02 appeal path: the project steward named in the manifest, or the
- * account that listed the project, records a reinstatement
- * request. A moderator who did not place the restriction still decides it.
+ * Owners, original applicants and accounts named in the current project ban
+ * can request reinstatement. A moderator who did not place the restriction
+ * still decides it. Filing does not grant project authority.
  */
 async function requestReinstatement(
   request: Request,
@@ -1675,10 +1675,20 @@ async function requestReinstatement(
       // the project through self-service setup.
       const creator = await deps.persistence.projectCreator(project.id);
       if (creator?.githubId === session.githubId) return "project-applicant";
+      const restriction = projectRestriction(
+        project.id,
+        await deps.persistence.listEnforcements(),
+      );
+      if (
+        restriction.bannedMaintainers.some(
+          (account) => account.githubId === session.githubId,
+        )
+      )
+        return "banned-account";
       return fail(
         403,
         "forbidden",
-        "Only the project steward or the account that listed the project can request reinstatement",
+        "Only the project steward, the account that listed the project, or an account banned by this project decision can appeal",
       );
     },
     decisionSource: "owner-request",
@@ -1806,7 +1816,8 @@ async function recordEnforcement(
     ],
     actor,
     actorRole,
-    decisionSource: input.decisionSource,
+    decisionSource:
+      actorRole === "banned-account" ? "account-request" : input.decisionSource,
     beforeRevision: project.revision,
     beforeManifestSha256: project.manifestSha256,
     afterRevision: revisionText === null ? null : project.revision + 1,

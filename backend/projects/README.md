@@ -272,7 +272,10 @@ rate limit, and caches each answer for five minutes. The browser never calls
   `evidenceReference`). The record names the role `project-steward` or
   `project-applicant` and the source `owner-request`
   (`0027_project_enforcement_owner_appeals.sql`). A moderator may also file
-  it at `/admin`. Only a moderator decides it.
+  it at `/admin`. An account named in the current project ban can use the same
+  route even if it is no longer the owner and did not list the project. Its
+  record uses `banned-account` and `account-request`. Filing does not lift a
+  restriction or grant project access. Only a moderator decides the appeal.
 - Reinstatement needs an open reinstatement request and a moderator who did
   not place the restriction. Both preview and confirmation require a clean
   scan of the current restricted revision, requested after the latest restriction,

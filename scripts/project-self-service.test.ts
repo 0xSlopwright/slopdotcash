@@ -6,7 +6,7 @@
  * the installation reads write access and the exact content has a clean scan.
  */
 import { expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import type { RepositoryControl } from "../backend/projects/contracts";
 import {
@@ -58,10 +58,15 @@ const CLEARED: VettingClearance = {
   },
 };
 
-function registry() {
+function registry(beforeAccountAppealMigration = false) {
   const { db, sqlite } = sqliteD1(
     readdirSync(new URL("../migrations/", import.meta.url))
-      .filter((name) => name.endsWith(".sql"))
+      .filter(
+        (name) =>
+          name.endsWith(".sql") &&
+          (!beforeAccountAppealMigration ||
+            name !== "0070_banned_account_appeals.sql"),
+      )
       .sort(),
   );
   const persistence = new CloudflareProjectPersistence(db);
@@ -562,7 +567,7 @@ test("the scan digest ignores presentation, listing and money but binds skill in
 });
 
 test("an explicit moderator ban blocks new contribution intake without blaming the original applicant", async () => {
-  const t = registry();
+  const t = registry(true);
   t.deps.moderatorGithubIds = new Set([ADMIN]);
   t.deps.github.fetch = async () =>
     Response.json({ id: Number(OTHER), login: "other", type: "User" });
@@ -717,4 +722,45 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
   expect(
     (await t.create("banned-actor", "example/banned-actor", OTHER)).status,
   ).toBe(403);
+  // Upgrade a populated registry: keep the ban and its original journal bytes.
+  const before = t.sqlite
+    .query("SELECT rowid, * FROM project_enforcements ORDER BY rowid")
+    .all();
+  t.sqlite.exec(
+    readFileSync(
+      new URL("../migrations/0070_banned_account_appeals.sql", import.meta.url),
+      "utf8",
+    ),
+  );
+  expect(
+    t.sqlite
+      .query("SELECT rowid, * FROM project_enforcements ORDER BY rowid")
+      .all(),
+  ).toEqual(before);
+  expect(t.sqlite.query("PRAGMA foreign_key_check").all()).toEqual([]);
+  // A ban on one project grants no appeal authority on an unrelated project.
+  expect(
+    (
+      await t.call("POST", "project-appeals", OTHER, {
+        projectId: "unrelated-applicant",
+        reason: "Try to act on a project that did not ban this account",
+        evidenceReference: "private-account-appeal-fixture",
+      })
+    ).status,
+  ).toBe(403);
+  const appeal = await t.call("POST", "project-appeals", OTHER, {
+    projectId: "responsibility",
+    reason: "The evidence does not establish my responsibility",
+    evidenceReference: "private-account-appeal-fixture",
+  });
+  expect(appeal.status).toBe(200);
+  expect(appeal.body.record).toMatchObject({
+    actorRole: "banned-account",
+    decisionSource: "account-request",
+    action: "request_reinstatement",
+    stateAfter: "banned",
+    afterRevision: null,
+  });
+  // Filing an appeal grants no new participation or project authority.
+  expect((await newRun()).status).toBe(403);
 });
