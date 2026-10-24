@@ -2,8 +2,9 @@
 // fetch: verify and deduplicate webhooks, then enqueue identifiers only.
 // queue: re-read GitHub state and run the review pipeline.
 import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+import { dispatchDueAppeals } from "./appeals";
 import { resumeBudgetBlocks } from "./budget-blocks";
-import type { Job } from "./contracts";
+import { APPEAL_COMMANDS, type Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import { dispatchMaintainerHolds } from "./maintainer-holds";
 import * as store from "./persistence";
@@ -13,7 +14,13 @@ import {
   handleRepositoryAccess,
   REPOSITORY_ACCESS_URL,
 } from "./repository-access";
-import { applyMaintainerHold, recordHumanSignal, reviewItem } from "./review";
+import {
+  applyAppealCommand,
+  applyMaintainerHold,
+  escalateDueAppeal,
+  recordHumanSignal,
+  reviewItem,
+} from "./review";
 import { dispatchSpendAlert } from "./spend-alerts";
 import {
   consumePendingValueRequest,
@@ -122,12 +129,24 @@ export function jobFor(
         ...item,
         qualityCommentId: payload.comment?.id,
       };
-    if (
-      action !== "created" ||
-      !(payload.comment?.body ?? "").trim().startsWith("/slopbot appeal")
-    )
-      return null;
-    return { kind: "appeal", ...base, ...item, senderId: sender.id };
+    if (action !== "created") return null;
+    const text = (payload.comment?.body ?? "").trim();
+    if (text.startsWith("/slopbot appeal"))
+      return { kind: "appeal", ...base, ...item, senderId: sender.id };
+    const command = APPEAL_COMMANDS.find(
+      (name) =>
+        text === `/slopbot ${name}` ||
+        text.startsWith(`/slopbot ${name}\n`) ||
+        text.startsWith(`/slopbot ${name} `),
+    );
+    if (command === undefined) return null;
+    return {
+      kind: "appeal_command",
+      command,
+      ...base,
+      ...item,
+      senderId: sender.id,
+    };
   }
   if (action === "reopened")
     return { kind: "human_reopen", ...base, ...item, senderId: sender.id };
@@ -386,6 +405,7 @@ export default {
   async scheduled(_event: unknown, env: Env) {
     await resumeBudgetBlocks(env.SLOPBOT_DB, env.SLOPBOT_QUEUE);
     await dispatchMaintainerHolds(env.SLOPBOT_DB, env.SLOPBOT_QUEUE);
+    await dispatchDueAppeals(env.SLOPBOT_DB, env.SLOPBOT_QUEUE);
     if (env.SLOP_NOTIFY)
       await dispatchSpendAlert(env.SLOPBOT_DB, env.SLOP_NOTIFY);
     await consumePendingValueRequest(env);
@@ -408,7 +428,11 @@ export default {
             ? await reviewItem(env, message.body)
             : message.body.kind === "maintainer_hold"
               ? await applyMaintainerHold(env, message.body)
-              : await recordHumanSignal(env, message.body);
+              : message.body.kind === "appeal_command"
+                ? await applyAppealCommand(env, message.body)
+                : message.body.kind === "appeal_due"
+                  ? await escalateDueAppeal(env, message.body)
+                  : await recordHumanSignal(env, message.body);
         console.log(
           JSON.stringify({
             delivery: message.body.deliveryId,
