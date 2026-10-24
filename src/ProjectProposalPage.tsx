@@ -3,7 +3,6 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { GeneratedSkillPreview } from "./GeneratedSkillPreview";
 import { Link } from "./Link";
 import { CONTACT_EMAIL, CONTACT_MAILTO } from "./lib/contact";
-import { copyText } from "./lib/copy-text";
 import {
   ESCROW_PAYOUT_FEE_BASIS_POINTS,
   ESCROW_WITHDRAWAL_FEE_BASIS_POINTS,
@@ -700,30 +699,6 @@ function RepositoryPicker({
   );
 }
 
-function downloadText(value: string, name: string, type: string) {
-  const url = URL.createObjectURL(new Blob([value], { type }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function useCopyStatus() {
-  const [status, setStatus] = useState<{
-    kind: string;
-    state: "copied" | "error";
-  } | null>(null);
-  const copy = (kind: string, value: string) =>
-    void copyText(value).then(
-      () => setStatus({ kind, state: "copied" }),
-      () => setStatus({ kind, state: "error" }),
-    );
-  const label = (kind: string, idle: string, done: string, failed: string) =>
-    status?.kind === kind ? (status.state === "copied" ? done : failed) : idle;
-  return { status, copy, label };
-}
-
 /**
  * Reads the session only on the review step that needs it. The API decides
  * who may create a project, so the button follows its session, not the
@@ -947,7 +922,6 @@ export default function ProjectProposalPage() {
       proposal.copyrightModel !== "unknown" ||
       proposal.inboundMode !== "unknown",
   );
-  const copy = useCopyStatus();
   useEffect(() => {
     try {
       localStorage.setItem(PROPOSAL_DRAFT_KEY, JSON.stringify(proposal));
@@ -1164,7 +1138,6 @@ export default function ProjectProposalPage() {
       },
     };
   }, [p, slug, funding]);
-  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
   const [submission, setSubmission] = useState<
     | { status: "idle" | "submitting" }
     | { status: "error"; message: string; install: boolean }
@@ -1890,50 +1863,10 @@ export default function ProjectProposalPage() {
                   </p>
                 ) : null}
                 {draftNote}
-                <div className="handoff-alternatives">
-                  <span>Other options:</span>
-                  <button
-                    onClick={() =>
-                      downloadText(
-                        manifestText,
-                        `${slug}-project.json`,
-                        "application/json",
-                      )
-                    }
-                    type="button"
-                  >
-                    Download manifest
-                  </button>
-                  <button
-                    onClick={() => copy.copy("json", manifestText)}
-                    type="button"
-                  >
-                    {copy.label(
-                      "json",
-                      "Copy manifest",
-                      "Manifest copied",
-                      "Copy unavailable; select the manifest",
-                    )}
-                  </button>
-                </div>
               </div>
             ) : (
               draftNote
             )}
-            <details
-              className="manifest-preview"
-              open={
-                copy.status?.kind === "json" && copy.status.state === "error"
-              }
-            >
-              <summary>View manifest · {slug}</summary>
-              <textarea
-                aria-label="Project manifest JSON"
-                readOnly
-                spellCheck={false}
-                value={manifestText}
-              />
-            </details>
           </>
         ) : null}
         {step < 3 ? (
@@ -2646,6 +2579,12 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
  * application stored before self-service setup, which its applicant
  * publishes without entering it again.
  */
+/** Readable labels for the stored project status enum. */
+const PROJECT_STATUS_LABEL: Record<ProjectSummary["status"], string> = {
+  active: "Live",
+  paused: "Paused",
+};
+
 function OwnerProjects({ refreshKey }: { refreshKey: string }) {
   const session = useProjectSession();
   const [state, setState] = useState<
@@ -2708,7 +2647,8 @@ function OwnerProjects({ refreshKey }: { refreshKey: string }) {
         <ul>
           {state.projects.map((project) => (
             <li key={project.id}>
-              <strong>{project.name}</strong> · {project.status}
+              <strong>{project.name}</strong> ·{" "}
+              {PROJECT_STATUS_LABEL[project.status]}
               {project.listingTier === "retired" ? " · delisted" : ""}{" "}
               <Link href={`/projects/${project.slug}/manage`}>Manage</Link>{" "}
               <button
