@@ -4,7 +4,8 @@ test("hero types, deletes and cycles all original campaign phrases without movin
   page,
 }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.clock.install();
+  await page.clock.install({ time: new Date("2026-10-24T00:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-10-24T00:00:01Z"));
   await page.goto("/");
   const heading = page.getByRole("heading", { level: 1 });
   const text = heading.locator(".hero-typewriter");
@@ -34,7 +35,8 @@ test("hero types, deletes and cycles all original campaign phrases without movin
 
 test("reduced motion keeps the hero static", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.clock.install();
+  await page.clock.install({ time: new Date("2026-10-24T00:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-10-24T00:00:01Z"));
   await page.goto("/");
   const text = page.locator(".hero-typewriter");
   await expect(text).toHaveText("SHIPPING OPEN SOURCE.");
