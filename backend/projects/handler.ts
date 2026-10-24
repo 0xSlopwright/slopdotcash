@@ -1503,29 +1503,6 @@ function assertMaintainerNotBanned(
     );
 }
 
-/**
- * The maintainer accounts a moderator bans with a confirmed malicious
- * project: its steward when that is a GitHub user, and the account that
- * listed it.
- */
-async function projectMaintainers(
-  deps: ProjectApiDependencies,
-  project: ProjectRecord,
-): Promise<GithubActor[]> {
-  const steward = project.manifest.steward.github;
-  const maintainers: GithubActor[] =
-    steward.type === "User"
-      ? [{ githubId: String(steward.actorId), githubLogin: steward.login }]
-      : [];
-  const creator = await deps.persistence.projectCreator(project.id);
-  if (
-    creator !== null &&
-    !maintainers.some((maintainer) => maintainer.githubId === creator.githubId)
-  )
-    maintainers.push(creator);
-  return maintainers;
-}
-
 function adminEnforcement(
   project: ProjectRecord,
   restriction: ProjectRestriction,
@@ -1600,17 +1577,57 @@ async function enforceProject(
   const session = await requireModerator(request, deps);
   if (!PROJECT_ID.test(projectId)) fail(404, "not_found", "Project not found");
   const body = await readJsonObject(request);
-  exactKeys(body, [
-    "action",
-    "reason",
-    "evidenceReference",
-    "expectedRevision",
-    "expectedSequence",
-  ]);
+  exactKeys(
+    body,
+    [
+      "action",
+      "reason",
+      "evidenceReference",
+      "expectedRevision",
+      "expectedSequence",
+    ],
+    ["responsibleAccounts"],
+  );
   if (!ENFORCEMENT_ACTIONS.includes(body.action as EnforcementAction))
     fail(400, "invalid_request", "Invalid enforcement action");
+  const responsibleAccounts: GithubActor[] = [];
+  if (body.responsibleAccounts !== undefined) {
+    if (!Array.isArray(body.responsibleAccounts))
+      fail(400, "invalid_request", "Select the responsible accounts.");
+    for (const selected of body.responsibleAccounts) {
+      if (
+        !selected ||
+        typeof selected !== "object" ||
+        typeof selected.githubLogin !== "string"
+      )
+        fail(400, "invalid_request", "Enter a GitHub account name.");
+      const account = await lookupGitHubActor(
+        deps.github.fetch,
+        deps.github.token,
+        selected.githubLogin,
+        deps.github.apiOrigin,
+      );
+      if (
+        account === null ||
+        (selected.githubId !== undefined &&
+          selected.githubId !== account.githubId)
+      )
+        fail(
+          409,
+          "account_changed",
+          "The selected GitHub account changed. Preview the decision again.",
+        );
+      if (
+        !responsibleAccounts.some(
+          (entry) => entry.githubId === account.githubId,
+        )
+      )
+        responsibleAccounts.push(account);
+    }
+  }
   return await recordEnforcement(deps, {
     projectId,
+    responsibleAccounts,
     action: body.action as EnforcementAction,
     ...enforcementText(body),
     expectedRevision: positiveInteger(
@@ -1673,6 +1690,7 @@ async function recordEnforcement(
   deps: ProjectApiDependencies,
   input: {
     projectId: string;
+    responsibleAccounts?: GithubActor[];
     action: EnforcementAction;
     reason: string;
     evidenceReference: string;
@@ -1755,9 +1773,13 @@ async function recordEnforcement(
       maliciousAssessmentIds: vetting.reviewedMaliciousAssessmentIds ?? [],
     };
   }
-  const maintainerBans = plan.bansMaintainer
-    ? await projectMaintainers(deps, project)
-    : [];
+  const maintainerBans = input.responsibleAccounts ?? [];
+  if (maintainerBans.length > 0 && !plan.bansMaintainer)
+    fail(
+      400,
+      "invalid_request",
+      "Account bans require a moderator decision on a confirmed malicious result.",
+    );
   const recordId = `enf_${deps.randomId().replaceAll("-", "")}`;
   const at = deps.now().toISOString();
   const revisionText =

@@ -293,8 +293,11 @@ rate limit, and caches each answer for five minutes. The browser never calls
   decision needed", with or without an owner appeal. The moderator either
   reinstates the project through the appeal path above, or chooses "Ban
   project and maintainer". That decision is a moderator `ban` record. In the
-  same D1 batch it stores the project's GitHub user steward and the account
-  that listed the project in `project_maintainer_bans`
+  same D1 batch it stores only the accounts that the moderator selected from
+  the evidence in `project_maintainer_bans`. The API resolves each selected
+  GitHub login to an immutable account ID; confirmation checks the previewed
+  ID again. An empty selection bans only the project. Current stewardship
+  and the original application do not select accounts automatically
   (`0066_project_maintainer_bans.sql`), and it closes an open appeal as
   denied. A moderator who placed the restriction cannot decide an open appeal
   this way. A plain denial is refused with `malicious_decision_required`
@@ -303,7 +306,10 @@ rate limit, and caches each answer for five minutes. The browser never calls
   an owner revision, as the actor or as the named steward
   (`maintainer_banned`). The steward or applicant can still appeal the
   project. A later reinstatement of that project lifts the maintainer ban.
-  The ban does not erase an approved funded award.
+  The ban does not erase an approved funded award. PRD section 8 also requires
+  blocking all new Slop participation and preserving appeals by responsible
+  accounts after a transfer; the project-write checks alone do not meet that
+  requirement.
 - Two standing rules act without a moderator (PRD section 8; see
   `backend/vetting/README.md`). The second distinct active contributor flag
   appends a `quarantine` record whose issuer is `contributor-flags`, and a

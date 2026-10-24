@@ -1,5 +1,6 @@
 import type { D1TransactionalDatabase as D1Database, D1Result } from "../d1";
 import { notifyWalletChanged } from "../notifications/events";
+import { hasParticipationBan } from "../projects/account-bans";
 import type {
   AttachTraceInput,
   AuditInput,
@@ -272,6 +273,10 @@ export class CloudflareTracePersistence implements TracePersistence {
     private readonly db: D1Database,
     private readonly bucket: R2Bucket,
   ) {}
+
+  hasParticipationBan(githubId: string): Promise<boolean> {
+    return hasParticipationBan(this.db, githubId);
+  }
 
   async createRun(input: CreateRunInput): Promise<PersistenceResult<TraceRun>> {
     const existing = await this.db

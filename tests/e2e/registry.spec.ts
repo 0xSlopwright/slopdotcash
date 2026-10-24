@@ -1167,6 +1167,7 @@ test("a moderator decides a confirmed malicious result and bans the project and 
     .getByLabel("Reason (private audit record)")
     .fill("Reviewed the signed finding: the install script steals tokens");
   await panel.getByLabel("Evidence reference (link or case id)").fill(evidence);
+  await panel.getByLabel("Responsible GitHub accounts").fill(login);
   await panel.getByRole("button", { name: "Preview action" }).click();
   const preview = panel.getByRole("group", {
     name: "Preview: check it, then confirm",

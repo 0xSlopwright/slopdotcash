@@ -16,6 +16,15 @@ import {
 } from "../backend/projects/handler";
 import type { ScanRequest } from "../backend/projects/setup";
 import { TokenMetadataError } from "../backend/projects/token-metadata";
+import { signApiToken } from "../backend/trace/auth";
+import {
+  CloudflareTracePersistence,
+  type R2Bucket,
+} from "../backend/trace/cloudflare-persistence";
+import {
+  handleTraceApi,
+  type TraceApiDependencies,
+} from "../backend/trace/handler";
 import { vettedContentSha256 } from "../backend/vetting/persistence";
 import type { RepositoryAccess } from "../src/lib/project-contracts";
 import { classifyRevisionChanges } from "../src/lib/project-revision-changes";
@@ -130,7 +139,7 @@ function registry() {
     call("POST", "projects", actor, {
       manifest: applicationManifest(id, repository),
     });
-  return { persistence, sqlite, state, call, create, deps };
+  return { db, persistence, sqlite, state, call, create, deps };
 }
 
 type Setup = {
@@ -550,4 +559,146 @@ test("the scan digest ignores presentation, listing and money but binds skill in
     financial: ["reward"],
     restricted: ["status"],
   });
+});
+
+test("an explicit moderator ban blocks new contribution intake without blaming the original applicant", async () => {
+  const t = registry();
+  t.deps.moderatorGithubIds = new Set([ADMIN]);
+  t.deps.github.fetch = async () =>
+    Response.json({ id: Number(OTHER), login: "other", type: "User" });
+  expect(
+    (await t.create("responsibility", "example/responsibility")).status,
+  ).toBe(201);
+  const project = await t.persistence.getProject("responsibility");
+  if (!project) throw new Error("Project missing");
+  await t.persistence.appendEnforcement(
+    {
+      id: "enf_responsibility_scan",
+      projectId: project.id,
+      sequence: 1,
+      action: "ban",
+      stateAfter: "banned",
+      appealAfter: "none",
+      reason: "Synthetic confirmed malicious scan",
+      evidenceReference: "private-case-fixture",
+      repositoryGithubId: "987654321",
+      repositoryKeys: ["example/responsibility"],
+      actor: null,
+      actorRole: "vetting-service",
+      decisionSource: "standing-rule",
+      systemIssuer: {
+        kind: "vetting-service",
+        keySha256: "a".repeat(64),
+        assessmentId: "vet_fixture",
+        policyVersion: "fixture",
+        rule: "confirmed-malicious",
+      },
+      beforeRevision: project.revision,
+      beforeManifestSha256: project.manifestSha256,
+      afterRevision: null,
+      afterManifestSha256: null,
+      result: "revision_pending",
+      createdAt: NOW,
+    },
+    null,
+    [],
+  );
+  const secret = "synthetic-ban-workflow-secret-01234567890123456789";
+  const token = await signApiToken(
+    {
+      iss: "slop.cash",
+      aud: "private-trace-api",
+      sub: `github:${OTHER}`,
+      githubId: OTHER,
+      githubLogin: "other",
+      roles: ["contributor"],
+      iat: Math.floor(Date.parse(NOW) / 1000),
+      exp: Math.floor(Date.parse(NOW) / 1000) + 300,
+      jti: "ban-workflow-token-0123456789",
+    },
+    secret,
+  );
+  let run = 0;
+  const trace: TraceApiDependencies = {
+    persistence: new CloudflareTracePersistence(t.db, {} as R2Bucket),
+    authSecret: secret,
+    operatorGithubIds: new Set(),
+    now: () => new Date(NOW),
+    randomId: () => `ban-workflow-run-${++run}`,
+    verifyIdentityAssertion: async () => null,
+    privateIntakeStatus: async () => ({ status: "unavailable" }),
+  };
+  const newRun = () =>
+    handleTraceApi(
+      new Request("http://localhost/api/v1/runs", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "idempotency-key": `ban-workflow-create-${run}-0123456789`,
+        },
+        body: JSON.stringify({
+          clientRunId: "client_ban_workflow",
+          projectId: "other-project",
+          repository: "example/other-project",
+          projectPolicyRevision: "a".repeat(40),
+          provider: "openai",
+          model: "gpt-5",
+          client: "codex",
+          clientVersion: "1.0.0",
+        }),
+      }),
+      trace,
+    );
+  expect((await newRun()).status).toBe(201);
+  const decision = {
+    action: "ban",
+    reason: "Evidence identifies the selected account, not the applicant",
+    evidenceReference: "private-case-fixture",
+    expectedRevision: project.revision,
+    expectedSequence: 2,
+  };
+  const empty = await t.call(
+    "POST",
+    "admin/projects/responsibility/enforcement-preview",
+    ADMIN,
+    decision,
+  );
+  expect(empty.status).toBe(200);
+  expect(
+    (empty.body.preview as { maintainerBans: unknown[] }).maintainerBans,
+  ).toEqual([]);
+  const preview = await t.call(
+    "POST",
+    "admin/projects/responsibility/enforcement-preview",
+    ADMIN,
+    { ...decision, responsibleAccounts: [{ githubLogin: "other" }] },
+  );
+  expect(preview.status).toBe(200);
+  const selected = (preview.body.preview as { maintainerBans: unknown[] })
+    .maintainerBans;
+  expect(selected).toEqual([{ githubId: OTHER, githubLogin: "other" }]);
+  expect(
+    (
+      await t.call("POST", "admin/projects/responsibility/enforcement", ADMIN, {
+        ...decision,
+        responsibleAccounts: selected,
+      })
+    ).status,
+  ).toBe(200);
+  const refused = await newRun();
+  expect(refused.status).toBe(403);
+  expect((await refused.json()).error).toBe("participation_banned");
+  expect(
+    (
+      await t.create(
+        "unrelated-applicant",
+        "example/unrelated-applicant",
+        OWNER,
+      )
+    ).status,
+  ).toBe(201);
+  expect(
+    (await t.create("banned-actor", "example/banned-actor", OTHER)).status,
+  ).toBe(403);
 });

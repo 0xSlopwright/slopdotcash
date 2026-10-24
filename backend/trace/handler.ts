@@ -813,6 +813,12 @@ async function createRun(
   deps: TraceApiDependencies,
 ): Promise<Response> {
   assertWriter(actor);
+  if (await deps.persistence.hasParticipationBan(actor.githubId))
+    fail(
+      403,
+      "participation_banned",
+      "This account cannot start new Slop contributions. Funded awards and appeals remain available.",
+    );
   const body = await readJsonObject(request);
   const now = deps.now().toISOString();
   const result = await deps.persistence.createRun({
@@ -1092,6 +1098,12 @@ async function appendEvent(
   runId: string,
 ): Promise<Response> {
   assertWriter(actor);
+  if (await deps.persistence.hasParticipationBan(actor.githubId))
+    fail(
+      403,
+      "participation_banned",
+      "This account cannot start new Slop contributions. Funded awards and appeals remain available.",
+    );
   const run = await ensureOwner(deps.persistence, actor, runId);
   if (run.state === "finalized") fail(409, "run_finalized", "Run is finalized");
   const body = await readJsonObject(request);

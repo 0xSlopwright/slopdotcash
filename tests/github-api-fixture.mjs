@@ -559,6 +559,17 @@ export function startGitHubApiFixture(port) {
       response.end(JSON.stringify({ enabled: state === "enabled" }));
       return;
     }
+    const account = /^\/users\/([^/]+)$/u.exec(path);
+    if (request.method === "GET" && account) {
+      const id = fixtureMemberId(account[1]);
+      if (id !== undefined) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({ id: Number(id), login: account[1], type: "User" }),
+        );
+        return;
+      }
+    }
     const ownedRepositories = /^\/users\/([^/]+)\/repos$/u.exec(path);
     if (request.method === "GET" && ownedRepositories) {
       response.writeHead(200, { "content-type": "application/json" });

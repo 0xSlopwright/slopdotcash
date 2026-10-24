@@ -79,6 +79,7 @@ export function ProjectEnforcementPanel({
   const [action, setAction] = useState<EnforcementAction>(actions[0]);
   const [reason, setReason] = useState("");
   const [evidence, setEvidence] = useState("");
+  const [responsible, setResponsible] = useState("");
   const [preview, setPreview] = useState<EnforcementPreview | null>(null);
   const [busy, setBusy] = useState<"preview" | "apply" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -89,6 +90,16 @@ export function ProjectEnforcementPanel({
     evidenceReference: evidence.trim(),
     expectedRevision: project.revision,
     expectedSequence: enforcement.nextSequence,
+    ...(action === "ban" && enforcement.decisionRequired
+      ? {
+          responsibleAccounts:
+            preview?.maintainerBans ??
+            responsible
+              .split(/[\s,]+/u)
+              .filter(Boolean)
+              .map((githubLogin) => ({ githubLogin })),
+        }
+      : {}),
   });
   const path = (mode: "enforcement" | "enforcement-preview") =>
     `admin/projects/${encodeURIComponent(project.id)}/${mode}`;
@@ -117,7 +128,7 @@ export function ProjectEnforcementPanel({
     projectApiRequest("POST", path("enforcement"), request()).then(
       () =>
         onDone(
-          `${actionLabel(action, enforcement.decisionRequired)} recorded for ${project.manifest.name}. Public lists and skill routes changed at once.`,
+          `${actionLabel(action, (preview?.maintainerBans.length ?? 0) > 0)} recorded for ${project.manifest.name}. Public lists and skill routes changed at once.`,
         ),
       (caught: unknown) => {
         setBusy(null);
@@ -250,6 +261,21 @@ export function ProjectEnforcementPanel({
               ))}
             </select>
           </label>
+          {action === "ban" && enforcement.decisionRequired ? (
+            <label>
+              Responsible GitHub accounts
+              <input
+                value={responsible}
+                onChange={(event) => setResponsible(event.target.value)}
+                readOnly={preview !== null}
+              />
+              <span>
+                Enter account names separated by commas. Select only accounts
+                the evidence identifies as responsible. Leave empty to ban only
+                the project.
+              </span>
+            </label>
+          ) : null}
           <label>
             Reason (private audit record)
             <textarea
