@@ -32,7 +32,7 @@ GitHub is the only login. Use its permanent actor ID through renames. Account ho
 
 Public GitHub work stays public. Show private case status only in the authorized user's private account area. Keep private case amounts out of ordinary balances and public rankings. X connection shows on the profile with consent and permits no posting or messaging. Support account closure.
 
-Store only ID, optional username, verification time, and visibility. Reserve that ID to the first verified GitHub identity, including after disconnect. Public display requires membership and link consent. Grant no points or authority. Joining earns no welcome points; participation points are removed (D2, section 11).
+Store only ID, optional username, verification time, and visibility. Reserve that ID to the first verified GitHub identity, including after disconnect. Public display requires membership and link consent. Grant no points or authority. Joining earns no welcome points; welcome and X-connection points are removed (D2, section 11).
 
 Users can add EVM and Solana payout wallets. If users have not added wallets, they can claim payouts they should have already received.
 
