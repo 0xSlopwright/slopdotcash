@@ -815,3 +815,33 @@ test("a two-flag pause is reinstated automatically after the service's clean fre
   ).toBe(200);
   expect(await flags.activeFlags(clock)).toEqual([]);
 });
+
+test("unsupported artifacts produce an incomplete scan rather than aborting the scan pass", async () => {
+  await commit(
+    Object.fromEntries(
+      Array.from({ length: 101 }, (_, index) => [
+        `artifacts/unsupported-${index}.exe`,
+        `MZharmless unsupported fixture ${index}`,
+      ]),
+    ),
+    "Add unsupported artifact fixtures",
+  );
+  const report = await runScanPass(config);
+  expect(report.assessments).toHaveLength(1);
+  expect(report.assessments[0]).toMatchObject({
+    state: "published",
+    disposition: "incomplete",
+    outcome: "accepted",
+  });
+  const assessment = await vetting.getAssessment(
+    report.assessments[0].assessmentId,
+  );
+  const result = assessment?.result;
+  if (!result || !isScanResult(result)) throw new Error("no bounded result");
+  expect(result.artifacts).toHaveLength(101);
+  expect(
+    result.artifacts.every((artifact) => artifact.state === "quarantined"),
+  ).toBe(true);
+  expect((await activate()).status).toBe(422);
+  expect((await runScanPass(config)).assessments).toEqual([]);
+}, 30000);

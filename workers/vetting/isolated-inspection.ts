@@ -29,9 +29,11 @@ export async function inspectIsolatedArtifacts(input: {
     items: { id: string; text: string; sha256: string }[];
     visibilityGaps: string[];
   };
-  const gap = (message: string) => {
-    inspection.visibilityGaps.push(message);
-    inventory.visibilityGaps.push(message);
+  // The reviewer bounds visibility-gap entries. Keep repeated execution gaps
+  // grouped by reason; the result retains every exact artifact record.
+  const gaps = new Map<string, number>();
+  const gap = (reason: string) => {
+    gaps.set(reason, (gaps.get(reason) ?? 0) + 1);
     inspection.coverage.downloads.state = "partial";
   };
   const reports: Uint8Array[] = [];
@@ -55,7 +57,7 @@ export async function inspectIsolatedArtifacts(input: {
       bytes[18] !== 0x3e ||
       bytes[19] !== 0
     ) {
-      gap(`Isolated analysis does not yet support artifact ${artifact.sha256}`);
+      gap("Isolated analysis does not yet support these artifacts");
       continue;
     }
     const result = await runIsolatedArtifact({
@@ -83,7 +85,7 @@ export async function inspectIsolatedArtifacts(input: {
     reports.push(result.bytes);
     // Running successfully does not release quarantine or establish safety.
     if (!evidence.outputComplete || evidence.exitCode !== 0)
-      gap(`Isolated execution was incomplete for artifact ${artifact.sha256}`);
+      gap("Isolated execution was incomplete");
     let stdout: string;
     let stderr: string;
     try {
@@ -91,7 +93,7 @@ export async function inspectIsolatedArtifacts(input: {
       stdout = decoder.decode(Buffer.from(evidence.stdoutBase64, "base64"));
       stderr = decoder.decode(Buffer.from(evidence.stderrBase64, "base64"));
     } catch {
-      gap(`Isolated output was not UTF-8 for artifact ${artifact.sha256}`);
+      gap("Isolated output was not UTF-8");
       continue;
     }
     const text = JSON.stringify({ ...evidence, stdout, stderr });
@@ -106,10 +108,13 @@ export async function inspectIsolatedArtifacts(input: {
       new TextEncoder().encode(JSON.stringify(candidate)).length >
         MAX_INVENTORY_BYTES
     ) {
-      gap(
-        `Execution evidence exceeds the review inventory limit for artifact ${artifact.sha256}`,
-      );
+      gap("Execution evidence exceeds the review inventory limit");
     } else inventory.items.push(item);
+  }
+  for (const [reason, count] of gaps) {
+    const message = `${reason}: ${count} artifact records`;
+    inspection.visibilityGaps.push(message);
+    inventory.visibilityGaps.push(message);
   }
   inspection.inventory = new TextEncoder().encode(JSON.stringify(inventory));
   inspection.inventorySha256 = await sha256Hex(inspection.inventory);
