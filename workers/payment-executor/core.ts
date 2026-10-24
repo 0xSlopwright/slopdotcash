@@ -441,6 +441,8 @@ async function signAndSubmit(
     obligationId?: string;
     monthlyPeriod?: string;
   },
+  /** Journal list that records the key in the same transaction as the signed bytes. */
+  pendingList?: string,
 ) {
   let attempt = await env.JOURNAL.get<Attempt>(key);
   if (attempt && attempt.fingerprint !== fingerprint)
@@ -513,6 +515,10 @@ async function signAndSubmit(
       };
       await store.put(key, next);
       await store.put(nonceKey, nonce + 1);
+      if (pendingList) {
+        const keys = (await store.get<string[]>(pendingList)) ?? [];
+        if (!keys.includes(key)) await store.put(pendingList, [...keys, key]);
+      }
       return next;
     });
   }
@@ -846,15 +852,20 @@ export async function bindStoredDestination(
     current.version,
   );
   if (!data) return { state: "waiting" };
-  // Tracked before signing, so the signed bytes are reconciled even after
-  // this contributor stops being a candidate.
-  await env.JOURNAL.transaction(async (store) => {
-    const keys = (await store.get<string[]>(PENDING_BINDINGS)) ?? [];
-    if (!keys.includes(key)) await store.put(PENDING_BINDINGS, [...keys, key]);
-  });
+  // The signing transaction also adds the key to the pending list, so the
+  // signed bytes are reconciled even after this contributor stops being a
+  // candidate, and no overlapping run can remove the key before signing.
   return {
     state: "submitted",
-    ...(await signAndSubmit(env, deployment, key, operation, data, journaled)),
+    ...(await signAndSubmit(
+      env,
+      deployment,
+      key,
+      operation,
+      data,
+      journaled,
+      PENDING_BINDINGS,
+    )),
   };
 }
 
@@ -943,10 +954,16 @@ export async function runStoredBindings(
   };
   for (const key of await pendingStoredBindings(env.JOURNAL)) {
     try {
+      const observed = (await env.JOURNAL.get<Attempt | null>(key))
+        ?.transactionId;
       const result = await reconcileStoredBinding(env, key);
       if (result.transactionId) submitted.add(result.transactionId);
       if (result.settled)
         await env.JOURNAL.transaction(async (store) => {
+          // An overlapping run may have signed a replacement meanwhile; its
+          // key stays pending.
+          const now = await store.get<Attempt | null>(key);
+          if (now && now.transactionId !== observed) return;
           const keys = (await store.get<string[]>(PENDING_BINDINGS)) ?? [];
           await store.put(
             PENDING_BINDINGS,
