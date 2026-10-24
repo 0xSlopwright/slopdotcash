@@ -161,7 +161,7 @@ function capUsageForEvents(
       usage.evidencePoints.used += event.points;
     } else if (event.category === "substantive-review") {
       usage.substantiveReviews.used += 1;
-    } else if (event.category === "evaluated-contribution") {
+    } else {
       usage.evaluatedContributions.used += 1;
     }
   }
@@ -556,32 +556,17 @@ export function createProjectView(
       (total, event) => total + (event.scoreThirds ?? event.points * 3),
       0,
     );
-    const credited = events.filter(
-      (event) => event.category !== "penalty-debit",
-    );
-    const creditedThirds = credited.reduce(
-      (total, event) => total + (event.scoreThirds ?? event.points * 3),
-      0,
-    );
-    const creditedWeight = credited.reduce(
+    const weightedThirdBasisPoints = events.reduce(
       (total, event) =>
         total +
         (event.scoreThirds ?? event.points * 3) *
           (10_000 + (event.evidenceBonusBasisPoints ?? 0)),
       0,
     );
-    // A penalty debit lowers the payment weight by the same share as the
-    // score, bonus included, so a month at zero score has zero weight.
-    const weightedThirdBasisPoints =
-      creditedThirds === rawThirds
-        ? creditedWeight
-        : creditedThirds === 0
-          ? 0
-          : Math.floor((creditedWeight * rawThirds) / creditedThirds);
     const computeBonus =
-      creditedThirds === 0
+      rawThirds === 0
         ? 0
-        : Math.floor(creditedWeight / creditedThirds) - 10_000;
+        : Math.floor(weightedThirdBasisPoints / rawThirds) - 10_000;
     const score = Math.floor(rawThirds / 3);
     const points = {
       "merged-pull-request": 0,
@@ -590,7 +575,6 @@ export function createProjectView(
       evidence: 0,
       "substantive-review": 0,
       "evaluated-contribution": 0,
-      "penalty-debit": 0,
     } satisfies Record<ScoreCategory, number>;
     for (const event of events) points[event.category] += event.points;
     return {
@@ -603,9 +587,7 @@ export function createProjectView(
       adjustedWeight: weightedThirdBasisPoints,
       computeBonusBasisPoints: computeBonus,
       points,
-      acceptedOutcomeCount: events.filter(
-        (event) => event.category !== "penalty-debit",
-      ).length,
+      acceptedOutcomeCount: events.length,
       evidenceEventIds: events.map((event) => event.id).sort(),
       reportedModels: [
         ...new Set(

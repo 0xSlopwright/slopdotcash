@@ -5,14 +5,7 @@ pinned `slop-scan-review-1` prompt, whose coverage areas are the scan's five
 threat checks, and a second model or specialist review only for an ambiguous
 or high-risk result ([worker](README.md)). It shares the transports, limits,
 identity checks and private records described below, and never retries, picks
-a fallback provider, clears or bans. The scan service
-([`scan-service.ts`](scan-service.ts)) uses the `surplus-messages` transport:
-the Anthropic Messages wire of the owner's Surplus account at
-`https://api.surplusintelligence.ai/anthropic/v1/messages`, with a bearer
-key. Owner decision D16 pins `claude-opus-5.5` as the primary model and
-`gpt-6.1-sol` as the specialist. A response that Surplus marks with
-`x-si-truncated: 1` fails the review. The historical two-review contract
-does not accept this transport.
+a fallback provider, clears or bans.
 
 The historical secure-VM contract (`slop-vetting-result-v1`) required two
 independent reviews of the exact evidence.
@@ -23,7 +16,12 @@ clearance or ban decision.
 
 The operator supplies both profiles: reviewer class, documented provider
 endpoint, reviewed model version, API key, output-token limit and rate card.
-The endpoint must be the official endpoint for that transport. The model has
+The endpoint must be the official endpoint for that transport, or the same
+transport through Surplus Intelligence
+(`https://api.surplusintelligence.ai/anthropic/v1/messages` or
+`https://api.surplusintelligence.ai/openai/v1/responses`, owner decision D16).
+Surplus takes the account key as a bearer token and records the provider as
+`surplus`. The marketplace model identity is not independently verified. The model has
 no default. Its returned identity must equal the configured identity. Operators
 must select an approved immutable model version; matching a provider's echoed
 alias alone does not establish version immutability or reviewer-class approval.

@@ -146,11 +146,12 @@ canonical assembly. No recorded incomplete result is reinterpreted as clean.
 
 ## Remaining service implementation and operation
 
-The intake, automatic queue, flags and scan composition are source. The
-deployed scanner service, its Ed25519 key, the public key in
-`VETTING_RESULT_PUBLIC_KEYS`, a pinned primary and specialist provider profile,
-the evidence store policy, an accepted isolated runner for risky artifacts and
-staging acceptance remain operational work. Until then no community project
+The intake, automatic queue, flags, scan composition and the scan service
+pass (`workers/vetting/run.ts`) are source. Deploying the scanner service, its
+Ed25519 key, the public key in `VETTING_RESULT_PUBLIC_KEYS`, the Surplus key,
+the pinned primary and specialist profiles, the evidence store policy, an
+accepted isolated runner for risky artifacts and staging acceptance remain
+operational work. Until then no community project
 can be cleared, so no project skill is served. The earlier secure-VM
 components stay available for advanced detonation; they are no longer a
 prerequisite for an ordinary clean result.
@@ -211,8 +212,10 @@ If the manifest is not already paused and retired, the record says `revision_pen
 an admin must append that canonical revision before reinstatement. No GitHub actor
 or revision author is invented for the service.
 
-A clean scan alone does not clear a confirmed malicious finding. An owner or
-moderator files an appeal. An independent human moderator may decide it only after
+A clean scan alone does not clear a confirmed malicious finding. A moderator
+decides every confirmed malicious Ban, with or without an appeal: ban the
+project and its maintainer, or reinstate it (see `backend/projects/README.md`).
+An owner or moderator files an appeal to start reinstatement. An independent human moderator may decide it only after
 a fresh complete scan of the restricted revision. Migration 0031 stores the exact
 clean scan and reviewed malicious assessment IDs with that append-only decision.
 Every later malicious assessment remains a new ban; no old decision covers it.

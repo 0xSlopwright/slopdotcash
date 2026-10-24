@@ -1,5 +1,4 @@
 import { GitHubClient } from "../workers/slopbot/github";
-import { loadPenaltyDebits } from "./penalty-ingestion";
 import {
   loadValueInputs,
   VALUE_FEED_UNAVAILABLE_EXIT_CODE,
@@ -280,8 +279,6 @@ export interface GenerateOptions {
   actualNow?: Date;
   onProgress?: (progress: GenerationProgress) => void;
   evidenceFetch?: FetchLike;
-  /** Transport for the fixed Slopbot penalty feed; tests inject a local worker. */
-  penaltyFetch?: (input: URL, init: RequestInit) => Promise<Response>;
   evidenceToken?: string;
   evidenceTimeoutMs?: number;
   evidenceRetryDelayMs?: number;
@@ -4072,20 +4069,6 @@ export async function generateLeaderboardFromGitHub(
       )),
     );
   }
-  // Published-table debits apply to the same window (PRD section 7).
-  const penaltyDebits = await loadPenaltyDebits(
-    {
-      get: <T>(path: string) => {
-        valueRestRequests += 1;
-        return github.get<T>(path);
-      },
-    },
-    options.penaltyFetch,
-    (itemNodeId) =>
-      process.stderr.write(
-        `[slop.cash] penalty ${itemNodeId} has no current public item; not applied\n`,
-      ),
-  );
   const fetchedAt = new Date().toISOString();
   const rateLimit = client.getRateLimit();
   const source: LeaderboardSourceMetadata = {
@@ -4124,7 +4107,6 @@ export async function generateLeaderboardFromGitHub(
   };
   const snapshot = createLeaderboardSnapshot({
     ...valueInputs,
-    penaltyDebits,
     valuePolicy: scoringPolicy,
     generatedAt: fetchedAt,
     windowFrom: windowFrom.toISOString(),

@@ -278,33 +278,7 @@ export type ScoreCategory =
   | "material-test-change"
   | "evidence"
   | "substantive-review"
-  | "evaluated-contribution"
-  | "penalty-debit";
-
-/**
- * One unreversed debit from the published penalty table, recorded by
- * Slopbot after a confirmed close (PRD section 7). The producer applies at
- * most the actor's credit in the same project and UTC month.
- */
-export interface PenaltyDebitRecord {
-  itemNodeId: string;
-  actor: GitHubActor;
-  repository: RepositoryId;
-  /** The closed issue or pull request that the debit cites. */
-  item: {
-    kind: "issue" | "pull-request";
-    number: number;
-    title: string;
-    url: string;
-  };
-  /** The Slopbot category that the table priced. */
-  category: string;
-  tableVersion: string;
-  debitThirds: number;
-  /** UTC month of the close, YYYY-MM. */
-  period: string;
-  recordedAt: string;
-}
+  | "evaluated-contribution";
 
 export interface ScoreEvent {
   id: string;
@@ -351,14 +325,6 @@ export interface ScoreEvent {
     reviewer: string;
     manifestPath: string;
     manifestSha256: string;
-  };
-  /** Present only on a penalty-debit event; scoreThirds is -appliedThirds. */
-  penalty?: {
-    category: string;
-    tableVersion: string;
-    debitThirds: number;
-    appliedThirds: number;
-    period: string;
   };
 }
 
@@ -411,8 +377,6 @@ export interface LeaderboardEntry {
     evidence: number;
     substantiveReviews: number;
     evaluatedContributions: number;
-    /** Applied penalty debits, subtracted from the other categories. */
-    penaltyDebits?: number;
   };
   pointThirds: {
     mergedPullRequests: number;
@@ -421,8 +385,6 @@ export interface LeaderboardEntry {
     evidence: number;
     substantiveReviews: number;
     evaluatedContributions: number;
-    /** Applied penalty debits, subtracted from the other categories. */
-    penaltyDebits?: number;
   };
   acceptedOutcomes: {
     mergedPullRequests: number;
@@ -655,8 +617,6 @@ export interface LeaderboardInput {
   verificationWindowFrom: string;
   verifiedEvidence: VerifiedEvidenceArtifact[];
   evaluatedContributions?: ScoreEvent[];
-  /** Unreversed published-table debits from the Slopbot penalty record. */
-  penaltyDebits?: PenaltyDebitRecord[];
   /**
    * Previously published accepted review events. GitHub may delete a merged
    * pull request and its reviews; only events whose parent outcome is absent

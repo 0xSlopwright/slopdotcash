@@ -49,13 +49,8 @@ const SCAN_REVIEW: ReviewContract = {
 };
 
 export type ScannerProfile = {
-  reviewer: "astra" | "opus" | "sol";
-  /**
-   * "surplus-messages" is the Anthropic Messages wire of the owner's Surplus
-   * account (owner decision D16). The marketplace serves both scan models;
-   * its returned model name is not independent proof of the served model.
-   */
-  transport: "openai-responses" | "anthropic-messages" | "surplus-messages";
+  reviewer: "astra" | "opus";
+  transport: "openai-responses" | "anthropic-messages";
   /** Explicit operator-reviewed endpoint and version. No implicit provider/model selection. */
   endpoint: string;
   model: string;
@@ -143,16 +138,35 @@ function prepare(input: string, expected: string): EvidenceBundle {
     visibilityGaps: bundle.visibilityGaps.map((gap) => text(gap)),
   };
 }
+/**
+ * The reviewed endpoints of each transport: the provider's own API, or the
+ * same transport through Surplus Intelligence with the operator's
+ * `SURPLUS_API_KEY` (owner decision D16: Surplus `claude-opus-5.5` first,
+ * Surplus `gpt-6.1-sol` only for ambiguous or high-risk results).
+ */
+const ENDPOINTS: Record<
+  ScannerProfile["transport"],
+  Record<string, "openai" | "anthropic" | "surplus">
+> = {
+  "openai-responses": {
+    "https://api.openai.com/v1/responses": "openai",
+    "https://api.surplusintelligence.ai/openai/v1/responses": "surplus",
+  },
+  "anthropic-messages": {
+    "https://api.anthropic.com/v1/messages": "anthropic",
+    "https://api.surplusintelligence.ai/anthropic/v1/messages": "surplus",
+  },
+};
+/** The provider an approved profile reaches; null for an unapproved endpoint. */
+function providerOf(profile: ScannerProfile) {
+  return Object.hasOwn(ENDPOINTS[profile.transport] ?? {}, profile.endpoint)
+    ? ENDPOINTS[profile.transport][profile.endpoint]
+    : null;
+}
 function validateProfile(profile: ScannerProfile) {
-  const endpoints = {
-    "openai-responses": "https://api.openai.com/v1/responses",
-    "anthropic-messages": "https://api.anthropic.com/v1/messages",
-    "surplus-messages":
-      "https://api.surplusintelligence.ai/anthropic/v1/messages",
-  };
   if (
-    profile.endpoint !== endpoints[profile.transport] ||
-    !["astra", "opus", "sol"].includes(profile.reviewer)
+    providerOf(profile) === null ||
+    !["astra", "opus"].includes(profile.reviewer)
   )
     throw new Error("Unapproved provider endpoint");
   text(profile.model, 128);
@@ -204,12 +218,7 @@ async function reviewOne(
   const result: ScannerEvidence = {
     review: {
       reviewer: profile.reviewer,
-      provider:
-        profile.transport === "openai-responses"
-          ? "openai"
-          : profile.transport === "surplus-messages"
-            ? "surplus"
-            : "anthropic",
+      provider: providerOf(profile) ?? "unapproved",
       model: profile.model,
       promptPolicyRevision: contract.revision,
       inputManifestSha256: inputSha,
@@ -237,9 +246,10 @@ async function reviewOne(
       signal: AbortSignal.timeout(120_000),
       headers: {
         "content-type": "application/json",
+        // Surplus takes its account key as a bearer token on both transports.
         ...(openai
           ? { authorization: `Bearer ${profile.apiKey}` }
-          : profile.transport === "surplus-messages"
+          : providerOf(profile) === "surplus"
             ? {
                 authorization: `Bearer ${profile.apiKey}`,
                 "anthropic-version": "2023-06-01",
@@ -268,8 +278,6 @@ async function reviewOne(
             },
       ),
     });
-    // Surplus marks a response that its deadline cut short.
-    const truncated = response.headers.get("x-si-truncated") === "1";
     const raw = await limitedResponse(response);
     result.responseSha256 = digest(raw);
     const body = record(JSON.parse(raw));
@@ -305,7 +313,6 @@ async function reviewOne(
         rateCardSha256: digest(JSON.stringify(rates)),
       };
     if (
-      truncated ||
       body.model !== profile.model ||
       (openai
         ? body.status !== "completed" ||
@@ -414,8 +421,7 @@ export async function reviewIndependently(input: {
   const bundle = prepare(input.evidence, input.inputSha256);
   if (
     new Set(input.profiles.map((profile) => profile.reviewer)).size !== 2 ||
-    new Set(input.profiles.map((profile) => profile.transport)).size !== 2 ||
-    input.profiles.some((profile) => profile.transport === "surplus-messages")
+    new Set(input.profiles.map((profile) => profile.transport)).size !== 2
   )
     throw new Error("Two independent reviewer profiles required");
   // Validate both profiles before either provider is contacted. No fallback or automatic retry.

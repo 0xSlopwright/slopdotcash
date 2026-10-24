@@ -392,10 +392,8 @@ export function applyPointsSnapshot(
   // (re-derived work unit, possibly dropped as a repeat work unit), so it
   // neither rewrites nor zeroes one the retained batch owns.
   const batchOwned = retainedBatchOwnedKeys(journal);
-  // Points record earned awards. A penalty debit changes only the Slop
-  // Score of its project month, so it never revises or zeroes an award.
   const awards = snapshot.ledger
-    .filter((e) => e.actor.kind === "User" && e.category !== "penalty-debit")
+    .filter((e) => e.actor.kind === "User")
     .map(awardForScore)
     .filter((a) => !batchOwned.has(a.key));
   const decisions = new Map<string, PointDecision>();

@@ -154,13 +154,10 @@ export function summarizeWhoBuilds(
   snapshot: LeaderboardSnapshot,
 ): WhoBuildsSummary {
   const counts = new Map<string, number>();
-  const credited = snapshot.ledger.filter(
-    (event) => event.category !== "penalty-debit",
-  );
-  for (const event of credited) {
+  for (const event of snapshot.ledger) {
     counts.set(event.repository, (counts.get(event.repository) ?? 0) + 1);
   }
-  const scoredEvents = credited.length;
+  const scoredEvents = snapshot.ledger.length;
   const repositories = [...counts.entries()]
     .map(([repositoryId, events]) => {
       const project = findProjectByRepositoryId(repositoryId);

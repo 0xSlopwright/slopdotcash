@@ -56,6 +56,50 @@ The flow for one queued assessment:
    ([EVIDENCE.md](../../backend/vetting/EVIDENCE.md)), then publish once with
    `publishResult` ([PUBLICATION.md](PUBLICATION.md)).
 
+### Scan service
+
+`run.ts` runs this flow automatically. One pass:
+
+1. calls the signed `POST /api/v1/vetting/refresh`, so Slop queues every
+   changed project;
+2. reads the signed queue;
+3. for each pending assessment, in queue order, acquires the exact inputs
+   (`acquireQueuedAssessment`), inspects the repository source and the queued
+   skill template, runs the primary review and, only when
+   `composeScanResult` reports `needsSpecialist`, the specialist review;
+4. registers and uploads the private report, the reviewed inventory, every
+   dependency lock and every named artifact under the scan run through the
+   signed evidence routes;
+5. publishes the result once with `publishResult`.
+
+A service failure publishes nothing: an unavailable source, a failed primary
+or specialist review, or a refused evidence upload leaves the assessment
+pending, and the next pass retries it. A published attempt is journaled, so a
+later pass never sends it again; an uncertain or rejected attempt waits for
+an operator. The pass removes the acquired bytes after each assessment. It
+never executes repository content on its host, never confirms malice and never releases
+a quarantined artifact.
+
+The source-inventory gaps of the historical secure-VM contract that this scan
+covers itself are not carried into the result: the skill template is read from
+the queue, dependency manifests and lockfiles are checked, and the scan runs
+its own model review. Submodule, link and LFS gaps still keep `source`
+partial.
+
+The operator runs it on a private host:
+
+```sh
+SURPLUS_API_KEY=... SLOP_VETTING_SIGNING_JWK='{"kty":"OKP","crv":"Ed25519","x":"...","d":"..."}' \
+  bun workers/vetting/run.ts /private/scan-service.json --every 300
+```
+
+The configuration file names `origin`, `policyVersion`, `workDirectory`,
+`journalDirectory`, and the `primary` and `specialist` profiles without
+keys. Owner decision D16 pins the primary to the Surplus Anthropic Messages
+endpoint with `claude-opus-5.5` and the specialist to the Surplus OpenAI
+Responses endpoint with `gpt-6.1-sol`. Both use `SURPLUS_API_KEY`. The output
+lists safe assessment identities and states only.
+
 ### Cache and rescans
 
 The inventory digest covers executable content only. Documentation that is
@@ -73,55 +117,6 @@ live pin for a project that contributor flags alone paused. Banned and
 moderator-restricted projects wait for a moderator. An admin can still queue a
 scan by hand.
 
-### Scan service
-
-`scan-service.ts` chains steps 1 to 6 for each queued assessment. One cycle
-calls the signed refresh, reads the signed queue and, in queue order:
-
-1. acquires the exact commit and skill template (`acquireQueuedAssessment`);
-2. reads the repository files and the template inputs by digest
-   (`readQueuedScanInput`). The template files are scanned under
-   `slop-skill-template/`. The three generic acquisition gaps that the bounded
-   scan answers by its own definition are removed: the template is acquired,
-   the scan performs the model review, and dependencies are the lockfiles and
-   install-time downloads of their surfaces. Submodule, link and LFS gaps stay;
-3. inspects the files and runs the primary review with Surplus
-   `claude-opus-5.5`;
-4. runs the specialist review with Surplus `gpt-6.1-sol` only when
-   `composeScanResult` reports `needsSpecialist`;
-5. registers and uploads the report (`trace`), the inventory (`manifest`),
-   every dependency lock and every repository artifact under the scan run;
-6. publishes the canonical result bytes once with `publishResult`.
-
-An assessment whose publication the journal already reserved is skipped, so
-an uncertain earlier attempt is never sent again; an operator reconciles it.
-Each step that fails stops only that assessment, and the next cycle scans it
-again. No result is published without its retained evidence. The controller
-never executes repository content on its own host. Acquired Linux x86-64
-native artifacts run through the signed private sandbox route. The controller
-requires a released image identity, adds output to the bounded review inventory,
-and retains the exact execution responses before publication. Unsupported
-formats, oversized artifacts and incomplete output remain coverage gaps.
-Ordinary source does not need isolated execution. It never sets a confirmation, so it never
-publishes `malicious`; a moderator confirms malice.
-
-Run one cycle from an operator host:
-
-```sh
-VETTING_SERVICE_ORIGIN=https://slop.cash \
-VETTING_SERVICE_PRIVATE_KEY=<Ed25519 PKCS #8, base64> \
-SURPLUS_API_KEY=<owner Surplus key> \
-VETTING_SCAN_PROFILE='{"policyVersion":"…","maxOutputTokens":4096,"rateCards":{"primary":{…},"specialist":{…}}}' \
-VETTING_WORK_DIRECTORY=/private/scan-work \
-VETTING_JOURNAL_DIRECTORY=/private/scan-journal \
-bun workers/vetting/scan-service.ts
-```
-
-Each rate card has the four `…NanoUsdPerToken` integer fields of
-[SCANNERS.md](SCANNERS.md). The command prints one JSON outcome per
-assessment with identifiers and outcomes only, and exits 1 when any
-assessment did not publish.
-
 ### Isolated execution
 
 Ordinary source needs no execution. When an install hook or download cannot
@@ -136,9 +131,18 @@ specialist or the isolated analysis releases it.
 ## Evidence
 
 ```sh
-bun test scripts/vetting-bounded-scan.test.ts scripts/vetting-scan-flags.test.ts \
-  scripts/vetting-scan-service.test.ts
+bun test scripts/vetting-bounded-scan.test.ts scripts/vetting-scan-flags.test.ts
+bun test scripts/vetting-scan-service.test.ts
 ```
+
+`vetting-scan-service.test.ts` runs complete scan passes against the real
+vetting, evidence and project handlers on the real migrations, with local
+workerd R2, a real local Git repository served through the GitHub Git API
+format, and a local server that answers in the Surplus Anthropic Messages and
+OpenAI Responses formats. It proves that a provider outage leaves the scan
+pending and publishes nothing, that the next pass clears the project with one
+primary review and lets activation proceed, that an ambiguous primary review
+runs the specialist once, and that a failed specialist publishes nothing.
 
 The worker tests use harmless fixtures and a real local HTTP server that
 answers in the Anthropic Messages format. They check surface coverage, threat
@@ -148,15 +152,6 @@ API workflow runs on the real migrations and handlers with an ephemeral
 Ed25519 key and local workerd R2. It proves that a clean supported scan lets
 activation proceed, reuse and automatic rescans, refusal without retained
 evidence, and that incomplete results stay quarantined.
-
-`vetting-scan-service.test.ts` runs the scan service itself: the signed
-refresh, queue, exact Git acquisition from a local Git repository, the
-Surplus Messages transport, evidence retention in local workerd R2 and
-journaled publication. It proves that one cycle scans a listed project
-clean so that the owner can activate it; that risky new content is
-flagged, sent to the specialist and kept quarantined, with no model-made
-ban; that a clean fresh scan reinstates a two-flag pause; and that a
-reserved publication is never sent again.
 
 These tests do not prove a real provider review, the deployed scanner
 service, an approved isolated runner or live acceptance. No real provider
@@ -201,8 +196,22 @@ VM.
 
 | Item | Status |
 | --- | --- |
-| Scanner service deployment | `scan-service.ts` runs the complete cycle. It is not deployed by this source: a scheduled operator host (or the D16 fallback VM) runs it with its Ed25519 key, the public key in `VETTING_RESULT_PUBLIC_KEYS`, `SURPLUS_API_KEY`, the rate cards and the evidence store policy. |
-| Provider and model | Owner decision D16: Surplus `claude-opus-5.5` is the primary model and Surplus `gpt-6.1-sol` is the specialist, only for ambiguous or high-risk results. `surplusScanProfiles` pins both; the operator supplies the key and rate cards. Surplus's returned model name is not independent proof of the served model. |
-| Isolated runner | Owner decision D16: Cloudflare Sandboxes/Containers, one disposable sandbox per risky artifact, with `enableInternet: false` set explicitly and no secrets. The private runner is integrated for acquired Linux x86-64 native artifacts. Archives, other executable formats and unretrieved downloads remain incomplete. Execution alone never releases quarantine. Live image and service qualification are still required. |
+| Scanner service deployment | `run.ts` is the service source; it is not deployed by this source. It needs a private host, its Ed25519 key, the public key in `VETTING_RESULT_PUBLIC_KEYS`, `SURPLUS_API_KEY` and the evidence store policy. |
+| Provider and model | Owner decision D16: Surplus `claude-opus-5.5` is the primary model and Surplus `gpt-6.1-sol` is the specialist, only for ambiguous or high-risk results. Scanner profiles accept the Surplus endpoints. The operator pins both in the configuration file; the source has no default. |
+| Isolated runner | Owner decision D16: Cloudflare Sandboxes/Containers, one disposable sandbox per risky artifact, with `enableInternet: false` set explicitly and no secrets. Adapting this worker from the Bubblewrap host to that runner is follow-up work. |
 | Specialist authority | Owner decision D3: moderators confirm malice and release quarantined artifacts. A model label alone cannot; a signed malicious result restricts the project until a moderator decides. |
 | Live acceptance | Clean, incomplete, malicious, flag and reinstatement paths on staging with the real services. |
+
+### Private artifact execution
+
+The scan service sends acquired Linux x86-64 native artifacts to the signed
+private sandbox route before model review. It requires a released image identity,
+adds execution output to the bounded review inventory, and retains each exact
+execution response before publication. A runner failure leaves the assessment
+pending. Unsupported artifacts and incomplete output remain explicit coverage
+gaps. Execution does not release quarantine or confirm malice. The controller
+never executes repository content on its host.
+
+The disposable runner and release requirements are documented in
+[the sandbox guide](../vetting-sandbox/README.md). Native Linux isolation and live
+provider qualification remain required before production activation.

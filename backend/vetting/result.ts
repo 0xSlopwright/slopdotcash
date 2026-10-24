@@ -56,7 +56,7 @@ const ARTIFACT_ANALYSES = [
   "suspicious",
   "malicious",
 ] as const;
-const REVIEWERS = ["astra", "opus", "sol"] as const;
+const REVIEWERS = ["astra", "opus"] as const;
 const REVIEW_STATUSES = ["completed", "unavailable", "failed"] as const;
 const REVIEW_VERDICTS = ["no-findings", "findings", "malicious-suspected"];
 const SEVERITIES = ["info", "low", "medium", "high", "critical"] as const;

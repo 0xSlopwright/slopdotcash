@@ -25,7 +25,6 @@ import type {
   MergedPullRequestOutcome,
   MergedPullRequestReviewRecord,
   ModelAttribution,
-  PenaltyDebitRecord,
   PullRequestFile,
   PullRequestRecord,
   PullRequestReview,
@@ -75,7 +74,6 @@ export type {
   MergedPullRequestOutcome,
   MergedPullRequestReviewRecord,
   ModelAttribution,
-  PenaltyDebitRecord,
   PullRequestFile,
   PullRequestRecord,
   PullRequestReview,
@@ -1521,14 +1519,6 @@ export function leaderboardMethodology(
         qualification:
           "A public, strictly validated award manifest was reviewed and merged into elizaOS/slopdotcash for useful implementation, tests, review, diagnosis, or evidence that is not already rewarded as a merged outcome.",
       },
-      {
-        id: "penalty-debit",
-        points:
-          "published penalty table: spam -1; scam or malicious -8; clear violation of a quoted project rule -1/3",
-        cap: "never below zero: at most the author's credit in the same project and UTC month",
-        qualification:
-          "Slopbot records one debit when it closes a pull request by a closure-eligible author (a verified slop.cash member with an authenticated run for that pull request; never a maintainer). Reopen, appeal and retry cannot repeat it. An upheld appeal or a maintainer reopen reverses it once, and the next publication restores the month. A closed cycle keeps its frozen snapshot, so a debit never changes an approved, scheduled or paid award.",
-      },
     ],
     evidenceWeights: { ...EVIDENCE_WEIGHTS },
     materialTestThreshold: {
@@ -1804,113 +1794,6 @@ function addScore(
   entry.projectCapUsage.set(capKey, capUsage);
   ledger.push(scoredEvent);
   return true;
-}
-
-/**
- * Applies the published penalty table (PRD section 7) after every credit is
- * known. A debit reduces only the author's credit in the same project and
- * UTC month, and never below zero: it applies at most what that month has
- * earned in this window. A later credit in the same month lets a later run
- * apply more of the recorded debit. A reversed debit is never supplied, so
- * the next publication restores the month. Closed cycles keep their frozen
- * source snapshot, so a debit never changes an approved, scheduled or paid
- * award.
- */
-function applyPenaltyDebits(
-  entries: Map<string, MutableLeaderboardEntry>,
-  ledger: ScoreEvent[],
-  penalties: readonly PenaltyDebitRecord[],
-  windowFrom: string,
-  windowTo: string,
-): void {
-  const seen = new Set<string>();
-  const applied = new Map<string, number>();
-  const projectOf = (repository: string) =>
-    REGISTERED_REPOSITORIES.find((candidate) => candidate.id === repository)
-      ?.projectId;
-  const ordered = [...penalties].sort(
-    (left, right) =>
-      left.recordedAt.localeCompare(right.recordedAt) ||
-      left.itemNodeId.localeCompare(right.itemNodeId),
-  );
-  for (const penalty of ordered) {
-    if (seen.has(penalty.itemNodeId))
-      throw new Error(`Duplicate penalty debit ${penalty.itemNodeId}`);
-    seen.add(penalty.itemNodeId);
-    const projectId = projectOf(penalty.repository);
-    if (
-      !projectId ||
-      !Number.isSafeInteger(penalty.debitThirds) ||
-      penalty.debitThirds < 1 ||
-      !/^\d{4}-(0[1-9]|1[0-2])$/u.test(penalty.period) ||
-      !Number.isFinite(Date.parse(penalty.recordedAt))
-    )
-      throw new Error(`Invalid penalty debit ${penalty.itemNodeId}`);
-    if (isBotActor(penalty.actor)) continue;
-    const [year, month] = penalty.period.split("-").map(Number);
-    // The close month is the debit month; a late record stays in it.
-    const occurredAt = penalty.recordedAt.startsWith(penalty.period)
-      ? new Date(penalty.recordedAt).toISOString()
-      : new Date(Date.UTC(year, month, 1) - 1).toISOString();
-    if (
-      parseIsoTime(occurredAt) < parseIsoTime(windowFrom) ||
-      parseIsoTime(occurredAt) >= parseIsoTime(windowTo)
-    )
-      continue;
-    const key = `${penalty.actor.id}\0${projectId}\0${penalty.period}`;
-    const credit = dedupeByNodeId(ledger)
-      .filter(
-        (event) =>
-          event.category !== "penalty-debit" &&
-          event.actor.id === penalty.actor.id &&
-          projectOf(event.repository) === projectId &&
-          event.occurredAt.slice(0, 7) === penalty.period,
-      )
-      .reduce(
-        (total, event) => total + (event.scoreThirds ?? event.points * 3),
-        0,
-      );
-    const appliedThirds = Math.min(
-      penalty.debitThirds,
-      credit - (applied.get(key) ?? 0),
-    );
-    if (appliedThirds <= 0) continue;
-    applied.set(key, (applied.get(key) ?? 0) + appliedThirds);
-    const entry = actorEntry(entries, penalty.actor);
-    entry.score -= appliedThirds / 3;
-    entry.scoreThirds -= appliedThirds;
-    entry.points.penaltyDebits =
-      (entry.points.penaltyDebits ?? 0) + appliedThirds / 3;
-    entry.pointThirds.penaltyDebits =
-      (entry.pointThirds.penaltyDebits ?? 0) + appliedThirds;
-    ledger.push({
-      id: `penalty:${penalty.itemNodeId}`,
-      actor: penalty.actor,
-      category: "penalty-debit",
-      points: -appliedThirds / 3,
-      scoreThirds: -appliedThirds,
-      occurredAt,
-      repository: penalty.repository,
-      source: {
-        id: penalty.itemNodeId,
-        kind: penalty.item.kind,
-        number: penalty.item.number,
-        title: penalty.item.title,
-        url: penalty.item.url,
-      },
-      reason:
-        appliedThirds === penalty.debitThirds
-          ? `Published penalty table debit for ${penalty.category.replaceAll("_", " ")}.`
-          : `Published penalty table debit for ${penalty.category.replaceAll("_", " ")}: ${appliedThirds} of ${penalty.debitThirds} thirds apply, so the month stays at zero or above.`,
-      penalty: {
-        category: penalty.category,
-        tableVersion: penalty.tableVersion,
-        debitThirds: penalty.debitThirds,
-        appliedThirds,
-        period: penalty.period,
-      },
-    });
-  }
 }
 
 function recordTextActivity(
@@ -4636,13 +4519,6 @@ function createSnapshotWithReviewCutoff(
       actorEntry(entries, attribution.actor).models.add(attribution.identifier);
     }
   }
-  applyPenaltyDebits(
-    entries,
-    ledger,
-    input.penaltyDebits ?? [],
-    input.windowFrom,
-    input.windowTo,
-  );
 
   const leaders = [...entries.values()]
     .filter(
@@ -4662,9 +4538,6 @@ function createSnapshotWithReviewCutoff(
         evidence: entry.pointThirds.evidence / 3,
         substantiveReviews: entry.pointThirds.substantiveReviews / 3,
         evaluatedContributions: entry.pointThirds.evaluatedContributions / 3,
-        ...(entry.pointThirds.penaltyDebits
-          ? { penaltyDebits: entry.pointThirds.penaltyDebits / 3 }
-          : {}),
       },
       pointThirds: { ...entry.pointThirds },
       acceptedOutcomes: { ...entry.acceptedOutcomes },
@@ -5008,13 +4881,11 @@ function assertActorCoherence(actors: GitHubActor[]): void {
 function assertMethodologyValue(value: unknown, path: string): void {
   const methodology = assertObject(value, path);
   assertString(methodology.summary, `${path}.summary`);
-  // Snapshots published before the penalty table have six rules.
   if (
     !Array.isArray(methodology.scoringRules) ||
-    (methodology.scoringRules.length !== 6 &&
-      methodology.scoringRules.length !== 7)
+    methodology.scoringRules.length !== 6
   ) {
-    throw new Error(`${path}.scoringRules must contain every scoring rule`);
+    throw new Error(`${path}.scoringRules must contain all six scoring rules`);
   }
   const expectedRuleIds: ScoreCategory[] = [
     "merged-pull-request",
@@ -5023,9 +4894,6 @@ function assertMethodologyValue(value: unknown, path: string): void {
     "evidence",
     "substantive-review",
     "evaluated-contribution",
-    ...(methodology.scoringRules.length === 7
-      ? (["penalty-debit"] as const)
-      : []),
   ];
   const seenRuleIds = new Set<string>();
   methodology.scoringRules.forEach((ruleValue, index) => {
@@ -5356,25 +5224,6 @@ function assertLeaderValue(
       throw new Error(`${path}.points.${key} does not match integer thirds`);
     }
     scoreThirdsTotal += Number(pointThirds[key]);
-  }
-  if (
-    points.penaltyDebits !== undefined ||
-    pointThirds.penaltyDebits !== undefined
-  ) {
-    assertPositiveInteger(
-      pointThirds.penaltyDebits,
-      `${path}.pointThirds.penaltyDebits`,
-    );
-    if (
-      Math.abs(
-        Number(points.penaltyDebits) - Number(pointThirds.penaltyDebits) / 3,
-      ) > 1e-12
-    ) {
-      throw new Error(
-        `${path}.points.penaltyDebits does not match integer thirds`,
-      );
-    }
-    scoreThirdsTotal -= Number(pointThirds.penaltyDebits);
   }
   if (scoreThirdsTotal !== entry.scoreThirds) {
     throw new Error(`${path}.scoreThirds does not equal its point breakdown`);
@@ -5767,65 +5616,6 @@ function assertWorkItemValue(
   }
 }
 
-/** A debit event carries exactly its applied amount and its table record. */
-function assertPenaltyDebitValue(
-  event: Record<string, unknown>,
-  path: string,
-  repositoryIds: readonly string[],
-): void {
-  if (event.category !== "penalty-debit")
-    throw new Error(`${path}.penalty is reserved for penalty debits`);
-  for (const key of [
-    "workUnitId",
-    "scoreDecisionSourceId",
-    "scoreDecisionAt",
-    "acceptanceKind",
-    "evidenceBonusBasisPoints",
-    "reviewHistory",
-    "continuity",
-    "evaluation",
-  ])
-    if (key in event)
-      throw new Error(`${path}.${key} is not allowed on a penalty debit`);
-  const penalty = assertObject(event.penalty, `${path}.penalty`);
-  if (
-    Object.keys(penalty).sort().join("\0") !==
-    "appliedThirds\0category\0debitThirds\0period\0tableVersion"
-  )
-    throw new Error(`${path}.penalty has unexpected or missing fields`);
-  assertString(penalty.category, `${path}.penalty.category`);
-  assertString(penalty.tableVersion, `${path}.penalty.tableVersion`);
-  assertPositiveInteger(penalty.debitThirds, `${path}.penalty.debitThirds`);
-  assertPositiveInteger(penalty.appliedThirds, `${path}.penalty.appliedThirds`);
-  assertString(penalty.period, `${path}.penalty.period`);
-  assertIsoTimestamp(event.occurredAt, `${path}.occurredAt`);
-  if (
-    penalty.appliedThirds > penalty.debitThirds ||
-    event.scoreThirds !== -penalty.appliedThirds ||
-    event.points !== -penalty.appliedThirds / 3 ||
-    String(event.occurredAt).slice(0, 7) !== penalty.period
-  )
-    throw new Error(`${path} does not match its applied penalty`);
-  assertString(event.reason, `${path}.reason`);
-  assertEnum(event.repository, repositoryIds, `${path}.repository`);
-  const source = assertObject(event.source, `${path}.source`);
-  assertString(source.id, `${path}.source.id`);
-  assertString(source.title, `${path}.source.title`);
-  if (
-    (source.kind !== "pull-request" && source.kind !== "issue") ||
-    event.id !== `penalty:${source.id}`
-  )
-    throw new Error(`${path}.source must be the closed item it debits`);
-  assertPositiveInteger(source.number, `${path}.source.number`);
-  assertRepositoryUrl(
-    source.url,
-    `${path}.source.url`,
-    source.kind,
-    source.number,
-    event.repository as RepositoryId,
-  );
-}
-
 function assertLedgerValue(
   value: unknown,
   path: string,
@@ -5843,14 +5633,9 @@ function assertLedgerValue(
       "evidence",
       "substantive-review",
       "evaluated-contribution",
-      "penalty-debit",
     ],
     `${path}.category`,
   );
-  if (event.category === "penalty-debit" || "penalty" in event) {
-    assertPenaltyDebitValue(event, path, repositoryIds);
-    return;
-  }
   assertNonNegativeNumber(event.points, `${path}.points`);
   const eventPoints = Number(event.points);
   const isV2 =
@@ -6622,10 +6407,7 @@ export function assertLeaderboardSnapshot(
       }
       evaluatedReviewSemanticKeys.add(semanticKey);
     }
-    if (
-      event.category !== "evaluated-contribution" &&
-      event.category !== "penalty-debit"
-    ) {
+    if (event.category !== "evaluated-contribution") {
       nonEvaluatedSourceIds.add(`${event.repository}\0${event.source.id}`);
       nonEvaluatedSourceUrls.add(`${event.repository}\0${event.source.url}`);
     }
@@ -6645,21 +6427,12 @@ export function assertLeaderboardSnapshot(
       substantiveReviews: number;
     }
   >();
-  // A debit never takes an actor's project month below zero.
-  const monthThirds = new Map<string, { credit: number; debit: number }>();
   for (const event of validatedLedger) {
     const repository = findRegisteredRepositoryById(event.repository);
     if (!repository) {
       throw new Error(`snapshot.ledger event ${event.id} has no project`);
     }
     const capKey = `${event.actor.id}\0${repository.projectId}\0${event.occurredAt.slice(0, 7)}`;
-    const month = monthThirds.get(capKey) ?? { credit: 0, debit: 0 };
-    monthThirds.set(capKey, month);
-    if (event.category === "penalty-debit") {
-      month.debit -= event.scoreThirds ?? 0;
-      continue;
-    }
-    month.credit += event.scoreThirds ?? event.points * 3;
     const usage = projectCapUsage.get(capKey) ?? {
       evidencePoints: 0,
       evaluatedContributions: 0,
@@ -6722,11 +6495,6 @@ export function assertLeaderboardSnapshot(
     }
     projectCapUsage.set(capKey, usage);
   }
-  for (const month of monthThirds.values())
-    if (month.debit > month.credit)
-      throw new Error(
-        "snapshot.ledger penalty debits exceed their project month credit",
-      );
   for (const events of mergedEventsByProjectMonth.values()) {
     const legacyEvents = events.filter(
       (event) =>
@@ -6776,12 +6544,9 @@ export function assertLeaderboardSnapshot(
       substantiveReviews: 0,
       evaluatedContributions: 0,
     };
-    let penaltyThirds = 0;
     for (const event of events) {
       const eventThirds = event.scoreThirds ?? event.points * 3;
-      if (event.category === "penalty-debit") {
-        penaltyThirds -= eventThirds;
-      } else if (event.category === "merged-pull-request") {
+      if (event.category === "merged-pull-request") {
         pointThirds.mergedPullRequests += eventThirds;
         outcomes.mergedPullRequests += 1;
       } else if (event.category === "resolved-issue") {
@@ -6828,8 +6593,7 @@ export function assertLeaderboardSnapshot(
       outcomes.substantiveReviews !==
         leader.acceptedOutcomes.substantiveReviews ||
       outcomes.evaluatedContributions !==
-        leader.acceptedOutcomes.evaluatedContributions ||
-      penaltyThirds !== (leader.pointThirds.penaltyDebits ?? 0)
+        leader.acceptedOutcomes.evaluatedContributions
     ) {
       throw new Error(
         `snapshot.leaders actor ${leader.actor.login} does not match the public ledger`,
