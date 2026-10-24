@@ -2,13 +2,13 @@
  * Proves the acceptance runner end to end on local chains with throwaway keys:
  * an Anvil fork of each EVM test network (real chain id and real test
  * stablecoin, funded with anvil_dealERC20) and a local Solana validator with
- * the test-delay build of the escrow program. Nothing is broadcast to a public
+ * the production build of the escrow program. Nothing is broadcast to a public
  * network; the forks only read public state.
  *
  *   bun scripts/escrow-acceptance/local.ts [network ...]
  *
- * Solana needs `SLOP_ESCROW_FEATURES=short-delay-for-tests bun run
- * build:contracts:solana` first, so the binding delay can be seconds.
+ * Solana needs `bun run build:contracts:solana` first. The production build
+ * accepts the short delays configured by this local workflow.
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -235,7 +235,12 @@ async function solanaLocalnet() {
     "deploy",
     "slop_escrow.so",
   );
-  const programId = "4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj";
+  const programId: string = JSON.parse(
+    readFileSync(
+      join(root, "contracts", "solana", "idl", "slop_escrow.json"),
+      "utf8",
+    ),
+  ).address;
   const seed = () =>
     Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
   const pubkey = (hex: string) =>
