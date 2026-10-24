@@ -99,7 +99,7 @@ export function OwnerVaultSetup({
   const [signInRequired, setSignInRequired] = useState(false);
   const [claims, setClaims] = useState<WalletClaim[]>([]);
   const [network, setNetwork] = useState(saved.pending?.input.network ?? "");
-  const [automatic, setAutomatic] = useState(true);
+  const [automatic, setAutomatic] = useState<boolean | null>(null);
   const [wallet, setWallet] = useState<Connection | null>(null);
   const [review, setReview] = useState<Pending | null>(null);
   const createButton = useRef<HTMLButtonElement>(null);
@@ -193,6 +193,8 @@ export function OwnerVaultSetup({
         throw new Error(
           "Confirm this wallet in Earnings, then reload the setup options.",
         );
+      if (automatic === null)
+        throw new Error("Choose the monthly payment setting before review.");
       const input = {
         network: network as EscrowDeployment["network"],
         claimId: claim.claimId,
@@ -395,22 +397,31 @@ export function OwnerVaultSetup({
               </p>
             ) : null}
             <label>
-              <input
-                type="checkbox"
-                checked={automatic}
+              Automatic monthly payment
+              <select
+                value={automatic === null ? "" : automatic ? "on" : "off"}
                 disabled={busy}
-                onChange={(e) => setAutomatic(e.target.checked)}
-              />{" "}
-              Automatically pay the monthly allocation
+                onChange={(e) =>
+                  setAutomatic(
+                    e.target.value === "" ? null : e.target.value === "on",
+                  )
+                }
+              >
+                <option value="">Choose a setting</option>
+                <option value="on">On</option>
+                <option value="off">Off</option>
+              </select>
             </label>
             <p>
               The cap is {project.reward.monthlyCapDisplay} per month. You can
-              turn automatic payment off later.
+              change this setting later.
             </p>
             <button
               className="button"
               type="button"
-              disabled={busy || !claim || Boolean(saved.error)}
+              disabled={
+                busy || !claim || automatic === null || Boolean(saved.error)
+              }
               onClick={() => void reviewCreation()}
             >
               Review vault creation
