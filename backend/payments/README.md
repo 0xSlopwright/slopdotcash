@@ -298,8 +298,6 @@ sections 6 and 7). Migration `0062` adds its private records.
    each funded month's eligible allocation. The Durable Object records the
    first intent before signing and refuses a different root for that month.
    Funding-time exclusions are omitted; later bans preserve funded awards.
-   Solana v3 binds a freeze timestamp saved with the first signing intent;
-   signer retries keep that timestamp and the same authorization bytes.
    The signed allocation is immutable in `monthly_payment_authorizations`.
    `GET /api/v1/payments/projects/:projectId/monthly/:YYYY-MM/authorization/:network`
    returns only this final authorization and its publication time, without
@@ -309,11 +307,19 @@ sections 6 and 7). Migration `0062` adds its private records.
    reconcile finalized results. The payments scheduler sends published allocations
    to the configured executor's `/v1/commit-monthly` service. Hosted relayers
    accept this only on the test stack; production requires a separately operated
-   executor. EVM admission reserves its awards in one transaction. Solana admits
-   the total, then commits or releases one proven leaf per invocation. Only a
-   source consumed before freeze, a sufficiently funded matching monthly source,
-   or zero actor can release its leaf. A conflicting manual award after freeze
-   stays reserved; valid funded awards never expire. An admitted Solana month continues after opt-out or its admission
+   executor. EVM admission reserves its awards in one transaction and keeps the
+   monthly digest of #1081. Solana signs `solanaMonthlyMessage` v3. Before it
+   signs, the attester reads every included source's `origin` and
+   `monthly-source` account at one finalized slot, refuses the month if any
+   exists, and signs that slot's block time as `frozenAt`. The journal keeps this
+   `frozenAt`, so an interrupted signer signs the same bytes. The attester also
+   refuses a source that appears in another published month of the same vault.
+   Solana admits the total, then the executor commits or releases up to 16
+   proven leaves per invocation. A zero actor, a source that another month paid
+   to the same actor, or a source committed by hand before `frozenAt` releases its
+   leaf. A source committed by hand after `frozenAt` stays reserved and is never
+   refunded; the executor reports it as `stranded`. Valid funded awards never
+   expire. An admitted Solana month continues after opt-out or its admission
    window closes. `monthly_payment_execution` tracks fair retries and completed
    execution, not public payment state. Signed transactions are journaled before
    broadcast and reused after an uncertain response.

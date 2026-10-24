@@ -18,6 +18,7 @@ interface Intent {
   snapshotSha256: string;
   messageHex: string;
   authority: string;
+  /** Solana: the observed freeze time, reused if signing is interrupted. */
   frozenAt?: string;
   authorization?: MonthlyAuthorization;
 }
@@ -42,6 +43,9 @@ export async function signMonthlyAllocation(
     verifyDeployment(plan: MonthlyAttestationPlan): Promise<void>;
     /** Sign the EVM digest directly (not personal_sign), or the Solana message. */
     sign(plan: MonthlyAttestationPlan): Promise<string>;
+    /** Solana: at one finalized slot, prove that no included source has an
+     * `origin` or `monthly-source` account and return that slot's block time. */
+    freeze?(plan: MonthlyAttestationPlan): Promise<string>;
   },
   request: MonthlyAttestationRequest,
 ): Promise<MonthlyAuthorization> {
@@ -51,17 +55,34 @@ export async function signMonthlyAllocation(
   );
   await deps.verifyDeployment(plan);
   const key = `monthly:${request.network}:${plan.deployment.vault}:${request.period}`;
+  if (plan.family === "solana") {
+    // The release path is refund-free only if frozen_at is a time at which no
+    // included source was consumed. A recorded freeze stays true: origins are
+    // never closed, so a source absent at that slot was absent before it.
+    const previous = await deps.journal.get<Intent>(key);
+    let frozenAt = previous?.frozenAt;
+    if (!frozenAt) {
+      if (!deps.freeze) throw new Error("Solana freeze observer unavailable");
+      frozenAt = await deps.freeze(plan);
+    }
+    plan = await prepareMonthlyAttestation(
+      { ...deps, now: deps.now() },
+      request,
+      frozenAt,
+    );
+  }
   const expected: Intent = {
     snapshotSha256: request.snapshotSha256,
     messageHex: plan.messageHex,
     authority: plan.deployment.identityAuthority,
-    ...(plan.frozenAt === undefined ? {} : { frozenAt: plan.frozenAt }),
+    ...(plan.frozenAt ? { frozenAt: plan.frozenAt } : {}),
   };
   const intent = await deps.journal.transaction(async (tx) => {
     const previous = await tx.get<Intent>(key);
     if (previous) {
       if (
         previous.snapshotSha256 !== expected.snapshotSha256 ||
+        previous.messageHex !== expected.messageHex ||
         previous.authority !== expected.authority
       )
         throw new Error(
@@ -72,16 +93,6 @@ export async function signMonthlyAllocation(
     await tx.put(key, expected);
     return expected;
   });
-  if (intent.frozenAt !== plan.frozenAt) {
-    plan = await prepareMonthlyAttestation(
-      { ...deps, now: deps.now(), frozenAt: intent.frozenAt },
-      request,
-    );
-  }
-  if (intent.messageHex !== plan.messageHex)
-    throw new Error(
-      "Monthly authorization already bound to another allocation or authority",
-    );
   if (intent.authorization) return intent.authorization;
   const signatureHex = await deps.sign(plan);
   const signature = bytes(signatureHex);
@@ -110,8 +121,9 @@ export async function signMonthlyAllocation(
   }
   // A slow signer must not publish after a restriction or opt-out was observed.
   const current = await prepareMonthlyAttestation(
-    { ...deps, now: deps.now(), frozenAt: plan.frozenAt },
+    { ...deps, now: deps.now() },
     request,
+    plan.frozenAt,
   );
   if (
     current.messageHex !== plan.messageHex ||

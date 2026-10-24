@@ -152,13 +152,104 @@ async function submit(
 }
 
 /** Advances one finalized monthly reservation by one bounded transaction. Never pays an award. */
+const MONTH_SIZE = 109;
+const int64 = (value: Uint8Array, offset: number) =>
+  new DataView(value.buffer, value.byteOffset, value.byteLength).getBigInt64(
+    offset,
+    true,
+  );
+const sourcePdas = (config: SolanaEscrowConfig, sourceDigest: string) => {
+  const source = solanaDigest(sourceDigest);
+  return {
+    source,
+    origin: pda(config.programId, [
+      encoder.encode("origin"),
+      bytes(config.projectPda),
+      source,
+    ]),
+    monthlySource: pda(config.programId, [
+      encoder.encode("monthly-source"),
+      bytes(config.projectPda),
+      source,
+    ]),
+  };
+};
+/** The program's own test: anyone can send lamports to a PDA address, which
+ * leaves a system-owned empty account that the program treats as absent. */
+const initialized = (config: SolanaEscrowConfig, value: unknown) => {
+  if (value === null || typeof value !== "object") return false;
+  const info = value as { owner?: unknown; data?: unknown };
+  return (
+    info.owner === config.programId &&
+    Array.isArray(info.data) &&
+    typeof info.data[0] === "string" &&
+    info.data[0].length > 0
+  );
+};
+/** Reads accounts at one finalized slot per batch of 100; returns the lowest slot seen. */
+async function readFinalized(config: SolanaEscrowConfig, addresses: string[]) {
+  const values: unknown[] = [];
+  let slot = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < addresses.length; index += 100) {
+    const batch = addresses.slice(index, index + 100);
+    const response = (await solanaRpc(config, "getMultipleAccounts", [
+      batch,
+      { commitment: "finalized", encoding: "base64" },
+    ])) as { context?: { slot?: unknown }; value: unknown[] };
+    if (
+      !Array.isArray(response.value) ||
+      response.value.length !== batch.length ||
+      typeof response.context?.slot !== "number" ||
+      !Number.isSafeInteger(response.context.slot)
+    )
+      throw new Error("Invalid finalized account response");
+    slot = Math.min(slot, response.context.slot);
+    values.push(...response.value);
+  }
+  return { values, slot };
+}
+
+/**
+ * Attester rule for solanaMonthlyMessage v3: at one finalized slot no included
+ * source has an `origin` or a `monthly-source` account; frozen_at is that slot's
+ * block time. Origins are never closed, so every batch's source was also absent
+ * at the lowest batch slot, whose block time is returned. A later hand commit has
+ * committed_at >= frozen_at, so release_monthly_award keeps its gross reserved.
+ */
+export async function freezeSolanaMonthly(
+  config: SolanaEscrowConfig,
+  plan: MonthlyAuthorization["plan"],
+) {
+  if (plan.family !== "solana") throw new Error("Wrong monthly family");
+  const addresses = plan.entries.flatMap((entry) => {
+    const { origin, monthlySource } = sourcePdas(config, entry.sourceDigest);
+    return [origin, monthlySource];
+  });
+  const { values, slot } = await readFinalized(config, addresses);
+  if (values.some((value) => initialized(config, value)))
+    throw new Error("A monthly source was already consumed");
+  const time = await solanaRpc(config, "getBlockTime", [slot]);
+  if (typeof time !== "number" || !Number.isSafeInteger(time) || time <= 0)
+    throw new Error("Invalid finalized block time");
+  return String(time);
+}
+
+/** Advances one finalized monthly reservation by up to `limit` bounded
+ * transactions. Never pays an award. After admission it settles every
+ * remaining leaf, so the owner's direct commits stay blocked only briefly. */
 export async function submitSolanaMonthly(
   env: SolanaExecutorEnvironment,
   authorization: MonthlyAuthorization,
   allowAdmission = true,
+  limit = 1,
 ) {
   const { plan, signatureHex } = authorization;
   if (plan.family !== "solana") throw new Error("Wrong monthly family");
+  if (!Number.isSafeInteger(limit) || limit < 1)
+    throw new Error("Invalid monthly transaction limit");
+  const frozenAt = plan.frozenAt ?? "";
+  if (!/^[1-9][0-9]{0,15}$/.test(frozenAt))
+    throw new Error("Monthly freeze time missing");
   const config = await preflightSolanaDeployment(env, {
     network: plan.request.network,
     vault: plan.deployment.vault,
@@ -170,19 +261,13 @@ export async function submitSolanaMonthly(
     throw new Error("Wrong monthly deployment");
   const root = solanaAllocationRoot(plan.entries);
   const total = solanaAllocationTotal(plan.entries);
-  if (
-    !plan.frozenAt ||
-    !/^[0-9]+$/.test(plan.frozenAt) ||
-    BigInt(plan.frozenAt) > (1n << 63n) - 1n
-  )
-    throw new Error("Invalid monthly freeze time");
   const signed = solanaMonthlyMessage(
     config.programId,
     config.projectPda,
     plan.request.period,
     root,
     total,
-    plan.frozenAt,
+    frozenAt,
     config.networkDomain,
   );
   if (
@@ -200,7 +285,7 @@ export async function submitSolanaMonthly(
   const record = await readSolanaAccount(
     config,
     month,
-    109,
+    MONTH_SIZE,
     discriminator("MonthlyAllocation"),
   );
   const payer = { key: env.SOLANA_SIGNER.address, write: true };
@@ -261,7 +346,7 @@ export async function submitSolanaMonthly(
           period,
           solanaDigest(root),
           le(BigInt(total)),
-          le(BigInt(plan.frozenAt)),
+          le(BigInt(frozenAt)),
         ),
       },
     ]);
@@ -271,99 +356,84 @@ export async function submitSolanaMonthly(
     hex(record.slice(40, 44)) !== hex(period) ||
     hex(record.slice(44, 76)) !== root ||
     solanaUint(record, 84) !== BigInt(total) ||
-    solanaUint(record, 100) !== BigInt(plan.frozenAt)
+    int64(record, 100) !== BigInt(frozenAt)
   )
     throw new Error("Conflicting monthly reservation");
   if (solanaUint(record, 76) === BigInt(total))
     return { transactionId: null, alreadyCommitted: true };
   // Admission authenticated the whole root. Later authority rotation, opt-out and
   // period changes must not invalidate its already-funded, permissionless leaves.
-  let held = 0;
-  let markers: (Uint8Array | null)[] = [];
+  const { values: markers } = await readFinalized(
+    config,
+    plan.entries.map((entry) =>
+      pda(config.programId, [
+        encoder.encode("settled"),
+        bytes(month),
+        solanaDigest(entry.sourceDigest),
+      ]),
+    ),
+  );
+  const transactionIds: string[] = [];
+  let stranded = 0;
   for (let index = 0; index < plan.entries.length; index++) {
-    if (index % 100 === 0) {
-      const batch = plan.entries
-        .slice(index, index + 100)
-        .map((entry) =>
-          pda(config.programId, [
-            encoder.encode("settled"),
-            bytes(month),
-            solanaDigest(entry.sourceDigest),
-          ]),
-        );
-      const response = (await solanaRpc(config, "getMultipleAccounts", [
-        batch,
-        { commitment: "finalized", encoding: "base64" },
-      ])) as { value: unknown[] };
-      if (
-        !Array.isArray(response.value) ||
-        response.value.length !== batch.length
+    if (transactionIds.length >= limit) break;
+    if (
+      initialized(config, markers[index]) &&
+      solanaAccount(
+        markers[index],
+        config.programId,
+        8,
+        discriminator("BindingVeto"),
       )
-        throw new Error("Invalid monthly marker response");
-      markers = response.value.map((value) =>
-        value === null
-          ? null
-          : solanaAccount(
-              value,
-              config.programId,
-              8,
-              discriminator("BindingVeto"),
-            ),
-      );
-    }
+    )
+      continue;
     const entry = plan.entries[index];
-    const source = solanaDigest(entry.sourceDigest);
+    const { source, origin, monthlySource } = sourcePdas(
+      config,
+      entry.sourceDigest,
+    );
     const settled = pda(config.programId, [
       encoder.encode("settled"),
       bytes(month),
       source,
     ]);
-    if (markers[index % 100]) continue;
-    const origin = pda(config.programId, [
-      encoder.encode("origin"),
-      bytes(config.projectPda),
-      source,
-    ]);
-    const consumed = await readSolanaAccount(
-      config,
-      origin,
-      40,
-      discriminator("Origin"),
-    );
-    const monthlySource = pda(config.programId, [
-      encoder.encode("monthly-source"),
-      bytes(config.projectPda),
-      source,
-    ]);
-    const release = consumed !== null || BigInt(entry.githubUserId) === 0n;
-    let consumedAddress = config.programId; // Anchor optional account: program id represents None.
-    if (consumed) {
-      consumedAddress = solanaPubkey(consumed, 8);
-      const obligation = await readSolanaAccount(
-        config,
-        consumedAddress,
-        OBLIGATION_SIZE,
-        OBLIGATION_DISCRIMINATOR,
-      );
-      if (!obligation)
-        throw new Error("Consumed monthly source has no obligation");
-      const priorMonthly = await readSolanaAccount(
-        config,
-        monthlySource,
-        8,
-        discriminator("BindingVeto"),
-      );
-      const matchingMonthly =
-        priorMonthly &&
-        solanaUint(obligation, 112) === BigInt(entry.githubUserId) &&
-        solanaUint(obligation, 8) >= BigInt(entry.grossMicro);
-      if (
-        !matchingMonthly &&
-        solanaUint(obligation, 137) >= BigInt(plan.frozenAt)
-      ) {
-        held++;
-        continue;
-      } // The owner's post-freeze conflict stays reserved; other leaves may still progress.
+    const actor = BigInt(entry.githubUserId);
+    const gross = BigInt(entry.grossMicro);
+    // Mirror release_monthly_award: a zero actor, or a consumed source whose
+    // obligation is another month's award for at least this gross to the same
+    // actor, or one committed strictly before frozen_at. Any other consumed
+    // source stays reserved for good and is never retried as a refund.
+    let release = actor === 0n;
+    let obligation = config.programId; // Anchor's placeholder for no account.
+    if (!release) {
+      const [originInfo, marker] = (
+        await readFinalized(config, [origin, monthlySource])
+      ).values;
+      if (initialized(config, originInfo)) {
+        const consumed = solanaAccount(
+          originInfo,
+          config.programId,
+          40,
+          discriminator("Origin"),
+        );
+        obligation = solanaPubkey(consumed, 8);
+        const recorded = await readSolanaAccount(
+          config,
+          obligation,
+          OBLIGATION_SIZE,
+          OBLIGATION_DISCRIMINATOR,
+        );
+        if (!recorded) throw new Error("Origin obligation missing");
+        const byMonth =
+          initialized(config, marker) &&
+          solanaUint(recorded, 112) === actor &&
+          solanaUint(recorded, 8) >= gross;
+        if (!byMonth && int64(recorded, 137) >= BigInt(frozenAt)) {
+          stranded++;
+          continue;
+        }
+        release = true;
+      }
     }
     const proof = solanaAllocationProof(plan.entries, index);
     const award = solanaDigest(
@@ -371,14 +441,14 @@ export async function submitSolanaMonthly(
     );
     const args = [
       source,
-      le(BigInt(entry.githubUserId)),
-      le(BigInt(entry.grossMicro)),
+      le(actor),
+      le(gross),
       u32(index),
       u32(plan.entries.length),
       u32(proof.length),
       ...proof.map((n) => concat(solanaDigest(n.hash), le(BigInt(n.total)))),
     ];
-    return submit(
+    const result = await submit(
       env,
       config,
       `${journal}:${index}:${release ? "release" : "commit"}`,
@@ -392,7 +462,7 @@ export async function submitSolanaMonthly(
                 monthMeta,
                 { key: origin, write: false },
                 { key: monthlySource, write: false },
-                { key: consumedAddress, write: false },
+                { key: obligation, write: false },
                 { key: settled, write: true },
                 system,
               ]
@@ -420,8 +490,17 @@ export async function submitSolanaMonthly(
         },
       ],
     );
+    transactionIds.push(result.transactionId);
   }
-  if (held > 0)
+  if (transactionIds.length)
+    return {
+      transactionId: transactionIds[transactionIds.length - 1],
+      transactionIds,
+      alreadyCommitted: false,
+    };
+  // Only sources the owner consumed by hand after the freeze remain. They can
+  // never commit or release, so their gross stays reserved and nothing is left.
+  if (stranded)
     throw new Error(
       "Post-freeze source conflict remains reserved; reconciliation required",
     );

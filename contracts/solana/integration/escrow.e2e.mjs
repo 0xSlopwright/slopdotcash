@@ -31,7 +31,10 @@ import {
   solanaMonthlyMessage,
   solanaPaymentAdapter,
 } from "../.local/adapter.mjs";
-import { submitSolanaMonthly } from "../.local/monthly-executor.mjs";
+import {
+  freezeSolanaMonthly,
+  submitSolanaMonthly,
+} from "../.local/monthly-executor.mjs";
 import {
   configAddress,
   configFees,
@@ -2080,6 +2083,22 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
       await nodeSigner(authority).signMessage(signed),
     ).toString("hex"),
   };
+  const freezeConfig = {
+    ...config,
+    mint: config.asset,
+    rpcUrl: provider.connection.rpcEndpoint,
+  };
+  await assert.rejects(
+    freezeSolanaMonthly(freezeConfig, authorization.plan),
+    /already consumed/,
+  );
+  const observedFreeze = await freezeSolanaMonthly(freezeConfig, {
+    ...authorization.plan,
+    entries: entries.filter((_, index) => index !== 1),
+  });
+  assert.ok(
+    Number(observedFreeze) > 0 && Number(observedFreeze) <= (await chainTime()),
+  );
   await assert.rejects(
     submitSolanaMonthly(environment, {
       ...authorization,

@@ -43,7 +43,8 @@ export interface MonthlyAttestationPlan {
   messageHex: string;
   family: "evm" | "solana";
   totalGrossBase: string;
-  /** Solana v3 attestation freeze time, persisted with the first signing intent. */
+  /** Solana only: Unix seconds of the finalized slot at which the attester saw
+   * no `origin` or `monthly-source` account for any included source. */
   frozenAt?: string;
   entries: { githubUserId: string; grossMicro: string; sourceDigest: string }[];
 }
@@ -54,6 +55,8 @@ function reject(code: string, message: string): never {
 /** The caller must re-run this immediately before signing and publishing.
  * The chain still enforces its live cap, opt-out, authority and monthly window.
  * The recorded funding-time decisions preserve already-funded awards.
+ * A Solana plan without `frozenAt` has an empty `messageHex` and cannot be
+ * signed; the attester first observes the freeze slot (`freezeSolanaMonthly`).
  */
 export async function prepareMonthlyAttestation(
   deps: {
@@ -63,9 +66,9 @@ export async function prepareMonthlyAttestation(
     networks: readonly string[];
     schedule: MonthlySchedule;
     now: Date;
-    frozenAt?: string;
   },
   request: MonthlyAttestationRequest,
+  frozenAt?: string,
 ): Promise<MonthlyAttestationPlan> {
   const period = assertPeriod(request.period);
   const cutoff = monthlyCutoff(deps.schedule, period);
@@ -266,6 +269,30 @@ export async function prepareMonthlyAttestation(
       "obligations_changed",
       "The funded obligations do not match the frozen allocation.",
     );
+  // The contract releases a leaf whose source another month consumed, so no
+  // source may appear in two months of one vault. Sources are period-bound by
+  // escrowAwardOrigin; this also refuses any published month that repeats one.
+  const others = await deps.db
+    .prepare(
+      "SELECT json_group_array(authorization) items FROM monthly_payment_authorizations WHERE project_id=? AND network=? AND period<>?",
+    )
+    .bind(project.id, request.network, period)
+    .first<{ items: string }>();
+  const sources = new Set(eligible.map((a) => a.sourceDigest.toLowerCase()));
+  for (const text of JSON.parse(others?.items ?? "[]") as string[]) {
+    const other = JSON.parse(text) as {
+      plan: { entries: { sourceDigest: string }[] };
+    };
+    if (
+      other.plan.entries.some((e) =>
+        sources.has(e.sourceDigest.replace(/^0x/, "").toLowerCase()),
+      )
+    )
+      reject(
+        "source_repeated",
+        "An award source already appears in another month.",
+      );
+  }
   const network = ESCROW_NETWORKS[request.network];
   const entries = eligible.map((a) => ({
     githubUserId: a.githubUserId,
@@ -277,21 +304,7 @@ export async function prepareMonthlyAttestation(
     network.family === "evm"
       ? evmAllocationRoot(entries)
       : solanaAllocationRoot(entries);
-  let messageHex: string;
-  const frozenAt =
-    network.family === "solana"
-      ? (deps.frozenAt ?? String(Math.floor(deps.now.getTime() / 1000)))
-      : undefined;
-  if (
-    frozenAt !== undefined &&
-    (!/^[0-9]+$/.test(frozenAt) ||
-      BigInt(frozenAt) < BigInt(cutoff.getTime() / 1000) ||
-      BigInt(frozenAt) > BigInt(Math.floor(deps.now.getTime() / 1000)))
-  )
-    reject(
-      "invalid_freeze",
-      "The attestation freeze time is outside its signing window.",
-    );
+  let messageHex = "";
   if (network.family === "evm") {
     if (!network.chainId)
       reject("invalid_deployment", "EVM chain identity is missing.");
@@ -308,18 +321,31 @@ export async function prepareMonthlyAttestation(
       !deployment.networkDomain
     )
       reject("invalid_deployment", "Solana deployment identity is missing.");
-    messageHex = Array.from(
-      solanaMonthlyMessage(
-        deployment.programId,
-        deployment.projectPda,
-        period,
-        allocationRoot,
-        totalGrossBase,
-        frozenAt as string,
-        deployment.networkDomain,
-      ),
-      (b) => b.toString(16).padStart(2, "0"),
-    ).join("");
+    if (frozenAt !== undefined) {
+      // The contract requires window opening <= frozen_at <= admission time.
+      const at = /^[1-9][0-9]{0,15}$/.test(frozenAt) ? Number(frozenAt) : NaN;
+      if (
+        !(at >= cutoff.getTime() / 1000) ||
+        !(at < closes.getTime() / 1000) ||
+        at > deps.now.getTime() / 1000
+      )
+        reject(
+          "invalid_freeze",
+          "The freeze time is outside the commitment window.",
+        );
+      messageHex = Array.from(
+        solanaMonthlyMessage(
+          deployment.programId,
+          deployment.projectPda,
+          period,
+          allocationRoot,
+          totalGrossBase,
+          frozenAt,
+          deployment.networkDomain,
+        ),
+        (b) => b.toString(16).padStart(2, "0"),
+      ).join("");
+    }
   }
   return {
     request,
@@ -328,7 +354,9 @@ export async function prepareMonthlyAttestation(
     allocationRoot,
     messageHex,
     totalGrossBase,
-    ...(frozenAt === undefined ? {} : { frozenAt }),
+    ...(network.family === "solana" && frozenAt !== undefined
+      ? { frozenAt }
+      : {}),
     entries,
   };
 }

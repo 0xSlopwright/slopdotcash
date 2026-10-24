@@ -1285,7 +1285,8 @@ test("Solana v3 retries preserve the first signed freeze time after a signer out
       return fn(journal);
     },
   };
-  let now = afterCutoff;
+  let now = new Date(afterCutoff.getTime() + 30_000);
+  let freezeReads = 0;
   let fail = true;
   const messages: string[] = [];
   const deps = {
@@ -1296,6 +1297,10 @@ test("Solana v3 retries preserve the first signed freeze time after a signer out
     now: () => now,
     journal,
     verifyDeployment: async () => {},
+    freeze: async () => {
+      freezeReads++;
+      return String(afterCutoff.getTime() / 1000);
+    },
     sign: async (plan: { messageHex: string }) => {
       messages.push(plan.messageHex);
       if (fail) throw new Error("test signer outage");
@@ -1321,4 +1326,5 @@ test("Solana v3 retries preserve the first signed freeze time after a signer out
   now = new Date(afterCutoff.getTime() + 120_000);
   expect(await signMonthlyAllocation(deps, request)).toEqual(signed);
   expect(messages.length).toBe(2);
+  expect(freezeReads).toBe(1);
 });
