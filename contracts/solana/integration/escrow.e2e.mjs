@@ -1988,7 +1988,9 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
     sourceDigest: Buffer.from(hash(`source:${name}`)).toString("hex"),
   }));
   // The owner consumes leaf B's source before the month is admitted.
-  await commit("leaf-b", 999, 1);
+  const consumedTransaction = await commit("leaf-b", 999, 1);
+  // The executor reads only finalized accounts, including this newly created project.
+  await provider.connection.confirmTransaction(consumedTransaction, "finalized");
   const consumedAt = (
     await program.account.obligation.fetch(obligation("leaf-b"))
   ).committedAt.toNumber();
@@ -2110,11 +2112,17 @@ test("monthly outstanding blocks direct commits; a consumed leaf releases once a
   };
   try {
     submitted = await submitSolanaMonthly(environment, authorization);
+  } catch (error) {
+    // The accepted transaction may not be visible on the immediate status read.
+    assert.match(error.message, /Test: accepted broadcast response lost/);
   } finally {
     globalThis.fetch = originalFetch;
   }
   assert.equal(lostReply, true);
-
+  const rootAttempt = [...journal.values()][0];
+  assert.ok(rootAttempt?.transactionId);
+  submitted ??= await submitSolanaMonthly(environment, authorization);
+  assert.equal(submitted.transactionId, rootAttempt.transactionId);
   assert.equal(submitted.alreadyCommitted, false);
   assert.equal(
     (await submitSolanaMonthly(environment, authorization)).transactionId,
