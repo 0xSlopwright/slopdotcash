@@ -17,6 +17,7 @@ import { registerPaymentWallet } from "../payments/wallet-registration";
 import { CloudflareProjectPersistence } from "../projects/cloudflare-persistence";
 import type { ProjectEnforcement } from "../projects/contracts";
 import { CloudflareTracePersistence } from "../trace/cloudflare-persistence";
+import { notifySlopbotScamReview } from "./events";
 import { handleNotificationsApi } from "./handler";
 
 const migrations = readdirSync("migrations")
@@ -657,5 +658,126 @@ describe("notifications API", () => {
         .status,
     ).toBe(401);
     expect(await call(new Request(`${origin}/api/v1/projects`))).toBeNull();
+  });
+});
+
+// Owner decision D4 (PRD section 11): the scam account-review notice.
+describe("slopbot scam review notices", () => {
+  const AUTHOR = "900000006";
+  const target = {
+    owner: "example",
+    repo: "alpha",
+    itemKind: "pull_request" as const,
+    number: 7,
+  };
+  function scam(category = "scam", moderatorReview = 1) {
+    const { db, sqlite, rows } = open();
+    sqlite
+      .prepare(
+        `INSERT INTO slopbot_penalties (item_node_id,repository_id,project_id,author_github_id,category,
+          table_version,debit_thirds,period,moderator_review,review_key,recorded_at)
+         VALUES ('PR_alpha',1,'alpha',?,?,'slopbot-penalties-v1',24,'2026-10',?,'review-1',?)`,
+      )
+      .run(AUTHOR, category, moderatorReview, T);
+    const notify = (recipient: string) =>
+      (db as unknown as D1Database).batch([
+        notifySlopbotScamReview(db as unknown as D1Database, {
+          ...target,
+          itemNodeId: "PR_alpha",
+          authorLogin: "scam-author",
+          recipient,
+          at: R,
+        }),
+      ]);
+    const call = (actor: string, moderators: string[], path: string) =>
+      handleNotificationsApi(new Request(`https://slop.cash${path}`), {
+        db: db as never,
+        sessionActor: async () => ({ githubId: actor }),
+        now: () => new Date(R),
+        moderatorGithubIds: new Set(moderators),
+      }) as Promise<Response>;
+    return { notify, call, rows };
+  }
+
+  test("one notice per moderator from the committed penalty, never to the author", async () => {
+    const { notify, rows } = scam();
+    await notify(MODERATOR);
+    await notify(MODERATOR);
+    await notify(AUTHOR);
+    expect(rows(MODERATOR)).toEqual([
+      {
+        event_key: "slopbot-scam-review:PR_alpha",
+        kind: "slopbot_scam_review",
+        subject: "alpha",
+        detail:
+          "Review the account of @scam-author after a scam closure on example/alpha#7.",
+        action_path: "/api/v1/notifications/scam-reviews/example/alpha/pull/7",
+        source_at: T,
+        read_at: null,
+      },
+    ]);
+    expect(rows(AUTHOR)).toEqual([]);
+  });
+
+  test("a penalty without moderator review writes no notice", async () => {
+    for (const [category, review] of [
+      ["spam", 0],
+      ["scam", 0],
+    ] as const) {
+      const { notify, rows } = scam(category, review);
+      await notify(MODERATOR);
+      expect(rows(MODERATOR)).toEqual([]);
+    }
+  });
+
+  test("an invalid target or author is refused before any write", () => {
+    const { db } = open();
+    const input = {
+      ...target,
+      itemNodeId: "PR_alpha",
+      authorLogin: "scam-author",
+      recipient: MODERATOR,
+      at: R,
+    };
+    for (const bad of [
+      { owner: "../evil" },
+      { repo: "alpha/../../x" },
+      { number: 0 },
+      { authorLogin: "a b" },
+    ])
+      expect(() =>
+        notifySlopbotScamReview(db as unknown as D1Database, {
+          ...input,
+          ...bad,
+        }),
+      ).toThrow();
+  });
+
+  test("moderator access is rechecked on every list and open", async () => {
+    const { notify, call } = scam();
+    await notify(MODERATOR);
+    const path = "/api/v1/notifications/scam-reviews/example/alpha/pull/7";
+    const list = async (moderators: string[]) =>
+      parseNotificationsResponse(
+        await (
+          await call(MODERATOR, moderators, "/api/v1/notifications")
+        ).json(),
+      );
+    expect((await list([MODERATOR])).notifications).toHaveLength(1);
+    expect(await list([])).toMatchObject({ notifications: [], unread: 0 });
+    const opened = await call(MODERATOR, [MODERATOR], path);
+    expect(opened.status).toBe(302);
+    expect(opened.headers.get("location")).toBe(
+      "https://github.com/example/alpha/pull/7",
+    );
+    expect((await call(MODERATOR, [], path)).status).toBe(403);
+    // Another moderator has no notice that stores this target.
+    expect((await call(OTHER, [MODERATOR, OTHER], path)).status).toBe(404);
+    for (const forged of [
+      "/api/v1/notifications/scam-reviews/example/alpha/pull/8",
+      "/api/v1/notifications/scam-reviews/example/alpha/tree/7",
+      "/api/v1/notifications/scam-reviews/example/alpha/pull/7/extra",
+    ])
+      expect((await call(MODERATOR, [MODERATOR], forged)).status).toBe(404);
   });
 });

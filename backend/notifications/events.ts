@@ -503,3 +503,85 @@ export function notifySlopbotAppeal<S>(
       `/api/v1/notifications/appeals/${encodeURIComponent(appealKey)}`,
     );
 }
+
+/** The same-site route that rechecks moderator access, then opens the item. */
+export const SCAM_REVIEW_PATH = "/api/v1/notifications/scam-reviews/";
+const GITHUB_OWNER = /^[A-Za-z0-9_.-]{1,39}$/u;
+const GITHUB_REPO = /^[A-Za-z0-9_.-]{1,100}$/u;
+const GITHUB_LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/u;
+
+export type ScamReviewTarget = {
+  owner: string;
+  repo: string;
+  itemKind: "pull_request" | "issue";
+  number: number;
+};
+
+/** The stored action path of a scam review notice. Rejects any target that
+ * is not a canonical GitHub owner, repository, item kind and number. */
+export function scamReviewPath(target: ScamReviewTarget): string {
+  if (
+    !GITHUB_OWNER.test(target.owner) ||
+    !GITHUB_REPO.test(target.repo) ||
+    (target.itemKind !== "pull_request" && target.itemKind !== "issue") ||
+    !Number.isSafeInteger(target.number) ||
+    target.number < 1
+  )
+    throw new Error("Invalid scam review target");
+  const kind = target.itemKind === "pull_request" ? "pull" : "issues";
+  return `${SCAM_REVIEW_PATH}${target.owner}/${target.repo}/${kind}/${target.number}`;
+}
+
+/** The GitHub item behind a stored scam review action path, or null. */
+export function scamReviewGitHubUrl(path: string): string | null {
+  if (!path.startsWith(SCAM_REVIEW_PATH)) return null;
+  const parts = path.slice(SCAM_REVIEW_PATH.length).split("/");
+  const [owner = "", repo = "", kind, number = ""] = parts;
+  if (
+    parts.length !== 4 ||
+    (kind !== "pull" && kind !== "issues") ||
+    !/^[1-9]\d{0,15}$/u.test(number) ||
+    !GITHUB_OWNER.test(owner) ||
+    !GITHUB_REPO.test(repo)
+  )
+    return null;
+  return `https://github.com/${owner}/${repo}/${kind}/${number}`;
+}
+
+/**
+ * Owner decision D4 (PRD section 11): a confirmed Slopbot close in the
+ * "Scam or malicious" category asks each configured moderator to review the
+ * author's account. The facts come from the committed penalty row, so a close
+ * that recorded no moderator-review penalty writes nothing, and the item's
+ * node ID keys the event, so a retry or replay never adds a second notice.
+ * The author never receives the notice about their own account.
+ */
+export function notifySlopbotScamReview<S>(
+  db: Preparer<S>,
+  input: ScamReviewTarget & {
+    itemNodeId: string;
+    authorLogin: string;
+    recipient: string;
+    at: string;
+  },
+): S {
+  if (!GITHUB_LOGIN.test(input.authorLogin))
+    throw new Error("Invalid scam review author");
+  const path = scamReviewPath(input);
+  return db
+    .prepare(`${INSERT}
+    SELECT 'slopbot-scam-review:' || p.item_node_id, ?2,
+           'slopbot_scam_review', p.project_id, ?3, ?4, p.recorded_at, ?5
+      FROM slopbot_penalties p
+     WHERE p.item_node_id = ?1 AND p.category = 'scam'
+       AND p.moderator_review = 1 AND p.author_github_id <> ?2
+       AND ${GITHUB_ID("?2")}
+    ${ONCE}`)
+    .bind(
+      input.itemNodeId,
+      input.recipient,
+      `Review the account of @${input.authorLogin} after a scam closure on ${input.owner}/${input.repo}#${input.number}.`,
+      path,
+      input.at,
+    );
+}

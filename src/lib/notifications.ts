@@ -1,7 +1,7 @@
 /** In-app inbox contract shared by the API and the page (PRD NOT-01). */
 
 /**
- * Every inbox kind (migration 0063). Writers live in
+ * Every inbox kind (migrations 0063, 0065 and 0079). Writers live in
  * backend/notifications/events.ts. `application_approved` and
  * `application_rejected` came from the removed admin admission path and
  * stay readable as history.
@@ -28,6 +28,7 @@ export const NOTIFICATION_KINDS = [
   "security_report_received",
   "slopbot_appeal_review",
   "slopbot_appeal_resolved",
+  "slopbot_scam_review",
 ] as const;
 
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
@@ -193,6 +194,8 @@ export function notificationTitle(n: Notification): string {
       return "A contribution appeal needs your decision on GitHub.";
     case "slopbot_appeal_resolved":
       return "The contribution appeal was resolved. No decision is needed.";
+    case "slopbot_scam_review":
+      return `Slopbot closed a ${n.subject} contribution as a scam. Review the author's account.`;
     case "security_case":
       return `Private security case ${n.subject} changed.`;
     case "security_report_received":
@@ -226,6 +229,8 @@ export function notificationAction(n: Notification): string {
     case "slopbot_appeal_review":
     case "slopbot_appeal_resolved":
       return "Open appeal on GitHub";
+    case "slopbot_scam_review":
+      return "Open closed item on GitHub";
     case "security_case":
     case "security_report_received":
       return "Open security cases";

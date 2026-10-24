@@ -1,6 +1,7 @@
 // Review pipeline for one issue or pull request revision (PRD BOT-04 to BOT-13).
 // The model only classifies. Every GitHub action is decided here, in code,
 // after independent state checks.
+import { notifySlopbotScamReview } from "../../backend/notifications/events";
 import {
   APPEAL_RESOLUTION_DAYS,
   type Appeal,
@@ -1320,6 +1321,26 @@ async function runReview(
           closedAt: new Date(),
         })
       : null;
+    // D4: the same malicious result asks each configured moderator, once, to
+    // review the author's account in the Slop Inbox.
+    if (penalty?.moderator_review === 1) {
+      const at = new Date().toISOString();
+      const moderators = [
+        ...moderatorIds(env.PROJECT_MODERATOR_GITHUB_IDS),
+      ].map((recipient) =>
+        notifySlopbotScamReview(db, {
+          itemNodeId: issue.node_id,
+          authorLogin: issue.user.login,
+          owner: job.owner,
+          repo: job.repo,
+          itemKind: job.itemKind,
+          number: job.number,
+          recipient,
+          at,
+        }),
+      );
+      if (moderators.length > 0) await db.batch(moderators);
+    }
     await upsertComment(
       env,
       job,
