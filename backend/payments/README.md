@@ -70,9 +70,8 @@ the same verification.
 The ledger records `paid` only when the payout destination is one of the
 contributor's authorized wallets. Any other destination means the identity
 authority was misused, so indexing fails closed for investigation. Executors
-never sign a payment for a pending, cancelled, or vetoed binding. A successor
-wallet waits 24 hours even where the escrow has no earlier binding for that
-contributor. A Base bind transaction can be retired only after its revert is finalized
+never sign a payment for a pending, cancelled, or vetoed binding. A verified successor wallet activates immediately once earlier payment attempts
+are reconciled. A Base bind transaction can be retired only after its revert is finalized
 and its receipt matches the canonical block. The journal keeps that proof
 before a fresh bind can replace it. Pending and ambiguous results remain held.
 
@@ -140,8 +139,7 @@ status API even after a wallet change. Missing receipts remain uncertain. Only
 proved finalized reverts permit a fresh payment attempt; the failure evidence is
 retained. Successful transactions become paid only through the finalized event
 scanner. Destination changes cannot start a competing transfer while an earlier
-attempt is uncertain; successor binding rotation waits 24 hours after the later claim/consent time
-and requires a proved ancestor claim with no unresolved old-wallet attempts.
+attempt is uncertain; successor binding rotation requires a proved ancestor claim with no unresolved old-wallet attempts.
 
 `GET /api/v1/payments/projects/<id>/totals` publishes net contributor payments,
 payout fees, and unpaid award reserves from verified events, one `assets` row
@@ -277,6 +275,10 @@ sections 6 and 7). Migration `0062` adds its private records.
    allocations cannot change after the cutoff. Either path writes the single
    `monthly_payment_runs` row of that month; a frozen month accepts no
    further change.
+   A banned account cannot change allocations or automatic-payment settings,
+   or finalize a month. Each write checks the account ban again to refuse a
+   concurrent ban. Reading awards and preparing an existing funded obligation
+   remain available, subject to the existing authority and project checks.
 4. **Obligations.** The coordinator creates one `monthly_payment_obligations`
    row per positive award once, only when the vault's finalized free balance
    (a `vault_snapshots` row newer than 30 minutes) covers the month together
@@ -284,7 +286,13 @@ sections 6 and 7). Migration `0062` adds its private records.
    An underfunded month waits for a deposit and creates nothing. The steward
    gets one Inbox payout exception for that month (key
    `monthly-underfunded:PROJECT:YYYY-MM`), however often the coordinator
-   retries.
+   retries. Before it creates new obligations, the coordinator excludes accounts
+   with an active moderator ban. It records the exact ban in
+   `monthly_payment_exclusions` and keeps the original frozen snapshot. Excluded
+   amounts do not delay other recipients or become their extra awards. A ban
+   during the write forces a retry. Previously funded obligations remain valid.
+   The owner sees excluded entries with zero payable amounts; they cannot obtain
+   a reservation plan for those entries.
 5. **Reservation and payment.** The coordinator does not yet submit the D13
    bounded monthly commitment (`commitMonthly` on EVM, `commit_monthly` and
    `commit_monthly_award` on Solana; see the contract READMEs), because that

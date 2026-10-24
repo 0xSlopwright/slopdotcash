@@ -15,6 +15,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { PENALTY_TABLE } from "../workers/slopbot/penalties";
 import { CycleArchivePage, CyclePage } from "./CyclePages";
 import { EarningsPage } from "./Earnings";
 import { EscrowFunding } from "./EscrowFunding";
@@ -40,6 +41,10 @@ import {
   type ProjectDefinition,
 } from "./lib/projects.mjs";
 import { REWARD_ASSET_NETWORKS } from "./lib/reward-asset.mjs";
+import {
+  MAX_CREDITED_REVIEWERS,
+  VALUE_SCORING_POLICY_EFFECTIVE_AT,
+} from "./lib/scoring-policy";
 import { pageTitle, SITE_ORIGIN, STATIC_PAGE_TITLES } from "./lib/site-routes";
 import { SOURCE_REPOSITORY } from "./lib/source-repository";
 import { useCycleIndex } from "./lib/use-cycle-index";
@@ -67,6 +72,7 @@ import {
   ExternalLinkAnchor,
   formatCycleMonth,
   formatDate,
+  formatDateTime,
   formatMicroUsdc,
   monthlyPoolLabel,
   monthlyPoolPointsOnly,
@@ -1195,7 +1201,19 @@ function ProjectPaymentHistory({
 }
 
 export function ProjectFunding({ project }: { project: ProjectDefinition }) {
-  return project.escrow ? <EscrowFunding project={project} /> : null;
+  if (!project.escrow) return null;
+  // A stale registry may name an old vault, so deposits need the live one.
+  if (globalThis.__SLOP_PROJECT_REGISTRY_STALE__)
+    return (
+      <section className="section project-funding" aria-label="Project escrow">
+        <h2>Escrow</h2>
+        <p role="status">
+          Funding actions are unavailable until the current project registry
+          loads.
+        </p>
+      </section>
+    );
+  return <EscrowFunding project={project} />;
 }
 
 function fundingStateLabel(project: ProjectDefinition): string {
@@ -1516,6 +1534,11 @@ function ProjectPage({
   );
 }
 
+/** A Slop Score in integer thirds, as the tier table writes it: 1/3, 1, 8. */
+function thirdsLabel(thirds: number): string {
+  return thirds % 3 === 0 ? String(thirds / 3) : `${thirds}/3`;
+}
+
 function HowItWorksPage() {
   const protocolRoot = `${SOURCE_REPOSITORY}/blob/${browserDeployment.branch}/protocol`;
   return (
@@ -1603,38 +1626,46 @@ function HowItWorksPage() {
         <div>
           <h2>Slop Score</h2>
           <p>
-            Maintainers ratify effort tiers for accepted work. Related or split
-            PRs share one work unit. Score is separate from{" "}
+            Slopbot sizes each accepted pull request with the tiers in this
+            table and gives it a standard score. Every accepted merge earns at
+            least 1/3. Score is separate from{" "}
             <Link href="/points">participation Points</Link> and money received.
           </p>
           <details>
             <summary>Scoring rules and evidence</summary>
             <p>
-              Signed receipts and reviewed private trace uploads are optional.
-              Declining them does not block submission. Public receipts do not
-              expose prompts, responses, source files or keys.
+              A useful review can find a correction or validate the change. A
+              request for changes is not required. Review bands are triage 1/3,
+              standard 1, deep 3 and specialist 8. The first{" "}
+              {MAX_CREDITED_REVIEWERS} distinct qualifying reviewers share one
+              review pool per pull request: the sum of their highest bands,
+              capped at the pull request's own size and never less than 1/3.
+              Self-review, review after merge, repeated or empty review, and bot
+              activity do not score.
             </p>
             <p>
-              Since August 2026, accepted work is tiered by effort, complexity,
-              impact, and review load instead of counted per merge. Related or
-              split pull requests share one work unit. XL, exceptional,
-              security-sensitive, and related-party cases need a second
-              maintainer.
+              Slopbot debits a closed pull request once, from its published
+              penalty table: spam {thirdsLabel(PENALTY_TABLE.spam.debitThirds)},
+              scam or malicious {thirdsLabel(PENALTY_TABLE.scam.debitThirds)}, a
+              clear violation of a quoted project rule{" "}
+              {thirdsLabel(PENALTY_TABLE.gaming.debitThirds)}. A debit lowers
+              only that project and UTC month, never below zero, and never
+              changes an approved, scheduled or paid award. An upheld appeal or
+              a maintainer reopen removes it.
             </p>
             <p>
-              Review is scored work: triage 1/3, standard review 1, deep
-              reproduction 3, specialist review 8. Since October 2026, an
-              ordinary review scores only when the merged code answered its
-              request for changes, once per pull request. Self-review,
-              post-merge review, duplicate review, and bot activity do not
-              score. A valid signed receipt with a finalized private trace adds
-              a fixed 15% weight.
+              Owners, funded employees and related parties can have an explicit
+              payout exclusion. They keep their score, but their weight leaves
+              the pool, so it does not reduce other contributors' shares.
+              Exclusions apply from the next UTC month.
             </p>
             <p>
-              Token volume, cost, lines, commits, confidence, and account count
-              stay diagnostic. They never change score, rank, share, or payment.
-              No KYC: abuse resistance comes from immutable GitHub IDs,
-              exact-head decisions, and append-only public corrections.
+              These rules apply to work accepted from{" "}
+              {formatDate(VALUE_SCORING_POLICY_EFFECTIVE_AT)} UTC. Earlier work
+              keeps its recorded terms. Signed receipts and reviewed private
+              trace uploads are optional; declining them does not block
+              submission. Token volume, cost, lines, commits and account count
+              stay diagnostic and never change score, rank, share or payment.
             </p>
           </details>
         </div>
@@ -1763,29 +1794,12 @@ function HowItWorksPage() {
         <details>
           <summary>Do reviews score?</summary>
           <p>
-            Only when it changes what merges. Since October 2026, a review
-            scores 1/3 of a point when:
-          </p>
-          <ul>
-            <li>
-              It is submitted as Request changes. Approve and Comment reviews do
-              not score.
-            </li>
-            <li>It is on someone else&apos;s pull request.</li>
-            <li>
-              It has at least 20 characters of written reasoning or an inline
-              comment.
-            </li>
-            <li>
-              The author pushes new code after it, and the pull request then
-              merges.
-            </li>
-          </ul>
-          <p>
-            Each pull request gives one review award, to the latest request for
-            changes that the merged code answered. Reviews by or of bot accounts
-            do not score. A maintainer can award a higher review tier for an
-            unusually valuable review.
+            Yes, when the review is useful. It can find a correction or validate
+            the change; a request for changes is not required. The first{" "}
+            {MAX_CREDITED_REVIEWERS} distinct qualifying reviewers share the
+            pull request&apos;s review pool, as the Slop Score rules above
+            explain. Reviews of earlier work keep the rules recorded when they
+            were made.
           </p>
         </details>
         <details>
@@ -1815,15 +1829,13 @@ function HowItWorksPage() {
           </p>
         </details>
         <details>
-          <summary>
-            What is my merge worth before a maintainer scores it?
-          </summary>
+          <summary>What is my merge worth before Slopbot sizes it?</summary>
           <p>
-            Since October 2026, every merge starts as a provisional small unit,
-            1 point; earlier merges started at 1/3. A review agent may propose
-            another tier from the table above, and the score changes only when a
-            maintainer ratifies that tier on the exact merged commit. Related or
-            split pull requests share one work unit.
+            Every accepted merge earns at least 1/3. When Slopbot sizes it, the
+            score follows the tier table above. A valid maintainer ratification
+            takes precedence. Related or split pull requests share one work
+            unit. Merges before {formatDate(VALUE_SCORING_POLICY_EFFECTIVE_AT)}{" "}
+            keep their recorded score.
           </p>
         </details>
         <details>
@@ -2920,6 +2932,18 @@ const REGISTRY_INDEPENDENT_ROUTES: Route["kind"][] = [
   "how-it-works",
 ];
 
+/**
+ * Routes that act on a project's current manifest. They never use the last
+ * good registry, because sensitive actions recheck current authority (PRD
+ * section 9).
+ */
+const CURRENT_REGISTRY_ROUTES: Route["kind"][] = [
+  "funding-project",
+  "manage-project",
+  "owner-awards",
+  "security-program",
+];
+
 export function App() {
   const route = useRoute();
   return (
@@ -2955,9 +2979,14 @@ function AppContent({ route }: { route: Route }) {
     "unknown",
     "cycle-archive",
   ];
-  const registryError = globalThis.__SLOP_PROJECT_REGISTRY_ERROR__;
-  const blocked =
-    Boolean(registryError) && !REGISTRY_INDEPENDENT_ROUTES.includes(route.kind);
+  const staleRegistry = globalThis.__SLOP_PROJECT_REGISTRY_STALE__;
+  const registryIndependent = REGISTRY_INDEPENDENT_ROUTES.includes(route.kind);
+  const registryError =
+    globalThis.__SLOP_PROJECT_REGISTRY_ERROR__ ??
+    (staleRegistry && CURRENT_REGISTRY_ROUTES.includes(route.kind)
+      ? `${staleRegistry.reason} This page needs the current project registry.`
+      : undefined);
+  const blocked = Boolean(registryError) && !registryIndependent;
   const needsSnapshot = !blocked && !snapshotFree.includes(route.kind);
   const [state, retry] = useSnapshot(needsSnapshot);
   const [archive, retryArchive] = useCycleIndex(route.kind === "cycle-archive");
@@ -3071,6 +3100,20 @@ function AppContent({ route }: { route: Route }) {
       <Header />
       {/* Routes render their own main; the skip link lands on this container. */}
       <div className="skip-target" id="main" tabIndex={-1}>
+        {staleRegistry && !blocked && !registryIndependent ? (
+          <aside
+            aria-label="Project registry status"
+            className="shell registry-stale"
+          >
+            <p className="data-notice data-stale" role="status">
+              Projects may be outdated · updated{" "}
+              {formatDateTime(staleRegistry.syncedAt)}. {staleRegistry.reason}
+              <button onClick={() => window.location.reload()} type="button">
+                Try again
+              </button>
+            </p>
+          </aside>
+        ) : null}
         <Suspense
           fallback={
             <main className="shell route-main" role="status">

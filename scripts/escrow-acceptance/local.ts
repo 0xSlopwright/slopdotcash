@@ -288,6 +288,7 @@ async function solanaLocalnet() {
       upgradeAuthority,
       identity: pubkey(keys.ESCROW_ACCEPTANCE_IDENTITY_KEY),
       feeRecipient,
+      rotationAuthority: pubkey(seed()),
       fund: [
         pubkey(upgradeAuthority),
         pubkey(keys.ESCROW_ACCEPTANCE_OWNER_KEY),

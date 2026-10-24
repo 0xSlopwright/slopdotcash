@@ -1,5 +1,7 @@
 import { GitHubClient } from "../workers/slopbot/github";
 import {
+  fetchProjectPenalties,
+  loadParticipationBans,
   loadValueInputs,
   VALUE_FEED_UNAVAILABLE_EXIT_CODE,
   ValueFeedUnavailableError,
@@ -44,7 +46,9 @@ import {
   type PullRequestFile,
   type PullRequestRecord,
   type PullRequestReview,
+  penaltyProjectOf,
   pullRequestTextSources,
+  repositoryIdFromUrl,
   SCORE_WINDOW_DAYS,
   type ScoreEvent,
   selectUniqueVerifiedEvidence,
@@ -4069,6 +4073,23 @@ export async function generateLeaderboardFromGitHub(
       )),
     );
   }
+  const participationBans = await loadParticipationBans({
+    get: <T>(path: string) => {
+      valueRestRequests += 1;
+      return github.get<T>(path);
+    },
+  });
+  // A debit applies only to a closed, unmerged pull request in this census,
+  // so only projects with such a pull request read the penalty feed.
+  const penalties: NonNullable<LeaderboardInput["penalties"]>[number][] = [];
+  for (const projectId of [
+    ...new Set(
+      closedUnmergedPullRequests.map((pull) =>
+        penaltyProjectOf(repositoryIdFromUrl(pull.url)),
+      ),
+    ),
+  ].sort())
+    penalties.push(...(await fetchProjectPenalties(projectId)));
   const fetchedAt = new Date().toISOString();
   const rateLimit = client.getRateLimit();
   const source: LeaderboardSourceMetadata = {
@@ -4117,6 +4138,7 @@ export async function generateLeaderboardFromGitHub(
     mergedPullRequests: dedupedMergedPullRequests,
     reviewedMergedPullRequests: dedupedReviewedMergedPullRequests,
     closedUnmergedPullRequests,
+    penalties,
     detailEligibleMergedPullRequestIds: [...hydrationPlan.detailEligibleIds],
     closedIssueCount,
     resolvedIssues: dedupedClosedIssues,
@@ -4133,6 +4155,7 @@ export async function generateLeaderboardFromGitHub(
     retainedReviewEvents: options.retainedReviewEvents,
     retainedReviewAttributions: options.retainedReviewAttributions,
     verifyRunReceipt: verifyRunReceiptSignature,
+    participationBans,
   });
   return snapshot;
 }

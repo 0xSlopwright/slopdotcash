@@ -42,6 +42,7 @@ const solanaDeployment = {
   owner: "11111111111111111111111111111111",
   identityAuthority: "SysvarRent111111111111111111111111111111111",
   feeRecipient: "SysvarC1ock11111111111111111111111111111111",
+  rotationAuthority: "Vote111111111111111111111111111111111111111",
   deploymentTransaction: "1".repeat(64),
   sourceCommit: "0123456789abcdef0123456789abcdef01234567",
   codeSha256: "ab".repeat(32),

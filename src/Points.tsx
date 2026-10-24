@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 import { identityPublicOrigin } from "../workers/identity/contracts";
+import { AccountAppeals } from "./AccountAppeals";
 import { EarningsPage } from "./Earnings";
 import { Link } from "./Link";
 import { browserDeployment } from "./lib/browser-deployment";
@@ -884,6 +885,7 @@ export function LoginPage() {
   );
 }
 export function AccountPage() {
+  const accountSession = useProjectSession();
   const { me, session } = useContext(Context);
   const [closedNotice, setClosedNotice] = useState("");
   useEffect(() => {
@@ -899,6 +901,9 @@ export function AccountPage() {
         <a href="/earnings">Payouts</a>
         <a href="/inbox">Inbox</a>
         {me ? <a href="#sessions">Sessions</a> : null}
+        {accountSession.status === "signed-in" ? (
+          <a href="#appeals">Appeals</a>
+        ) : null}
         <a href="#recovery">{me ? "Recovery and closure" : "Recovery"}</a>
       </nav>
       <div id="profile">
@@ -916,6 +921,7 @@ export function AccountPage() {
         <EarningsPage walletsOnly key={me?.actor.id ?? "signed-out"} />
       )}
       {me ? <AccountSessions /> : null}
+      {accountSession.status === "signed-in" ? <AccountAppeals /> : null}
       <section id="recovery">
         <h2>{me ? "Recovery and closure" : "Recovery"}</h2>
         {closedNotice ? <p role="status">{closedNotice}</p> : null}
@@ -1767,7 +1773,6 @@ function SocialConnections() {
   const [data, setData] = useState<{
     configured: boolean;
     account: (XAccount & { public: number }) | null;
-    award: { points: number; awardedAt: string } | null;
   } | null>(null);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1784,10 +1789,7 @@ function SocialConnections() {
         const v = value as NonNullable<typeof data>;
         if (
           typeof v.configured !== "boolean" ||
-          (v.account && ![0, 1].includes(v.account.public)) ||
-          (v.award &&
-            (v.award.points !== 10 ||
-              !Number.isFinite(Date.parse(v.award.awardedAt))))
+          (v.account && ![0, 1].includes(v.account.public))
         )
           throw new Error("Invalid connection state");
         if (v.account) xAccount(v.account);
@@ -1839,9 +1841,9 @@ function SocialConnections() {
     <section className="points-panel" aria-label="Connections">
       <h2>Connections</h2>
       {outcome === "connected" ? (
-        <p role="status">X connected. Your connection points are recorded.</p>
+        <p role="status">X connected.</p>
       ) : outcome === "cancelled" ? (
-        <p role="status">X connection cancelled. No new points were awarded.</p>
+        <p role="status">X connection cancelled.</p>
       ) : outcome === "failed" ? (
         <p role="status">
           X could not be connected. Try again; an X account already claimed by
@@ -1867,11 +1869,6 @@ function SocialConnections() {
               ) : (
                 "Not connected"
               )}
-            </span>
-            <span>
-              {data.award
-                ? `+10 points · earned ${data.award.awardedAt.slice(0, 10)}`
-                : "+10 points once"}
             </span>
             {data.account ? (
               <button
@@ -1912,8 +1909,8 @@ function SocialConnections() {
             <p>Your membership is private, so your X link stays hidden.</p>
           ) : null}
           <p className="points-meta">
-            Slop does not request posting or messaging permissions. A new handle
-            or connection does not create another award.
+            Connections grant no points or authority. Slop does not request
+            posting or messaging permissions.
           </p>
           <p role="status">{message}</p>
         </>

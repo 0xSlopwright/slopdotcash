@@ -7,8 +7,13 @@ import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { sqliteD1 } from "../../tests/sqlite-d1";
 import type { AdvisoryReader, GithubPrivateReport } from "./advisories";
-import type { SecurityAnalysisInput, SecurityAnalyzer } from "./analysis";
+import type {
+  SecurityAnalysisInput,
+  SecurityAnalyzer,
+  SecurityAppealInput,
+} from "./analysis";
 import { handleSecurityApi, type SecurityD1Database } from "./handler";
+import { seedParticipationBan } from "./participation-ban.fixture";
 
 const migrations = readdirSync("migrations")
   .filter((f) => f.endsWith(".sql"))
@@ -204,11 +209,20 @@ function open(securityBounty: Record<string, unknown> = OPEN_PROGRAM) {
     },
   };
   const analyzed: SecurityAnalysisInput[] = [];
+  const appealInputs: SecurityAppealInput[] = [];
   let analyzerFails = false;
   let analyzerConfigured = true;
   const analyzer: SecurityAnalyzer = {
     provider: "fixture",
     model: "fixture-model",
+    triageAppeal: async (input) => {
+      appealInputs.push(input);
+      return {
+        proposedOutcome: "return",
+        rationale: "Review the receipt-time scope.",
+        confidence: 0.95,
+      };
+    },
     analyze: async (input) => {
       analyzed.push(input);
       if (analyzerFails) throw new Error("provider down");
@@ -336,7 +350,10 @@ function open(securityBounty: Record<string, unknown> = OPEN_PROGRAM) {
         "SELECT case_id, gross_minor FROM security_award_reservations ORDER BY case_id",
       )
       .all() as { case_id: string; gross_minor: string }[];
+  const ban = (account: Account) =>
+    seedParticipationBan(sqlite, account, DISPUTE, REVISION_AT);
   return {
+    ban,
     sqlite,
     fund,
     call,
@@ -348,6 +365,7 @@ function open(securityBounty: Record<string, unknown> = OPEN_PROGRAM) {
     inbox,
     reports,
     analyzed,
+    appealInputs,
     reservations,
     setIntake: (state: typeof intake) => {
       intake = state;
@@ -619,6 +637,68 @@ describe("automatic private intake", () => {
 });
 
 describe("discretionary awards", () => {
+  test("a banned researcher keeps funded awards and appeals but receives no new bounty award", async () => {
+    const env = open();
+    const funded = await env.receive(REPORTER, "2026-10-19T09:10:00.000Z");
+    await env.decide(funded, "funded-root");
+    expect((await env.award(funded, "1000000")).status).toBe(200);
+    const pending = await env.receive(REPORTER, "2026-10-19T09:20:00.000Z");
+    await env.decide(pending, "pending-root");
+    env.ban(REPORTER);
+    const refused = await env.award(pending, "1000000");
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toBe("participation_banned");
+    expect(env.reservations()).toEqual([
+      { case_id: funded, gross_minor: "1000000" },
+    ]);
+    const existing = await env.call(
+      REPORTER,
+      "GET",
+      `security-cases/${funded}`,
+    );
+    expect(existing.status).toBe(200);
+    expect(existing.body.case.award?.researcherMinor).toBe("750000");
+    expect(
+      (
+        await env.act(MAINTAINER, pending, {
+          action: "award",
+          decision: "none",
+          reason: "Account ban prevents a new award",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await env.act(REPORTER, pending, {
+          action: "appeal",
+          reason: "Please review this ban",
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  for (const relatedParty of [false, true])
+    for (const racing of [false, true])
+      test(`a banned maintainer cannot create a new bounty award (race: ${racing}, related: ${relatedParty})`, async () => {
+        const env = open();
+        const pending = await env.receive(REPORTER, "2026-10-19T09:10:00.000Z");
+        await env.decide(pending, "maintainer-ban-root", { relatedParty });
+        if (racing) env.setBeforeBatch(() => env.ban(MAINTAINER));
+        else env.ban(MAINTAINER);
+        const result = await env.award(pending, "1000000");
+        expect(result.status).toBe(racing ? 409 : 403);
+        expect(env.reservations()).toEqual([]);
+      });
+
+  test("a ban that arrives during bounty approval prevents its reservation", async () => {
+    const env = open();
+    const pending = await env.receive(REPORTER, "2026-10-19T09:10:00.000Z");
+    await env.decide(pending, "racing-root");
+    env.setBeforeBatch(() => env.ban(REPORTER));
+    expect((await env.award(pending, "1000000")).status).toBe(409);
+    expect(env.reservations()).toEqual([]);
+  });
+
   test("large program balances keep every minor unit after approved awards", async () => {
     const env = open({
       ...OPEN_PROGRAM,
@@ -899,6 +979,7 @@ describe("discretionary awards", () => {
     expect((await env.award(id, "800000")).body.error).toBe(
       "award_obligation_exists",
     );
+    env.ban(MAINTAINER);
     const approved = await env.award(id, "1000000");
     expect(approved.status).toBe(200);
     expect(approved.body.case.awardState).toBe("approved");
@@ -1030,4 +1111,52 @@ describe("related-party awards", () => {
     expect(approved.status).toBe(200);
     expect(approved.body.case.awardState).toBe("approved");
   });
+});
+
+test("report analysis and appeal triage keep the scope recorded at receipt", async () => {
+  const env = open();
+  const changed = programManifest({
+    ...OPEN_PROGRAM,
+    scope: {
+      includedAssets: ["A different asset added after the report"],
+      severityRubric: "A later rubric",
+      lossDefinition: "A later loss definition",
+    },
+  });
+  const digest = createHash("sha256").update(changed).digest("hex");
+  env.sqlite
+    .query(
+      "INSERT INTO project_revisions(project_id,revision,manifest,manifest_sha256,reason,created_at) VALUES (?,2,?,?,'Later scope','2026-10-19T09:30:00.000Z')",
+    )
+    .run(PROJECT, changed, digest);
+  env.sqlite
+    .query(
+      "UPDATE projects SET revision=2,manifest=?,manifest_sha256=?,updated_at='2026-10-19T09:30:00.000Z' WHERE id=?",
+    )
+    .run(changed, digest, PROJECT);
+  const id = await env.receive(REPORTER, "2026-10-19T09:10:00.000Z");
+  expect(env.analyzed[0].scope).toEqual(OPEN_PROGRAM.scope);
+  expect((await env.decide(id, "receipt-time-scope")).status).toBe(200);
+  expect(
+    (
+      await env.act(MAINTAINER, id, {
+        action: "award",
+        decision: "none",
+        reason: "Owner decision for review",
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await env.act(REPORTER, id, {
+        action: "appeal",
+        reason: "Review the scope that applied at receipt",
+      })
+    ).status,
+  ).toBe(200);
+  expect(env.appealInputs).toHaveLength(1);
+  expect(env.appealInputs[0].scope).toEqual(OPEN_PROGRAM.scope);
+  await env.receive(OTHER, "2026-10-19T08:59:00.000Z");
+  expect(env.analyzed[1].scope).toBeNull();
+  env.sqlite.close();
 });

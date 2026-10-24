@@ -517,9 +517,20 @@
       "discriminator": [3, 247, 66, 156, 194, 171, 127, 86],
       "accounts": [
         {
-          "name": "fee_recipient",
+          "name": "rotation_authority",
           "signer": true,
-          "relations": ["project"]
+          "relations": ["config"]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
         },
         {
           "name": "project",
@@ -727,6 +738,10 @@
         {
           "name": "fee_recipient",
           "type": "pubkey"
+        },
+        {
+          "name": "rotation_authority",
+          "type": "pubkey"
         }
       ]
     },
@@ -844,12 +859,65 @@
         {
           "name": "project",
           "writable": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [99, 111, 110, 102, 105, 103]
+              }
+            ]
+          }
         }
       ],
       "args": [
         {
           "name": "next",
           "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "release_monthly",
+      "discriminator": [9, 152, 23, 151, 98, 176, 142, 7],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": ["project"]
+        },
+        {
+          "name": "project",
+          "writable": true,
+          "relations": ["month"]
+        },
+        {
+          "name": "month",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [109, 111, 110, 116, 104]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "period"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "period",
+          "type": "u32"
         }
       ]
     },
@@ -1089,6 +1157,10 @@
       "discriminator": [21, 90, 254, 60, 119, 79, 65, 193]
     },
     {
+      "name": "MonthlyRemainderReleased",
+      "discriminator": [179, 101, 22, 249, 248, 55, 224, 8]
+    },
+    {
       "name": "UnusedWithdrawn",
       "discriminator": [158, 175, 215, 198, 157, 135, 114, 234]
     },
@@ -1196,12 +1268,12 @@
     {
       "code": 6019,
       "name": "RotationConfirmed",
-      "msg": "The fee recipient already confirmed this rotation"
+      "msg": "The rotation authority already confirmed this rotation"
     },
     {
       "code": 6020,
       "name": "RotationUnconfirmed",
-      "msg": "The fee recipient has not confirmed this rotation"
+      "msg": "The rotation authority has not confirmed this rotation"
     },
     {
       "code": 6021,
@@ -1252,6 +1324,16 @@
       "code": 6030,
       "name": "MonthlyCapExceeded",
       "msg": "Monthly awards would exceed the owner's monthly cap"
+    },
+    {
+      "code": 6031,
+      "name": "MonthlyWindowOpen",
+      "msg": "The period's window has not closed"
+    },
+    {
+      "code": 6032,
+      "name": "MonthlyReleased",
+      "msg": "The owner released this period's remainder"
     }
   ],
   "types": [
@@ -1460,7 +1542,7 @@
     {
       "name": "Config",
       "docs": [
-        "The deployment-wide identity authority and fee recipient, written once by",
+        "The separate identity, fee and rotation authorities, written once by",
         "`initialize_config` and never changed."
       ],
       "type": {
@@ -1472,6 +1554,10 @@
           },
           {
             "name": "fee_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "rotation_authority",
             "type": "pubkey"
           },
           {
@@ -1492,6 +1578,10 @@
           },
           {
             "name": "fee_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "rotation_authority",
             "type": "pubkey"
           }
         ]
@@ -1546,6 +1636,13 @@
           {
             "name": "total",
             "type": "u64"
+          },
+          {
+            "name": "released",
+            "docs": [
+              "The owner returned the uncommitted remainder after the window closed."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -1591,6 +1688,26 @@
           },
           {
             "name": "total",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MonthlyRemainderReleased",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "period",
+            "type": "u32"
+          },
+          {
+            "name": "released",
             "type": "u64"
           }
         ]

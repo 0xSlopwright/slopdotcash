@@ -62,16 +62,16 @@ export function chainClient(
     allowSolanaLive?: boolean;
   } = {},
 ): ChainClient {
-  // PRD TOK-07: the Solana fee recipient also confirms identity-attester
-  // rotation (PAY-05), so a hot key for it may not sign until the owner
-  // records how that role stays separate. Solana runs in dry_run only.
+  // Older Solana deployments give the fee recipient rotation authority.
+  // Keep live conversion blocked until the separate-role deployment and
+  // converter verification are qualified. Solana runs in dry_run only.
   if (
     config.mode === "live" &&
     network.network === "solana" &&
     !overrides.allowSolanaLive
   )
     throw new Error(
-      "live Solana conversion is blocked until the owner separates the PAY-05 fee-recipient role from the hot key",
+      "live Solana conversion is blocked until the separate rotation authority is deployed and verified",
     );
   // dry_run never loads a key, so it cannot sign even when one is present.
   // A network without a verified USDC target never signs either: it only
