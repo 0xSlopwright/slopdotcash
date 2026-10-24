@@ -570,11 +570,7 @@ function ProjectCard({
         </p>
         {monthlyPoolPointsOnly(project.reward) ? (
           <small className="project-money-state">Points only</small>
-        ) : project.reward.kind === "monthly-pool" ? (
-          <small className="project-money-state">
-            Check project vault funding
-          </small>
-        ) : (
+        ) : project.reward.kind === "monthly-pool" ? null : (
           <small className="project-money-state">External prize</small>
         )}
         {project.reward.reviewBudget ? (
@@ -585,8 +581,8 @@ function ProjectCard({
         {scoresUpdatedAt === null ? null : (
           <small className="project-freshness">
             {stale({ generatedAt: scoresUpdatedAt })
-              ? "Scores may be outdated · updated "
-              : "Scores updated "}
+              ? "Points may be outdated · updated "
+              : "Points updated "}
             {formatDateTime(scoresUpdatedAt)}
           </small>
         )}

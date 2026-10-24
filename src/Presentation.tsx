@@ -35,7 +35,7 @@ export function DataNotice({
   if (state.refreshError !== undefined) {
     return (
       <p className="data-notice data-stale" role="status">
-        Scores may be outdated · updated{" "}
+        Points may be outdated · updated{" "}
         {formatDateTime(state.snapshot.generatedAt)}. Refresh failed:{" "}
         {state.refreshError}
         <button onClick={retry} type="button">
@@ -48,7 +48,7 @@ export function DataNotice({
   if (stale(state.snapshot)) {
     return (
       <p className="data-notice data-stale" role="status">
-        Scores may be outdated · updated{" "}
+        Points may be outdated · updated{" "}
         {formatDateTime(state.snapshot.generatedAt)}
       </p>
     );

@@ -237,7 +237,7 @@ test("a failed snapshot refresh keeps the last good scores with a stale label", 
     .locator(".project-hero")
     .getByRole("status")
     .filter({ hasText: "Refresh failed" });
-  await expect(notice).toContainText("Scores may be outdated");
+  await expect(notice).toContainText("Points may be outdated");
   await expect(notice).toContainText("Refresh failed: snapshot returned 503");
   await expect(notice.getByRole("button", { name: "Retry" })).toBeVisible();
   await expect(scoreRows).toHaveCount(rowCount);
