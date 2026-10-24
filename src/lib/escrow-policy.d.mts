@@ -20,6 +20,7 @@ export interface EscrowDeployment {
   owner: string;
   identityAuthority: string;
   feeRecipient: string;
+  rotationAuthority?: string;
   deploymentTransaction: string;
   sourceCommit: string;
   codeSha256: string;
