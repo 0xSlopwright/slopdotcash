@@ -174,6 +174,18 @@ const sourcePdas = (config: SolanaEscrowConfig, sourceDigest: string) => {
     ]),
   };
 };
+/** The program's own test: anyone can send lamports to a PDA address, which
+ * leaves a system-owned empty account that the program treats as absent. */
+const initialized = (config: SolanaEscrowConfig, value: unknown) => {
+  if (value === null || typeof value !== "object") return false;
+  const info = value as { owner?: unknown; data?: unknown };
+  return (
+    info.owner === config.programId &&
+    Array.isArray(info.data) &&
+    typeof info.data[0] === "string" &&
+    info.data[0].length > 0
+  );
+};
 /** Reads accounts at one finalized slot per batch of 100; returns the lowest slot seen. */
 async function readFinalized(config: SolanaEscrowConfig, addresses: string[]) {
   const values: unknown[] = [];
@@ -214,7 +226,7 @@ export async function freezeSolanaMonthly(
     return [origin, monthlySource];
   });
   const { values, slot } = await readFinalized(config, addresses);
-  if (values.some((value) => value !== null))
+  if (values.some((value) => initialized(config, value)))
     throw new Error("A monthly source was already consumed");
   const time = await solanaRpc(config, "getBlockTime", [slot]);
   if (typeof time !== "number" || !Number.isSafeInteger(time) || time <= 0)
@@ -366,7 +378,7 @@ export async function submitSolanaMonthly(
   for (let index = 0; index < plan.entries.length; index++) {
     if (transactionIds.length >= limit) break;
     if (
-      markers[index] !== null &&
+      initialized(config, markers[index]) &&
       solanaAccount(
         markers[index],
         config.programId,
@@ -394,13 +406,16 @@ export async function submitSolanaMonthly(
     let release = actor === 0n;
     let obligation = config.programId; // Anchor's placeholder for no account.
     if (!release) {
-      const consumed = await readSolanaAccount(
-        config,
-        origin,
-        40,
-        discriminator("Origin"),
-      );
-      if (consumed) {
+      const [originInfo, marker] = (
+        await readFinalized(config, [origin, monthlySource])
+      ).values;
+      if (initialized(config, originInfo)) {
+        const consumed = solanaAccount(
+          originInfo,
+          config.programId,
+          40,
+          discriminator("Origin"),
+        );
         obligation = solanaPubkey(consumed, 8);
         const recorded = await readSolanaAccount(
           config,
@@ -409,9 +424,8 @@ export async function submitSolanaMonthly(
           OBLIGATION_DISCRIMINATOR,
         );
         if (!recorded) throw new Error("Origin obligation missing");
-        const marker = (await readFinalized(config, [monthlySource])).values[0];
         const byMonth =
-          marker !== null &&
+          initialized(config, marker) &&
           solanaUint(recorded, 112) === actor &&
           solanaUint(recorded, 8) >= gross;
         if (!byMonth && int64(recorded, 137) >= BigInt(frozenAt)) {
