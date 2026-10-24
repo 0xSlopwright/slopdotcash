@@ -961,6 +961,48 @@
       ]
     },
     {
+      "name": "release_monthly",
+      "discriminator": [9, 152, 23, 151, 98, 176, 142, 7],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": ["project"]
+        },
+        {
+          "name": "project",
+          "writable": true,
+          "relations": ["month"]
+        },
+        {
+          "name": "month",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [109, 111, 110, 116, 104]
+              },
+              {
+                "kind": "account",
+                "path": "project"
+              },
+              {
+                "kind": "arg",
+                "path": "period"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "period",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "release_monthly_award",
       "discriminator": [251, 169, 31, 29, 244, 159, 21, 237],
       "accounts": [
@@ -1321,6 +1363,10 @@
       "discriminator": [21, 90, 254, 60, 119, 79, 65, 193]
     },
     {
+      "name": "MonthlyRemainderReleased",
+      "discriminator": [179, 101, 22, 249, 248, 55, 224, 8]
+    },
+    {
       "name": "ProjectMigrated",
       "discriminator": [120, 121, 121, 187, 64, 18, 169, 152]
     },
@@ -1503,6 +1549,16 @@
       "code": 6033,
       "name": "NotLegacyProject",
       "msg": "Account is not a Project of the 316-byte layout"
+    },
+    {
+      "code": 6034,
+      "name": "MonthlyWindowOpen",
+      "msg": "The period's window has not closed"
+    },
+    {
+      "code": 6035,
+      "name": "MonthlyReleased",
+      "msg": "The period has no unsettled remainder to release"
     }
   ],
   "types": [
@@ -1832,9 +1888,9 @@
           {
             "name": "released",
             "docs": [
-              "The part of `committed` that release_monthly_award returned to free balance. This",
-              "field also makes the account 100 bytes, so a month recorded by the 316-byte build",
-              "(92 bytes, with no settled markers or outstanding count) fails closed here."
+              "The part of `committed` that release_monthly_award or release_monthly returned to",
+              "free balance. This field also makes the account 100 bytes, so a month recorded by the",
+              "316-byte build (92 bytes, with no settled markers or outstanding count) fails closed here."
             ],
             "type": "u64"
           }
@@ -1912,6 +1968,26 @@
           },
           {
             "name": "total",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MonthlyRemainderReleased",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "project",
+            "type": "pubkey"
+          },
+          {
+            "name": "period",
+            "type": "u32"
+          },
+          {
+            "name": "released",
             "type": "u64"
           }
         ]

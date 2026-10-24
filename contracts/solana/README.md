@@ -242,6 +242,14 @@ period is open at a time.
    inside one allocation could settle only once and would leave the second copy
    reserved, so the allocation builder in `adapter.ts` rejects repeated sources
    before the identity authority signs.
+5. After the period's window closes, the owner may call
+   `release_monthly(period)`. It returns `total - committed` (the gross that no
+   award committed or released) to the free balance, subtracts it from
+   `monthly_outstanding`, and counts it as settled, so the period accepts no
+   more awards. This clears a period whose leaves cannot settle one by one, for
+   example a root with no valid leaves. Anyone can commit each valid award
+   during the full window, so the release cannot remove an award that was
+   committed on time.
 
 Two steps are necessary because one Solana transaction cannot create the
 accounts of a full month. The attester's role grows from wallet binding to

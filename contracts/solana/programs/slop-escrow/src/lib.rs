@@ -433,6 +433,40 @@ pub mod slop_escrow {
         });
         Ok(())
     }
+    // After the period's window closes, the owner returns the part of the period's reservation
+    // that no award settled to the free balance. A leaf that cannot commit and cannot be
+    // released one by one (for example a root with no valid leaves) would otherwise keep its
+    // gross reserved and block ordinary commits forever. The remainder counts as settled, so
+    // the period then accepts no more awards. Anyone can commit each valid award during the
+    // full window, so the release cannot remove an award that was committed on time.
+    pub fn release_monthly(ctx: Context<ReleaseMonthly>, period: u32) -> Result<()> {
+        let (_, closes_at) = monthly_window(period)?;
+        require!(
+            Clock::get()?.unix_timestamp >= closes_at,
+            EscrowError::MonthlyWindowOpen
+        );
+        let m = &mut ctx.accounts.month;
+        let released = m
+            .total
+            .checked_sub(m.committed)
+            .ok_or(error!(EscrowError::Arithmetic))?;
+        require!(released > 0, EscrowError::MonthlyReleased);
+        m.committed = m.total;
+        m.released = add(m.released, released)?;
+        let p = &mut ctx.accounts.project;
+        let less = |n: u64| {
+            n.checked_sub(released)
+                .ok_or(error!(EscrowError::Arithmetic))
+        };
+        p.reserved = less(p.reserved)?;
+        p.monthly_outstanding = less(p.monthly_outstanding)?;
+        emit!(MonthlyRemainderReleased {
+            project: p.key(),
+            period,
+            released
+        });
+        Ok(())
+    }
 
     // The attester and the destination keypair both sign this exact transaction, including
     // deployment, project and predecessor. The destination is a co-signer, so the authority
@@ -1080,6 +1114,15 @@ pub struct ReleaseMonthlyAward<'info> {
     pub system_program: Program<'info, System>,
 }
 #[derive(Accounts)]
+#[instruction(period:u32)]
+pub struct ReleaseMonthly<'info> {
+    pub owner: Signer<'info>,
+    #[account(mut,has_one=owner)]
+    pub project: Box<Account<'info, Project>>,
+    #[account(mut,has_one=project,seeds=[b"month",project.key().as_ref(),&period.to_le_bytes()],bump)]
+    pub month: Box<Account<'info, MonthlyAllocation>>,
+}
+#[derive(Accounts)]
 #[instruction(actor_id:u64,network:[u8;32])]
 pub struct BindWallet<'info> {
     #[account(mut)]
@@ -1237,9 +1280,9 @@ pub struct MonthlyAllocation {
     /// Gross settled so far: committed awards plus released awards.
     pub committed: u64,
     pub total: u64,
-    /// The part of `committed` that release_monthly_award returned to free balance. This
-    /// field also makes the account 100 bytes, so a month recorded by the 316-byte build
-    /// (92 bytes, with no settled markers or outstanding count) fails closed here.
+    /// The part of `committed` that release_monthly_award or release_monthly returned to
+    /// free balance. This field also makes the account 100 bytes, so a month recorded by the
+    /// 316-byte build (92 bytes, with no settled markers or outstanding count) fails closed here.
     pub released: u64,
 }
 /// The separate identity, fee and rotation authorities, written once by
@@ -1297,6 +1340,12 @@ pub struct MonthlyCommitted {
     pub period: u32,
     pub allocation_root: [u8; 32],
     pub total: u64,
+}
+#[event]
+pub struct MonthlyRemainderReleased {
+    pub project: Pubkey,
+    pub period: u32,
+    pub released: u64,
 }
 #[event]
 pub struct AuthorityRotationProposed {
@@ -1462,6 +1511,10 @@ pub enum EscrowError {
     AwardCommittable,
     #[msg("Account is not a Project of the 316-byte layout")]
     NotLegacyProject,
+    #[msg("The period's window has not closed")]
+    MonthlyWindowOpen,
+    #[msg("The period has no unsettled remainder to release")]
+    MonthlyReleased,
 }
 
 #[account]
