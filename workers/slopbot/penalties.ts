@@ -132,6 +132,9 @@ export async function reversePenalty(
 /** One public penalty record: identifiers, integers and outcomes only. */
 export type PenaltyRecord = {
   itemNodeId: string;
+  /** The closed item, from the review that recorded the debit. */
+  itemKind: "issue" | "pull_request";
+  itemNumber: number;
   repositoryId: number;
   projectId: string;
   authorGithubId: string;
@@ -159,14 +162,21 @@ export async function penaltyHistory(
   const row = await db
     .prepare(
       `SELECT json_group_array(json_object(
-        'itemNodeId', item_node_id, 'repositoryId', repository_id,
+        'itemNodeId', item_node_id, 'itemKind', item_kind,
+        'itemNumber', item_number, 'repositoryId', repository_id,
         'projectId', project_id, 'authorGithubId', author_github_id,
         'category', category, 'tableVersion', table_version,
         'debitThirds', debit_thirds, 'period', period,
         'recordedAt', recorded_at, 'reversedAt', reversed_at,
         'reversal', reversal)) AS records_json
-       FROM (SELECT * FROM slopbot_penalties WHERE item_node_id > ?
-         ORDER BY item_node_id LIMIT ${PENALTY_HISTORY_PAGE + 1})`,
+       FROM (SELECT p.item_node_id, r.item_kind, r.item_number,
+           p.repository_id, p.project_id, p.author_github_id, p.category,
+           p.table_version, p.debit_thirds, p.period, p.recorded_at,
+           p.reversed_at, p.reversal
+         FROM slopbot_penalties p
+         LEFT JOIN slopbot_reviews r ON r.review_key = p.review_key
+         WHERE p.item_node_id > ?
+         ORDER BY p.item_node_id LIMIT ${PENALTY_HISTORY_PAGE + 1})`,
     )
     .bind(afterItemNodeId)
     .first<{ records_json: string }>();

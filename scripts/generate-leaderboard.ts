@@ -4074,8 +4074,12 @@ export async function generateLeaderboardFromGitHub(
   }
   // Published-table debits apply to the same window (PRD section 7).
   const penaltyDebits = await loadPenaltyDebits(
-    async (query, variables) =>
-      await client.execute(query, variables as GraphqlVariables),
+    {
+      get: <T>(path: string) => {
+        valueRestRequests += 1;
+        return github.get<T>(path);
+      },
+    },
     options.penaltyFetch,
     (itemNodeId) =>
       process.stderr.write(

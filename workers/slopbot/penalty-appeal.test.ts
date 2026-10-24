@@ -657,6 +657,23 @@ const SLOP_AUTHOR: GitHubActor = {
   kind: "User",
 };
 
+/** GitHub's REST issue record of the closed pull request. */
+const githubItem = (authorId: number) => ({
+  node_id: "PR_local",
+  number: 5,
+  title: "Followers",
+  html_url: "https://github.com/elizaOS/asi/pull/5",
+  pull_request: {},
+  user: {
+    id: authorId,
+    node_id: SLOP_AUTHOR.id,
+    login: SLOP_AUTHOR.login,
+    avatar_url: SLOP_AUTHOR.avatarUrl,
+    html_url: SLOP_AUTHOR.url,
+    type: "User",
+  },
+});
+
 function merged(
   repository: string,
   number: number,
@@ -789,32 +806,17 @@ test("a recorded debit lowers only its project month on the published Slop Score
       return run.fetchWorker(new Request(url, init));
     };
     let lookups = 0;
-    const graphql = async (
-      _query: string,
-      variables: Record<string, unknown>,
-    ) => {
-      lookups += 1;
-      expect(variables.ids).toEqual(["PR_local"]);
-      return {
-        nodes: [
-          {
-            __typename: "PullRequest",
-            id: "PR_local",
-            number: 5,
-            title: "Followers",
-            url: "https://github.com/elizaOS/asi/pull/5",
-            repository: {
-              databaseId: repositoryId,
-              nameWithOwner: "elizaOS/asi",
-            },
-            author: { __typename: "User", databaseId: AUTHOR, ...SLOP_AUTHOR },
-          },
-        ],
-      };
+    // GitHub REST, read by the immutable repository ID and the item number.
+    const github = {
+      get: async <T>(path: string) => {
+        lookups += 1;
+        expect(path).toBe(`/repositories/${repositoryId}/issues/5`);
+        return githubItem(AUTHOR) as T;
+      },
     };
     const score = async () => {
       const snapshot = createLeaderboardSnapshot(
-        scoreInput(await loadPenaltyDebits(graphql, transport)),
+        scoreInput(await loadPenaltyDebits(github, transport)),
       );
       const leader = (projectId: string, cycle: string) =>
         createPaymentProjectView(snapshot, projectId, cycle).leaders.find(
@@ -908,7 +910,9 @@ test("the penalty route serves identifiers and outcomes only, and the producer r
       "authorGithubId",
       "category",
       "debitThirds",
+      "itemKind",
       "itemNodeId",
+      "itemNumber",
       "period",
       "projectId",
       "recordedAt",
@@ -920,7 +924,15 @@ test("the penalty route serves identifiers and outcomes only, and the producer r
     expect(body).toMatchObject({
       schemaVersion: "slop-penalty-history:v1",
       nextAfter: null,
-      records: [{ authorGithubId: "42", category: "spam", debitThirds: 3 }],
+      records: [
+        {
+          itemKind: "pull_request",
+          itemNumber: 5,
+          authorGithubId: "42",
+          category: "spam",
+          debitThirds: 3,
+        },
+      ],
     });
     expect(
       (
@@ -929,25 +941,9 @@ test("the penalty route serves identifiers and outcomes only, and the producer r
         )
       ).status,
     ).toBe(400);
-    const project = findProject("asi");
     await expect(
       loadPenaltyDebits(
-        async () => ({
-          nodes: [
-            {
-              __typename: "PullRequest",
-              id: "PR_local",
-              number: 5,
-              title: "Followers",
-              url: "https://github.com/elizaOS/asi/pull/5",
-              repository: {
-                databaseId: Number(project?.authority.repositoryId),
-                nameWithOwner: "elizaOS/asi",
-              },
-              author: { __typename: "User", databaseId: 7, ...SLOP_AUTHOR },
-            },
-          ],
-        }),
+        { get: async <T>() => githubItem(7) as T },
         (url, init) => run.fetchWorker(new Request(url, init)),
       ),
     ).rejects.toThrow("does not match its recorded item or author");
@@ -955,7 +951,7 @@ test("the penalty route serves identifiers and outcomes only, and the producer r
     // published snapshot (owner decision D2) instead of assuming no debits.
     await expect(
       loadPenaltyDebits(
-        async () => ({ nodes: [] }),
+        { get: async () => null },
         async () => new Response("not found", { status: 404 }),
       ),
     ).rejects.toBeInstanceOf(ValueFeedUnavailableError);
