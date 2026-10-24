@@ -328,7 +328,7 @@ describe("monthly coordinator", () => {
       projectId: project.id,
       period: "2026-11",
       network: "base-sepolia",
-      chain: "base",
+      chain: "base" as const,
       assetAddress: deployment.asset,
       assetDecimals: 6,
       grossBase: "600",
