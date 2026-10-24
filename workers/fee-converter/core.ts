@@ -712,6 +712,10 @@ async function convert(
         updatedAt: at(),
       });
     });
+    // Match migration 0078: at most 128 KiB encoded as hex plus its prefix.
+    // Refuse before persistence and broadcast, with a terminal failed record.
+    if (prepared.rawTx.length > 262146)
+      throw new Error("signed transaction exceeds the storage limit");
   } catch (error) {
     await deps.store.update(row.id, {
       state: "failed",
