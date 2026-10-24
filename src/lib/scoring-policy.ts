@@ -16,8 +16,8 @@ export const VALUE_SCORING_POLICY_ID = "slop-value-v1" as const;
 export const MAX_CREDITED_REVIEWERS = 5 as const;
 
 /**
- * AWAITING OWNER DECISION. The PRD does not yet set these values (section 12,
- * "Remaining implementation decisions": review-credit allocation rounding).
+ * AWAITING OWNER DECISION. The PRD does not yet set these values (section 11,
+ * "Open owner decisions": review-credit pool).
  *
  * - `effectiveAt`: exact UTC instant from which accepted work uses the value
  *   policy. Earlier work keeps its historical policy.

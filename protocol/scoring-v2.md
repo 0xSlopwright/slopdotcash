@@ -215,8 +215,8 @@ effective instant is not applied, so legacy work is never scored twice; its
 new member keeps the one-third minimum.
 
 The effective instant and the per-pull-request review pool await an owner
-decision (PRD section 12, review-credit allocation rounding). Until both are
-recorded in `VALUE_SCORING_POLICY_DECISION`, generation stops before
+decision (PRD section 11, "Open owner decisions": review-credit pool). Until
+both are recorded in `VALUE_SCORING_POLICY_DECISION`, generation stops before
 collecting any source and publishes nothing; it does not fall back to the
 legacy producer. Accepted-source identity, the earliest-merge commit rule and
 separate payment authority are unchanged. A score is never a payment approval.
