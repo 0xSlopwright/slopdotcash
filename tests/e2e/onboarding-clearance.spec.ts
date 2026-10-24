@@ -1,17 +1,40 @@
-/** The agent prompt is always available; it never waits on discovery. */
+/** Agent setup always offers a prompt; only a cleared project gets its own. */
 import { expect, test } from "@playwright/test";
 
-test("agent setup always shows the copyable prompt", async ({
+test("project agent setup falls back to the general prompt until cleared", async ({
   page,
   context,
 }, info) => {
-  let discoveryRequests = 0;
-  await page.route("**/.well-known/slop/projects.json", (route) => {
-    discoveryRequests += 1;
-    return route.fulfill({ status: 503, body: "" });
-  });
+  let state: "unavailable" | "blocked" | "cleared" = "unavailable";
+  await page.route("**/.well-known/slop/projects.json", (route) =>
+    state === "unavailable"
+      ? route.fulfill({ status: 503, body: "" })
+      : route.fulfill({
+          json: {
+            schemaVersion: "1",
+            projects: state === "blocked" ? [] : [{ project_id: "eliza" }],
+          },
+        }),
+  );
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/projects/eliza", { waitUntil: "networkidle" });
+  await expect(
+    page.getByText("Project clearance could not be checked."),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status", { name: "Agent prompt" }),
+  ).toContainText("/SKILL.md");
+  await expect(page.getByText("inbound terms")).toHaveCount(0);
+  state = "blocked";
+  await page.reload({ waitUntil: "networkidle" });
+  await expect(
+    page.getByText("This project revision is not cleared"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status", { name: "Agent prompt" }),
+  ).not.toContainText("elizaOS/eliza");
+  state = "cleared";
+  await page.reload({ waitUntil: "networkidle" });
   await expect(
     page.getByRole("status", { name: "Agent prompt" }),
   ).toContainText("elizaOS/eliza");
@@ -20,14 +43,8 @@ test("agent setup always shows the copyable prompt", async ({
   expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(
     "elizaOS/eliza",
   );
-  await expect(page.getByText("inbound terms")).toHaveCount(0);
-  await page.goto("/", { waitUntil: "networkidle" });
-  await expect(
-    page.getByRole("status", { name: "Agent prompt" }),
-  ).toContainText("/SKILL.md");
-  expect(discoveryRequests).toBe(0);
   await page.screenshot({
-    path: info.outputPath("home-agent-setup.png"),
+    path: info.outputPath("project-agent-setup.png"),
     fullPage: true,
   });
 });

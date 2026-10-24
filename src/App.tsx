@@ -90,6 +90,8 @@ import { ProjectRiskFlag } from "./ProjectRiskFlag";
  * validated before money, score, work, or usage is presented as healthy data.
  */
 
+import { fetchWithDeadline, readBoundedJson } from "./lib/browser-json";
+
 const OwnerAwardsPage = lazy(() => import("./OwnerAwards"));
 const ProjectProposalPage = lazy(() => import("./ProjectProposalPage"));
 const AdminPage = lazy(() => import("./Admin"));
@@ -939,21 +941,80 @@ export function ProjectParticipation({
 }
 
 function InstallPanel({ project }: { project?: ProjectDefinition }) {
+  if (project) return <ProjectInstallPanel project={project} />;
   return (
-    <div
-      className={project ? "install-panel" : "home-agent-setup"}
-      id={project ? "start" : undefined}
-    >
-      {project ? (
-        <div className="install-heading">
-          <h2>Copy this into your agent.</h2>
-        </div>
-      ) : (
-        <p className="hero-copy">Paste this into your coding agent.</p>
+    <div className="home-agent-setup">
+      <p className="hero-copy">Paste this into your coding agent.</p>
+      <AgentPromptBox openIn prompt={bootstrapAgentPrompt()} />
+    </div>
+  );
+}
+
+/**
+ * PRD section 4: project-specific installation checks restrictions and
+ * clearance. Discovery lists only cleared, unrestricted projects. Until it
+ * confirms this project, the panel offers the generic agent prompt, which
+ * selects only cleared projects itself.
+ */
+function ProjectInstallPanel({ project }: { project: ProjectDefinition }) {
+  const projectId = project.id;
+  const [eligibility, setEligibility] = useState<
+    "loading" | "ready" | "blocked" | "error"
+  >("loading");
+  useEffect(() => {
+    let active = true;
+    setEligibility("loading");
+    fetchWithDeadline("/.well-known/slop/projects.json", {
+      headers: { accept: "application/json" },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Discovery unavailable");
+        const body = (await readBoundedJson(
+          response,
+          4 * 1024 * 1024,
+          "Agent setup",
+        )) as { schemaVersion?: unknown; projects?: { project_id: string }[] };
+        if (body.schemaVersion !== "1" || !Array.isArray(body.projects))
+          throw new Error("Invalid discovery registry");
+        if (active)
+          setEligibility(
+            body.projects.some((entry) => entry.project_id === projectId)
+              ? "ready"
+              : "blocked",
+          );
+      })
+      .catch(() => {
+        if (active) setEligibility("error");
+      });
+    return () => {
+      active = false;
+    };
+  }, [projectId]);
+  const ready = eligibility === "ready";
+  return (
+    <div className="install-panel" id="start">
+      <div className="install-heading">
+        <h2>Copy this into your agent.</h2>
+      </div>
+      {ready ? null : (
+        <p>
+          {eligibility === "loading"
+            ? "Checking project clearance. The general prompt below works now."
+            : eligibility === "blocked"
+              ? "This project revision is not cleared for agent installation. The general prompt below selects only cleared projects."
+              : "Project clearance could not be checked. The general prompt below selects only cleared projects."}
+          {eligibility === "blocked" ? (
+            <>
+              {" "}
+              <Link href={`/projects/${project.slug}/manage`}>
+                Project owner: review setup
+              </Link>
+            </>
+          ) : null}
+        </p>
       )}
       <AgentPromptBox
-        openIn={!project}
-        prompt={project ? projectAgentPrompt(project) : bootstrapAgentPrompt()}
+        prompt={ready ? projectAgentPrompt(project) : bootstrapAgentPrompt()}
       />
     </div>
   );
