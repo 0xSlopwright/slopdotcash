@@ -65,8 +65,19 @@ queue a scan, and Slop serves no skill for it.
 | `cleared` | The newest finished scan of the live pin is `clean` and its required retained objects pass verification | Allowed |
 | `banned` | A malicious scan has no independent reinstatement decision covering it | Blocked; a new scan or commit alone cannot lift it |
 
-Merging to the integration branch therefore pauses skills and discovery for
-the project until a scan of the new head lands clean. The signed service's
+Projects registered before the gate are grandfathered.
+`migrations/0075_vetting_grandfathered_projects.sql` records every project
+that existed when it ran in the immutable `vetting_grandfathered_projects`
+table. A grandfathered project is `cleared` with no assessment, so it serves
+skills, lists for discovery and activates without a scan. A confirmed
+malicious finding still bans it, and reinstatement still needs a fresh clean
+scan. The exemption covers future executable changes, but it does not override
+flag pauses or account restrictions. Flag-only reinstatement still requires a
+fresh clean scan. Projects created later follow the rules below. The owner
+approved this permanent exception in canonical PRD section 8 on 24 October 2026.
+
+For projects without the exemption, merging to the integration branch pauses
+skills and discovery until a scan of the new head lands clean. The signed service's
 `POST /api/v1/vetting/refresh` queues that scan automatically; a scan whose
 executable inventory is unchanged reuses the cached clean result. Slop keeps each branch head in the edge cache for 30 seconds. Dynamic
 skills, discovery and public clearance responses use no-store. Each request

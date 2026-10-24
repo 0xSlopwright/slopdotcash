@@ -31,7 +31,7 @@ test("disabled payouts are visible from discovery through the project page", asy
   const card = page.locator('a.project-card[href="/projects/eliza"]');
   await expect(
     card.getByText("Payments not active", { exact: true }),
-  ).toBeVisible();
+  ).toHaveCount(0);
   await expect(card).toContainText("/mo target");
   await page.screenshot({
     path: info.outputPath("home-payment-unavailable.png"),

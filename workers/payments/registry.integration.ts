@@ -26,6 +26,10 @@ import {
   type evmBindingTypedData,
   evmVaultKey,
 } from "../../contracts/evm/adapter";
+import {
+  captureUpgrade,
+  deployUpgradeableFactory,
+} from "../../contracts/evm/integration/upgrade";
 import { onRequest } from "../../functions/api/v1/[[path]]";
 import {
   payoutReadiness,
@@ -202,12 +206,10 @@ try {
       database.exec(readFileSync(`${root}migrations/${file}`, "utf8"));
 
   const asset = deploy("integration/TestDollar.sol:TestDollar").deployedTo;
-  const factory = deploy("src/ProjectEscrow.sol:EscrowFactory", [
-    registrar,
-    fee,
-    attester,
-    delay,
-  ]).deployedTo;
+  const factory = deployUpgradeableFactory(
+    (contract, args) => deploy(contract, args).deployedTo,
+    [registrar, fee, attester, delay],
+  );
   // Vault creation is permissionless; the sender (the owner) owns the vault.
   const createTx = await send(
     factory,
@@ -271,6 +273,7 @@ try {
     factory: factory.toLowerCase(),
     factoryCodeSha256: await codeSha256(factory),
     registrar,
+    evmUpgrade: await captureUpgrade(rpc, factory, vault),
   };
   const withEscrow = assertProjectDefinition({
     ...base,
@@ -527,10 +530,13 @@ try {
   assert.deepEqual(Object.keys(production.configs), ["attester"]);
   assert.equal(production.configs.attester.vars.SIGNER_ROLE, "attester");
   assert.equal(production.configs.attester.vars.SIGNER_STACK, "production");
-  assert.equal(production.configs.attester.triggers, undefined);
+  assert.deepEqual(production.configs.attester.triggers, {
+    crons: ["*/5 * * * *"],
+  });
   assert.equal(production.configs.attester.services, undefined);
   assert.deepEqual(production.configs.attester.d1_databases, [
     { binding: "PAYMENTS_DB", ...registryDatabase },
+    { binding: "REGISTRY_DB", ...registryDatabase },
   ]);
   const mainnetReport = (enabled: boolean) =>
     payoutReadiness({

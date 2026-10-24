@@ -15,11 +15,14 @@ These steps deploy replacement UUPS EVM factories and vault implementations,
 and deploy or upgrade the Solana program with owner-controlled upgrades.
 The approved launch order is Base, Solana, Ethereum, then Robinhood.
 
-Deployment runs through the owner-controlled operator process. The owner has
-authorized the deployment agent to use the designated local deployment keys.
-This authorization does not grant Slop application services custody of those
-keys or authority to upgrade contracts. Keep signing material and transaction
-journals private; publish only transaction identities and verified results.
+Deployment runs through a human operator. Under the current repository rules,
+humans create, store and rotate signing keys and deploy mainnet contracts.
+Agents may prepare unsigned plans, review public configuration and verify
+public chain evidence; they must not handle signing material or execute a
+mainnet deployment. Application services receive only their separately
+authorized attester or fee-conversion key, never deployment or upgrade keys.
+Keep signing material and transaction journals private; publish only
+transaction identities and verified results.
 
 No project activates escrow because a factory or program exists. Activation
 needs a reviewed manifest revision with the deployment evidence below
@@ -34,10 +37,10 @@ needs a reviewed manifest revision with the deployment evidence below
    those reviews as completed. Confirm that the testnet acceptance runs
    (`docs/robinhood-chain-testnet-runbook.md` and the Base Sepolia run) and a
    rehearsed key recovery runbook are recorded. These are launch gates.
-3. Decide and record, for each chain, four public addresses and their
+3. Record the approved public role addresses and their
    custody:
    - `ESCROW_REGISTRAR`: proposes identity authority
-     rotations. Use a reviewed multisig or hardware key, never the attester
+     rotations. Use the owner-controlled custody process, never the attester
      service key.
    - `ESCROW_IDENTITY_AUTHORITY`: Slop's attester key (PAY-05).
    - `ESCROW_FEE_RECIPIENT`: the network fee wallet. On Base the script
@@ -47,7 +50,8 @@ needs a reviewed manifest revision with the deployment evidence below
 4. Set `ESCROW_UPGRADE_AUTHORITY` to the approved deployment authority. It can
    upgrade factory and vault logic immediately. The deployer pays gas and holds
    upgrade power only if selected. Use a hardware
-   wallet (`--ledger` or `--trezor`) or a Foundry keystore (`--account`).
+   wallet (`--ledger` or `--trezor`) or a human-managed Foundry keystore
+   (`--account`). Hardware is optional; the owner selected software custody.
    Never pass a private key on the command line.
 5. Use Foundry 1.7.1 (commit `4072e48705af9d93e3c0f6e29e93b5e9a40caed8`).
    Build and test the exact tree:
@@ -93,7 +97,7 @@ export ESCROW_UPGRADE_AUTHORITY=0x...
 export ESCROW_IDENTITY_AUTHORITY=0x...
 export ESCROW_FEE_RECIPIENT=0x...      # optional on Base only
 forge script script/DeployEthereum.s.sol:DeployEthereum \
-  --rpc-url "$ETHEREUM_RPC_URL" --ledger --sender 0xYourDeployer
+  --rpc-url "$ETHEREUM_RPC_URL" --account slop-mainnet-deployer --sender 0xYourDeployer
 ```
 
 Replace the script and RPC for Base or Robinhood Chain. Read the simulated
@@ -147,7 +151,7 @@ and `1` for a private bounty vault:
 
 ```sh
 cast send "$FACTORY" 'create(bytes32,address,uint8)' \
-  "$PROJECT_ID" "$TOKEN" "$PURPOSE" --rpc-url "$RPC" --ledger
+  "$PROJECT_ID" "$TOKEN" "$PURPOSE" --rpc-url "$RPC" --account slop-mainnet-owner
 KEY=$(cast call "$FACTORY" 'vaultKey(address,bytes32,address,uint8)(bytes32)' \
   "$OWNER" "$PROJECT_ID" "$TOKEN" "$PURPOSE" --rpc-url "$RPC")
 VAULT=$(cast call "$FACTORY" 'vaults(bytes32)(address)' "$KEY" --rpc-url "$RPC")

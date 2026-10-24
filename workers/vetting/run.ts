@@ -17,7 +17,7 @@
  * quarantined artifact: moderators decide those (owner decision D3).
  */
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { sha256Hex } from "../../backend/trace/validation";
 import {
@@ -28,6 +28,10 @@ import {
 } from "./bounded-scan";
 import { inspectIsolatedArtifacts } from "./isolated-inspection";
 import { publishResult } from "./publication";
+import {
+  filePublicationJournal,
+  type PublicationJournal,
+} from "./publication-journal";
 import {
   acquireQueuedAssessment,
   type QueueConnection,
@@ -62,6 +66,7 @@ export type ScanServiceConfig = {
   workDirectory: string;
   /** Operator-private publication journal (publication.ts). */
   journalDirectory: string;
+  journal?: PublicationJournal;
   randomId?: () => string;
 };
 
@@ -135,15 +140,6 @@ async function refresh(connection: QueueConnection): Promise<boolean> {
     );
     await response.body?.cancel();
     return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
   } catch {
     return false;
   }
@@ -367,6 +363,7 @@ async function scanOne(
       approvedSha256: await sha256Hex(encoder.encode(body)),
       signer: connection,
       journalDirectory: config.journalDirectory,
+      journal: config.journal,
       at: connection.now?.(),
       fetch: connection.fetch,
     });
@@ -392,8 +389,10 @@ export async function runScanPass(
   const refreshed = await refresh(config.connection);
   const pending = await readPendingAssessments(config.connection);
   const assessments: AssessmentOutcome[] = [];
+  const journal =
+    config.journal ?? filePublicationJournal(config.journalDirectory);
   for (const assessment of pending) {
-    if (await exists(join(config.journalDirectory, assessment.assessmentId))) {
+    if (await journal.has(assessment.assessmentId)) {
       assessments.push({
         assessmentId: assessment.assessmentId,
         state: "journaled",

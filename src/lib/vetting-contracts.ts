@@ -34,7 +34,8 @@ export type VettingPin = { commitSha: string; templateSha256: string };
  * What a revision may do. Only "cleared" lets Slop serve skills, list the
  * project for discovery, or activate the revision. "stale" means a scan of
  * this content exists, but for another branch head or template digest;
- * "unverified" means Slop could not read the live pin to compare.
+ * "unverified" means Slop could not read the live pin to compare. A project
+ * registered before the gate is grandfathered: "cleared" with no assessment.
  */
 export type VettingClearance =
   | { state: "unscanned" }
@@ -47,4 +48,5 @@ export type VettingClearance =
       assessment: AssessmentSummary;
       reviewedMaliciousAssessmentIds?: string[];
     }
+  | { state: "cleared"; assessment: null; grandfathered: true }
   | { state: "banned"; assessment: AssessmentSummary };

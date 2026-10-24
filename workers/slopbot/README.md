@@ -252,11 +252,13 @@ pending record in `slopbot_value_requests`. Redelivery must not create another
 record. A pending record proves intake only; verify the resulting assessment
 and publication separately. An unregistered repository must create no record.
 
+Escalated appeals also create a moderator Inbox notice. Repeated events use
+one notice key. The action and email dispatcher recheck moderator access and
+appeal status; a resolved appeal no longer asks for a decision. Verify actual
+provider delivery separately from local queue acceptance.
+
 ## Not yet implemented
 
-- Inbox notices for escalated appeals. Escalation is visible through the
-  `slopbot: moderator` label and the appeal comment until the Inbox adds an
-  appeal notice kind.
 - Maintainer dashboard and Automation row (LDR-04).
 
 ## Value assessment work in progress
@@ -284,6 +286,12 @@ two-parent merge in an isolated bare repository with no global configuration,
 hooks or configured merge drivers. Only the difference between that automatic
 tree and the recorded tree becomes resolution scope. A clean branch sync adds
 no claims. The record binds the Git version, parents, trees and patch digest.
+If Git automatically moves a file added on the other parent, collection also
+records its original path and ancestor commits. The blob and file mode must
+match in the source parent, automatic tree, resolved tree and accepted head.
+The claim binder retains the original commit/path identity and covers the new
+path without creating a second claim for the move. Changed content cannot use
+this byte-identical relocation evidence.
 Missing objects or a failed reconstruction stop collection. Octopus merges are
 not reconstructed. Reconstruction depends on the Git merge algorithm: review
 the resulting diff before valuation; it does not itself prove useful work.
