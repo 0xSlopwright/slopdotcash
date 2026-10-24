@@ -193,7 +193,7 @@ Projects are added on the website, never by pull request. The PRD now requires
 self-service setup: verify current GitHub authority, complete project terms,
 install Slopbot, and obtain malicious-code clearance before automatic activation.
 PRD section 8 permanently exempts the existing projects captured by migration
-`0074_vetting_grandfathered_projects.sql` from normal scan clearance, including
+`0075_vetting_grandfathered_projects.sql` from normal scan clearance, including
 future executable changes. Later projects require scans. Record exemption
 explicitly, never as a passed scan; flags, pauses, confirmed-malicious bans
 and fresh-scan reinstatement requirements still apply.

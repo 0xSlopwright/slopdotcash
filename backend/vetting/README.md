@@ -66,7 +66,7 @@ queue a scan, and Slop serves no skill for it.
 | `banned` | A malicious scan has no independent reinstatement decision covering it | Blocked; a new scan or commit alone cannot lift it |
 
 Projects registered before the gate are grandfathered.
-`migrations/0074_vetting_grandfathered_projects.sql` records every project
+`migrations/0075_vetting_grandfathered_projects.sql` records every project
 that existed when it ran in the immutable `vetting_grandfathered_projects`
 table. A grandfathered project is `cleared` with no assessment, so it serves
 skills, lists for discovery and activates without a scan. A confirmed

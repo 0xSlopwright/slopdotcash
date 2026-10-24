@@ -939,7 +939,7 @@ test("a concurrent account ban cannot supply the flag that pauses another projec
 });
 
 test("the existing-project exemption is permanent but cannot clear reinstatement or later projects", async () => {
-  const migration = "0074_vetting_grandfathered_projects.sql";
+  const migration = "0075_vetting_grandfathered_projects.sql";
   const database = sqliteD1(
     readdirSync(new URL("../migrations", import.meta.url))
       .filter((name) => name.endsWith(".sql") && name !== migration)
