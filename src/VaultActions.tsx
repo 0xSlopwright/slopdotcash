@@ -159,9 +159,7 @@ export function VaultActions({
     run(async () => {
       if (!wallet) throw new Error("Choose a wallet first.");
       if (!canDeposit && operation === "deposit")
-        throw new Error(
-          "New deposits are disabled while this project is restricted.",
-        );
+        throw new Error("New deposits are currently unavailable.");
       setReview(
         solana
           ? await reviewSolanaVaultAction(
@@ -184,9 +182,7 @@ export function VaultActions({
     run(async () => {
       if (!wallet || !review || pending || storageError) return;
       if (!canDeposit && operation === "deposit")
-        throw new Error(
-          "New deposits are disabled while this project is restricted.",
-        );
+        throw new Error("New deposits are currently unavailable.");
       const current = solana
         ? await reviewSolanaVaultAction(
             projectId,
@@ -458,7 +454,9 @@ export function VaultActions({
                 ? canDeposit
                   ? (["deposit", "withdraw"] as const)
                   : (["withdraw"] as const)
-                : (["deposit"] as const)
+                : canDeposit
+                  ? (["deposit"] as const)
+                  : []
               ).map((choice) => (
                 <label key={choice}>
                   <input
@@ -497,6 +495,7 @@ export function VaultActions({
               type="button"
               className="button secondary-button"
               onClick={() => void inspect()}
+              disabled={!canDeposit && operation === "deposit"}
             >
               Review {operation === "deposit" ? "deposit" : "withdrawal"}
             </button>
@@ -554,7 +553,7 @@ export function VaultActions({
               <button
                 type="button"
                 className="button primary-button"
-                disabled={busy}
+                disabled={busy || (!canDeposit && operation === "deposit")}
                 onClick={() =>
                   void send(
                     review.resetAllowance

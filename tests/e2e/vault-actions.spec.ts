@@ -1235,7 +1235,7 @@ test("owner creates, registers and funds a vault through the real API", async ({
       setup.getByRole("button", { name: "Review vault creation", exact: true }),
     ).toBeDisabled();
     await setup
-      .getByLabel("Automatic monthly payment", { exact: true })
+      .getByRole("combobox", { name: /^Automatic monthly payment/ })
       .selectOption(automatic ? "on" : "off");
     const reviewButton = setup.getByRole("button", {
       name: "Review vault creation",
@@ -1653,12 +1653,12 @@ test("owner funds a separate bounty vault with private balances and no monthly r
     const errors: string[] = [];
     const failed: string[] = [];
     const privateUrl = `${origin}/api/v1/project-vaults/${id}?purpose=security-bounty`;
-    let expectedUnavailableErrors = 0;
+    let expectedPrivateErrors = 0;
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (event) => {
       if (event.type() !== "error") return;
-      if (event.location().url === privateUrl && /503/.test(event.text()))
-        expectedUnavailableErrors++;
+      if (event.location().url === privateUrl && /403|503/.test(event.text()))
+        expectedPrivateErrors++;
       else errors.push(event.text());
     });
     page.on("response", (response) => {
@@ -1674,7 +1674,7 @@ test("owner funds a separate bounty vault with private balances and no monthly r
     });
     await setup.getByRole("button", { name: "Connect MetaMask" }).click();
     await expect(
-      setup.getByLabel("Automatically pay the monthly allocation"),
+      setup.getByRole("combobox", { name: /^Automatic monthly payment/ }),
     ).toHaveCount(0);
     await setup.getByRole("button", { name: "Review vault creation" }).focus();
     await page.keyboard.press("Enter");
@@ -1793,7 +1793,7 @@ test("owner funds a separate bounty vault with private balances and no monthly r
     expect(publicProject).not.toMatch(/availableMinor|freeMinor|snapshotAt/);
     expect(errors).toEqual([]);
     expect(failed).toEqual([`503 ${privateUrl}`]);
-    expect(expectedUnavailableErrors).toBe(1);
+    expect(expectedPrivateErrors).toBe(1);
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
@@ -1829,9 +1829,29 @@ test("owner funds a separate bounty vault with private balances and no monthly r
       page.getByRole("region", { name: "Bounty funds", exact: true }),
     ).toContainText("Available for new awards: 10 USDC");
     await expect(funding.getByRole("status")).toHaveCount(0);
+    // Unlike a transient read failure, lost authority must clear private data.
+    await page.request.post(`${origin}/__fixture`, {
+      data: { permitted: false },
+    });
+    const denied = page.waitForResponse(
+      (response) => response.url() === privateUrl && response.status() === 403,
+    );
+    await page.getByRole("button", { name: "Refresh bounty funds" }).click();
+    await denied;
+    await expect(bountyFunds.getByRole("alert")).toBeVisible();
+    await expect(funding).toHaveCount(0);
+    await expect(bountyFunds).not.toContainText("10 USDC");
+    await page.request.post(`${origin}/__fixture`, {
+      data: { permitted: true },
+    });
+    await page.getByRole("button", { name: "Refresh bounty funds" }).click();
+    await expect(bountyFunds.getByRole("alert")).toHaveCount(0);
+    await expect(bountyFunds).toContainText(
+      "Available for new awards: 10 USDC",
+    );
     expect(errors).toEqual([]);
-    expect(failed).toEqual([`503 ${privateUrl}`]);
-    expect(expectedUnavailableErrors).toBe(1);
+    expect(failed).toEqual([`503 ${privateUrl}`, `403 ${privateUrl}`]);
+    expect(expectedPrivateErrors).toBe(2);
   } finally {
     server.kill("SIGTERM");
     rmSync(temporary, { recursive: true, force: true });

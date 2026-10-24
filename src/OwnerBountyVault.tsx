@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ESCROW_NETWORKS } from "./lib/escrow-policy.mjs";
 import type { VaultConnection } from "./lib/evm-vault-actions";
-import { projectApiRequest } from "./lib/project-api";
+import { ProjectApiError, projectApiRequest } from "./lib/project-api";
 import { formatAssetAmount } from "./lib/project-schema.mjs";
 import type { ProjectDefinition } from "./lib/projects.mjs";
 import { OwnerVaultSetup } from "./OwnerVaultSetup";
@@ -29,7 +29,12 @@ export function OwnerBountyVault({
   const [state, setState] = useState<
     | { status: "loading" }
     | { status: "error"; message: string }
-    | { status: "ready"; funds: PrivateFunds | null; canSetup: boolean }
+    | {
+        status: "ready";
+        funds: PrivateFunds | null;
+        canSetup: boolean;
+        refreshError?: string;
+      }
   >({ status: "loading" });
   const [reload, setReload] = useState(0);
   const [wallet, setWallet] = useState<VaultConnection | null>(null);
@@ -49,14 +54,19 @@ export function OwnerBountyVault({
         if (active) setState({ status: "ready", ...result });
       },
       (error: unknown) => {
-        if (active)
-          setState({
-            status: "error",
-            message:
-              error instanceof Error
-                ? error.message
-                : "Bounty funds could not load.",
-          });
+        if (!active) return;
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Bounty funds could not load.";
+        const temporary =
+          error instanceof ProjectApiError &&
+          (error.status === 0 || error.status >= 500);
+        setState((previous) =>
+          temporary && previous.status === "ready"
+            ? { ...previous, canSetup: false, refreshError: message }
+            : { status: "error", message },
+        );
       },
     );
     return () => {
@@ -77,7 +87,18 @@ export function OwnerBountyVault({
       {state.status === "error" ? <p role="alert">{state.message}</p> : null}
       {state.status === "ready" ? (
         <>
-          {!state.canSetup ? (
+          {state.refreshError ? (
+            <p role="alert">
+              {state.refreshError}{" "}
+              {state.funds
+                ? "Last verified balance is stale."
+                : "Last verified vault information is shown."}{" "}
+              New setup and deposits are disabled until a successful refresh.
+              Existing transaction checks and owner withdrawals remain
+              available.
+            </p>
+          ) : null}
+          {!state.canSetup && !state.refreshError ? (
             <p>
               This project is restricted. New setup and deposits are disabled.
               {deployments.length > 0
