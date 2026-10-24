@@ -90,8 +90,6 @@ import { ProjectRiskFlag } from "./ProjectRiskFlag";
  * validated before money, score, work, or usage is presented as healthy data.
  */
 
-export { readBoundedJson } from "./lib/browser-json";
-
 const OwnerAwardsPage = lazy(() => import("./OwnerAwards"));
 const ProjectProposalPage = lazy(() => import("./ProjectProposalPage"));
 const AdminPage = lazy(() => import("./Admin"));
