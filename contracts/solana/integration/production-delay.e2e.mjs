@@ -255,7 +255,6 @@ test("the deployable build permits immediate payment and rotation and rejects in
     mint,
     vault,
     destination,
-    feeAccount,
     tokenProgram: TOKEN_PROGRAM_ID,
     veto: pda(
       Buffer.from("veto"),
@@ -278,6 +277,22 @@ test("the deployable build permits immediate payment and rotation and rejects in
     (await getAccount(provider.connection, destination)).amount,
     980n,
   );
+  // The fee accrues in the vault; anyone moves it to the fee recipient's account.
+  assert.equal(
+    (await program.account.project.fetch(project)).accruedFees.toString(),
+    "20",
+  );
+  assert.equal((await getAccount(provider.connection, feeAccount)).amount, 0n);
+  await program.methods
+    .claimFees()
+    .accountsStrict({
+      project,
+      mint,
+      vault,
+      feeAccount,
+      tokenProgram: TOKEN_PROGRAM_ID,
+    })
+    .rpc();
   assert.equal((await getAccount(provider.connection, feeAccount)).amount, 20n);
   assert.equal(
     (await program.account.project.fetch(project)).reserved.toString(),

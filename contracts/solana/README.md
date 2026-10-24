@@ -181,9 +181,14 @@ The program has no service charge. Slopbot is free (PRD section 5); owner
 decision D13 removed `charge_service` and its `service_fees` counter. The
 conservation identity is
 `deposited = free + reserved + paid + payout_fees + withdrawn_gross`.
-The binding lifecycle does not change this identity. A zero-amount transfer leg
-(a zero fee, or a withdrawal whose return rounds to zero) is skipped, so a
-frozen fee account cannot stall a zero-fee payout.
+The binding lifecycle does not change this identity. `pay` and `withdraw` move
+only the net amount; the payout or withdrawal fee stays in the vault and is
+added to `accrued_fees`. Anyone calls `claim_fees` to move all accrued fees to
+any token account of the mint that the fee recipient owns. A frozen or missing
+fee account therefore stops only `claim_fees`, never a payout or withdrawal, as
+on EVM (review item L-2). Every new reserve or withdrawal also requires
+`vault.amount >= reserved + accrued_fees + amount`. A withdrawal whose return
+rounds to zero needs no transfer.
 It cannot spend reserved principal or fees. Every credited balance is
 owner-controlled free balance, whoever deposited it; this version keeps no
 separate donor-class funds.
@@ -221,6 +226,22 @@ period is open at a time.
    commits as an ordinary award with the 2% fee
    through the same `origin` and `award` PDAs, so a source commits once, by
    hand or monthly.
+3. Recording a root adds its total to `monthly_outstanding`; each committed
+   award subtracts its gross. While `monthly_outstanding` is positive the owner's
+   ordinary `commit` fails with `MonthlyOutstanding`, so the owner cannot consume
+   an admitted award's source by hand and strand its reserve. Anyone, including
+   the owner, can clear the gate by committing the remaining awards.
+4. An award that can never commit is returned to free balance by anyone with
+   `release_monthly_award(period, source_digest, actor_id, gross, index, count,
+   proof)`. The leaf must prove against the recorded month, and its source must
+   already have an `origin` (it was committed before the month was admitted, or
+   by another month) or its actor must be zero; otherwise the call fails with
+   `AwardCommittable`. Both `commit_monthly_award` and `release_monthly_award`
+   create the `["settled", month, source_digest]` PDA, so each source of a month
+   settles once: a committed award cannot also be released. A source repeated
+   inside one allocation could settle only once and would leave the second copy
+   reserved, so the allocation builder in `adapter.ts` rejects repeated sources
+   before the identity authority signs.
 
 Two steps are necessary because one Solana transaction cannot create the
 accounts of a full month. The attester's role grows from wallet binding to
@@ -380,11 +401,11 @@ finalized block time. `vault` is the project PDA, `asset` the mint, and
 `decimals` comes from the mint account. Counters are decimal text in token base
 units. `freeBalance` is `deposited - paid - payout_fees - withdrawn_gross -
 reserved`; the function throws when it is negative. Solana keeps
-one combined `reserved`, so `reservedPrincipal`, `reservedFees` and
-`accruedFees` are null.
+one combined `reserved`, so `reservedPrincipal` and `reservedFees` are null.
+`accruedFees` is the project's unclaimed fees.
 
 `owner-plan.mjs` creates unsigned initialize/deposit/commit/veto/withdraw,
-propose-rotation, confirm-rotation and cancel-rotation transactions; a veto may name an
+claim-fees, propose-rotation, confirm-rotation and cancel-rotation transactions; a veto may name an
 unpaid award (`obligationId`) to use its commit-delay window. `initialize`
 refuses reviewed authorities that differ from the Config, and passes the Config
 account. `confirm-rotation` requires the independent rotation-authority signer,
@@ -394,14 +415,26 @@ fee, signs, and funds the deposit from its associated token account.
 `config-plan.mjs plan` creates the unsigned `initialize_config` transaction for
 the current upgrade authority after it checks the deployed program bytes and
 that no Config exists. `config-plan.mjs projects` lists every Project account
-and marks which ones the Config pins. Neither mode reads keys or sends a
+and marks which ones the Config pins and which still need migration.
+`config-plan.mjs migrate` builds one unsigned `migrate_project` transaction per
+316-byte project for the input's `payer`. No mode reads keys or sends a
 transaction.
 
 ### Project account layout
 
-The `Project` account is 316 bytes. The D13 revision removed `service_fees` and
+The `Project` account is 332 bytes. The D13 revision removed `service_fees` and
 appended `purpose`, `monthly_cap` and `monthly_enabled`, and the purpose is a
-project PDA seed. A project from an earlier build cannot sign with the new
+project PDA seed. The red-team revision of 24 October 2026 appended
+`accrued_fees` and `monthly_outstanding` (u64 each). A 316-byte project from the
+build before it cannot be read until anyone calls the permissionless
+`migrate_project`, which grows it to 332 bytes, takes any added rent from the
+payer and starts both counters at zero (that build sent fees out at once).
+The same revision appended `released` to `MonthlyAllocation` (now 100 bytes).
+A month recorded by the earlier build has no settled markers and is not in
+`monthly_outstanding`, so the new build cannot read it and its awards fail
+closed. Before an in-place upgrade, `getProgramAccounts` must show no
+92-byte month account; devnet program `7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ`
+had none on 24 October 2026. A project from an earlier build cannot sign with the new
 seeds, so the D13 revision is a new deployment, and the earlier
 `migrate_project` path is removed. Later upgrades must preserve this layout or use an explicitly reviewed migration.
 A replacement deployment must preserve the old deployment and its obligations.
