@@ -353,19 +353,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  isolated-artifact:
+    uses: ./.github/workflows/vetting-sandbox.yml
+    permissions:
+      contents: read
+
   quality:
     name: Skill, data, build, and browser checks
     if: always()
-    needs: [prepare, browsers]
+    needs: [prepare, browsers, isolated-artifact]
     runs-on: ubuntu-24.04
     steps:
       - name: Require the checked bundle and every browser lane
         env:
           PREPARE_RESULT: ${{ needs.prepare.result }}
           BROWSER_RESULT: ${{ needs.browsers.result }}
+          SANDBOX_RESULT: ${{ needs.isolated-artifact.result }}
         run: |
           test "$PREPARE_RESULT" = success
           test "$BROWSER_RESULT" = success
+          test "$SANDBOX_RESULT" = success
 
   staging:
     name: Deploy verified development to staging
@@ -445,6 +452,7 @@ jobs:
             echo "No repository payment records to import."
           fi
           ./node_modules/.bin/wrangler deploy --config workers/identity/wrangler.staging.toml
+          bun scripts/release-vetting-sandbox.mjs staging
           ./node_modules/.bin/wrangler deploy --config workers/slopbot/wrangler.repository-access-staging.toml
           node scripts/configure-staging-secrets.mjs
           if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
@@ -788,6 +796,8 @@ jobs:
             throw new TypeError("Pages secret inventory is incomplete or contains unexpected entries");
           }
           NODE
+
+          bun scripts/release-vetting-sandbox.mjs production
 
           ./node_modules/.bin/wrangler d1 migrations apply slop-private \
             --remote \
