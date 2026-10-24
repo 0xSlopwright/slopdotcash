@@ -4,9 +4,14 @@ import type {
   GitHubActor,
   LeaderboardInput,
   MergedPullRequestOutcome,
+  PenaltyFeedRecord,
 } from "../src/lib/leaderboard-types";
-import { findRegisteredRepositoryById } from "../src/lib/repositories.mjs";
+import {
+  findRegisteredRepositoryById,
+  REGISTERED_REPOSITORIES,
+} from "../src/lib/repositories.mjs";
 import type { GitHubClient } from "../workers/slopbot/github";
+import type { PublishedPenalty as PublishedPenaltyRow } from "../workers/slopbot/penalties";
 import { loadPolicy } from "../workers/slopbot/review";
 import { readValueDecisionFromHistory } from "../workers/slopbot/value-consumption";
 import {
@@ -143,6 +148,90 @@ async function fetchHistoryPage(
   )
     throw new Error("Joint value history has an invalid snapshot boundary");
   return body;
+}
+
+/**
+ * Reads every unreversed debit of one project from the fixed hosted origin
+ * (PRD section 7). An outage keeps the last published snapshot, like the
+ * value feed; a malformed page fails the publication.
+ */
+export async function fetchProjectPenalties(
+  projectId: string,
+  transport: Fetch = fetch,
+): Promise<PenaltyFeedRecord[]> {
+  if (!REGISTERED_REPOSITORIES.some((entry) => entry.projectId === projectId))
+    throw new Error("Penalty source project is not registered");
+  const records: PenaltyFeedRecord[] = [];
+  let after = "";
+  for (;;) {
+    const url = new URL("/v1/penalties", HISTORY_ORIGIN);
+    url.searchParams.set("project", projectId);
+    url.searchParams.set("after", after);
+    let response: Response;
+    try {
+      response = await transport(url, {
+        redirect: "manual",
+        cache: "no-store",
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (error) {
+      throw new ValueFeedUnavailableError(error);
+    }
+    // A Slopbot release without this route (404) is an outage too: keep the
+    // last published snapshot instead of publishing scores without debits.
+    if (
+      response.status === 404 ||
+      response.status === 408 ||
+      response.status === 429 ||
+      response.status >= 500
+    )
+      throw new ValueFeedUnavailableError(`HTTP ${response.status}`);
+    if (response.status !== 200 || response.redirected)
+      throw new Error("Authoritative penalty feed is unavailable");
+    let body: {
+      schemaVersion?: unknown;
+      project?: unknown;
+      records?: unknown;
+      nextAfter?: unknown;
+    };
+    try {
+      body = await response.json();
+    } catch (error) {
+      throw new ValueFeedUnavailableError(error);
+    }
+    if (
+      body?.schemaVersion !== "slop-penalties:v1" ||
+      body.project !== projectId ||
+      !Array.isArray(body.records) ||
+      body.records.length > 100 ||
+      !(
+        body.nextAfter === null ||
+        (typeof body.nextAfter === "string" && body.nextAfter > after)
+      )
+    )
+      throw new Error("Penalty feed page has invalid identity or pagination");
+    for (const row of body.records as PublishedPenaltyRow[]) {
+      if (
+        typeof row?.item_node_id !== "string" ||
+        row.item_node_id <= after ||
+        (body.nextAfter !== null && row.item_node_id > body.nextAfter)
+      )
+        throw new Error("Penalty feed page is out of order");
+      records.push({
+        itemNodeId: row.item_node_id,
+        authorGithubId: row.author_github_id,
+        category: row.category,
+        tableVersion: row.table_version,
+        debitThirds: row.debit_thirds,
+        recordedAt: row.recorded_at,
+      });
+    }
+    if (body.nextAfter === null) return records;
+    // The cursor must be the page's last record, or rows between are skipped.
+    if (body.nextAfter !== records.at(-1)?.itemNodeId)
+      throw new Error("Penalty feed cursor skips records");
+    after = body.nextAfter;
+  }
 }
 
 export async function fetchValueHistoryPage(

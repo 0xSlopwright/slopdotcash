@@ -7,8 +7,19 @@ import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { handleNotificationsApi } from "../../backend/notifications/handler";
+import { fetchProjectPenalties } from "../../scripts/value-ingestion";
+import {
+  createLeaderboardSnapshot,
+  type LeaderboardSnapshot,
+} from "../../src/lib/leaderboard";
 import { parseNotificationsResponse } from "../../src/lib/notifications";
+import { createProjectView } from "../../src/lib/project-view";
 import { findProject } from "../../src/lib/projects.mjs";
+import {
+  GENERATED_AT,
+  PENALIZED_AUTHOR,
+  penaltyScoreInput,
+} from "../../tests/penalty-score-fixture";
 import { sqliteD1 } from "../../tests/sqlite-d1";
 import {
   activityMailEligibility,
@@ -48,6 +59,8 @@ type Run = {
   comments: string[];
   labels: string[];
   sql: (q: string) => unknown;
+  /** The worker's public HTTP routes, served in process. */
+  feed: typeof fetch;
   job: (kind: string, extra: Record<string, unknown>) => Job;
 };
 
@@ -435,6 +448,11 @@ async function closedItem(cb: (run: Run) => Promise<void>) {
         verdict = { category, confidence };
       },
       sql: (q) => sqlite.query(q).all(),
+      feed: ((url: Parameters<typeof fetch>[0]) =>
+        worker.fetch(
+          new Request(url instanceof Request ? url.url : String(url)),
+          env as never,
+        )) as typeof fetch,
     });
   } finally {
     console.log = log;
@@ -694,6 +712,95 @@ test("a retry after an uncertain reopen completes the recorded appeal decision",
     ]);
     expect(run.labels).not.toContain("slopbot: scam");
     expect(run.comments.at(-1)).toContain("**Appeal upheld**");
+  });
+});
+
+// PRD section 7: the real worker records the debit, its public penalty feed
+// carries it to the real score producer, and the published score applies it
+// once, only to its project and UTC month, never below zero. An upheld appeal
+// removes it from the next published score.
+test("a recorded debit reaches the published score once and an upheld appeal restores it", async () => {
+  setSystemTime(new Date(GENERATED_AT));
+  await closedItem(async (run) => {
+    const publish = async () =>
+      createLeaderboardSnapshot(
+        penaltyScoreInput(await fetchProjectPenalties("asi", run.feed)),
+      );
+    const standing = (snapshot: LeaderboardSnapshot) => {
+      const leader = snapshot.leaders.find(
+        (entry) => entry.actor.id === PENALIZED_AUTHOR.id,
+      );
+      const month = (cycleId: string) =>
+        createProjectView(snapshot, "asi", cycleId).leaders.find(
+          (entry) => entry.actor.id === PENALIZED_AUTHOR.id,
+        );
+      return {
+        scoreThirds: leader?.scoreThirds,
+        penaltyThirds: leader?.penaltyThirds ?? 0,
+        october: month("2026-10")?.scoreThirds,
+        november: month("2026-11")?.scoreThirds,
+        novemberPenalty: month("2026-11")?.penaltyThirds,
+      };
+    };
+
+    // October earns 3 thirds; November earns the 1-third merge minimum.
+    expect(standing(await publish())).toEqual({
+      scoreThirds: 4,
+      penaltyThirds: 0,
+      october: 3,
+      november: 1,
+      novemberPenalty: 0,
+    });
+
+    expect(await run.review()).toBe("closed (spam)");
+    const debited = await publish();
+    expect(
+      debited.penalties?.map(({ id, category, debitThirds, occurredAt }) => ({
+        id,
+        category,
+        debitThirds,
+        occurredAt,
+      })),
+    ).toEqual([
+      {
+        id: "PR_local:penalty",
+        category: "spam",
+        debitThirds: 3,
+        occurredAt: "2026-11-10T00:00:00.000Z",
+      },
+    ]);
+    // The 3-third debit stops at November's 1 third; October is untouched.
+    const penalized = {
+      scoreThirds: 3,
+      penaltyThirds: 1,
+      october: 3,
+      november: 0,
+      novemberPenalty: 1,
+    };
+    expect(standing(debited)).toEqual(penalized);
+
+    // A replayed review and a second publication apply the debit once.
+    await run.review();
+    expect(standing(await publish())).toEqual(penalized);
+
+    run.model("none", 0.95);
+    expect(await run.deliver(run.job("appeal", { senderId: AUTHOR }))).toBe(
+      "appeal drafted (uphold)",
+    );
+    expect(
+      await run.deliver(
+        run.job("appeal_command", { command: "accept", senderId: AUTHOR }),
+      ),
+    ).toBe("appeal upheld by the appellant");
+    const restored = await publish();
+    expect(restored.penalties).toEqual([]);
+    expect(standing(restored)).toEqual({
+      scoreThirds: 4,
+      penaltyThirds: 0,
+      october: 3,
+      november: 1,
+      novemberPenalty: 0,
+    });
   });
 });
 

@@ -52,6 +52,7 @@ export interface PaymentDeployment {
   owner: string;
   identityAuthority: string;
   feeRecipient: string;
+  rotationAuthority?: string;
   codeSha256: string;
   bindingDelaySeconds: string;
   rotationDelaySeconds?: string;
@@ -356,7 +357,8 @@ export async function ingestPaymentEvent(
     deployment.projectPda &&
     deployment.asset &&
     deployment.networkDomain &&
-    deployment.rotationDelaySeconds
+    deployment.rotationDelaySeconds &&
+    deployment.rotationAuthority
   ) {
     const genesis = (
       JSON.parse(env.PAYMENT_SOLANA_GENESIS ?? "{}") as Record<string, string>
@@ -371,6 +373,7 @@ export async function ingestPaymentEvent(
       mint: deployment.asset,
       networkDomain: deployment.networkDomain,
       rotationDelaySeconds: deployment.rotationDelaySeconds,
+      rotationAuthority: deployment.rotationAuthority,
     });
   } else throw new Error("Reviewed chain deployment incomplete");
   await indexPaymentEvent(

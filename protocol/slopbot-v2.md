@@ -73,6 +73,20 @@ A debit reduces only the score of the UTC month of the close and never takes
 that month below zero. It never changes an approved, scheduled or paid award.
 Changes to this table apply prospectively.
 
+The read-only `GET /v1/penalties?project=ID&after=NODE_ID` feed returns the
+unreversed debits of one project in pages of 100: item node ID, repository
+ID, author ID, category, table version, thirds, period and close time. It
+returns no review key, verdict,
+appeal text, source or model output. The leaderboard binds each debit to a
+closed, unmerged pull request of its GitHub census, so GitHub supplies the
+author and the month of the close; a debit whose author differs from the
+GitHub author stops publication. The snapshot publishes each bound debit in
+`penalties`. For each author, project and UTC month, the applied debit is the
+smaller of the recorded debits and that month's credit, and the project
+payment weight falls in the same proportion. A reversed debit is not in the
+feed, so the next snapshot restores the score. A closed cycle record keeps its
+score.
+
 ## Appeals
 
 Owner decision D8 of 24 October 2026. Slopbot triages each appeal first: an
@@ -104,7 +118,8 @@ Superseded by the canonical PRD section 5: Slopbot is always free and does
 not charge project vaults. The former cost-plus-10% billing no longer applies
 to new reviews; historical charge records stay unchanged. Slop records
 provider cost internally for budgets and queue limits only. Slopbot holds no
-funds and no payment key.
+funds and no payment key. The vault contracts have no service charge: owner
+decision D13 (24 October 2026) removed `chargeService` and `charge_service`.
 
 ## Recognition
 

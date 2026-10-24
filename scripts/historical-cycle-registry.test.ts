@@ -1,14 +1,20 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fixtureCheckout } from "../tests/fixture-checkout";
+
+let root = "";
+afterEach(() => {
+  if (root) rmSync(root, { recursive: true, force: true });
+  root = "";
+});
 
 // A registry edit must not change the frozen proposal that an owner reviews.
 // Run the real proposal builder and archive validator in separate processes so
 // each reads the changed registry instead of an already cached module.
 test("a frozen owner proposal survives registry copy and primary changes", () => {
-  const root = fixtureCheckout("historical-cycle-registry-");
+  root = fixtureCheckout("historical-cycle-registry-");
   copyFileSync(
     resolve(import.meta.dir, "../src/lib/leaderboard.ts"),
     join(root, "src/lib/leaderboard.ts"),

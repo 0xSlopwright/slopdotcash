@@ -230,6 +230,24 @@ async function handlePrivateIntake(state, request, response, url) {
     if (JSON.parse(body).model !== "claude-opus-5.5")
       return send(400, { type: "error" });
     state.analysisRequests.push(body);
+    // Slopbot's appeal triage drafts a resolution for a moderator.
+    if (JSON.parse(body).system.includes("first triage step for appeals"))
+      return send(200, {
+        type: "message",
+        role: "assistant",
+        stop_reason: "end_turn",
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              proposedOutcome: "return",
+              rationale:
+                "Fixture draft: the appeal names a separate withdrawal path that the decision did not review.",
+              confidence: 0.72,
+            }),
+          },
+        ],
+      });
     return send(200, {
       type: "message",
       role: "assistant",
