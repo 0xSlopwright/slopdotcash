@@ -42,6 +42,8 @@ function network(definition, assets) {
     assets: Object.freeze(assets),
   });
 }
+// Testnet scan pages match the configured RPC limits verified during live
+// acceptance: Base 200 blocks; Ethereum and Robinhood 10 blocks.
 export const ESCROW_NETWORKS = Object.freeze({
   "base-sepolia": network(
     {
@@ -50,7 +52,7 @@ export const ESCROW_NETWORKS = Object.freeze({
       testnet: true,
       chainId: "84532",
       gasCeiling: "500000",
-      scanPageBlocks: "2000",
+      scanPageBlocks: "200",
     },
     [
       asset(
@@ -127,7 +129,7 @@ export const ESCROW_NETWORKS = Object.freeze({
       testnet: true,
       chainId: "46630",
       gasCeiling: "2000000",
-      scanPageBlocks: "9000",
+      scanPageBlocks: "10",
     },
     [
       /** Paxos testnet USDG, listed by the Paxos USDG testnet guide and read back on chain (design record). */
@@ -166,7 +168,7 @@ export const ESCROW_NETWORKS = Object.freeze({
       testnet: true,
       chainId: "11155111",
       gasCeiling: "500000",
-      scanPageBlocks: "2000",
+      scanPageBlocks: "10",
     },
     [
       /** Circle test USDC; read back on chain 18 October 2026 (symbol USDC, 6 decimals, chain 11155111). */

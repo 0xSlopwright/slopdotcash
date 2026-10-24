@@ -107,7 +107,9 @@ describe("escrow chain families", () => {
   test("Base keeps its executor and scanner limits", () => {
     for (const name of ["base-sepolia", "base-mainnet"] as const) {
       expect(ESCROW_NETWORKS[name].gasCeiling).toBe("500000");
-      expect(ESCROW_NETWORKS[name].scanPageBlocks).toBe("2000");
+      expect(ESCROW_NETWORKS[name].scanPageBlocks).toBe(
+        name === "base-sepolia" ? "200" : "2000",
+      );
       expect(ESCROW_NETWORKS[name].assetSymbol).toBe("USDC");
     }
     expect(ESCROW_NETWORKS["solana-testnet"].assetSymbol).toBe("TEST");
@@ -132,7 +134,7 @@ describe("escrow chain families", () => {
         },
       ],
       gasCeiling: "2000000",
-      scanPageBlocks: "9000",
+      scanPageBlocks: "10",
     });
     expect(mainnet).toEqual({
       chain: "robinhood",
