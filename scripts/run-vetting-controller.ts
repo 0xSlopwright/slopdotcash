@@ -77,7 +77,7 @@ async function main() {
         specialist: {
           reviewer: "astra",
           transport: "openai-responses",
-          endpoint: "https://api.surplusintelligence.ai/openai/v1/responses",
+          endpoint: "https://api.surplusintelligence.ai/v1/responses",
           model: "gpt-6.1-sol",
           maxOutputTokens: 8192,
           rateCard: rates.specialist,
