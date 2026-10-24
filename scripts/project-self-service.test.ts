@@ -678,17 +678,33 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
   const selected = (preview.body.preview as { maintainerBans: unknown[] })
     .maintainerBans;
   expect(selected).toEqual([{ githubId: OTHER, githubLogin: "other" }]);
-  expect(
-    (
-      await t.call("POST", "admin/projects/responsibility/enforcement", ADMIN, {
-        ...decision,
-        responsibleAccounts: selected,
-      })
-    ).status,
-  ).toBe(200);
+  // The ban lands after intake checks the account but before it writes the run.
+  const readBan = trace.persistence.hasParticipationBan.bind(trace.persistence);
+  let pendingBan = true;
+  trace.persistence.hasParticipationBan = async (githubId) => {
+    const banned = await readBan(githubId);
+    if (pendingBan) {
+      pendingBan = false;
+      expect(
+        (
+          await t.call(
+            "POST",
+            "admin/projects/responsibility/enforcement",
+            ADMIN,
+            {
+              ...decision,
+              responsibleAccounts: selected,
+            },
+          )
+        ).status,
+      ).toBe(200);
+    }
+    return banned;
+  };
   const refused = await newRun();
   expect(refused.status).toBe(403);
   expect((await refused.json()).error).toBe("participation_banned");
+  expect((await newRun()).status).toBe(403);
   expect(
     (
       await t.create(
