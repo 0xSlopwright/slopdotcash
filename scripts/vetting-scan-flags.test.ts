@@ -181,7 +181,13 @@ function projectApi(request: Request) {
     now: () => clock,
     randomId,
     sessionActor: async (value) => actorOf(value),
-    repositoryControl: async () => ({ state: "proven", reason: "fixture" }),
+    repositoryControl: async () => ({ state: "matched", reason: "fixture" }),
+    repositoryAccess: async () => ({
+      installation: "installed",
+      installationId: 1,
+      permission: "admin",
+      roleName: null,
+    }),
     readTokenMetadata: async () => {
       throw new Error("no token reads in this suite");
     },
@@ -219,7 +225,6 @@ const flagApi = (request: Request) =>
         (key) => ACTORS[key].githubId === actor.githubId,
       );
       return setupAuthority(
-        { state: "unproven", reason: "fixture" },
         {
           state: "read",
           access: {

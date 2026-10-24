@@ -6,8 +6,9 @@
  * checks keep old cycle records verifiable under the rules they were made
  * under.
  */
-import type { assertProjectDefinition } from "../project-schema.mjs";
+
 import { MAX_BASE_UNITS } from "../escrow-policy.mjs";
+import type { assertProjectDefinition } from "../project-schema.mjs";
 
 export interface EscrowReviewProposal {
   projectId: string;

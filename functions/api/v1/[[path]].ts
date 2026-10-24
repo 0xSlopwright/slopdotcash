@@ -677,18 +677,8 @@ export async function onRequest(context: PagesContext): Promise<Response> {
         ),
     }),
     repositoryAuthority: async (manifest, actor) => {
-      // A flag needs no proof that the manifest matches GitHub, only
-      // whether this member maintains the repository.
-      let control: RepositoryControl | null;
-      try {
-        control = await repositoryControl(manifest, actor, context.env);
-      } catch {
-        control = null;
-      }
-      if (control?.state === "mismatch")
-        control = { state: "unproven", reason: control.reason };
+      // Only current repository permission determines maintainer exclusion.
       return setupAuthority(
-        control,
         await readRepositoryAccess(
           (repository, member) =>
             slopbotRepositoryAccess(context.env.SLOPBOT, repository, member),
