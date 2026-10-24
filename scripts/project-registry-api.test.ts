@@ -37,13 +37,14 @@ import {
   deriveAllocationFundingBasis,
 } from "../src/lib/allocation-funding";
 import type { RepositoryAccess } from "../src/lib/project-contracts";
-import { slugify } from "../src/lib/project-proposal";
+import { rewardFields, slugify } from "../src/lib/project-proposal";
 import { PROJECT_SKILL_TEMPLATES } from "../src/lib/project-schema.mjs";
 import {
   buildProjectPublication,
   sha256Hex,
 } from "../src/lib/project-skill-publication.mjs";
 import type { ProjectDefinition } from "../src/lib/projects.mjs";
+import { resolveRewardCapMinor } from "../src/lib/reward-cap.mjs";
 import {
   applicationManifest,
   CONTRIBUTION,
@@ -467,6 +468,74 @@ describe("project registry API", () => {
       (await persistence.getProject("open-registry"))?.manifest.rewardAsset
         ?.decimals,
     ).toBe(18);
+    access = ADMIN_ACCESS;
+    for (const [time, amount] of [
+      ["2026-10-18T12:00:00.000Z", "500"],
+      ["2026-11-18T12:00:00.000Z", "250"],
+    ]) {
+      deps.now = () => new Date(time);
+      const current = await persistence.getProject("open-registry");
+      if (!current) throw new Error("token project disappeared");
+      const changed = await call("PUT", "projects/open-registry", "applicant", {
+        manifest: current.manifest,
+        expectedRevision: current.revision,
+        monthlyAmount: amount,
+      });
+      expect(changed.status, JSON.stringify(await changed.json())).toBe(200);
+    }
+    const current = await persistence.getProject("open-registry");
+    if (!current) throw new Error("token project disappeared");
+    const oldRevision = await persistence.getRevisionText(
+      "open-registry",
+      current.revision,
+    );
+    const fields = rewardFields(
+      {
+        mode: "monthly",
+        network: "base",
+        assetKind: "stablecoin",
+        tokenAddress: "",
+        tokenSymbol: "",
+        monthlyAmount: "1000",
+      },
+      deps.now(),
+    );
+    const changedAsset = await call(
+      "PUT",
+      "projects/open-registry",
+      "applicant",
+      {
+        manifest: {
+          ...current.manifest,
+          ...fields,
+          reward: {
+            ...current.manifest.reward,
+            ...(fields.reward as Record<string, unknown>),
+            rewardStartAt: current.manifest.reward.rewardStartAt,
+          },
+        },
+        expectedRevision: current.revision,
+        monthlyAmount: "1000",
+      },
+    );
+    expect(changedAsset.status, JSON.stringify(await changedAsset.json())).toBe(
+      200,
+    );
+    const changed = await persistence.getProject("open-registry");
+    if (!changed) throw new Error("changed project disappeared");
+    expect(changed.manifest.reward).toMatchObject({
+      currency: "USDC",
+      monthlyCapMinor: "1000000000",
+      rewardStartAt: "2026-12-01T00:00:00.000Z",
+    });
+    expect(resolveRewardCapMinor(changed.manifest, "2026-10")).toBe("0");
+    expect(resolveRewardCapMinor(changed.manifest, "2026-11")).toBe("0");
+    expect(resolveRewardCapMinor(changed.manifest, "2026-12")).toBe(
+      "1000000000",
+    );
+    expect(
+      await persistence.getRevisionText("open-registry", current.revision),
+    ).toEqual(oldRevision);
   });
 
   test("refuses an unverifiable or malformed token and stores nothing", async () => {

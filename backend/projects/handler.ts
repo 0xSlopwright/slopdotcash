@@ -342,37 +342,46 @@ function prospectiveFinancialChange(
     } = reward;
     return rest;
   };
+  const assetChanged =
+    !sameValue(previous.rewardAsset, next.rewardAsset) ||
+    before.chain !== after.chain ||
+    before.currency !== after.currency;
   if (
     !sameValue(fixed(before), fixed(after)) ||
-    !sameValue(before.cycleCaps, after.cycleCaps)
+    (assetChanged
+      ? after.cycleCaps !== undefined
+      : !sameValue(before.cycleCaps, after.cycleCaps))
   )
     fail(
       422,
       "financial_change_restricted",
       "Only the monthly amount, network and asset change through owner self-service",
     );
-  // Amounts are in the asset's base units, so an amount in the previous
-  // asset cannot carry over to a new one: the open cycle then has no pool.
-  const assetChanged =
-    !sameValue(previous.rewardAsset, next.rewardAsset) ||
-    before.chain !== after.chain ||
-    before.currency !== after.currency;
-  if (!assetChanged && before.monthlyCapMinor === after.monthlyCapMinor)
-    return next;
   const cycleId = now.toISOString().slice(0, 7);
+  if (assetChanged) {
+    // Old caps remain in immutable revisions of the old asset. The new
+    // asset starts next month and must never fund an earlier period.
+    return {
+      ...next,
+      reward: {
+        ...after,
+        rewardStartAt: new Date(
+          Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+        ).toISOString(),
+        cycleCaps: [{ cycleId, monthlyCapMinor: "0" }],
+      },
+    };
+  }
+  if (before.monthlyCapMinor === after.monthlyCapMinor) return next;
   const caps = before.cycleCaps ?? [];
-  const open = caps.find((cap) => cap.cycleId === cycleId);
-  if (!assetChanged && open !== undefined) return next;
+  if (caps.some((cap) => cap.cycleId === cycleId)) return next;
   return {
     ...next,
     reward: {
       ...after,
       cycleCaps: [
-        ...caps.filter((cap) => cap.cycleId !== cycleId),
-        {
-          cycleId,
-          monthlyCapMinor: assetChanged ? "0" : before.monthlyCapMinor,
-        },
+        ...caps,
+        { cycleId, monthlyCapMinor: before.monthlyCapMinor },
       ].sort((left, right) => left.cycleId.localeCompare(right.cycleId)),
     },
   };
@@ -986,20 +995,39 @@ async function publishOwnerRevision(
       `The project is ${restriction.state}; request reinstatement before changing it`,
     );
   // The server decides status and listing; the owner sends content.
-  const { manifest: submitted } = canonicalManifest(
-    withMonthlyAmount(
-      await verifiedRewardAsset(
-        {
-          ...(body.manifest as Record<string, unknown>),
-          status: current.manifest.status,
-          listingTier: current.manifest.listingTier,
-        },
-        current.manifest.rewardAsset,
-        deps,
-      ),
-      body.monthlyAmount,
+  let prepared = withMonthlyAmount(
+    await verifiedRewardAsset(
+      {
+        ...(body.manifest as Record<string, unknown>),
+        status: current.manifest.status,
+        listingTier: current.manifest.listingTier,
+      },
+      current.manifest.rewardAsset,
+      deps,
     ),
-  );
+    body.monthlyAmount,
+  ) as ProjectDefinition;
+  if (
+    current.manifest.reward.kind === "monthly-pool" &&
+    prepared.reward?.kind === "monthly-pool" &&
+    (!sameValue(current.manifest.rewardAsset, prepared.rewardAsset) ||
+      current.manifest.reward.chain !== prepared.reward.chain ||
+      current.manifest.reward.currency !== prepared.reward.currency)
+  ) {
+    // These read-only caps belong to the previous asset. Check continuity
+    // before removing them from validation of the new asset's manifest.
+    if (
+      !sameValue(current.manifest.reward.cycleCaps, prepared.reward.cycleCaps)
+    )
+      fail(
+        422,
+        "financial_change_restricted",
+        "Historical cycle caps cannot change",
+      );
+    const { cycleCaps: _oldCaps, ...reward } = prepared.reward;
+    prepared = { ...prepared, reward };
+  }
+  const { manifest: submitted } = canonicalManifest(prepared);
   if (submitted.id !== projectId)
     fail(422, "invalid_manifest", "Project id cannot change");
   const changes = classifyRevisionChanges(current.manifest, submitted);

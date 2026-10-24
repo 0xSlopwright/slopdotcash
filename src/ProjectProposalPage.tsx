@@ -2072,8 +2072,7 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
   const capMinor = monthly ? reward.monthlyCapMinor : "0";
   // Amounts are stored in the asset's base units (owner decision D11).
   const decimals = current.rewardAsset?.decimals ?? 6;
-  const hasVault = current.escrow !== undefined;
-  const funded =
+  const assetFixed =
     monthly &&
     (reward.fundingState === "committed" ||
       reward.paymentMode === "enabled" ||
@@ -2197,7 +2196,6 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
     tokenSymbol: value.tokenSymbol,
     monthlyAmount: value.monthlyAmount,
   };
-  const assetFixed = funded || hasVault;
   if (
     choice.mode === "monthly" &&
     !assetFixed &&

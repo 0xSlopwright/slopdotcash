@@ -1149,6 +1149,37 @@ test("an owner installs Slopbot before creation and resumes setup; a failed scan
   expect(errors).toHaveLength(1);
   expect(errors[0]).toContain("409");
 
+  // A policy with no deployed or funded vault must not lock the asset.
+  await expect(
+    page.getByRole("combobox", { name: "Network", exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole("combobox", { name: "Network", exact: true })
+    .selectOption("ethereum");
+  await page.getByLabel("Monthly amount (USDC)").fill("1200");
+  await page
+    .getByLabel("Revision note", { exact: true })
+    .fill("Use USDC on Ethereum from next month");
+  await page.getByRole("button", { name: "Publish changes" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Published revision 3" }),
+  ).toBeVisible();
+  const switched = await listedProject(page, project.id);
+  const now = new Date();
+  expect(switched).toMatchObject({
+    rewardAsset: { network: "ethereum", kind: "stablecoin" },
+    reward: {
+      monthlyCapMinor: "1200000000",
+      rewardStartAt: new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+      ).toISOString(),
+    },
+  });
+  await page.screenshot({
+    path: test.info().outputPath("unfunded-asset-change.png"),
+    fullPage: true,
+  });
+
   // Permission loss: Slopbot now reads only read access. The setup status
   // names the next action, and the owner cannot publish another change.
   await setSlopbot(`${project.repository}/permission/e2e-owner/read`);
@@ -1172,7 +1203,7 @@ test("an owner installs Slopbot before creation and resumes setup; a failed scan
     history.revisions.filter(
       (revision: { projectId: string }) => revision.projectId === project.id,
     ),
-  ).toHaveLength(2);
+  ).toHaveLength(3);
   expect(await listedProject(page, project.id)).toMatchObject({
     status: "paused",
     headline: "Accepted setup outcomes with a clear project scope",
