@@ -1015,6 +1015,13 @@
           }
         },
         {
+          "name": "obligation",
+          "docs": [
+            "The obligation the origin records; required unless the actor is zero."
+          ],
+          "optional": true
+        },
+        {
           "name": "settled",
           "docs": [
             "The same marker as commit_monthly_award, so a source settles once per month."
@@ -1833,10 +1840,17 @@
             "name": "released",
             "docs": [
               "The part of `committed` that release_monthly_award returned to free balance. This",
-              "field also makes the account 100 bytes, so a month recorded by the 316-byte build",
-              "(92 bytes, with no settled markers or outstanding count) fails closed here."
+              "field also makes the account larger than the 92-byte month of the 316-byte build (no",
+              "settled markers or outstanding count), so such a month fails closed here."
             ],
             "type": "u64"
+          },
+          {
+            "name": "admitted_at",
+            "docs": [
+              "When the root was recorded. Only a source consumed before it can be released."
+            ],
+            "type": "i64"
           }
         ]
       }
@@ -2089,9 +2103,16 @@
             "name": "monthly_outstanding",
             "docs": [
               "Gross of admitted monthly allocations not yet committed or released. While it is",
-              "positive the owner cannot commit by hand."
+              "positive the owner cannot commit by hand, until monthly_gate_until."
             ],
             "type": "u64"
+          },
+          {
+            "name": "monthly_gate_until",
+            "docs": [
+              "When the monthly gate lapses: MONTHLY_GATE_GRACE after the latest admitted window."
+            ],
+            "type": "i64"
           }
         ]
       }

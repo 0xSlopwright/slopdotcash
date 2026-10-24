@@ -14,6 +14,10 @@ const MAX_ROTATION_DELAY: i64 = 90 * 86400;
 /// A monthly allocation for calendar UTC month M can be recorded from this delay after M ends
 /// until this delay after the next month ends (owner decision D1: 00:00 UTC on the 4th).
 const MONTHLY_CUTOFF_DELAY: i64 = 72 * 3600;
+/// An admitted month blocks the owner's direct commits until this long after its window
+/// closes. Every award of a correct allocation is committed well before then; a month that
+/// can never settle (a lost or faulty allocation) cannot block the owner for ever.
+const MONTHLY_GATE_GRACE: i64 = 30 * 86400;
 /// The identity authority signs this prefix, the program ID, the project, the period (u32 LE,
 /// YYYYMM), the allocation root, total and stored network domain.
 pub const MONTHLY_MESSAGE_PREFIX: &[u8] = b"slop-monthly-allocation-v2";
@@ -232,9 +236,12 @@ pub mod slop_escrow {
             EscrowError::WrongPurpose
         );
         // While an admitted month has uncommitted awards, the owner cannot consume one of
-        // their sources by hand and strand that award. Anyone can commit the rest first.
+        // their sources by hand and strand that award; anyone can commit the rest first. The
+        // gate lapses MONTHLY_GATE_GRACE after the last admitted window closes, and a source
+        // consumed after admission can never be released, so the reserve stays reserved.
+        let p = &ctx.accounts.project;
         require!(
-            ctx.accounts.project.monthly_outstanding == 0,
+            p.monthly_outstanding == 0 || Clock::get()?.unix_timestamp >= p.monthly_gate_until,
             EscrowError::MonthlyOutstanding
         );
         let a = &mut ctx.accounts;
@@ -336,9 +343,13 @@ pub mod slop_escrow {
         m.allocation_root = allocation_root;
         m.committed = 0;
         m.released = 0;
+        m.admitted_at = now;
         m.total = total;
         p.reserved = add(p.reserved, total)?;
         p.monthly_outstanding = add(p.monthly_outstanding, total)?;
+        p.monthly_gate_until = p
+            .monthly_gate_until
+            .max(add_i64(closes_at, MONTHLY_GATE_GRACE)?);
         emit!(MonthlyCommitted {
             project: p.key(),
             period,
@@ -406,12 +417,27 @@ pub mod slop_escrow {
         count: u32,
         proof: Vec<AllocationNode>,
     ) -> Result<()> {
-        let origin = &ctx.accounts.origin;
-        require!(
-            gross > 0
-                && (actor_id == 0 || (origin.owner == ctx.program_id && !origin.data_is_empty())),
-            EscrowError::AwardCommittable
-        );
+        require!(gross > 0, EscrowError::AwardCommittable);
+        if actor_id != 0 {
+            // Only a source consumed strictly before this month was admitted releases. A source
+            // the owner consumes after admission stays reserved, so it can never become a refund.
+            let origin = &ctx.accounts.origin;
+            require!(
+                origin.owner == ctx.program_id && !origin.data_is_empty(),
+                EscrowError::AwardCommittable
+            );
+            let recorded = Origin::try_deserialize(&mut &origin.try_borrow_data()?[..])?;
+            let consumed = ctx
+                .accounts
+                .obligation
+                .as_ref()
+                .ok_or(error!(EscrowError::AwardCommittable))?;
+            require!(
+                consumed.key() == recorded.obligation
+                    && consumed.committed_at < ctx.accounts.month.admitted_at,
+                EscrowError::AwardCommittable
+            );
+        }
         let a = &mut ctx.accounts;
         settle_leaf(
             &mut a.project,
@@ -1074,6 +1100,8 @@ pub struct ReleaseMonthlyAward<'info> {
     /// CHECK: the source's origin address; the handler requires an initialized origin unless the actor is zero.
     #[account(seeds=[b"origin",project.key().as_ref(),&source_digest],bump)]
     pub origin: UncheckedAccount<'info>,
+    /// The obligation the origin records; required unless the actor is zero.
+    pub obligation: Option<Box<Account<'info, Obligation>>>,
     /// The same marker as commit_monthly_award, so a source settles once per month.
     #[account(init,payer=payer,space=8+BindingVeto::INIT_SPACE,seeds=[b"settled",month.key().as_ref(),&source_digest],bump)]
     pub settled: Account<'info, BindingVeto>,
@@ -1218,8 +1246,10 @@ pub struct Project {
     /// Payout and withdrawal fees held in the vault until claim_fees moves them.
     pub accrued_fees: u64,
     /// Gross of admitted monthly allocations not yet committed or released. While it is
-    /// positive the owner cannot commit by hand.
+    /// positive the owner cannot commit by hand, until monthly_gate_until.
     pub monthly_outstanding: u64,
+    /// When the monthly gate lapses: MONTHLY_GATE_GRACE after the latest admitted window.
+    pub monthly_gate_until: i64,
 }
 /// What a project holds funds for. It is part of the project PDA seeds.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
@@ -1238,9 +1268,11 @@ pub struct MonthlyAllocation {
     pub committed: u64,
     pub total: u64,
     /// The part of `committed` that release_monthly_award returned to free balance. This
-    /// field also makes the account 100 bytes, so a month recorded by the 316-byte build
-    /// (92 bytes, with no settled markers or outstanding count) fails closed here.
+    /// field also makes the account larger than the 92-byte month of the 316-byte build (no
+    /// settled markers or outstanding count), so such a month fails closed here.
     pub released: u64,
+    /// When the root was recorded. Only a source consumed before it can be released.
+    pub admitted_at: i64,
 }
 /// The separate identity, fee and rotation authorities, written once by
 /// `initialize_config` and never changed.
@@ -1535,9 +1567,9 @@ mod tests {
     }
     #[test]
     fn migration_appends_two_counters() {
-        assert_eq!(8 + Project::INIT_SPACE, LEGACY_PROJECT_SIZE + 16);
+        assert_eq!(8 + Project::INIT_SPACE, LEGACY_PROJECT_SIZE + 24);
         // A legacy 92-byte month cannot deserialize as the current month.
-        assert_eq!(8 + MonthlyAllocation::INIT_SPACE, 100);
+        assert_eq!(8 + MonthlyAllocation::INIT_SPACE, 108);
     }
     #[test]
     fn fee_is_two_percent_per_award_or_withdrawal() {

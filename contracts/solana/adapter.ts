@@ -36,9 +36,9 @@ export interface SolanaEscrowConfig {
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 /** Project account size: 257 bytes of core state, the pending identity authority, its
  * effective time and confirmation, the i64 rotation delay, then the u8 purpose, the u64
- * monthly cap, the monthly on/off switch, the u64 accrued fees and the u64 outstanding
- * monthly gross. */
-export const PROJECT_SIZE = 332;
+ * monthly cap, the monthly on/off switch, the u64 accrued fees, the u64 outstanding
+ * monthly gross and the i64 time the monthly gate lapses. */
+export const PROJECT_SIZE = 340;
 /** Wallet binding size: 160 bytes of latest-binding state plus the u64 paid version and u8 veto count. */
 export const BINDING_SIZE = 169;
 /** Obligation size: 137 bytes of v2 state plus the i64 commit time. */
