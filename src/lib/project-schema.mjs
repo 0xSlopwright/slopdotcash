@@ -1,4 +1,4 @@
-import { assertEscrowPolicy } from "./escrow-policy.mjs";
+import { assertEscrowPolicy, isBaseUnits } from "./escrow-policy.mjs";
 import { exactKeys, readRecord as record } from "./record-validation.mjs";
 /**
  * Validates untrusted project folders before they enter discovery, ingestion,
@@ -113,9 +113,6 @@ export function formatMonthlyCapDisplay(value) {
   return `$${whole}${cents === 0 ? "" : `.${String(cents).padStart(2, "0")}`}`;
 }
 
-/** The most whole units of a reward token that one month may name. */
-const MAX_MONTHLY_TOKEN_UNITS = 1_000_000_000_000n;
-
 /** Formats integer base units of an asset with `decimals`, without floats. */
 export function formatAssetAmount(value, decimals) {
   if (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/u.test(value)) {
@@ -162,14 +159,10 @@ export function parseAssetAmount(value, decimals) {
  */
 export function monthlyAmountDisplay(value, rewardAsset) {
   if (rewardAsset?.kind !== "token") return formatMonthlyCapDisplay(value);
-  const display = formatAssetAmount(value, rewardAsset.decimals);
-  if (
-    BigInt(value) >
-    MAX_MONTHLY_TOKEN_UNITS * 10n ** BigInt(rewardAsset.decimals)
-  ) {
+  if (!isBaseUnits(value)) {
     throw new RangeError("monthly amount is too large");
   }
-  return `${display} ${rewardAsset.symbol}`;
+  return `${formatAssetAmount(value, rewardAsset.decimals)} ${rewardAsset.symbol}`;
 }
 
 function text(value, field, { max = 500, min = 1, pattern } = {}) {

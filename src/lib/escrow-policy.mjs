@@ -1,5 +1,15 @@
 import { isFundingAddress, isSolanaTransactionId } from "./funding-address.mjs";
 
+/** The largest base-unit amount supported by the vault accounting. */
+export const MAX_BASE_UNITS = (1n << 128n) - 1n;
+export function isBaseUnits(value) {
+  return (
+    typeof value === "string" &&
+    /^(0|[1-9][0-9]{0,38})$/.test(value) &&
+    BigInt(value) <= MAX_BASE_UNITS
+  );
+}
+
 /**
  * Technical network definitions only. Projects and their deployments live in
  * the D1 project registry, one revision per manifest change. `family` selects

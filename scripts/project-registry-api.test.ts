@@ -32,6 +32,10 @@ import {
   vettedContentSha256,
 } from "../backend/vetting/persistence";
 import { parseVettingResult } from "../backend/vetting/result";
+import {
+  allocationFundingMinor,
+  deriveAllocationFundingBasis,
+} from "../src/lib/allocation-funding";
 import type { RepositoryAccess } from "../src/lib/project-contracts";
 import { slugify } from "../src/lib/project-proposal";
 import { PROJECT_SKILL_TEMPLATES } from "../src/lib/project-schema.mjs";
@@ -415,6 +419,15 @@ describe("project registry API", () => {
     );
     expect(created.status).toBe(201);
     expect(tokenReads).toEqual([`base:${TOKEN}`]);
+    // The stored pool must also load through the public funding projection.
+    const tokenProject = await persistence.getProject("open-registry");
+    if (!tokenProject) throw new Error("token project was not created");
+    const basis = deriveAllocationFundingBasis(
+      tokenProject.manifest,
+      "2026-10",
+    );
+    expect(basis.monthlyCapMinor).toBe("1000500000000000000000");
+    expect(allocationFundingMinor(basis)).toBe(0n);
     // Owner decision D11: 1,000.5 tokens of 18 decimals, never dollars.
     expect(
       (await persistence.getProject("open-registry"))?.manifest.reward,

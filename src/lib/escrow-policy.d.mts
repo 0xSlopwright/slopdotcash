@@ -103,3 +103,6 @@ export type SecurityEscrowPolicy = Omit<EscrowPolicy, "feeBasisPoints"> & {
 export declare function assertSecurityEscrowPolicy(
   value: unknown,
 ): SecurityEscrowPolicy;
+
+export const MAX_BASE_UNITS: bigint;
+export function isBaseUnits(value: unknown): value is string;
