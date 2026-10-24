@@ -8,7 +8,7 @@ import {
   solanaVaultAddress,
 } from "./adapter";
 
-const PROGRAM = "4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj";
+const PROGRAM = "7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ";
 const TOKEN = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const PROJECT = solanaBase58(new Uint8Array(32).fill(7));
 const MINT_BYTES = new Uint8Array(32).fill(9);
@@ -191,8 +191,8 @@ describe("program addresses", () => {
   test("derive the Config and vault PDAs", () => {
     expect(PROJECT).toBe("US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx");
     expect(solanaConfigAddress(PROGRAM)).toBe(
-      "D1zzrMUJ5CyZZgwNkMHKp7n6WpV2MLev7i2P6j2BAxmC",
+      "9hjoFnUrgF65K4DnWSDbS1WJjoGu4LChuz8XFq73UtaS",
     );
-    expect(VAULT).toBe("HKDSkf4p2xZ3frfngLQdS8QiE6Z9UazAqWxhEMJ63piw");
+    expect(VAULT).toBe("DmCm1opZm61cYKAHYQ24LTVvh8UqPu5hpkRChccaCa6n");
   });
 });

@@ -1,5 +1,5 @@
 {
-  "address": "4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj",
+  "address": "7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ",
   "metadata": {
     "name": "slop_escrow",
     "version": "0.1.0",
@@ -720,7 +720,7 @@
         },
         {
           "name": "program",
-          "address": "4hXeYxsTKbwVKRRn8P1emGNDmVUSx13VMykfUAsbPnnj"
+          "address": "7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ"
         },
         {
           "name": "program_data"
