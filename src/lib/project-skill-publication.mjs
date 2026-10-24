@@ -130,12 +130,15 @@ function json(value) {
 async function verifiedTemplateFiles(group, readFile) {
   const files = {};
   for (const file of group.files) {
-    const bytes = await readFile(`${group.sourcePath}/${file.path}`);
+    // Template paths are POSIX names relative to the template root: an index
+    // built on Windows must publish the same archive bytes as a Linux build.
+    const path = file.path.replaceAll("\\", "/");
+    const bytes = await readFile(`${group.sourcePath}/${path}`);
     if ((await sha256Hex(bytes)) !== file.sha256)
       throw new Error(
-        `Skill template file ${group.sourcePath}/${file.path} does not match its digest`,
+        `Skill template file ${group.sourcePath}/${path} does not match its digest`,
       );
-    files[file.path] = bytes;
+    files[path] = bytes;
   }
   return files;
 }
