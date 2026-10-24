@@ -8,7 +8,10 @@ import {
   indexPaymentEvent,
   type PaymentChainAdapter,
 } from "../../backend/payments/ledger";
-import { coordinateMonthlyPayments } from "../../backend/payments/monthly";
+import {
+  automaticMonthlyPayment,
+  coordinateMonthlyPayments,
+} from "../../backend/payments/monthly";
 import {
   refreshVaultSnapshots,
   type VaultTotals,
@@ -32,7 +35,12 @@ import {
 } from "../../contracts/solana/adapter";
 import { chainFamily, type EscrowChain } from "../../src/lib/escrow-policy.mjs";
 import type { PayoutPolicy } from "../../src/lib/payments/contracts";
-import { parseMonthlySchedule } from "../../src/lib/payments/monthly-allocation";
+import {
+  monthlyCutoff,
+  parseMonthlySchedule,
+  periodEnd,
+} from "../../src/lib/payments/monthly-allocation";
+import type { MonthlyAuthorization } from "../payment-executor/monthly";
 import {
   loadRegistryPaymentDeployments,
   parsePaymentNetworks,
@@ -293,6 +301,122 @@ export async function runMonthlyCoordinator(
     throw new AggregateError(report.failures, "Monthly coordinator failures");
   return report;
 }
+/** Submit published ordinary allocations through the separately operated executor.
+ * A submission only wakes the finalized scanner; it never writes a reserve/payment.
+ */
+export async function runMonthlyCommitments(
+  env: PaymentsWorkerEnvironment,
+  now = new Date(),
+) {
+  if (env.PAYMENT_SCOPE === "security-bounty") return;
+  const schedule = parseMonthlySchedule(env.MONTHLY_PAYMENT_SCHEDULE);
+  if (!schedule) return;
+  const shifted = new Date(
+    now.getTime() - schedule.cutoffSecondsAfterPeriodEnd * 1000,
+  );
+  const activePeriod = new Date(
+    Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth() - 1, 1),
+  )
+    .toISOString()
+    .slice(0, 7);
+  const registry = await registryDeployments(env);
+  const deployments = registry.deployments;
+  const failures: unknown[] = [...registry.failures];
+  const rows = await env.PAYMENTS_DB.prepare(
+    "SELECT json_group_array(authorization) items FROM (SELECT a.authorization FROM monthly_payment_authorizations a LEFT JOIN monthly_payment_execution x ON x.project_id=a.project_id AND x.period=a.period AND x.network=a.network WHERE coalesce(x.complete,0)=0 AND (a.period=? OR json_extract(a.authorization,'$.plan.family')='solana') AND a.network IN (SELECT value FROM json_each(?)) ORDER BY coalesce(x.last_attempt,''),a.period,a.project_id LIMIT 50)",
+  )
+    .bind(activePeriod, env.PAYMENT_NETWORKS)
+    .first<{ items: string }>();
+  for (const encoded of JSON.parse(rows?.items ?? "[]") as string[]) {
+    try {
+      const authorization = JSON.parse(encoded) as MonthlyAuthorization;
+      const { plan } = authorization;
+      await env.PAYMENTS_DB.prepare(
+        "INSERT INTO monthly_payment_execution(project_id,period,network,last_attempt) VALUES(?,?,?,?) ON CONFLICT(project_id,period,network) DO UPDATE SET last_attempt=excluded.last_attempt",
+      )
+        .bind(
+          plan.request.projectId,
+          plan.request.period,
+          plan.request.network,
+          now.toISOString(),
+        )
+        .run();
+      const automatic = await automaticMonthlyPayment(
+        env.PAYMENTS_DB,
+        plan.request.projectId,
+      );
+      const cutoff = monthlyCutoff(schedule, plan.request.period);
+      const closes = monthlyCutoff(
+        schedule,
+        periodEnd(plan.request.period).toISOString().slice(0, 7),
+      );
+      const admit =
+        automatic && !!cutoff && !!closes && now >= cutoff && now < closes;
+      if (!admit && plan.family !== "solana") continue;
+      const matches = deployments.filter(
+        (d) =>
+          d.projectId === plan.request.projectId &&
+          d.network === plan.request.network &&
+          d.vault === plan.deployment.vault,
+      );
+      if (matches.length !== 1)
+        throw new Error("Monthly deployment is no longer served");
+      const service =
+        chainFamily(matches[0].chain) === "evm"
+          ? env.EVM_PAYMENT_EXECUTOR
+          : env.SOLANA_PAYMENT_EXECUTOR;
+      if (!service) throw new Error("Monthly executor unavailable");
+      const response = await service.fetch(
+        new Request(
+          `https://payments-executor.internal/v1/commit-monthly?admit=${admit}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(authorization),
+          },
+        ),
+      );
+      if (!response.ok) throw new Error("Monthly executor rejected commitment");
+      const result = (await response.json()) as {
+        transactionId?: unknown;
+        alreadyCommitted?: unknown;
+        notAdmitted?: unknown;
+      };
+      if (
+        !admit &&
+        plan.family === "solana" &&
+        result.notAdmitted === true &&
+        result.transactionId === null &&
+        result.alreadyCommitted === false
+      )
+        continue;
+      if (
+        !(
+          (result.alreadyCommitted === true && result.transactionId === null) ||
+          (result.alreadyCommitted === false &&
+            typeof result.transactionId === "string" &&
+            result.transactionId.length > 0)
+        )
+      )
+        throw new Error("Monthly executor returned no submission evidence");
+      if (result.alreadyCommitted === true) {
+        await env.PAYMENTS_DB.prepare(
+          "UPDATE monthly_payment_execution SET complete=1 WHERE project_id=? AND period=? AND network=?",
+        )
+          .bind(
+            plan.request.projectId,
+            plan.request.period,
+            plan.request.network,
+          )
+          .run();
+      }
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length)
+    throw new AggregateError(failures, "Monthly commitment failures");
+}
 export interface PaymentEventMessage {
   projectId: string;
   network?: string;
@@ -494,6 +618,7 @@ export default {
           >,
         ),
       () => runMonthlyCoordinator(env),
+      () => runMonthlyCommitments(env),
       () => runPaymentDispatch(env),
     ]) {
       try {

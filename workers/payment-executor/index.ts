@@ -2,9 +2,22 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { privateKeyToAccount } from "viem/accounts";
 import type { D1TransactionalDatabase as D1Database } from "../../backend/d1";
 import type { PaymentExecutor } from "../../backend/payments/dispatch";
+import type { MonthlyAttestationRequest } from "../../backend/payments/monthly-attestation";
+import { publishMonthlyAuthorizations } from "../../backend/payments/monthly-publication";
+import {
+  CloudflareProjectPersistence,
+  type ProjectD1Database,
+} from "../../backend/projects/cloudflare-persistence";
+import { publicRestrictionOf } from "../../backend/projects/enforcement";
 import { securityPaymentDatabase } from "../../backend/security/payment-database";
 import { solanaBase58 } from "../../contracts/solana/adapter";
 import { readBoundedJson } from "../../src/lib/browser-json";
+import {
+  ESCROW_NETWORKS,
+  paymentDeploymentRecord,
+} from "../../src/lib/escrow-policy.mjs";
+import { parseMonthlySchedule } from "../../src/lib/payments/monthly-allocation";
+import { runMonthlyCoordinator, syncRegistryVaults } from "../payments/index";
 import {
   createEvmAttester,
   createEvmExecutor,
@@ -13,7 +26,10 @@ import {
   preflightEvmDeployment,
   retireUnsignedAttempt,
   type Signer,
+  submitEvmMonthly,
 } from "./core";
+import type { MonthlyAuthorization } from "./monthly";
+import { signMonthlyAllocation } from "./monthly";
 import {
   SIGNER_STACKS,
   signerStack,
@@ -25,6 +41,7 @@ import {
   createSolanaExecutor,
   preflightSolanaDeployment,
 } from "./solana";
+import { submitSolanaMonthly } from "./solana-monthly";
 
 export { createEvmAttester, createEvmExecutor } from "./core";
 
@@ -38,6 +55,8 @@ interface Namespace {
 interface Environment {
   PAYMENT_SCOPE?: "security-bounty";
   PAYMENTS_DB: D1Database;
+  REGISTRY_DB?: ProjectD1Database;
+  MONTHLY_PAYMENT_SCHEDULE?: string;
   PAYMENT_DEPLOYMENTS: string;
   PAYMENT_RPC_URLS: string;
   SIGNER_ROLE: "attester" | "relayer";
@@ -73,6 +92,8 @@ export class PaymentSignerJournal {
       request.method !== "POST" ||
       ![
         "/v1/pay",
+        "/v1/monthly-authorization",
+        "/v1/commit-monthly",
         "/v1/complete-bind",
         "/v1/attempt-status",
         "/v1/cancel-unsubmitted",
@@ -80,6 +101,173 @@ export class PaymentSignerJournal {
     )
       return new Response("Not found", { status: 404 });
     try {
+      if (pathname === "/v1/commit-monthly") {
+        // Hosted relayers are test-only. Production submission belongs to a
+        // project-operated or permissionless executor, never this attester.
+        const stack = signerStack(this.env.SIGNER_STACK);
+        if (
+          stack !== "test" ||
+          this.env.SIGNER_ROLE !== "relayer" ||
+          this.env.PAYMENT_SCOPE === "security-bounty"
+        )
+          return new Response("Not found", { status: 404 });
+        const authorization = (await readBoundedJson(
+          request,
+          4 * 1024 * 1024,
+          "monthly commitment",
+        )) as MonthlyAuthorization;
+        const target = {
+          network: authorization.plan.request.network,
+          vault: authorization.plan.deployment.vault,
+        };
+        if (!stackServesNetwork(stack, target.network))
+          throw new Error("Wrong signer stack");
+        if (this.env.CHAIN_FAMILY === "solana") {
+          await preflightSolanaDeployment(this.env, target);
+          const encodedSeed = this.env[SIGNER_STACKS[stack].solanaSecret];
+          if (!encodedSeed || !/^[0-9a-f]{64}$/.test(encodedSeed))
+            throw new Error("Signer unavailable");
+          const seed = Uint8Array.from(encodedSeed.match(/../g) ?? [], (byte) =>
+            Number.parseInt(byte, 16),
+          );
+          return Response.json(
+            await submitSolanaMonthly(
+              {
+                PAYMENTS_DB: database,
+                PAYMENT_DEPLOYMENTS: this.env.PAYMENT_DEPLOYMENTS,
+                PAYMENT_RPC_URLS: this.env.PAYMENT_RPC_URLS,
+                JOURNAL: this.state.storage,
+                SOLANA_SIGNER: {
+                  address: solanaBase58(ed25519.getPublicKey(seed)),
+                  async signMessage(message: Uint8Array) {
+                    return ed25519.sign(message, seed);
+                  },
+                },
+              },
+              authorization,
+              new URL(request.url).searchParams.get("admit") !== "false",
+            ),
+          );
+        }
+        await preflightEvmDeployment(this.env, target);
+        const key = this.env[SIGNER_STACKS[stack].evmSecret];
+        if (!key) throw new Error("Signer unavailable");
+        return Response.json(
+          await submitEvmMonthly(
+            {
+              PAYMENTS_DB: database,
+              PAYMENT_DEPLOYMENTS: this.env.PAYMENT_DEPLOYMENTS,
+              PAYMENT_RPC_URLS: this.env.PAYMENT_RPC_URLS,
+              JOURNAL: this.state.storage,
+              SIGNER: privateKeyToAccount(key),
+            },
+            authorization,
+          ),
+        );
+      }
+      if (pathname === "/v1/monthly-authorization") {
+        if (
+          this.env.SIGNER_ROLE !== "attester" ||
+          this.env.PAYMENT_SCOPE === "security-bounty" ||
+          !this.env.REGISTRY_DB
+        )
+          return new Response("Not found", { status: 404 });
+        const input = (await readBoundedJson(
+          request,
+          4096,
+          "monthly authorization",
+        )) as MonthlyAttestationRequest;
+        const stack = signerStack(this.env.SIGNER_STACK);
+        if (
+          !input ||
+          typeof input.projectId !== "string" ||
+          typeof input.period !== "string" ||
+          typeof input.network !== "string" ||
+          typeof input.snapshotSha256 !== "string" ||
+          !stackServesNetwork(stack, input.network)
+        )
+          throw new Error("Invalid monthly authorization request");
+        const schedule = parseMonthlySchedule(
+          this.env.MONTHLY_PAYMENT_SCHEDULE,
+        );
+        if (!schedule) throw new Error("Monthly schedule required");
+        const registry = new CloudflareProjectPersistence(this.env.REGISTRY_DB);
+        const pinned = JSON.parse(this.env.PAYMENT_DEPLOYMENTS) as Record<
+          string,
+          unknown
+        >[];
+        const secrets = SIGNER_STACKS[stack];
+        const authorization = await signMonthlyAllocation(
+          {
+            db: database,
+            getProject: (id) => registry.getProject(id),
+            restricted: async (project) =>
+              publicRestrictionOf(project, await registry.listEnforcements())
+                .state !== "clear",
+            networks: pinned.map((d) => String(d.network)),
+            schedule,
+            now: () => new Date(),
+            journal: this.state.storage,
+            verifyDeployment: async (plan) => {
+              if (plan.family !== this.env.CHAIN_FAMILY)
+                throw new Error("Wrong chain family");
+              const expected = paymentDeploymentRecord(
+                input.projectId,
+                plan.deployment,
+              );
+              const matches = pinned.filter(
+                (d) =>
+                  d.projectId === input.projectId &&
+                  d.network === input.network &&
+                  d.vault === plan.deployment.vault,
+              );
+              if (
+                matches.length !== 1 ||
+                Object.entries(expected).some(
+                  ([key, value]) =>
+                    JSON.stringify(matches[0][key]) !== JSON.stringify(value),
+                )
+              )
+                throw new Error(
+                  "Monthly deployment differs from pinned configuration",
+                );
+              const target = {
+                network: input.network,
+                vault: plan.deployment.vault,
+              };
+              if (plan.family === "evm")
+                await preflightEvmDeployment(this.env, target);
+              else await preflightSolanaDeployment(this.env, target);
+            },
+            sign: async (plan) => {
+              if (plan.family === "evm") {
+                const key = this.env[secrets.evmSecret];
+                if (!key) throw new Error("Signer unavailable");
+                return (
+                  await privateKeyToAccount(key).sign({
+                    hash: `0x${plan.messageHex}`,
+                  })
+                ).slice(2);
+              }
+              const encoded = this.env[secrets.solanaSecret];
+              if (!encoded || !/^[a-f0-9]{64}$/.test(encoded))
+                throw new Error("Signer unavailable");
+              const seed = Uint8Array.from(encoded.match(/../g) ?? [], (b) =>
+                Number.parseInt(b, 16),
+              );
+              const message = Uint8Array.from(
+                plan.messageHex.match(/../g) ?? [],
+                (b) => Number.parseInt(b, 16),
+              );
+              return Array.from(ed25519.sign(message, seed), (b) =>
+                b.toString(16).padStart(2, "0"),
+              ).join("");
+            },
+          },
+          input,
+        );
+        return Response.json(authorization);
+      }
       const input = (await readBoundedJson(
         request,
         4096,
@@ -221,8 +409,74 @@ export class PaymentSignerJournal {
   }
 }
 
+/** Background indexing and monthly signatures only; never dispatches a payment. */
+export async function runMonthlyAttester(env: Environment) {
+  if (env.SIGNER_ROLE !== "attester" || env.PAYMENT_SCOPE === "security-bounty")
+    return;
+  if (!env.REGISTRY_DB) throw new Error("Monthly registry binding missing");
+  const schedule = parseMonthlySchedule(env.MONTHLY_PAYMENT_SCHEDULE);
+  if (!schedule) throw new Error("Monthly schedule missing");
+  const stack = signerStack(env.SIGNER_STACK);
+  const deployments = JSON.parse(env.PAYMENT_DEPLOYMENTS) as {
+    network: string;
+  }[];
+  const networks = [...new Set(deployments.map((d) => d.network))];
+  if (
+    !networks.length ||
+    networks.some((network) => !stackServesNetwork(stack, network))
+  )
+    throw new Error("Monthly signer stack mismatch");
+  const worker = {
+    PAYMENTS_DB: env.PAYMENTS_DB,
+    REGISTRY_DB: env.REGISTRY_DB,
+    PAYMENT_NETWORKS: JSON.stringify(networks),
+    PAYMENT_RPC_URLS: env.PAYMENT_RPC_URLS,
+    PAYMENT_SOLANA_GENESIS: JSON.stringify(
+      Object.fromEntries(
+        networks.map((network) => [
+          network,
+          ESCROW_NETWORKS[network as keyof typeof ESCROW_NETWORKS]?.genesisHash,
+        ]),
+      ),
+    ),
+    MONTHLY_PAYMENT_SCHEDULE: env.MONTHLY_PAYMENT_SCHEDULE,
+  };
+  const sync = await syncRegistryVaults(worker);
+  await runMonthlyCoordinator(worker);
+  const report = await publishMonthlyAuthorizations({
+    db: env.PAYMENTS_DB,
+    networks,
+    schedule,
+    now: new Date(),
+    authorize: async (request) => {
+      const response = await env.JOURNAL.get(
+        env.JOURNAL.idFromName(SIGNER_STACKS[stack].journal),
+      ).fetch(
+        new Request("https://attester.internal/v1/monthly-authorization", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(request),
+        }),
+      );
+      if (!response.ok)
+        throw new Error("Monthly attester rejected authorization");
+      return (await readBoundedJson(
+        response,
+        4 * 1024 * 1024,
+        "monthly authorization",
+      )) as MonthlyAuthorization;
+    },
+  });
+  if (sync.failures.length || report.failures.length)
+    throw new Error("Monthly indexing or authorization incomplete");
+  return report;
+}
+
 /** Service bindings only. workers_dev and preview URLs must remain disabled in both deployments. */
 export default {
+  async scheduled(_event: unknown, env: Environment) {
+    await runMonthlyAttester(env);
+  },
   async fetch(request: Request, env: Environment) {
     return env.JOURNAL.get(
       env.JOURNAL.idFromName(
