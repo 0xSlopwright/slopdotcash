@@ -30,6 +30,8 @@ const MAX_VETOES_BETWEEN_PAYMENTS: u8 = 3;
 /// recipient, rounded down once per award or withdrawal (PRD section 18). One rate for both
 /// stops an owner from awarding free funds to itself to pay a lower fee than a withdrawal (#907).
 const FEE_DIVISOR: u64 = 50;
+/// Size of a Project created before accrued fees and the monthly gate were added.
+const LEGACY_PROJECT_SIZE: usize = 316;
 #[program]
 pub mod slop_escrow {
     use super::*;
@@ -610,6 +612,39 @@ pub mod slop_escrow {
     }
     // Anyone moves the accrued payout and withdrawal fees to a token account the fee recipient
     // owns. Only this instruction depends on the fee recipient, as on EVM.
+    // Anyone grows a Project created by the 316-byte build to the current layout, paying
+    // any extra rent. The new counters start at zero: that build sent fees out at once and
+    // had no monthly gate. No other instruction can read the old layout.
+    pub fn migrate_project(ctx: Context<MigrateProject>) -> Result<()> {
+        let info = ctx.accounts.project.to_account_info();
+        require!(
+            info.owner == ctx.program_id
+                && info.data_len() == LEGACY_PROJECT_SIZE
+                && info.try_borrow_data()?[..8] == *Project::DISCRIMINATOR,
+            EscrowError::NotLegacyProject
+        );
+        let size = 8 + Project::INIT_SPACE;
+        let lacking = Rent::get()?
+            .minimum_balance(size)
+            .saturating_sub(info.lamports());
+        if lacking > 0 {
+            anchor_lang::system_program::transfer(
+                CpiContext::new(
+                    ctx.accounts.system_program.to_account_info(),
+                    anchor_lang::system_program::Transfer {
+                        from: ctx.accounts.payer.to_account_info(),
+                        to: info.clone(),
+                    },
+                ),
+                lacking,
+            )?;
+        }
+        info.realloc(size, true)?;
+        emit!(ProjectMigrated {
+            project: info.key()
+        });
+        Ok(())
+    }
     pub fn claim_fees(ctx: Context<ClaimFees>) -> Result<()> {
         let p = &ctx.accounts.project;
         let amount = p.accrued_fees;
@@ -1128,6 +1163,15 @@ pub struct Withdraw<'info> {
     pub token_program: Program<'info, Token>,
 }
 #[derive(Accounts)]
+pub struct MigrateProject<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    /// CHECK: the handler requires a program-owned Project of the 316-byte layout.
+    #[account(mut)]
+    pub project: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
+}
+#[derive(Accounts)]
 pub struct ClaimFees<'info> {
     #[account(mut,has_one=mint)]
     pub project: Box<Account<'info, Project>>,
@@ -1309,6 +1353,10 @@ pub struct MonthlyAwardReleased {
     pub gross: u64,
 }
 #[event]
+pub struct ProjectMigrated {
+    pub project: Pubkey,
+}
+#[event]
 pub struct FeesClaimed {
     pub project: Pubkey,
     pub fee_account: Pubkey,
@@ -1401,6 +1449,8 @@ pub enum EscrowError {
     MonthlyOutstanding,
     #[msg("This monthly award can still be committed")]
     AwardCommittable,
+    #[msg("Account is not a Project of the 316-byte layout")]
+    NotLegacyProject,
 }
 
 #[account]
@@ -1471,6 +1521,10 @@ mod tests {
         assert!(merkle_sum_root(leaves[0], 0, 3, &[leaves[1]]).is_err());
         assert!(merkle_sum_root(leaves[0], 3, 3, &[]).is_err());
         assert_eq!(merkle_sum_root(leaves[0], 0, 1, &[]).unwrap(), leaves[0]);
+    }
+    #[test]
+    fn migration_appends_two_counters() {
+        assert_eq!(8 + Project::INIT_SPACE, LEGACY_PROJECT_SIZE + 16);
     }
     #[test]
     fn fee_is_two_percent_per_award_or_withdrawal() {
