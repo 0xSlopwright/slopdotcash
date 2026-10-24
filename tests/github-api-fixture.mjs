@@ -1,10 +1,16 @@
 /**
  * A loopback stand-in for the public GitHub API reads the project registry
  * makes (repository facts, organization membership, the integration-branch
- * head that security vetting pins, and the security intake readiness check),
+ * head that security vetting pins, the security intake readiness check, and
+ * the synthetic private vulnerability reports that verify receipt),
  * so the registry browser lane is deterministic and never
  * spends GitHub's rate limit. The browser's own repository lookup is mocked
  * from the same facts.
+ *
+ * Contributor flags read account facts: `GET /user/:id` and the member's
+ * merged pull requests through `GET /repos/:owner/:repo/issues?creator=`.
+ * Accounts are unknown until a test sets them with
+ * `PUT /__fixture/github-users/:id?login=&createdAt=&merged=`.
  *
  * It also stands in for the automatic private intake GitHub calls: the
  * intake App's OAuth authorization and code exchange, `/user`, the App
@@ -31,6 +37,13 @@ export const E2E_SECURITY_ACCOUNTS = Object.freeze({
   dispute: "900000016",
   "security-b": "900000017",
 });
+
+/**
+ * The installation token the fixture mints for the slopdotcash App stand-in,
+ * only for a repository-scoped "Repository security advisories: read"
+ * request. The fixture refuses advisory reads without it.
+ */
+const E2E_INSTALLATION_TOKEN = "ghs_e2e-fixture-advisory-read-token";
 
 /** Deterministic public facts for a fixture repository. */
 export function fixtureRepository(fullName) {
@@ -71,11 +84,14 @@ const GHSA_ALPHABET = "23456789cfghjmpqrvwx";
 
 /** The fixture's private advisory store and intake App state. */
 function privateIntakeFixture() {
-  const installed = new Set();
+  // The App is installed on every fixture repository unless a test removes it.
+  const uninstalled = new Set();
   const advisories = [];
   const tokens = new Map();
   const codes = new Map();
   const faults = { create: "ok", list: "ok", get: "ok" };
+  // Request bodies the loopback analysis provider received, in order.
+  const analysisRequests = [];
   let issued = 0;
   const loginToAccount = (login) => {
     const role = /^e2e-(.+)$/u.exec(login ?? "")?.[1];
@@ -121,8 +137,9 @@ function privateIntakeFixture() {
     return advisory;
   };
   return {
-    installed,
+    uninstalled,
     advisories,
+    analysisRequests,
     tokens,
     codes,
     faults,
@@ -159,14 +176,25 @@ async function handlePrivateIntake(state, request, response, url) {
     response.end(body === undefined ? "" : JSON.stringify(body));
     return true;
   };
+  const seedReport = /^\/__fixture\/security-advisories\/([^/]+\/[^/]+)$/u.exec(
+    path,
+  );
+  if (request.method === "POST" && seedReport) {
+    const advisory = JSON.parse(await readBody(request));
+    state.advisories.push({
+      repository: seedReport[1].toLowerCase(),
+      advisory,
+    });
+    return send(204);
+  }
   const appControl =
     /^\/__fixture\/intake-app\/([^/]+\/[^/]+)\/(installed|missing)$/u.exec(
       path,
     );
   if (request.method === "PUT" && appControl) {
     if (appControl[2] === "installed")
-      state.installed.add(appControl[1].toLowerCase());
-    else state.installed.delete(appControl[1].toLowerCase());
+      state.uninstalled.delete(appControl[1].toLowerCase());
+    else state.uninstalled.add(appControl[1].toLowerCase());
     return send(204);
   }
   const faultControl =
@@ -174,6 +202,46 @@ async function handlePrivateIntake(state, request, response, url) {
   if (request.method === "PUT" && faultControl) {
     state.faults[faultControl[1]] = faultControl[2];
     return send(204);
+  }
+  // A loopback stand-in for the Surplus Messages API that the private AI
+  // analysis calls in the private-intake lane. It answers one fixed
+  // proposal and keeps each request so a test can see what the model read.
+  if (request.method === "POST" && path === "/anthropic/v1/messages") {
+    if (request.headers.authorization !== "Bearer e2e-fixture-analysis-key")
+      return send(401, { type: "error" });
+    const body = await readBody(request);
+    // Owner decision: request Opus 5.5 through Surplus only.
+    if (JSON.parse(body).model !== "claude-opus-5.5")
+      return send(400, { type: "error" });
+    state.analysisRequests.push(body);
+    return send(200, {
+      type: "message",
+      role: "assistant",
+      stop_reason: "end_turn",
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            summary:
+              "Fixture proposal: the withdraw path skips the owner check, so a crafted proof can drain the vault.",
+            severity: "critical",
+            potentialLoss: "likely",
+            duplicateCaseIds: [],
+            rootCauseKey: "vault-withdraw-owner-check",
+            remediation: "Require the owner check before every withdraw.",
+          }),
+        },
+      ],
+    });
+  }
+  if (request.method === "GET" && path === "/__fixture/analysis/requests") {
+    const needle = url.searchParams.get("containing") ?? "";
+    return send(200, {
+      count: state.analysisRequests.length,
+      containing: state.analysisRequests.filter(
+        (body) => needle !== "" && body.includes(needle),
+      ).length,
+    });
   }
   const countControl = /^\/__fixture\/advisories\/([^/]+\/[^/]+)\/count$/u.exec(
     path,
@@ -213,21 +281,43 @@ async function handlePrivateIntake(state, request, response, url) {
     return send(200, { access_token: token, token_type: "bearer" });
   }
   const installation = /^\/repos\/([^/]+\/[^/]+)\/installation$/u.exec(path);
+  const appJwt = /^Bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u;
   if (request.method === "GET" && installation)
-    return state.installed.has(
-      decodeURIComponent(installation[1]).toLowerCase(),
-    )
+    return appJwt.test(request.headers.authorization ?? "") &&
+      !state.uninstalled.has(decodeURIComponent(installation[1]).toLowerCase())
       ? send(200, { id: 4242 })
       : send(404, { message: "Not Found" });
+  // Owner decision D10: the App mints one repository-scoped token with
+  // advisory read only. Any broader request is refused.
+  if (
+    request.method === "POST" &&
+    path === "/app/installations/4242/access_tokens"
+  ) {
+    const scope = JSON.parse(await readBody(request));
+    return appJwt.test(request.headers.authorization ?? "") &&
+      Array.isArray(scope.repositories) &&
+      scope.repositories.length === 1 &&
+      JSON.stringify(scope.permissions) ===
+        JSON.stringify({ repository_advisories: "read" })
+      ? send(201, {
+          token: E2E_INSTALLATION_TOKEN,
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        })
+      : send(422, { message: "Invalid scope" });
+  }
   const advisoryPath =
     /^\/repos\/([^/]+\/[^/]+)\/security-advisories(?:\/(reports|GHSA-[^/]+))?$/u.exec(
       path,
     );
   if (path !== "/user" && !advisoryPath) return false;
-  const user = state.tokens.get(
-    (request.headers.authorization ?? "").replace(/^Bearer /u, ""),
-  );
-  if (user === undefined) return send(401, { message: "Bad credentials" });
+  const token = (request.headers.authorization ?? "").replace(/^Bearer /u, "");
+  const user = state.tokens.get(token);
+  const readOnly =
+    token === E2E_INSTALLATION_TOKEN &&
+    request.method === "GET" &&
+    advisoryPath;
+  if (user === undefined && !readOnly)
+    return send(401, { message: "Bad credentials" });
   if (request.method === "GET" && path === "/user") return send(200, user);
   const repository = decodeURIComponent(advisoryPath[1]);
   const own = state.advisories.filter(
@@ -271,6 +361,54 @@ async function handlePrivateIntake(state, request, response, url) {
     );
   }
   return send(404, { message: "Not Found" });
+}
+
+/**
+ * Account facts for contributor flag eligibility. Every merged pull request
+ * the fixture reports belongs to the repository that was asked about.
+ */
+function handleGithubUsers(users, request, response, url) {
+  const send = (status, body) => {
+    response.writeHead(status, { "content-type": "application/json" });
+    response.end(body === undefined ? "" : JSON.stringify(body));
+    return true;
+  };
+  const control = /^\/__fixture\/github-users\/([1-9][0-9]*)$/u.exec(
+    url.pathname,
+  );
+  if (request.method === "PUT" && control) {
+    users.set(control[1], {
+      id: Number(control[1]),
+      login: url.searchParams.get("login") ?? "",
+      type: "User",
+      created_at: url.searchParams.get("createdAt") ?? "",
+      merged: Number(url.searchParams.get("merged") ?? "0"),
+    });
+    return send(204);
+  }
+  if (request.method !== "GET") return false;
+  const user = /^\/user\/([1-9][0-9]*)$/u.exec(url.pathname);
+  if (user) {
+    const found = users.get(user[1]);
+    if (found === undefined) return send(404, { message: "Not Found" });
+    const { merged: _merged, ...facts } = found;
+    return send(200, facts);
+  }
+  if (/^\/repos\/[^/]+\/[^/]+\/issues$/u.test(url.pathname)) {
+    const creator = url.searchParams.get("creator");
+    const found = [...users.values()].find(
+      (entry) => entry.login.toLowerCase() === creator?.toLowerCase(),
+    );
+    return send(
+      200,
+      Array.from({ length: found?.merged ?? 0 }, (_, index) => ({
+        number: index + 1,
+        user: { id: found.id, login: found.login },
+        pull_request: { merged_at: "2026-09-01T00:00:00Z" },
+      })),
+    );
+  }
+  return false;
 }
 
 /**
@@ -361,6 +499,7 @@ export function startGitHubApiFixture(port) {
   // Private vulnerability reporting per repository; on unless a test sets it.
   const intake = new Map();
   const privateIntake = privateIntakeFixture();
+  const githubUsers = new Map();
   const slopbot = {
     installations: new Map(),
     permissions: new Map(),
@@ -370,6 +509,7 @@ export function startGitHubApiFixture(port) {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const path = url.pathname;
     if (handleSlopbotApp(slopbot, request, response, path)) return;
+    if (handleGithubUsers(githubUsers, request, response, url)) return;
     try {
       if (await handlePrivateIntake(privateIntake, request, response, url))
         return;

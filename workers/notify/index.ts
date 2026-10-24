@@ -29,6 +29,8 @@ type Env = {
   ACTIVITY_MAIL_PILOT?: string;
   NOTIFY_FROM_ADDRESS: string;
   NOTIFY_INBOX_URL?: string;
+  /** Slop moderators; without it, moderator case mail is suppressed. */
+  PROJECT_MODERATOR_GITHUB_IDS?: string;
 };
 
 function securityDependencies(env: Env): SecurityMailDependencies | null {
@@ -38,6 +40,12 @@ function securityDependencies(env: Env): SecurityMailDependencies | null {
   return {
     db: env.SLOP_DB,
     config,
+    moderatorGithubIds: new Set(
+      (env.PROJECT_MODERATOR_GITHUB_IDS ?? "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter((id) => /^[1-9][0-9]{0,19}$/u.test(id)),
+    ),
     fromAddress: env.NOTIFY_FROM_ADDRESS,
     now: () => new Date(),
     sendEmail: (from, to, rawMime) =>
