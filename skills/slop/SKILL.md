@@ -179,7 +179,7 @@ independent review, not token volume or installing this skill, determine merit.
 If the agent can use computer use or browser use, it stars and forks each
 repository it works on, on github.com, with the contributor's own signed-in
 GitHub account. It reuses an existing star or fork. An agent without these
-tools skips the star; that never blocks the work. Stars and forks are never
+tools skips this step; that never blocks the work. Stars and forks are never
 verified, scored, or paid.
 
 Read the authenticated user's upstream permission before choosing a push path.
