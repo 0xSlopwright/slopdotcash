@@ -478,6 +478,7 @@ function HeroHeading() {
           {HERO_ACTIONS.map((candidate) => (
             <span className="hero-switch-sizer" key={candidate}>
               {candidate}
+              <span className="hero-typewriter-caret" />
             </span>
           ))}
           <span className="hero-typewriter">

@@ -9,6 +9,7 @@ test("hero types, deletes and cycles all original campaign phrases without movin
   const heading = page.getByRole("heading", { level: 1 });
   const text = heading.locator(".hero-typewriter");
   await expect(text).toHaveText("SHIPPING OPEN SOURCE.");
+  await page.evaluate(() => document.fonts.ready);
   const before = await heading.boundingBox();
   for (const next of [
     "SECURING THE WEB.",
@@ -46,5 +47,7 @@ test("reduced motion keeps the hero static", async ({ page }) => {
   await expect(text).toHaveText("SHIPPING OPEN SOURCE.");
   await page.clock.runFor(30_000);
   await expect(text).toHaveText("SHIPPING OPEN SOURCE.");
-  await expect(page.locator(".hero-typewriter-caret")).toBeHidden();
+  await expect(
+    page.locator(".hero-typewriter > .hero-typewriter-caret"),
+  ).toBeHidden();
 });
