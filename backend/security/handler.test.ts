@@ -5,11 +5,11 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
-import { seedParticipationBan } from "./participation-ban.fixture";
 import { sqliteD1 } from "../../tests/sqlite-d1";
 import type { AdvisoryReader, GithubPrivateReport } from "./advisories";
 import type { SecurityAnalysisInput, SecurityAnalyzer } from "./analysis";
 import { handleSecurityApi, type SecurityD1Database } from "./handler";
+import { seedParticipationBan } from "./participation-ban.fixture";
 
 const migrations = readdirSync("migrations")
   .filter((f) => f.endsWith(".sql"))

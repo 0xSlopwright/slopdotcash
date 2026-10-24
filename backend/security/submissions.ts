@@ -21,12 +21,12 @@
 import type { GithubActor as Actor } from "../../src/lib/project-contracts";
 import type { SecurityBountyTerms } from "../../src/lib/security-bounty.mjs";
 import { fail } from "../api-error";
+import type { D1QueryStatement as D1Statement } from "../d1";
+import { notifySecurityReportReceived } from "../notifications/events";
 import {
   hasParticipationBan,
   PARTICIPATION_BAN_QUERY,
 } from "../projects/account-bans";
-import type { D1QueryStatement as D1Statement } from "../d1";
-import { notifySecurityReportReceived } from "../notifications/events";
 import {
   type AdvisoryFacts,
   type FailureCode,

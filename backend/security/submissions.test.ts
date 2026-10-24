@@ -11,12 +11,12 @@ import {
 } from "bun:test";
 import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
-import { seedParticipationBan } from "./participation-ban.fixture";
 import { sqliteD1 } from "../../tests/sqlite-d1";
 import type { SecurityAnalysisInput, SecurityAnalyzer } from "./analysis";
 import { FAKE_OAUTH, fakeGithub } from "./github-advisories.fake";
 import { handleSecurityApi, type SecurityD1Database } from "./handler";
 import { githubIntakeOAuth, type IntakeConfig } from "./intake-grant";
+import { seedParticipationBan } from "./participation-ban.fixture";
 import { cvss3BaseScore, deterministicAnalyzer } from "./report-analysis";
 import { RECONCILE_QUIET_MS, SUBMITTED_LIMIT_MS } from "./submissions";
 
