@@ -405,7 +405,7 @@ test("owner revisions publish presentation at once, rescan skill inputs and appl
 });
 
 test("a payout exclusion starts with the next UTC month on every revision path", async () => {
-  const { persistence, call, create } = registry();
+  const { persistence, call, create, deps } = registry();
   await create("open-registry", "example/open-registry");
   const exclusion = (fromCycle: string) => ({
     actorId: OTHER,
@@ -471,6 +471,26 @@ test("a payout exclusion starts with the next UTC month on every revision path",
     (await revise("admin/projects/open-registry/manifest", ADMIN, undefined))
       .status,
   ).toBe(200);
+  expect(
+    (await revise("projects/open-registry", OWNER, [exclusion("2026-11")]))
+      .status,
+  ).toBe(200);
+  deps.now = () => new Date("2026-11-01T00:00:00.000Z");
+  // The numeric account ID controls private allocation checks. Keeping the
+  // node ID must not allow an owner or admin to replace that identity now.
+  for (const [path, actor] of [
+    ["projects/open-registry", OWNER],
+    ["admin/projects/open-registry/manifest", ADMIN],
+  ]) {
+    const changed = await revise(path, actor, [
+      { ...exclusion("2026-11"), actorId: OWNER },
+    ]);
+    expect(changed.status).toBe(422);
+    expect(
+      (await persistence.getProject("open-registry"))?.manifest.reward
+        .payoutExclusions,
+    ).toEqual([exclusion("2026-11")]);
+  }
 });
 
 test("an application stored before self-service setup publishes once, by its applicant", async () => {
