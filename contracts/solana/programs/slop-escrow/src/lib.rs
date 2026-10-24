@@ -406,9 +406,10 @@ pub mod slop_escrow {
         )
     }
     // Anyone returns one award of a recorded allocation to free balance when it can never
-    // commit: its source was consumed by hand before the allocation froze, or by another
-    // month's award, or its actor is zero. A source the owner consumes after the freeze
-    // stays reserved, so selective removal never becomes a refund. The `settled` marker,
+    // commit: its source already pays the same actor at least as much, or was consumed by
+    // hand before the allocation froze, or its actor is zero. A source the owner consumes
+    // after the freeze with a smaller award or one to another actor stays reserved, so
+    // selective removal never becomes a refund. The `settled` marker,
     // shared with commit_monthly_award, lets each source of a month settle only once.
     #[allow(clippy::too_many_arguments)]
     pub fn release_monthly_award(
@@ -443,7 +444,11 @@ pub mod slop_escrow {
             // owner consumed it by hand before the freeze, which it may do. A smaller award or
             // one to another actor after the freeze leaves this gross reserved rather than
             // refunding the gap.
-            let pays_actor = consumed.actor_id == actor_id && consumed.gross >= gross;
+            // Gross and the principal the contributor receives, so a migrated obligation
+            // with another fee can never under-pay.
+            let pays_actor = consumed.actor_id == actor_id
+                && consumed.gross >= gross
+                && consumed.principal >= gross - fee_for(gross);
             require!(
                 pays_actor || consumed.committed_at < ctx.accounts.month.frozen_at,
                 EscrowError::AwardCommittable

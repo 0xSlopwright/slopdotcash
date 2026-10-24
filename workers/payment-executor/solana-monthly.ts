@@ -193,7 +193,9 @@ const paysActor = (
   entry: { githubUserId: string; grossMicro: string },
 ) =>
   solanaUint(recorded, 112) === BigInt(entry.githubUserId) &&
-  solanaUint(recorded, 8) >= BigInt(entry.grossMicro);
+  solanaUint(recorded, 8) >= BigInt(entry.grossMicro) &&
+  solanaUint(recorded, 120) >=
+    BigInt(entry.grossMicro) - BigInt(entry.grossMicro) / 50n;
 /** Reads accounts at one finalized slot per batch of 100; returns the lowest slot seen. */
 async function readFinalized(config: SolanaEscrowConfig, addresses: string[]) {
   const values: unknown[] = [];
@@ -220,8 +222,10 @@ async function readFinalized(config: SolanaEscrowConfig, addresses: string[]) {
 /**
  * Attester rule for solanaMonthlyMessage v3: at one finalized slot no included
  * source has a `monthly-source` account, and any `origin` it has records an
- * identical award (counted once, as on EVM); frozen_at is that slot's block time. Origins are never closed, so every batch's source was also absent
- * at the lowest batch slot, whose block time is returned. A later hand commit has
+ * award paying that actor at least that gross (counted once, as on EVM);
+ * frozen_at is that slot's block time. Origins are never closed, so every
+ * batch's source was also absent at the lowest batch slot, whose block time is
+ * returned. A later hand commit of a smaller award or one to another actor has
  * committed_at >= frozen_at, so release_monthly_award keeps its gross reserved.
  */
 export async function freezeSolanaMonthly(
