@@ -276,7 +276,13 @@ sections 6 and 7). Migration `0062` adds its private records.
    An underfunded month waits for a deposit and creates nothing. The steward
    gets one Inbox payout exception for that month (key
    `monthly-underfunded:PROJECT:YYYY-MM`), however often the coordinator
-   retries.
+   retries. Before it creates new obligations, the coordinator excludes accounts
+   with an active moderator ban. It records the exact ban in
+   `monthly_payment_exclusions` and keeps the original frozen snapshot. Excluded
+   amounts do not delay other recipients or become their extra awards. A ban
+   during the write forces a retry. Previously funded obligations remain valid.
+   The owner sees excluded entries with zero payable amounts; they cannot obtain
+   a reservation plan for those entries.
 5. **Reservation and payment.** The vault contract accepts `commitAward` only
    from the owner's wallet, so each obligation waits for the owner on the
    Awards page. `POST .../monthly/:YYYY-MM/commitment` and
