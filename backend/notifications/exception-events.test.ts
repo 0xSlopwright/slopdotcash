@@ -8,8 +8,6 @@ import type { ProjectDefinition } from "../../src/lib/projects.mjs";
 import { sqliteD1 } from "../../tests/sqlite-d1";
 import { CloudflareProjectPersistence } from "../projects/cloudflare-persistence";
 import {
-  notifyProjectEnforcement,
-  notifyProjectFlagPause,
   notifyProjectRevision,
   notifyProjectScanFailed,
   notifySecurityReportReceived,
@@ -24,7 +22,6 @@ const T = "2026-10-23T10:00:00.000Z";
 const R = "2026-10-23T11:00:00.000Z";
 const APPLICANT = "910000001";
 const STEWARD = "910000002";
-const MODERATOR = "910000003";
 const REPORTER = "910000004";
 const ADMIN = { githubId: "1", githubLogin: "admin" };
 
@@ -235,54 +232,6 @@ describe("exception-only notification events", () => {
     });
     expect(rows(APPLICANT)).toEqual(lost);
     expect(rows(STEWARD)).toEqual(lost);
-  });
-
-  test("a two-flag pause notifies owners and moderators once, without the reason", async () => {
-    const { db, sqlite, rows, project } = open();
-    project("alpha", "active", "example/alpha");
-    sqlite.exec(
-      `INSERT INTO project_enforcements (id,project_id,sequence,action,state_after,appeal_after,reason,evidence_reference,repository_github_id,repository_keys,actor_github_id,actor_github_login,actor_role,decision_source,before_revision,before_manifest_sha256,result,created_at)
-         VALUES ('enf_flagpause01','alpha',1,'quarantine','quarantined','none','Private flag evidence','private-flags-1','123','["example/alpha"]','${MODERATOR}','moderator','project-moderator','admin-panel',1,'${"a".repeat(64)}','no_revision_needed','${R}');`,
-    );
-    for (let replay = 0; replay < 2; replay++)
-      await db.batch([
-        notifyProjectFlagPause(db, "enf_flagpause01", [MODERATOR, "x1"]),
-        // The generic enforcement notice shares the event key, so it cannot
-        // add a second notice for the same transition.
-        notifyProjectEnforcement(db, "enf_flagpause01"),
-      ] as never);
-    const paused = [
-      {
-        event_key: "project-enforcement:enf_flagpause01",
-        kind: "project_paused_by_flags",
-        subject: "alpha",
-        detail: null,
-        action_path: "/projects/alpha",
-      },
-    ];
-    expect(rows(APPLICANT)).toEqual(paused);
-    expect(rows(STEWARD)).toEqual(paused);
-    expect(rows(MODERATOR)).toEqual([
-      {
-        event_key: "flag-pause-review:enf_flagpause01",
-        kind: "flag_pause_review",
-        subject: "alpha",
-        detail: null,
-        action_path: "/admin",
-      },
-    ]);
-    // Flag evidence never reaches a notice, and nothing reaches activity mail
-    // without consent.
-    expect(
-      sqlite
-        .query(
-          "SELECT count(*) n FROM notifications WHERE detail IS NOT NULL OR subject <> 'alpha'",
-        )
-        .get(),
-    ).toEqual({ n: 0 });
-    expect(
-      sqlite.query("SELECT count(*) n FROM activity_notification_outbox").get(),
-    ).toEqual({ n: 0 });
   });
 
   test("a verified report receipt reaches only its reporter, once, with no acknowledgment", async () => {

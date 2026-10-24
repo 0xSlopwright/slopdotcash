@@ -12,8 +12,6 @@ export const NOTIFICATION_KINDS = [
   "project_ready",
   "project_scan_failed",
   "project_installation_lost",
-  "project_paused_by_flags",
-  "flag_pause_review",
   "project_revision",
   "award_reserved",
   "payment_paid",
@@ -143,10 +141,6 @@ export function notificationTitle(n: Notification): string {
       return `The security scan of ${n.subject} could not finish. Contributor work stays closed until a scan passes.`;
     case "project_installation_lost":
       return `Slopbot is no longer installed on a ${n.subject} repository. Install it again so reviews continue.`;
-    case "project_paused_by_flags":
-      return `Two contributors flagged ${n.subject}, so it is paused. A clean fresh scan reinstates it.`;
-    case "flag_pause_review":
-      return `Two contributor flags paused ${n.subject}.`;
     case "project_revision":
       return `The ${n.subject} project manifest changed.`;
     case "award_reserved":
@@ -192,12 +186,10 @@ export function notificationAction(n: Notification): string {
     case "payout_exception":
       return "Open project";
     case "reinstatement_review":
-    case "flag_pause_review":
       return "Open admin";
     case "project_ready":
     case "project_scan_failed":
     case "project_installation_lost":
-    case "project_paused_by_flags":
       return "Open project";
     case "security_case":
     case "security_report_received":

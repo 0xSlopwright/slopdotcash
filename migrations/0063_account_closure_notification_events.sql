@@ -29,8 +29,8 @@ BEGIN
   SELECT RAISE(ABORT, 'a closed account has no sessions');
 END;
 
--- Widen the inbox kinds. Setup completion, failed setup checks, flag pauses
--- and private report receipts replace routine admission notices. The old
+-- Widen the inbox kinds. Setup completion, failed setup checks and private
+-- report receipts replace routine admission notices. The old
 -- application kinds stay valid because inbox rows are permanent. SQLite
 -- cannot alter a CHECK in place, so the table is rebuilt as in 0029: copy the
 -- rows aside, drop the triggers and table, create the replacement, copy the
@@ -68,7 +68,7 @@ CREATE TABLE notifications (
     'project_reinstated', 'reinstatement_denied', 'reinstatement_review',
     'payout_exception', 'security_case',
     'project_ready', 'project_scan_failed', 'project_installation_lost',
-    'project_paused_by_flags', 'flag_pause_review', 'security_report_received'
+    'security_report_received'
   )),
   subject TEXT NOT NULL CHECK (length(subject) BETWEEN 1 AND 80),
   detail TEXT CHECK (detail IS NULL OR length(detail) BETWEEN 1 AND 1000),

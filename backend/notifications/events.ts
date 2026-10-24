@@ -8,8 +8,7 @@
  *
  * Notices report outcomes and exceptions, not routine admission steps:
  * setup completion (`project_ready`), failed checks (`project_scan_failed`,
- * `project_installation_lost`), flag pauses (`project_paused_by_flags`,
- * `flag_pause_review`), payment exceptions (`payout_held`,
+ * `project_installation_lost`), payment exceptions (`payout_held`,
  * `payout_exception`) and private report receipts
  * (`security_report_received`). Only private case notices that ask a role
  * holder to act (`security_case`) carry an acknowledgment and escalation;
@@ -384,40 +383,6 @@ export function notifyReinstatementReviewers<S>(
        ${ONCE}`,
     )
     .bind(recordId, JSON.stringify(reviewers));
-}
-
-/**
- * Two distinct contributor flags paused the project (PRD sections 4 and 8).
- * The pause is the `quarantine` enforcement record; the caller asserts that
- * flags caused it. The project's owners get `project_paused_by_flags` under
- * the record's enforcement event key, so this replaces, never duplicates,
- * `notifyProjectEnforcement` for that record. Each moderator in `moderators`
- * gets one `flag_pause_review` notice. Neither notice carries the flag
- * evidence or the reporters.
- */
-export function notifyProjectFlagPause<S>(
-  db: Preparer<S>,
-  recordId: string,
-  moderators: readonly string[],
-): S {
-  return db
-    .prepare(
-      `${INSERT}
-       SELECT 'project-enforcement:' || e.id, owners.recipient,
-              'project_paused_by_flags', e.project_id, NULL,
-              '/projects/' || e.project_id, e.created_at, e.created_at
-         FROM project_enforcements e
-         JOIN ${PROJECT_OWNERS("(SELECT project_id FROM project_enforcements WHERE id = ?1)")} owners
-        WHERE e.id = ?1 AND e.action = 'quarantine'
-          AND ${GITHUB_ID("owners.recipient")}
-       UNION ALL
-       SELECT 'flag-pause-review:' || e.id, m.value, 'flag_pause_review',
-              e.project_id, NULL, '/admin', e.created_at, e.created_at
-         FROM project_enforcements e, json_each(?2) m
-        WHERE e.id = ?1 AND e.action = 'quarantine' AND ${GITHUB_ID("m.value")}
-       ${ONCE}`,
-    )
-    .bind(recordId, JSON.stringify(moderators));
 }
 
 /**

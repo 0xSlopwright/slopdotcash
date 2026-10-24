@@ -18,7 +18,6 @@ recipient. Notices report outcomes and exceptions, not routine admission:
 | `project_ready` | `notifyProjectRevision` on a revision that makes the project active | owners, never the publisher |
 | `project_scan_failed` | `notifyProjectScanFailed` for an `incomplete` assessment | owners |
 | `project_installation_lost` | `notifySlopbotInstallationLost` when an installation is suspended or removed | owners of each affected project |
-| `project_paused_by_flags`, `flag_pause_review` | `notifyProjectFlagPause` for the flag-caused `quarantine` record | owners; listed moderators |
 | `payout_held`, `payout_exception` | payout dispatch | contributor; project steward |
 | `security_report_received` | `notifySecurityReportReceived` once a report is verified | reporter |
 | `security_case` | private case events | current case role holders |
