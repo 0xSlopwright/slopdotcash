@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { deployUpgradeableFactory } from "../../contracts/evm/integration/upgrade";
 import { solanaBase58 } from "../../contracts/solana/adapter";
 import { ESCROW_NETWORKS } from "../../src/lib/escrow-policy.mjs";
 import {
@@ -150,7 +151,7 @@ async function evmFork(network: string, port: number) {
       "ESCROW_ACCEPTANCE_RELAYER_KEY",
     ] as const)
       await rpc("anvil_setBalance", [address(name), "0x8ac7230489e80000"]);
-    const create = (contract: string, args: string[]) =>
+    const create = (contract: string, args: string[] = []) =>
       JSON.parse(
         Bun.spawnSync(
           [
@@ -166,13 +167,12 @@ async function evmFork(network: string, port: number) {
             address("ESCROW_ACCEPTANCE_REGISTRAR_KEY"),
             "--broadcast",
             "--json",
-            "--constructor-args",
-            ...args,
+            ...(args.length ? ["--constructor-args", ...args] : []),
           ],
           { stderr: "inherit" },
         ).stdout.toString(),
       ).deployedTo as string;
-    const factory = create("src/ProjectEscrow.sol:EscrowFactory", [
+    const factory = deployUpgradeableFactory(create, [
       address("ESCROW_ACCEPTANCE_REGISTRAR_KEY"),
       feeRecipient,
       address("ESCROW_ACCEPTANCE_IDENTITY_KEY"),

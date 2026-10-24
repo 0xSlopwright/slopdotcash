@@ -300,7 +300,7 @@ above, never through a hidden administrative bypass.
 ## Mainnet upgrade
 
 The program is upgradeable on mainnet until the human runbook in
-`contracts/DEPLOY-MAINNET.md` ("Solana program upgrade") revokes the upgrade
+`contracts/DEPLOY-MAINNET.md` ("Solana program upgrade") retains the owner-controlled upgrade
 authority. That runbook builds verifiably, upgrades through a checked buffer,
 creates the Config with `config-plan.mjs`, lists unpinned projects, and then
 runs `solana program set-upgrade-authority --final`. Agents never run it.
@@ -425,3 +425,5 @@ deployment; an earlier 73-byte Config is not migrated or accepted by the
 adapter. Prepare `rotationAuthority` in the reviewed configuration and keep
 its seed only in the owner-controlled signing environment. It must differ
 from the fee wallet, identity authority, project owner and vault.
+
+The owner approved zero mandatory award and identity-rotation delays and retained production upgrade authority on 24 October 2026. New project configurations use zero delays. Existing project accounts retain their recorded delays. The configured upgrade key and exact program bytes remain part of verification.

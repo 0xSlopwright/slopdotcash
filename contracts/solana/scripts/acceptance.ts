@@ -567,14 +567,14 @@ export async function runSolana(
   if (new Set(addresses).size !== addresses.length)
     throw new Error("Every test role needs its own key");
   const bindingDelay = BigInt(
-    process.env.ESCROW_ACCEPTANCE_BINDING_DELAY_SECONDS ?? "3600",
+    process.env.ESCROW_ACCEPTANCE_BINDING_DELAY_SECONDS ?? "0",
   );
   const rotationDelay = BigInt(
-    process.env.ESCROW_ACCEPTANCE_ROTATION_DELAY_SECONDS ?? "7200",
+    process.env.ESCROW_ACCEPTANCE_ROTATION_DELAY_SECONDS ?? "0",
   );
   // The project registry refuses a Solana deployment whose rotation notice
   // reaches four binding delays (assertEscrowPolicy), so stop before signing.
-  if (rotationDelay >= 4n * bindingDelay)
+  if (bindingDelay > 0n && rotationDelay >= 4n * bindingDelay)
     throw new Error(
       "ESCROW_ACCEPTANCE_ROTATION_DELAY_SECONDS must be shorter than four binding delays",
     );

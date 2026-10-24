@@ -1,3 +1,14 @@
+> Current owner decision (24 October 2026): deploy replacement EVM UUPS proxies
+> with `ESCROW_UPGRADE_AUTHORITY` explicitly set and `BINDING_DELAY = 0`.
+> The script deploys vault logic, factory logic and an atomically initialized
+> factory proxy. Retain Solana upgrade authority. Neither upgrade path has a
+> timelock. Historical immutable contracts retain their original behavior.
+> Record `evmUpgrade` (authority, both implementation addresses and both code
+> SHA-256 digests) alongside the proxy digests. Read ERC-1967 implementation
+> slots at the same finalized block used for verification. Proxy bytecode alone
+> does not prove the approved logic. After an upgrade, review and append a new
+> registry revision before treating the new implementation as accepted.
+
 # Escrow mainnet deployment (humans only)
 
 These are the exact human steps to deploy the escrow v4 `EscrowFactory` on
@@ -21,7 +32,7 @@ needs a reviewed manifest revision with the deployment evidence below
    rehearsed key recovery runbook are recorded. These are launch gates.
 3. Decide and record, for each chain, three public addresses and their
    custody:
-   - `ESCROW_REGISTRAR`: creates vaults and proposes identity authority
+   - `ESCROW_REGISTRAR`: proposes identity authority
      rotations. Use a reviewed multisig or hardware key, never the attester
      service key.
    - `ESCROW_IDENTITY_AUTHORITY`: Slop's attester key (PAY-05).
@@ -29,7 +40,9 @@ needs a reviewed manifest revision with the deployment evidence below
      defaults to Slop's published Base fee recipient
      `0x8f77C37D8650776bFe73c9b12B15209eE15D9b86` when this variable is not
      set. On every other chain it is required.
-4. The deployer account pays gas only and holds no escrow role. Use a hardware
+4. Set `ESCROW_UPGRADE_AUTHORITY` to the approved deployment authority. It can
+   upgrade factory and vault logic immediately. The deployer pays gas and holds
+   upgrade power only if selected. Use a hardware
    wallet (`--ledger` or `--trezor`) or a Foundry keystore (`--account`).
    Never pass a private key on the command line.
 5. Use Foundry 1.7.1 (commit `4072e48705af9d93e3c0f6e29e93b5e9a40caed8`).
@@ -52,7 +65,7 @@ needs a reviewed manifest revision with the deployment evidence below
 
 Each script rejects every other chain id and reverts when a required address
 is missing. One factory serves every standard ERC-20 on its chain; the
-registrar later creates one vault per project and token.
+project owner later creates its own vault per project, token and purpose.
 
 ### 1.1 Robinhood Chain only: opcode check
 
@@ -72,6 +85,7 @@ Stop if the value is below 75. Record the value and block.
 ```sh
 cd contracts/evm
 export ESCROW_REGISTRAR=0x...
+export ESCROW_UPGRADE_AUTHORITY=0x...
 export ESCROW_IDENTITY_AUTHORITY=0x...
 export ESCROW_FEE_RECIPIENT=0x...      # optional on Base only
 forge script script/DeployEthereum.s.sol:DeployEthereum \
@@ -108,10 +122,8 @@ compare the runtime code SHA-256. The digest is the manifest's
 ### 1.5 Source verification
 
 ```sh
-ARGS=$(cast abi-encode 'constructor(address,address,address,uint64)' \
-  "$ESCROW_REGISTRAR" "$ESCROW_FEE_RECIPIENT" "$ESCROW_IDENTITY_AUTHORITY" 172800)
-forge verify-contract "$FACTORY" src/ProjectEscrow.sol:EscrowFactory \
-  --chain-id 1 --constructor-args "$ARGS" --watch \
+forge verify-contract "$FACTORY_IMPLEMENTATION" src/ProjectEscrow.sol:EscrowFactory \
+  --chain-id 1 --watch \
   --verifier etherscan --etherscan-api-key "$ETHERSCAN_API_KEY"
 ```
 
@@ -140,8 +152,7 @@ VAULT=$(cast call "$FACTORY" 'vaults(bytes32)(address)' "$KEY" --rpc-url "$RPC")
 Before you create a vault, check that the token is a standard ERC-20 with
 exact transfers: no fee on transfer, no rebasing. Read `decimals()` and record
 it. After creation, verify the vault source like the factory (the constructor
-arguments are `projectId, token, owner, purpose, feeRecipient,
-bindingDelay`), record its runtime code SHA-256 as `codeSha256`, and run
+arguments are the vault implementation and encoded `initialize` call), record its runtime code SHA-256 as `codeSha256`, and run
 `verifyEvmDeployment` from `contracts/evm/adapter.ts` against the manifest
 before activation.
 
@@ -268,7 +279,7 @@ including zero padding. It is the `codeSha256` value for every project manifest.
 Optionally submit the verification to the public registry:
 `solana-verify verify-from-repo -u "$RPC" --program-id "$PROGRAM" --library-name slop_escrow --mount-path contracts/solana --commit-hash "$COMMIT" https://github.com/SlopDotCash/slopdotcash`.
 
-### 6. Create the Config (once, before revoking the upgrade authority)
+### 6. Create the Config once with the upgrade authority
 
 Write `config-input.json`:
 
@@ -325,19 +336,18 @@ every unpinned project, so its manifest cannot activate payments. Tell its owner
 to create a new project under the Config and move unused funds with
 `withdraw` (2% fee).
 
-### 8. Revoke the upgrade authority
+### 8. Retain the owner's upgrade authority
 
-```bash
-solana program set-upgrade-authority "$PROGRAM" --final \
-  --upgrade-authority "$UPGRADE_AUTHORITY" -u "$RPC"
-```
-
-After this, no one can change the program or create a Config.
+The owner approved continuing Solana upgradeability without a timelock on 24 October 2026.
+Keep the separate owner-controlled upgrade key. Do not use `--final` and do not
+transfer this authority to the identity attester or fee converter. Record its
+public key in the reviewed manifest. The authority can replace fund-controlling
+code; this trust remains explicit after activation.
 
 ### 9. Final checks
 
 ```bash
-solana program show "$PROGRAM" -u "$RPC"   # Authority: none
+solana program show "$PROGRAM" -u "$RPC"   # Authority: the approved owner upgrade public key
 solana program dump "$PROGRAM" final.so -u "$RPC"
 sha256sum final.so                         # must equal DEPLOYED_CODE_SHA256
 solana-verify get-program-hash "$PROGRAM" -u "$RPC"   # must equal REVIEWED_EXECUTABLE_HASH
@@ -345,7 +355,7 @@ node scripts/config-plan.mjs projects config-input.json   # Config unchanged
 ```
 
 Every project manifest then uses `codeSha256 = DEPLOYED_CODE_SHA256`,
-`upgradeAuthority = null`, `identityAuthority = $IDENTITY` and
+`upgradeAuthority = $UPGRADE_AUTHORITY_PUBKEY`, `identityAuthority = $IDENTITY` and
 `feeRecipient = $FEES`. The adapter (`verifySolanaDeployment`) refuses any
 other value. Attach the commands, outputs and hashes from every step to the
 release issue. An upgrade is not proof of payment availability: run the funded

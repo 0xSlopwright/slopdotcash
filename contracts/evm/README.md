@@ -1,3 +1,19 @@
+> Replacement deployment policy, approved 24 October 2026: factory and vault
+> logic use OpenZeppelin v5.5.0 UUPS proxies. The deployment authority controls
+> upgrades without a timelock. Fee and identity keys cannot upgrade. New release
+> deployments use zero award delay and immediate identity-authority rotation.
+> Legacy delay examples below describe previous deployments; they do not set
+> the replacement deployment policy.
+>
+> `ESCROW_UPGRADE_AUTHORITY` is required. Implementations disable initialization;
+> proxies initialize atomically. `setVaultImplementation` selects logic for new
+> vaults only. Existing vaults upgrade individually with `upgradeToAndCall`.
+> Factory upgrade-authority transfer requires recipient acceptance and changes
+> who can upgrade every vault from that factory. It has no waiting period.
+> Verify the proxy code, ERC-1967 implementation address, implementation code
+> digest and upgrade authority, not only the proxy bytecode. Keep storage layout
+> compatible and prove funded lifecycle continuity before each upgrade.
+
 # EVM escrow v5
 
 This is an immutable escrow implementation for one project, one token and one
@@ -42,8 +58,8 @@ the owner. A vault proves only which account created it. The project registry
 decides which owner's vault a project uses, so a vault that another account
 creates for the same project ID never replaces or reaches the owner's vault.
 The registrar creates no vaults and holds no money power. The registrar, the
-fee recipient and the identity authority are explicit constructor parameters;
-the deploying account holds no role. Anyone can deposit. The project owner
+fee recipient, identity authority and upgrade authority are explicit initializer parameters.
+The deploying account holds an upgrade role only if selected as upgrade authority. Anyone can deposit. The project owner
 approves awards and withdraws free funds to itself. An ordinary vault also
 takes the bounded monthly commitment below. The identity authority
 is a factory-level address that every vault reads; it is Slop's attester key. A
@@ -82,8 +98,8 @@ change. Protect the identity authority and verify account and wallet proof
 before signing. A compromised authority with a colluding destination wallet
 can redirect an eligible payment. Authority rotation does not reverse payments.
 
-The constructor still bounds the award/review period to one hour through
-30 days. Production configuration retains its 48-hour minimum. The adapter
+The initializer bounds the award/review period to zero through
+30 days. New production deployments use zero. The adapter
 checks this parameter against the reviewed manifest. Use separate identities
 for the owner, attester, registrar, and gas sponsor.
 
@@ -91,9 +107,9 @@ for the owner, attester, registrar, and gas sponsor.
 
 The factory holds `identityAuthority` and one pending replacement. The
 registrar calls `proposeIdentityAuthority(next)`; the proposal is public in
-`IdentityAuthorityRotationProposed` with its effective time, 7 days after the
-proposal (`AUTHORITY_ROTATION_DELAY`). The registrar can cancel its own pending
-proposal with `cancelIdentityAuthorityRotation`. After the effective time
+`IdentityAuthorityRotationProposed` with its effective time, the proposal block time
+(`AUTHORITY_ROTATION_DELAY = 0`). The registrar can cancel its own pending
+proposal with `cancelIdentityAuthorityRotation`. Immediately after the proposal
 anyone can call `executeIdentityAuthorityRotation`, which emits
 `IdentityAuthorityRotated`; the current authority has no call that blocks or
 delays it. Until execution the current authority keeps binding; afterwards only

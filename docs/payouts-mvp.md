@@ -39,3 +39,9 @@ Every escrow policy records an immutable effective UTC cycle. Earlier cycles ret
 7. Reviewed legacy migration and separately authorized production activation.
 
 See [the full architecture and test plan](base-solana-payout-plan.md). A source implementation, local test, merged PR, or deployment alone does not prove the next boundary.
+
+## Owner-approved replacement contracts
+
+The 24 October 2026 owner decision permits immediate award payment and identity-authority rotation, with the existing required signatures. Replacement EVM factories and vaults use owner-controlled upgrades without an upgrade timelock. The deployment authority controls upgrades; fee and attester keys do not. An upgrade can change the handling of deposited funds. The application must verify the reviewed implementation and upgrade authority. Existing immutable deployments and their obligations remain unchanged. This supersedes the delay and immutability requirements above. Calendar-month accounting and evidence retention do not change.
+
+The owner also approved retaining the separate Solana production upgrade authority without a timelock. Do not revoke it during activation. Verify its public key and deployed bytes.

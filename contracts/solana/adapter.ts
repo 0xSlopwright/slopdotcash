@@ -33,7 +33,6 @@ export interface SolanaEscrowConfig {
   /** Reviewed notice period, in seconds, before a proposed identity authority takes effect. */
   rotationDelaySeconds: string;
 }
-const MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 /** Project account size: 257 bytes of core state, the pending identity authority, its
  * effective time and confirmation, the i64 rotation delay, then the u8 purpose, the u64
@@ -224,13 +223,8 @@ export async function verifySolanaDeployment(
     throw new Error("Missing reviewed program digest");
   if ((await rpc(config, "getGenesisHash", [])) !== config.genesisHash)
     throw new Error("Wrong Solana cluster");
-  // An upgrade key could swap the program, empty vaults, and restore the
-  // reviewed bytes before this check runs again.
-  if (
-    config.genesisHash === MAINNET_GENESIS &&
-    config.upgradeAuthority !== null
-  )
-    throw new Error("Mainnet escrow requires a revoked upgrade authority");
+  // The owner explicitly retains upgrade control. Verify the configured authority
+  // below together with the exact finalized program bytes.
   for (const delay of [config.bindingDelaySeconds, config.rotationDelaySeconds])
     if (
       !/^(0|[1-9][0-9]{0,18})$/.test(delay) ||

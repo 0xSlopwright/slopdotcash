@@ -10,7 +10,15 @@ export type EvmRpc =
       request: (method: string, params: unknown[]) => Promise<unknown>;
     };
 
+export interface EvmUpgrade {
+  authority: string;
+  vaultImplementation: string;
+  vaultImplementationCodeSha256: string;
+  factoryImplementation: string;
+  factoryImplementationCodeSha256: string;
+}
 export type EvmEscrowConfig = EvmRpc & {
+  evmUpgrade?: EvmUpgrade;
   /** Selected from the approved private settlement, never inferred from event amounts. */
   payoutPolicy?: PayoutPolicy;
   chainId: bigint;
@@ -132,7 +140,7 @@ async function rpc(config: EvmRpc, method: string, params: unknown[]) {
 }
 
 /** The reviewed factory rotates the identity authority only after this notice period. */
-export const EVM_AUTHORITY_ROTATION_DELAY = 7n * 24n * 60n * 60n;
+export const EVM_AUTHORITY_ROTATION_DELAY = 0n;
 async function runtimeSha256(
   config: EvmEscrowConfig,
   address: string,
@@ -224,6 +232,58 @@ export async function verifyEvmDeployment(
     config.factoryCodeSha256
   )
     throw new Error("Escrow factory code does not match reviewed deployment");
+  // Proxy bytecode alone does not identify the logic that holds funds. Pin both
+  // implementation slots and their code at the same block as the payment proof.
+  const implementationSlot =
+    "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
+  const upgrade = config.evmUpgrade;
+  for (const [target, expected, digest] of [
+    [
+      config.vault,
+      upgrade?.vaultImplementation,
+      upgrade?.vaultImplementationCodeSha256,
+    ],
+    [
+      config.factory,
+      upgrade?.factoryImplementation,
+      upgrade?.factoryImplementationCodeSha256,
+    ],
+  ]) {
+    const slot = await rpc(config, "eth_getStorageAt", [
+      target,
+      implementationSlot,
+      blockTag,
+    ]);
+    if (typeof slot !== "string" || !HASH.test(slot))
+      throw new Error("Invalid implementation slot");
+    if (!upgrade) {
+      if (BigInt(slot) !== 0n)
+        throw new Error("Proxy deployment has no reviewed implementation");
+    } else if (
+      !expected ||
+      !ADDRESS.test(expected) ||
+      !digest ||
+      !/^[0-9a-f]{64}$/.test(digest) ||
+      slot.toLowerCase() !== addressWord(expected).toLowerCase() ||
+      (await runtimeSha256(config, expected, blockTag)) !== digest
+    ) {
+      throw new Error(
+        "Escrow implementation does not match reviewed deployment",
+      );
+    }
+  }
+  if (
+    upgrade &&
+    (!ADDRESS.test(upgrade.authority) ||
+      [config.feeRecipient, config.identityAuthority].some(
+        (value) => value.toLowerCase() === upgrade.authority.toLowerCase(),
+      ) ||
+      (await getter(config, config.factory, "upgradeAuthority()", blockTag)) !==
+        addressWord(upgrade.authority))
+  )
+    throw new Error(
+      "Escrow upgrade authority does not match reviewed deployment",
+    );
   for (const [target, signature, expected] of [
     [config.vault, "token()", config.asset],
     [config.vault, "owner()", config.owner],
@@ -246,7 +306,7 @@ export async function verifyEvmDeployment(
     [
       config.factory,
       "AUTHORITY_ROTATION_DELAY()",
-      EVM_AUTHORITY_ROTATION_DELAY,
+      config.evmUpgrade ? EVM_AUTHORITY_ROTATION_DELAY : 604800n,
     ],
   ] as const) {
     if (BigInt(await getter(config, target, signature, blockTag)) !== expected)

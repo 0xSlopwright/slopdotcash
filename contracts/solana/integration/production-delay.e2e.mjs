@@ -158,10 +158,9 @@ test("the deployable build rejects a binding delay below one hour", async () => 
       })
       .rpc();
   };
-  await assert.rejects(initialize(1), /InvalidDelay/);
-  await assert.rejects(initialize(3599), /InvalidDelay/);
-  // The identity authority rotation delay has the same one-hour floor.
-  await assert.rejects(initialize(3600, 1), /InvalidDelay/);
-  await assert.rejects(initialize(3600, 3599), /InvalidDelay/);
-  await initialize(3600);
+  await assert.rejects(initialize(-1), /InvalidDelay/);
+  await assert.rejects(initialize(30 * 86400 + 1), /InvalidDelay/);
+  await assert.rejects(initialize(0, -1), /InvalidDelay/);
+  await assert.rejects(initialize(0, 90 * 86400 + 1), /InvalidDelay/);
+  await initialize(0, 0);
 });

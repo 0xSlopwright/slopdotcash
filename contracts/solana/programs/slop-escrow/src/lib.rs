@@ -6,18 +6,10 @@ use anchor_spl::associated_token::get_associated_token_address;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, TransferChecked};
 use solana_sha256_hasher::hashv;
 declare_id!("7E5ZRh5y6Xgg7k3kdS75CMiTE2efoq9PqNWR5fCVDavQ");
-/// Bounds on the binding delay. Below one hour the owner cannot react; above 30 days a
-/// binding or a committed award waits too long to be useful. The local end-to-end suite
-/// builds with the `short-delay-for-tests` feature so it can wait the delay out in
-/// seconds; that build must never be deployed.
-const MIN_BINDING_DELAY: i64 = if cfg!(feature = "short-delay-for-tests") {
-    1
-} else {
-    3600
-};
+/// Zero-delay deployment is supported. Historical projects retain their recorded delay.
+const MIN_BINDING_DELAY: i64 = 0;
 const MAX_BINDING_DELAY: i64 = 30 * 86400;
-/// An identity authority rotation is public for at least the binding delay floor and at most
-/// 90 days; production manifests require at least 7 days.
+/// Historical rotation delays remain bounded; new deployments use zero delay.
 const MAX_ROTATION_DELAY: i64 = 90 * 86400;
 /// A monthly allocation for calendar UTC month M can be recorded from this delay after M ends
 /// until this delay after the next month ends (owner decision D1: 00:00 UTC on the 4th).
@@ -1246,7 +1238,7 @@ pub enum EscrowError {
     AwardPending,
     #[msg("Owner veto limit reached since the actor's last payment")]
     VetoLimit,
-    #[msg("Binding delay must be 1 hour to 30 days; rotation delay 1 hour to 90 days")]
+    #[msg("Binding delay must be 0 to 30 days; rotation delay 0 to 90 days")]
     InvalidDelay,
     #[msg("Binding submission expired")]
     BindingExpired,
@@ -1289,16 +1281,17 @@ pub struct Origin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The deployable build (no `short-delay-for-tests`) must keep the one-hour floor.
+    // The deployable build supports immediate payment and rotation.
     #[cfg(not(feature = "short-delay-for-tests"))]
     #[test]
     fn production_delay_bounds() {
-        assert!(!valid_delay(0));
-        assert!(!valid_delay(3599));
+        assert!(valid_delay(0));
+        assert!(valid_delay(3599));
         assert!(valid_delay(3600));
         assert!(valid_delay(30 * 86400));
         assert!(!valid_delay(30 * 86400 + 1));
-        assert!(!valid_rotation_delay(3599));
+        assert!(valid_rotation_delay(0));
+        assert!(valid_rotation_delay(3599));
         assert!(valid_rotation_delay(3600));
         assert!(valid_rotation_delay(90 * 86400));
         assert!(!valid_rotation_delay(90 * 86400 + 1));
