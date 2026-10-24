@@ -634,7 +634,7 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
         ? { vettingReview: byEnforcement.get(row.id) }
         : {}),
       ...(bansByEnforcement.has(row.id)
-        ? { maintainerBan: bansByEnforcement.get(row.id) }
+        ? { maintainerBans: bansByEnforcement.get(row.id) }
         : {}),
     }));
   }
@@ -673,11 +673,13 @@ export class CloudflareProjectPersistence implements ProjectPersistence {
           ),
       );
     }
-    for (const maintainer of record.maintainerBan ?? [])
+    for (const maintainer of record.maintainerBans ?? [])
       statements.push(
         this.db
           .prepare(
-            "INSERT INTO project_maintainer_bans (enforcement_id, github_id, github_login) VALUES (?, ?, ?)",
+            `INSERT INTO project_maintainer_bans
+             (enforcement_id, github_id, github_login)
+           VALUES (?, ?, ?)`,
           )
           .bind(record.id, maintainer.githubId, maintainer.githubLogin),
       );

@@ -31,6 +31,10 @@ const MODERATOR_TOKEN = process.env.SLOP_E2E_MODERATOR_TOKEN ?? "";
 const VETTING_PUBLIC_KEY = process.env.SLOP_E2E_VETTING_PUBLIC_KEY ?? "";
 const VETTING_PRIVATE_KEY = process.env.SLOP_E2E_VETTING_PRIVATE_KEY ?? "";
 const GITHUB_FIXTURE = process.env.SLOP_E2E_GITHUB_API_ORIGIN ?? "";
+/** One maintainer session per viewport, which a moderator bans. */
+const MAINTAINER_TOKENS = JSON.parse(
+  process.env.SLOP_E2E_MAINTAINER_TOKENS ?? "{}",
+) as Record<string, string>;
 /** A contributor session from the security roles, used as a flagger. */
 const SECURITY_ACCOUNT = {
   id: "900000011",
@@ -1088,26 +1092,27 @@ test("moderators restrict a project and refuse reinstatement without canonical s
   await applicantContext.close();
 });
 
-test("a moderator denies a malicious project's appeal and bans its maintainer, who cannot list another project @registry", async ({
+test("a moderator decides a confirmed malicious result and bans the project and its maintainer @registry", async ({
   browser,
   request,
 }) => {
-  // PRD section 8: after a confirmed malicious result, a moderator decides
-  // whether to reinstate the project or ban it and the maintainer.
   const suffix = test.info().project.name.replace(/-chromium$/u, "");
   const login = `e2e-maintainer-${suffix}`;
-  const token = (
-    JSON.parse(process.env.SLOP_E2E_MAINTAINER_TOKENS ?? "{}") as Record<
-      string,
-      string
-    >
-  )[`maintainer-${suffix}`];
+  const token = MAINTAINER_TOKENS[`maintainer-${suffix}`] ?? "";
+  const words = suffix.replaceAll("-", " ");
   const project = {
-    repository: `${login}/drainer-registry-${suffix}`,
-    id: `drainer-registry-${suffix}`,
-    name: `Drainer Registry ${suffix.replaceAll("-", " ")}`,
+    id: `malice-${suffix}`,
+    repository: `${login}/malice-${suffix}`,
+    name: `Malice ${words}`,
+  };
+  const next = {
+    id: `malice-next-${suffix}`,
+    repository: `${login}/malice-next-${suffix}`,
+    name: `Malice next ${words}`,
   };
   const evidence = `https://github.com/${project.repository}/security/advisories/GHSA-e2e`;
+
+  // The maintainer lists the project; setup queues its first scan.
   const maintainerContext = await browser.newContext(walkthroughOptions());
   const maintainer = await maintainerContext.newPage();
   const maintainerErrors = observe(maintainer);
@@ -1121,107 +1126,128 @@ test("a moderator denies a malicious project's appeal and bans its maintainer, w
     maintainer.getByRole("heading", { name: "Project created" }),
   ).toBeVisible();
 
-  // The first scan confirms malice, so the signed vetting service bans the
-  // project, and its maintainer appeals.
+  // A signed confirmed malicious result bans the project at once.
   await postVettingResult(request, project.id, project.repository, "malicious");
-  const origin = new URL(maintainer.url()).origin;
-  const appealed = await maintainer.request.post("/api/v1/project-appeals", {
-    headers: { origin, cookie: `__Host-slop_points=${token}` },
-    data: {
-      projectId: project.id,
-      reason: "The script was a test and is gone",
-      evidenceReference: evidence,
-    },
-  });
-  expect(appealed.status()).toBe(200);
-  expect((await appealed.json()).record).toMatchObject({
-    stateAfter: "banned",
-    appealAfter: "requested",
-  });
+  expect((await request.get(`/api/v1/projects/${project.id}`)).status()).toBe(
+    410,
+  );
   expect(maintainerErrors).toEqual([]);
   await maintainerContext.close();
 
+  // Without an appeal, the moderator queue lists the result for a decision.
   const moderatorContext = await browser.newContext(walkthroughOptions());
   const moderator = await moderatorContext.newPage();
   const moderatorErrors = observe(moderator);
   await signIn(moderator, MODERATOR_TOKEN);
-  await moderator.goto(`/admin?project=${project.id}`, {
-    waitUntil: "networkidle",
+  await moderator.goto("/admin", { waitUntil: "networkidle" });
+  const summary = moderator.locator(".admin-project-summary", {
+    has: moderator.getByRole("heading", { name: project.name, exact: true }),
   });
+  await expect(summary).toContainText(
+    "Moderator decision needed: confirmed malicious result",
+  );
+  await expectAccessible(moderator);
+  await moderator.screenshot({
+    path: test.info().outputPath("malicious-decision-queue.png"),
+    fullPage: true,
+  });
+  await summary.getByRole("button", { name: `Open ${project.name}` }).click();
   const panel = moderator
     .locator(".admin-card", {
       has: moderator.getByText(project.id, { exact: true }),
     })
     .getByRole("region", { name: "Enforcement", exact: true });
+  await expect(panel).toContainText("Moderator decision needed");
   await expect(panel).toContainText("Banned");
-  await expect(panel).toContainText("Reinstatement requested");
-  await panel
-    .getByLabel("Action")
-    .selectOption({ label: "Deny reinstatement" });
-  const banMaintainer = panel.getByLabel(/Also ban the maintainer/u);
-  await expect(panel).toContainText(`Also ban the maintainer (@${login}`);
-  await banMaintainer.check();
+  await expect(panel.getByLabel("Action")).toHaveValue("ban");
+  await expect(panel.getByLabel("Action").locator("option:checked")).toHaveText(
+    "Ban project and maintainer",
+  );
   await panel
     .getByLabel("Reason (private audit record)")
-    .fill("Confirmed wallet drainer; the appeal shows no fix");
+    .fill("Reviewed the signed finding: the install script steals tokens");
   await panel.getByLabel("Evidence reference (link or case id)").fill(evidence);
   await panel.getByRole("button", { name: "Preview action" }).click();
   const preview = panel.getByRole("group", {
     name: "Preview: check it, then confirm",
   });
-  await expect(preview).toContainText(`Maintainer ban@${login}`);
   await expect(preview).toContainText("Banned → Banned");
+  await expect(preview).toContainText(`Maintainer accounts banned@${login}`);
   await expectAccessible(moderator);
   await moderator.screenshot({
-    path: test.info().outputPath("maintainer-ban-preview.png"),
+    path: test.info().outputPath("malicious-decision-preview.png"),
     fullPage: true,
   });
   await preview
-    .getByRole("button", { name: "Confirm: Deny reinstatement" })
+    .getByRole("button", { name: "Confirm: Ban project and maintainer" })
     .click();
   await expect(moderator.getByRole("status").first()).toContainText(
-    "Deny reinstatement recorded",
+    "Ban project and maintainer recorded",
   );
-  await moderator.reload({ waitUntil: "networkidle" });
-  await expect(panel).toContainText(
-    `Banned maintainers@${login} (cannot create, publish or change a project)`,
-  );
+  await expect(panel).not.toContainText("Moderator decision needed");
+  await expect(panel).toContainText(`Banned maintainers@${login}`);
   await panel.getByText(/Enforcement history/u).click();
-  await expect(panel).toContainText(`Maintainers banned: @${login}`);
+  await expect(panel.locator("li")).toHaveCount(2);
+  await expect(panel.locator("li").nth(1)).toContainText(
+    "Ban project and maintainer by @e2e-moderator (project-moderator, admin-panel)",
+  );
   await expectAccessible(moderator);
+  await moderator.evaluate(() => {
+    document.documentElement.style.zoom = "2";
+  });
+  await expectAccessible(moderator);
+  await moderator.screenshot({
+    path: test.info().outputPath("malicious-decision-zoom200.png"),
+    fullPage: true,
+  });
   expect(moderatorErrors).toEqual([]);
   await moderatorContext.close();
 
-  // The banned maintainer cannot list another repository it owns. A new
-  // context starts without the first draft.
-  const refusedContext = await browser.newContext(walkthroughOptions());
-  const refused = await refusedContext.newPage();
-  const refusedErrors = observe(refused);
-  await signIn(refused, token);
-  const second = {
-    repository: `${login}/second-registry-${suffix}`,
-    name: `Second Registry ${suffix.replaceAll("-", " ")}`,
-  };
-  await setSlopbot(`${second.repository}/installed`);
-  await draftApplication(refused, second);
-  await refused
+  // The decision stays a ban on every public route.
+  expect((await request.get(`/api/v1/projects/${project.id}`)).status()).toBe(
+    410,
+  );
+  expect((await request.get(`/projects/${project.id}/SKILL.md`)).status()).toBe(
+    410,
+  );
+
+  // The banned maintainer returns in a new session and cannot list another
+  // project.
+  const returningContext = await browser.newContext(walkthroughOptions());
+  const returning = await returningContext.newPage();
+  const returningErrors = observe(returning);
+  await signIn(returning, token);
+  await setSlopbot(`${next.repository}/installed`);
+  await draftApplication(returning, next);
+  await returning
     .getByRole("button", { name: "Create project", exact: true })
     .click();
-  await expect(refused.getByRole("alert")).toContainText(
-    `A moderator banned this maintainer with project ${project.id}.`,
+  await expect(returning.getByRole("alert").first()).toContainText(
+    "A moderator banned this maintainer",
   );
-  expect(
-    (await request.get(`/api/v1/projects/second-registry-${suffix}`)).status(),
-  ).toBe(404);
-  await expectAccessible(refused);
-  await refused.screenshot({
-    path: test.info().outputPath("maintainer-ban-refusal.png"),
-    fullPage: true,
-  });
-  expect(refusedErrors).toEqual([
+  expect(await listedProject(returning, next.id)).toBeUndefined();
+  expect(returningErrors).toEqual([
     "Failed to load resource: the server responded with a status of 403 (Forbidden)",
   ]);
-  await refusedContext.close();
+  returningErrors.length = 0;
+  await expectAccessible(returning);
+  await returning.screenshot({
+    path: test.info().outputPath("banned-maintainer-refused.png"),
+    fullPage: true,
+  });
+
+  // The maintainer's inbox has the automatic ban and the moderator decision,
+  // without the private reason or evidence reference.
+  await returning.goto("/inbox", { waitUntil: "networkidle" });
+  await expect(
+    returning.locator(".inbox-item", {
+      hasText: `The ${project.id} project is banned.`,
+    }),
+  ).toHaveCount(2);
+  await expect(returning.locator("main")).not.toContainText("steals tokens");
+  await expect(returning.locator("main")).not.toContainText(evidence);
+  expect(returningErrors).toEqual([]);
+  await returningContext.close();
 });
 
 test("an owner installs Slopbot before creation and resumes setup; a failed scan and lost access each show the next action @registry", async ({

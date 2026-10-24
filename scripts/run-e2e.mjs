@@ -141,7 +141,7 @@ function prepareRegistryDatabase() {
         { token: sessionToken(), githubId },
       ]),
     ),
-    // Maintainers a moderator bans, one per viewport (registry.spec.ts).
+    // Maintainers a moderator bans in tests/e2e/registry.spec.ts.
     ...Object.fromEntries(
       Object.entries(E2E_MAINTAINER_ACCOUNTS).map(([role, githubId]) => [
         role,
