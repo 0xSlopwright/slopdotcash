@@ -24,18 +24,18 @@ const profiles: [ScannerProfile, ScannerProfile] = [
   {
     reviewer: "astra",
     transport: "openai-responses",
-    endpoint: "https://api.openai.com/v1/responses",
-    model: "operator-pinned-astra-fixture",
-    apiKey: "fixture-openai-key",
+    endpoint: "https://api.surplusintelligence.ai/v1/responses",
+    model: "gpt-6.1-sol",
+    apiKey: "fixture-surplus-astra-key",
     maxOutputTokens: 1024,
     rateCard: rates,
   },
   {
     reviewer: "opus",
     transport: "anthropic-messages",
-    endpoint: "https://api.anthropic.com/v1/messages",
-    model: "operator-pinned-opus-fixture",
-    apiKey: "fixture-anthropic-key",
+    endpoint: "https://api.surplusintelligence.ai/anthropic/v1/messages",
+    model: "claude-opus-5.5",
+    apiKey: "fixture-surplus-opus-key",
     maxOutputTokens: 1024,
     rateCard: rates,
   },
@@ -48,12 +48,22 @@ let mode:
   | "unavailable"
   | "partial" = "normal";
 let requests: Record<string, unknown>[] = [];
+let headers: {
+  path: string;
+  authorization: string | null;
+  version: string | null;
+}[] = [];
 beforeAll(() => {
   server = Bun.serve({
     port: 0,
     async fetch(request) {
       const body = (await request.json()) as Record<string, unknown>;
       requests.push(body);
+      headers.push({
+        path: new URL(request.url).pathname,
+        authorization: request.headers.get("authorization"),
+        version: request.headers.get("anthropic-version"),
+      });
       const openai = new URL(request.url).pathname === "/v1/responses";
       if (!openai && mode === "unavailable")
         return new Response("private provider error", { status: 503 });
@@ -173,8 +183,8 @@ test("independent HTTP reviews bind exact input and identities and retain disagr
   expect(openai?.truncation).toBe("disabled");
   expect(anthropic?.messages).toEqual([{ role: "user", content: evidence }]);
   expect(anthropic?.tools).toBeUndefined();
-  expect(JSON.stringify(result)).not.toContain("fixture-openai-key");
-  expect(JSON.stringify(result)).not.toContain("fixture-anthropic-key");
+  expect(JSON.stringify(result)).not.toContain("fixture-surplus-astra-key");
+  expect(JSON.stringify(result)).not.toContain("fixture-surplus-opus-key");
   expect(result.every((entry) => !("disposition" in entry))).toBe(true);
 });
 
@@ -229,4 +239,54 @@ test("partial evidence coverage stays explicit; missing credentials fail readine
     }),
   ).rejects.toThrow();
   expect(requests).toHaveLength(0);
+});
+
+test("only the pinned Surplus profiles are contacted, with the account key as a bearer token", async () => {
+  mode = "normal";
+  requests = [];
+  headers = [];
+  await run();
+  expect(headers.sort((a, b) => (a.path < b.path ? -1 : 1))).toEqual([
+    {
+      path: "/anthropic/v1/messages",
+      authorization: "Bearer fixture-surplus-opus-key",
+      version: "2023-06-01",
+    },
+    {
+      path: "/v1/responses",
+      authorization: "Bearer fixture-surplus-astra-key",
+      version: null,
+    },
+  ]);
+  const [astra, opus] = profiles;
+  for (const unapproved of [
+    // The providers' own APIs would receive the Surplus key.
+    [{ ...astra, endpoint: "https://api.openai.com/v1/responses" }, opus],
+    [astra, { ...opus, endpoint: "https://api.anthropic.com/v1/messages" }],
+    [
+      astra,
+      { ...opus, endpoint: "https://surplus.example.invalid/v1/messages" },
+    ],
+    // An endpoint pinned to the other transport.
+    [{ ...astra, endpoint: opus.endpoint }, opus],
+    // Any other model, including the other pinned model on this transport.
+    [{ ...astra, model: "gpt-6.1" }, opus],
+    [astra, { ...opus, model: "gpt-6.1-sol" }],
+    // A reviewer class that is not the pinned one for its transport.
+    [
+      { ...astra, reviewer: "opus" },
+      { ...opus, reviewer: "astra" },
+    ],
+  ] as [ScannerProfile, ScannerProfile][]) {
+    requests = [];
+    await expect(
+      reviewIndependently({
+        evidence,
+        inputSha256: digest(evidence),
+        profiles: unapproved,
+        fetch: transport,
+      }),
+    ).rejects.toThrow("Unapproved scanner profile");
+    expect(requests).toHaveLength(0);
+  }
 });

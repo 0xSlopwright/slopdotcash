@@ -139,37 +139,48 @@ function prepare(input: string, expected: string): EvidenceBundle {
   };
 }
 /**
- * The reviewed endpoints of each transport: the provider's own API, or the
- * same transport through Surplus Intelligence with the operator's
- * `SURPLUS_API_KEY` (owner decision D16: Surplus `claude-opus-5.5` first,
- * Surplus `gpt-6.1-sol` only for ambiguous or high-risk results).
+ * The only approved profile of each transport (owner decision D16): Surplus
+ * Intelligence `claude-opus-5.5` as the primary reviewer and Surplus
+ * `gpt-6.1-sol` as the specialist, both reached with the operator's
+ * `SURPLUS_API_KEY`. The key is never sent to any other endpoint, and no
+ * other provider, endpoint, model or reviewer class is accepted.
  */
-const ENDPOINTS: Record<
+export const PINNED_SCANNER_PROFILES: Record<
   ScannerProfile["transport"],
-  Record<string, "openai" | "anthropic" | "surplus">
+  Pick<ScannerProfile, "reviewer" | "endpoint" | "model">
 > = {
-  "openai-responses": {
-    "https://api.openai.com/v1/responses": "openai",
-    "https://api.surplusintelligence.ai/v1/responses": "surplus",
-  },
   "anthropic-messages": {
-    "https://api.anthropic.com/v1/messages": "anthropic",
-    "https://api.surplusintelligence.ai/anthropic/v1/messages": "surplus",
+    reviewer: "opus",
+    endpoint: "https://api.surplusintelligence.ai/anthropic/v1/messages",
+    model: "claude-opus-5.5",
+  },
+  "openai-responses": {
+    reviewer: "astra",
+    endpoint: "https://api.surplusintelligence.ai/v1/responses",
+    model: "gpt-6.1-sol",
   },
 };
-/** The provider an approved profile reaches; null for an unapproved endpoint. */
-function providerOf(profile: ScannerProfile) {
-  return Object.hasOwn(ENDPOINTS[profile.transport] ?? {}, profile.endpoint)
-    ? ENDPOINTS[profile.transport][profile.endpoint]
+/** "surplus" for the pinned profile of its transport; null for anything else. */
+function providerOf(profile: ScannerProfile): "surplus" | null {
+  const pinned = Object.hasOwn(PINNED_SCANNER_PROFILES, profile.transport)
+    ? PINNED_SCANNER_PROFILES[profile.transport]
+    : null;
+  return pinned !== null &&
+    profile.endpoint === pinned.endpoint &&
+    profile.model === pinned.model &&
+    profile.reviewer === pinned.reviewer
+    ? "surplus"
     : null;
 }
-function validateProfile(profile: ScannerProfile) {
-  if (
-    providerOf(profile) === null ||
-    !["astra", "opus"].includes(profile.reviewer)
-  )
-    throw new Error("Unapproved provider endpoint");
-  text(profile.model, 128);
+/**
+ * Fails closed, before any provider is contacted, unless the profile is the
+ * pinned Surplus profile of its transport.
+ */
+export function validateProfile(profile: ScannerProfile) {
+  if (providerOf(profile) === null)
+    throw new Error(
+      "Unapproved scanner profile: only Surplus claude-opus-5.5 (Anthropic Messages) and Surplus gpt-6.1-sol (Responses) are approved",
+    );
   text(profile.apiKey, 4096);
   if (
     !Number.isInteger(profile.maxOutputTokens) ||
@@ -247,17 +258,8 @@ async function reviewOne(
       headers: {
         "content-type": "application/json",
         // Surplus takes its account key as a bearer token on both transports.
-        ...(openai
-          ? { authorization: `Bearer ${profile.apiKey}` }
-          : providerOf(profile) === "surplus"
-            ? {
-                authorization: `Bearer ${profile.apiKey}`,
-                "anthropic-version": "2023-06-01",
-              }
-            : {
-                "x-api-key": profile.apiKey,
-                "anthropic-version": "2023-06-01",
-              }),
+        authorization: `Bearer ${profile.apiKey}`,
+        ...(openai ? {} : { "anthropic-version": "2023-06-01" }),
       },
       body: JSON.stringify(
         openai
