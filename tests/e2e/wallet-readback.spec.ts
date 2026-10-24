@@ -19,7 +19,6 @@ const account = {
     address,
     claimId: `readback_${chain}`,
     authorized: false,
-    activationEligibleAt: null,
   })),
   payments: [],
   monthlyAwards: [],
