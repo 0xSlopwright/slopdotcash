@@ -213,7 +213,6 @@ export class CloudflareVettingPersistence {
     );
   }
 
-  /** Returns "conflict" when this revision already has a queued scan. */
   /** A scan can resolve only the flags present when it was queued. */
   async assessmentCoversActiveFlags(assessmentId: string): Promise<boolean> {
     const row = await this.db
@@ -226,6 +225,7 @@ export class CloudflareVettingPersistence {
     return row?.covered === 1;
   }
 
+  /** Returns "conflict" when this revision already has a queued scan. */
   async createAssessment(
     assessment: Omit<
       VettingAssessment,
