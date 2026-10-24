@@ -423,12 +423,17 @@ function validateEscrowPolicy(value, feeBasisPoints) {
   }
   return value;
 }
-export function assertEscrowTransition(previous, next) {
+export function assertEscrowTransition(
+  previous,
+  next,
+  allowUnfundedChange = false,
+) {
   if (!previous) return;
   if (
     !next ||
-    previous.chain !== next.chain ||
-    previous.effectiveCycle !== next.effectiveCycle ||
+    ((!allowUnfundedChange || previous.deployments.length > 0) &&
+      (previous.chain !== next.chain ||
+        previous.effectiveCycle !== next.effectiveCycle)) ||
     previous.feeMode !== next.feeMode ||
     previous.feeBasisPoints !== next.feeBasisPoints ||
     previous.withdrawalFeeBasisPoints !== next.withdrawalFeeBasisPoints

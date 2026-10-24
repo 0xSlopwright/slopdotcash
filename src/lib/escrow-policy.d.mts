@@ -83,6 +83,7 @@ export declare function assertEscrowPolicy(value: unknown): EscrowPolicy;
 export declare function assertEscrowTransition(
   previous: EscrowPolicy | undefined,
   next: EscrowPolicy | undefined,
+  allowUnfundedChange?: boolean,
 ): void;
 /** One reviewed deployment with the network registry's values, as the payment workers read it. */
 export type PaymentDeploymentRecord = EscrowDeployment & {
