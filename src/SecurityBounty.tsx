@@ -172,6 +172,7 @@ function automaticReady(value: Readiness): boolean {
 function IntakeHandoff({ project }: { project: ProjectDefinition }) {
   const [state, setState] = useState<ReadinessState>({ status: "checking" });
   const [draft, setDraft] = useState<ReportDraft>(EMPTY_DRAFT);
+  const signedIn = useProjectSession().status === "signed-in";
   const stateRef = useRef(state);
   useEffect(() => {
     stateRef.current = state;
@@ -254,7 +255,7 @@ function IntakeHandoff({ project }: { project: ProjectDefinition }) {
             <div className="form-error" role="alert">
               <CircleAlert aria-hidden="true" /> The readiness check from{" "}
               {formatUtc(state.value.checkedAt)} is out of date.
-              {state.value.automatic === "ready"
+              {state.value.automatic === "ready" && signedIn
                 ? " Your draft is kept; sending checks again first."
                 : ""}
               {checkAgain(state.rechecking)}
@@ -396,7 +397,8 @@ function IntakeConsent({ login }: { login: string | null }) {
     <p>
       The Slop private intake app will file this on GitHub as{" "}
       {login ? `@${login}` : "you"} with your authorization, as a private report
-      only you and the repository’s security managers can read.
+      only you and the repository’s administrators and security managers can
+      read.
     </p>
   );
 }
