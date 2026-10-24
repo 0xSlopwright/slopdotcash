@@ -307,7 +307,7 @@ human-gated work, and epics fail closed. Re-read live GitHub before acting.
 The rolling ledger covers a complete 35-day window, publishes exact bounds and
 record counts, and deduplicates immutable GitHub IDs. Exclude bots, self-review,
 post-merge review, and repeated low-value comments. Every accepted merge gets
-at least one-third point. Group split or related pull requests into one work
+at least 10 accepted-work points (one legacy credit-third). Group split or related pull requests into one work
 unit; do not apply account-level caps or diminishing credit.
 
 Unusual useful work may score only through a strict reviewed `evaluations/`
@@ -320,12 +320,15 @@ automatic monthly distribution.
 
 ## Participation points
 
-Slop Points are nonfinancial participation records governed by
+Slop Points are the single contribution and participation unit governed by
 `protocol/points-v1.md`. Welcome and verified X-connection awards are not accepted-work score.
 Verified payout recognition is fixed per recipient/project/cycle, never per dollar
 or transfer. X or Telegram control never confers GitHub, organization, or payment
 authority; a Telegram connection earns no points (PRD SOC-02).
-Never feed points into rewards or settlement. Preserve the append-only journal,
+Only accepted-work points for the project and period determine reward shares;
+never feed welcome, social or payout-recognition bonuses into rewards. Preserve
+historical settlements and compatibility fields without exposing a separate
+score metric. Preserve the append-only journal,
 source coverage, original contribution dates, and distinct recording dates.
 Generated points projections are build outputs; do not edit them by hand.
 

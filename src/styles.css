@@ -713,17 +713,18 @@ p {
   text-wrap: balance;
 }
 
-.hero-typewriter {
+.hero-typewriter,
+.hero-switch-sizer {
   grid-area: 1 / 1;
+}
+
+.hero-switch-sizer {
+  visibility: hidden;
 }
 
 .hero-typewriter {
   position: relative;
   align-self: start;
-}
-
-.hero-mobile-action {
-  display: none;
 }
 
 .hero-typewriter-caret {
@@ -2335,15 +2336,6 @@ small {
     font-size: clamp(36px, 11.5vw, 52px);
     letter-spacing: -0.04em;
     line-height: 0.9;
-  }
-
-  .hero-typewriter {
-    display: none;
-  }
-
-  .hero-mobile-action {
-    display: block;
-    grid-area: 1 / 1;
   }
 
   .hero-copy {
@@ -4984,4 +4976,114 @@ small {
 
 .owner-award-list dd {
   margin: 0;
+}
+
+/* Compact owner setup checks; text and icons both communicate state. */
+.owner-section.project-setup-status {
+  display: block;
+}
+.project-setup-status > .handoff-actions {
+  margin: 16px 0;
+}
+
+.setup-checks {
+  margin: 1.5rem 0 0;
+  border: 1px solid var(--input-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.setup-check {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  padding: 18px 20px;
+}
+.setup-check + .setup-check {
+  border-top: 1px solid var(--input-border);
+}
+.setup-check dt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  flex-wrap: wrap;
+}
+.setup-check dt > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.setup-check dd {
+  margin: 0;
+}
+.setup-check small,
+.setup-funding-note {
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+.setup-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+.setup-badge svg {
+  flex-shrink: 0;
+}
+.setup-badge--ready {
+  color: #b4e4c1;
+  background: #1a3022;
+}
+.setup-badge--pending {
+  color: #ded8cc;
+  background: #2c2923;
+}
+.setup-badge--warning {
+  color: #ffce91;
+  background: #38291b;
+}
+.setup-check--funding {
+  align-items: flex-start;
+}
+.setup-check--funding dd {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+.setup-funding-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.setup-details {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+.setup-details summary {
+  cursor: pointer;
+  width: fit-content;
+  padding: 6px 0;
+}
+.setup-details dt {
+  font-weight: 600;
+  margin-top: 12px;
+}
+.setup-details dd {
+  margin: 4px 0 0;
+}
+@media (max-width: 480px) {
+  .setup-check {
+    padding: 16px;
+  }
+  .setup-check--funding dd {
+    align-items: flex-start;
+    width: 100%;
+  }
 }
