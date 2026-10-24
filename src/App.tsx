@@ -1676,7 +1676,7 @@ function HowItWorksPage() {
           </ol>
         </section>
       </div>
-      <section className="worked-example score-contract">
+      <section className="worked-example score-contract" id="points">
         <div>
           <h2>Points</h2>
           <p>

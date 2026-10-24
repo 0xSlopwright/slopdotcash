@@ -191,7 +191,9 @@ test("owner edits monthly allocations privately, finalizes them and keeps sign-i
     .click();
   await expect(awards).toContainText("Finalized by you");
   await expect(awards).toContainText("Dec 2, 2026, 00:00 UTC");
-  await expect(awards).toContainText("Waiting for free vault funds");
+  await expect(awards).toContainText(
+    "Underfunded: waiting for free vault funds",
+  );
   await expect(awards.getByLabel("Award for second-contributor")).toHaveCount(
     0,
   );
