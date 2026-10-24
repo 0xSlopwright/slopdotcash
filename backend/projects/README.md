@@ -314,7 +314,11 @@ rate limit, and caches each answer for five minutes. The browser never calls
   restriction and other accounts unchanged. Each release references its exact
   ban in `project_account_reinstatements`; the existing enforcement journal
   records its reason and evidence. Migration 0072 preserves releases already
-  made under the former project-wide rule.
+  made under the former project-wide rule. Signed-in accounts can use
+  `/account#appeals` without Points membership. `GET /api/v1/project-appeals`
+  lists only the caller's active account bans and appeal state; it omits
+  moderation reasons, evidence and other accounts. The form uses the existing
+  authenticated appeal route and retains its status after reload.
   The ban does not erase an approved funded award. The trace API refuses new
   contribution runs and progress events. Bounty approval refuses new
   reservations for a banned researcher, including concurrent bans. Private
