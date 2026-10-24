@@ -353,19 +353,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  isolated-artifact:
+    uses: ./.github/workflows/vetting-sandbox.yml
+    permissions:
+      contents: read
+
   quality:
     name: Skill, data, build, and browser checks
     if: always()
-    needs: [prepare, browsers]
+    needs: [prepare, browsers, isolated-artifact]
     runs-on: ubuntu-24.04
     steps:
       - name: Require the checked bundle and every browser lane
         env:
           PREPARE_RESULT: ${{ needs.prepare.result }}
           BROWSER_RESULT: ${{ needs.browsers.result }}
+          SANDBOX_RESULT: ${{ needs.isolated-artifact.result }}
         run: |
           test "$PREPARE_RESULT" = success
           test "$BROWSER_RESULT" = success
+          test "$SANDBOX_RESULT" = success
 
   staging:
     name: Deploy verified development to staging
@@ -415,6 +422,8 @@ jobs:
           test "$HAS_APP" = true
       - name: Publish and verify isolated staging
         env:
+          SLOP_VETTING_BACKUP_RELEASE: ${{ vars.SLOP_VETTING_BACKUP_STAGING_RELEASE }}
+          SLOP_VETTING_RETENTION_RELEASE: ${{ vars.SLOP_VETTING_RETENTION_STAGING_RELEASE }}
           SLOP_NOTIFY_RELEASE: ${{ vars.SLOP_NOTIFY_STAGING_RELEASE }}
           SLOP_NOTIFY_MAIL_PILOTS: ${{ vars.SLOP_NOTIFY_STAGING_MAIL_PILOTS }}
           GH_TOKEN: ${{ github.token }}
@@ -444,11 +453,15 @@ jobs:
           fi
           ./node_modules/.bin/wrangler deploy --config workers/identity/wrangler.staging.toml
           ./node_modules/.bin/wrangler deploy --config workers/slopbot/wrangler.repository-access-staging.toml
+          bun scripts/release-vetting-sandbox.mjs staging
           node scripts/configure-staging-secrets.mjs
           if [ "$SLOP_NOTIFY_RELEASE" = "enabled" ]; then
             bun scripts/release-notify.mjs deploy staging "$RUNNER_TEMP/slop-notify-staging-release"
           else
             test -z "$SLOP_NOTIFY_MAIL_PILOTS"
+          fi
+          if [ "$SLOP_VETTING_BACKUP_RELEASE" = "enabled" ]; then
+            node scripts/release-vetting-backup.mjs staging
           fi
           # Pages requires the standard config filename in its working directory.
           # Keep the production config untouched and publish the verified bundle
@@ -676,6 +689,8 @@ jobs:
           SLOP_NOTIFY_RELEASE: ${{ vars.SLOP_NOTIFY_RELEASE }}
           SLOP_NOTIFY_MAIL_PILOTS: ${{ vars.SLOP_NOTIFY_MAIL_PILOTS }}
           SLOP_FEE_CONVERTER_RELEASE: ${{ vars.SLOP_FEE_CONVERTER_RELEASE }}
+          SLOP_VETTING_BACKUP_RELEASE: ${{ vars.SLOP_VETTING_BACKUP_RELEASE }}
+          SLOP_VETTING_RETENTION_RELEASE: ${{ vars.SLOP_VETTING_RETENTION_RELEASE }}
         # wrangler.toml owns pages_build_output_dir. A positional directory
         # bypasses that deployment contract and must not be added here.
         run: |
@@ -781,6 +796,8 @@ jobs:
             throw new TypeError("Pages secret inventory is incomplete or contains unexpected entries");
           }
           NODE
+
+          bun scripts/release-vetting-sandbox.mjs production
 
           ./node_modules/.bin/wrangler d1 migrations apply slop-private \
             --remote \
@@ -1111,6 +1128,10 @@ jobs:
           else
             test -z "$SLOP_NOTIFY_MAIL_PILOTS"
             echo "::notice::Notification release is disabled."
+          fi
+
+          if [ "$SLOP_VETTING_BACKUP_RELEASE" = "enabled" ]; then
+            node scripts/release-vetting-backup.mjs production
           fi
 
           # Slopbot (workers/slopbot, protocol/slopbot-v2.md). The owner creates

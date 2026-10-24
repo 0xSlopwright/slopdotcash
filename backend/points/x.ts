@@ -84,7 +84,7 @@ type Flow = {
   iv: string;
   public: number;
 };
-/** OAuth proves the X numeric ID; an entered handle can never create a link or award. */
+/** OAuth proves the X numeric ID; an entered handle cannot create a link. Connections grant no points. */
 export async function handleX(
   request: Request,
   deps: PointsDependencies,
@@ -219,18 +219,6 @@ export async function handleX(
           ),
         deps.db
           .prepare(
-            "INSERT INTO points_x_awards(actor_id,x_id,awarded_at,points) SELECT actor_id,x_id,?,10 FROM points_x_claims WHERE x_id=? AND actor_id=? AND EXISTS(SELECT 1 FROM points_sessions WHERE token_hash=? AND expires_at>?) AND EXISTS(SELECT 1 FROM points_x_flows WHERE state_hash=? AND status='processing') ON CONFLICT(actor_id) DO NOTHING",
-          )
-          .bind(
-            verifiedAt,
-            id,
-            flow.actor_id,
-            flow.session_hash,
-            verifiedAt,
-            hash,
-          ),
-        deps.db
-          .prepare(
             "INSERT INTO points_x_links(actor_id,x_id,username,verified_at,public) SELECT actor_id,x_id,?,?,? FROM points_x_claims WHERE x_id=? AND actor_id=? AND EXISTS(SELECT 1 FROM points_sessions WHERE token_hash=? AND expires_at>?) AND EXISTS(SELECT 1 FROM points_x_flows WHERE state_hash=? AND status='processing') ON CONFLICT(actor_id) DO UPDATE SET x_id=excluded.x_id,username=excluded.username,verified_at=excluded.verified_at,public=excluded.public",
           )
           .bind(
@@ -244,7 +232,7 @@ export async function handleX(
             hash,
           ),
       ]);
-      if (result.some((r) => !r.success) || result[2].meta?.changes !== 1)
+      if (result.some((r) => !r.success) || result[1].meta?.changes !== 1)
         return fail();
       return finish("connected");
     } catch {
@@ -283,13 +271,7 @@ export async function handleX(
       )
       .bind(current.actor)
       .first();
-    const award = await deps.db
-      .prepare(
-        "SELECT points,awarded_at awardedAt FROM points_x_awards WHERE actor_id=?",
-      )
-      .bind(current.actor)
-      .first();
-    return json(200, { configured: !!config, account, award });
+    return json(200, { configured: !!config, account });
   }
   if (route === "/start" && request.method === "POST") {
     if (!config) return json(503, { error: "x_not_configured" });

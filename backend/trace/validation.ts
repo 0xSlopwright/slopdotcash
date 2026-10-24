@@ -138,7 +138,7 @@ export async function readTraceBody(request: Request): Promise<Uint8Array> {
 }
 
 export async function readLimitedBody(
-  request: Request,
+  request: Pick<Request, "headers" | "body">,
   limit: number,
 ): Promise<Uint8Array> {
   const declared = request.headers.get("content-length");
