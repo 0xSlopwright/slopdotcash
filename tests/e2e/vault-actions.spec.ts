@@ -7,6 +7,7 @@ import { expect, test } from "@playwright/test";
 import { encodeFunctionData, parseAbi } from "viem";
 import { EVM_ESCROW_EVENT_TOPICS } from "../../contracts/evm/adapter";
 import type { EscrowDeployment } from "../../src/lib/escrow-policy.mjs";
+import { formatAssetAmount } from "../../src/lib/project-schema.mjs";
 import { PROJECTS } from "../../src/lib/projects.mjs";
 
 test.skip(
@@ -178,13 +179,15 @@ test.beforeAll(async () => {
     factoryCodeSha256: await digest(factory),
   };
   const original = PROJECTS.find((entry) => entry.id === "eliza");
-  if (!original) throw new Error("Missing project fixture");
+  if (original?.reward.kind !== "monthly-pool")
+    throw new Error("Missing monthly project fixture");
   project = {
     ...original,
     reward: {
       ...original.reward,
       chain: "base",
       currency: "TEST",
+      monthlyCapDisplay: `${formatAssetAmount(original.reward.monthlyCapMinor, 6)} TEST`,
       feeBasisPoints: 200,
       paymentMode: "disabled",
       committedMinor: "0",

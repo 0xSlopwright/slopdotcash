@@ -7,6 +7,7 @@
  * under.
  */
 import type { assertProjectDefinition } from "../project-schema.mjs";
+import { MAX_BASE_UNITS } from "../escrow-policy.mjs";
 
 export interface EscrowReviewProposal {
   projectId: string;
@@ -80,7 +81,7 @@ export function assertEscrowDecisions(
       award = awards.get(row.githubUserId);
     if (
       !award ||
-      amount > (1n << 64n) - 1n ||
+      amount > MAX_BASE_UNITS ||
       (row.state !== "approved" && amount !== 0n)
     )
       throw new Error("Invalid approved gross amount");

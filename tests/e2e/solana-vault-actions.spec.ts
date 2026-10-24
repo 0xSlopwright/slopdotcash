@@ -12,6 +12,7 @@ import { handlePaymentsApi } from "../../backend/payments/handler";
 import type { SolanaEscrowConfig } from "../../contracts/solana/adapter";
 import { decodeBase58Bytes } from "../../src/lib/base58";
 import type { EscrowDeployment } from "../../src/lib/escrow-policy.mjs";
+import { formatAssetAmount } from "../../src/lib/project-schema.mjs";
 import { PROJECTS } from "../../src/lib/projects.mjs";
 
 // Dependencies are installed by the existing Solana contract test command.
@@ -225,13 +226,15 @@ test.beforeAll(async () => {
     genesisHash: await connection.getGenesisHash(),
   } as SolanaEscrowConfig;
   const original = PROJECTS.find((p) => p.id === "eliza");
-  if (!original) throw new Error("Missing project fixture");
+  if (original?.reward.kind !== "monthly-pool")
+    throw new Error("Missing monthly project fixture");
   project = {
     ...original,
     reward: {
       ...original.reward,
       chain: "solana",
       currency: "TEST",
+      monthlyCapDisplay: `${formatAssetAmount(original.reward.monthlyCapMinor, 6)} TEST`,
       feeBasisPoints: 200,
       paymentMode: "disabled",
       committedMinor: "0",
