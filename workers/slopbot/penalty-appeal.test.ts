@@ -898,17 +898,25 @@ test("a recorded debit outside its month or window is never applied", () => {
 for (const state of ["active", "revoked", "resolved", "opted-out"] as const) {
   test(`an escalated appeal reaches the moderator Inbox and respects ${state} delivery state`, async () => {
     await closedItem(async (run) => {
-      await run.enableMail();
       run.model("scam", 0.97);
       expect(await run.review()).toBe("closed (scam)");
+      // Mail starts after the close, so only the appeal notice is mailed here;
+      // the scam account-review notice has its own test below.
+      await run.enableMail();
       await run.deliver(run.job("appeal", { senderId: AUTHOR }));
       await run.deliver(run.job("appeal", { senderId: AUTHOR }));
       const first = parseNotificationsResponse(
         await (await run.inbox(MODERATOR)).json(),
       );
-      expect(first.notifications).toHaveLength(1);
-      expect(first.notifications[0].kind).toBe("slopbot_appeal_review");
-      const path = first.notifications[0].actionPath;
+      const appeals = first.notifications.filter(
+        (n) => n.kind === "slopbot_appeal_review",
+      );
+      expect(appeals).toHaveLength(1);
+      expect(first.notifications.map((n) => n.kind).sort()).toEqual([
+        "slopbot_appeal_review",
+        "slopbot_scam_review",
+      ]);
+      const path = appeals[0].actionPath;
       const target = await run.inbox(MODERATOR, String(MODERATOR), path);
       expect(target.status).toBe(302);
       expect(target.headers.get("location")).toMatch(
@@ -934,8 +942,9 @@ for (const state of ["active", "revoked", "resolved", "opted-out"] as const) {
           run.job("appeal_command", { command: "deny", senderId: MODERATOR }),
         );
         expect(
-          parseNotificationsResponse(await (await run.inbox(MODERATOR)).json())
-            .notifications[0].kind,
+          parseNotificationsResponse(
+            await (await run.inbox(MODERATOR)).json(),
+          ).notifications.find((n) => n.eventKey === appeals[0].eventKey)?.kind,
         ).toBe("slopbot_appeal_resolved");
       }
       if (state === "opted-out")
@@ -950,3 +959,109 @@ for (const state of ["active", "revoked", "resolved", "opted-out"] as const) {
     });
   });
 }
+
+const SCAM_NOTICES =
+  "SELECT event_key, recipient_github_id, kind, subject, detail, action_path FROM notifications WHERE kind = 'slopbot_scam_review'";
+
+// Owner decision D4 (PRD section 11): a scam close asks each moderator, once,
+// to review the author's account. The worker, Inbox route and mail dispatcher
+// all run for real against the migrations.
+test("a scam close writes one moderator account-review notice across replays", async () => {
+  await closedItem(async (run) => {
+    await run.enableMail();
+    run.model("scam", 0.97);
+    expect(await run.review()).toBe("closed (scam)");
+    expect(await run.review()).toBe(
+      "already reviewed at this revision and policy",
+    );
+    const notices = run.sql(SCAM_NOTICES) as Record<string, string>[];
+    expect(notices).toEqual([
+      {
+        event_key: "slopbot-scam-review:PR_local",
+        recipient_github_id: String(MODERATOR),
+        kind: "slopbot_scam_review",
+        subject: "asi",
+        detail:
+          "Review the account of @author after a scam closure on SlopDotCash/asi#5.",
+        action_path:
+          "/api/v1/notifications/scam-reviews/SlopDotCash/asi/pull/5",
+      },
+    ]);
+    expect(run.labels).toContain("slopbot: moderator");
+
+    const inbox = parseNotificationsResponse(
+      await (await run.inbox(MODERATOR)).json(),
+    );
+    expect(inbox).toMatchObject({ unread: 1 });
+    expect(inbox.notifications.map((n) => n.kind)).toEqual([
+      "slopbot_scam_review",
+    ]);
+    const path = inbox.notifications[0].actionPath;
+    const open = await run.inbox(MODERATOR, String(MODERATOR), path);
+    expect(open.status).toBe(302);
+    expect(open.headers.get("location")).toBe(
+      "https://github.com/SlopDotCash/asi/pull/5",
+    );
+    // Moderator access is rechecked on every read: neither the author, an
+    // outsider nor a former moderator sees or opens the notice.
+    for (const actor of [AUTHOR, OUTSIDER])
+      expect(
+        parseNotificationsResponse(await (await run.inbox(actor)).json()),
+      ).toMatchObject({ notifications: [], unread: 0 });
+    expect((await run.inbox(OUTSIDER, String(MODERATOR), path)).status).toBe(
+      403,
+    );
+    expect(
+      parseNotificationsResponse(await (await run.inbox(MODERATOR, "")).json()),
+    ).toMatchObject({ notifications: [], unread: 0 });
+    expect((await run.inbox(MODERATOR, "", path)).status).toBe(403);
+    // A moderator cannot open a target that no notice of theirs stores.
+    expect(
+      (
+        await run.inbox(
+          MODERATOR,
+          String(MODERATOR),
+          "/api/v1/notifications/scam-reviews/SlopDotCash/asi/pull/6",
+        )
+      ).status,
+    ).toBe(404);
+
+    // Optional activity mail rechecks moderator access before sending.
+    expect(await run.mail("")).toEqual([]);
+    run.sql(
+      "UPDATE activity_notification_outbox SET state='queued' WHERE event_key='slopbot-scam-review:PR_local'",
+    );
+    expect(await run.mail()).toEqual(["moderator@example.com"]);
+    expect(await run.mail()).toEqual([]);
+    expect(
+      run.sql(
+        "SELECT COUNT(*) AS total FROM activity_notification_outbox WHERE event_key='slopbot-scam-review:PR_local'",
+      ),
+    ).toEqual([{ total: 1 }]);
+    expect(run.sql(SCAM_NOTICES)).toHaveLength(1);
+  });
+});
+
+test("a reversed scam penalty suppresses the pending account-review mail", async () => {
+  await closedItem(async (run) => {
+    await run.enableMail();
+    run.model("scam", 0.97);
+    expect(await run.review()).toBe("closed (scam)");
+    expect(
+      await run.deliver(run.job("human_reopen", { senderId: MAINTAINER })),
+    ).toBe("human_reopen");
+    expect(await run.mail()).toEqual([]);
+    // The Inbox history is permanent; the notice is not deleted or rewritten.
+    expect(run.sql(SCAM_NOTICES)).toHaveLength(1);
+  });
+});
+
+for (const category of ["spam", "duplicate"] as const)
+  test(`a ${category} close writes no moderator account-review notice`, async () => {
+    await closedItem(async (run) => {
+      run.model(category, 0.97);
+      expect(await run.review()).toBe(`closed (${category})`);
+      expect(run.sql(SCAM_NOTICES)).toEqual([]);
+      expect(run.labels).not.toContain("slopbot: moderator");
+    });
+  });

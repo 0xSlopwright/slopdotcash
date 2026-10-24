@@ -13,6 +13,7 @@ import {
   type NotificationsResponse,
   notificationCursor,
 } from "../../src/lib/notifications";
+import { SCAM_REVIEW_PATH, scamReviewGitHubUrl } from "./events";
 
 export interface NotificationsDependencies {
   db: {
@@ -91,8 +92,10 @@ export async function handleNotificationsApi(
   const url = new URL(request.url);
   const appealPrefix = `${NOTIFICATIONS_PATH}/appeals/`;
   const appealRoute = url.pathname.startsWith(appealPrefix);
+  const scamRoute = url.pathname.startsWith(SCAM_REVIEW_PATH);
   if (
     !appealRoute &&
+    !scamRoute &&
     url.pathname !== NOTIFICATIONS_PATH &&
     url.pathname !== READ_PATH
   )
@@ -112,6 +115,26 @@ export async function handleNotificationsApi(
     const actor = await deps.sessionActor(request);
     if (actor === null) return json(401, { error: "not_signed_in" });
     const moderator = deps.moderatorGithubIds?.has(actor.githubId) === true;
+    if (scamRoute) {
+      // Moderator access is rechecked on every open (owner decision D4). The
+      // target is only ever a path stored on the actor's own notice.
+      if (!moderator) return json(403, { error: "not_authorized" });
+      const target = scamReviewGitHubUrl(url.pathname);
+      if (target === null) return json(404, { error: "not_found" });
+      const rows = await deps.db
+        .prepare(`SELECT 1 AS found FROM notifications n
+        JOIN slopbot_penalties p
+          ON n.event_key = 'slopbot-scam-review:' || p.item_node_id
+        WHERE n.recipient_github_id = ? AND n.kind = 'slopbot_scam_review'
+          AND n.action_path = ? AND p.author_github_id <> ?`)
+        .bind(actor.githubId, url.pathname, actor.githubId)
+        .all<{ found: number }>();
+      if (!rows.results[0]) return json(404, { error: "not_found" });
+      return new Response(null, {
+        status: 302,
+        headers: { ...headers, location: target },
+      });
+    }
     if (appealRoute) {
       if (!moderator) return json(403, { error: "not_authorized" });
       let key: string;
@@ -181,7 +204,7 @@ export async function handleNotificationsApi(
                         WHERE a.event_key = notifications.event_key AND a.recipient_github_id = notifications.recipient_github_id
                           AND a.template_version = 'activity-inbox-v1')) AS delivery_state
                FROM notifications WHERE recipient_github_id = ?
-                AND (kind <> 'slopbot_appeal_review' OR ? = 1)
+                AND (kind NOT IN ('slopbot_appeal_review', 'slopbot_scam_review') OR ? = 1)
                 ${cursor ? "AND (source_at < ? OR (source_at = ? AND event_key > ?))" : ""}
               ORDER BY source_at DESC, event_key LIMIT ?`,
           )
@@ -196,7 +219,7 @@ export async function handleNotificationsApi(
           .prepare(
             `SELECT COUNT(*) AS count FROM notifications
               WHERE recipient_github_id = ? AND read_at IS NULL
-                AND (kind <> 'slopbot_appeal_review' OR ? = 1)`,
+                AND (kind NOT IN ('slopbot_appeal_review', 'slopbot_scam_review') OR ? = 1)`,
           )
           .bind(actor.githubId, moderator ? 1 : 0)
           .all<{ count: number }>(),
