@@ -40,7 +40,6 @@ import {
 } from "./lib/model-outcomes";
 import { networkLabel } from "./lib/network-names";
 import { formatAssetAmount } from "./lib/payments/contracts";
-import { projectLinks } from "./lib/project-links";
 import {
   findProject,
   PROJECTS,
@@ -69,7 +68,6 @@ import {
   PointsNav,
   PointsPage,
   PointsProvider,
-  PublicXLink,
 } from "./Points";
 import {
   cycleLifecycleLabel,
@@ -923,20 +921,6 @@ function AgentPromptBox({
   );
 }
 
-function ProjectLinksLine({ project }: { project: ProjectDefinition }) {
-  const links = projectLinks(project);
-  return (
-    <nav aria-label="Project links" className="project-links-line">
-      {links.map((link, index) => (
-        <span key={link.href}>
-          {index > 0 ? " · " : null}
-          <ExternalLinkAnchor href={link.href}>{link.label}</ExternalLinkAnchor>
-        </span>
-      ))}
-    </nav>
-  );
-}
-
 export function ProjectParticipation({
   project,
   cycles,
@@ -1012,17 +996,21 @@ function InstallPanel({ project }: { project?: ProjectDefinition }) {
   );
 }
 
+/**
+ * PRD section 4: project-specific installation checks restrictions and
+ * clearance. Discovery lists only cleared, unrestricted projects. Until it
+ * confirms this project, the panel offers the generic agent prompt, which
+ * selects only cleared projects itself.
+ */
 function ProjectInstallPanel({ project }: { project: ProjectDefinition }) {
   const projectId = project.id;
   const [eligibility, setEligibility] = useState<
     "loading" | "ready" | "blocked" | "error"
   >("loading");
-  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let active = true;
     setEligibility("loading");
     fetchWithDeadline("/.well-known/slop/projects.json", {
-      cache: attempt > 0 ? "reload" : "default",
       headers: { accept: "application/json" },
     })
       .then(async (response) => {
@@ -1047,45 +1035,33 @@ function ProjectInstallPanel({ project }: { project: ProjectDefinition }) {
     return () => {
       active = false;
     };
-  }, [projectId, attempt]);
+  }, [projectId]);
+  const ready = eligibility === "ready";
   return (
     <div className="install-panel" id="start">
-      {eligibility === "ready" ? (
-        <>
-          <div className="install-heading">
-            <h2>Copy this into your agent.</h2>
-          </div>
-          <AgentPromptBox prompt={projectAgentPrompt(project)} />
-        </>
-      ) : (
-        <>
-          <h2>
-            {eligibility === "loading"
-              ? "Checking agent setup…"
-              : eligibility === "blocked"
-                ? "Agent setup awaiting security review"
-                : "Agent setup unavailable"}
-          </h2>
+      <div className="install-heading">
+        <h2>Copy this into your agent.</h2>
+      </div>
+      {ready ? null : (
+        <p>
+          {eligibility === "loading"
+            ? "Checking project clearance. The general prompt below works now."
+            : eligibility === "blocked"
+              ? "This project revision is not cleared for agent installation. The general prompt below selects only cleared projects."
+              : "Project clearance could not be checked. The general prompt below selects only cleared projects."}
           {eligibility === "blocked" ? (
-            <p>
-              The current project revision is not cleared for agent
-              installation.{" "}
+            <>
+              {" "}
               <Link href={`/projects/${project.slug}/manage`}>
                 Project owner: review setup
               </Link>
-            </p>
+            </>
           ) : null}
-          {eligibility !== "loading" ? (
-            <button
-              className="button secondary-button"
-              type="button"
-              onClick={() => setAttempt((value) => value + 1)}
-            >
-              Check again
-            </button>
-          ) : null}
-        </>
+        </p>
       )}
+      <AgentPromptBox
+        prompt={ready ? projectAgentPrompt(project) : bootstrapAgentPrompt()}
+      />
     </div>
   );
 }
@@ -1428,37 +1404,13 @@ function ProjectPage({
                   }
                 />
               ) : null}
-              <p className="project-terms-line">
-                By{" "}
-                <ExternalLinkAnchor href={project.steward.github.profileUrl}>
-                  {project.steward.displayName}
-                </ExternalLinkAnchor>{" "}
-                · {project.terms.repositoryLicense.spdx ?? "license unknown"} ·{" "}
-                {project.terms.inbound.mode === "unknown"
-                  ? "inbound terms unknown"
-                  : `${project.terms.inbound.mode} inbound terms`}{" "}
-                · <a href={`/projects/${project.id}/terms.json`}>Terms</a>
-                {project.securityBounty ? (
-                  <>
-                    {" · "}
-                    <Link href={`/projects/${project.slug}/security`}>
-                      Security bounty
-                    </Link>
-                  </>
-                ) : null}
-                {project.steward.github.type === "User" ? (
-                  <PublicXLink actorId={project.steward.github.nodeId} />
-                ) : null}
-                {view ? (
-                  <>
-                    {" · "}
-                    <Link href={`/projects/${project.slug}#contributors`}>
-                      Contributors
-                    </Link>
-                  </>
-                ) : null}
-              </p>
-              <ProjectLinksLine project={project} />
+              {project.securityBounty ? (
+                <p className="project-terms-line">
+                  <Link href={`/projects/${project.slug}/security`}>
+                    Security bounty
+                  </Link>
+                </p>
+              ) : null}
               {project.rewardAsset ? (
                 <p className="project-terms-line">
                   Reward asset: {project.rewardAsset.symbol} on{" "}
@@ -1947,7 +1899,7 @@ function HowItWorksPage() {
         <ul>
           <li>
             <ExternalLinkAnchor href={`${protocolRoot}/scoring-v2.md`}>
-              Score v2 contract
+              Points v2 contract
             </ExternalLinkAnchor>
           </li>
           <li>

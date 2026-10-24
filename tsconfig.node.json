@@ -47,7 +47,6 @@
     "scripts/**/*.ts",
     "src/lib/cycle-index.ts",
     "src/lib/site-routes.ts",
-    "src/lib/project-links.ts",
     "src/lib/project-contracts.ts",
     "src/lib/vetting-contracts.ts",
     "src/lib/project-proposal.ts",
