@@ -2340,11 +2340,16 @@ export function ProjectUpdatePage({ project }: { project: ProjectDefinition }) {
           ? value.monthlyAmount.trim()
           : null,
       );
+      // The response is the published revision. Use it before allowing the
+      // next edit; a later GET would make a fast new draft appear stale.
+      setBase({
+        revision: result.project.revision,
+        project: result.project.manifest,
+      });
       setSubmission({ state: "published", result });
       setDraft(null);
       setDraftRevision(null);
       setAttempted(false);
-      setReload((count) => count + 1);
     } catch (error) {
       setSubmission({
         state: "error",

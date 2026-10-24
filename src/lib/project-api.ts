@@ -163,7 +163,12 @@ export function publishStoredApplication(
 }
 
 export type RevisionResult = {
-  project: { id: string; revision: number; status: string };
+  project: {
+    id: string;
+    revision: number;
+    status: string;
+    manifest: ProjectDefinition;
+  };
   changes: {
     presentation: string[];
     executable: string[];
