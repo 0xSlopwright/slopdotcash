@@ -1271,22 +1271,26 @@ function ProjectFundingPage({ project }: { project: ProjectDefinition }) {
                       ?.advertisedAmountDisplay ?? "External")}
             </dd>
           </div>
-          <div>
-            <dt>Funding</dt>
-            <dd>{fundingStateLabel(project)}</dd>
-          </div>
-          <div>
-            <dt>Committed</dt>
-            <dd>{formatMicroUsdc(project.reward.committedMinor)}</dd>
-          </div>
-          <div>
-            <dt>Payments</dt>
-            <dd>{paymentStateLabel(project)}</dd>
-          </div>
-          <div>
-            <dt>Project vault</dt>
-            <dd>{vaultStateLabel(project)}</dd>
-          </div>
+          {!project.escrow ? (
+            <>
+              <div>
+                <dt>Funding</dt>
+                <dd>{fundingStateLabel(project)}</dd>
+              </div>
+              <div>
+                <dt>Committed</dt>
+                <dd>{formatMicroUsdc(project.reward.committedMinor)}</dd>
+              </div>
+              <div>
+                <dt>Payments</dt>
+                <dd>{paymentStateLabel(project)}</dd>
+              </div>
+              <div>
+                <dt>Project vault</dt>
+                <dd>{vaultStateLabel(project)}</dd>
+              </div>
+            </>
+          ) : null}
         </dl>
         {project.reward.kind === "external-prize-share" ? (
           <p>
@@ -1313,11 +1317,11 @@ function ProjectFundingPage({ project }: { project: ProjectDefinition }) {
           <div>
             <EmptyState text="This project has no vault yet." />
             <p>
-              Deposits and payments are not possible until a vault is recorded
-              for this project. The site has no control that creates a vault:
-              the project owner creates it on chain from its own wallet, and a
-              project revision then records it. Project owner:{" "}
-              <a href={CONTACT_MAILTO}>contact Slop</a> for vault setup.
+              Choose a monthly amount in{" "}
+              <Link href={`/projects/${project.slug}/manage`}>
+                project settings
+              </Link>{" "}
+              to enable vault setup.
             </p>
           </div>
         )}

@@ -205,6 +205,7 @@ export function evmVaultKey(input: {
 export async function verifyEvmDeployment(
   config: EvmEscrowConfig,
   blockTag: unknown = "finalized",
+  expectedProjectId?: string,
 ) {
   if (
     ![
@@ -319,6 +320,8 @@ export async function verifyEvmDeployment(
   )
     throw new Error("Escrow purpose does not match the payout policy");
   const projectId = await getter(config, config.vault, "projectId()", blockTag);
+  if (expectedProjectId && projectId !== hash(expectedProjectId))
+    throw new Error("The vault belongs to a different registry project");
   const key = evmVaultKey({
     owner: config.owner,
     projectId,
@@ -916,6 +919,149 @@ export function buildCreateVaultCalldata(input: {
     throw new Error("The owner's monthly cap is required");
   return `0x${selector("createWithMonthlyCommitment(bytes32,address,uint128,bool)")}${hash(input.projectId).slice(2)}${addressWord(input.asset).slice(2)}${monthlyCommitmentWords(input.monthlyCap, input.automaticMonthly ?? true)}`;
 }
+/** Creation uses a reviewed existing vault only as the factory/code trust source. */
+export interface EvmVaultCreation {
+  projectId: string;
+  asset: string;
+  owner: string;
+  monthlyCap: string;
+  monthlyEnabled: boolean;
+  payoutPolicy?: PayoutPolicy;
+}
+function creationData(input: EvmVaultCreation) {
+  return buildCreateVaultCalldata({
+    projectId: input.projectId,
+    asset: input.asset,
+    payoutPolicy: input.payoutPolicy,
+    ...(input.payoutPolicy === "security-bounty"
+      ? {}
+      : {
+          monthlyCap: input.monthlyCap,
+          automaticMonthly: input.monthlyEnabled,
+        }),
+  });
+}
+async function creationVault(
+  config: EvmEscrowConfig,
+  input: EvmVaultCreation,
+  block: string,
+) {
+  const key = evmVaultKey(input);
+  const value = await getter(
+    config,
+    config.factory,
+    "vaults(bytes32)",
+    block,
+    key.slice(2),
+  );
+  return `0x${value.slice(-40)}`;
+}
+/** Refuses unreviewed logic and factories that cannot atomically set monthly policy. */
+export async function prepareEvmVaultCreation(
+  config: EvmEscrowConfig,
+  input: EvmVaultCreation,
+) {
+  await verifyEvmDeployment(config);
+  if (
+    !config.evmUpgrade ||
+    (await getter(
+      config,
+      config.factory,
+      "vaultImplementation()",
+      "finalized",
+    )) !== addressWord(config.evmUpgrade.vaultImplementation)
+  )
+    throw new Error(
+      "Vault creation is unavailable until the factory's new-vault implementation is reviewed.",
+    );
+  const existingVault = await creationVault(config, input, "latest");
+  const transaction = {
+    from: input.owner,
+    to: config.factory,
+    data: creationData(input),
+    value: "0x0",
+  };
+  if (BigInt(existingVault) !== 0n) return { existingVault, transaction };
+  const result = await rpc(config, "eth_call", [transaction, "latest"]);
+  if (typeof result !== "string" || !HASH.test(result) || BigInt(result) === 0n)
+    throw new Error(
+      "This reviewed factory does not support the requested vault creation.",
+    );
+  return { existingVault: null, transaction };
+}
+export class EvmVaultCreationFailed extends Error {}
+
+/** Exact finalized creation, not a user-supplied deployment assertion. */
+export async function verifyEvmVaultCreation(
+  config: EvmEscrowConfig,
+  input: EvmVaultCreation,
+  transactionId: string,
+) {
+  const transactionHash = hash(transactionId);
+  const receiptValue = await rpc(config, "eth_getTransactionReceipt", [
+    transactionHash,
+  ]);
+  if (!receiptValue) return null;
+  const receipt = object(receiptValue);
+  const finalized = object(
+    await rpc(config, "eth_getBlockByNumber", ["finalized", false]),
+  );
+  if (quantity(receipt.blockNumber) > quantity(finalized.number)) return null;
+  const [transaction, canonicalBlock] = await Promise.all([
+    rpc(config, "eth_getTransactionByHash", [transactionHash]),
+    rpc(config, "eth_getBlockByNumber", [receipt.blockNumber, false]),
+  ]);
+  const tx = object(transaction);
+  const canonical = object(canonicalBlock);
+  if (
+    hash(receipt.transactionHash) !== transactionHash ||
+    hash(tx.hash) !== transactionHash ||
+    hash(canonical.hash) !== hash(receipt.blockHash) ||
+    quantity(canonical.number) !== quantity(receipt.blockNumber)
+  )
+    throw new Error("The creation receipt does not match its canonical block.");
+  if (
+    String(tx.from).toLowerCase() !== input.owner.toLowerCase() ||
+    String(tx.to).toLowerCase() !== config.factory.toLowerCase() ||
+    String(tx.input).toLowerCase() !== creationData(input).toLowerCase() ||
+    quantity(tx.value) !== 0n ||
+    tx.blockHash !== receipt.blockHash
+  )
+    throw new Error(
+      "The transaction does not match this owner's vault creation request.",
+    );
+  if (quantity(receipt.status) !== 1n)
+    throw new EvmVaultCreationFailed(
+      "The vault creation transaction failed. Review a new request.",
+    );
+  const vault = await creationVault(config, input, String(receipt.blockNumber));
+  const created = {
+    ...config,
+    vault,
+    owner: input.owner,
+    asset: input.asset,
+    payoutPolicy: input.payoutPolicy,
+  };
+  await verifyEvmDeployment(created, receipt.blockNumber, input.projectId);
+  await verifyEvmDeployment(created, "finalized", input.projectId);
+  if (input.payoutPolicy !== "security-bounty") {
+    const cap = BigInt(
+      await getter(created, vault, "monthlyCap()", "finalized"),
+    );
+    const enabled = BigInt(
+      await getter(created, vault, "monthlyEnabled()", "finalized"),
+    );
+    if (
+      cap !== BigInt(input.monthlyCap) ||
+      enabled !== (input.monthlyEnabled ? 1n : 0n)
+    )
+      throw new Error(
+        "The vault's monthly policy differs from the reviewed creation request.",
+      );
+  }
+  return vault;
+}
+
 /** One award of a monthly allocation, in allocation order. */
 export interface MonthlyAllocationEntry {
   githubUserId: string;
