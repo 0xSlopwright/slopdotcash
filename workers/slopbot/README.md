@@ -252,11 +252,13 @@ pending record in `slopbot_value_requests`. Redelivery must not create another
 record. A pending record proves intake only; verify the resulting assessment
 and publication separately. An unregistered repository must create no record.
 
+Escalated appeals also create a moderator Inbox notice. Repeated events use
+one notice key. The action and email dispatcher recheck moderator access and
+appeal status; a resolved appeal no longer asks for a decision. Verify actual
+provider delivery separately from local queue acceptance.
+
 ## Not yet implemented
 
-- Inbox notices for escalated appeals. Escalation is visible through the
-  `slopbot: moderator` label and the appeal comment until the Inbox adds an
-  appeal notice kind.
 - Maintainer dashboard and Automation row (LDR-04).
 
 ## Value assessment work in progress

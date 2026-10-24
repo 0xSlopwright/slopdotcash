@@ -150,7 +150,7 @@ const ENDPOINTS: Record<
 > = {
   "openai-responses": {
     "https://api.openai.com/v1/responses": "openai",
-    "https://api.surplusintelligence.ai/openai/v1/responses": "surplus",
+    "https://api.surplusintelligence.ai/v1/responses": "surplus",
   },
   "anthropic-messages": {
     "https://api.anthropic.com/v1/messages": "anthropic",

@@ -1,4 +1,7 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 type SessionReport = { sessions: Record<string, Record<string, unknown>> };
 type RunReceiptUsage = {
@@ -22,7 +25,16 @@ const { normalizeSessionReport, usageDelta }: RunReceiptUsage = await import(
   source
 );
 
-const repositoryRoot = "/work/slopdotcash";
+// A native absolute root: the dashed Claude Code directory name that scopes a
+// session is derived from the same platform path the script normalizes.
+const repositoryRoot = mkdtempSync(join(tmpdir(), "run-receipt-usage-"));
+
+afterAll(() => rmSync(repositoryRoot, { recursive: true, force: true }));
+
+/** The dashed directory name Claude Code derives from a repository root. */
+function claudeProjectDirectoryName(value: string): string {
+  return value.replaceAll(/[^A-Za-z0-9]/gu, "-");
+}
 
 // Session row shape from `ccusage@20.0.20 codex session --json --mode calculate`.
 // Codex rows have no project path. "directory" is the date directory of the
@@ -90,13 +102,13 @@ test("Claude Code and Grok Build project paths still decide the session scope", 
       sessions: [
         {
           sessionId: "claude-here",
-          projectPath: "-work-slopdotcash",
+          projectPath: claudeProjectDirectoryName(repositoryRoot),
           inputTokens: 10,
           outputTokens: 5,
         },
         {
           sessionId: "grok-elsewhere",
-          projectPath: "/work/other",
+          projectPath: join(tmpdir(), "other-checkout"),
           inputTokens: 10,
           outputTokens: 5,
         },
