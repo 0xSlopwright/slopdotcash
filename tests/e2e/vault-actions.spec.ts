@@ -1229,7 +1229,7 @@ test("owner creates, registers and funds a vault through the real API", async ({
       setup.getByRole("button", { name: "Review vault creation", exact: true }),
     ).toBeDisabled();
     await setup
-      .getByLabel("Automatic monthly payment", { exact: true })
+      .getByRole("combobox", { name: "Automatic monthly payment", exact: true })
       .selectOption(automatic ? "on" : "off");
     const reviewButton = setup.getByRole("button", {
       name: "Review vault creation",
