@@ -336,8 +336,10 @@ historical receipts stay verifiable.
 For the upgradeable loader, `codeSha256` hashes every byte after the fixed
 45-byte ProgramData header, including allocation padding. `upgradeAuthority`
 must match the finalized loader state, including `null` for an immutable program.
-On mainnet the adapter and manifest schema require `null`: a retained upgrade key
-could replace the program, empty vaults, and restore the reviewed bytes.
+On mainnet the owner-approved upgrade authority remains set and must match the
+manifest. This authority can replace program logic governing deposited funds.
+Each approved upgrade must record the new program hash and preserve prior
+deployment evidence.
 Classic immutable BPF loader deployments hash their complete executable data.
 The deploy script prints separate compiled and deployed hashes; they need not match
 when ProgramData reserves additional zero-filled capacity.
