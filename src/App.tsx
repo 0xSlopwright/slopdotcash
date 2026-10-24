@@ -1749,7 +1749,7 @@ function HowItWorksPage() {
         <ul>
           <li>
             <ExternalLinkAnchor href={`${protocolRoot}/scoring-v2.md`}>
-              Score v2 contract
+              Points v2 contract
             </ExternalLinkAnchor>
           </li>
           <li>
