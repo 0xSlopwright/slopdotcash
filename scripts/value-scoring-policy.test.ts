@@ -791,14 +791,14 @@ test("published account bans remove new merge and review credit but retain earli
           node_id: path === "/user/11" ? "U_alice" : "U_bob",
         }) as T,
     },
-    async () =>
+    (async () =>
       Response.json({
         schemaVersion: "slop-account-bans:v1",
         bans: [
           { githubId: "11", bannedAt },
           { githubId: "12", bannedAt },
         ],
-      }),
+      })) as unknown as typeof fetch,
   );
   const before = snapshot().ledger;
   const after = snapshot(POLICY, bans).ledger;
@@ -820,7 +820,8 @@ test("published account bans remove new merge and review credit but retain earli
   await expect(
     loadParticipationBans(
       { get: async () => null },
-      async () => new Response(null, { status: 503 }),
+      (async () =>
+        new Response(null, { status: 503 })) as unknown as typeof fetch,
     ),
   ).rejects.toBeInstanceOf(ValueFeedUnavailableError);
 });
