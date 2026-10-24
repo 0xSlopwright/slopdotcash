@@ -842,6 +842,10 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
       })
     ).status,
   ).toBe(403);
+  expect((await t.call("GET", "project-account-bans", "")).body).toEqual({
+    schemaVersion: "slop-account-bans:v1",
+    bans: [OTHER, "900000004"].map((githubId) => ({ githubId, bannedAt: NOW })),
+  });
   const listedAppeals = await t.call("GET", "project-appeals", OTHER);
   expect(listedAppeals.status).toBe(200);
   expect(listedAppeals.body).toEqual({
@@ -924,6 +928,11 @@ test("an explicit moderator ban blocks new contribution intake without blaming t
   });
   expect((await newRun()).status).toBe(201);
   expect(await hasParticipationBan(t.db, "900000004")).toBe(true);
+  expect((await t.call("GET", "project-account-bans", "")).body).toEqual({
+    schemaVersion: "slop-account-bans:v1",
+    bans: [{ githubId: "900000004", bannedAt: NOW }],
+  });
+
   expect((await t.call("GET", "project-appeals", OTHER)).body).toEqual({
     appeals: [],
   });
