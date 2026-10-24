@@ -1,12 +1,16 @@
 // Slopbot GitHub App service (draft, docs/slopbot-v2-proposal.md).
 // fetch: verify and deduplicate webhooks, then enqueue identifiers only.
 // queue: re-read GitHub state and run the review pipeline.
-import { findRegisteredRepositoryById } from "../../src/lib/repositories.mjs";
+import {
+  findRegisteredRepositoryById,
+  REGISTERED_REPOSITORIES,
+} from "../../src/lib/repositories.mjs";
 import { dispatchDueAppeals } from "./appeals";
 import { resumeBudgetBlocks } from "./budget-blocks";
 import { APPEAL_COMMANDS, type Job } from "./contracts";
 import { verifyWebhookSignature } from "./github";
 import { dispatchMaintainerHolds } from "./maintainer-holds";
+import { activePenaltyPage } from "./penalties";
 import * as store from "./persistence";
 import { QUALITY_MARKER } from "./quality";
 import { registeredRepository, reviewRegistration } from "./registry";
@@ -215,6 +219,42 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
       return Response.json({ service: "slopbot", ok: true });
+    }
+    if (request.method === "GET" && url.pathname === "/v1/penalties") {
+      // The score producer's read of unreversed debits (PRD section 7). The
+      // published score applies each one once; a reversal removes it.
+      const project = url.searchParams.get("project") ?? "";
+      const after = url.searchParams.get("after") ?? "";
+      if (
+        !REGISTERED_REPOSITORIES.some(
+          (repository) => repository.projectId === project,
+        ) ||
+        !/^[A-Za-z0-9_=-]{0,100}$/u.test(after)
+      )
+        return Response.json(
+          { error: "Invalid penalty query" },
+          { status: 400 },
+        );
+      try {
+        return Response.json(
+          {
+            schemaVersion: "slop-penalties:v1",
+            project,
+            ...(await activePenaltyPage(env.SLOPBOT_DB, project, after)),
+          },
+          {
+            headers: {
+              "cache-control": "no-store",
+              "x-content-type-options": "nosniff",
+            },
+          },
+        );
+      } catch {
+        return Response.json(
+          { error: "Penalties are unavailable" },
+          { status: 503, headers: { "cache-control": "no-store" } },
+        );
+      }
     }
     const jointHistory = url.pathname === "/v1/work-unit-assessments";
     if (

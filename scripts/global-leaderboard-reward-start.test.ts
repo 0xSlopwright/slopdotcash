@@ -1,7 +1,7 @@
 /// <reference types="bun-types" />
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { CycleIndex, CycleIndexEntry } from "../src/lib/cycle-index";
 import { createGlobalLeaders } from "../src/lib/global-leaderboard";
@@ -32,12 +32,17 @@ if (!registered) throw new Error("eliza project is not registered");
 const eliza = registered;
 const rewardStartAt = eliza.reward.rewardStartAt;
 
+let checkout = "";
+afterAll(() => {
+  if (checkout) rmSync(checkout, { recursive: true, force: true });
+});
+
 let index: CycleIndex;
 let julyCycle: CycleIndexEntry;
 beforeAll(async () => {
   // The cycle index reads fixed repository paths, so it is built inside a
   // checkout that restores the frozen pre-registry history.
-  const checkout = fixtureCheckout("global-leaderboard-");
+  checkout = fixtureCheckout("global-leaderboard-");
   const built = spawnSync(process.execPath, ["scripts/sync-cycle-index.ts"], {
     cwd: checkout,
     encoding: "utf8",
