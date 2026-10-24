@@ -1592,7 +1592,7 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
   );
   await assert.rejects(record(later), /MonthlyWindowClosed/);
 
-  // The signature binds the program, project, period, root and total, and only the
+  // The signature binds the network, program, project, period, root and total. Only the
   // project's identity authority attests.
   await assert.rejects(record(period, root, []), /InvalidAttestation/);
   await assert.rejects(
@@ -1613,6 +1613,7 @@ test("bounded monthly commitment: signed root, cap, one period, opt-out, proofs 
           period,
           root,
           "59000000",
+          Buffer.from(network).toString("hex"),
         ),
       ),
     ]),
