@@ -818,6 +818,13 @@ describe("discretionary awards", () => {
     const second = await env.receive(REPORTER, "2026-10-19T09:20:00.000Z");
     await env.decide(first, "vault-drain");
     await env.decide(second, "oracle-skew");
+    // The scanner refreshes the balance after the read and before the write.
+    env.setBeforeBatch(() => env.fund("0"));
+    const changed = await env.award(first, "1000000");
+    expect(changed.status).toBe(409);
+    expect(changed.body.error).toBe("insufficient_funds");
+    expect(env.reservations()).toEqual([]);
+    env.fund("1200000");
     expect((await env.award(first, "1000000")).status).toBe(200);
     expect((await env.award(second, "1000000")).body.error).toBe(
       "insufficient_funds",

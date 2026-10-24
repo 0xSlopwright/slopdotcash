@@ -638,6 +638,7 @@ const OUTSTANDING_RESERVATIONS = `SELECT COALESCE(SUM(CAST(r.gross_minor AS INTE
 async function programFunds(
   deps: Pick<SecurityApiDependencies, "db" | "now">,
   projectId: string,
+  snapshotGuards: { sql: string; values: unknown[] }[] = [],
 ): Promise<{
   currency: SecurityBountyTerms["amount"]["currency"];
   decimals: number;
@@ -673,6 +674,20 @@ async function programFunds(
       !(now - Date.parse(snapshot.observed_at) <= VAULT_SNAPSHOT_MAX_AGE_MS)
     )
       continue;
+    // An award write must still see the exact balances used by this read.
+    // Keep these internal SQL guards out of the private case response.
+    snapshotGuards.push({
+      sql: "EXISTS (SELECT 1 FROM security_vault_snapshots WHERE project_id = ? AND network = ? AND vault = ? AND asset_address = ? AND asset_decimals = ? AND free_balance = ? AND observed_at = ?)",
+      values: [
+        projectId,
+        deployment.network,
+        deployment.vault,
+        snapshot.asset_address,
+        snapshot.asset_decimals,
+        snapshot.free_balance,
+        snapshot.observed_at,
+      ],
+    });
     free += BigInt(snapshot.free_balance);
     if (snapshotAt === null || snapshot.observed_at < snapshotAt)
       snapshotAt = snapshot.observed_at;
@@ -2620,7 +2635,8 @@ async function awardReservation(
   if (terms === null || rootCauseKey === null)
     fail(409, "action_not_allowed", "The case has no paid terms to reserve");
   await assertRootCauseFree(deps, row.project_id, row.id, rootCauseKey);
-  const funds = await programFunds(deps, row.project_id);
+  const snapshotGuards: { sql: string; values: unknown[] }[] = [];
+  const funds = await programFunds(deps, row.project_id, snapshotGuards);
   if (
     funds === null ||
     funds.currency !== terms.currency ||
@@ -2642,7 +2658,7 @@ async function awardReservation(
     before: [
       deps.db
         .prepare(
-          `INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT revision FROM security_cases WHERE id = ?) = ? AND (${OUTSTANDING_RESERVATIONS}) + CAST(? AS INTEGER) <= CAST(? AS INTEGER) AND NOT EXISTS (${ROOT_CAUSE_PENDING_REVIEW})`,
+          `INSERT INTO security_award_reservations (case_id, project_id, root_cause_key, policy_revision, gross_minor, currency, reserved_at) SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT revision FROM security_cases WHERE id = ?) = ? AND (${OUTSTANDING_RESERVATIONS}) + CAST(? AS INTEGER) <= CAST(? AS INTEGER) AND ${snapshotGuards.map((guard) => guard.sql).join(" AND ")} AND NOT EXISTS (${ROOT_CAUSE_PENDING_REVIEW})`,
         )
         .bind(
           row.id,
@@ -2659,6 +2675,7 @@ async function awardReservation(
           funds.snapshotAt,
           grossMinor,
           funds.freeMinor,
+          ...snapshotGuards.flatMap((guard) => guard.values),
           row.project_id,
           row.id,
           rootCauseKey,
