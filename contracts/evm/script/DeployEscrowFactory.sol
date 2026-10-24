@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.30;
-import {EscrowFactory, ProjectEscrow, ERC1967Proxy} from "../src/ProjectEscrow.sol";
+import {EscrowFactory, ERC1967Proxy} from "../src/ProjectEscrow.sol";
 
 interface DeploymentVm {
     function envAddress(string calldata key) external returns (address);
     function envOr(string calldata key, address defaultValue) external returns (address);
     function startBroadcast() external;
     function stopBroadcast() external;
+    function getCode(string calldata artifactPath) external view returns (bytes memory);
 }
 
 /// @notice Shared factory deployment. Signing comes from Foundry's external signer/account configuration; the
@@ -40,8 +41,15 @@ abstract contract DeployEscrowFactory {
             ? vm.envOr("ESCROW_FEE_RECIPIENT", BASE_PUBLISHED_FEE_RECIPIENT)
             : vm.envAddress("ESCROW_FEE_RECIPIENT");
         address upgradeAuthority = vm.envAddress("ESCROW_UPGRADE_AUTHORITY");
+        // Load the vault creation code from its artifact. Embedding it with `new` puts the vault, factory and
+        // proxy creation code in one script contract, which exceeds the EIP-170 size check in CI.
+        bytes memory vaultCreationCode = vm.getCode("ProjectEscrow.sol:ProjectEscrow");
         vm.startBroadcast();
-        ProjectEscrow vaultImplementation = new ProjectEscrow();
+        address vaultImplementation;
+        assembly ("memory-safe") {
+            vaultImplementation := create(0, add(vaultCreationCode, 0x20), mload(vaultCreationCode))
+        }
+        require(vaultImplementation != address(0), "vault implementation deployment failed");
         EscrowFactory factoryImplementation = new EscrowFactory();
         factory = EscrowFactory(
             address(
@@ -55,7 +63,7 @@ abstract contract DeployEscrowFactory {
                             identityAuthority,
                             BINDING_DELAY,
                             upgradeAuthority,
-                            address(vaultImplementation)
+                            vaultImplementation
                         )
                     )
                 )
