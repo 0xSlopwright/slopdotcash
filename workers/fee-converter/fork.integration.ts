@@ -298,7 +298,9 @@ try {
         "latest",
       ])) as Hex,
     });
-  const factory = (
+  // Reuse the contract suite's atomic proxy deployment. The production
+  // implementations disable direct initialization in their constructors.
+  const fixture = (
     JSON.parse(
       execFileSync(
         "forge",
@@ -306,7 +308,7 @@ try {
           "create",
           "--root",
           fileURLToPath(new URL("../../contracts/evm", import.meta.url)),
-          "src/ProjectEscrow.sol:EscrowFactory",
+          "test/DeployFactory.sol:FactoryFixture",
           "--rpc-url",
           RPC,
           "--unlocked",
@@ -324,6 +326,20 @@ try {
       ),
     ) as { deployedTo: string }
   ).deployedTo.toLowerCase();
+  const factory = decodeFunctionResult({
+    abi: parseAbi(["function factory() view returns (address)"]),
+    functionName: "factory",
+    data: (await rpc("eth_call", [
+      {
+        to: fixture,
+        data: encodeFunctionData({
+          abi: parseAbi(["function factory() view returns (address)"]),
+          functionName: "factory",
+        }),
+      },
+      "latest",
+    ])) as Hex,
+  }).toLowerCase();
   const projectKey = keccak256(new TextEncoder().encode("fee-claim-fork"));
   await call(
     registrar,
