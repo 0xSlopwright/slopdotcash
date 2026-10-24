@@ -172,8 +172,7 @@ export function EscrowFunding({ project }: { project: ProjectDefinition }) {
       {!deployed ? (
         <p>
           This project has no vault yet. Deposits and payments are not possible
-          until a Slop admin records the owner&apos;s vault in a reviewed
-          project revision.
+          until a project revision records the owner&apos;s vault.
         </p>
       ) : (
         <>

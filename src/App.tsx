@@ -1201,6 +1201,7 @@ function paymentStateLabel(project: ProjectDefinition): string {
 
 /** "Live" only when a recorded vault can pay: payments must be enabled too. */
 function vaultStateLabel(project: ProjectDefinition): string {
+  if (project.reward.kind === "external-prize-share") return "Not applicable";
   if (!project.escrow?.deployments.length) return "Not set up";
   return project.reward.paymentMode === "enabled"
     ? "Live"
@@ -1256,17 +1257,22 @@ function ProjectFundingPage({ project }: { project: ProjectDefinition }) {
             <dd>{vaultStateLabel(project)}</dd>
           </div>
         </dl>
-        {project.escrow ? (
+        {project.reward.kind === "external-prize-share" ? (
+          <p>
+            The organizer pays this external prize. Slop has no vault for this
+            project.
+          </p>
+        ) : project.escrow ? (
           <EscrowFunding project={project} />
         ) : (
           <div>
             <EmptyState text="This project has no vault yet." />
             <p>
-              Deposits and payments are not possible until a vault is set up.
-              Vault setup is not self-service: the project owner creates the
-              vault from its own wallet, and a Slop admin records it in a
-              reviewed project revision. Project owner:{" "}
-              <a href={CONTACT_MAILTO}>contact Slop</a> to start vault setup.
+              Deposits and payments are not possible until a vault is recorded
+              for this project. The site has no control that creates a vault:
+              the project owner creates it on chain from its own wallet, and a
+              project revision then records it. Project owner:{" "}
+              <a href={CONTACT_MAILTO}>contact Slop</a> for vault setup.
             </p>
           </div>
         )}
@@ -2292,8 +2298,8 @@ function SponsorsPage({
               <li>The monthly cap, with exact-cycle overrides.</li>
               <li>
                 Proposed awards may change privately within the cap before the
-                monthly cutoff. Automatic monthly payment is on by default and
-                can be turned off.
+                monthly cutoff. When payments are enabled, automatic monthly
+                payment is on by default and can be turned off.
               </li>
               <li>
                 Whether to add a named review budget as a second cash line.
