@@ -14,8 +14,13 @@ The deployment authority must supply all policy fields: `version`,
 The external-controls record requires `attestedByGithubId` equal to the configured
 policy authority, `evidenceReference`, `attestedAt`, and `validUntil`. Its time
 window must be current. These values come from trusted deployment configuration,
-not from a service upload or browser request. No production policy values or
-operator identities are selected by this change.
+not from a service upload or browser request. The parser accepts only the
+recorded identities from [the approved policy](#approved-production-policy):
+`policyAuthorityGithubId` must be `18633264`, and `operatorGithubIds` must name
+exactly `18633264` and `202660855`, in any order. A policy that names another
+owner or reader, omits either reader, or repeats one is inactive, so evidence
+upload, grants and reads fail closed. Changing these identities is a code
+change, not a configuration change.
 
 `readGrantDurationSeconds` controls the read token, database expiry and download
 cookie only. Set it to 900 for the approved 15-minute operator grant.
