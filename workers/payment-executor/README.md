@@ -45,8 +45,10 @@ is accepted (Base Sepolia, Robinhood Chain Testnet, Ethereum Sepolia, Solana
 Devnet and Testnet); each network's chain and chain id come from
 `src/lib/escrow-policy.mjs`. A mainnet network (Base, Ethereum, Robinhood
 Chain, Solana) is accepted only when its value in `mainnet-execution.mjs` is
-`true`. Every value is `false`. Only a reviewed pull request that records that
-network's production activation can change one. The local integration
+`true`. Only `base-mainnet` is `true` (owner activation of 24 October 2026,
+`contracts/DEPLOY-MAINNET.md` section 3.6); every other value is `false`. Only
+a reviewed pull request that records that network's production activation can
+change one. The local integration
 override exists only in the core APIs and is not forwarded by the hosted
 wrapper. `assert-fresh-test-stack.mjs` accepts only registry test networks.
 

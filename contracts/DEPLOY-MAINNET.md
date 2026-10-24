@@ -464,10 +464,10 @@ Do this section for one network. Finish it, reconcile the first payout, and
 record the evidence before you start the next network. Agents must not run
 these steps; they may prepare commands and read reports.
 
-The code does not enable a mainnet. Every value in
+The code enables only Base mainnet (section 3.6). Every other value in
 `workers/payment-executor/mainnet-execution.mjs` is `false`, and the
-executor and the attester refuse a mainnet deployment before they read a
-signer secret. `workers/payment-executor/configure.mjs --stack production`
+executor and the attester refuse those mainnets before they read a signer
+secret. `workers/payment-executor/configure.mjs --stack production`
 generates the production stack for one mainnet. It is the identity attester
 Worker only (PAY-05). Slop holds no relayer key and runs no dispatcher or
 other scheduled job that starts a payment (PAY-04). The project or a
@@ -559,7 +559,116 @@ separately. Attach the report to the release issue.
 5. Record the transaction, the snapshot row and the page screenshot on the
    release issue. Then start the next network at step 3.1.
 
+### 3.6 Base mainnet activation: owner steps
+
+The owner approved Base mainnet execution on 24 October 2026 and installs the
+secrets. `base-mainnet` is `true` in `mainnet-execution.mjs`, and the Pages
+`PAYMENT_NETWORKS` in `wrangler.toml` is `["base-mainnet"]`. The production
+release (`.github/workflows/deploy.yml`, job `deploy`, `main` only, environment
+`eliza-army-production`) generates the attester configuration with
+`configure.mjs --stack production` from the registry snapshot of the released
+commit. Then:
+
+- If the snapshot pins no Base mainnet vault, the release skips the attester
+  and reports a notice. The attester has nothing to sign.
+- If the snapshot pins a vault, the release reads the secret names of
+  `slop-payments-base-mainnet-attester` (never the values). The names must be
+  exactly `PAYMENT_RPC_URLS` and `SIGNER_PRIVATE_KEY`. A missing or extra
+  name stops the release before it changes the identity Worker, D1 or
+  Pages. The release then deploys the attester with the commit SHA as its
+  version tag and checks that the active version has that tag.
+
+Install the secrets before the first snapshot that pins a Base vault reaches
+`main`. The push of that snapshot to `main` starts a release, and that release
+stops while the Worker or a secret is missing, as does every later release of
+the site. Do these steps from a clean checkout of `development` after an admin
+revision records the project's Base vault and the registry snapshot that
+contains it is on `development`:
+
+1. Generate the configuration. The secrets belong to the Worker name, so this
+   configuration also serves the later `main` release:
+
+   ```sh
+   bun install --frozen-lockfile --ignore-scripts
+   bun run payments:deployments mainnet base-mainnet > /tmp/base-mainnet-pinned.json
+   node workers/payment-executor/configure.mjs --stack production \
+     --network base-mainnet \
+     --deployments /tmp/base-mainnet-pinned.json \
+     --output workers/payment-executor/.generated
+   CONFIG=workers/payment-executor/.generated/slop-payments-base-mainnet-attester.json
+   ```
+
+   `.generated/` is ignored by git.
+
+2. Install the two secrets on the attester Worker only. Wrangler reads each
+   value at its prompt; do not put a value in the command, a file in the
+   repository, or the shell history. If the Worker does not exist yet,
+   Wrangler asks to create it: answer yes.
+
+   ```sh
+   ./node_modules/.bin/wrangler secret put SIGNER_PRIVATE_KEY --config "$CONFIG"
+   ./node_modules/.bin/wrangler secret put PAYMENT_RPC_URLS --config "$CONFIG"
+   ```
+
+   - `SIGNER_PRIVATE_KEY`: the `0x`-prefixed hex private key of the identity
+     authority `0x31B87d13f9091bC3b8A5cb6F45C8b3cB99Ed6d70`. No other key.
+   - `PAYMENT_RPC_URLS`: one line of JSON,
+     `{"base-mainnet":"https://<private Base endpoint>"}`. The endpoint must
+     serve the `finalized` block tag.
+
+   Do not install a relayer key, a test key or a Solana seed. The release
+   refuses any other secret name.
+
+3. Check the names (Wrangler prints names, not values):
+
+   ```sh
+   ./node_modules/.bin/wrangler secret list --config "$CONFIG"
+   ```
+
+   The list must contain exactly `PAYMENT_RPC_URLS` and `SIGNER_PRIVATE_KEY`.
+
+4. Fund `0x31B87d13f9091bC3b8A5cb6F45C8b3cB99Ed6d70` with a small Base ETH
+   balance. The attester signs and pays gas for each destination binding
+   transaction. It never pays out an award. See the limit below: nothing
+   uses this balance until a binding trigger exists.
+
+5. Optional: run the readiness report of section 3.3. Enter the RPC map at a
+   silent prompt so that it is not in the command or the shell history:
+
+   ```sh
+   read -rs PAYMENT_RPC_URLS && export PAYMENT_RPC_URLS
+   bun run payments:readiness --registry-origin https://slop.cash \
+     --config "$CONFIG" --probe
+   unset PAYMENT_RPC_URLS
+   ```
+
+   For `base-mainnet`, `factory` and `attester` must be `configured` and
+   `rpc` must be `finalized`. `executor` reports `missing`.
+
+6. Approve the production release: merge the reviewed promotion pull request
+   from `development` to `main`. The `deploy` job checks the secrets and
+   deploys the attester. Check the job log for the attester deploy, then
+   check the Worker with
+   `./node_modules/.bin/wrangler deployments status --config "$CONFIG"`.
+
+Monitoring: the attester's five-minute cron run throws on any indexing or
+monthly authorization failure, which shows in the Cloudflare Workers logs of
+`slop-payments-base-mainnet-attester`
+(`./node_modules/.bin/wrangler tail --config "$CONFIG"`). No alerting service
+watches it.
+
+Limit: on Base no Slop service sends a destination binding request to the
+attester. The test stack's relayer sends it (section "Restricted test payout
+execution" in `workers/payment-executor/README.md`), and a mainnet has no
+Slop relayer. Until a reviewed change adds the trigger, a Base payout needs
+an operator decision on how bindings are submitted.
+
 To stop new Slop attestations on a network, change its
 `mainnet-execution.mjs` value back to `false` through a reviewed pull request
-and redeploy the attester Worker. Slop cannot stop a payment that the project
+and redeploy the attester Worker. On Base the release redeploys it only while
+the snapshot pins a Base vault, so stop the attester this way before a
+snapshot removes the last pinned Base vault; a release with no pinned vault
+leaves an existing attester unchanged. Do not delete `SIGNER_PRIVATE_KEY` to
+stop it: every later release of the site then stops at the secret check. Do
+not delete the Worker: that deletes its signing journal. Slop cannot stop a payment that the project
 or a permissionless executor submits for an approved and funded obligation.
