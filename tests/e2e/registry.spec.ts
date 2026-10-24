@@ -1248,7 +1248,69 @@ test("a moderator decides a confirmed malicious result and bans the project and 
   await expect(returning.locator("main")).not.toContainText("steals tokens");
   await expect(returning.locator("main")).not.toContainText(evidence);
   expect(returningErrors).toEqual([]);
+  const appeal = await returning.request.post("/api/v1/project-appeals", {
+    headers: {
+      origin: new URL(returning.url()).origin,
+      cookie: `__Host-slop_points=${token}`,
+    },
+    data: {
+      projectId: project.id,
+      reason: "The account is not responsible for this code",
+      evidenceReference: evidence,
+    },
+  });
+  expect(appeal.status()).toBe(200);
   await returningContext.close();
+
+  const independentContext = await browser.newContext(walkthroughOptions());
+  const independent = await independentContext.newPage();
+  const independentErrors = observe(independent);
+  await signIn(independent, ADMIN_TOKEN);
+  await independent.goto("/admin", { waitUntil: "networkidle" });
+  await independent
+    .getByRole("button", { name: `Open ${project.name}`, exact: true })
+    .click();
+  const accountPanel = independent
+    .locator(".admin-card", {
+      has: independent.getByText(project.id, { exact: true }),
+    })
+    .getByRole("region", { name: "Enforcement", exact: true });
+  await accountPanel.getByLabel("Action").selectOption("reinstate_accounts");
+  await accountPanel.getByLabel("GitHub accounts to reinstate").fill(login);
+  await accountPanel
+    .getByLabel("Reason (private audit record)")
+    .fill("The evidence clears this account; the project stays banned");
+  await accountPanel
+    .getByLabel("Evidence reference (link or case id)")
+    .fill(evidence);
+  await accountPanel.getByRole("button", { name: "Preview action" }).click();
+  const accountPreview = accountPanel.getByRole("group", {
+    name: "Preview: check it, then confirm",
+  });
+  await expect(accountPreview).toContainText(`Accounts reinstated@${login}`);
+  await expect(accountPreview).toContainText("Banned → Banned");
+  await expectAccessible(independent);
+  await independent.screenshot({
+    path: test.info().outputPath("account-reinstatement-preview.png"),
+    fullPage: true,
+  });
+  await accountPreview
+    .getByRole("button", { name: "Confirm: Reinstate selected accounts" })
+    .click();
+  await expect(independent.getByRole("status").first()).toContainText(
+    "Reinstate selected accounts recorded",
+  );
+  await expect(accountPanel).not.toContainText(`Banned maintainers@${login}`);
+  expect((await request.get(`/api/v1/projects/${project.id}`)).status()).toBe(
+    410,
+  );
+  await expectAccessible(independent);
+  await independent.screenshot({
+    path: test.info().outputPath("account-reinstated-project-banned.png"),
+    fullPage: true,
+  });
+  expect(independentErrors).toEqual([]);
+  await independentContext.close();
 });
 
 test("an owner installs Slopbot before creation and resumes setup; a failed scan and lost access each show the next action @registry", async ({
