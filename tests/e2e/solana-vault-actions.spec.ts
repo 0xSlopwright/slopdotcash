@@ -814,7 +814,7 @@ test("Solana wallet deposits, recovers after reload, and owner withdraws with ve
 test("owner creates, recovers, registers and funds a Solana vault through the API", async ({
   page,
 }, info) => {
-  test.setTimeout(240_000);
+  test.setTimeout(480_000);
   const automatic = !info.project.name.includes("mobile");
   const temporary = mkdtempSync(join(tmpdir(), "slop-solana-setup-"));
   const apiPort = rpcPort + 60;
@@ -1005,7 +1005,14 @@ test("owner creates, recovers, registers and funds a Solana vault through the AP
     await setup
       .getByRole("combobox", { name: "Automatic monthly payment", exact: true })
       .selectOption(automatic ? "on" : "off");
+    const browserReviewResponse = page.waitForResponse(
+      (response) =>
+        response.url() === `${origin}/api/v1/project-vaults/${project.id}` &&
+        response.request().method() === "POST" &&
+        response.request().postDataJSON().step === "review",
+    );
     await setup.getByRole("button", { name: "Review vault creation" }).click();
+    const browserReview = (await (await browserReviewResponse).json()).review;
     await expect(
       setup.getByRole("button", { name: "Create vault in wallet" }),
     ).toBeEnabled();
@@ -1013,6 +1020,29 @@ test("owner creates, recovers, registers and funds a Solana vault through the AP
       path: info.outputPath("solana-create-review.png"),
       fullPage: true,
     });
+    if (automatic) {
+      // A normal owner can leave this review open past the Solana transaction lifetime.
+      await expect
+        .poll(() => connection.getBlockHeight("confirmed"), {
+          timeout: 240_000,
+          intervals: [1000],
+        })
+        .toBeGreaterThan(browserReview.transaction.lastValidBlockHeight);
+      const validity = await connection.isBlockhashValid(
+        browserReview.transaction.blockhash,
+        "confirmed",
+      );
+      expect(validity.value).toBe(false);
+      await info.attach("expired-creation-review.json", {
+        body: JSON.stringify({
+          blockhash: browserReview.transaction.blockhash,
+          lastValidBlockHeight: browserReview.transaction.lastValidBlockHeight,
+          blockHeightBeforeCreate: await connection.getBlockHeight("confirmed"),
+          validBeforeCreate: validity.value,
+        }),
+        contentType: "application/json",
+      });
+    }
     await setup.getByRole("button", { name: "Create vault in wallet" }).click();
     await expect(setup.getByRole("alert")).toContainText(
       "Transport interrupted",
