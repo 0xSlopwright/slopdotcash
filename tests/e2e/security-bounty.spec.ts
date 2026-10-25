@@ -716,6 +716,10 @@ test("private security bounty programs keep cases restricted from intake to awar
       path: test.info().outputPath("program-terms.png"),
       fullPage: true,
     });
+    // The page checks readiness on open, and the edge keeps each answer for
+    // INTAKE_READINESS_TTL_SECONDS. Turn reporting off before the first
+    // check of program B, so the next step never reads a cached "ready".
+    await setIntake(request, b.repository, "disabled");
     await page.goto(`/projects/${b.id}/security`, { waitUntil: "networkidle" });
     await expect(page.locator(".security-lead")).toContainText(
       "100,000 USDC gross per finding, 75,000 USDC to the researcher",
