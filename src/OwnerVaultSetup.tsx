@@ -268,33 +268,36 @@ export function OwnerVaultSetup({
             JSON.stringify(review.review.creation))
       )
         throw new Error("The creation request changed. Review again.");
-      remember(review);
+      // Refresh Solana's transaction lifetime only after the owner, policy and
+      // exact creation instructions still match the review above.
+      const ready = { ...review, review: fresh.review };
+      remember(ready);
       try {
         let hash: unknown;
-        if (review.review.family === "solana") {
-          if (!review.review.transaction)
+        if (ready.review.family === "solana") {
+          if (!ready.review.transaction)
             throw new Error("Recover the existing vault transaction.");
           hash = await sendSolanaWalletTransaction(
-            { network: review.input.network },
+            { network: ready.input.network },
             wallet,
-            review.review.transaction.transaction,
-            solanaVaultCreationMessage(review.review),
-            () => remember(review),
+            ready.review.transaction.transaction,
+            solanaVaultCreationMessage(ready.review),
+            () => remember(ready),
           );
         } else {
           if (!wallet.evmRequest) throw new Error("Choose an EVM wallet.");
           hash = await wallet.evmRequest("eth_sendTransaction", [
-            review.review.transaction,
+            ready.review.transaction,
           ]);
         }
         if (
           typeof hash !== "string" ||
-          !isVaultCreationId(review.input.network, hash)
+          !isVaultCreationId(ready.input.network, hash)
         )
           throw new Error(
             "The wallet did not return a transaction hash. Recover it from wallet activity.",
           );
-        remember({ ...review, hash });
+        remember({ ...ready, hash });
         setRecoveryHash(hash);
         setReview(null);
         setNotice(
