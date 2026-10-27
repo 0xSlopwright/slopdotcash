@@ -571,6 +571,14 @@ export function startGitHubApiFixture(port) {
     permissions: new Map(),
     token: "ghs_slopbotfixtureinstallationtoken",
   };
+  // Every response closes its connection, so `closeIdleConnections()` can only
+  // hurt a socket that was just accepted and has not delivered its request
+  // line yet. Track that here instead of trusting the built-in idle state: a
+  // socket counts as idle only after its response finished, and only after a
+  // short grace, so an aggressive caller (the e2e runner retires them every
+  // millisecond) never resets a write that is already on the wire.
+  const idleSockets = new Map();
+  const IDLE_GRACE_MS = 25;
   const server = createServer(async (request, response) => {
     // Browser tests can spend seconds in synchronous fixture/database setup
     // between these control requests. Retiring a pooled idle connection then
@@ -703,6 +711,24 @@ export function startGitHubApiFixture(port) {
     response.writeHead(404, { "content-type": "application/json" });
     response.end('{"message":"Not Found"}');
   });
+  server.on("connection", (socket) => {
+    socket.once("close", () => idleSockets.delete(socket));
+  });
+  server.on("request", (request, response) => {
+    idleSockets.delete(request.socket);
+    response.once("close", () => {
+      if (!request.socket.destroyed)
+        idleSockets.set(request.socket, performance.now());
+    });
+  });
+  server.closeIdleConnections = () => {
+    const now = performance.now();
+    for (const [socket, idleSince] of idleSockets) {
+      if (now - idleSince < IDLE_GRACE_MS) continue;
+      idleSockets.delete(socket);
+      socket.destroy();
+    }
+  };
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => {
