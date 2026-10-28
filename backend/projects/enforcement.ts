@@ -143,12 +143,16 @@ export function projectRestriction(
   return restriction;
 }
 
-/** An account-only appeal does not open or pre-empt the project's appeal. */
+/**
+ * An account-only appeal does not open or pre-empt the project's appeal, but
+ * an appeal kept open through a confirmed malicious result is still the
+ * project's open appeal: it authorizes the reinstatement decision.
+ */
 export function projectAppealState(
   restriction: ProjectRestriction,
 ): AppealState {
   if (restriction.state === "clear") return "none";
-  return projectAppealOpen(restriction.records) ? "requested" : "none";
+  return projectAppealOpen(restriction.records, true) ? "requested" : "none";
 }
 
 /**

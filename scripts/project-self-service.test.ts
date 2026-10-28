@@ -2060,23 +2060,21 @@ test("admin state separates a kept appeal from a new project request without wea
       response.body.projects as { id: string; enforcement: unknown }[]
     ).find((project) => project.id === "kept-appeal")?.enforcement;
   };
-  expect(await state()).toMatchObject({
+  // A kept appeal is still open: the panel offers the decision, and the
+  // decision reaches the manifest check instead of a missing-appeal refusal.
+  const keptState = (await state()) as { projectAppeal?: string };
+  expect(keptState.projectAppeal).toBe("requested");
+  expect(keptState).toMatchObject({
     appeal: "requested",
-    projectAppeal: "none",
     decisionRequired: true,
   });
-  const kept = await decide("reinstate", OWNER, 7);
-  expect(kept.status).toBe(409);
-  expect(kept.body.error).toBe("no_open_appeal");
-  expect((await decide("request_reinstatement", OWNER, 7)).status).toBe(200);
-  expect(await state()).toMatchObject({
-    appeal: "requested",
-    projectAppeal: "requested",
-    decisionRequired: true,
-  });
-  const unscanned = await decide("reinstate", OWNER, 8);
+  const unscanned = await decide("reinstate", OWNER, 7);
   expect(unscanned.status).toBe(409);
   expect(unscanned.body.error).toBe("vetting_required");
+  // Asking again while the kept appeal is open would append a second request.
+  const duplicate = await decide("request_reinstatement", OWNER, 7);
+  expect(duplicate.status).toBe(409);
+  expect(duplicate.body.error).toBe("appeal_open");
 });
 
 test("an account release leaves the kept project appeal for an independent malicious decision", async () => {
