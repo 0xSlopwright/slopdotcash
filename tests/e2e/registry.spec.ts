@@ -890,9 +890,10 @@ test("moderators restrict a project and refuse reinstatement without canonical s
   request,
 }) => {
   const project = fixtureProjects().queued;
-  // The refused reinstatement preview below.
+  // The refused reinstatement preview below. The moderator files the appeal
+  // first, so the refusal is the self-review rule, not the missing scan.
   const refused = diagnostics.allowResponse(
-    409,
+    403,
     "POST",
     `/api/v1/admin/projects/${project.id}/enforcement-preview`,
   );
@@ -1167,7 +1168,7 @@ test("moderators restrict a project and refuse reinstatement without canonical s
     .fill(evidence);
   await moderatorPanel.getByRole("button", { name: "Preview action" }).click();
   await expect(moderatorPanel.getByRole("alert")).toContainText(
-    "fresh clean scan",
+    "Another moderator must decide an appeal its author filed",
   );
   expect(diagnostics.count(refused)).toBe(1);
   await expect(
